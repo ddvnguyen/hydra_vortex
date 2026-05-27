@@ -194,40 +194,68 @@ dotnet test src/Tests.Shared/Tests.Shared.csproj
 # Expected: Passed! - Failed: 0, Passed: 29
 ```
 
-### ⚠️ M0.2 — Hydra.Store (SKELETON — NEEDS IMPLEMENTATION)
+### ✅ M0.2 — Hydra.Store (COMPLETE, builds + 23 tests pass)
 
-`src/Hydra.Store/` exists with file stubs. **Not yet implemented.**
+`src/Hydra.Store/` — full implementation.
 
-Files that need implementation:
-- `StorageEngine.cs` — file I/O on tmpfs (PUT/GET/DEL/STAT/LIST)
-- `StoreServer.cs` — RPC handler dispatching to StorageEngine
-- `Program.cs` — DI wiring + startup
+| File | Status |
+|---|---|
+| `StorageEngine.cs` | ✅ PUT/GET/DEL/STAT/LIST + path traversal guard |
+| `StoreServer.cs` | ✅ RPC dispatch + sendfile for GET + debug HTTP endpoint |
+| `StoreMetrics.cs` | ✅ prometheus-net counters + histograms |
+| `StoreConfig.cs` | ✅ appsettings binding |
+| `StatResult.cs` | ✅ |
+| `Program.cs` | ✅ DI wiring |
 
-`Tests.Store/` — 23/23 pass ✅ (was "compile errors", now fixed).  
-`Tests.Integration/` — needs running Store + Agent services (skips at runtime).
+`Tests.Store/` — 23/23 pass ✅.
 
-### ⚠️ M0.3 — Hydra.Agent (SKELETON — NEEDS IMPLEMENTATION)
+### ✅ M0.3 — Hydra.Agent (COMPLETE, builds + 13 tests pass)
 
-`src/Hydra.Agent/` exists with file stubs. **Not yet implemented.**
+`src/Hydra.Agent/` — full implementation.
 
-Files that need implementation:
-- `LlamaClient.cs` — HTTP client wrapping llama-server local API
-- `StateHandler.cs` — Save/Restore orchestration (llama ↔ Store pipe)
-- `AgentServer.cs` — RPC handler for Coordinator ops
-- `Program.cs` — DI wiring + startup
+| File | Status |
+|---|---|
+| `LlamaClient.cs` | ✅ GetState/PutState/GetStateMeta + HTTP health/slots/erase |
+| `StateHandler.cs` | ✅ SaveToStore + RestoreFromStore (streamed, no 800 MB buffer) |
+| `AgentServer.cs` | ✅ SAVE/RESTORE/SLOT_STATUS/NODE_HEALTH/SLOT_ERASE handlers |
+| `AgentMetrics.cs` | ✅ prometheus-net counters + histograms |
+| `AgentConfig.cs` | ✅ appsettings binding |
+| `Program.cs` | ✅ DI wiring |
 
-`Tests.Agent/` — 13/13 pass ✅ (was "compile errors", now fixed).
+`Tests.Agent/` — 13/13 pass ✅.
+
+**Known design issue (P2):** `RestoreFromStoreAsync` makes 2 Store GET requests — first one buffers  
+the 800 MB payload to extract size from meta, then discards and re-streams via second GET.  
+Fix: use OpCode.Stat to get size first, then single streaming GET.
 
 ### ✅ M0.4 — E2E Test (WRITTEN)
 
-`src/tests/e2e/test_e2e.py` — async pytest, exercises prompt→save→restore→continuation flow with 4 assertions (cache_n > 0, prompt_ms < 5000, save returns size, restore returns restored=true).  
+`tests/e2e/test_e2e.py` — async pytest: prompt→save→restore→continuation flow.  
+4 assertions: choices present, save returns size, restore returns restored=true, cache_n > 0.  
 Uses `httpx.AsyncClient` for HTTP and `python_shared.RpcClient` for RPC.  
 Requires all 6 services running (two llama-servers, Store, two Agents).  
 Skipped by default — run with `pytest -m e2e -s`.
 
-### ⚠️ M1 — Coordinator (SKELETON — NEEDS IMPLEMENTATION)
+### ✅ M1 — Coordinator (COMPLETE, 42 tests pass)
 
-`src/coordinator/` has file stubs only. Core routing logic, session table, migration engine not implemented.
+`src/coordinator/` — full implementation.
+
+| File | Status |
+|---|---|
+| `session_table.py` | ✅ LRU tracking, mark_evicted, get_sessions_on_node |
+| `routing.py` | ✅ Session affinity → store_restore → long_prompt_rtx → least_loaded |
+| `health.py` | ✅ Background poll every 10s; marks unhealthy after 3 failures; polls immediately on start |
+| `state_manager.py` | ✅ save/restore/migrate/evict_lru via Agent RPC |
+| `proxy.py` | ✅ Non-streaming + SSE streaming proxy to llama-server |
+| `router.py` | ✅ POST /v1/chat/completions, GET /health, GET /status, GET/DELETE /sessions, POST migrate |
+| `app.py` | ✅ Single-instance singletons; lifespan only starts/stops HealthMonitor |
+| `config.py` | ✅ pydantic-settings config |
+| `metrics.py` | ✅ prometheus-client counters |
+| `main.py` | ✅ uvicorn entry point |
+
+`python_shared/rpc_client.py` — ✅ correct 16-byte wire format (`<HBBHqH`).
+
+**Missing tests (P1):** No `test_health.py`, `test_proxy.py`, or integration test `test_coordinator_agent.py`.
 
 ---
 
@@ -752,7 +780,12 @@ src/python-shared/rpc_client.py    ← Python RPC client (write this first)
 | `Tests.Shared` | ✅ All pass | 29/29 |
 | `Tests.Store` | ✅ All pass | 23/23 |
 | `Tests.Agent` | ✅ All pass | 13/13 |
-| `Tests.Integration` | ✅ Builds (skips if services not running) | 7/7 |
+| `Tests.Integration` | ✅ Builds (skips if services not running) | 6/6 |
+| `Python coordinator tests` | ✅ All pass | 42/42 |
 | `E2E test_e2e.py` | ✅ Written, skipped by default (use `-m e2e`) | 1 test, 4 assertions |
 | llama-server `build-check` | ✅ Compiles | CPU-only |
-| Python coordinator tests | ✅ Collect (42 tests) | 42/42 |
+
+**Missing test coverage (P1):**
+- `test_health.py` — HealthMonitor unit tests
+- `test_proxy.py` — proxy SSE forwarding
+- `tests/integration/test_coordinator_agent.py` — M1.4.1 with real Store + Agent
