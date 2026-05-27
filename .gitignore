@@ -19,8 +19,9 @@ build/
 venv/
 .env
 
-# C++ (root build only, submodule has its own)
+# C++ and llama.cpp
 build/
+src/llama-cpp/build/
 *.o
 *.a
 *.so
