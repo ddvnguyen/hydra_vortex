@@ -1,0 +1,49 @@
+from pydantic import computed_field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Literal
+
+
+class NodeConfig(BaseSettings):
+    model_config = SettingsConfigDict()
+
+    name: str = "rtx"
+    host: str = "127.0.0.1"
+    rpc_port: int = 9601
+    llama_url: str = "http://localhost:8080"
+    gpu_type: Literal["rtx5060ti", "p100"] = "rtx5060ti"
+
+
+class CoordinatorConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="HYDRA_COORD_")
+
+    host: str = "0.0.0.0"
+    port: int = 9000
+    log_level: str = "INFO"
+
+    rtx_host: str = "127.0.0.1"
+    rtx_port: int = 9601
+    rtx_llama_url: str = "http://localhost:8080"
+    p100_host: str = "192.168.122.21"
+    p100_port: int = 9602
+    p100_llama_url: str = "http://192.168.122.21:8086"
+
+    store_host: str = "127.0.0.1"
+    store_port: int = 9500
+
+    health_poll_interval_s: int = 10
+    health_max_failures: int = 3
+
+    chars_per_token: float = 4.0
+    long_prompt_threshold: int = 4096
+
+    session_idle_timeout_s: int = 3600
+
+    max_tokens_default: int = 512
+
+    @computed_field
+    @property
+    def nodes(self) -> list[NodeConfig]:
+        return [
+            NodeConfig(name="rtx", host=self.rtx_host, rpc_port=self.rtx_port, llama_url=self.rtx_llama_url, gpu_type="rtx5060ti"),
+            NodeConfig(name="p100", host=self.p100_host, rpc_port=self.p100_port, llama_url=self.p100_llama_url, gpu_type="p100"),
+        ]

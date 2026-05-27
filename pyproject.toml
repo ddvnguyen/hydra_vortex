@@ -2,7 +2,7 @@
 name = "hydra"
 version = "0.2.0"
 description = "High-throughput multi-GPU LLM inference system with KV state management"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -26,15 +26,18 @@ all = ["hydra[persistence,monitoring,langfuse,dev]"]
 
 [project.scripts]
 hydra-coordinator = "coordinator.main:run"
-hydra-tail = "python_shared.tail:main"
 
 [tool.setuptools.package-dir]
 "" = "src"
-"python_shared" = "src/python-shared"
+"coordinator" = "src/coordinator"
+"python_shared" = "src/python_shared"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["src/tests"]
+testpaths = ["src/coordinator/tests", "tests"]
+markers = [
+    "e2e: marks E2E tests that require real services (llama-servers, Store, Agents)",
+]
 
 [tool.ruff]
 target-version = "py311"

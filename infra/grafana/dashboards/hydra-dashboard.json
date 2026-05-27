@@ -1,0 +1,136 @@
+{
+  "title": "Hydra Dashboard",
+  "version": 1,
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Service Metrics",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Request Rate",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "rate(hydra_requests_total[1m])",
+        "legendFormat": "{{node}}"
+      }],
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "stat",
+      "title": "Active Sessions",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "sum(hydra_active_sessions)",
+        "legendFormat": "sessions"
+      }],
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "stat",
+      "title": "Store Ops/s",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "rate(hydra_store_ops_total[1m])",
+        "legendFormat": "{{op}}"
+      }],
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "stat",
+      "title": "Store Bytes Transferred/s",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "rate(hydra_store_bytes_stored[1m]) + rate(hydra_store_bytes_sent[1m])",
+        "legendFormat": "bytes/s"
+      }],
+      "unit": "bytes",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "row",
+      "title": "Agent Performance",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Save Duration (p50/p95)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(hydra_agent_save_duration_seconds_bucket[1m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(hydra_agent_save_duration_seconds_bucket[1m]))",
+          "legendFormat": "p95"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "options": { "legend": { "calcs": ["mean"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Restore Duration (p50/p95)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(hydra_agent_restore_duration_seconds_bucket[1m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(hydra_agent_restore_duration_seconds_bucket[1m]))",
+          "legendFormat": "p95"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "options": { "legend": { "calcs": ["mean"] } }
+    },
+    {
+      "type": "row",
+      "title": "Logs",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+    },
+    {
+      "id": 10,
+      "type": "logs",
+      "title": "All Logs",
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "targets": [{
+        "expr": "{service=~\"store|agent-rtx|coordinator\"}",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 19 },
+      "options": { "showTime": true, "showLabels": true }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "trace_id",
+        "type": "textbox",
+        "query": "",
+        "current": { "value": "" },
+        "label": "Trace ID",
+        "description": "Filter logs by trace_id"
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "name": "Trace ID Logs",
+        "datasource": { "type": "loki", "uid": "Loki" },
+        "expr": "{service=~\"store|agent-rtx|coordinator\"} |~ \"`$trace_id`\"",
+        "enable": true,
+        "iconColor": "rgba(255, 96, 96, 1)"
+      }
+    ]
+  }
+}

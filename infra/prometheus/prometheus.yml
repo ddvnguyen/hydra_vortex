@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: hydra-store
+    static_configs:
+      - targets: ["store:9501"]
+        labels:
+          component: store
+
+  - job_name: hydra-agent
+    static_configs:
+      - targets: ["agent-rtx:9611"]
+        labels:
+          component: agent
+          node: rtx
+
+  - job_name: hydra-agent-p100
+    static_configs:
+      - targets: ["agent-p100:9622"]
+        labels:
+          component: agent
+          node: p100
+
+  - job_name: hydra-coordinator
+    static_configs:
+      - targets: ["coordinator:9000"]
+        labels:
+          component: coordinator

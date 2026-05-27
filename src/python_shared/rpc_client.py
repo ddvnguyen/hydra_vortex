@@ -224,14 +224,7 @@ class RpcClient:
         return RpcResponse(status, meta, payload)
 
     async def _read_exact(self, n: int) -> bytes:
-        buf = bytearray(n)
-        view = memoryview(buf)
-        while view:
-            read = await self._reader.readinto(view)
-            if read == 0:
-                raise asyncio.IncompleteReadError(bytes(buf[: n - len(view)]), n)
-            view = view[read:]
-        return bytes(buf)
+        return await self._reader.readexactly(n)
 
     @staticmethod
     def _parse_response_header(buf: bytes) -> tuple[int, int, int]:

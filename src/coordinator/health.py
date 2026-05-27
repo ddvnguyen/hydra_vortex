@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -8,6 +9,12 @@ from python_shared.rpc_client import RpcClient, OpCode
 from coordinator.config import NodeConfig
 
 log = get_logger()
+
+
+def _extract_health_data(resp) -> dict:
+    if resp.meta.get("component") == "health" and resp.payload:
+        return json.loads(resp.payload)
+    return resp.meta
 
 
 @dataclass
@@ -70,11 +77,12 @@ class HealthMonitor:
                     await client.close()
 
                 info.healthy = True
-                info.node_name = resp.meta.get("node_name", node_name)
-                info.slots_total = resp.meta.get("slots_total", 0)
-                info.slots_idle = resp.meta.get("slots_idle", 0)
-                info.gpu_type = resp.meta.get("gpu_type", config.gpu_type)
-                info.llama_url = resp.meta.get("llama_url", config.llama_url)
+                health_data = _extract_health_data(resp)
+                info.node_name = health_data.get("node_name", node_name)
+                info.slots_total = health_data.get("slots_total", 0)
+                info.slots_idle = health_data.get("slots_idle", 0)
+                info.gpu_type = health_data.get("gpu_type", config.gpu_type)
+                info.llama_url = health_data.get("llama_url", config.llama_url)
                 info.consecutive_failures = 0
                 info.last_check = time.time()
 

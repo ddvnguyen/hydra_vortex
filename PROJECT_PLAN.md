@@ -6,16 +6,17 @@ across heterogeneous GPU nodes, enabling session migration without re-prefill.
 
 ## Architecture
 ```
-  Clients (Cline, OpenWebUI, curl)
-      │ OpenAI-compatible HTTP
-      ▼
+		Clients (Cline, OpenWebUI, curl)
+		OpenAI-compatible HTTP
+					│ 
+					▼
   ┌──────────────────────────────┐
   │  Coordinator :9000           │  Python / FastAPI
   │  Routes requests             │  Best LLM tooling ecosystem
   │  Manages sessions            │  (Langfuse, pydantic, structlog)
   └──────┬─────────────┬─────────┘
-         │ RPC          │ RPC
-         ▼              ▼
+         │ RPC         │ RPC
+         ▼             ▼
   ┌──────────┐    ┌──────────┐
   │ Agent    │    │ Agent    │  C# / .NET 10
   │ RTX      │    │ P100     │  System.IO.Pipelines
@@ -23,10 +24,10 @@ across heterogeneous GPU nodes, enabling session migration without re-prefill.
   │  │ HTTP  │    │  │ HTTP  │  (local only)
   │  ▼       │    │  ▼       │
   │ llama    │    │ llama    │  Unmodified llama.cpp
-  │ :8080    │    │ :8081    │  + hydra-state-streaming branch
+  │ :8080    │    │ :8086    │  + hydra-state-streaming branch
   └────┬─────┘    └────┬─────┘
-       │ RPC            │ RPC
-       ▼                ▼
+       │ RPC           │ RPC
+       ▼               ▼
   ┌──────────────────────────────┐
   │  Store :9500                 │  C# / .NET 10
   │  KV state chunks             │  tmpfs-backed

@@ -17,7 +17,7 @@ Client (HTTP) → Coordinator :9000 [Python/FastAPI]
               Agent RTX :9601   Agent P100 :9602  [C#/.NET 10]
                 │ HTTP local      │ HTTP local
                 ▼                 ▼
-           llama :8080        llama :8081          [C++ fork]
+           llama :8080        llama :8086          [C++ fork]
                 │ RPC               │ RPC
                 └────────┬──────────┘
                          ▼

@@ -1,0 +1,162 @@
+name: hydra
+
+services:
+  store:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: store
+    ports:
+      - "9500:9500"
+      - "9501:9501"
+    tmpfs:
+      - /mnt/llm-ram:size=30G
+    environment:
+      - HYDRA_STORE_HOST=0.0.0.0
+      - HYDRA_STORE_PORT=9500
+      - HYDRA_STORE_DIR=/mnt/llm-ram/store
+      - HYDRA_STORE_DEBUG_PORT=9501
+    labels:
+      component: store
+    restart: unless-stopped
+
+  agent-rtx:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: agent
+    ports:
+      - "9601:9601"
+      - "9611:9611"
+    environment:
+      - HYDRA_AGENT_HOST=0.0.0.0
+      - HYDRA_AGENT_PORT=9601
+      - HYDRA_AGENT_NODE_NAME=rtx
+      - HYDRA_AGENT_LLAMA_URL=http://host.docker.internal:8080
+      - HYDRA_AGENT_STORE_HOST=store
+      - HYDRA_AGENT_STORE_PORT=9500
+      - HYDRA_AGENT_DEBUG_HTTP_PORT=9611
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - store
+    labels:
+      component: agent
+    restart: unless-stopped
+
+  agent-p100:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: agent
+    ports:
+      - "9602:9602"
+      - "9622:9622"
+    environment:
+      - HYDRA_AGENT_HOST=0.0.0.0
+      - HYDRA_AGENT_PORT=9602
+      - HYDRA_AGENT_NODE_NAME=p100
+      - HYDRA_AGENT_LLAMA_URL=http://192.168.122.21:8086
+      - HYDRA_AGENT_STORE_HOST=store
+      - HYDRA_AGENT_STORE_PORT=9500
+      - HYDRA_AGENT_DEBUG_HTTP_PORT=9622
+    depends_on:
+      - store
+    labels:
+      component: agent
+    restart: unless-stopped
+
+  coordinator:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: coordinator
+    ports:
+      - "9000:9000"
+    environment:
+      - HYDRA_COORD_HOST=0.0.0.0
+      - HYDRA_COORD_PORT=9000
+      - HYDRA_COORD_RTX_HOST=agent-rtx
+      - HYDRA_COORD_RTX_PORT=9601
+      - HYDRA_COORD_RTX_LLAMA_URL=http://host.docker.internal:8080
+      - HYDRA_COORD_P100_HOST=agent-p100
+      - HYDRA_COORD_P100_PORT=9602
+      - HYDRA_COORD_P100_LLAMA_URL=http://192.168.122.21:8086
+      - HYDRA_COORD_STORE_HOST=store
+      - HYDRA_COORD_STORE_PORT=9500
+      - HYDRA_COORD_LOG_LEVEL=DEBUG
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - store
+    labels:
+      component: coordinator
+    restart: unless-stopped
+
+  # ── Observability Stack ────────────────────────────────────────────
+
+  loki:
+    image: grafana/loki:3.4
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/loki-config.yml
+    labels:
+      component: observability
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.4
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /run/user/1000/podman/podman.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/promtail-config.yml
+    depends_on:
+      - loki
+    labels:
+      component: observability
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    depends_on:
+      - store
+      - agent-rtx
+      - coordinator
+    labels:
+      component: observability
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.6
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/hydra-dashboard.json
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    depends_on:
+      - prometheus
+      - loki
+    labels:
+      component: observability
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  prometheus-data:
+  grafana-data:

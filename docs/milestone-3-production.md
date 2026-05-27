@@ -7,7 +7,7 @@ for LLM request tracing. Model weight distribution via Store (deferred from M0).
 ## What "Done" Means
 ```
 ✅ Reboot → KV sessions restored from NVMe within 30s
-✅ Grafana dashboard shows: request latency, cache hit rate, migration count, GPU utilization
+✅ Grafana dashboard shows: request rate, active sessions, store performance, agent save/restore latency, logs with trace_id filter
 ✅ Langfuse shows full request traces with token counts and routing decisions
 ✅ Model weights served from Store to new nodes (no manual scp)
 ✅ systemd manages full lifecycle: ramdisk → store → agents → coordinator
@@ -59,42 +59,30 @@ for LLM request tracing. Model weight distribution via Store (deferred from M0).
 
 ## Task M3.2: Observability — Grafana
 
-### M3.2.1: Prometheus Metrics (`shared/metrics.py`)
-- Use `prometheus_client` library
-- Coordinator metrics:
-  - `hydra_requests_total` (counter, labels: node, reason)
-  - `hydra_request_latency_seconds` (histogram, labels: node)
-  - `hydra_cache_hit_total` (counter)
-  - `hydra_migration_total` (counter, labels: from_node, to_node)
-  - `hydra_migration_latency_seconds` (histogram)
-  - `hydra_active_sessions` (gauge, labels: node)
-- Store metrics:
-  - `hydra_store_ops_total` (counter, labels: op)
-  - `hydra_store_bytes_transferred` (counter, labels: direction)
-  - `hydra_store_chunks_total` (gauge)
-  - `hydra_store_dedup_ratio` (gauge)
-- Agent metrics:
-  - `hydra_agent_save_seconds` (histogram)
-  - `hydra_agent_restore_seconds` (histogram)
-  - `hydra_agent_slot_utilization` (gauge, labels: node)
-- Each service exposes GET /metrics on its debug HTTP port
-- **Lines:** ~60
-- **Test:** verify metrics endpoint returns valid Prometheus format
-- **Done when:** `curl :9501/metrics` returns counters
+### M3.2.1: Prometheus Metrics (`src/coordinator/metrics.py`, `src/Hydra.Store/StoreMetrics.cs`, `src/Hydra.Agent/AgentMetrics.cs`)
+- **Store** (.NET, prometheus-net): `hydra_store_ops_total`, `hydra_store_bytes_stored`, `hydra_store_bytes_sent`, `hydra_store_op_duration_seconds` — exposed on `:9501/metrics`
+- **Agent** (.NET, prometheus-net): `hydra_agent_save_ops_total`, `hydra_agent_restore_ops_total`, `hydra_agent_save_duration_seconds`, `hydra_agent_restore_duration_seconds`, `hydra_agent_slots_idle`, `hydra_agent_llama_healthy` — exposed on `:9611/metrics`
+- **Coordinator** (Python, prometheus_client): `hydra_requests_total`, `hydra_cache_hits_total`, `hydra_migrations_total`, `hydra_active_sessions` — exposed on `:9000/metrics`
+- Each service adds a `GET /metrics` endpoint alongside its debug HTTP server
+- `Prometheus` in docker-compose scrapes all three targets
+- **Done when:** `docker compose up` — Prometheus scrapes all targets (check `:9090/targets`)
 
-### M3.2.2: Grafana Dashboard (`infra/grafana/hydra-dashboard.json`)
-- Provisioned dashboard JSON
-- Panels: request rate, latency p50/p95/p99, cache hit rate, migration count,
-  per-node slot utilization, store disk usage, dedup ratio
-- Docker compose adds Prometheus + Grafana
-- **Done when:** `docker compose up` shows working dashboard
+### M3.2.2: Grafana Dashboard (`infra/grafana/dashboards/hydra-dashboard.json`)
+- Provisioned dashboard JSON, auto-loaded by Grafana at startup
+- Panels (Prometheus): request rate, active sessions, store ops/s, store bytes/s, save/restore p50/p95
+- Logs panel (Loki): all service logs with label filters
+- **Trace ID filter**: textbox variable `$trace_id` in dashboard — enter a trace ID to filter
+- Docker compose: Prometheus + Loki + Grafana provisioned automatically
+- **Done when:** `docker compose up` → Grafana at `:3000` shows working dashboard
 
-### M3.2.3: Request Trace Logging
-- Structured log enrichment: every log line includes trace_id, duration_ms, component
-- Log aggregation: all services write to `/var/log/hydra/{component}.log`
-- `hydra-tail` CLI tool: `hydra-tail --trace abc123` shows full request lifecycle
-- **Lines:** ~40 (CLI tool)
-- **Done when:** single trace_id shows complete flow across all 3 services
+### M3.2.3: Request Trace Logging (Loki + Grafana)
+- Serilog JSON stdout includes `@t`, `@mt`, `component`, `trace_id`, `source_context`
+- Promtail scrapes Docker container logs → sends to Loki with `service` and `component` labels
+- Grafana dashboard includes a **Trace ID** textbox variable `$trace_id`
+  - Enter a trace ID → filter all log panels by `{service=~".*"} |~ "$trace_id"`
+  - Shows the full request lifecycle across Store, Agent, and Coordinator
+- No `hydra-tail` CLI — replaced by Grafana Explore or dashboard filter
+- **Done when:** enter trace_id in dashboard → logs from all services appear
 
 ---
 
@@ -144,7 +132,7 @@ for LLM request tracing. Model weight distribution via Store (deferred from M0).
 | M3.1.3  | store       | 40    | M3.1.2     | High      |
 | M3.2.1  | shared      | 60    | M1         | Medium    |
 | M3.2.2  | infra       | —     | M3.2.1     | Medium    |
-| M3.2.3  | shared      | 40    | M1         | Medium    |
+| M3.2.3  | infra       | —     | M1         | Medium    |
 | M3.3.1  | coordinator | 60    | M1         | Low       |
 | M3.4.1  | store+agent | 90    | M1         | Low       |
 | M3.4.2  | infra       | —     | all above  | Medium    |

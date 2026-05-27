@@ -2,7 +2,7 @@
 
 **For:** AI agents and engineers picking up this project cold.  
 **Updated:** 2026-05-27  
-**Status:** M0 llama fork ✅ | Hydra.Shared ✅ | Store/Agent ⚠️ incomplete | Coordinator ⚠️ incomplete | E2E test ✅
+**Status:** M0 llama fork ✅ | Hydra.Shared ✅ | Store ❇️ implemented | Agent ❇️ implemented | Coordinator ⚠️ skeleton | Observability ❇️ Prometheus+Grafana+Loki | E2E test ⏳
 
 ---
 
@@ -26,7 +26,7 @@ Coordinator :9000       [Python/FastAPI]   NOT YET BUILT (M1)
 Agent RTX :9601         Agent P100 :9602   [C#/.NET 10]   SKELETON EXISTS
   │ HTTP local                 │ HTTP local
   ▼                            ▼
-llama-server :8080      llama-server :8081 [C++ fork]    ✅ BUILT
+llama-server :8080      llama-server :8086 [C++ fork]    ✅ BUILT
   │ Hydra binary RPC           │ Hydra binary RPC
   └──────────┬─────────────────┘
              ▼
@@ -44,7 +44,7 @@ HTTP only at two edges: Client → Coordinator, and Agent → local llama-server
 | Machine | GPU | CUDA Arch | Address | Role |
 |---|---|---|---|---|
 | Host (i7-12700K, 64 GB) | RTX 5060 Ti 16 GB | sm_120 | localhost | Prefill + llama:8080 + Agent:9601 + Store:9500 + Coordinator:9000 |
-| KVM VM | Tesla P100 16 GB | sm_60 | 192.168.122.21 | Decode + llama:8081 + Agent:9602 |
+| KVM VM | Tesla P100 16 GB | sm_60 | 192.168.122.21 | Decode + llama:8086 + Agent:9602 |
 
 **Model:** `Darwin-36B-Opus-APEX-I-Balanced.gguf` (~25.5 GB, qwen35moe arch)  
 **Model path:** assumed at `/mnt/llm-ram/` or local path — check actual location.
@@ -264,7 +264,12 @@ Skipped by default — run with `pytest -m e2e -s`.
 ### 7.1 Host Machine (RTX)
 
 ```bash
+# 0. Prerequisites: Docker + Docker Compose (for Hydra control plane + observability)
+docker --version          # must be 24+
+docker compose version
+
 # 1. Mount tmpfs (30 GB ramdisk for Store)
+# NOTE: Not needed when running Store via Docker Compose (tmpfs is managed by Docker)
 sudo bash infra/setup-ramdisk.sh
 # Verify: mountpoint -q /mnt/llm-ram && echo OK
 
@@ -323,9 +328,27 @@ cd src/llama-cpp && git checkout hydra-state-streaming
 
 ## 8. Running Services
 
-### 8.1 Start Order
+### 8.0 Quick Start (Docker Compose)
 
-Always start in this order:
+The Hydra control plane (Store + Agent + Coordinator + observability) runs via Docker Compose.
+llama-server runs natively on each GPU machine (not containerized).
+
+```bash
+# Start all Hydra services + Prometheus + Loki + Grafana
+cd infra
+docker compose up -d
+
+# Verify:
+curl -s http://localhost:9501/debug    # Store health
+curl -s http://localhost:9611/debug    # Agent health
+curl -s http://localhost:9000/health   # Coordinator health
+curl -s http://localhost:9090/targets  # Prometheus targets
+open http://localhost:3000             # Grafana (hydra dashboard)
+```
+
+### 8.1 Start Order (Native)
+
+If running outside Docker, always start in this order:
 1. **Store** (no dependencies)
 2. **llama-server RTX** + **llama-server P100** (independent)
 3. **Agent RTX** + **Agent P100** (need Store + llama running)
@@ -357,7 +380,7 @@ cd src/llama-cpp
 # On VM (192.168.122.21):
 ./llama-server \
   -m /path/to/Darwin-36B-Opus-APEX-I-Balanced.gguf \
-  --port 8081 \
+  --port 8086 \
   --rpc-port 8091 \
   --parallel 4 \
   --ctx-size 131072 \
@@ -365,56 +388,88 @@ cd src/llama-cpp
   --log-format json
 ```
 
-### 8.4 Hydra Store
+### 8.4 Hydra Store (Docker Compose)
 
+Store runs in Docker. See `8.0 Quick Start` for `docker compose up`.
+
+For native debugging:
 ```bash
-# Not yet runnable — needs implementation (see Section 6)
-# When implemented:
 cd src/Hydra.Store
 dotnet run --configuration Release
-# Config via appsettings.json or env vars:
-# Store__StoreDir=/mnt/llm-ram/store
-# Store__Port=9500
+# Config via env vars:
+# HYDRA_STORE_DIR=/mnt/llm-ram/store
+# HYDRA_STORE_PORT=9500
+# HYDRA_STORE_DEBUG_PORT=9501
 ```
 
-### 8.5 Hydra Agent RTX
+Metrics: `GET :9501/metrics`
 
+### 8.5 Hydra Agent RTX (Docker Compose)
+
+Agent RTX runs in Docker. See `8.0 Quick Start`.
+
+For native debugging:
 ```bash
-# Not yet runnable — needs implementation (see Section 6)
-# When implemented:
 cd src/Hydra.Agent
 dotnet run --configuration Release
 # Config:
-# Agent__Port=9601
-# Agent__NodeName=rtx
+# HYDRA_AGENT_PORT=9601
+# HYDRA_AGENT_NODE_NAME=rtx
 # Agent__LlamaUrl=http://localhost:8080
 # Agent__StoreHost=127.0.0.1
 # Agent__StorePort=9500
 ```
 
-### 8.6 Hydra Agent P100
+### 8.6 Hydra Agent P100 (Native, on VM)
 
 ```bash
 # On VM — same binary, different config:
-# Agent__Port=9602
-# Agent__NodeName=p100
-# Agent__LlamaUrl=http://localhost:8081
+# HYDRA_AGENT_PORT=9602
+# HYDRA_AGENT_NODE_NAME=p100
+# Agent__LlamaUrl=http://localhost:8086
 # Agent__StoreHost=192.168.122.1   ← host machine IP from VM
 # Agent__StorePort=9500
 ```
 
-### 8.7 Coordinator
+### 8.7 Coordinator (Docker Compose)
 
+Coordinator runs in Docker. See `8.0 Quick Start`.
+
+For native debugging:
 ```bash
-# Not yet runnable — needs implementation (see Section 6)
-# When implemented:
-pip install -e .
+pip install -e ".[monitoring]"
 hydra-coordinator
 # or: uvicorn coordinator.main:app --port 9000
 # Config via env:
 # HYDRA_COORD_HOST=0.0.0.0
 # HYDRA_COORD_PORT=9000
 ```
+
+---
+
+### 8.8 Observability Stack
+
+The Docker Compose setup includes:
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| Prometheus | 9090 | Metrics scraped from Store/:9501, Agent/:9611, Coordinator/:9000 |
+| Loki | 3100 | Log storage, ingested via Promtail scraping Docker container logs |
+| Promtail | 9080 | Docker log scraper, sends to Loki with `service` + `component` labels |
+| Grafana | 3000 | Dashboards for metrics + logs with trace_id filter |
+
+```bash
+# Prometheus targets
+curl -s http://localhost:9090/targets | jq
+
+# Loki readiness
+curl -s http://localhost:3100/ready
+
+# Grafana
+open http://localhost:3000  # anonymous admin, no login
+```
+
+Serilog JSON logs include `trace_id`, `component`, `source_context` — Promtail scrapes them from Docker's json-file logs. Use the Grafana dashboard's "Trace ID" filter to see all logs for a single request.
 
 ---
 
@@ -428,7 +483,7 @@ curl -s http://localhost:8080/health
 # Expected: {"status":"ok","slots_idle":4,"slots_processing":0}
 
 # P100
-curl -s http://192.168.122.21:8081/health
+curl -s http://192.168.122.21:8086/health
 ```
 
 ### 9.2 Slot Metadata via HTTP (debug endpoint)
@@ -518,7 +573,7 @@ result = state_put('192.168.122.21', 8091, slot_id=0, data=kv_data)
 print(f"Restored: {result}")
 
 # Then verify on P100 (n_tokens MUST be > n_past):
-# curl P100:8081/v1/chat/completions with the original prompt + continuation
+# curl P100:8086/v1/chat/completions with the original prompt + continuation
 ```
 
 ### 9.5 C# Tests
@@ -570,48 +625,18 @@ cd src/llama-cpp
 cmake -B build-check -DGGML_CPU_ONLY=ON -G Ninja && cmake --build build-check --target llama-server -j$(nproc)
 ```
 
-### Priority 2 — Hydra.Store (M0.2)
+### ✅ Priority 2 — Hydra.Store (M0.2) — COMPLETE
 
-Implement `src/Hydra.Store/StorageEngine.cs`:
-- `PutAsync(key, PipeReader, size, ct)` — stream to file at `{storeDir}/{key}`, no 800 MB buffer
-- `GetAsync(key, ct)` — return `FileInfo?` (caller uses `Socket.SendFileAsync`)
-- `DeleteAsync`, `StatAsync`, `ListAsync` — straightforward file operations
-- Key validation: reject keys with `..` or starting with `/`
+`src/Hydra.Store/StorageEngine.cs` — PUT/GET/DEL/STAT/LIST with PipeReader streaming + sendfile.
+`src/Hydra.Store/StoreServer.cs` — RPC dispatch for all 5 ops + debug HTTP endpoint.
+`src/Tests.Store/` — 23 tests pass.
 
-Implement `src/Hydra.Store/StoreServer.cs`:
-- Extend `RpcServer` from Hydra.Shared
-- Handle ops: PUT(0x01), GET(0x02), DEL(0x03), STAT(0x04), LIST(0x05)
-- GET uses `Socket.SendFileAsync` for zero-copy sendfile syscall
-- PUT pipes `PipeReader` directly to `FileStream` — no buffering
+### ✅ Priority 3 — Hydra.Agent (M0.3) — COMPLETE
 
-Fix `src/Tests.Store/` compile errors, run tests:
-```bash
-dotnet test src/Tests.Store/Tests.Store.csproj
-```
-
-### Priority 3 — Hydra.Agent (M0.3)
-
-Implement `src/Hydra.Agent/LlamaClient.cs`:
-- `GetStateAsync(slotId)` — Hydra RPC STATE_GET (0x30) on `--rpc-port`
-- `PutStateAsync(slotId, stream)` — Hydra RPC STATE_PUT (0x31) on `--rpc-port`
-- `GetStateMetaAsync(slotId)` — Hydra RPC STATE_META (0x32) on `--rpc-port`
-- Standard HTTP: `/health`, `/slots`, `/v1/chat/completions`
-- **Note:** Use `RpcClient` from Hydra.Shared for the RPC ops (0x30-0x32), not HTTP
-
-Implement `src/Hydra.Agent/StateHandler.cs`:
-- `SaveToStoreAsync(sessionId, slotId, traceId)`: RPC STATE_GET → pipe → Store RPC PUT
-- `RestoreFromStoreAsync(sessionId, slotId, traceId)`: Store RPC GET → pipe → RPC STATE_PUT
-- **Key:** Store n_past from STATE_GET response; pass to caller for Coordinator use
-- No disk I/O — everything is piped in memory
-
-Implement `src/Hydra.Agent/AgentServer.cs`:
-- Handle: SAVE_STATE(0x20), RESTORE_STATE(0x21), SLOT_STATUS(0x22), NODE_HEALTH(0x24)
-- Response to SAVE_STATE includes `n_past` so Coordinator can track it
-
-Fix `src/Tests.Agent/` compile errors, run tests:
-```bash
-dotnet test src/Tests.Agent/Tests.Agent.csproj
-```
+`src/Hydra.Agent/LlamaClient.cs` — HTTP client for llama-server state/health/slots/erase.
+`src/Hydra.Agent/StateHandler.cs` — SaveToStore/RestoreFromStore with zero-copy streaming.
+`src/Hydra.Agent/AgentServer.cs` — RPC dispatch for SAVE/RESTORE/SLOT_STATUS/NODE_HEALTH.
+`src/Tests.Agent/` — 13 tests pass.
 
 ### Priority 4 — E2E Test (M0.4)
 
@@ -633,9 +658,72 @@ File: `src/coordinator/` — implement session routing logic.
 Key constraint: **Every request must have n_tokens > session.n_past** or the KV cache dies.  
 Session table must track: `{session_id → (node, slot_id, n_past)}`.
 
+### Priority 6 — Observability (M3.2) — IMPLEMENTED
+
+**Prometheus metrics** on each service:
+- `Store` (:9501/metrics) — ops counter, bytes stored/sent, op duration histogram (`StoreMetrics.cs`)
+- `Agent` (:9611/metrics) — save/restore count + duration histogram, slots idle gauge (`AgentMetrics.cs`)
+- `Coordinator` (:9000/metrics) — request counter, cache hits, active sessions (`metrics.py`)
+
+**Loki + Promtail** — Promtail scrapes Docker container logs → sends to Loki with `service` + `component` labels.
+Serilog JSON output already includes `trace_id`, `component`, `source_context`.
+
+**Grafana dashboard** (`infra/grafana/dashboards/hydra-dashboard.json`):
+- Metric panels: request rate, active sessions, store ops/s, store bytes/s, save/restore p50/p95
+- Logs panel: all service logs with label filters
+- **Trace ID filter**: textbox variable `$trace_id` — enter trace ID to see all related logs in Grafana
+
+**Docker Compose** (`infra/docker-compose.yml`):
+- Builds and runs Store + Agent RTX + Coordinator + Loki + Promtail + Prometheus + Grafana
+- llama-server runs natively on each GPU machine (not containerized)
+
+```bash
+cd infra && docker compose up -d
+curl -s localhost:9501/metrics | head
+curl -s localhost:9611/metrics | head
+curl -s localhost:9000/metrics | head
+open http://localhost:3000
+```
+
 ---
 
 ## 12. Build Commands Reference
+
+### Docker Compose (Hydra control plane + Observability)
+
+```bash
+# Build and start all services
+cd infra
+docker compose up -d
+
+# Rebuild after code changes
+docker compose build
+docker compose up -d
+
+# Build a single service (avoids rebuilding everything)
+docker compose build store
+docker compose up -d store
+
+# View logs
+docker compose logs -f store agent-rtx coordinator
+
+# Filter logs by trace_id
+docker compose logs store | grep "abc123"
+
+# Check Prometheus targets
+curl -s localhost:9090/targets | jq '.data.activeTargets[].labels'
+
+# Stop everything
+docker compose down
+
+# Stop + delete volumes (lose store data + Grafana state)
+docker compose down -v
+```
+
+**Build architecture:** A single `infra/Dockerfile` builds all projects with one shared `.NET SDK` stage.
+- Each service selects its target: `store`, `agent`, or `coordinator`
+- .NET SDK is pulled **once** for all C# services (down from 3× to 1×)
+- Python coordinator uses `python:3.13-slim`
 
 ### C++ (llama.cpp fork)
 
@@ -703,7 +791,7 @@ pytest tests/ -v
 |---|---|---|---|
 | 8080 | llama-server RTX (HTTP) | localhost | OpenAI-compat completions |
 | 8090 | llama-server RTX (RPC) | localhost | Hydra binary RPC (STATE_GET/PUT/META) |
-| 8081 | llama-server P100 (HTTP) | 192.168.122.21 | OpenAI-compat completions |
+| 8086 | llama-server P100 (HTTP) | 192.168.122.21 | OpenAI-compat completions |
 | 8091 | llama-server P100 (RPC) | 192.168.122.21 | Hydra binary RPC |
 | 9000 | Coordinator (HTTP) | 0.0.0.0 | Client-facing OpenAI-compat API |
 | 9500 | Store (RPC) | 0.0.0.0 | Binary KV state store |
@@ -711,6 +799,9 @@ pytest tests/ -v
 | 9601 | Agent RTX (RPC) | 0.0.0.0 | Coordinator ↔ Agent channel |
 | 9611 | Agent RTX debug (HTTP) | localhost | `/debug` stats endpoint |
 | 9602 | Agent P100 (RPC) | 192.168.122.21 | Coordinator ↔ Agent channel |
+| 3000 | Grafana (HTTP) | localhost | Pre-provisioned dashboards |
+| 9090 | Prometheus (HTTP) | localhost | Metrics from Store/Agent/Coordinator |
+| 3100 | Loki (HTTP) | localhost | Log storage for Grafana |
 
 ---
 
@@ -737,27 +828,49 @@ src/llama-cpp/tools/server/server-rpc.h         ← constants only
 ```
 src/Hydra.Store/StorageEngine.cs   ← file I/O
 src/Hydra.Store/StoreServer.cs     ← RPC dispatch
+src/Hydra.Store/StoreMetrics.cs    ← prometheus-net counters
 src/Hydra.Store/Program.cs         ← DI + startup
-src/Tests.Store/                   ← fix compile errors first
+src/Tests.Store/                   ← 23 tests
 ```
 
 ### Implementing Agent
 ```
 src/Hydra.Agent/LlamaClient.cs     ← llama HTTP + RPC client
 src/Hydra.Agent/StateHandler.cs    ← save/restore pipeline
-src/Hydra.Agent/AgentServer.cs     ← RPC server
+src/Hydra.Agent/AgentServer.cs     ← RPC server + debug HTTP + metrics
+src/Hydra.Agent/AgentMetrics.cs    ← prometheus-net counters
 src/Hydra.Agent/Program.cs         ← DI + startup
-src/Tests.Agent/                   ← fix compile errors first
+src/Tests.Agent/                   ← 13 tests
 ```
 
 ### Implementing Coordinator
 ```
-src/coordinator/routing.py         ← route by prompt length / n_past
-src/coordinator/session_table.py   ← session → (node, slot, n_past) map
-src/coordinator/state_manager.py   ← trigger save/restore via Agent RPC
-src/coordinator/router.py          ← FastAPI routes
-src/coordinator/app.py             ← app factory
-src/python-shared/rpc_client.py    ← Python RPC client (write this first)
+src/coordinator/main.py            ← uvicorn entry point
+src/coordinator/app.py             ← FastAPI factory
+src/coordinator/router.py          ← HTTP routes
+src/coordinator/routing.py         ← route logic
+src/coordinator/session_table.py   ← session tracking
+src/coordinator/health.py          ← node health polling
+src/coordinator/state_manager.py   ← save/restore orchestration
+src/coordinator/proxy.py           ← llama-server proxy
+src/coordinator/config.py          ← pydantic-settings
+src/coordinator/metrics.py         ← prometheus_client counters
+src/python-shared/                 ← shared libs (RPC client, logging)
+```
+
+### Implementing Observability
+```
+infra/Dockerfile                                  ← Multi-target: store, agent, coordinator (one SDK pull)
+infra/docker-compose.yml                          ← Hydra services + Loki + Promtail + Prometheus + Grafana
+infra/prometheus/prometheus.yml                   ← scrape target config
+infra/loki/loki-config.yml                        ← log storage config
+infra/promtail/promtail-config.yml                ← Docker log scraping
+infra/grafana/datasources/datasources.yml          ← datasource provisioning
+infra/grafana/dashboards/hydra-dashboard.json      ← metrics + logs + trace_id filter panel
+infra/grafana/dashboards/dashboard-providers.yml   ← auto-load dashboards
+src/Hydra.Store/StoreMetrics.cs                   ← Store Prometheus metrics
+src/Hydra.Agent/AgentMetrics.cs                   ← Agent Prometheus metrics
+src/coordinator/metrics.py                        ← Coordinator Prometheus metrics
 ```
 
 ---
@@ -769,7 +882,7 @@ src/python-shared/rpc_client.py    ← Python RPC client (write this first)
 | **M0** | `pytest tests/e2e/test_e2e.py` passes all 8 assertions; `cache_n > 0` on P100 |
 | **M1** | `curl localhost:9000/v1/chat/completions` routes to correct GPU; session migrates automatically |
 | **M2** | Store uses content-addressed chunks; repeated migrations skip duplicate data |
-| **M3** | Grafana dashboard live; Langfuse traces per completion; model layer distribution |
+| **M3** | Grafana dashboard shows metrics + logs with trace_id filter; Langfuse traces per completion; model layer distribution |
 
 ---
 
@@ -780,7 +893,7 @@ src/python-shared/rpc_client.py    ← Python RPC client (write this first)
 | `Tests.Shared` | ✅ All pass | 29/29 |
 | `Tests.Store` | ✅ All pass | 23/23 |
 | `Tests.Agent` | ✅ All pass | 13/13 |
-| `Tests.Integration` | ✅ Builds (skips if services not running) | 6/6 |
+| `Tests.Integration` | ✅ All pass | 6/6 |
 | `Python coordinator tests` | ✅ All pass | 42/42 |
 | `E2E test_e2e.py` | ✅ Written, skipped by default (use `-m e2e`) | 1 test, 4 assertions |
 | llama-server `build-check` | ✅ Compiles | CPU-only |

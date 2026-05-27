@@ -147,13 +147,13 @@ ls -lh /tmp/kv_test.bin
 # Expected: ~800 MB file
 
 # 3. Stream state into P100
-curl -s -X PUT http://192.168.122.21:8081/slots/0/state \
+curl -s -X PUT http://192.168.122.21:8086/slots/0/state \
   -H "Content-Type: application/octet-stream" \
   --data-binary @/tmp/kv_test.bin
 # Expected: {"restored":true,"n_past":2968}
 
 # 4. Verify continuation (n_tokens MUST be > 2968)
-curl -s http://192.168.122.21:8081/v1/chat/completions \
+curl -s http://192.168.122.21:8086/v1/chat/completions \
   -d '{"messages":[...original + response + new question...],"max_tokens":50}' \
   | python3 -c "import sys,json; t=json.load(sys.stdin)['timings']; print(f'cache_n={t[\"cache_n\"]}')"
 # Expected: cache_n=2968
