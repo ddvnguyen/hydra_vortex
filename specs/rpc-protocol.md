@@ -73,6 +73,33 @@ meta_len      payload_len  payload — raw bytes (streamed)
 0x25  COMPLETION      Proxy a chat completion request
 ```
 
+### llama-server Direct Operations  (via --rpc-port, implemented in M0)
+Agent calls llama-server directly for KV state transfer.
+key = slot_id as ASCII decimal string (e.g. "0").
+llama-server knows nothing about Store or sessions — it only manages its own slots.
+
+```
+0x30  STATE_GET   Stream full KV state out as response payload
+                  Request:  key="<slot_id>", payload_len=0
+                  Response: meta={"n_past":<N>,"state_size":<N>}
+                            payload=<raw KV bytes, ~800 MB>
+
+0x31  STATE_PUT   Restore KV state from request payload
+                  Request:  key="<slot_id>", payload=<raw KV bytes>
+                  Response: meta={"restored":true,"bytes":<N>}
+                            payload_len=0
+
+0x32  STATE_META  Slot metadata only — no KV serialization (cheap)
+                  Request:  key="<slot_id>", payload_len=0
+                  Response: meta={"slot_id":<N>,"n_past":<N>,
+                                  "state_size":<N>,"is_processing":<bool>}
+                            payload_len=0
+```
+
+**n_past definition:** `n_prompt_tokens_cache + n_decoded` (prompt tokens in KV cache
+plus tokens generated in this session). The next completion request sent to this slot
+MUST have `n_tokens > n_past` or the KV cache will be invalidated.
+
 ## Status Codes
 ```
 0x00  OK          Operation succeeded

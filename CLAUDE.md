@@ -14,22 +14,22 @@ Multi-GPU LLM inference system. Routes requests across RTX 5060 Ti and Tesla P10
 Client (HTTP) → Coordinator :9000 [Python/FastAPI]
                     │ RPC           │ RPC
                     ▼               ▼
-              Agent RTX :9601   Agent P100 :9602  [C#/.NET 8]
+              Agent RTX :9601   Agent P100 :9602  [C#/.NET 10]
                 │ HTTP local      │ HTTP local
                 ▼                 ▼
            llama :8080        llama :8081          [C++ fork]
                 │ RPC               │ RPC
                 └────────┬──────────┘
                          ▼
-                   Store :9500                     [C#/.NET 8]
+                   Store :9500                     [C#/.NET 10]
                    /mnt/llm-ram/store/ (tmpfs)
 ```
 
 ## Language Decisions (FINAL — do not change)
 | Service     | Language  | Reason                                      |
 |-------------|-----------|---------------------------------------------|
-| Store       | C# .NET 8 | System.IO.Pipelines, Socket.SendFileAsync   |
-| Agent       | C# .NET 8 | Same RPC lib as Store, team expertise       |
+| Store       | C# .NET 10 | System.IO.Pipelines, Socket.SendFileAsync   |
+| Agent       | C# .NET 10 | Same RPC lib as Store, team expertise       |
 | Coordinator | Python    | Langfuse, pydantic, best LLM tooling        |
 | llama-server| C++ (fork)| +3 streaming state endpoints only           |
 

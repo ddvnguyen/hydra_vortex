@@ -165,7 +165,7 @@ curl -s http://192.168.122.21:8081/v1/chat/completions \
 
 ## Task M0.1: Shared RPC Library (C# — Hydra.Shared)
 **Project:** `src/Hydra.Shared/Hydra.Shared.csproj`
-**Framework:** .NET 8, NativeAOT-compatible
+**Framework:** .NET 10, NativeAOT-compatible
 
 ### M0.1.1: Protocol (`Protocol.cs`)
 ```csharp
