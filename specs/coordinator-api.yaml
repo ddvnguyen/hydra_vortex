@@ -1,0 +1,86 @@
+openapi: 3.1.0
+info:
+  title: Hydra Coordinator
+  version: 0.2.0
+paths:
+  /v1/chat/completions:
+    post:
+      summary: OpenAI-compatible chat completion
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: Completion (JSON or SSE stream)
+        '503':
+          description: All nodes unavailable
+  /health:
+    get:
+      summary: System health
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /status:
+    get:
+      summary: Detailed system status
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+  /sessions:
+    get:
+      summary: List active sessions
+  /sessions/{session_id}:
+    delete:
+      summary: Evict session
+  /sessions/{session_id}/migrate:
+    post:
+      summary: Force-migrate session to another node
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target_node:
+                  type: string
+components:
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required: [messages]
+      properties:
+        model: { type: string, default: "darwin" }
+        messages: { type: array, items: { $ref: '#/components/schemas/ChatMessage' } }
+        max_tokens: { type: integer, default: 512 }
+        temperature: { type: number, default: 0.86 }
+        top_p: { type: number, default: 0.95 }
+        top_k: { type: integer, default: 20 }
+        stream: { type: boolean, default: true }
+        session_id: { type: string, nullable: true }
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: { type: string }
+        content: { type: string }
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [healthy, degraded, unhealthy] }
+        nodes: { type: object }
+        store: { type: object }
+    StatusResponse:
+      type: object
+      properties:
+        uptime_s: { type: number }
+        sessions: { type: object }
+        routing_stats: { type: object }
+        nodes: { type: object }

@@ -1,0 +1,41 @@
+[project]
+name = "hydra"
+version = "0.2.0"
+description = "High-throughput multi-GPU LLM inference system with KV state management"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "structlog>=24.0",
+    "aiofiles>=24.0",
+]
+
+[project.optional-dependencies]
+persistence = ["aiosqlite>=0.20"]
+monitoring = ["prometheus-client>=0.21"]
+langfuse = ["langfuse>=2.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.5",
+]
+all = ["hydra[persistence,monitoring,langfuse,dev]"]
+
+[project.scripts]
+hydra-coordinator = "coordinator.main:run"
+hydra-tail = "python_shared.tail:main"
+
+[tool.setuptools.package-dir]
+"" = "src"
+"python_shared" = "src/python-shared"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["src/tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
