@@ -1,0 +1,114 @@
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from python_shared.log_config import get_logger, new_trace_id
+from python_shared.rpc_client import RpcClient, OpCode
+from coordinator.config import NodeConfig
+
+log = get_logger()
+
+
+@dataclass
+class NodeInfo:
+    healthy: bool = False
+    node_name: str = ""
+    slots_total: int = 0
+    slots_idle: int = 0
+    gpu_type: str = ""
+    llama_url: str = ""
+    consecutive_failures: int = 0
+    last_check: float = 0.0
+
+
+class HealthMonitor:
+    def __init__(
+        self,
+        nodes: list[NodeConfig],
+        poll_interval_s: int = 10,
+        max_failures: int = 3,
+    ):
+        self._nodes = {n.name: NodeInfo() for n in nodes}
+        self._node_configs = {n.name: n for n in nodes}
+        self._poll_interval = poll_interval_s
+        self._max_failures = max_failures
+        self._task: Optional[asyncio.Task] = None
+
+    async def start(self):
+        self._task = asyncio.create_task(self._poll_loop())
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _poll_loop(self):
+        # Poll immediately on first iteration so nodes are healthy before first request.
+        # Then sleep between subsequent polls.
+        while True:
+            try:
+                await self._poll_all()
+                await asyncio.sleep(self._poll_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("health_poll_error")
+
+    async def _poll_all(self):
+        for node_name, config in self._node_configs.items():
+            info = self._nodes[node_name]
+            try:
+                trace_id = new_trace_id()
+                client = RpcClient(config.host, config.rpc_port)
+                try:
+                    resp = await client.request(OpCode.NodeHealth, "", trace_id=trace_id)
+                finally:
+                    await client.close()
+
+                info.healthy = True
+                info.node_name = resp.meta.get("node_name", node_name)
+                info.slots_total = resp.meta.get("slots_total", 0)
+                info.slots_idle = resp.meta.get("slots_idle", 0)
+                info.gpu_type = resp.meta.get("gpu_type", config.gpu_type)
+                info.llama_url = resp.meta.get("llama_url", config.llama_url)
+                info.consecutive_failures = 0
+                info.last_check = time.time()
+
+                log.info("health_ok", node=node_name)
+            except Exception as e:
+                info.consecutive_failures += 1
+                if info.consecutive_failures >= self._max_failures:
+                    info.healthy = False
+                log.warning(
+                    "health_fail",
+                    node=node_name,
+                    failures=info.consecutive_failures,
+                    error=str(e) if not isinstance(e, type) else type(e).__name__,
+                )
+
+    def is_healthy(self, node_name: str) -> bool:
+        info = self._nodes.get(node_name)
+        return info.healthy if info else False
+
+    def get_node_info(self, node_name: str) -> Optional[NodeInfo]:
+        return self._nodes.get(node_name)
+
+    def get_health_summary(self) -> dict:
+        summary = {}
+        for name, info in self._nodes.items():
+            summary[name] = {
+                "healthy": info.healthy,
+                "slots_total": info.slots_total,
+                "slots_idle": info.slots_idle,
+                "gpu_type": info.gpu_type,
+                "consecutive_failures": info.consecutive_failures,
+            }
+        return summary
+
+    @property
+    def all_healthy(self) -> bool:
+        return all(info.healthy for info in self._nodes.values())

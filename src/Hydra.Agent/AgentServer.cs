@@ -1,0 +1,260 @@
+using System.Diagnostics;
+using System.IO.Pipelines;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+using Hydra.Shared;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Prometheus;
+using Serilog;
+
+namespace Hydra.Agent;
+
+public sealed class AgentServer : RpcServer
+{
+    private readonly AgentConfig _cfg;
+    private readonly StateHandler _handler;
+    private readonly LlamaClient _llama;
+    private readonly ILogger _log;
+
+    public AgentServer(AgentConfig cfg, StateHandler handler, LlamaClient llama, ILogger log)
+        : base(cfg.Host, cfg.Port)
+    {
+        _cfg = cfg;
+        _handler = handler;
+        _llama = llama;
+        _log = log;
+    }
+
+    protected override async Task HandleAsync(
+        OpCode op, string key, string traceId, long payloadLen,
+        PipeReader reader, PipeWriter writer, TcpClient client, CancellationToken ct)
+    {
+        using var _ = _log.TraceScope(traceId);
+
+        switch (op)
+        {
+            case OpCode.SaveState:
+                await HandleSaveStateAsync(key, writer, ct);
+                break;
+            case OpCode.RestoreState:
+                await HandleRestoreStateAsync(key, writer, ct);
+                break;
+            case OpCode.SlotStatus:
+                await HandleSlotStatusAsync(key, writer, ct);
+                break;
+            case OpCode.NodeHealth:
+                await HandleNodeHealthAsync(writer, ct);
+                break;
+            case OpCode.SlotErase:
+                await HandleSlotEraseAsync(key, writer, ct);
+                break;
+            default:
+                await WriteErrorAsync(writer, $"Unknown opcode: {op}", ct);
+                break;
+        }
+    }
+
+    private async Task HandleSaveStateAsync(string sessionId, PipeWriter writer, CancellationToken ct)
+    {
+        using var _ = AgentMetrics.SaveDuration.NewTimer();
+        try
+        {
+            var slotId = int.TryParse(sessionId, out var s) ? s : await _llama.FindIdleSlotAsync(ct) ?? 0;
+
+            var result = await _handler.SaveToStoreAsync(
+                ExtractSessionId(sessionId, slotId), slotId,
+                "agent-save", ct);
+
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}}}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+            var span = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(span);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+            AgentMetrics.SaveOpsTotal.Inc();
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "SaveState failed for session {SessionId}", sessionId);
+            await WriteErrorAsync(writer, ex.Message, ct);
+        }
+    }
+
+    private async Task HandleRestoreStateAsync(string sessionId, PipeWriter writer, CancellationToken ct)
+    {
+        using var _ = AgentMetrics.RestoreDuration.NewTimer();
+        try
+        {
+            var parts = sessionId.Split(':');
+            var sid = parts[0];
+            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : 0;
+
+            var result = await _handler.RestoreFromStoreAsync(sid, slotId, "agent-restore", ct);
+
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"restored":{{result.Restored.ToString().ToLowerInvariant()}},"restore_ms":{{result.ElapsedMs}}}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+            var span = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(span);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+            AgentMetrics.RestoreOpsTotal.Inc();
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "RestoreState failed for session {SessionId}", sessionId);
+            await WriteErrorAsync(writer, ex.Message, ct);
+        }
+    }
+
+    private async Task HandleSlotStatusAsync(string slotIdStr, PipeWriter writer, CancellationToken ct)
+    {
+        try
+        {
+            var slots = await _llama.GetSlotsAsync(ct);
+
+            if (!string.IsNullOrEmpty(slotIdStr) && int.TryParse(slotIdStr, out var specificSlot))
+            {
+                slots = slots.Where(s => s.Id == specificSlot).ToList();
+            }
+
+            var payload = JsonSerializer.SerializeToUtf8Bytes(slots);
+            var meta = $$"""{"count":{{slots.Count}}}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, (ulong)payload.Length, ct);
+            var mSpan = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(mSpan);
+            writer.Advance(metaBytes.Length);
+            var pSpan = writer.GetSpan(payload.Length);
+            payload.AsSpan().CopyTo(pSpan);
+            writer.Advance(payload.Length);
+            await writer.FlushAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "SlotStatus failed");
+            await WriteErrorAsync(writer, ex.Message, ct);
+        }
+    }
+
+    private async Task HandleNodeHealthAsync(PipeWriter writer, CancellationToken ct)
+    {
+        try
+        {
+            var isHealthy = await _llama.HealthAsync(ct);
+            var slots = await _llama.GetSlotsAsync(ct);
+
+            var healthPayload = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                healthy = isHealthy,
+                node_name = _cfg.NodeName,
+                slots_total = slots.Count,
+                slots_idle = slots.Count(s => !s.IsProcessing),
+                llama_url = _cfg.LlamaUrl,
+            });
+
+            var meta = """{"component":"health"}"""u8.ToArray();
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)meta.Length, (ulong)healthPayload.Length, ct);
+            var mSpan = writer.GetSpan(meta.Length);
+            meta.AsSpan().CopyTo(mSpan);
+            writer.Advance(meta.Length);
+            var pSpan = writer.GetSpan(healthPayload.Length);
+            healthPayload.AsSpan().CopyTo(pSpan);
+            writer.Advance(healthPayload.Length);
+            await writer.FlushAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "NodeHealth failed");
+            await WriteErrorAsync(writer, ex.Message, ct);
+        }
+    }
+
+    private async Task HandleSlotEraseAsync(string slotIdStr, PipeWriter writer, CancellationToken ct)
+    {
+        try
+        {
+            if (!int.TryParse(slotIdStr, out var slotId))
+            {
+                await WriteErrorAsync(writer, $"Invalid slot id: {slotIdStr}", ct);
+                return;
+            }
+
+            await _llama.EraseSlotAsync(slotId, ct);
+            var meta = $$"""{"slot_id":{{slotId}},"erased":true}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+            var span = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(span);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "SlotErase failed for slot {SlotId}", slotIdStr);
+            await WriteErrorAsync(writer, ex.Message, ct);
+        }
+    }
+
+    private readonly long _startedAt = Stopwatch.GetTimestamp();
+
+    public Task StartDebugEndpointAsync(CancellationToken ct)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseSetting(WebHostDefaults.ServerUrlsKey, $"http://{_cfg.Host}:{_cfg.DebugHttpPort}");
+
+        var app = builder.Build();
+
+        app.UseMetricServer();
+
+        app.MapGet("/debug", async (HttpContext ctx) =>
+        {
+            var uptimeS = (Stopwatch.GetTimestamp() - _startedAt) / Stopwatch.Frequency;
+            var isHealthy = await _llama.HealthAsync(ct);
+            var slots = await _llama.GetSlotsAsync(ct);
+
+            AgentMetrics.LlamaHealthy.WithLabels(_cfg.NodeName).Set(isHealthy ? 1 : 0);
+            AgentMetrics.SlotsIdle.WithLabels(_cfg.NodeName).Set(slots.Count(s => !s.IsProcessing));
+
+            var debugInfo = new
+            {
+                status = isHealthy ? "ok" : "degraded",
+                node_name = _cfg.NodeName,
+                llama_healthy = isHealthy,
+                slots = slots.Select(s => new { s.Id, s.NPast, s.IsProcessing }),
+                pending_ops = 0,
+                local_kv_files = 0,
+                store_connected = true,
+                uptime_s = (int)uptimeS,
+            };
+
+            return Results.Json(debugInfo);
+        });
+
+        ct.Register(async () => await app.StopAsync());
+        return app.RunAsync();
+    }
+
+    private static string ExtractSessionId(string key, int slotId)
+    {
+        if (string.IsNullOrEmpty(key) || key == slotId.ToString())
+            return $"slot-{slotId}";
+        return key;
+    }
+
+    private static async Task WriteErrorAsync(PipeWriter writer, string message, CancellationToken ct, StatusCode status = StatusCode.Error)
+    {
+        var meta = $$"""{"error":"{{message}}"}""";
+        var metaBytes = Encoding.UTF8.GetBytes(meta);
+        await WriteResponseHeaderAsync(writer, (byte)status, (uint)metaBytes.Length, 0, ct);
+        var span = writer.GetSpan(metaBytes.Length);
+        metaBytes.CopyTo(span);
+        writer.Advance(metaBytes.Length);
+        await writer.FlushAsync(ct);
+    }
+}
