@@ -148,6 +148,7 @@ services:
     volumes:
       - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
       - /run/user/1000/podman/podman.sock:/var/run/docker.sock:ro
+      - promtail-positions:/var/lib/promtail
     command: -config.file=/etc/promtail/promtail-config.yml
     depends_on:
       - loki
@@ -197,3 +198,4 @@ volumes:
   loki-data:
   prometheus-data:
   grafana-data:
+  promtail-positions:

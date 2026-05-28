@@ -168,6 +168,22 @@ jobs:
           \`\`\`
           SUMMARY
 
+      - name: Verify services healthy
+        run: |
+          echo "Waiting for services to stabilise..."
+          sleep 10
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -sf http://localhost:9000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])" 2>/dev/null || echo "unreachable")
+            echo "Attempt $i: coordinator status=$STATUS"
+            if [ "$STATUS" = "healthy" ] || [ "$STATUS" = "degraded" ]; then
+              echo "Services OK"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Coordinator did not come up healthy after deploy"
+          exit 1
+
       - name: Upload deploy log artifact
         uses: actions/upload-artifact@v4
         if: always()
@@ -217,11 +233,19 @@ jobs:
   e2e-full:
     name: E2E Tests (full stack)
     runs-on: self-hosted
-    needs: build-test
+    needs: [build-test, deploy]
     timeout-minutes: 60
-    # Requires all 6 services running on the self-hosted machine.
-    # Trigger: add 'run-e2e' label to PR, '[run-e2e]' in commit msg, or use workflow_dispatch
-    if: contains(github.event.pull_request.labels.*.name, 'run-e2e') || contains(github.event.push.head_commit.message, '[run-e2e]') || (github.event_name == 'workflow_dispatch' && github.event.inputs.run-e2e-full == 'true')
+    # Runs automatically after a successful deploy on main.
+    # Opt-in on other branches: add 'run-e2e' label to PR, '[run-e2e]' in commit msg, or workflow_dispatch.
+    if: |
+      always() &&
+      needs.build-test.result == 'success' &&
+      (
+        needs.deploy.result == 'success' ||
+        contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
+        contains(github.event.push.head_commit.message, '[run-e2e]') ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.run-e2e-full == 'true')
+      )
 
     steps:
       - uses: actions/checkout@v4
