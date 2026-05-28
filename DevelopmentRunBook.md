@@ -17,17 +17,19 @@ Client (HTTP) → Coordinator :9000     [Python/FastAPI]
                        /mnt/llm-ram/store/ (tmpfs)
 ```
 
-| Port | Service    | Lang     | Debug Config              |
-|------|------------|----------|---------------------------|
-| 9000 | Coordinator| Python   | `Coordinator (:9000)`     |
-| 9500 | Store      | C#       | `Store (:9500)`           |
-| 9501 | Store debug| HTTP     | —                         |
-| 9601 | Agent RTX  | C#       | `Agent RTX (:9601)`       |
-| 9611 | Agent debug| HTTP     | —                         |
-| 9602 | Agent P100 | C#       | `Agent P100 (:9602)`      |
-| 9622 | Agent debug| HTTP     | —                         |
-| 8080 | llama RTX  | C++      | external                  |
-| 8086 | llama P100 | C++      | external (in VM)          |
+| Port    | Service       | Lang     | Debug Config              |
+|---------|---------------|----------|---------------------------|
+| 9000    | Coordinator   | Python   | `Coordinator (:9000)`     |
+| 9500    | Store         | C#       | `Store (:9500)`           |
+| 9501    | Store debug   | HTTP     | —                         |
+| 9601    | Agent RTX     | C#       | `Agent RTX (:9601)`       |
+| 9611    | Agent debug   | HTTP     | —                         |
+| 9602    | Agent P100    | C#       | `Agent P100 (:9602)`      |
+| 9622    | Agent debug   | HTTP     | —                         |
+| 8080    | llama RTX     | C++      | external (HTTP)           |
+| **9501**| **llama RTX** | **C++**  | **external (RPC)**        |
+| 8086    | llama P100    | C++      | external in VM (HTTP)     |
+| **9502**| **llama P100**| **C++**  | **external in VM (RPC)**  |
 
 ---
 
@@ -40,26 +42,35 @@ Client (HTTP) → Coordinator :9000     [Python/FastAPI]
 
 ---
 
-## Quick Start (all services locally)
+## Quick Start (Docker Compose)
 
 ```bash
-# Terminal 1 — Store
-dotnet run --project src/Hydra.Store
+# All Hydra services (Store + Agents + Coordinator + Observability)
+cd infra
+docker compose up -d
 
-# Terminal 2 — Agent (RTX node)
-dotnet run --project src/Hydra.Agent
-
-# Terminal 3 — Coordinator
-hydra-coordinator
-
-# Terminal 4 — llama-server (RTX, patched hydra-state-streaming branch)
+# llama-server RTX (native, needs GPU)
 ./build-rtx/bin/llama-server \
   -m /path/to/model.gguf \
-  --port 8080 \
-  --rpc-port 9601 \
-  --n-gpu-layers 99 \
-  --ctx-size 81920
+  --port 8080 --rpc-port 9501 \
+  -ngl 99 --ctx-size 131072 --parallel 2 \
+  --cont-batching --flash-attn on
+
+# llama-server P100 (on VM 192.168.122.21)
+# SSH into VM, then:
+./llama-server \
+  -m /path/to/model.gguf \
+  --port 8086 --rpc-port 9502 \
+  -ngl 99 --ctx-size 131072 --parallel 1 \
+  --cont-batching --flash-attn on
+
+# Verify all services
+curl -s :9000/health
 ```
+
+> **Note:** The Agent connects to llama via **HTTP** (slots/state endpoints), not via
+> the RPC port. The llama RPC port (`--rpc-port`) is used for direct state access
+> (e.g., Python/python_shared RPC client).
 
 ---
 
@@ -110,7 +121,8 @@ dotnet test src/Tests.Integration --filter "FullyQualifiedName~Chunked" -v m
 # Python tests
 pytest src/coordinator/tests -v        # 46 tests
 pytest src/coordinator/tests/test_prefix_checkpoint.py -v  # 4 M2 tests
-pytest tests/e2e -v -m e2e             # E2E (requires all services)
+pytest tests/e2e/test_e2e.py -v -m e2e                # M0 E2E (RPC save/restore)
+pytest tests/e2e/test_full_workflow_e2e.py -v -m e2e  # M1+M2 full workflow via Coordinator HTTP
 ```
 
 ---
@@ -208,6 +220,7 @@ dotnet sln add src/Tests.Xyz
 # Check all services are healthy
 curl -s :9501/debug | jq .
 curl -s :9611/debug | jq .
+curl -s :9622/debug | jq .
 curl -s :9000/health
 ```
 

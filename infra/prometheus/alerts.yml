@@ -1,0 +1,102 @@
+groups:
+  - name: hydra
+    interval: 30s
+    rules:
+      - alert: StoreDown
+        expr: up{component="store"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Store is down"
+          description: "Hydra Store has been unreachable for 30s"
+
+      - alert: AgentDown
+        expr: up{component="agent"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent {{ $labels.node }} is down"
+          description: "Hydra Agent on {{ $labels.node }} has been unreachable for 30s"
+
+      - alert: CoordinatorDown
+        expr: up{component="coordinator"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Coordinator is down"
+          description: "Hydra Coordinator has been unreachable for 30s"
+
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.95, rate(hydra_request_latency_seconds_bucket[5m])) > 30
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency on {{ $labels.node }}"
+          description: "p95 latency on {{ $labels.node }} is {{ $value }}s (threshold 30s)"
+
+      - alert: NoSlotUtilization
+        expr: hydra_agent_slots_idle == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No idle slots on {{ $labels.node }}"
+          description: "All slots on {{ $labels.node }} are busy for 5+ minutes"
+
+      - alert: MigrationFailing
+        expr: rate(hydra_migrations_total[5m]) == 0 and delta(hydra_migrations_total[10m]) < 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No migrations detected"
+          description: "No cache migration activity in the last 10 minutes"
+
+      - alert: StoreOpErrors
+        expr: rate(hydra_store_ops_total{op=~".*error.*|.*fail.*"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Store operation errors"
+          description: "Store is seeing {{ $value }} errors/s (op={{ $labels.op }})"
+
+      - alert: HighDeduplicationRatio
+        expr: hydra_store_dedup_ratio < 0.1
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Low cache deduplication"
+          description: "Dedup ratio is {{ $value }} — chunks are mostly unique"
+
+      - alert: LlamaServerDown
+        expr: up{component="llama-server"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "llama-server {{ $labels.node }} is down"
+          description: "llama-server at {{ $labels.instance }} has been unreachable for 30s"
+
+      - alert: GPUMemoryPressure
+        expr: 1 - (nvidia_gpu_memory_used_bytes / nvidia_gpu_memory_total_bytes) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU {{ $labels.gpu }} memory pressure"
+          description: "GPU {{ $labels.gpu }} has < 10% free memory ({{ $value | humanizePercentage }} free)"
+
+      - alert: HighGPUTemperature
+        expr: nvidia_gpu_temperature_celsius > 85
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU {{ $labels.gpu }} temperature high"
+          description: "GPU {{ $labels.gpu }} is at {{ $value }}°C (threshold 85°C)"

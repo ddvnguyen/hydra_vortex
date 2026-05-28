@@ -48,7 +48,12 @@ def route_request(
     else:
         entry = None
 
-    if not entry:
+    # Only fall back to derived session_id when caller did NOT provide one.
+    # When caller provides session_id and it's not found, keep it as-is so
+    # the caller can register it as a new session (without being overridden
+    # by a derived ID that may collide with a different session on the same
+    # message content).
+    if not entry and not session_id:
         derived_id = derive_session_id(request_messages)
         entry = session_table.lookup(derived_id)
         if entry:

@@ -77,3 +77,39 @@ Build RTX: GGML_CUDA_FORCE_CUBLAS=ON, sm_120. Build P100: sm_60.
 - Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM at 192.168.122.21
 - tmpfs 30 GB at /mnt/llm-ram on host, shared to VM via virtiofs
 - Model: Darwin-36B-Opus-APEX-I-Balanced.gguf (~25.5 GB, qwen35moe arch)
+
+## Monitoring & Observability
+Full prometheus + loki + promtail + grafana stack in infra/docker-compose.yml.
+Grafana at :3000, Prometheus at :9091, Loki at :3100.
+
+### Start everything
+```bash
+cd infra && docker compose up -d
+```
+
+### Key dashboards/metrics endpoints
+- Grafana: http://localhost:3000 (anonymous admin)
+- Prometheus: http://localhost:9091
+- Store metrics: http://localhost:9501/metrics
+- Agent RTX metrics: http://localhost:9611/metrics
+- Agent P100 metrics: http://localhost:9622/metrics
+- Coordinator metrics: http://localhost:9000/metrics
+- llama RTX metrics: http://localhost:8080/metrics
+- Node exporter: http://localhost:9100/metrics
+- GPU exporter: http://localhost:9835/metrics
+
+### Logs
+All container logs shipped via Promtail → Loki.
+View in Grafana Explore (Loki datasource) or the Logs panel in the Hydra dashboard.
+Filter by `$trace_id` template variable to correlate logs across services.
+
+### Alerts
+Prometheus alerting rules in `infra/prometheus/alerts.yml` — covers service down, high latency, GPU memory/temp, migration issues.
+
+### Dashboard panels
+1. Service Metrics: request rate, sessions, store ops, bytes, cache hit rate, migrations
+2. Agent Performance: save/restore p50/p95 duration
+3. Host & GPU: utilization, memory, temperature, power, CPU, RAM
+4. llama-server: tokens/s, requests processing, KV cache usage
+5. Service Health: up/down table, llama health per node, agent slot status
+6. Logs: all service logs with trace_id filter

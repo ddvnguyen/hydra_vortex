@@ -93,6 +93,42 @@ services:
       component: coordinator
     restart: unless-stopped
 
+  # ── Host Monitoring ─────────────────────────────────────────────
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    ports:
+      - "9100:9100"
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+    labels:
+      component: observability
+    restart: unless-stopped
+
+  nvidia-exporter:
+    image: nvidia/dcgm-exporter:latest
+    ports:
+      - "9835:9400"
+    cap_add:
+      - SYS_ADMIN
+    labels:
+      component: observability
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility]
+
   # ── Observability Stack ────────────────────────────────────────────
 
   loki:
@@ -143,7 +179,8 @@ services:
       - "3000:3000"
     volumes:
       - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/dashboards/dashboard-providers.yml:/etc/grafana/provisioning/dashboards/dashboard-providers.yml:ro
+      - ./grafana/dashboards/hydra-dashboard.json:/var/lib/grafana/dashboards/hydra-dashboard.json:ro
       - grafana-data:/var/lib/grafana
     environment:
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/hydra-dashboard.json

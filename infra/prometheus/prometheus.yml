@@ -2,6 +2,9 @@ global:
   scrape_interval: 10s
   evaluation_interval: 10s
 
+rule_files:
+  - alerts.yml
+
 scrape_configs:
   - job_name: hydra-store
     static_configs:
@@ -28,3 +31,32 @@ scrape_configs:
       - targets: ["coordinator:9000"]
         labels:
           component: coordinator
+
+  - job_name: hydra-llama-rtx
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          component: llama-server
+          node: rtx
+
+  - job_name: hydra-llama-p100
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["192.168.122.21:8086"]
+        labels:
+          component: llama-server
+          node: p100
+
+  - job_name: hydra-node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          component: node
+
+  - job_name: hydra-gpu
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["nvidia-exporter:9400"]
+        labels:
+          component: gpu

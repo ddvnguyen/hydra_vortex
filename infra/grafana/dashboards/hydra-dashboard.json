@@ -1,7 +1,8 @@
 {
   "title": "Hydra Dashboard",
-  "version": 1,
+  "version": 2,
   "timezone": "browser",
+  "editable": true,
   "panels": [
     {
       "type": "row",
@@ -16,7 +17,7 @@
         "expr": "rate(hydra_requests_total[1m])",
         "legendFormat": "{{node}}"
       }],
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 1 },
       "options": { "colorMode": "background", "graphMode": "sparkline" }
     },
     {
@@ -27,7 +28,7 @@
         "expr": "sum(hydra_active_sessions)",
         "legendFormat": "sessions"
       }],
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 1 },
       "options": { "colorMode": "background", "graphMode": "sparkline" }
     },
     {
@@ -38,25 +39,48 @@
         "expr": "rate(hydra_store_ops_total[1m])",
         "legendFormat": "{{op}}"
       }],
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 1 },
       "options": { "colorMode": "background", "graphMode": "sparkline" }
     },
     {
       "type": "stat",
-      "title": "Store Bytes Transferred/s",
+      "title": "Store Bytes/s",
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [{
         "expr": "rate(hydra_store_bytes_stored[1m]) + rate(hydra_store_bytes_sent[1m])",
         "legendFormat": "bytes/s"
       }],
       "unit": "bytes",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 1 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "stat",
+      "title": "Cache Hit Rate",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "rate(hydra_cache_hits_total[1m]) / (rate(hydra_requests_total[1m]) + 0.001) * 100",
+        "legendFormat": "hit %"
+      }],
+      "unit": "percent",
+      "gridPos": { "h": 6, "w": 4, "x": 16, "y": 1 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "stat",
+      "title": "Migration Rate",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "rate(hydra_migrations_total[1m])",
+        "legendFormat": "{{from}}→{{to}}"
+      }],
+      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 1 },
       "options": { "colorMode": "background", "graphMode": "sparkline" }
     },
     {
       "type": "row",
       "title": "Agent Performance",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 }
     },
     {
       "type": "timeseries",
@@ -72,7 +96,7 @@
           "legendFormat": "p95"
         }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "options": { "legend": { "calcs": ["mean"] } }
     },
     {
@@ -89,13 +113,289 @@
           "legendFormat": "p95"
         }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "options": { "legend": { "calcs": ["mean"] } }
     },
     {
       "type": "row",
+      "title": "Host & GPU",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "type": "gauge",
+      "title": "GPU Utilization",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "nvidia_gpu_duty_ratio",
+        "legendFormat": "{{gpu}}"
+      }],
+      "unit": "percent",
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 17 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "thresholds": [
+          { "color": "green", "value": null },
+          { "color": "orange", "value": 70 },
+          { "color": "red", "value": 90 }
+        ]
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "GPU Memory",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "nvidia_gpu_memory_used_bytes / nvidia_gpu_memory_total_bytes * 100",
+        "legendFormat": "{{gpu}}"
+      }],
+      "unit": "percent",
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 17 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "thresholds": [
+          { "color": "green", "value": null },
+          { "color": "orange", "value": 80 },
+          { "color": "red", "value": 95 }
+        ]
+      }
+    },
+    {
+      "type": "stat",
+      "title": "GPU Temperature",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "nvidia_gpu_temperature_celsius",
+        "legendFormat": "{{gpu}}"
+      }],
+      "unit": "celsius",
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 17 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "stat",
+      "title": "GPU Power",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "nvidia_gpu_power_usage_milliwatts / 1000",
+        "legendFormat": "{{gpu}}"
+      }],
+      "unit": "watt",
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 17 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "stat",
+      "title": "CPU Utilization",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)",
+        "legendFormat": "cpu"
+      }],
+      "unit": "percent",
+      "gridPos": { "h": 6, "w": 4, "x": 16, "y": 17 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "stat",
+      "title": "Memory Utilization",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100",
+        "legendFormat": "memory"
+      }],
+      "unit": "percent",
+      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 17 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" }
+    },
+    {
+      "type": "row",
+      "title": "llama-server Inference",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens per Second",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "rate(llamacpp_tokens_predicted_total[1m])",
+          "legendFormat": "decode {{node}}"
+        },
+        {
+          "expr": "rate(llamacpp_prompt_tokens_total[1m])",
+          "legendFormat": "prompt {{node}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "options": { "legend": { "calcs": ["mean"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests Processing",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "llamacpp_requests_processing",
+        "legendFormat": "{{node}}"
+      }],
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 24 },
+      "options": { "legend": { "calcs": ["mean"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "KV Cache Usage",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "llamacpp_kv_cache_usage_ratio * 100",
+        "legendFormat": "{{node}}"
+      }],
+      "unit": "percent",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 24 },
+      "options": { "legend": { "calcs": ["mean"] } }
+    },
+    {
+      "type": "row",
+      "title": "Service Health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 }
+    },
+    {
+      "type": "table",
+      "title": "Target Status",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "up",
+        "legendFormat": "{{component}} {{node}}"
+      }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Value", "desc": false }]
+      },
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Value" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "green", "value": 1 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "stat",
+      "title": "llama-server Health (RTX)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "up{component=\"llama-server\",node=\"rtx\"}",
+        "legendFormat": "rtx"
+      }],
+      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 33 },
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ]
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "llama-server Health (P100)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "up{component=\"llama-server\",node=\"p100\"}",
+        "legendFormat": "p100"
+      }],
+      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 33 },
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ]
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Agent Slots (RTX)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "hydra_agent_slots_idle{node=\"rtx\"}",
+        "legendFormat": "idle rtx"
+      }],
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 33 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0 },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Agent Slots (P100)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{
+        "expr": "hydra_agent_slots_idle{node=\"p100\"}",
+        "legendFormat": "idle p100"
+      }],
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 33 },
+      "options": { "colorMode": "background", "graphMode": "sparkline" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0 },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "row",
       "title": "Logs",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 }
     },
     {
       "id": 10,
@@ -103,10 +403,10 @@
       "title": "All Logs",
       "datasource": { "type": "loki", "uid": "Loki" },
       "targets": [{
-        "expr": "{service=~\"store|agent-rtx|coordinator\"}",
+        "expr": "{component=~\"store|agent|coordinator\"}",
         "refId": "A"
       }],
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 19 },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 42 },
       "options": { "showTime": true, "showLabels": true }
     }
   ],
@@ -127,7 +427,7 @@
       {
         "name": "Trace ID Logs",
         "datasource": { "type": "loki", "uid": "Loki" },
-        "expr": "{service=~\"store|agent-rtx|coordinator\"} |~ \"`$trace_id`\"",
+        "expr": "{component=~\"store|agent|coordinator\"} |~ \"`$trace_id`\"",
         "enable": true,
         "iconColor": "rgba(255, 96, 96, 1)"
       }
