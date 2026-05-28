@@ -5,6 +5,16 @@ on:
     branches: ["**"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      run-e2e-full:
+        description: "Run full-stack E2E tests (requires all 6 services healthy)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   checks: write
@@ -210,8 +220,8 @@ jobs:
     needs: build-test
     timeout-minutes: 60
     # Requires all 6 services running on the self-hosted machine.
-    # Trigger: add the 'run-e2e' label to a PR, or push to main with that label active.
-    if: contains(github.event.pull_request.labels.*.name, 'run-e2e') || contains(github.event.push.head_commit.message, '[run-e2e]')
+    # Trigger: add 'run-e2e' label to PR, '[run-e2e]' in commit msg, or use workflow_dispatch
+    if: contains(github.event.pull_request.labels.*.name, 'run-e2e') || contains(github.event.push.head_commit.message, '[run-e2e]') || (github.event_name == 'workflow_dispatch' && github.event.inputs.run-e2e-full == 'true')
 
     steps:
       - uses: actions/checkout@v4
