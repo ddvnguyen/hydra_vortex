@@ -42,3 +42,4 @@ Thumbs.db
 
 # Hydra-specific
 /mnt/llm-ram/
+deploy.log
