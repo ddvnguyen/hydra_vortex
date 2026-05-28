@@ -68,6 +68,10 @@ jobs:
           path: TestResults/*.trx
           retention-days: 30
 
+      - name: Clean .NET download cache
+        if: always()
+        run: dotnet nuget locals http-cache --clear --force-english-output
+
   integration:
     name: Integration Tests
     runs-on: self-hosted
@@ -183,6 +187,31 @@ jobs:
           done
           echo "Coordinator did not come up healthy after deploy"
           exit 1
+
+      - name: Manage build cache (≤10 GB images)
+        if: always()
+        run: |
+          # Force-remove all dangling images (image prune -f misses replaced-tag images)
+          DANGLING=$(podman images -f dangling=true -q)
+          [ -n "$DANGLING" ] && podman rmi -f $DANGLING || true
+
+          # Measure current image storage via podman (avoids du double-counting hard links)
+          IMAGES_SIZE=$(podman system df 2>/dev/null | awk '/^Images/{print $4}')
+          echo "Image cache: $IMAGES_SIZE"
+
+          # If images exceed 10 GB, remove all unused images (base images re-pulled next build)
+          IMAGES_MB=$(python3 -c "
+          s='${IMAGES_SIZE}'
+          if not s: print(0); exit()
+          n=float(''.join(c for c in s if c in '0123456789.'))
+          mult=1024 if 'G' in s else (1 if 'M' in s else 0)
+          print(int(n*mult))
+          " 2>/dev/null || echo 0)
+          if [ "$IMAGES_MB" -gt 10240 ]; then
+            echo "Images exceed 10 GB (${IMAGES_SIZE}) — pruning all unused images"
+            podman image prune -a -f
+          fi
+          podman system df
 
       - name: Upload deploy log artifact
         uses: actions/upload-artifact@v4
