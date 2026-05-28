@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Prometheus;
+using Serilog;
 
 namespace Hydra.Store;
 
@@ -170,7 +171,7 @@ public sealed class StoreServer : RpcServer
 					 var chunkRef = new ChunkRef(chunks.Count, hash, chunkData.Length);
 					 chunks.Add(chunkRef);
 
-					 if (_chunkStore.StoreChunk(hash, chunkData))
+					 if (await _chunkStore.StoreChunkAsync(hash, chunkData, innerCt))
 					 {
 						 Interlocked.Increment(ref totalNew);
 					 }
@@ -223,23 +224,12 @@ public sealed class StoreServer : RpcServer
 			var missingHashes = _chunkStore.DiffPlan(manifest, knownHashes);
 
 			long totalSize = 0;
-			var chunkDataList = new List<(string Hash, byte[] Data)>();
-
 			foreach (var hash in missingHashes)
 			{
 				var path = _chunkStore.GetChunkPath(hash);
 				if (path is null) continue;
-				var data = await File.ReadAllBytesAsync(path, ct);
-				totalSize += data.Length;
-				chunkDataList.Add((hash, data));
+				totalSize += new FileInfo(path).Length;
 			}
-
-			var missingMeta = JsonSerializer.SerializeToUtf8Bytes(new
-			{
-				missing_count = missingHashes.Count,
-				total_size = totalSize,
-				missing_hashes = missingHashes
-			});
 
 			var meta = $$"""{"missing_count":{{missingHashes.Count}},"total_size":{{totalSize}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
@@ -247,12 +237,12 @@ public sealed class StoreServer : RpcServer
 			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, (ulong)totalSize, ct);
 			await WriteMetaAsync(writer, meta, ct);
 
-			foreach (var (_, data) in chunkDataList)
+			foreach (var hash in missingHashes)
 			{
-				await writer.WriteAsync(data, ct);
+				var path = _chunkStore.GetChunkPath(hash);
+				if (path is null) continue;
+				await SendFileAsync(client, path, ct);
 			}
-
-			await writer.FlushAsync(ct);
 
 			StoreMetrics.OpsTotal.WithLabels("get_chunked").Inc();
 			StoreMetrics.BytesSent.Inc(totalSize);
@@ -322,6 +312,8 @@ public sealed class StoreServer : RpcServer
 			var pushedBytes = await ReadPayloadAsync(reader, payloadLen, ct);
 			var offset = 0;
 			var stored = 0;
+			var chunkRefs = new List<ChunkRef>();
+			var totalPushedSize = 0L;
 
 			while (offset < pushedBytes.Length)
 			{
@@ -335,8 +327,18 @@ public sealed class StoreServer : RpcServer
 				offset += chunkSize;
 
 				var hash = ChunkEngine.ComputeHash(chunkData);
-				if (_chunkStore.StoreChunk(hash, chunkData))
+				chunkRefs.Add(new ChunkRef(chunkRefs.Count, hash, chunkSize));
+				totalPushedSize += chunkSize;
+				if (await _chunkStore.StoreChunkAsync(hash, chunkData, ct))
 					stored++;
+			}
+
+			// Write manifest if one doesn't exist yet
+			var existingManifest = await _chunkStore.LoadManifestAsync(key, ct);
+			if (existingManifest is null)
+			{
+				var manifest = ChunkEngine.CreateManifest(key, 0, totalPushedSize, chunkRefs);
+				await _chunkStore.SaveManifestAsync(key, manifest, ct);
 			}
 
 			var meta = $$"""{"stored":{{stored}},"total":{{payloadLen}}}""";
@@ -376,12 +378,19 @@ public sealed class StoreServer : RpcServer
 
 		var app = builder.Build();
 
+		app.MapGet("/version", () => Results.Json(new
+		{
+			service = "hydra-store",
+			version = HydraLogging.ServiceVersion,
+		}));
+
 		app.MapGet("/debug", async (HttpContext ctx) =>
 		{
 			var storeStats = await _engine.GetDebugStatsAsync(ct);
 			var chunkStats = await _chunkStore.GetStatsAsync(ct);
 			return Results.Json(new
 			{
+				version = HydraLogging.ServiceVersion,
 				raw = storeStats,
 				chunks = chunkStats
 			});

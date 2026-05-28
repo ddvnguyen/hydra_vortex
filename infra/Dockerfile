@@ -2,6 +2,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /build
 
+# Version file + shared build props
+COPY VERSION .
+COPY src/Directory.Build.props src/
+
 # Copy only source directories needed for .NET builds
 COPY src/Hydra.Shared/ src/Hydra.Shared/
 COPY src/Hydra.Store/ src/Hydra.Store/
@@ -30,6 +34,7 @@ ENTRYPOINT ["dotnet", "Hydra.Agent.dll"]
 # ── Coordinator target ──────────────────────────────────────────────
 FROM python:3.13-slim AS coordinator
 WORKDIR /app
+COPY VERSION .
 COPY pyproject.toml .
 COPY src/coordinator/ src/coordinator/
 COPY src/python_shared/ src/python_shared/

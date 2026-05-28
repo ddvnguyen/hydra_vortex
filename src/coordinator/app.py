@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,27 +9,48 @@ from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
 from coordinator.router import create_router
+from coordinator.version import VERSION, REVISION
 
 log = get_logger()
 
 
-def _make_lifespan(health_monitor: HealthMonitor, config: CoordinatorConfig):
-    """Return a lifespan context manager that starts/stops the health monitor."""
+def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor, config: CoordinatorConfig):
+    """Return a lifespan context manager that starts/stops health monitor + eviction loop."""
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         setup_logging(config.log_level)
         log.info(
             "coordinator_start",
+            version=VERSION,
+            revision=REVISION,
             nodes=[n.name for n in config.nodes],
             store_host=config.store_host,
             store_port=config.store_port,
         )
+
+        eviction_task = asyncio.create_task(
+            _eviction_loop(session_table, config.session_idle_timeout_s)
+        )
+
         await health_monitor.start()
         yield
+        eviction_task.cancel()
         await health_monitor.stop()
         log.info("coordinator_stopped")
 
     return lifespan
+
+
+async def _eviction_loop(session_table: SessionTable, timeout_s: int, interval_s: int = 60):
+    """Periodically evict stale sessions."""
+    try:
+        while True:
+            await asyncio.sleep(interval_s)
+            removed = session_table.evict_stale(timeout_s)
+            if removed > 0:
+                log.info("evicted_stale_sessions", count=removed, timeout_s=timeout_s)
+    except asyncio.CancelledError:
+        pass
 
 
 def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
@@ -58,8 +80,8 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Hydra Coordinator",
-        version="0.2.0",
-        lifespan=_make_lifespan(health_monitor, config),
+        version=VERSION,
+        lifespan=_make_lifespan(session_table, health_monitor, config),
     )
     app.state.config = config
     app.state.session_table = session_table

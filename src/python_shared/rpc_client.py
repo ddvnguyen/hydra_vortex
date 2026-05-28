@@ -26,6 +26,8 @@ class OpCode(IntEnum):
     SlotErase = 0x23
     NodeHealth = 0x24
     Completion = 0x25
+    SaveStateChunked = 0x26
+    RestoreStateChunked = 0x27
     StateGet = 0x30
     StatePut = 0x31
     StateMeta = 0x32

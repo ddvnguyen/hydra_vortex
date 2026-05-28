@@ -308,7 +308,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RestoreFromStoreChunked_WithLocalCache_SkipsTransfer()
+    public async Task RestoreFromStoreChunked_WithLocalCache_StillFetchesFullData()
     {
         var stateData = new byte[3 * 1024 * 1024]; // 3 MB
         new Random(200).NextBytes(stateData);
@@ -353,17 +353,21 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                 "cached-session", 0, "trace-cache-save", CancellationToken.None);
             Assert.True(saveResult.Size > 0);
 
-            // Restore via RestoreFromStoreChunked on the same cache
-            // llama should NOT receive a PUT because all chunks are cached
-            var llamaPutCalled = false;
+            // Restore — always fetches full state from store regardless of cache
+            byte[]? receivedBody = null;
 
-            var llamaRestoreHandler = new MockHttpHandler((request, ct) =>
+            var llamaRestoreHandler = new MockHttpHandler(async (request, ct) =>
             {
-                llamaPutCalled = true; // should NOT happen
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                var path = request.RequestUri!.ToString();
+                if (path.Contains("/state") && request.Method == HttpMethod.Put)
                 {
-                    Content = new StringContent("""{"restored":true,"n_past":3000,"bytes":0}""", Encoding.UTF8, "application/json"),
-                });
+                    receivedBody = await request.Content!.ReadAsByteArrayAsync(ct);
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"restored":true,"n_past":3000,"bytes":50000}""", Encoding.UTF8, "application/json"),
+                    };
+                }
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
             });
 
             var llamaRestoreClient = new LlamaClient(new HttpClient(llamaRestoreHandler), "http://localhost:8080");
@@ -372,10 +376,11 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
             var restoreResult = await restoreHandler.RestoreFromStoreChunkedAsync(
                 "cached-session", 1, "trace-cache-restore", CancellationToken.None);
 
-            // When all chunks are cached locally, the handler should return early
-            // without calling llama's PUT
+            // Restore should still get full data from store
+            // Client-side delta restore is not yet implemented
             Assert.True(restoreResult.Restored);
-            Assert.False(llamaPutCalled, "llama PUT should not be called when all chunks are cached");
+            Assert.NotNull(receivedBody);
+            Assert.Equal(stateData, receivedBody);
 
             llamaRestoreClient.Dispose();
         }

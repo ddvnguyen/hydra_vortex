@@ -22,36 +22,36 @@ public sealed class ChunkStoreTests : IDisposable
     }
 
     [Fact]
-    public void StoreChunk_NewChunk_ReturnsTrue()
+    public async Task StoreChunk_NewChunk_ReturnsTrue()
     {
         var data = "hello chunk"u8.ToArray();
         var hash = ChunkEngine.ComputeHash(data);
 
-        var isNew = _store.StoreChunk(hash, data);
+        var isNew = await _store.StoreChunkAsync(hash, data);
 
         Assert.True(isNew);
         Assert.True(_store.HasChunk(hash));
     }
 
     [Fact]
-    public void StoreChunk_Duplicate_ReturnsFalse()
+    public async Task StoreChunk_Duplicate_ReturnsFalse()
     {
         var data = "dedup me"u8.ToArray();
         var hash = ChunkEngine.ComputeHash(data);
 
-        _store.StoreChunk(hash, data);
-        var isNew = _store.StoreChunk(hash, data);
+        await _store.StoreChunkAsync(hash, data);
+        var isNew = await _store.StoreChunkAsync(hash, data);
 
         Assert.False(isNew);
     }
 
     [Fact]
-    public void HasChunk_Existing_ReturnsTrue()
+    public async Task HasChunk_Existing_ReturnsTrue()
     {
         var data = "check me"u8.ToArray();
         var hash = ChunkEngine.ComputeHash(data);
 
-        _store.StoreChunk(hash, data);
+        await _store.StoreChunkAsync(hash, data);
         Assert.True(_store.HasChunk(hash));
     }
 
@@ -62,12 +62,12 @@ public sealed class ChunkStoreTests : IDisposable
     }
 
     [Fact]
-    public void GetChunkPath_Existing_ReturnsPath()
+    public async Task GetChunkPath_Existing_ReturnsPath()
     {
         var data = "path test"u8.ToArray();
         var hash = ChunkEngine.ComputeHash(data);
 
-        _store.StoreChunk(hash, data);
+        await _store.StoreChunkAsync(hash, data);
 
         var path = _store.GetChunkPath(hash);
         Assert.NotNull(path);
@@ -135,11 +135,11 @@ public sealed class ChunkStoreTests : IDisposable
         // Store a chunk, store a manifest that references it
         var data1 = "chunk one"u8.ToArray();
         var hash1 = ChunkEngine.ComputeHash(data1);
-        _store.StoreChunk(hash1, data1);
+        await _store.StoreChunkAsync(hash1, data1);
 
         var data2 = "orphan chunk"u8.ToArray();
         var hash2 = ChunkEngine.ComputeHash(data2);
-        _store.StoreChunk(hash2, data2);
+        await _store.StoreChunkAsync(hash2, data2);
 
         var manifest = new Manifest("sess_active", 1, 0, data1.Length,
             [new ChunkRef(0, hash1, data1.Length)], DateTime.UtcNow);
@@ -158,7 +158,7 @@ public sealed class ChunkStoreTests : IDisposable
     {
         var data = "garbage"u8.ToArray();
         var hash = ChunkEngine.ComputeHash(data);
-        _store.StoreChunk(hash, data);
+        await _store.StoreChunkAsync(hash, data);
 
         var manifest = new Manifest("sess_gone", 1, 0, data.Length,
             [new ChunkRef(0, hash, data.Length)], DateTime.UtcNow);
@@ -192,7 +192,7 @@ public sealed class ChunkStoreTests : IDisposable
     {
         var data = "stats test"u8.ToArray();
         var hash = ChunkEngine.ComputeHash(data);
-        _store.StoreChunk(hash, data);
+        await _store.StoreChunkAsync(hash, data);
 
         var stats = await _store.GetStatsAsync(CancellationToken.None);
 
@@ -202,12 +202,12 @@ public sealed class ChunkStoreTests : IDisposable
     }
 
     [Fact]
-    public void StoreChunk_WritesToCorrectDirectory()
+    public async Task StoreChunk_WritesToCorrectDirectory()
     {
         var data = "path check"u8.ToArray();
         var hash = ChunkEngine.ComputeHash(data);
 
-        _store.StoreChunk(hash, data);
+        await _store.StoreChunkAsync(hash, data);
 
         var expectedPath = Path.Combine(_store.ChunksDirectory.FullName, hash);
         Assert.True(File.Exists(expectedPath));

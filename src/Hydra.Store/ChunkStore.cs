@@ -35,13 +35,13 @@ public sealed class ChunkStore
     public DirectoryInfo ChunksDirectory => _chunksDir;
     public DirectoryInfo ManifestsDirectory => _manifestsDir;
 
-    public bool StoreChunk(string hash, byte[] data)
+    public async Task<bool> StoreChunkAsync(string hash, byte[] data, CancellationToken ct = default)
     {
         if (_knownHashes.ContainsKey(hash))
             return false;
 
         var path = Path.Combine(_chunksDir.FullName, hash);
-        File.WriteAllBytes(path, data);
+        await File.WriteAllBytesAsync(path, data, ct);
         _knownHashes[hash] = 0;
         return true;
     }

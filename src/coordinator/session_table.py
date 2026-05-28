@@ -59,6 +59,17 @@ class SessionTable:
             return None
         return min(sessions, key=lambda s: s.last_used)
 
+    def active_count_on_node(self, node_name: str) -> int:
+        return sum(1 for s in self._sessions.values() if s.node_name == node_name)
+
+    def evict_stale(self, timeout_s: int) -> int:
+        now = time.time()
+        stale = [sid for sid, entry in self._sessions.items()
+                 if now - entry.last_used > timeout_s]
+        for sid in stale:
+            del self._sessions[sid]
+        return len(stale)
+
     def remove(self, session_id: str):
         self._sessions.pop(session_id, None)
 

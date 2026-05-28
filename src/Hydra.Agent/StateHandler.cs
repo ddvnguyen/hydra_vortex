@@ -119,23 +119,24 @@ public sealed class StateHandler
 
         var hashes = new List<string>();
         var buffer = new byte[1024 * 1024];
-
-        var teeStream = new ChunkHashTeeStream(stateStream, hashes, buffer);
         var storeKey = $"kv/{sessionId}";
-
-        var response = await _store.RequestStreamBodyAsync(
-            OpCode.PutChunked, storeKey, teeStream, stateSize,
-            traceId, ct);
-
         var deduped = 0;
         var total = 0;
-        if (response.Meta is not null)
+
         {
-            using var doc = JsonDocument.Parse(response.Meta);
-            if (doc.RootElement.TryGetProperty("deduped_chunks", out var d))
-                deduped = d.GetInt32();
-            if (doc.RootElement.TryGetProperty("total_chunks", out var t))
-                total = t.GetInt32();
+            await using var teeStream = new ChunkHashTeeStream(stateStream, hashes, buffer);
+            var response = await _store.RequestStreamBodyAsync(
+                OpCode.PutChunked, storeKey, teeStream, stateSize,
+                traceId, ct);
+
+            if (response.Meta is not null)
+            {
+                using var doc = JsonDocument.Parse(response.Meta);
+                if (doc.RootElement.TryGetProperty("deduped_chunks", out var d))
+                    deduped = d.GetInt32();
+                if (doc.RootElement.TryGetProperty("total_chunks", out var t))
+                    total = t.GetInt32();
+            }
         }
 
         await _chunkCache.SaveHashesAsync(sessionId, hashes, ct);
@@ -155,14 +156,14 @@ public sealed class StateHandler
         var sw = ValueStopwatch.StartNew();
 
         var cachedHashes = await _chunkCache.LoadHashesAsync(sessionId, ct);
-        var knownHashesJson = JsonSerializer.SerializeToUtf8Bytes(cachedHashes);
         var storeKey = $"kv/{sessionId}";
 
         _log.Information("Restoring chunked session {SessionId} to slot {SlotId} (cached_chunks={Cached})",
             sessionId, slotId, cachedHashes.Count);
 
+        // Always get full state from store — client-side delta restore is not yet implemented
         var getResp = await _store.RequestAsync(
-            OpCode.GetChunked, storeKey, knownHashesJson,
+            OpCode.GetChunked, storeKey, ReadOnlyMemory<byte>.Empty,
             traceId, ct);
 
         if (getResp.Status != (byte)StatusCode.Ok)
@@ -178,13 +179,6 @@ public sealed class StateHandler
             using var doc = JsonDocument.Parse(getResp.Meta);
             if (doc.RootElement.TryGetProperty("total_size", out var s))
                 totalSize = s.GetInt64();
-        }
-
-        if (totalSize == 0 && cachedHashes.Count > 0)
-        {
-            _log.Information("All chunks cached locally for session {SessionId}, skipping restore data transfer",
-                sessionId);
-            return new RestoreSessionResult(sessionId, slotId, true, 0, sw.ElapsedMilliseconds);
         }
 
         var dataStream = new MemoryStream(getResp.Payload);

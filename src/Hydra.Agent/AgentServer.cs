@@ -52,9 +52,11 @@ public sealed class AgentServer : RpcServer
                 await HandleSlotEraseAsync(key, writer, ct);
                 break;
             case OpCode.PutChunked:
+            case OpCode.SaveStateChunked:
                 await HandleSaveStateChunkedAsync(key, writer, ct);
                 break;
             case OpCode.GetChunked:
+            case OpCode.RestoreStateChunked:
                 await HandleRestoreStateChunkedAsync(key, writer, ct);
                 break;
             default:
@@ -155,10 +157,14 @@ public sealed class AgentServer : RpcServer
             var isHealthy = await _llama.HealthAsync(ct);
             var slots = await _llama.GetSlotsAsync(ct);
 
+            AgentMetrics.LlamaHealthy.WithLabels(_cfg.NodeName).Set(isHealthy ? 1 : 0);
+            AgentMetrics.SlotsIdle.WithLabels(_cfg.NodeName).Set(slots.Count(s => !s.IsProcessing));
+
             var healthPayload = JsonSerializer.SerializeToUtf8Bytes(new
             {
                 healthy = isHealthy,
                 node_name = _cfg.NodeName,
+                version = HydraLogging.ServiceVersion,
                 slots_total = slots.Count,
                 slots_idle = slots.Count(s => !s.IsProcessing),
                 llama_url = _cfg.LlamaUrl,
@@ -272,6 +278,12 @@ public sealed class AgentServer : RpcServer
 
         app.UseMetricServer();
 
+        app.MapGet("/version", () => Results.Json(new
+        {
+            service = "hydra-agent",
+            version = HydraLogging.ServiceVersion,
+        }));
+
         app.MapGet("/debug", async (HttpContext ctx) =>
         {
             var uptimeS = (Stopwatch.GetTimestamp() - _startedAt) / Stopwatch.Frequency;
@@ -284,6 +296,7 @@ public sealed class AgentServer : RpcServer
             var debugInfo = new
             {
                 status = isHealthy ? "ok" : "degraded",
+                version = HydraLogging.ServiceVersion,
                 node_name = _cfg.NodeName,
                 llama_healthy = isHealthy,
                 slots = slots.Select(s => new { s.Id, s.NPast, s.IsProcessing }),
@@ -297,7 +310,17 @@ public sealed class AgentServer : RpcServer
         });
 
         ct.Register(async () => await app.StopAsync());
-        return app.RunAsync();
+        return Task.Run(async () =>
+        {
+            try
+            {
+                await app.RunAsync();
+            }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Debug HTTP endpoint crashed");
+            }
+        }, ct);
     }
 
     private static string ExtractSessionId(string key, int slotId)

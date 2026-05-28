@@ -1,6 +1,6 @@
 [project]
 name = "hydra"
-version = "0.2.0"
+dynamic = ["version"]
 description = "High-throughput multi-GPU LLM inference system with KV state management"
 requires-python = ">=3.13"
 dependencies = [
@@ -23,6 +23,9 @@ dev = [
     "ruff>=0.5",
 ]
 all = ["hydra[persistence,monitoring,langfuse,dev]"]
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
 
 [project.scripts]
 hydra-coordinator = "coordinator.main:run"

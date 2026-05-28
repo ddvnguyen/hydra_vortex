@@ -26,7 +26,7 @@ class StateManager:
         trace_id = new_trace_id()
         client = self._agent_client(node_host, node_port)
         try:
-            resp = await client.request(OpCode.SaveState, session_id, trace_id=trace_id)
+            resp = await client.request(OpCode.SaveStateChunked, session_id, trace_id=trace_id)
             entry = self._session_table.lookup(session_id)
             if entry:
                 n_past = resp.meta.get("n_past", entry.n_past)
@@ -43,7 +43,7 @@ class StateManager:
         trace_id = new_trace_id()
         client = self._agent_client(target_host, target_port)
         try:
-            resp = await client.request(OpCode.RestoreState, session_id, trace_id=trace_id)
+            resp = await client.request(OpCode.RestoreStateChunked, session_id, trace_id=trace_id)
             slot_id = resp.meta.get("slot_id")
             n_past = resp.meta.get("n_past", 0)
             entry = self._session_table.lookup(session_id)
@@ -126,7 +126,7 @@ class StateManager:
         client = self._agent_client(node_host, node_port)
         try:
             resp = await client.request(
-                OpCode.SaveState,
+                OpCode.SaveStateChunked,
                 f"prefix/{checkpoint_name}",
                 trace_id=trace_id,
             )
@@ -154,7 +154,7 @@ class StateManager:
         client = self._agent_client(target_host, target_port)
         try:
             resp = await client.request(
-                OpCode.RestoreState,
+                OpCode.RestoreStateChunked,
                 f"prefix/{checkpoint_name}:{slot_id}",
                 trace_id=trace_id,
             )

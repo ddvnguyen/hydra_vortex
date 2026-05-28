@@ -1,3 +1,4 @@
+import json
 import time
 from typing import Optional
 
@@ -13,6 +14,7 @@ from coordinator.state_manager import StateManager
 from coordinator.proxy import proxy_completion, proxy_completion_stream
 from coordinator.config import CoordinatorConfig
 from coordinator.metrics import metrics_endpoint, requests_total, active_sessions
+from coordinator.version import VERSION, REVISION
 
 log = get_logger()
 
@@ -77,7 +79,8 @@ def create_router(
 
         sess_id = decision.session_id or derive_session_id(messages_dict)
         requests_total.labels(node=decision.node_name, reason=decision.action).inc()
-        active_sessions.labels(node=decision.node_name).set(session_table.active_count)
+        for n in config.nodes:
+            active_sessions.labels(node=n.name).set(session_table.active_count_on_node(n.name))
 
         if decision.action == "store_restore":
             try:
@@ -116,13 +119,37 @@ def create_router(
         node_url_base = node_url(decision.node_name)
 
         if req.stream:
+            async def stream_with_npast():
+                last_usage = None
+                async for chunk in proxy_completion_stream(node_url_base, request_dict, trace_id):
+                    if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
+                        try:
+                            data = json.loads(chunk[6:])
+                            if "usage" in data:
+                                last_usage = data["usage"]
+                        except Exception:
+                            pass
+                    yield chunk
+                if last_usage:
+                    total = last_usage.get("total_tokens", 0)
+                    if total > 0:
+                        entry = session_table.lookup(sess_id)
+                        if entry:
+                            session_table.update_n_past(sess_id, entry.n_past + total)
+
             return StreamingResponse(
-                proxy_completion_stream(node_url_base, request_dict, trace_id),
+                stream_with_npast(),
                 media_type="text/event-stream",
                 headers={"X-Trace-Id": trace_id, "X-Hydra-Node": decision.node_name},
             )
         else:
             result = await proxy_completion(node_url_base, request_dict, trace_id)
+            usage = result.get("usage", {})
+            total = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
+            if total > 0:
+                entry = session_table.lookup(sess_id)
+                if entry:
+                    session_table.update_n_past(sess_id, entry.n_past + total)
             return JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": trace_id, "X-Hydra-Node": decision.node_name},
@@ -131,6 +158,14 @@ def create_router(
     @router.get("/metrics")
     async def metrics():
         return await metrics_endpoint(None)
+
+    @router.get("/version")
+    async def version():
+        return {
+            "service": "hydra-coordinator",
+            "version": VERSION,
+            "revision": REVISION,
+        }
 
     @router.get("/health")
     async def health():
@@ -147,6 +182,8 @@ def create_router(
 
         return {
             "status": status,
+            "version": VERSION,
+            "revision": REVISION,
             "nodes": summary,
             "store": {"healthy": store_ok},
         }
@@ -168,6 +205,8 @@ def create_router(
                 nodes_detail[n.name] = {"healthy": False}
 
         return {
+            "version": VERSION,
+            "revision": REVISION,
             "uptime_s": uptime,
             "sessions": {
                 "active": session_table.active_count,

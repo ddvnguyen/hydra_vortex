@@ -2,7 +2,7 @@
 
 ## Goal
 Persistence across restarts. Grafana dashboards for monitoring. Langfuse integration
-for LLM request tracing. Model weight distribution via Store (deferred from M0).
+for LLM request tracing. Model weight distribution via Store.
 
 ## What "Done" Means
 ```
