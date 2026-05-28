@@ -209,8 +209,9 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 60
-    # Requires all 6 services running. Only triggered on main or with label.
-    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-e2e')
+    # Requires all 6 services running on the self-hosted machine.
+    # Trigger: add the 'run-e2e' label to a PR, or push to main with that label active.
+    if: contains(github.event.pull_request.labels.*.name, 'run-e2e') || contains(github.event.push.head_commit.message, '[run-e2e]')
 
     steps:
       - uses: actions/checkout@v4

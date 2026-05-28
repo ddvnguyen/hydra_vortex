@@ -185,8 +185,11 @@ def test_completion_streaming(client, monkeypatch):
             n_past=0,
         )
 
+    async def fake_stream(*a, **kw):
+        yield "data: hello\n\n"
+
     monkeypatch.setattr("coordinator.router.route_request", fake_route)
-    monkeypatch.setattr("coordinator.router.proxy_completion_stream", lambda *a, **kw: iter(["data: hello\n\n"]))
+    monkeypatch.setattr("coordinator.router.proxy_completion_stream", fake_stream)
 
     resp = client.post(
         "/v1/chat/completions",
