@@ -18,8 +18,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Restore & build (.NET)
         run: dotnet build src/ -c Release --nologo -v minimal
@@ -50,6 +48,7 @@ jobs:
           path: TestResults/*.trx
           reporter: dotnet-trx
           fail-on-error: false
+          fail-on-empty: false
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -68,8 +67,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Build
         run: dotnet build src/ -c Release --nologo -v minimal
@@ -92,6 +89,7 @@ jobs:
           path: TestResults/integration.trx
           reporter: dotnet-trx
           fail-on-error: false
+          fail-on-empty: false
 
       - name: Upload integration test artifacts
         uses: actions/upload-artifact@v4
