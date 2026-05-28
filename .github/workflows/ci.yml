@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  checks: write
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: self-hosted
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore & build (.NET)
+        run: dotnet build src/ -c Release --nologo -v minimal
+
+      - name: Unit tests — Shared
+        run: |
+          dotnet test src/Tests.Shared/ -c Release --no-build --nologo -v normal \
+            --logger "trx;LogFileName=shared.trx" \
+            --results-directory TestResults/
+
+      - name: Unit tests — Store
+        run: |
+          dotnet test src/Tests.Store/ -c Release --no-build --nologo -v normal \
+            --logger "trx;LogFileName=store.trx" \
+            --results-directory TestResults/
+
+      - name: Unit tests — Agent
+        run: |
+          dotnet test src/Tests.Agent/ -c Release --no-build --nologo -v normal \
+            --logger "trx;LogFileName=agent.trx" \
+            --results-directory TestResults/
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Unit Tests
+          path: TestResults/*.trx
+          reporter: dotnet-trx
+          fail-on-error: false
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results-${{ github.run_number }}
+          path: TestResults/*.trx
+          retention-days: 30
+
+  integration:
+    name: Integration Tests
+    runs-on: self-hosted
+    needs: build-test
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-integration')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: dotnet build src/ -c Release --nologo -v minimal
+
+      - name: Integration tests
+        run: |
+          dotnet test src/Tests.Integration/ -c Release --no-build --nologo -v normal \
+            --logger "trx;LogFileName=integration.trx" \
+            --results-directory TestResults/
+        env:
+          HYDRA_STORE_URL: http://localhost:9500
+          HYDRA_AGENT_RTX_URL: http://localhost:9601
+          HYDRA_AGENT_P100_URL: http://localhost:9602
+
+      - name: Publish integration test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Integration Tests
+          path: TestResults/integration.trx
+          reporter: dotnet-trx
+          fail-on-error: false
+
+      - name: Upload integration test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results-${{ github.run_number }}
+          path: TestResults/integration.trx
+          retention-days: 30
+
+  deploy:
+    name: Deploy
+    runs-on: self-hosted
+    needs: build-test
+    timeout-minutes: 10
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy (podman-compose)
+        id: deploy
+        run: |
+          REV=$(git rev-parse --short HEAD)
+          VERSION=$(cat VERSION)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+
+          cd infra
+          podman-compose build 2>&1 | tee /tmp/hydra-build.log | tail -5
+          podman-compose up -d 2>&1 | tee /tmp/hydra-up.log | tail -5
+
+      - name: Record deploy log
+        run: |
+          REV="${{ steps.deploy.outputs.rev }}"
+          VERSION="${{ steps.deploy.outputs.version }}"
+          echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $VERSION ($REV) deployed via CI by ${{ github.actor }}" >> deploy.log
+
+      - name: Write deploy summary
+        if: always()
+        run: |
+          VERSION="${{ steps.deploy.outputs.version }}"
+          REV="${{ steps.deploy.outputs.rev }}"
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BUILD_LOG=$(tail -10 /tmp/hydra-build.log 2>/dev/null || echo "(no output)")
+          UP_LOG=$(tail -5 /tmp/hydra-up.log 2>/dev/null || echo "(no output)")
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## Deploy Summary
+
+          | Field   | Value |
+          |---------|-------|
+          | Version | \`$VERSION\` |
+          | Commit  | \`$REV\` |
+          | Branch  | \`${{ github.ref_name }}\` |
+          | By      | ${{ github.actor }} |
+          | Time    | $TIMESTAMP |
+
+          ### Build log
+          \`\`\`
+          $BUILD_LOG
+          \`\`\`
+
+          ### Services
+          \`\`\`
+          $UP_LOG
+          \`\`\`
+          SUMMARY
+
+      - name: Upload deploy log artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deploy-log-${{ github.run_number }}
+          path: deploy.log
+          retention-days: 90
