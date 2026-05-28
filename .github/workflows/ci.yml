@@ -44,7 +44,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: Unit Tests
+          name: Unit Test Results
           path: TestResults/*.trx
           reporter: dotnet-trx
           fail-on-error: false
@@ -85,7 +85,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: Integration Tests
+          name: Integration Test Results
           path: TestResults/integration.trx
           reporter: dotnet-trx
           fail-on-error: false
@@ -190,7 +190,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: E2E Tests (mocked)
+          name: E2E Mocked Results
           path: TestResults/e2e-mocked.xml
           reporter: java-junit
           fail-on-error: false
@@ -256,7 +256,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: E2E Tests (full stack)
+          name: E2E Full Stack Results
           path: TestResults/e2e-full.xml
           reporter: java-junit
           fail-on-error: false
