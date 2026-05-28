@@ -2,7 +2,8 @@ using Hydra.Store;
 
 var cfg = new StoreConfig();
 var engine = new StorageEngine(cfg.StoreDirectory);
-var server = new StoreServer(cfg, engine);
+var chunkStore = new ChunkStore(cfg.StoreDirectory);
+var server = new StoreServer(cfg, engine, chunkStore);
 
 var cts = new CancellationTokenSource();
 

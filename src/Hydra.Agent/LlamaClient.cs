@@ -118,6 +118,11 @@ public sealed class LlamaClient : IDisposable
     {
         var response = await _http.PostAsync(
             $"{_baseUrl}/slots/{slotId}?action=erase", null, ct);
+        // 404/501: server doesn't support slot erase (no --slot-save-path) — treat as success
+        if ((int)response.StatusCode == 404 || (int)response.StatusCode == 501)
+        {
+            return;
+        }
         response.EnsureSuccessStatusCode();
     }
 

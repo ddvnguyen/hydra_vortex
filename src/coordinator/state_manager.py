@@ -68,12 +68,13 @@ class StateManager:
     ) -> dict:
         log.info("migrate_start", session_id=session_id, to=to_node_name)
 
+        entry = self._session_table.lookup(session_id)
+        slot_id = str(entry.slot_id) if entry and entry.slot_id is not None else ""
+
         save_meta = await self.save_session(session_id, from_host, from_port)
 
         erase_client = self._agent_client(from_host, from_port)
         try:
-            entry = self._session_table.lookup(session_id)
-            slot_id = str(entry.slot_id) if entry and entry.slot_id is not None else ""
             trace_id = new_trace_id()
             await erase_client.request(OpCode.SlotErase, slot_id, trace_id=trace_id)
         finally:
@@ -110,3 +111,64 @@ class StateManager:
             await erase_client.close()
 
         return slot_id
+
+    async def save_prefix_checkpoint(
+        self,
+        checkpoint_name: str,
+        node_host: str,
+        node_port: int,
+        slot_id: int | None = None,
+    ) -> dict:
+        if slot_id is None:
+            slot_id = 0
+
+        trace_id = new_trace_id()
+        client = self._agent_client(node_host, node_port)
+        try:
+            resp = await client.request(
+                OpCode.SaveState,
+                f"prefix/{checkpoint_name}",
+                trace_id=trace_id,
+            )
+            log.info(
+                "prefix_checkpoint_saved",
+                checkpoint=checkpoint_name,
+                slot_id=slot_id,
+                meta=resp.meta,
+            )
+            return resp.meta
+        finally:
+            await client.close()
+
+    async def restore_prefix_checkpoint(
+        self,
+        checkpoint_name: str,
+        target_host: str,
+        target_port: int,
+        slot_id: int | None = None,
+    ) -> dict:
+        if slot_id is None:
+            slot_id = 0
+
+        trace_id = new_trace_id()
+        client = self._agent_client(target_host, target_port)
+        try:
+            resp = await client.request(
+                OpCode.RestoreState,
+                f"prefix/{checkpoint_name}:{slot_id}",
+                trace_id=trace_id,
+            )
+            log.info(
+                "prefix_checkpoint_restored",
+                checkpoint=checkpoint_name,
+                slot_id=slot_id,
+                meta=resp.meta,
+            )
+            return resp.meta
+        except Exception as e:
+            log.warning(
+                "prefix_checkpoint_restore_failed",
+                checkpoint=checkpoint_name,
+                error=str(e),
+            )
+            raise

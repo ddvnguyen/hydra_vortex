@@ -252,4 +252,40 @@ def create_router(
             log.error("migrate_failed", session_id=session_id, error=str(e))
             raise HTTPException(status_code=500, detail=f"Migration failed: {e}")
 
+    @router.post("/prefix/{checkpoint_name}/save")
+    async def save_prefix(checkpoint_name: str, node_name: str = "rtx", slot_id: int = 0):
+        node_cfg = next((n for n in config.nodes if n.name == node_name), None)
+        if not node_cfg:
+            raise HTTPException(status_code=400, detail=f"Node {node_name} not configured")
+
+        try:
+            result = await state_manager.save_prefix_checkpoint(
+                checkpoint_name,
+                node_cfg.host,
+                node_cfg.rpc_port,
+                slot_id,
+            )
+            return {"saved": True, "checkpoint": checkpoint_name, "node": node_name, "result": result}
+        except Exception as e:
+            log.error("prefix_save_failed", checkpoint=checkpoint_name, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Prefix save failed: {e}")
+
+    @router.post("/prefix/{checkpoint_name}/restore")
+    async def restore_prefix(checkpoint_name: str, node_name: str = "p100", slot_id: int = 0):
+        node_cfg = next((n for n in config.nodes if n.name == node_name), None)
+        if not node_cfg:
+            raise HTTPException(status_code=400, detail=f"Node {node_name} not configured")
+
+        try:
+            result = await state_manager.restore_prefix_checkpoint(
+                checkpoint_name,
+                node_cfg.host,
+                node_cfg.rpc_port,
+                slot_id,
+            )
+            return {"restored": True, "checkpoint": checkpoint_name, "node": node_name, "result": result}
+        except Exception as e:
+            log.error("prefix_restore_failed", checkpoint=checkpoint_name, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Prefix restore failed: {e}")
+
     return router

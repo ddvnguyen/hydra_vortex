@@ -16,6 +16,10 @@ class OpCode(IntEnum):
     Del = 0x03
     Stat = 0x04
     List = 0x05
+    PutChunked = 0x10
+    GetChunked = 0x11
+    SyncPlan = 0x12
+    PushChunks = 0x13
     SaveState = 0x20
     RestoreState = 0x21
     SlotStatus = 0x22

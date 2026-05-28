@@ -9,6 +9,7 @@ public sealed record AgentConfig
     public string StoreHost { get; init; } = EnvString("HYDRA_AGENT_STORE_HOST", "127.0.0.1");
     public int StorePort { get; init; } = EnvInt("HYDRA_AGENT_STORE_PORT", 9500);
     public string SlotSavePath { get; init; } = EnvString("HYDRA_AGENT_SLOT_SAVE_PATH", "/tmp/hydra-kv");
+    public string ChunkCacheDir { get; init; } = EnvString("HYDRA_AGENT_CHUNK_CACHE_DIR", "/tmp/hydra-chunk-cache");
     public int DebugHttpPort { get; init; } = EnvInt("HYDRA_AGENT_DEBUG_HTTP_PORT", 9611);
 
     private static string EnvString(string key, string fallback) =>

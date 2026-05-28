@@ -51,6 +51,12 @@ public sealed class AgentServer : RpcServer
             case OpCode.SlotErase:
                 await HandleSlotEraseAsync(key, writer, ct);
                 break;
+            case OpCode.PutChunked:
+                await HandleSaveStateChunkedAsync(key, writer, ct);
+                break;
+            case OpCode.GetChunked:
+                await HandleRestoreStateChunkedAsync(key, writer, ct);
+                break;
             default:
                 await WriteErrorAsync(writer, $"Unknown opcode: {op}", ct);
                 break;
@@ -171,6 +177,60 @@ public sealed class AgentServer : RpcServer
         catch (Exception ex)
         {
             _log.Error(ex, "NodeHealth failed");
+            await WriteErrorAsync(writer, ex.Message, ct);
+        }
+    }
+
+    private async Task HandleSaveStateChunkedAsync(string sessionId, PipeWriter writer, CancellationToken ct)
+    {
+        using var _ = AgentMetrics.SaveDuration.NewTimer();
+        try
+        {
+            var slotId = int.TryParse(sessionId, out var s) ? s : await _llama.FindIdleSlotAsync(ct) ?? 0;
+
+            var result = await _handler.SaveToStoreChunkedAsync(
+                ExtractSessionId(sessionId, slotId), slotId,
+                "agent-save-chunked", ct);
+
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}},"chunked":true}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+            var span = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(span);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+            AgentMetrics.SaveOpsTotal.Inc();
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "SaveStateChunked failed for session {SessionId}", sessionId);
+            await WriteErrorAsync(writer, ex.Message, ct);
+        }
+    }
+
+    private async Task HandleRestoreStateChunkedAsync(string sessionId, PipeWriter writer, CancellationToken ct)
+    {
+        using var _ = AgentMetrics.RestoreDuration.NewTimer();
+        try
+        {
+            var parts = sessionId.Split(':');
+            var sid = parts[0];
+            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : 0;
+
+            var result = await _handler.RestoreFromStoreChunkedAsync(sid, slotId, "agent-restore-chunked", ct);
+
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"restored":{{result.Restored.ToString().ToLowerInvariant()}},"restore_ms":{{result.ElapsedMs}},"chunked":true}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+            var span = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(span);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+            AgentMetrics.RestoreOpsTotal.Inc();
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "RestoreStateChunked failed for session {SessionId}", sessionId);
             await WriteErrorAsync(writer, ex.Message, ct);
         }
     }

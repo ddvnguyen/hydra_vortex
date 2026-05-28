@@ -5,6 +5,7 @@ using Hydra.Shared;
 using StoreConfig = Hydra.Store.StoreConfig;
 using StoreServer = Hydra.Store.StoreServer;
 using StorageEngine = Hydra.Store.StorageEngine;
+using ChunkStore = Hydra.Store.ChunkStore;
 
 namespace Tests.Integration;
 
@@ -13,6 +14,8 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
     private readonly DirectoryInfo _storeDir;
     private StoreServer? _storeServer;
     private Task? _storeServerTask;
+
+    private readonly string _chunkCacheDir = Path.Combine(Path.GetTempPath(), $"hydra-cache-{Guid.NewGuid():N}");
 
     public StoreAgentIntegrationTests()
     {
@@ -31,7 +34,8 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         };
 
         var engine = new StorageEngine(_storeDir);
-        _storeServer = new StoreServer(storeCfg, engine);
+        var chunkStore = new ChunkStore(_storeDir);
+        _storeServer = new StoreServer(storeCfg, engine, chunkStore);
         _storeServerTask = Task.Run(() => _storeServer.RunAsync(CancellationToken.None));
         await Task.Delay(500);
     }
@@ -86,7 +90,8 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
             storeClient = new RpcClient("127.0.0.1", _storeServer!.Port);
             await storeClient.ConnectAsync(CancellationToken.None);
 
-            var handler = new StateHandler(llamaClient, storeClient, log);
+            var chunkCache = new LocalChunkCache(_chunkCacheDir);
+            var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
             var saveResult = await handler.SaveToStoreAsync("test-session", 0, "trace-save-e2e", CancellationToken.None);
 
@@ -164,7 +169,8 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
 
             // Act: Restore state directly via StateHandler (bypasses Agent RPC)
             var log = HydraLogging.CreateLogger("test-agent");
-            var handler = new StateHandler(llamaClient, storeClient, log);
+            var chunkCache = new LocalChunkCache(_chunkCacheDir);
+            var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
             var restoreResult = await handler.RestoreFromStoreAsync("restore-session", 0, "trace-restore-e2e", CancellationToken.None);
 
@@ -234,7 +240,8 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         await storeClient.ConnectAsync(CancellationToken.None);
 
         var log = HydraLogging.CreateLogger("roundtrip-test");
-        var handler = new StateHandler(llamaClient, storeClient, log);
+        var chunkCache = new LocalChunkCache(_chunkCacheDir);
+            var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         try
         {
@@ -291,7 +298,8 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         });
 
         var llamaClient = new LlamaClient(new HttpClient(llamaHandler), "http://localhost:8080");
-        var handler = new StateHandler(llamaClient, storeClient, HydraLogging.CreateLogger("nf-test"));
+        var chunkCache = new LocalChunkCache(_chunkCacheDir);
+            var handler = new StateHandler(llamaClient, storeClient, chunkCache, HydraLogging.CreateLogger("nf-test"));
 
         try
         {
@@ -342,7 +350,8 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         await storeClient.ConnectAsync(CancellationToken.None);
 
         var log = HydraLogging.CreateLogger("trace-test");
-        var handler = new StateHandler(llamaClient, storeClient, log);
+        var chunkCache = new LocalChunkCache(_chunkCacheDir);
+            var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         try
         {
@@ -402,7 +411,8 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         await storeClient.ConnectAsync(CancellationToken.None);
 
         var log = HydraLogging.CreateLogger("large-test");
-        var handler = new StateHandler(llamaClient, storeClient, log);
+        var chunkCache = new LocalChunkCache(_chunkCacheDir);
+            var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         try
         {

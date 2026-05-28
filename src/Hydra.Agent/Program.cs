@@ -6,7 +6,8 @@ var log = HydraLogging.CreateLogger("agent");
 
 var llamaClient = new LlamaClient(cfg.LlamaUrl);
 var storeClient = new RpcClient(cfg.StoreHost, cfg.StorePort);
-var handler = new StateHandler(llamaClient, storeClient, log);
+var chunkCache = new LocalChunkCache(cfg.ChunkCacheDir);
+var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 var server = new AgentServer(cfg, handler, llamaClient, log);
 
 var cts = new CancellationTokenSource();

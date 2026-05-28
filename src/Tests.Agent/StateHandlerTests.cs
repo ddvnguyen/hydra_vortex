@@ -15,6 +15,7 @@ public sealed class StateHandlerTests : IAsyncLifetime
     private static int _nextPort = 18000;
     private static readonly object _portLock = new();
     private int _port;
+    private readonly string _chunkCacheDir = Path.Combine(Path.GetTempPath(), $"hydra-cache-{Guid.NewGuid():N}");
 
     public async Task InitializeAsync()
     {
@@ -72,7 +73,8 @@ public sealed class StateHandlerTests : IAsyncLifetime
         await storeClient.ConnectAsync(CancellationToken.None);
 
         var log = HydraLogging.CreateLogger("test-agent");
-        var handler = new StateHandler(llamaClient, storeClient, log);
+        var chunkCache = new LocalChunkCache(_chunkCacheDir);
+        var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         var result = await handler.SaveToStoreAsync("test-session", 0, "trace-save", CancellationToken.None);
 
@@ -136,7 +138,8 @@ public sealed class StateHandlerTests : IAsyncLifetime
         await storeClient.ConnectAsync(CancellationToken.None);
 
         var log = HydraLogging.CreateLogger("test-agent");
-        var handler = new StateHandler(llamaClient, storeClient, log);
+        var chunkCache = new LocalChunkCache(_chunkCacheDir);
+        var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         var result = await handler.RestoreFromStoreAsync(
             "restore-session", 1, "trace-restore", CancellationToken.None);
@@ -169,7 +172,8 @@ public sealed class StateHandlerTests : IAsyncLifetime
         await storeClient.ConnectAsync(CancellationToken.None);
 
         var log = HydraLogging.CreateLogger("test-agent");
-        var handler = new StateHandler(llamaClient, storeClient, log);
+        var chunkCache = new LocalChunkCache(_chunkCacheDir);
+        var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
             handler.RestoreFromStoreAsync("nonexistent", 0, "trace-nf", CancellationToken.None));
@@ -217,7 +221,8 @@ public sealed class StateHandlerTests : IAsyncLifetime
         await storeClient.ConnectAsync(CancellationToken.None);
 
         var log = HydraLogging.CreateLogger("test-agent");
-        var handler = new StateHandler(llamaClient, storeClient, log);
+        var chunkCache = new LocalChunkCache(_chunkCacheDir);
+        var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         var result = await handler.SaveToStoreAsync("large-session", 0, "trace-large", CancellationToken.None);
 

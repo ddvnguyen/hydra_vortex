@@ -3,6 +3,7 @@ using Hydra.Shared;
 using StoreServer = Hydra.Store.StoreServer;
 using StoreConfig = Hydra.Store.StoreConfig;
 using StorageEngine = Hydra.Store.StorageEngine;
+using ChunkStore = Hydra.Store.ChunkStore;
 
 namespace Tests.Store;
 
@@ -18,6 +19,7 @@ public sealed class StoreServerTests : IAsyncLifetime
             Path.Combine(Path.GetTempPath(), $"hydra-store-test-{Guid.NewGuid():N}"));
 
         var engine = new StorageEngine(_storeDir);
+        var chunkStore = new ChunkStore(_storeDir);
         var cfg = new StoreConfig
         {
             Host = "127.0.0.1",
@@ -25,7 +27,7 @@ public sealed class StoreServerTests : IAsyncLifetime
             StoreDir = _storeDir.FullName,
         };
 
-        _server = new StoreServer(cfg, engine);
+        _server = new StoreServer(cfg, engine, chunkStore);
         _serverTask = Task.Run(() => _server.RunAsync(CancellationToken.None));
         await Task.Delay(300);
     }

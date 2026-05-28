@@ -40,6 +40,9 @@ class CoordinatorConfig(BaseSettings):
 
     max_tokens_default: int = 512
 
+    prefix_checkpoint_name: str = "system_prompt"
+    prefix_checkpoint_enabled: bool = True
+
     @computed_field
     @property
     def nodes(self) -> list[NodeConfig]:
