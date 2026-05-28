@@ -165,3 +165,110 @@ jobs:
           name: deploy-log-${{ github.run_number }}
           path: deploy.log
           retention-days: 90
+
+  e2e-mocked:
+    name: E2E Tests (mocked)
+    runs-on: self-hosted
+    needs: build-test
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python deps
+        run: pip install -e ".[dev]" --quiet
+
+      - name: Run mocked E2E tests
+        run: |
+          pytest tests/e2e/test_m1_e2e.py tests/e2e/test_m2_e2e.py -v \
+            --junit-xml=TestResults/e2e-mocked.xml
+
+      - name: Publish E2E mocked results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: E2E Tests (mocked)
+          path: TestResults/e2e-mocked.xml
+          reporter: java-junit
+          fail-on-error: false
+          fail-on-empty: false
+
+      - name: Upload E2E mocked artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-mocked-results-${{ github.run_number }}
+          path: TestResults/e2e-mocked.xml
+          retention-days: 30
+
+  e2e-full:
+    name: E2E Tests (full stack)
+    runs-on: self-hosted
+    needs: build-test
+    timeout-minutes: 60
+    # Requires all 6 services running. Only triggered on main or with label.
+    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-e2e')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python deps
+        run: pip install -e ".[all]" --quiet
+
+      - name: Check services are healthy
+        run: |
+          echo "Checking Coordinator health..."
+          curl -sf http://localhost:9000/health | python3 -m json.tool
+          STATUS=$(curl -sf http://localhost:9000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])")
+          if [ "$STATUS" != "healthy" ] && [ "$STATUS" != "degraded" ]; then
+            echo "Coordinator not healthy (status=$STATUS). Are all 6 services running?"
+            exit 1
+          fi
+          echo "Services OK (status=$STATUS)"
+
+      - name: Run full-stack E2E tests
+        run: |
+          pytest tests/e2e/ -m e2e -v --timeout=300 \
+            --ignore=tests/e2e/test_large_prompt_e2e.py \
+            --ignore=tests/e2e/test_stress_e2e.py \
+            --junit-xml=TestResults/e2e-full.xml
+        env:
+          COORD_URL: http://localhost:9000
+          RTX_LLAMA_URL: http://localhost:8080
+          P100_LLAMA_URL: http://192.168.122.21:8086
+          LLAMA_RTX_URL: http://localhost:8080
+          LLAMA_P100_URL: http://192.168.122.21:8086
+          RTX_AGENT_HOST: "127.0.0.1"
+          RTX_AGENT_PORT: "9601"
+          P100_AGENT_HOST: "192.168.122.21"
+          P100_AGENT_PORT: "9602"
+          STORE_HOST: "127.0.0.1"
+          STORE_PORT: "9500"
+
+      - name: Publish full-stack E2E results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: E2E Tests (full stack)
+          path: TestResults/e2e-full.xml
+          reporter: java-junit
+          fail-on-error: false
+          fail-on-empty: false
+
+      - name: Upload full-stack E2E artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-full-results-${{ github.run_number }}
+          path: TestResults/e2e-full.xml
+          retention-days: 30
