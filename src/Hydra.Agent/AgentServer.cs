@@ -70,10 +70,12 @@ public sealed class AgentServer : RpcServer
         using var _ = AgentMetrics.SaveDuration.NewTimer();
         try
         {
-            var slotId = int.TryParse(sessionId, out var s) ? s : await _llama.FindIdleSlotAsync(ct) ?? 0;
+            var parts = sessionId.Split(':');
+            var sid = parts[0];
+            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : await _llama.FindIdleSlotAsync(ct) ?? 0;
 
             var result = await _handler.SaveToStoreAsync(
-                ExtractSessionId(sessionId, slotId), slotId,
+                ExtractSessionId(sid, slotId), slotId,
                 "agent-save", ct);
 
             var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}}}""";
@@ -192,10 +194,12 @@ public sealed class AgentServer : RpcServer
         using var _ = AgentMetrics.SaveDuration.NewTimer();
         try
         {
-            var slotId = int.TryParse(sessionId, out var s) ? s : await _llama.FindIdleSlotAsync(ct) ?? 0;
+            var parts = sessionId.Split(':');
+            var sid = parts[0];
+            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : await _llama.FindIdleSlotAsync(ct) ?? 0;
 
             var result = await _handler.SaveToStoreChunkedAsync(
-                ExtractSessionId(sessionId, slotId), slotId,
+                ExtractSessionId(sid, slotId), slotId,
                 "agent-save-chunked", ct);
 
             var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}},"chunked":true}""";

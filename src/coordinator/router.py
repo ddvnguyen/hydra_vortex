@@ -135,7 +135,7 @@ def create_router(
                     if total > 0:
                         entry = session_table.lookup(sess_id)
                         if entry:
-                            session_table.update_n_past(sess_id, entry.n_past + total)
+                            session_table.update_n_past(sess_id, total)
 
             return StreamingResponse(
                 stream_with_npast(),
@@ -149,7 +149,7 @@ def create_router(
             if total > 0:
                 entry = session_table.lookup(sess_id)
                 if entry:
-                    session_table.update_n_past(sess_id, entry.n_past + total)
+                    session_table.update_n_past(sess_id, total)
             return JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": trace_id, "X-Hydra-Node": decision.node_name},

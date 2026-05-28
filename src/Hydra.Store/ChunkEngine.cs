@@ -34,7 +34,7 @@ public static class ChunkEngine
     }
 
     public static async Task<List<ChunkRef>> ChunkAndHashFromPipeAsync(
-        PipeReader reader, long totalSize, Func<byte[], CancellationToken, Task> onChunk,
+        PipeReader reader, long totalSize, Func<byte[], string, CancellationToken, Task> onChunk,
         CancellationToken ct)
     {
         var chunks = new List<ChunkRef>();
@@ -70,7 +70,7 @@ public static class ChunkEngine
                         var hash = ComputeHash(chunkData);
                         var chunk = new ChunkRef(chunks.Count, hash, bufferPos);
                         chunks.Add(chunk);
-                        await onChunk(chunkData, ct);
+                        await onChunk(chunkData, hash, ct);
                         bufferPos = 0;
                     }
                 }

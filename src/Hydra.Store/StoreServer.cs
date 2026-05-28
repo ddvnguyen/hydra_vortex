@@ -164,10 +164,9 @@ public sealed class StoreServer : RpcServer
 			var chunks = new List<ChunkRef>();
 			var totalNew = 0;
 
-			await ChunkEngine.ChunkAndHashFromPipeAsync(reader, payloadLen,
-				 async (chunkData, innerCt) =>
+ await ChunkEngine.ChunkAndHashFromPipeAsync(reader, payloadLen,
+				 async (chunkData, hash, innerCt) =>
 				 {
-					 var hash = ChunkEngine.ComputeHash(chunkData);
 					 var chunkRef = new ChunkRef(chunks.Count, hash, chunkData.Length);
 					 chunks.Add(chunkRef);
 
@@ -341,13 +340,13 @@ public sealed class StoreServer : RpcServer
 				await _chunkStore.SaveManifestAsync(key, manifest, ct);
 			}
 
-			var meta = $$"""{"stored":{{stored}},"total":{{payloadLen}}}""";
+			var meta = $$"""{"stored":{{stored}},"total":{{chunkRefs.Count}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
 			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
 			await WriteMetaAsync(writer, meta, ct);
 
 			StoreMetrics.OpsTotal.WithLabels("push_chunks").Inc();
-			StoreMetrics.BytesStored.Inc(payloadLen);
+			StoreMetrics.BytesStored.Inc(totalPushedSize);
 		}
 		catch (Exception ex)
 		{

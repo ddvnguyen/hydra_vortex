@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.0] - 2026-05-28
+
+### Fixed
+- G-P1-1: n_past double-counted across turns (Fix 1 — total_tokens is full KV cache size, not increment)
+- G-P1-4: Save path doesn't include slot_id — saves from random idle slot instead of session's slot (Fix 2)
+- G-P2-3: Double SHA-256 per chunk on PUT path (~800 redundant ops/save) (Fix 3)
+- G-P2-4: PUSH_CHUNKS `total` reports bytes not chunk count — dedup ratio shows ~0% (Fix 4)
+- G-P2-5: Dedup integration test assertions too weak — Assert.InRange(1,10) catches nothing (Fix 5)
+
 ## [0.3.0] - 2026-05-28
 
 ### Added

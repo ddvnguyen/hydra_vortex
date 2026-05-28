@@ -24,9 +24,11 @@ class StateManager:
 
     async def save_session(self, session_id: str, node_host: str, node_port: int) -> dict:
         trace_id = new_trace_id()
+        entry = self._session_table.lookup(session_id)
+        slot_id = entry.slot_id if entry and entry.slot_id is not None else 0
         client = self._agent_client(node_host, node_port)
         try:
-            resp = await client.request(OpCode.SaveStateChunked, session_id, trace_id=trace_id)
+            resp = await client.request(OpCode.SaveStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
             entry = self._session_table.lookup(session_id)
             if entry:
                 n_past = resp.meta.get("n_past", entry.n_past)
@@ -127,7 +129,7 @@ class StateManager:
         try:
             resp = await client.request(
                 OpCode.SaveStateChunked,
-                f"prefix/{checkpoint_name}",
+                f"prefix/{checkpoint_name}:{slot_id}",
                 trace_id=trace_id,
             )
             log.info(
