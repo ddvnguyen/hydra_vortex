@@ -52,10 +52,14 @@ public sealed class AgentServer : RpcServer
                 await HandleSlotEraseAsync(key, writer, ct);
                 break;
             case OpCode.PutChunked:
+                await WriteErrorAsync(writer, "Store opcode not supported on agent", ct);
+                break;
+            case OpCode.GetChunked:
+                await WriteErrorAsync(writer, "Store opcode not supported on agent", ct);
+                break;
             case OpCode.SaveStateChunked:
                 await HandleSaveStateChunkedAsync(key, writer, ct);
                 break;
-            case OpCode.GetChunked:
             case OpCode.RestoreStateChunked:
                 await HandleRestoreStateChunkedAsync(key, writer, ct);
                 break;
@@ -229,7 +233,7 @@ public sealed class AgentServer : RpcServer
 
             var result = await _handler.RestoreFromStoreChunkedAsync(sid, slotId, "agent-restore-chunked", ct);
 
-            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"restored":{{result.Restored.ToString().ToLowerInvariant()}},"restore_ms":{{result.ElapsedMs}},"chunked":true}""";
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"restored":{{result.Restored.ToString().ToLowerInvariant()}},"size":{{result.Size}},"restore_ms":{{result.ElapsedMs}},"chunked":true}""";
             var metaBytes = Encoding.UTF8.GetBytes(meta);
             await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
             var span = writer.GetSpan(metaBytes.Length);

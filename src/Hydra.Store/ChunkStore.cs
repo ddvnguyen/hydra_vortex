@@ -3,16 +3,21 @@ using System.Text.Json;
 
 namespace Hydra.Store;
 
-public sealed class ChunkStore
+  public sealed class ChunkStore
 {
     private readonly DirectoryInfo _chunksDir;
     private readonly DirectoryInfo _manifestsDir;
+    private DirectoryInfo? _metaDir;
     private readonly ConcurrentDictionary<string, byte> _knownHashes = new();
 
     public ChunkStore(DirectoryInfo storeDir)
     {
         _chunksDir = new DirectoryInfo(Path.Combine(storeDir.FullName, "chunks"));
         _manifestsDir = new DirectoryInfo(Path.Combine(storeDir.FullName, "manifests"));
+        // Optional: meta dir for storing n_past before manifest exists.
+        var metaPath = Path.Combine(storeDir.FullName, "meta");
+        if (Directory.Exists(metaPath))
+            _metaDir = new DirectoryInfo(metaPath);
 
         if (!_chunksDir.Exists)
             _chunksDir.Create();
@@ -74,16 +79,44 @@ public sealed class ChunkStore
         return JsonSerializer.Deserialize<Manifest>(json);
     }
 
-    public List<string> DiffPlan(Manifest manifest, List<string> clientHashes)
+    public async Task SaveMetaAsync(string key, string name, string value, CancellationToken ct)
     {
-        var clientSet = new HashSet<string>(clientHashes);
-        return manifest.Chunks
-            .Where(c => !clientSet.Contains(c.Hash))
-            .Select(c => c.Hash)
-            .ToList();
+        if (_metaDir is null)
+            _metaDir = new DirectoryInfo(Path.Combine(_chunksDir.Parent!.FullName, "meta"));
+        var path = Path.Combine(_metaDir.FullName, $"{key}.{name}");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, value, ct);
     }
 
-    public int GC(HashSet<string> keepSessions)
+    public async Task<int?> GetMetaAsync(string key, string name, CancellationToken ct)
+    {
+        if (_metaDir is null)
+            return null;
+        var path = Path.Combine(_metaDir.FullName, $"{key}.{name}");
+        if (!File.Exists(path))
+            return null;
+        var content = await File.ReadAllTextAsync(path, ct);
+        return int.TryParse(content, out var val) ? (int?)val : null;
+    }
+
+    public List<string> DiffPlan(Manifest manifest, List<string> clientHashes)
+	{
+		var clientSet = new HashSet<string>(clientHashes);
+		return manifest.Chunks
+			.Where(c => !clientSet.Contains(c.Hash))
+			.Select(c => c.Hash)
+			.ToList();
+	}
+
+	public List<ChunkRef> DiffPlanWithInfo(Manifest manifest, List<string> clientHashes)
+	{
+		var clientSet = new HashSet<string>(clientHashes);
+		return manifest.Chunks
+			.Where(c => !clientSet.Contains(c.Hash))
+			.ToList();
+	}
+
+	public int GC(HashSet<string> keepSessions)
     {
         var referenced = new HashSet<string>();
 
@@ -113,6 +146,26 @@ public sealed class ChunkStore
                 file.Delete();
                 _knownHashes.TryRemove(file.Name, out _);
                 removed++;
+            }
+        }
+
+        // Clean up orphaned temp meta files (left behind by incomplete saves).
+        if (_metaDir is not null)
+        {
+            foreach (var mf in _manifestsDir.EnumerateFiles("*.json"))
+            {
+                var manifestKey = Path.GetFileNameWithoutExtension(mf.Name);
+                foreach (var metaFile in _metaDir.GetFiles($"{manifestKey}.*"))
+                {
+                    if (metaFile.Name != $"{manifestKey}.n_past")
+                        continue;
+                    var content = File.ReadAllText(metaFile.FullName);
+                    if (string.IsNullOrWhiteSpace(content))
+                    {
+                        metaFile.Delete();
+                        removed++;
+                    }
+                }
             }
         }
 

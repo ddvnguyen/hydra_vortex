@@ -1,5 +1,6 @@
-using System.Diagnostics;
+ using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Hydra.Shared;
 using Serilog;
@@ -14,13 +15,15 @@ public sealed record SaveResult(
     long ElapsedMs
 );
 
-public sealed record RestoreSessionResult(
+  public sealed record RestoreSessionResult(
     string SessionId,
     int SlotId,
     bool Restored,
     int NPast,
+    long Size,
     long ElapsedMs
 );
+
 
 public sealed class StateHandler
 {
@@ -95,13 +98,16 @@ public sealed class StateHandler
 
         var asyncStream = new AsyncEnumerableStream(storeStream, ct);
 
-        var result = await _llama.PutStateAsync(slotId, asyncStream, longContentLength, ct);
+        await _llama.PutStateAsync(slotId, asyncStream, longContentLength, ct);
+
+        // Query llama for actual n_past after restore (not from PutState response).
+        var meta = await _llama.GetStateMetaAsync(slotId, ct);
 
         var elapsed = sw.ElapsedMilliseconds;
         _log.Information("Restored session {SessionId} to slot {SlotId} in {Elapsed}ms",
             sessionId, slotId, elapsed);
 
-        return new RestoreSessionResult(sessionId, slotId, result.Restored, result.NPast, elapsed);
+        return new RestoreSessionResult(sessionId, slotId, true, meta.NPast, longContentLength, elapsed);
     }
 
     public async Task<SaveResult> SaveToStoreChunkedAsync(
@@ -120,22 +126,31 @@ public sealed class StateHandler
         var hashes = new List<string>();
         var buffer = new byte[1024 * 1024];
         var storeKey = $"kv/{sessionId}";
-        var deduped = 0;
-        var total = 0;
+        int deduped = 0;
+        int total = 0;
+
+        // Send n_past to Store so it can update the manifest after PushChunks.
+        var nPastPayload = JsonSerializer.SerializeToUtf8Bytes(new { n_past = meta.NPast });
+        await _store.RequestAsync(OpCode.PutMeta, storeKey, nPastPayload, traceId, ct);
+
+        // Configure TeeStream to also save chunk data locally during streaming.
+        var teeStream = new ChunkHashTeeStream(stateStream, hashes, buffer, _chunkCache, sessionId);
 
         {
-            await using var teeStream = new ChunkHashTeeStream(stateStream, hashes, buffer);
-            var response = await _store.RequestStreamBodyAsync(
-                OpCode.PutChunked, storeKey, teeStream, stateSize,
-                traceId, ct);
-
-            if (response.Meta is not null)
+            await using (teeStream)
             {
-                using var doc = JsonDocument.Parse(response.Meta);
-                if (doc.RootElement.TryGetProperty("deduped_chunks", out var d))
-                    deduped = d.GetInt32();
-                if (doc.RootElement.TryGetProperty("total_chunks", out var t))
-                    total = t.GetInt32();
+                var response = await _store.RequestStreamBodyAsync(
+                    OpCode.PutChunked, storeKey, teeStream, stateSize,
+                    traceId, ct);
+
+                if (response.Meta is not null)
+                {
+                    using var doc = JsonDocument.Parse(response.Meta);
+                    if (doc.RootElement.TryGetProperty("deduped_chunks", out var d))
+                        deduped = d.GetInt32();
+                    if (doc.RootElement.TryGetProperty("total_chunks", out var t))
+                        total = t.GetInt32();
+                }
             }
         }
 
@@ -161,9 +176,10 @@ public sealed class StateHandler
         _log.Information("Restoring chunked session {SessionId} to slot {SlotId} (cached_chunks={Cached})",
             sessionId, slotId, cachedHashes.Count);
 
-        // Always get full state from store — client-side delta restore is not yet implemented
+        // Request missing chunks from store with known hashes.
+        var clientHashesJson = JsonSerializer.Serialize(cachedHashes);
         var getResp = await _store.RequestAsync(
-            OpCode.GetChunked, storeKey, ReadOnlyMemory<byte>.Empty,
+            OpCode.GetChunked, storeKey, Encoding.UTF8.GetBytes(clientHashesJson),
             traceId, ct);
 
         if (getResp.Status != (byte)StatusCode.Ok)
@@ -174,44 +190,148 @@ public sealed class StateHandler
         }
 
         var totalSize = 0L;
+        int missingCount = 0;
         if (getResp.Meta is not null)
         {
             using var doc = JsonDocument.Parse(getResp.Meta);
             if (doc.RootElement.TryGetProperty("total_size", out var s))
                 totalSize = s.GetInt64();
+            if (doc.RootElement.TryGetProperty("missing_count", out var m))
+                missingCount = m.GetInt32();
         }
 
-        var dataStream = new MemoryStream(getResp.Payload);
-        var result = await _llama.PutStateAsync(slotId, dataStream, totalSize, ct);
-
-        if (getResp.Meta is not null)
+          if (totalSize == 0 || missingCount == 0)
         {
-            using var doc = JsonDocument.Parse(getResp.Meta);
-            if (doc.RootElement.TryGetProperty("missing_count", out var mc))
-                _log.Information("Restored chunked session {SessionId} (missing={Missing})",
-                    sessionId, mc.GetInt32());
+            // Full cache hit — all chunks deduped, nothing to fetch from store.
+            // Verify we actually have state in llama (n_past > 0).
+            var restoreMeta = await _llama.GetStateMetaAsync(slotId, ct);
+            if (restoreMeta.NPast > 0)
+            {
+                _log.Information("Full cache hit for session {SessionId} — using existing llama state (n_past={NPast})",
+                    sessionId, restoreMeta.NPast);
+                return new RestoreSessionResult(sessionId, slotId, true, restoreMeta.NPast, restoreMeta.StateSize, sw.ElapsedMilliseconds);
+            }
+
+            _log.Warning("No state data to restore for session {SessionId} (total_size={Size}, missing={Missing})",
+                sessionId, totalSize, missingCount);
+            return new RestoreSessionResult(sessionId, slotId, false, 0, 0, sw.ElapsedMilliseconds);
         }
 
-        var elapsed = sw.ElapsedMilliseconds;
-        _log.Information("Restored session {SessionId} to slot {SlotId} in {Elapsed}ms",
-            sessionId, slotId, elapsed);
+        // Partial cache hit — fetch manifest and reassemble state from local + store chunks.
+        var manifestResp = await _store.RequestAsync(
+            OpCode.GetManifest, storeKey, ReadOnlyMemory<byte>.Empty,
+            traceId, ct);
 
-        return new RestoreSessionResult(sessionId, slotId, result.Restored, result.NPast, elapsed);
+        int nPast = 0;
+        List<ChunkRef> allChunks = [];
+        if (manifestResp.Meta is not null)
+        {
+            using var doc = JsonDocument.Parse(manifestResp.Meta);
+            if (doc.RootElement.TryGetProperty("n_past", out var npEl))
+                nPast = npEl.GetInt32();
+
+            // Extract chunk list from manifest payload.
+            var chunksNode = doc.RootElement.GetProperty("chunks");
+            foreach (var chunk in chunksNode.EnumerateArray())
+            {
+                allChunks.Add(new ChunkRef(
+                    Index: chunk.GetProperty("index").GetInt32(),
+                    Hash: chunk.GetProperty("hash").GetString() ?? "",
+                    Size: chunk.GetProperty("size").GetInt32()
+                ));
+            }
+        }
+
+        // Allocate buffer for the complete KV state (without header).
+        var kvBuffer = new byte[totalSize];
+
+        // Fill local cached chunks first.
+        foreach (var chunk in allChunks)
+        {
+            if (cachedHashes.Contains(chunk.Hash))
+            {
+                var chunkData = await _chunkCache.GetChunkDataAsync(sessionId, chunk.Hash, ct);
+                if (chunkData is not null && chunkData.Length == chunk.Size)
+                {
+                    int dataOffset = chunk.Index * ChunkEngine.ChunkSize;
+                    Array.Copy(chunkData, 0, kvBuffer, dataOffset, chunkData.Length);
+                }
+            }
+        }
+
+        // Parse missing chunks from GetChunked payload: [4B index][4B size][chunk data]...
+        var storePayload = getResp.Payload;
+        int storeOffset = 0;
+
+        while (storeOffset < storePayload.Length)
+        {
+            if (storeOffset + 8 > storePayload.Length)
+                break;
+
+            var header = storePayload.AsSpan(storeOffset, 8);
+            int chunkIndex = BitConverter.ToInt32(header.Slice(0, 4).ToArray());
+            int chunkSize = BitConverter.ToInt32(header.Slice(4, 4).ToArray());
+            storeOffset += 8;
+
+            if (chunkIndex < 0 || chunkSize <= 0 || storeOffset + chunkSize > storePayload.Length)
+                break;
+
+            int dataOffset = chunkIndex * ChunkEngine.ChunkSize;
+            if (dataOffset + chunkSize > kvBuffer.Length)
+            {
+                _log.Warning("Chunk overflow for session {SessionId}: offset={Offset} + size={Size} > total={Total}",
+                    sessionId, dataOffset, chunkSize, kvBuffer.Length);
+                storeOffset += chunkSize;
+                continue;
+            }
+
+            Array.Copy(storePayload, storeOffset, kvBuffer, dataOffset, chunkSize);
+            storeOffset += chunkSize;
+        }
+
+        // Prepend llama state header: [4B n_past][4B n_tok=0] + KV cache data.
+        var completeState = new byte[8 + kvBuffer.Length];
+        var nPastBytes = BitConverter.GetBytes(nPast);
+        Buffer.BlockCopy(nPastBytes, 0, completeState, 0, 4);
+        var nTokBytes = BitConverter.GetBytes(0);
+        Buffer.BlockCopy(nTokBytes, 0, completeState, 4, 4);
+        Buffer.BlockCopy(kvBuffer, 0, completeState, 8, kvBuffer.Length);
+
+        var dataStream = new MemoryStream(completeState);
+        await _llama.PutStateAsync(slotId, dataStream, (long)completeState.Length, ct);
+
+      // Query llama for actual n_past after restore (not from header or manifest).
+        var postRestoreMeta = await _llama.GetStateMetaAsync(slotId, ct);
+
+        _log.Information("Restored session {SessionId} slot {SlotId} in {Elapsed}ms",
+            sessionId, slotId, sw.ElapsedMilliseconds);
+
+        return new RestoreSessionResult(sessionId, slotId, true, postRestoreMeta.NPast, totalSize, sw.ElapsedMilliseconds);
     }
-}
 
-internal sealed class ChunkHashTeeStream : Stream
-{
+    internal sealed class ChunkHashTeeStream : Stream
+    {
     private readonly Stream _inner;
     private readonly List<string> _hashes;
     private readonly byte[] _buffer;
     private int _bufferPos;
+    private LocalChunkCache? _chunkCache;
+    private string _sessionId = "";
+
 
     public ChunkHashTeeStream(Stream inner, List<string> hashes, byte[] buffer)
+        : this(inner, hashes, buffer, null!, string.Empty)
+    {
+    }
+
+    public ChunkHashTeeStream(Stream inner, List<string> hashes, byte[] buffer,
+        LocalChunkCache? chunkCache, string sessionId)
     {
         _inner = inner;
         _hashes = hashes;
         _buffer = buffer;
+        _chunkCache = chunkCache;
+        _sessionId = sessionId;
     }
 
     public override bool CanRead => true;
@@ -224,7 +344,7 @@ internal sealed class ChunkHashTeeStream : Stream
     {
         var read = _inner.Read(buffer, offset, count);
         if (read > 0)
-            ComputeHashesForBuffer(buffer, offset, read);
+            ProcessRead(buffer, offset, read);
         return read;
     }
 
@@ -232,11 +352,11 @@ internal sealed class ChunkHashTeeStream : Stream
     {
         var read = await _inner.ReadAsync(buffer, offset, count, cancellationToken);
         if (read > 0)
-            ComputeHashesForBuffer(buffer, offset, read);
+            ProcessRead(buffer, offset, read);
         return read;
     }
 
-    private void ComputeHashesForBuffer(byte[] buffer, int offset, int count)
+    private void ProcessRead(byte[] buffer, int offset, int count)
     {
         var remaining = count;
         var bufOffset = offset;
@@ -254,6 +374,9 @@ internal sealed class ChunkHashTeeStream : Stream
             {
                 var hash = SHA256.HashData(_buffer.AsSpan(0, _buffer.Length));
                 _hashes.Add(Convert.ToHexStringLower(hash));
+                // Save chunk data locally for future partial-cache restore.
+                if (_chunkCache is not null && _sessionId != "")
+                    _chunkCache.SaveChunkData(_sessionId, Convert.ToHexStringLower(hash), _buffer);
                 _bufferPos = 0;
             }
         }
@@ -303,4 +426,6 @@ internal struct ValueStopwatch
             return elapsed * 1000 / Stopwatch.Frequency;
         }
     }
+}
+
 }

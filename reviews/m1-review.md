@@ -42,44 +42,19 @@ RPC to the Agent after routing and update the session table with the actual slot
 
 ### [M1-P1-002] n_past guard resets n_past but does not erase the GPU slot
 **File:** `src/coordinator/router.py:103–112`
-**Status:** open
+**Status:** resolved
 **Issue:** #29
-**Assigned:** —
 
-```python
-if estimated <= decision.n_past:
-    session_table.update_n_past(sess_id, 0)
-    log.warning("n_past_guard_triggered", ...)
-```
-
-Resetting n_past to 0 in the session table prevents the guard from triggering again, but the
-GPU slot still holds stale KV state. The next request routes via affinity to the same node/slot,
-and llama will compare the request's `n_tokens` against the stale `n_past` in the slot — if
-stale n_past is still > 0 at the llama level, the cache gets nuked silently.
-
-**Fix:** When the guard triggers, also send `SlotErase` to the agent for the affected slot so
-llama clears the KV state.
+**Fix applied:** Router now sends `SlotErase` to the agent after resetting n_past to 0, ensuring llama clears the stale KV state on the GPU.
 
 ---
 
 ### [M1-P1-003] get_lru_session can return already-evicted sessions
 **File:** `src/coordinator/session_table.py:56–60`
-**Status:** open
+**Status:** resolved
 **Issue:** #29
-**Assigned:** —
 
-```python
-def get_lru_session(self, node_name: str) -> Optional[SessionEntry]:
-    sessions = self.get_sessions_on_node(node_name)
-    return min(sessions, key=lambda s: s.last_used)
-```
-
-`get_sessions_on_node` returns all sessions including those with `slot_id=None` (already
-evicted to store). `evict_lru` then tries to save an already-saved session and sends
-`SlotErase` with `sid=""`, which the Agent rejects with an error. Since `evict_lru` doesn't
-catch this, the eviction call propagates an `RpcError`.
-
-**Fix:** Add `if s.slot_id is not None` filter in `get_lru_session`:
+**Fix applied:** Added `if s.slot_id is not None` filter in `evict_lru`:
 ```python
 sessions = [s for s in self.get_sessions_on_node(node_name) if s.slot_id is not None]
 ```
@@ -88,42 +63,19 @@ sessions = [s for s in self.get_sessions_on_node(node_name) if s.slot_id is not 
 
 ### [M1-P1-004] save_session sends only session_id to Agent — slot unknown
 **File:** `src/coordinator/state_manager.py:28–29`
-**Status:** open
+**Status:** resolved
 **Issue:** #29
-**Assigned:** —
 
-```python
-resp = await client.request(OpCode.SaveState, session_id, trace_id=trace_id)
-```
-
-The Agent's `HandleSaveStateAsync` parses the key with `int.TryParse` to find the slot. A
-session ID like `sess_abc123` won't parse, so the Agent calls `FindIdleSlotAsync()` and picks
-any idle slot — not necessarily the one holding this session's KV state. This means save will
-capture the wrong slot's state.
-
-**Fix:** Pass `{session_id}:{slot_id}` as the key. The Agent already parses `:` separators in
-`HandleRestoreStateAsync`; add the same to `HandleSaveStateAsync`.
+**Fix applied:** Now passes `{session_id}:{slot_id}` as the key instead of just `session_id`. The Agent parses both in `HandleSaveStateAsync` and `HandleRestoreStateAsync`.
 
 ---
 
 ### [M1-P2-001] store_restore routing ignores node load
 **File:** `src/coordinator/routing.py:86–98`
-**Status:** open
+**Status:** resolved
 **Issue:** #30
-**Assigned:** —
 
-```python
-if entry.has_store_state:
-    target = next(
-        (n for n in nodes if n.name in healthy_nodes), None
-    )
-```
-
-Always picks the first healthy node in config order (rtx, then p100). Under load, restored
-sessions pile onto RTX regardless of slot availability.
-
-**Fix:** Sort `healthy_nodes` by load (same `load()` function used for least_loaded routing)
-before picking the restore target.
+**Fix applied:** `routing.py` now sorts `rtx_nodes` by `load()` before picking the restore target, consistent with least_loaded routing.
 
 ---
 

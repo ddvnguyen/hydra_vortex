@@ -52,11 +52,17 @@ public sealed class StoreServer : RpcServer
 			case OpCode.GetChunked:
 				await HandleGetChunkedAsync(key, payloadLen, reader, writer, client, ct);
 				break;
+			case OpCode.GetManifest:
+				await HandleGetManifestAsync(key, writer, ct);
+				break;
 			case OpCode.SyncPlan:
 				await HandleSyncPlanAsync(key, payloadLen, reader, writer, ct);
 				break;
 			case OpCode.PushChunks:
 				await HandlePushChunksAsync(key, payloadLen, reader, writer, ct);
+				break;
+			case OpCode.PutMeta:
+				await HandlePutMetaAsync(key, reader, writer, ct);
 				break;
 			default:
 				await WriteErrorAsync(writer, $"Unknown opcode: {op}", ct);
@@ -220,32 +226,43 @@ public sealed class StoreServer : RpcServer
 				knownHashes = JsonSerializer.Deserialize<List<string>>(clientHashesJson) ?? [];
 			}
 
-			var missingHashes = _chunkStore.DiffPlan(manifest, knownHashes);
+			var missingChunks = _chunkStore.DiffPlanWithInfo(manifest, knownHashes);
 
 			long totalSize = 0;
-			foreach (var hash in missingHashes)
+			foreach (var mc in missingChunks)
 			{
-				var path = _chunkStore.GetChunkPath(hash);
+				var path = _chunkStore.GetChunkPath(mc.Hash);
 				if (path is null) continue;
 				totalSize += new FileInfo(path).Length;
 			}
 
-			var meta = $$"""{"missing_count":{{missingHashes.Count}},"total_size":{{totalSize}}}""";
+			var meta = $$"""{"missing_count":{{missingChunks.Count}},"total_size":{{totalSize}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
 
 			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, (ulong)totalSize, ct);
 			await WriteMetaAsync(writer, meta, ct);
 
-			foreach (var hash in missingHashes)
+			foreach (var mc in missingChunks)
 			{
-				var path = _chunkStore.GetChunkPath(hash);
+				var path = _chunkStore.GetChunkPath(mc.Hash);
 				if (path is null) continue;
-				await SendFileAsync(client, path, ct);
+
+				var chunkData = await File.ReadAllBytesAsync(path, ct);
+				// Write: [4B index][4B size][N bytes data]
+				var indexBytes = BitConverter.GetBytes(mc.Index);
+				var sizeBytes = BitConverter.GetBytes(chunkData.Length);
+				await writer.WriteAsync(indexBytes, ct);
+				writer.Advance(indexBytes.Length);
+				await writer.WriteAsync(sizeBytes, ct);
+				writer.Advance(sizeBytes.Length);
+				await writer.WriteAsync(chunkData, ct);
+				writer.Advance(chunkData.Length);
+				await writer.FlushAsync(ct);
 			}
 
 			StoreMetrics.OpsTotal.WithLabels("get_chunked").Inc();
 			StoreMetrics.BytesSent.Inc(totalSize);
-			StoreMetrics.ChunksSent.Inc(missingHashes.Count);
+			StoreMetrics.ChunksSent.Inc(missingChunks.Count);
 		}
 		catch (Exception ex)
 		{
@@ -336,8 +353,17 @@ public sealed class StoreServer : RpcServer
 			var existingManifest = await _chunkStore.LoadManifestAsync(key, ct);
 			if (existingManifest is null)
 			{
-				var manifest = ChunkEngine.CreateManifest(key, 0, totalPushedSize, chunkRefs);
+				int nPast = 0;
+				// Check for pre-stored n_past from PutMeta call.
+				var storedNpast = await _chunkStore.GetMetaAsync(key, "n_past", ct);
+				if (storedNpast.HasValue)
+					nPast = storedNpast.Value;
+
+				var manifest = ChunkEngine.CreateManifest(key, nPast, totalPushedSize, chunkRefs);
 				await _chunkStore.SaveManifestAsync(key, manifest, ct);
+
+				// Clean up the temp meta file.
+				await _chunkStore.SaveMetaAsync(key, "n_past", "", ct);
 			}
 
 			var meta = $$"""{"stored":{{stored}},"total":{{chunkRefs.Count}}}""";
@@ -351,6 +377,90 @@ public sealed class StoreServer : RpcServer
 		catch (Exception ex)
 		{
 			await WriteErrorAsync(writer, $"push_chunks failed: {ex.Message}", ct);
+		}
+	}
+
+	private async Task HandleGetManifestAsync(string key, PipeWriter writer, CancellationToken ct)
+	{
+		using var _ = StoreMetrics.OpDuration.WithLabels("get_manifest").NewTimer();
+
+		var manifest = await _chunkStore.LoadManifestAsync(key, ct);
+		if (manifest is null)
+		{
+			StoreMetrics.OpsTotal.WithLabels("get_manifest_not_found").Inc();
+			await WriteErrorAsync(writer, "not_found", ct, StatusCode.NotFound);
+			return;
+		}
+
+		var payload = JsonSerializer.SerializeToUtf8Bytes(new {
+			n_past = manifest.NPast,
+			total_size = manifest.TotalSize,
+			chunks = manifest.Chunks.Select(c => new { c.Index, c.Hash, c.Size })
+		});
+
+		var meta = $$"""{"chunk_count":{{manifest.Chunks.Count}}}""";
+		var metaBytes = Encoding.UTF8.GetBytes(meta);
+
+		await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, (ulong)payload.Length, ct);
+		await WriteMetaAsync(writer, meta, ct);
+		await writer.WriteAsync(payload, ct);
+		await writer.FlushAsync(ct);
+
+		StoreMetrics.OpsTotal.WithLabels("get_manifest").Inc();
+	}
+
+	private async Task HandlePutMetaAsync(string key, PipeReader reader, PipeWriter writer, CancellationToken ct)
+	{
+		using var _ = StoreMetrics.OpDuration.WithLabels("put_meta").NewTimer();
+
+		try
+		{
+			var payload = await ReadPayloadAsync(reader, 0, ct);
+
+			if (payload.Length == 0)
+			{
+				await WriteErrorAsync(writer, "empty payload", ct, StatusCode.BadRequest);
+				return;
+			}
+
+			using var doc = System.Text.Json.JsonDocument.Parse(payload);
+			if (!doc.RootElement.TryGetProperty("n_past", out var npEl))
+			{
+				await WriteErrorAsync(writer, "missing n_past in meta", ct, StatusCode.BadRequest);
+				return;
+			}
+
+			int nPast = npEl.GetInt32();
+
+			var manifest = await _chunkStore.LoadManifestAsync(key, ct);
+			if (manifest is not null)
+			{
+				var updated = new Manifest(
+					SessionId: manifest.SessionId,
+					Version: manifest.Version,
+					NPast: nPast,
+					TotalSize: manifest.TotalSize,
+					Chunks: manifest.Chunks,
+					CreatedAt: manifest.CreatedAt
+				);
+				await _chunkStore.SaveManifestAsync(key, updated, ct);
+			}
+			else
+			{
+				// Manifest doesn't exist yet (new save). Store n_past as temp metadata.
+				await _chunkStore.SaveMetaAsync(key, "n_past", nPast.ToString(), ct);
+			}
+
+			var meta = $$"""{"n_past":{{nPast}}}""";
+			var metaBytes = Encoding.UTF8.GetBytes(meta);
+			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+			await WriteMetaAsync(writer, meta, ct);
+
+			StoreMetrics.OpsTotal.WithLabels("put_meta").Inc();
+		}
+		catch (Exception ex)
+		{
+			await WriteErrorAsync(writer, $"put_meta failed: {ex.Message}", ct);
 		}
 	}
 

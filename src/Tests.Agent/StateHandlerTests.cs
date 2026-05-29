@@ -119,14 +119,23 @@ public sealed class StateHandlerTests : IAsyncLifetime
 
             if (path.Contains("/state"))
             {
-                Assert.Equal(HttpMethod.Put, request.Method);
+                if (request.Method == HttpMethod.Get)
+                {
+                    // GET_STATE_META handler.
+                    var metaResp = """{"n_past":2968,"n_tok":50000,"state_size":49992}""";
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(metaResp, Encoding.UTF8, "application/json"),
+                    };
+                }
+
+                // PUT_STATE handler.
                 restoredCalled = true;
                 receivedBody = await request.Content!.ReadAsByteArrayAsync(ct);
-
-                var resp = """{"restored":true,"n_past":2968,"bytes":50000}""";
+                var putResp = """{"restored":true,"n_past":2968,"size":50000}""";
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(resp, Encoding.UTF8, "application/json"),
+                    Content = new StringContent(putResp, Encoding.UTF8, "application/json"),
                 };
             }
 

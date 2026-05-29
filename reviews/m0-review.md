@@ -20,7 +20,7 @@ excessive flushes per response.
 
 ### [M0-P1-001] RpcClient retry logic never uses the last delay
 **File:** `src/Hydra.Shared/RpcClient.cs:149–186` (same pattern in all three catch blocks)
-**Status:** open
+**Status:** resolved
 **Issue:** #27
 **Assigned:** —
 
@@ -47,7 +47,7 @@ on the `when` guard to limit entries.
 
 ### [M0-P1-002] ReadPayloadAsync truncates long to int for large payloads
 **File:** `src/Hydra.Shared/RpcServer.cs:160`
-**Status:** open
+**Status:** resolved
 **Issue:** #27
 **Assigned:** —
 
@@ -67,7 +67,7 @@ payloads (JSON headers) and pipe large payloads directly.
 
 ### [M0-P2-001] _connections list has TOCTOU between Add and RemoveAll
 **File:** `src/Hydra.Shared/RpcServer.cs:53–56`
-**Status:** open
+**Status:** resolved
 **Issue:** #27
 **Assigned:** —
 
@@ -126,7 +126,7 @@ the llama fork as `X-Hydra-State-Size`), or hold a slot lock between meta and st
 
 ### [M0-P2-004] proxy.py appends non-standard SSE event after [DONE]
 **File:** `src/coordinator/proxy.py:56`
-**Status:** open
+**Status:** resolved
 **Issue:** #28
 **Assigned:** —
 

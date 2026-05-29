@@ -31,6 +31,7 @@ public enum OpCode : byte
     GetChunked    = 0x11,
     SyncPlan      = 0x12,
     PushChunks    = 0x13,
+    PutMeta       = 0x14,
     SaveState     = 0x20,
     RestoreState  = 0x21,
     SlotStatus    = 0x22,
@@ -40,8 +41,9 @@ public enum OpCode : byte
     SaveStateChunked    = 0x26,
     RestoreStateChunked = 0x27,
     StateGet      = 0x30,
-    StatePut      = 0x31,
+StatePut      = 0x31,
     StateMeta     = 0x32,
+    GetManifest   = 0x33,
 }
 
 public enum StatusCode : byte
@@ -49,6 +51,7 @@ public enum StatusCode : byte
     Ok         = 0x00,
     NotFound   = 0x01,
     Error      = 0x02,
+    BadRequest = 0x05,
     Partial    = 0x03,
     Busy       = 0x04,
 }

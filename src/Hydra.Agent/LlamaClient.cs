@@ -76,8 +76,10 @@ public sealed class LlamaClient : IDisposable
             $"{_baseUrl}/slots/{slotId}/state", content, ct);
         response.EnsureSuccessStatusCode();
 
-        var result = await response.Content.ReadFromJsonAsync<RestoreResult>(
-            (JsonSerializerOptions?)null, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (string.IsNullOrEmpty(body))
+            return new RestoreResult { Restored = false };
+        var result = JsonSerializer.Deserialize<RestoreResult>(body);
         return result ?? new RestoreResult { Restored = false };
     }
 

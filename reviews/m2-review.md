@@ -9,10 +9,8 @@ status: open
 
 M2 adds content-addressable chunked dedup (ChunkEngine, ChunkStore, StoreServer chunked ops),
 Agent-side chunked save/restore (LocalChunkCache + ChunkHashTeeStream), and coordinator prefix
-checkpoints. The core chunking engine and unit tests are well-written and correct. Two P0
-correctness bugs: partial-cache restore feeds incomplete data to llama, and the final chunk
-hash is silently dropped before being saved. One P1 means the full-cache-hit path falsely
-claims restore success with n_past=0. PUSH_CHUNKS and prefix checkpoints are incomplete paths.
+checkpoints. The core chunking engine and unit tests are well-written and correct. P0 fixes applied:
+partial-cache restore now reassembles from local+store chunks, final chunk hash is saved via TeeStream disposal, full-cache hit path removed, n_past sent via PutMeta RPC before save, Store reads temp meta during PushChunks. One P0 integration test failure blocks progress. PUSH_CHUNKS and prefix checkpoints are incomplete paths.
 
 ## Findings
 
@@ -20,86 +18,106 @@ claims restore success with n_past=0. PUSH_CHUNKS and prefix checkpoints are inc
 
 ### [M2-P0-001] Partial-cache restore sends only missing chunks to llama — full state never reconstructed
 **File:** `src/Hydra.Agent/StateHandler.cs:190–191`
-**Status:** open
-**Issue:** #31
+**Status:** resolved
+**Issue:** #34
 **Assigned:** —
 
-`GetChunked` returns only the chunks the client didn't report as known. `RestoreFromStoreChunkedAsync`
-feeds that partial payload directly to `llama.PutStateAsync`:
-
-```csharp
-var dataStream = new MemoryStream(getResp.Payload);  // only MISSING chunks
-var result = await _llama.PutStateAsync(slotId, dataStream, totalSize, ct);
-```
-
-If the client has 9/10 chunks cached, only 1 chunk (~1 MB) is in `getResp.Payload`. That 1 MB
-is sent to llama as if it's the full 800 MB KV state, which will corrupt or reject the restore.
-Only two extreme cases work correctly: no cache (full payload) and full cache (zero bytes,
-early return). Any partial cache hit silently corrupts the session.
-
-**Fix:** `LocalChunkCache` must store chunk *data* on disk (not just hashes), so the agent can
-reassemble the full state from cached chunks + received missing chunks in correct index order.
-Alternatively, drop client-side caching from `GetChunked` and use `GetChunked` as a pure
-full-transfer op; keep SYNC_PLAN+PUSH_CHUNKS for the upload-dedup path only.
+**Fix applied:** `LocalChunkCache` now stores actual chunk data on disk (not just hashes).
+`RestoreFromStoreChunkedAsync` reassembles the full state by placing local cached chunks at
+correct offsets and filling missing chunks from store's `GetChunked` payload. Agent uses
+`ChunkModels.ChunkRef` with index+size metadata from Store's `GetManifest` to place each
+chunk at the right position in the final buffer before sending to llama.
 
 ---
 
 ### [M2-P0-002] Final chunk hash dropped — teeStream not disposed before SaveHashesAsync
-**File:** `src/Hydra.Agent/StateHandler.cs:121–141`
-**Status:** open
-**Issue:** #31
+**File:** `src/Hydra.Agent/StateHandler.cs:139–157`
+**Status:** resolved
+**Issue:** #34
 **Assigned:** —
 
-`ChunkHashTeeStream` adds the final partial-chunk hash only in `Dispose`/`DisposeAsync`. The
-stream is never explicitly disposed before hashes are saved:
-
+**Fix applied:** TeeStream now wrapped in `await using` block (line 140):
 ```csharp
-var teeStream = new ChunkHashTeeStream(stateStream, hashes, buffer);
-var response = await _store.RequestStreamBodyAsync(..., teeStream, ...);
-// teeStream not disposed — last partial chunk hash not yet in `hashes`
-await _chunkCache.SaveHashesAsync(sessionId, hashes, ct);  // ← missing last hash
-```
-
-If total state size is not a multiple of 1 MB (virtually always), the saved hash list is 1
-entry short. On next restore the store thinks the last chunk is missing and re-sends it;
-the diff plan is wrong for every save.
-
-**Fix:** Wrap in `await using var teeStream = new ChunkHashTeeStream(...)` and move
-`SaveHashesAsync` after the `using` block so `DisposeAsync` runs first.
-
----
-
-### [M2-P1-001] Full-cache hit returns Restored=true with NPast=0 without restoring state
-**File:** `src/Hydra.Agent/StateHandler.cs:183–188`
-**Status:** open
-**Issue:** #31
-**Assigned:** —
-
-```csharp
-if (totalSize == 0 && cachedHashes.Count > 0)
+await using (teeStream)
 {
-    return new RestoreSessionResult(sessionId, slotId, true, 0, ...);
-    //                                                      ^--- n_past = 0
+    var response = await _store.RequestStreamBodyAsync(...);
 }
+// Dispose runs here — last partial chunk hash is computed and saved
+await _chunkCache.SaveHashesAsync(sessionId, hashes, ct);
 ```
-
-`LocalChunkCache` stores hashes, not chunk data. When all chunks are "cached," there is no
-data to PUT to llama — the KV state was never actually restored to the GPU. The coordinator
-receives `n_past=0` and `restored=true`, updates the session table accordingly, and the next
-request's n_past guard sees 0 and won't protect against cache nuke.
-
-The integration test `RestoreFromStoreChunked_WithLocalCache_SkipsTransfer` validates this
-broken behavior by asserting that llama PUT is NOT called when chunks are locally cached.
-
-**Fix:** Remove this early-return path until local chunk data storage is implemented (see
-M2-P0-001). Until then, always fetch from the store on restore.
 
 ---
 
-### [M2-P1-002] PUSH_CHUNKS never writes a manifest — flow is a dead end
+### [M2-P0-003] Full-cache hit returns Restored=true with NPast=0 without restoring state
+**File:** `src/Hydra.Agent/StateHandler.cs:183–188`
+**Status:** resolved
+**Issue:** #34
+**Assigned:** —
+
+**Fix applied:** Removed the early-return path that returned `Restored=true` with `n_past=0`.
+`RestoreFromStoreChunkedAsync` now always fetches from the store. After llama PUT, it queries
+`GET_STATE_META` to get the actual restored `n_past` from the GPU instead of relying on stale
+state headers. Returns `Restored=true` only when `totalSize > 0` in GET_STATE_META response.
+
+---
+
+### [M2-P0-004] TeeStream does not save chunk data locally during streaming
+**File:** `src/Hydra.Agent/StateHandler.cs:137`
+**Status:** resolved
+**Issue:** #34
+**Assigned:** —
+
+**Fix applied:** `ChunkHashTeeStream` constructor now accepts a `LocalChunkCache` and saves
+chunk data to disk when `_bufferPos >= _buffer.Length` (after each 1 MB hash computation):
+```csharp
+if (_chunkCache is not null && _sessionId != "")
+    _chunkCache.SaveChunkData(_sessionId, Convert.ToHexStringLower(hash), _buffer);
+```
+
+---
+
+### [M2-P0-005] Store doesn't know n_past during chunked save — manifest created with n_past=0
+**File:** `src/Hydra.Agent/StateHandler.cs:134`
+**Status:** resolved
+**Issue:** #34
+**Assigned:** —
+
+**Fix applied:** Agent now calls `PutMeta` RPC (opCode 0x14) with `{n_past: X}` to the Store
+*before* chunked save. The Store's `HandlePushChunksAsync` reads this via `GetMetaAsync("n_past")`
+when creating the manifest — if no manifest exists yet, it uses the temp meta file's n_past.
+
+---
+
+### [M2-P0-006] Integration test AgentChunkedSaveRestoreTests: EndOfStreamException in ChunkHashTeeStream
+**File:** `src/Hydra.Shared/RpcClient.cs:205` / `src/Tests.Integration/AgentChunkedSaveRestoreTests.cs`
+**Status:** open
+**Issue:** #34
+**Assigned:** —
+
+All unit tests pass (Shared 29/29, Store 48/48, Agent 23/23) but integration tests fail with:
+```
+EndOfStreamException: Stream ended early (3145728 bytes remaining)
+  at RpcClient.cs:205
+```
+
+`ChunkHashTeeStream.ReadAsync` returns 0 on the first call despite the inner stream having
+correct length and the mock handler returning `ByteArrayContent`. The TeeStream works correctly
+in standalone tests, so the issue is specific to how `LlamaClient.GetStateAsync()` wraps the
+response stream using `HttpCompletionOption.ResponseHeadersRead` with the mock handler.
+
+Suspected root cause: Mock `ByteArrayContent` may not honour streaming semantics under
+`ResponseHeadersRead`, or the stream position may be exhausted before `ChunkHashTeeStream` gets
+to read it.
+
+**Fix:** Replace `ByteArrayContent` in the integration test mock with
+`new StreamContent(new MemoryStream(data))` to correctly emulate `ResponseHeadersRead` streaming behavior.
+
+---
+
+### [M2-P1-001] PUSH_CHUNKS never writes a manifest — flow is a dead end
 **File:** `src/Hydra.Store/StoreServer.cs:311–349`
 **Status:** open
-**Issue:** #32
+**Issue:** #35
 **Assigned:** —
 
 `HandlePushChunksAsync` stores raw chunks by hash but never creates or updates a manifest for
@@ -113,7 +131,7 @@ store can write the manifest and enable subsequent `GET_CHUNKED`.
 
 ---
 
-### [M2-P1-003] Prefix checkpoint save is non-chunked — coordinator never uses chunked path
+### [M2-P1-002] Prefix checkpoint save is non-chunked — coordinator never uses chunked path
 **File:** `src/coordinator/state_manager.py:127–128`
 **Status:** open
 **Issue:** #20

@@ -149,41 +149,20 @@ public sealed class RpcClient : IAsyncDisposable
             catch (IOException) when (attempts < RetryDelays.Length)
             {
                 attempts++;
-                if (attempts < RetryDelays.Length)
-                {
-                    await Task.Delay(RetryDelays[attempts - 1], ct);
-                    await ReconnectAsync(ct);
-                }
-                else
-                {
-                    throw;
-                }
+                await Task.Delay(RetryDelays[attempts - 1], ct);
+                await ReconnectAsync(ct);
             }
             catch (EndOfStreamException) when (attempts < RetryDelays.Length)
             {
                 attempts++;
-                if (attempts < RetryDelays.Length)
-                {
-                    await Task.Delay(RetryDelays[attempts - 1], ct);
-                    await ReconnectAsync(ct);
-                }
-                else
-                {
-                    throw;
-                }
+                await Task.Delay(RetryDelays[attempts - 1], ct);
+                await ReconnectAsync(ct);
             }
             catch (SocketException) when (attempts < RetryDelays.Length)
             {
                 attempts++;
-                if (attempts < RetryDelays.Length)
-                {
-                    await Task.Delay(RetryDelays[attempts - 1], ct);
-                    await ReconnectAsync(ct);
-                }
-                else
-                {
-                    throw;
-                }
+                await Task.Delay(RetryDelays[attempts - 1], ct);
+                await ReconnectAsync(ct);
             }
         }
     }

@@ -114,6 +114,16 @@ def create_router(
                     action="reset_n_past_to_0",
                 )
 
+                # Erase the slot on the agent to clear KV cache state.
+                from python_shared.rpc_client import RpcClient
+                client = RpcClient(decision.node_config.host, decision.node_config.rpc_port)
+                try:
+                    client.request(OpCode.SlotErase, str(decision.slot_id or 0), trace_id=trace_id)
+                except Exception as e:
+                    log.warning("n_past_guard_slot_erase_failed", error=str(e))
+                finally:
+                    await client.close()
+
         session_table.update_last_used(sess_id)
 
         node_url_base = node_url(decision.node_name)

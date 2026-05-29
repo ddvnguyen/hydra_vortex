@@ -13,6 +13,7 @@ public abstract class RpcServer : IAsyncDisposable
 	private TcpListener? _listener;
 	private readonly CancellationTokenSource _stopCts = new();
 	private readonly List<Task> _connections = [];
+	private readonly object _connectionsLock = new();
 	private bool _disposed;
 
 	public int Port { get; private set; }
@@ -51,14 +52,20 @@ public abstract class RpcServer : IAsyncDisposable
 			}
 
 			var connTask = HandleConnectionAsync(tcpClient, token);
-			_connections.Add(connTask);
+			lock (_connectionsLock)
+			{
+				_connections.Add(connTask);
+			}
 			_ = connTask.ContinueWith(_ => CleanConnections(), TaskScheduler.Default);
 		}
 	}
 
 	private void CleanConnections()
 	{
-		_connections.RemoveAll(t => t.IsCompleted);
+		lock (_connectionsLock)
+		{
+			_connections.RemoveAll(t => t.IsCompleted);
+		}
 	}
 
 	private async Task HandleConnectionAsync(TcpClient tcpClient, CancellationToken ct)
@@ -157,10 +164,18 @@ public abstract class RpcServer : IAsyncDisposable
 		if (payloadLen <= 0)
 			return [];
 
-		var result = await reader.ReadAtLeastAsync((int)payloadLen, ct);
-		var buf = result.Buffer.Slice(0, payloadLen);
-		var data = buf.ToArray();
-		reader.AdvanceTo(result.Buffer.GetPosition(payloadLen));
+		var data = new byte[payloadLen];
+		int offset = 0;
+		while (offset < data.Length)
+		{
+			var remaining = payloadLen - offset;
+			var result = await reader.ReadAtLeastAsync((int)remaining, ct);
+			var buf = result.Buffer;
+			var toCopy = Math.Min(buf.Length, data.Length - offset);
+			buf.Slice(0, toCopy).CopyTo(data.AsSpan(offset));
+			offset += (int)toCopy;
+			reader.AdvanceTo(buf.GetPosition(toCopy));
+		}
 		return data;
 	}
 
@@ -204,7 +219,7 @@ public abstract class RpcServer : IAsyncDisposable
 
 	public async ValueTask DisposeAsync()
 	{
-		lock (_connectLock)
+		lock (_connectionsLock)
 		{
 			if (_disposed) return;
 			_disposed = true;
@@ -213,7 +228,13 @@ public abstract class RpcServer : IAsyncDisposable
 		await _stopCts.CancelAsync();
 		_listener?.Stop();
 
-		if (_connections.Count > 0)
+		Task? waitTask;
+		lock (_connectionsLock)
+		{
+			waitTask = _connections.Count > 0 ? Task.WhenAll(_connections) : null;
+		}
+
+		if (waitTask is not null)
 		{
 			using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 			try

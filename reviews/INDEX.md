@@ -6,11 +6,11 @@ All reviews for the Hydra project. Read this file first to understand current he
 
 | Milestone | File | Date | Reviewer | Status | Open P0 | Open P1 | Open P2 |
 |-----------|------|------|----------|--------|---------|---------|---------|
-| M0 | [m0-review.md](m0-review.md) | 2026-05-28 | claude-sonnet-4-6 | open | 0 | 2 | 3 |
-| M1 | [m1-review.md](m1-review.md) | 2026-05-28 | claude-sonnet-4-6 | open | 0 | 4 | 4 |
-| M2 | [m2-review.md](m2-review.md) | 2026-05-28 | claude-sonnet-4-6 | open | 2 | 3 | 5 |
+| M0 | [m0-review.md](m0-review.md) | 2026-05-28 | claude-sonnet-4-6 | open | 0 | 0 | 2 |
+| M1 | [m1-review.md](m1-review.md) | 2026-05-28 | claude-sonnet-4-6 | open | 0 | 1 | 3 |
+| M2 | [m2-review.md](m2-review.md) | 2026-05-29 | claude-sonnet-4-6 | open | 1 | 2 | 5 |
 
-**Total open:** 2 P0, 9 P1, 12 P2
+**Total open:** 1 P0, 3 P1, 10 P2
 
 ## Finding IDs
 

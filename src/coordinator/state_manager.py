@@ -29,13 +29,12 @@ class StateManager:
         client = self._agent_client(node_host, node_port)
         try:
             resp = await client.request(OpCode.SaveStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
-            entry = self._session_table.lookup(session_id)
+            n_past = resp.meta.get("n_past", 0) if resp.meta else entry.n_past if entry else 0
             if entry:
-                n_past = resp.meta.get("n_past", entry.n_past)
                 self._session_table.update_n_past(session_id, n_past)
                 self._session_table.mark_evicted(session_id)
             log.info("state_saved", session_id=session_id, meta=resp.meta)
-            return resp.meta
+            return resp.meta or {}
         finally:
             await client.close()
 
@@ -43,19 +42,22 @@ class StateManager:
         self, session_id: str, target_host: str, target_port: int
     ) -> dict:
         trace_id = new_trace_id()
+        entry = self._session_table.lookup(session_id)
+        slot_id = entry.slot_id if entry and entry.slot_id is not None else 0
         client = self._agent_client(target_host, target_port)
         try:
-            resp = await client.request(OpCode.RestoreStateChunked, session_id, trace_id=trace_id)
-            slot_id = resp.meta.get("slot_id")
-            n_past = resp.meta.get("n_past", 0)
-            entry = self._session_table.lookup(session_id)
+            resp = await client.request(OpCode.RestoreStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
+            restored = resp.meta.get("restored", False) if resp.meta else False
+            n_past = resp.meta.get("n_past", 0) if resp.meta else 0
+            slot_id = resp.meta.get("slot_id", slot_id) if resp.meta else slot_id
+            node_name = resp.meta.get("node_name", entry.node_name if entry else target_host) if resp.meta else (entry.node_name if entry else target_host)
             if entry:
-                entry.node_name = resp.meta.get("node_name", entry.node_name)
+                entry.node_name = node_name
                 entry.slot_id = slot_id
                 entry.n_past = n_past
-                entry.has_store_state = False
+                entry.has_store_state = not restored
             log.info("state_restored", session_id=session_id, slot_id=slot_id, n_past=n_past)
-            return resp.meta
+            return resp.meta or {}
         finally:
             await client.close()
 
@@ -96,7 +98,7 @@ class StateManager:
         self, node_name: str, node_host: str, node_port: int
     ) -> int | None:
         entry = self._session_table.get_lru_session(node_name)
-        if not entry:
+        if not entry or entry.slot_id is None:
             return None
 
         log.info("evict_lru", session_id=entry.session_id, node=node_name)
