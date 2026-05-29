@@ -1,0 +1,42 @@
+groups:
+  m0-rpc-protocol:
+    title: "[M0] RPC Protocol Layer — retry, overflow, connections, flush"
+    labels: [review-finding, p1-high, milestone-m0]
+    findings: [M0-P1-001, M0-P1-002, M0-P2-001, M0-P2-002]
+
+  m0-agent-proxy:
+    title: "[M0] Agent state TOCTOU + Coordinator proxy"
+    labels: [review-finding, p2-low, milestone-m0]
+    findings: [M0-P2-003, M0-P2-004]
+
+  m1-session-slots:
+    title: "[M1] Session & slot management"
+    labels: [review-finding, p1-high, milestone-m1]
+    findings: [M1-P1-001, M1-P1-002, M1-P1-003, M1-P1-004]
+
+  m1-routing-health:
+    title: "[M1] Load routing, health monitor & proxy"
+    labels: [review-finding, p2-low, milestone-m1]
+    findings: [M1-P2-001, M1-P2-002, M1-P2-003, M1-P2-004]
+
+  m2-chunked-restore:
+    title: "[M2] Chunked restore path — P0 correctness"
+    labels: [review-finding, p0-critical, milestone-m2]
+    findings: [M2-P0-001, M2-P0-002, M2-P1-001]
+
+  m2-store-streaming:
+    title: "[M2] Store streaming & PUSH_CHUNKS manifest"
+    labels: [review-finding, p1-high, milestone-m2]
+    findings: [M2-P1-002, M2-P2-001, M2-P2-002, M2-P2-003]
+    note: "Resolve before m2-prefix-checkpoints"
+
+  m2-prefix-checkpoints:
+    title: "[M2] Prefix checkpoints — coordinator chunked path"
+    labels: [review-finding, p1-high, milestone-m2]
+    findings: [M2-P1-003]
+    depends_on: m2-store-streaming
+
+  m2-protocol-tests:
+    title: "[M2] Protocol design & test quality"
+    labels: [review-finding, p2-low, milestone-m2]
+    findings: [M2-P2-004, M2-P2-005]

@@ -21,7 +21,7 @@ claims restore success with n_past=0. PUSH_CHUNKS and prefix checkpoints are inc
 ### [M2-P0-001] Partial-cache restore sends only missing chunks to llama — full state never reconstructed
 **File:** `src/Hydra.Agent/StateHandler.cs:190–191`
 **Status:** open
-**Issue:** #16
+**Issue:** #31
 **Assigned:** —
 
 `GetChunked` returns only the chunks the client didn't report as known. `RestoreFromStoreChunkedAsync`
@@ -47,7 +47,7 @@ full-transfer op; keep SYNC_PLAN+PUSH_CHUNKS for the upload-dedup path only.
 ### [M2-P0-002] Final chunk hash dropped — teeStream not disposed before SaveHashesAsync
 **File:** `src/Hydra.Agent/StateHandler.cs:121–141`
 **Status:** open
-**Issue:** #17
+**Issue:** #31
 **Assigned:** —
 
 `ChunkHashTeeStream` adds the final partial-chunk hash only in `Dispose`/`DisposeAsync`. The
@@ -72,7 +72,7 @@ the diff plan is wrong for every save.
 ### [M2-P1-001] Full-cache hit returns Restored=true with NPast=0 without restoring state
 **File:** `src/Hydra.Agent/StateHandler.cs:183–188`
 **Status:** open
-**Issue:** #18
+**Issue:** #31
 **Assigned:** —
 
 ```csharp
@@ -99,7 +99,7 @@ M2-P0-001). Until then, always fetch from the store on restore.
 ### [M2-P1-002] PUSH_CHUNKS never writes a manifest — flow is a dead end
 **File:** `src/Hydra.Store/StoreServer.cs:311–349`
 **Status:** open
-**Issue:** #19
+**Issue:** #32
 **Assigned:** —
 
 `HandlePushChunksAsync` stores raw chunks by hash but never creates or updates a manifest for
@@ -135,7 +135,7 @@ chunks even when they have the same system prompt.
 ### [M2-P2-001] Dead variable missingMeta computed but never sent
 **File:** `src/Hydra.Store/StoreServer.cs:237–242`
 **Status:** open
-**Issue:** #21
+**Issue:** #32
 **Assigned:** —
 
 ```csharp
@@ -159,7 +159,7 @@ in `GetChunked` responses.
 ### [M2-P2-002] GetChunked reads all missing chunks into memory before streaming
 **File:** `src/Hydra.Store/StoreServer.cs:228–234`
 **Status:** open
-**Issue:** #22
+**Issue:** #32
 **Assigned:** —
 
 ```csharp
@@ -180,7 +180,7 @@ the response header based on pre-computed file sizes (via `FileInfo.Length`), th
 ### [M2-P2-003] StoreChunk uses synchronous File.WriteAllBytes
 **File:** `src/Hydra.Store/ChunkStore.cs:43`
 **Status:** open
-**Issue:** #23
+**Issue:** #32
 **Assigned:** —
 
 ```csharp
@@ -196,7 +196,7 @@ Should be `await File.WriteAllBytesAsync(path, data, ct)` — requires changing 
 ### [M2-P2-004] Dedup integration test assertion is a tautology
 **File:** `src/Tests.Integration/ChunkedStoreIntegrationTests.cs:116`
 **Status:** open
-**Issue:** #24
+**Issue:** #33
 **Assigned:** —
 
 ```csharp
@@ -217,7 +217,7 @@ Assert.Equal(10, secondDeduped);  // first 10 chunks matched from first save
 ### [M2-P2-005] AgentServer reuses Store opcodes PutChunked/GetChunked
 **File:** `src/Hydra.Agent/AgentServer.cs:54–58`
 **Status:** open
-**Issue:** #25
+**Issue:** #33
 **Assigned:** —
 
 `OpCode.PutChunked` (0x10) and `GetChunked` (0x11) mean "store-level chunk operations" in the

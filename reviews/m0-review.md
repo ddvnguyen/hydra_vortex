@@ -21,7 +21,7 @@ excessive flushes per response.
 ### [M0-P1-001] RpcClient retry logic never uses the last delay
 **File:** `src/Hydra.Shared/RpcClient.cs:149–186` (same pattern in all three catch blocks)
 **Status:** open
-**Issue:** #2
+**Issue:** #27
 **Assigned:** —
 
 The `when (attempts < RetryDelays.Length)` guard and the inner `if (attempts < RetryDelays.Length)`
@@ -48,7 +48,7 @@ on the `when` guard to limit entries.
 ### [M0-P1-002] ReadPayloadAsync truncates long to int for large payloads
 **File:** `src/Hydra.Shared/RpcServer.cs:160`
 **Status:** open
-**Issue:** #3
+**Issue:** #27
 **Assigned:** —
 
 ```csharp
@@ -68,7 +68,7 @@ payloads (JSON headers) and pipe large payloads directly.
 ### [M0-P2-001] _connections list has TOCTOU between Add and RemoveAll
 **File:** `src/Hydra.Shared/RpcServer.cs:53–56`
 **Status:** open
-**Issue:** #4
+**Issue:** #27
 **Assigned:** —
 
 ```csharp
@@ -90,7 +90,7 @@ in both paths.
 ### [M0-P2-002] Multiple flushes per response add unnecessary syscalls
 **File:** `src/Hydra.Shared/RpcServer.cs:167–183`
 **Status:** open
-**Issue:** #5
+**Issue:** #27
 **Assigned:** —
 
 `WriteResponseHeaderAsync` flushes after the 12-byte header. `WriteMetaAsync` flushes after
@@ -105,7 +105,7 @@ written. The `PipeWriter` buffers internally until flushed.
 ### [M0-P2-003] StateHandler TOCTOU between GetStateMetaAsync and GetStateAsync
 **File:** `src/Hydra.Agent/StateHandler.cs:46–48`
 **Status:** open
-**Issue:** #6
+**Issue:** #28
 **Assigned:** —
 
 ```csharp
@@ -127,7 +127,7 @@ the llama fork as `X-Hydra-State-Size`), or hold a slot lock between meta and st
 ### [M0-P2-004] proxy.py appends non-standard SSE event after [DONE]
 **File:** `src/coordinator/proxy.py:56`
 **Status:** open
-**Issue:** #7
+**Issue:** #28
 **Assigned:** —
 
 ```python
