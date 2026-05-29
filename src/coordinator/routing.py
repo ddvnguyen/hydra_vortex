@@ -68,11 +68,17 @@ def route_request(
     if not healthy_nodes:
         raise RuntimeError("No healthy nodes available")
 
-    rtux_nodes = {
+    rtx_nodes = {
         name: info
         for name, info in healthy_nodes.items()
         if info.get("gpu_type") == "rtx5060ti"
     }
+
+    def load(node_name: str) -> int:
+        info = healthy_nodes.get(node_name, {})
+        total = info.get("slots_total", 1)
+        idle = info.get("slots_idle", 0)
+        return total - idle
 
     if entry:
         if entry.node_name in healthy_nodes:
@@ -89,9 +95,11 @@ def route_request(
                 )
 
         if entry.has_store_state:
-            target = next(
-                (n for n in nodes if n.name in healthy_nodes), None
+            sorted_healthy = sorted(
+                (n for n in nodes if n.name in healthy_nodes),
+                key=lambda n: load(n.name),
             )
+            target = sorted_healthy[0] if sorted_healthy else None
             if target:
                 return RoutingDecision(
                     node_name=target.name,
@@ -103,8 +111,8 @@ def route_request(
                 )
 
     estimated = estimate_request_tokens(request_messages, chars_per_token)
-    if estimated >= long_prompt_threshold and rtux_nodes:
-        target_name = next(iter(rtux_nodes))
+    if estimated >= long_prompt_threshold and rtx_nodes:
+        target_name = next(iter(rtx_nodes))
         node_cfg = next(n for n in nodes if n.name == target_name)
         return RoutingDecision(
             node_name=target_name,
@@ -112,12 +120,6 @@ def route_request(
             action="route",
             session_id=session_id,
         )
-
-    def load(node_name: str) -> int:
-        info = healthy_nodes.get(node_name, {})
-        total = info.get("slots_total", 1)
-        idle = info.get("slots_idle", 0)
-        return total - idle
 
     sorted_healthy = sorted(healthy_nodes.keys(), key=load)
 
