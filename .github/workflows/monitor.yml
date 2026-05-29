@@ -1,0 +1,29 @@
+name: Monitor — Alerts to Issues
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  alert-to-issues:
+    name: Sync Prometheus alerts to GitHub issues
+    runs-on: self-hosted
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python deps
+        run: pip install -e ".[dev]" --quiet
+
+      - name: Sync firing alerts to issues
+        run: python scripts/create_monitoring_issues.py
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMETHEUS_URL: http://localhost:9091
+          GRAFANA_URL: http://localhost:3000
+          MONITOR_MIN_SEVERITY: critical

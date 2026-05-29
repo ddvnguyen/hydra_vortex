@@ -59,6 +59,34 @@ Build RTX: GGML_CUDA_FORCE_CUBLAS=ON, sm_120. Build P100: sm_60.
 | M2 | Chunked dedup + prefix checkpoints            | 1 week    |
 | M3 | Persistence + Grafana + Langfuse              | 1-2 weeks |
 
+## GitHub Workflow (MANDATORY for all coding agents)
+
+The full development cycle: **feature → issue → implement → review → merge → deploy → monitoring → (problem → issue)**
+
+### Review → Issue
+After writing or updating `reviews/mN-review.md`:
+```bash
+python scripts/sync_reviews_to_github.py
+```
+Creates GitHub issues for all new open findings and writes `**Issue:** #N` back into the review file. Idempotent — safe to re-run. The `reviews.yml` GitHub Actions workflow also runs this automatically on push.
+
+### Fix → Branch → PR
+1. Read `reviews/INDEX.md` and `reviews/mN-review.md` — note `**Issue:** #N` for the finding to fix
+2. Create a branch from the issue:
+   ```bash
+   gh issue develop N --name fix/MN-Psev-seq
+   ```
+3. Implement the fix; mark `**Status:** resolved` in the review file; update `INDEX.md` counts
+4. Create the PR:
+   ```bash
+   gh pr create --title "fix: [MN-Psev-seq] short title" --body "Closes #N"
+   ```
+5. Add `**PR:** #M` to the finding block in the review file
+
+### Monitoring issues
+Auto-created by `monitor.yml` (Prometheus alerts) and `ci.yml` failure handlers.
+Do not manually close a monitoring issue without investigating the root cause.
+
 ## Starting Point
 1. M0.0 first: fork llama.cpp, add 3 endpoints (~80 lines C++), verify with curl
 2. Then M0.1: Hydra.Shared (C# RPC library) — everything else depends on it

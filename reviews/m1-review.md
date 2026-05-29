@@ -21,6 +21,7 @@ healthy node ignoring load.
 ### [M1-P1-001] All new sessions registered with slot_id=0
 **File:** `src/coordinator/router.py:94–96`
 **Status:** open
+**Issue:** #8
 **Assigned:** —
 
 ```python
@@ -42,6 +43,7 @@ RPC to the Agent after routing and update the session table with the actual slot
 ### [M1-P1-002] n_past guard resets n_past but does not erase the GPU slot
 **File:** `src/coordinator/router.py:103–112`
 **Status:** open
+**Issue:** #9
 **Assigned:** —
 
 ```python
@@ -63,6 +65,7 @@ llama clears the KV state.
 ### [M1-P1-003] get_lru_session can return already-evicted sessions
 **File:** `src/coordinator/session_table.py:56–60`
 **Status:** open
+**Issue:** #10
 **Assigned:** —
 
 ```python
@@ -86,6 +89,7 @@ sessions = [s for s in self.get_sessions_on_node(node_name) if s.slot_id is not 
 ### [M1-P1-004] save_session sends only session_id to Agent — slot unknown
 **File:** `src/coordinator/state_manager.py:28–29`
 **Status:** open
+**Issue:** #11
 **Assigned:** —
 
 ```python
@@ -105,6 +109,7 @@ capture the wrong slot's state.
 ### [M1-P2-001] store_restore routing ignores node load
 **File:** `src/coordinator/routing.py:86–98`
 **Status:** open
+**Issue:** #12
 **Assigned:** —
 
 ```python
@@ -125,6 +130,7 @@ before picking the restore target.
 ### [M1-P2-002] rtux_nodes typo — variable is misspelled
 **File:** `src/coordinator/routing.py:66`
 **Status:** open
+**Issue:** #13
 **Assigned:** —
 
 ```python
@@ -141,6 +147,7 @@ function, but misleads readers.
 ### [M1-P2-003] Health monitor startup race — nodes marked unhealthy until first poll
 **File:** `src/coordinator/health.py:45–67`
 **Status:** open
+**Issue:** #14
 **Assigned:** —
 
 `NodeInfo` initializes with `healthy=False`. `start()` creates the background poll task but
@@ -160,6 +167,7 @@ async def start(self):
 ### [M1-P2-004] proxy.py creates a new httpx.AsyncClient per request
 **File:** `src/coordinator/proxy.py:9–56`
 **Status:** open
+**Issue:** #15
 **Assigned:** —
 
 Both `proxy_completion` and `proxy_completion_stream` use `async with httpx.AsyncClient() as client:`.

@@ -5,6 +5,9 @@ on:
     branches: ["**"]
   pull_request:
     branches: [main]
+  push:
+    tags:
+      - "llama.cpp*"
   workflow_dispatch:
     inputs:
       run-e2e-full:
@@ -15,10 +18,19 @@ on:
         options:
           - "false"
           - "true"
+      deploy-llama:
+        description: "Deploy llama-server to RTX + P100"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   checks: write
   contents: read
+  issues: write
 
 jobs:
   build-test:
@@ -72,6 +84,27 @@ jobs:
         if: always()
         run: dotnet nuget locals http-cache --clear --force-english-output
 
+      - name: Create issue on build/unit-test failure
+        if: failure()
+        run: |
+          TITLE="CI: build-test failure on ${{ github.ref_name }}"
+          EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Open issue #$EXISTING already exists — skipping"
+          else
+            gh issue create \
+              --title "$TITLE" \
+              --body "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Commit:** \`${{ github.sha }}\`
+          **Branch:** \`${{ github.ref_name }}\`
+          **Actor:** ${{ github.actor }}
+
+          Build or unit tests failed. See run for details and test artifacts." \
+              --label "ci-failure,auto-created"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   integration:
     name: Integration Tests
     runs-on: self-hosted
@@ -112,6 +145,27 @@ jobs:
           name: integration-test-results-${{ github.run_number }}
           path: TestResults/integration.trx
           retention-days: 30
+
+      - name: Create issue on integration failure
+        if: failure()
+        run: |
+          TITLE="CI: integration failure on ${{ github.ref_name }}"
+          EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Open issue #$EXISTING already exists — skipping"
+          else
+            gh issue create \
+              --title "$TITLE" \
+              --body "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Commit:** \`${{ github.sha }}\`
+          **Branch:** \`${{ github.ref_name }}\`
+          **Actor:** ${{ github.actor }}
+
+          Integration tests failed. Services may be degraded — check Store/Agent/Coordinator health." \
+              --label "ci-failure,auto-created"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy:
     name: Deploy
@@ -332,3 +386,80 @@ jobs:
           name: e2e-full-results-${{ github.run_number }}
           path: TestResults/e2e-full.xml
           retention-days: 30
+
+      - name: Create issue on E2E full-stack failure
+        if: failure()
+        run: |
+          TITLE="CI: E2E full-stack failure on ${{ github.ref_name }}"
+          EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Open issue #$EXISTING already exists — skipping"
+          else
+            gh issue create \
+              --title "$TITLE" \
+              --body "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Commit:** \`${{ github.sha }}\`
+          **Branch:** \`${{ github.ref_name }}\`
+          **Actor:** ${{ github.actor }}
+
+          Full-stack E2E tests failed. Hardware may be involved — check GPU health, KV migration path, and coordinator logs in Grafana." \
+              --label "ci-failure,auto-created"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-llama:
+    name: Deploy llama-server
+    runs-on: self-hosted
+    timeout-minutes: 10
+    if: |
+      startsWith(github.ref, 'refs/tags/llama.cpp') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Ensure SSH config for P100
+        run: |
+          grep -q "Host hydra-p100" ~/.ssh/config 2>/dev/null || cat >> ~/.ssh/config <<'EOF'
+
+          Host hydra-p100
+              HostName 192.168.122.21
+              User vm1
+              IdentityFile ~/.ssh/vm_agent_01
+              IdentitiesOnly yes
+          EOF
+
+      - name: Restart llama-server RTX
+        run: |
+          podman restart llama-cpp
+          sleep 8
+          curl -sf http://localhost:8080/health && echo "llama-rtx OK" || echo "WARNING: llama-rtx health check failed (non-fatal)"
+
+      - name: Deploy llama-server to P100
+        run: |
+          rsync -az --checksum \
+            src/llama-cpp/build_sm60/bin/llama-server \
+            hydra-p100:/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+          ssh hydra-p100 "sudo systemctl restart llama-p100"
+          sleep 8
+          curl -sf http://192.168.122.21:8086/health && echo "llama-p100 OK" || echo "WARNING: llama-p100 health check failed (non-fatal)"
+
+      - name: Write deploy summary
+        if: always()
+        run: |
+          TAG="${{ github.ref_name }}"
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## llama-server Deploy
+
+          | Field | Value |
+          |-------|-------|
+          | Tag   | \`$TAG\` |
+          | By    | ${{ github.actor }} |
+          | Time  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
+
+          **RTX**: podman restart llama-cpp
+          **P100**: rsync + systemctl restart llama-p100
+          SUMMARY
