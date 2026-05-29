@@ -1,0 +1,44 @@
+name: Claude Code PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            Review this pull request and post your findings as inline review comments.
+
+            Context: This is a multi-GPU LLM inference system (Hydra) that routes requests
+            across RTX 5060 Ti and Tesla P100 GPUs, migrating 800 MB KV cache state between
+            GPUs. Services: Coordinator (Python/FastAPI), Agent (C#/.NET 10), Store (C#/.NET 10),
+            llama-server (C++ fork).
+
+            Focus on:
+            - Correctness bugs (race conditions, off-by-one errors, wrong state transitions)
+            - Security vulnerabilities (injection, unsafe deserialization, exposed secrets)
+            - Significant design issues (broken invariants, data loss risks, protocol violations)
+
+            How to post findings:
+            1. Run `gh pr diff` to see the changes
+            2. For each issue, post an inline comment with:
+               `gh pr review ${{ github.event.pull_request.number }} --comment -b "SUMMARY"`
+               and attach file/line annotations where applicable
+            3. If the PR looks clean, post a single short comment saying "LGTM — no issues found"
+               and do NOT submit a review that would appear as changes_requested
+
+            Do NOT flag style nits or minor formatting issues. Only report substantive problems.

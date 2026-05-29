@@ -1,0 +1,28 @@
+name: Trigger OpenCode to Resolve Review
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  trigger-resolve:
+    runs-on: ubuntu-latest
+    # Only fire when github-actions[bot] posted a commented/changes_requested review
+    if: |
+      (github.event.review.state == 'changes_requested' ||
+       github.event.review.state == 'commented') &&
+      github.event.review.user.login == 'github-actions[bot]'
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '/opencode Please read all the inline review comments on this PR and fix every issue identified. After fixing, push your changes to this branch.'
+            });
