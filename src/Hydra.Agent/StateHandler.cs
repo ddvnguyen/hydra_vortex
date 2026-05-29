@@ -207,7 +207,14 @@ public sealed class StateHandler
                 missingCount = m.GetInt32();
         }
 
-          if (totalSize == 0 || missingCount == 0)
+          if (getResp.Meta is null)
+        {
+            _log.Error("GetChunked returned OK but no manifest metadata for session {SessionId}",
+                sessionId);
+            return new RestoreSessionResult(sessionId, slotId, false, 0, 0, sw.ElapsedMilliseconds);
+        }
+
+        if (totalSize == 0 || missingCount == 0)
         {
             // Full cache hit — all chunks deduped, nothing to fetch from store.
             // Verify we actually have state in llama (n_past > 0).
