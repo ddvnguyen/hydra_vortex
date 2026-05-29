@@ -84,7 +84,7 @@ groups:
           description: "llama-server at {{ $labels.instance }} has been unreachable for 30s"
 
       - alert: GPUMemoryPressure
-        expr: 1 - (nvidia_gpu_memory_used_bytes / nvidia_gpu_memory_total_bytes) < 0.1
+        expr: DCGM_FI_DEV_FB_FREE / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) < 0.1
         for: 5m
         labels:
           severity: warning
@@ -93,7 +93,7 @@ groups:
           description: "GPU {{ $labels.gpu }} has < 10% free memory ({{ $value | humanizePercentage }} free)"
 
       - alert: HighGPUTemperature
-        expr: nvidia_gpu_temperature_celsius > 85
+        expr: DCGM_FI_DEV_GPU_TEMP > 85
         for: 2m
         labels:
           severity: warning

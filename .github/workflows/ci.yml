@@ -3,11 +3,10 @@ name: CI
 on:
   push:
     branches: ["**"]
-  pull_request:
-    branches: [main]
-  push:
     tags:
       - "llama.cpp*"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       run-e2e-full:
@@ -434,7 +433,9 @@ jobs:
 
       - name: Restart llama-server RTX
         run: |
-          podman restart llama-cpp
+          cd infra/llama-rtx-node
+          podman-compose pull --quiet 2>/dev/null || true
+          podman-compose up -d
           sleep 8
           curl -sf http://localhost:8080/health && echo "llama-rtx OK" || echo "WARNING: llama-rtx health check failed (non-fatal)"
 
