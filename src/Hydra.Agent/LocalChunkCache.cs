@@ -72,7 +72,7 @@ public sealed class LocalChunkCache : IDisposable
         var safeSessionId = sessionId.Replace('/', '_').Replace('\\', '_');
         var chunkPath = Path.Combine(_cacheDir.FullName, $"{safeSessionId}.{hash}");
         if (!File.Exists(chunkPath))
-            return null;
+            return Task.FromResult<byte[]?>(null);
 
         return File.ReadAllBytesAsync(chunkPath, ct);
     }

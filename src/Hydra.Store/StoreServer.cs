@@ -248,15 +248,10 @@ public sealed class StoreServer : RpcServer
 				if (path is null) continue;
 
 				var chunkData = await File.ReadAllBytesAsync(path, ct);
-				// Write: [4B index][4B size][N bytes data]
-				var indexBytes = BitConverter.GetBytes(mc.Index);
-				var sizeBytes = BitConverter.GetBytes(chunkData.Length);
-				await writer.WriteAsync(indexBytes, ct);
-				writer.Advance(indexBytes.Length);
-				await writer.WriteAsync(sizeBytes, ct);
-				writer.Advance(sizeBytes.Length);
+				// Write: [4B index][4B size][N bytes data] — WriteAsync already advances internally.
+				await writer.WriteAsync(BitConverter.GetBytes(mc.Index), ct);
+				await writer.WriteAsync(BitConverter.GetBytes(chunkData.Length), ct);
 				await writer.WriteAsync(chunkData, ct);
-				writer.Advance(chunkData.Length);
 				await writer.FlushAsync(ct);
 			}
 
@@ -415,7 +410,7 @@ public sealed class StoreServer : RpcServer
 
 		try
 		{
-			var payload = await ReadPayloadAsync(reader, 0, ct);
+			var payload = await ReadPayloadAsync(reader, payloadLen, ct);
 
 			if (payload.Length == 0)
 			{

@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 from python_shared.log_config import get_logger, new_trace_id
+from python_shared.protocol import OpCode
 from coordinator.session_table import SessionTable
 from coordinator.routing import route_request, estimate_request_tokens, derive_session_id
 from coordinator.health import HealthMonitor
@@ -118,7 +119,7 @@ def create_router(
                 from python_shared.rpc_client import RpcClient
                 client = RpcClient(decision.node_config.host, decision.node_config.rpc_port)
                 try:
-                    client.request(OpCode.SlotErase, str(decision.slot_id or 0), trace_id=trace_id)
+                    await client.request(OpCode.SlotErase, str(decision.slot_id or 0), trace_id=trace_id)
                 except Exception as e:
                     log.warning("n_past_guard_slot_erase_failed", error=str(e))
                 finally:

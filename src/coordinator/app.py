@@ -9,6 +9,7 @@ from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
 from coordinator.router import create_router
+from coordinator.proxy import shutdown as proxy_shutdown
 from coordinator.version import VERSION, REVISION
 
 log = get_logger()
@@ -36,6 +37,7 @@ def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor, c
         yield
         eviction_task.cancel()
         await health_monitor.stop()
+        await proxy_shutdown()
         log.info("coordinator_stopped")
 
     return lifespan
