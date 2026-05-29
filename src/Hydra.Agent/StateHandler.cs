@@ -98,14 +98,21 @@ public sealed class StateHandler
 
         var asyncStream = new AsyncEnumerableStream(storeStream, ct);
 
-        await _llama.PutStateAsync(slotId, asyncStream, longContentLength, ct);
+        var restoreResult = await _llama.PutStateAsync(slotId, asyncStream, longContentLength, ct);
 
         // Query llama for actual n_past after restore (not from PutState response).
         var meta = await _llama.GetStateMetaAsync(slotId, ct);
 
+        if (!restoreResult.Restored || meta.StateSize == 0)
+        {
+            _log.Warning("LLAMA restore failed for session {SessionId}: result={Restored}, state_size={StateSize}",
+                sessionId, restoreResult.Restored, meta.StateSize);
+            return new RestoreSessionResult(sessionId, slotId, false, meta.NPast, longContentLength, sw.ElapsedMilliseconds);
+        }
+
         var elapsed = sw.ElapsedMilliseconds;
-        _log.Information("Restored session {SessionId} to slot {SlotId} in {Elapsed}ms",
-            sessionId, slotId, elapsed);
+        _log.Information("Restored session {SessionId} to slot {SlotId} in {Elapsed}ms (n_past={NPast})",
+            sessionId, slotId, elapsed, meta.NPast);
 
         return new RestoreSessionResult(sessionId, slotId, true, meta.NPast, longContentLength, elapsed);
     }
