@@ -428,7 +428,7 @@ public sealed class StateHandler
             _hashes.Add(Convert.ToHexStringLower(hash));
             // Save partial final chunk data locally for future restore.
             if (_chunkCache is not null && _sessionId != "")
-                await _chunkCache.SaveChunkDataAsync(_sessionId, Convert.ToHexStringLower(hash), _buffer.AsSpan(0, _bufferPos).ToArray());
+                await _chunkCache.SaveChunkDataAsync(_sessionId, Convert.ToHexStringLower(hash), _buffer.AsSpan(0, _bufferPos).ToArray(), CancellationToken.None);
         }
         await _inner.DisposeAsync();
         await base.DisposeAsync();
