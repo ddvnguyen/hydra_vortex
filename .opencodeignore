@@ -21,7 +21,7 @@ venv/
 
 # C++ and llama.cpp
 build/
-src/llama-cpp/build/
+src/llama-cpp/**/*build*/
 *.o
 *.a
 *.so
@@ -41,8 +41,7 @@ src/llama-cpp/build/
 Thumbs.db
 
 # Hydra-specific
-/mnt/llm-ram/
 deploy.log
-# Test results
-tests/result/*.json
-src/Tests.Integration/TestResults/test_results*
+
+# TEST results
+/tests/result/**
