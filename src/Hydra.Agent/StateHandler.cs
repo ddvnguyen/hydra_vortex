@@ -406,12 +406,15 @@ public sealed class StateHandler
     public override void SetLength(long value) => throw new NotSupportedException();
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
-    protected override void Dispose(bool disposing)
+      protected override void Dispose(bool disposing)
     {
         if (disposing && _bufferPos > 0)
         {
             var hash = SHA256.HashData(_buffer.AsSpan(0, _bufferPos));
             _hashes.Add(Convert.ToHexStringLower(hash));
+            // Save partial final chunk data locally for future restore.
+            if (_chunkCache is not null && _sessionId != "")
+                _chunkCache.SaveChunkData(_sessionId, Convert.ToHexStringLower(hash), _buffer.AsSpan(0, _bufferPos).ToArray());
         }
         _inner.Dispose();
         base.Dispose(disposing);
@@ -423,6 +426,9 @@ public sealed class StateHandler
         {
             var hash = SHA256.HashData(_buffer.AsSpan(0, _bufferPos));
             _hashes.Add(Convert.ToHexStringLower(hash));
+            // Save partial final chunk data locally for future restore.
+            if (_chunkCache is not null && _sessionId != "")
+                await _chunkCache.SaveChunkDataAsync(_sessionId, Convert.ToHexStringLower(hash), _buffer.AsSpan(0, _bufferPos).ToArray());
         }
         await _inner.DisposeAsync();
         await base.DisposeAsync();
