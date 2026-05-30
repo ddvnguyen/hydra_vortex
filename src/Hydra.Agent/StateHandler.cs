@@ -236,7 +236,7 @@ public sealed class StateHandler
             OpCode.GetManifest, storeKey, ReadOnlyMemory<byte>.Empty,
             traceId, ct);
 
-        if (manifestResp.Status != (byte)StatusCode.Ok || manifestResp.Meta is null)
+        if (manifestResp.Status != (byte)StatusCode.Ok || manifestResp.Payload is null || manifestResp.Payload.Length == 0)
         {
             _log.Error("GetManifest failed for session {SessionId}, status={Status}",
                 sessionId, manifestResp.Status);
@@ -246,7 +246,7 @@ public sealed class StateHandler
         int nPast = 0;
         List<ChunkRef> allChunks = [];
         {
-            using var doc = JsonDocument.Parse(manifestResp.Meta);
+            using var doc = JsonDocument.Parse(manifestResp.Payload);
             if (doc.RootElement.TryGetProperty("n_past", out var npEl))
                 nPast = npEl.GetInt32();
 
@@ -262,17 +262,10 @@ public sealed class StateHandler
             }
         }
 
-        // Allocate single buffer for the full KV state with header.
-        // Header: [4B n_past][4B n_tok=0], then KV cache data at offset 8.
-        var completeState = new byte[8 + totalSize];
+        // Allocate buffer for the full KV state (no custom header — llama expects raw binary).
+        var completeState = new byte[totalSize];
 
-        // Write header.
-        var nPastBytes = BitConverter.GetBytes(nPast);
-        Buffer.BlockCopy(nPastBytes, 0, completeState, 0, 4);
-        var nTokBytes = BitConverter.GetBytes(0);
-        Buffer.BlockCopy(nTokBytes, 0, completeState, 4, 4);
-
-        // Fill local cached chunks directly into completeState at offset 8.
+        // Fill local cached chunks directly into completeState.
         foreach (var chunk in allChunks)
         {
             if (cachedHashes.Contains(chunk.Hash))
@@ -280,7 +273,7 @@ public sealed class StateHandler
                 var chunkData = await _chunkCache.GetChunkDataAsync(sessionId, chunk.Hash, ct);
                 if (chunkData is not null && chunkData.Length == chunk.Size)
                 {
-                    int dataOffset = 8 + chunk.Index * ChunkEngine.ChunkSize;
+                   int dataOffset = chunk.Index * ChunkEngine.ChunkSize;
                     Array.Copy(chunkData, 0, completeState, dataOffset, chunkData.Length);
                 }
             }
@@ -303,7 +296,7 @@ public sealed class StateHandler
             if (chunkIndex < 0 || chunkSize <= 0 || storeOffset + chunkSize > storePayload.Length)
                 break;
 
-            int dataOffset = 8 + chunkIndex * ChunkEngine.ChunkSize;
+            int dataOffset = chunkIndex * ChunkEngine.ChunkSize;
             if (dataOffset + chunkSize > completeState.Length)
             {
                 _log.Warning("Chunk overflow for session {SessionId}: offset={Offset} + size={Size} > total={Total}",
@@ -315,6 +308,8 @@ public sealed class StateHandler
             Array.Copy(storePayload, storeOffset, completeState, dataOffset, chunkSize);
             storeOffset += chunkSize;
         }
+
+        using var dataStream = new MemoryStream(completeState);
         var restoreResult = await _llama.PutStateAsync(slotId, dataStream, (long)completeState.Length, ct);
 
         // Query llama for actual n_past after restore (not from header or manifest).

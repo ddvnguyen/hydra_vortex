@@ -70,7 +70,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                 var meta = """{"slot_id":0,"n_past":2968,"state_size":50000,"is_processing":false}""";
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(meta, Encoding.UTF8, "application/json")),
+                    Content = new StringContent(meta, Encoding.UTF8, "application/json"),
                 };
             }
 
@@ -133,7 +133,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                 var meta = $$"""{"slot_id":0,"n_past":5000,"state_size":{{baseData.Length}},"is_processing":false}""";
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(meta, Encoding.UTF8, "application/json")),
+                    Content = new StringContent(meta, Encoding.UTF8, "application/json"),
                 };
             }
 
@@ -173,7 +173,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                     var meta = $$"""{"slot_id":1,"n_past":5000,"state_size":{{baseData.Length}},"is_processing":false}""";
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(meta, Encoding.UTF8, "application/json")),
+                   Content = new StringContent(meta, Encoding.UTF8, "application/json"),
                     };
                 }
 
@@ -233,7 +233,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                 var meta = """{"slot_id":0,"n_past":1500,"state_size":50000,"is_processing":false}""";
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(meta, Encoding.UTF8, "application/json")),
+                    Content = new StringContent(meta, Encoding.UTF8, "application/json"),
                 };
             }
 
@@ -274,7 +274,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                 var resp = """{"restored":true,"n_past":1500,"bytes":50000}""";
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(resp, Encoding.UTF8, "application/json")),
+                    Content = new StringContent(resp, Encoding.UTF8, "application/json"),
                 };
             }
 
@@ -323,7 +323,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                 var meta = $$"""{"slot_id":0,"n_past":3000,"state_size":{{stateData.Length}},"is_processing":false}""";
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(meta, Encoding.UTF8, "application/json")),
+                    Content = new StringContent(meta, Encoding.UTF8, "application/json"),
                 };
             }
 
@@ -364,7 +364,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                     receivedBody = await request.Content!.ReadAsByteArrayAsync(ct);
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent("""{"restored":true,"n_past":3000,"bytes":50000}""", Encoding.UTF8, "application/json")),
+                        Content = new StringContent("""{"restored":true,"n_past":3000,"bytes":50000}""", Encoding.UTF8, "application/json"),
                     };
                 }
                 return new HttpResponseMessage(HttpStatusCode.NotFound);

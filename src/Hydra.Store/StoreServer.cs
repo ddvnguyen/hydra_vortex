@@ -62,7 +62,7 @@ public sealed class StoreServer : RpcServer
 				await HandlePushChunksAsync(key, payloadLen, reader, writer, ct);
 				break;
 			case OpCode.PutMeta:
-				await HandlePutMetaAsync(key, reader, writer, ct);
+				await HandlePutMetaAsync(key, payloadLen, reader, writer, ct);
 				break;
 			default:
 				await WriteErrorAsync(writer, $"Unknown opcode: {op}", ct);
@@ -404,7 +404,7 @@ public sealed class StoreServer : RpcServer
 		StoreMetrics.OpsTotal.WithLabels("get_manifest").Inc();
 	}
 
-	private async Task HandlePutMetaAsync(string key, PipeReader reader, PipeWriter writer, CancellationToken ct)
+	private async Task HandlePutMetaAsync(string key, long payloadLen, PipeReader reader, PipeWriter writer, CancellationToken ct)
 	{
 		using var _ = StoreMetrics.OpDuration.WithLabels("put_meta").NewTimer();
 
