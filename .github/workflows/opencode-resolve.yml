@@ -15,7 +15,7 @@ jobs:
     if: |
       (github.event.review.state == 'changes_requested' ||
        github.event.review.state == 'commented') &&
-      github.event.review.user.login == 'github-actions[bot]'
+      github.event.review.user.login == vars.CLAUDE_BOT_LOGIN
     steps:
       - uses: actions/github-script@v7
         with:
