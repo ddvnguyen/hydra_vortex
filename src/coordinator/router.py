@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 from python_shared.log_config import get_logger, new_trace_id
-from python_shared.protocol import OpCode
+from python_shared.rpc_client import OpCode
 from coordinator.session_table import SessionTable
 from coordinator.routing import route_request, estimate_request_tokens, derive_session_id
 from coordinator.health import HealthMonitor
