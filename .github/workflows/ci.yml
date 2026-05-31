@@ -291,7 +291,7 @@ jobs:
 
       - name: Run mocked E2E tests
         run: |
-          pytest tests/e2e/test_m1_e2e.py tests/e2e/test_m2_e2e.py -v \
+          pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v \
             --junit-xml=TestResults/e2e-mocked.xml
 
       - name: Publish E2E mocked results
@@ -351,9 +351,9 @@ jobs:
 
       - name: Run full-stack E2E tests
         run: |
-          pytest tests/e2e/ -m e2e -v --timeout=300 \
-            --ignore=tests/e2e/test_large_prompt_e2e.py \
-            --ignore=tests/e2e/test_stress_e2e.py \
+          pytest tests/system/ -m system -v --timeout=300 \
+            --ignore=tests/system/test_large_prompt_system.py \
+            --ignore=tests/system/test_stress_system.py \
             --junit-xml=TestResults/e2e-full.xml
         env:
           COORD_URL: http://localhost:9000
