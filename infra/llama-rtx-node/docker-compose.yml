@@ -25,7 +25,7 @@ services:
     volumes: 
       - ./init:/init:ro 
       # - /opt/software/llama-official/stable:/llama:ro 
-      - /opt/software/llama-official/beta:/llama:ro 
+      - /mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm120:/llama:ro 
       - /mnt/SSD:/models:ro 
       - /mnt/SSD/kv_slots:/slots
 

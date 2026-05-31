@@ -35,7 +35,7 @@ scrape_configs:
   - job_name: hydra-llama-rtx
     metrics_path: /metrics
     static_configs:
-      - targets: ["host.docker.internal:8080"]
+      - targets: ["llama-cpp:8080"]
         labels:
           component: llama-server
           node: rtx

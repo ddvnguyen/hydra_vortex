@@ -37,8 +37,25 @@ git tag -a "v$NEW" -m "Hydra v$NEW"
 
 echo "Building images..."
 cd infra
+
+# Build and start Hydra stack
 podman-compose build 2>&1 | tail -3
 podman-compose up -d 2>&1 | tail -5
+
+# Build and start llama-cpp server
+echo "Starting llama-cpp server..."
+LLAMA_DIR="llama-rtx-node"
+if podman ps --format '{{.Names}}' | grep -q '^llama-cpp$'; then
+    echo "llama-cpp already running"
+else
+    podman-compose -f "$LLAMA_DIR/docker-compose.yml" up -d 2>&1 | tail -3
+fi
+
+# Connect llama-cpp to hydra_default network so agents can reach it
+HYDRA_NET="hydra_default"
+if podman network exists "$HYDRA_NET"; then
+    podman network connect "$HYDRA_NET" llama-cpp 2>/dev/null && echo "llama-cpp joined $HYDRA_NET" || echo "llama-cpp already on $HYDRA_NET"
+fi
 
 cd "$(git rev-parse --show-toplevel)"
 
