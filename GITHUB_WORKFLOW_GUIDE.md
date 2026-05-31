@@ -78,7 +78,7 @@ Follow the fix recommendation in the issue body.
 Run the test suite to verify:
 ```bash
 # Tier 1 (no hardware needed)
-pytest tests/e2e/test_m1_e2e.py tests/e2e/test_m2_e2e.py -v
+pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v
 
 # Or specific unit tests
 dotnet test src/Tests.Agent/ -c Release -v normal
@@ -179,7 +179,7 @@ Two types of issues are **auto-created by CI/monitoring** — do NOT close witho
 Created by `ci.yml` when a job fails:
 - `build-test` failure → issue "CI: build-test failure on [branch]"
 - `integration` failure → issue "CI: integration failure on [branch]"
-- `e2e-full` failure → issue "CI: E2E full-stack failure on [branch]"
+- `system-full` failure → issue "CI: System test full-stack failure on [branch]"
 
 **Action:** Check the run link in the issue body. Fix the root cause and push a new commit.
 
@@ -250,7 +250,7 @@ vim src/coordinator/router.py
 #   session_table.register(sess_id, decision.node_name, decision.slot_id)
 
 # 4. Run tests
-pytest tests/e2e/test_m1_e2e.py -v   # test_m1 mocks Agent RPC, so no hardware needed
+pytest tests/system/test_m1_system.py -v   # test_m1 mocks Agent RPC, so no hardware needed
 
 # 5. Update review file
 vim reviews/m1-review.md

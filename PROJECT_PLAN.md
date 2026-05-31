@@ -120,11 +120,11 @@ All source code lives under `src/`.
 │   │
 │   ├── llama-cpp/               git submodule — hydra-state-streaming branch
 │   │
-│   └── tests/                   Python tests (coordinator + e2e)
+│   └── tests/                   Python tests (coordinator + system)
 │       ├── __init__.py
 │       ├── coordinator/
 │       ├── integration/
-│       └── e2e/
+│       └── system/
 │
 ├── specs/                       # protocol & service specs
 ├── infra/                       # deployment scripts
@@ -134,7 +134,7 @@ All source code lives under `src/`.
 ## Milestones
 | MS | Name         | Scope                                          | Est.      |
 |----|--------------|------------------------------------------------|-----------|
-| M0 | MVP Test     | llama fork + Store + Agent + E2E verify        | 3-4 days  |
+| M0 | MVP Test     | llama fork + Store + Agent + system verify     | 3-4 days  |
 | M1 | Core System  | Coordinator + routing + session + migration    | 1-2 weeks |
 | M2 | Advanced     | Chunked dedup + prefix checkpoints             | 1 week    |
 | M3 | Production   | Persistence + Grafana + Langfuse + model dist  | 1-2 weeks |

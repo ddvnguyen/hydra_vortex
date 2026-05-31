@@ -9,8 +9,8 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      run-e2e-full:
-        description: "Run full-stack E2E tests (requires all 6 services healthy)"
+      run-system-full:
+        description: "Run full-stack system tests (requires all 6 services healthy)"
         required: false
         default: "false"
         type: choice
@@ -274,8 +274,8 @@ jobs:
           path: deploy.log
           retention-days: 90
 
-  e2e-mocked:
-    name: E2E Tests (mocked)
+  system-mocked:
+    name: System Tests (mocked)
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 10
@@ -289,31 +289,31 @@ jobs:
       - name: Install Python deps
         run: pip install -e ".[dev]" --quiet
 
-      - name: Run mocked E2E tests
+      - name: Run mocked system tests
         run: |
           pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v \
-            --junit-xml=TestResults/e2e-mocked.xml
+            --junit-xml=TestResults/system-mocked.xml
 
-      - name: Publish E2E mocked results
+      - name: Publish system mocked results
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: E2E Mocked Results
-          path: TestResults/e2e-mocked.xml
+          name: System Mocked Results
+          path: TestResults/system-mocked.xml
           reporter: java-junit
           fail-on-error: false
           fail-on-empty: false
 
-      - name: Upload E2E mocked artifacts
+      - name: Upload system mocked artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-mocked-results-${{ github.run_number }}
-          path: TestResults/e2e-mocked.xml
+          name: system-mocked-results-${{ github.run_number }}
+          path: TestResults/system-mocked.xml
           retention-days: 30
 
-  e2e-full:
-    name: E2E Tests (full stack)
+  system-full:
+    name: System Tests (full stack)
     runs-on: self-hosted
     needs: [build-test, deploy]
     timeout-minutes: 60
@@ -326,7 +326,7 @@ jobs:
         needs.deploy.result == 'success' ||
         contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
         contains(github.event.push.head_commit.message, '[run-e2e]') ||
-        (github.event_name == 'workflow_dispatch' && github.event.inputs.run-e2e-full == 'true')
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.run-system-full == 'true')
       )
 
     steps:
@@ -349,12 +349,12 @@ jobs:
           fi
           echo "Services OK (status=$STATUS)"
 
-      - name: Run full-stack E2E tests
+      - name: Run full-stack system tests
         run: |
           pytest tests/system/ -m system -v --timeout=300 \
             --ignore=tests/system/test_large_prompt_system.py \
             --ignore=tests/system/test_stress_system.py \
-            --junit-xml=TestResults/e2e-full.xml
+            --junit-xml=TestResults/system-full.xml
         env:
           COORD_URL: http://localhost:9000
           RTX_LLAMA_URL: http://localhost:8080
@@ -368,28 +368,28 @@ jobs:
           STORE_HOST: "127.0.0.1"
           STORE_PORT: "9500"
 
-      - name: Publish full-stack E2E results
+      - name: Publish full-stack system results
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: E2E Full Stack Results
-          path: TestResults/e2e-full.xml
+          name: System Full Stack Results
+          path: TestResults/system-full.xml
           reporter: java-junit
           fail-on-error: false
           fail-on-empty: false
 
-      - name: Upload full-stack E2E artifacts
+      - name: Upload full-stack system artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-full-results-${{ github.run_number }}
-          path: TestResults/e2e-full.xml
+          name: system-full-results-${{ github.run_number }}
+          path: TestResults/system-full.xml
           retention-days: 30
 
-      - name: Create issue on E2E full-stack failure
+      - name: Create issue on system test full-stack failure
         if: failure()
         run: |
-          TITLE="CI: E2E full-stack failure on ${{ github.ref_name }}"
+          TITLE="CI: System test full-stack failure on ${{ github.ref_name }}"
           EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
           if [ -n "$EXISTING" ]; then
             echo "Open issue #$EXISTING already exists — skipping"
@@ -401,7 +401,7 @@ jobs:
           **Branch:** \`${{ github.ref_name }}\`
           **Actor:** ${{ github.actor }}
 
-          Full-stack E2E tests failed. Hardware may be involved — check GPU health, KV migration path, and coordinator logs in Grafana." \
+          Full-stack system tests failed. Hardware may be involved — check GPU health, KV migration path, and coordinator logs in Grafana." \
               --label "ci-failure,auto-created"
           fi
         env:

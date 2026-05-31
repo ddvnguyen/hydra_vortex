@@ -1,5 +1,5 @@
 """
-pytest conftest for E2E tests -- saves a result JSON file after every test.
+pytest conftest for system tests -- saves a result JSON file after every test.
 
 Result files go to tests/result/{test_name}_{timestamp}.json
 and include test metadata plus service snapshots (coordinator status,

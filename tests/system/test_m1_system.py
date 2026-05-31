@@ -1,5 +1,5 @@
 """
-M1 E2E test for Coordinator HTTP layer — routing, session affinity, migration.
+M1 system test for Coordinator HTTP layer — routing, session affinity, migration.
 
 Tests the full Coordinator HTTP interface with mocked RPC backends:
   POST /v1/chat/completions → routes to correct node, tracks sessions

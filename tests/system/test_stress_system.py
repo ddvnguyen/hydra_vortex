@@ -1,5 +1,5 @@
 """
-Stress E2E tests for Coordinator HTTP API.
+Stress system tests for Coordinator HTTP API.
 
 Tests concurrent request handling and cross-session consistency.
 
@@ -91,7 +91,7 @@ async def get_status(coord_url: str) -> dict:
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_4_concurrent_completions():
     """
@@ -100,10 +100,10 @@ async def test_4_concurrent_completions():
     """
     prompt_text = generate_text(2_000)
     messages = [{"role": "user", "content": prompt_text}]
-    session_ids = [f"e2e-stress-{uuid4().hex[:12]}" for _ in range(4)]
+    session_ids = [f"system-stress-{uuid4().hex[:12]}" for _ in range(4)]
 
     # ── Measure serial time (single request) ──────────────────────────
-    ref_sid = f"e2e-stress-ref-{uuid4().hex[:12]}"
+    ref_sid = f"system-stress-ref-{uuid4().hex[:12]}"
     t0 = time.monotonic()
     ref_resp = await do_completion(
         COORD_URL, messages, session_id=ref_sid,
@@ -155,7 +155,7 @@ async def test_4_concurrent_completions():
                 pass
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_cross_session_consistency():
     """
@@ -178,7 +178,7 @@ async def test_cross_session_consistency():
     assert get_output_text(direct_msg), "Direct completion returned empty output"
 
     # ── Through Coordinator ────────────────────────────────────────────
-    session_id = f"e2e-cross-{uuid4().hex[:12]}"
+    session_id = f"system-cross-{uuid4().hex[:12]}"
     coord_resp = await do_completion(
         COORD_URL, messages, session_id=session_id,
     )

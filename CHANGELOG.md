@@ -60,7 +60,7 @@
 - Hydra.Shared RPC protocol library
 - Hydra.Store raw KV storage
 - Hydra.Agent with KV state read/write
-- E2E tests for save/restore cycle
+- System tests for save/restore cycle
 
 ## [0.0.1] - 2026-05-25
 

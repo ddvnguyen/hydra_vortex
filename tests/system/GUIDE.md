@@ -1,6 +1,6 @@
-# Hydra E2E Test Guide
+# Hydra System Test Guide
 
-For coding agents and developers running or extending the end-to-end test suite.
+For coding agents and developers running or extending the system test suite.
 
 ---
 
@@ -14,8 +14,8 @@ RPC connections are patched in-process. Run on any machine, any time.
 
 | File | What it tests |
 |------|---------------|
-| `test_m1_e2e.py` | Coordinator HTTP: routing, session affinity, migration, eviction, health/status endpoints |
-| `test_m2_e2e.py` | Prefix checkpoints, chunked dedup routing, store_restore action, n_past guard |
+| `test_m1_system.py` | Coordinator HTTP: routing, session affinity, migration, eviction, health/status endpoints |
+| `test_m2_system.py` | Prefix checkpoints, chunked dedup routing, store_restore action, n_past guard |
 
 ### Tier 2 — Full stack (real services required)
 
@@ -23,10 +23,10 @@ All 6 services must be up and healthy before running. GPU hardware required.
 
 | File | What it tests |
 |------|---------------|
-| `test_e2e.py` | Direct RPC path: llama RTX → save → Store → restore → llama P100, cache hit verification |
-| `test_full_workflow_e2e.py` | Full stack through Coordinator: completions, streaming, session lifecycle, migration, prefix checkpoints |
-| `test_large_prompt_e2e.py` | Large prompts (8K–48K tokens) through Coordinator, llama metrics verification, continuation |
-| `test_stress_e2e.py` | 4 concurrent completions, cross-session consistency, timing ratio assertions |
+| `test_system.py` | Direct RPC path: llama RTX → save → Store → restore → llama P100, cache hit verification |
+| `test_full_workflow_system.py` | Full stack through Coordinator: completions, streaming, session lifecycle, migration, prefix checkpoints |
+| `test_large_prompt_system.py` | Large prompts (8K–48K tokens) through Coordinator, llama metrics verification, continuation |
+| `test_stress_system.py` | 4 concurrent completions, cross-session consistency, timing ratio assertions |
 
 ---
 
@@ -51,14 +51,14 @@ pip install -e ".[all]"
 No environment variables needed.
 
 ```bash
-pytest tests/e2e/test_m1_e2e.py tests/e2e/test_m2_e2e.py -v
+pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v
 ```
 
 With JUnit XML output for CI:
 
 ```bash
-pytest tests/e2e/test_m1_e2e.py tests/e2e/test_m2_e2e.py -v \
-  --junit-xml=TestResults/e2e-mocked.xml
+pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v \
+  --junit-xml=TestResults/system-mocked.xml
 ```
 
 ---
@@ -99,38 +99,38 @@ All have defaults matching the standard local setup. Override only when addresse
 | `LLAMA_P100_URL` | `http://192.168.122.21:8086` | P100 llama (used by large/stress tests) |
 | `RTX_AGENT_HOST` | `127.0.0.1` | RTX agent RPC host |
 | `RTX_AGENT_PORT` | `9601` | RTX agent RPC port |
-| `P100_AGENT_HOST` | `192.168.122.21` | P100 agent RPC host (VM) |
+| `P100_AGENT_HOST` | `127.0.0.1` | P100 agent RPC host (same host as coordinator) |
 | `P100_AGENT_PORT` | `9602` | P100 agent RPC port |
 | `STORE_HOST` | `127.0.0.1` | Store RPC host |
 | `STORE_PORT` | `9500` | Store RPC port |
 
 ### Run commands
 
-Run all full-stack tests (marked `@pytest.mark.e2e`):
+Run all full-stack tests (marked `@pytest.mark.system`):
 
 ```bash
-pytest tests/e2e/ -m e2e -v --timeout=300
+pytest tests/system/ -m system -v --timeout=300
 ```
 
 Run a single file:
 
 ```bash
-pytest tests/e2e/test_full_workflow_e2e.py -v --timeout=300
+pytest tests/system/test_full_workflow_system.py -v --timeout=300
 ```
 
 Skip the slow large-prompt parametrized tests:
 
 ```bash
-pytest tests/e2e/ -m e2e -v --timeout=300 \
-  --ignore=tests/e2e/test_large_prompt_e2e.py \
-  --ignore=tests/e2e/test_stress_e2e.py
+pytest tests/system/ -m system -v --timeout=300 \
+  --ignore=tests/system/test_large_prompt_system.py \
+  --ignore=tests/system/test_stress_system.py
 ```
 
 With JUnit XML output:
 
 ```bash
-pytest tests/e2e/ -m e2e -v --timeout=300 \
-  --junit-xml=TestResults/e2e-full.xml
+pytest tests/system/ -m system -v --timeout=300 \
+  --junit-xml=TestResults/system-full.xml
 ```
 
 ---
@@ -146,8 +146,8 @@ These are not test bugs — they reflect real hardware invariants:
 
 ---
 
-## Adding new e2e tests
+## Adding new system tests
 
-- **Mocked tests** (no services): do not use `@pytest.mark.e2e`. Patch RpcClient via `unittest.mock.patch` at `coordinator.health.RpcClient` and `coordinator.state_manager.RpcClient`.
-- **Full-stack tests** (real services): add `@pytest.mark.e2e` and `@pytest.mark.asyncio`. Use `uuid4().hex[:12]` session IDs to avoid collisions between runs. Always clean up sessions in a `try/except` block at the end.
-- Do not add `@pytest.mark.e2e` to mocked tests — it controls which tests run in CI and which require hardware.
+- **Mocked tests** (no services): do not use `@pytest.mark.system`. Patch RpcClient via `unittest.mock.patch` at `coordinator.health.RpcClient` and `coordinator.state_manager.RpcClient`.
+- **Full-stack tests** (real services): add `@pytest.mark.system` and `@pytest.mark.asyncio`. Use `uuid4().hex[:12]` session IDs to avoid collisions between runs. Always clean up sessions in a `try/except` block at the end.
+- Do not add `@pytest.mark.system` to mocked tests — it controls which tests run in CI and which require hardware.

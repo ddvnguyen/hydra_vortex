@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
+import httpx
+
 from python_shared.log_config import get_logger, new_trace_id
 from python_shared.rpc_client import OpCode
 from coordinator.session_table import SessionTable
@@ -19,6 +21,36 @@ from coordinator.metrics import metrics_endpoint, requests_total, active_session
 from coordinator.version import VERSION, REVISION
 
 log = get_logger()
+
+
+async def _resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -> int | None:
+    """Query llama-server /slots and find the slot with matching n_past.
+
+    llama.cpp's OAI-compat /v1/chat/completions does not return the assigned slot
+    in the response body.  After a completion we know total_tokens (= n_past) from
+    the usage field, so we match against the /slots endpoint which *does* include
+    per-slot n_past.  This is unambiguous because we just completed the only
+    pending request on that node.
+    """
+    if expected_n_past <= 0:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                f"{llama_url.rstrip('/')}/slots",
+                headers={"X-Trace-Id": trace_id},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        log.warning("resolve_slot_id_failed", url=llama_url, error=str(exc))
+        return None
+
+    slots = data if isinstance(data, list) else data.get("slots", [])
+    for slot in slots:
+        if slot.get("n_past", 0) == expected_n_past:
+            return slot.get("id")
+    return None
 
 
 class ChatMessage(BaseModel):
@@ -100,7 +132,7 @@ def create_router(
             _routing_stats["store_restore"] += 1
 
         if not decision.session_found:
-            session_table.register(sess_id, decision.node_name, decision.slot_id or 0)
+            session_table.register(sess_id, decision.node_name, decision.slot_id, n_past=0)
             _routing_stats["least_loaded"] += 1
 
             # --- Prefix warm-start (M2.3) ---
@@ -184,15 +216,12 @@ def create_router(
         if req.stream:
             async def stream_with_npast():
                 last_usage = None
-                last_slot_id = None
                 async for chunk in proxy_completion_stream(node_url_base, request_dict, trace_id):
                     if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
                         try:
                             data = json.loads(chunk[6:])
                             if "usage" in data:
                                 last_usage = data["usage"]
-                            if "slot_id" in data:
-                                last_slot_id = data["slot_id"]
                         except Exception:
                             pass
                     yield chunk
@@ -202,8 +231,13 @@ def create_router(
                         total = last_usage.get("total_tokens", 0)
                         if total > 0:
                             session_table.update_n_past(sess_id, total)
-                    if last_slot_id is not None:
-                        entry.slot_id = last_slot_id
+                    if entry.slot_id is None and last_usage:
+                        total = last_usage.get("total_tokens", 0)
+                        resolved = await _resolve_slot_id(node_url_base, total, trace_id)
+                        if resolved is not None:
+                            entry.slot_id = resolved
+                            log.info("slot_resolved_stream",
+                                     session_id=sess_id, slot_id=resolved, n_past=total)
                 await _maybe_save_prefix()
 
             return StreamingResponse(
@@ -219,9 +253,12 @@ def create_router(
             if entry:
                 if total > 0:
                     session_table.update_n_past(sess_id, total)
-                slot_id_from_llama = result.get("slot_id")
-                if slot_id_from_llama is not None:
-                    entry.slot_id = slot_id_from_llama
+                if entry.slot_id is None and total > 0:
+                    resolved = await _resolve_slot_id(node_url_base, total, trace_id)
+                    if resolved is not None:
+                        entry.slot_id = resolved
+                        log.info("slot_resolved_nonstream",
+                                 session_id=sess_id, slot_id=resolved, n_past=total)
             await _maybe_save_prefix()
             return JSONResponse(
                 content=result,

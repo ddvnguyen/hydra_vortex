@@ -2,7 +2,7 @@
 
 **For:** AI agents and engineers picking up this project cold.  
 **Updated:** 2026-05-28  
-**Status:** M0 ✅ | Hydra.Shared ✅ | Store ✅ | Agent ✅ | Coordinator ✅ | M2 chunked dedup ✅ | Observability ✅ Prometheus+Grafana+Loki | E2E test ✅
+**Status:** M0 ✅ | Hydra.Shared ✅ | Store ✅ | Agent ✅ | Coordinator ✅ | M2 chunked dedup ✅ | Observability ✅ Prometheus+Grafana+Loki | System test ✅
 
 ---
 
@@ -236,13 +236,13 @@ dotnet test src/Tests.Shared/Tests.Shared.csproj
 the 800 MB payload to extract size from meta, then discards and re-streams via second GET.  
 Fix: use OpCode.Stat to get size first, then single streaming GET.
 
-### ✅ M0.4 — E2E Test (COMPLETE)
+### ✅ M0.4 — System Test (COMPLETE)
 
-`tests/e2e/test_e2e.py` — async pytest: prompt→save→restore→continuation flow.  
+`tests/system/test_system.py` — async pytest: prompt→save→restore→continuation flow.  
 4 assertions: choices present, save returns size, restore returns restored=true, cache_n > 0.  
 Uses `httpx.AsyncClient` for HTTP and `python_shared.RpcClient` for RPC.  
 Requires all 6 services running (two llama-servers, Store, two Agents).  
-Skipped by default — run with `pytest -m e2e -s`.
+Skipped by default — run with `pytest -m system -s`.
 
 ### ✅ M1 — Coordinator (COMPLETE, 42 tests pass)
 
@@ -698,14 +698,14 @@ cmake -B build-check -DGGML_CPU_ONLY=ON -G Ninja && cmake --build build-check --
 `src/Hydra.Agent/AgentServer.cs` — RPC dispatch for SAVE/RESTORE/SLOT_STATUS/NODE_HEALTH.
 `src/Tests.Agent/` — 13 tests pass.
 
-### ✅ Priority 4 — E2E Test (M0.4) — COMPLETE
+### ✅ Priority 4 — System Test (M0.4) — COMPLETE
 
-`tests/e2e/test_e2e.py` — prompt→save→restore→continuation flow.  
+`tests/system/test_system.py` — prompt→save→restore→continuation flow.  
 4 assertions: choices present, save returns size, restore returns restored=true, cache_n > 0.
 
 ```bash
-# Run E2E (requires all services running):
-pytest tests/e2e/test_e2e.py -v -m e2e
+# Run system test (requires all services running):
+pytest tests/system/test_system.py -v -m system
 ```
 
 ### ✅ Priority 5 — Coordinator (M1) — COMPLETE
@@ -961,7 +961,7 @@ src/coordinator/metrics.py                        ← Coordinator Prometheus met
 
 | Milestone | Gate Condition |
 |---|---|
-| **M0** | `pytest tests/e2e/test_e2e.py` passes all 8 assertions; `cache_n > 0` on P100 |
+| **M0** | `pytest tests/system/test_system.py` passes all 8 assertions; `cache_n > 0` on P100 |
 | **M1** | `curl localhost:9000/v1/chat/completions` routes to correct GPU; session migrates automatically |
 | **M2** | `dotnet test src/Tests.Store --filter Chunk` (21 pass) + `dotnet test src/Tests.Integration --filter Chunked` (12 pass) + `pytest src/coordinator/tests/test_prefix_checkpoint.py -v` (4 pass); Store deduplicates repeated saves; agent skips llama PUT when chunks cached |
 | **M3** | Grafana dashboard shows metrics + logs with trace_id filter; Langfuse traces per completion; model layer distribution |
@@ -981,10 +981,10 @@ src/coordinator/metrics.py                        ← Coordinator Prometheus met
 | `Tests.Integration` (M2 chunked store ops) | ✅ All pass | 8/8 |
 | `Tests.Integration` (M2 agent chunked) | ✅ All pass | 4/4 |
 | `Python coordinator tests` | ✅ All pass | 46/46 |
-| `E2E test_e2e.py` | ✅ Written, skipped by default (use `-m e2e`) | 1 test, 4 assertions |
+| `System test_system.py` | ✅ Written, skipped by default (use `-m system`) | 1 test, 4 assertions |
 | llama-server `build-check` | ✅ Compiles | CPU-only |
 
-**Total: 160 tests passing** (71 C# + 46 Python + 1 e2e + llama build-check)
+**Total: 160 tests passing** (71 C# + 46 Python + 1 system + llama build-check)
 
 **M2 test commands:**
 ```bash

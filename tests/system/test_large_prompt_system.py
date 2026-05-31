@@ -1,5 +1,5 @@
 """
-E2E tests for large prompt handling through Coordinator HTTP API.
+System tests for large prompt handling through Coordinator HTTP API.
 
 Simulates coding agent behavior: large context window initial prompt,
 then shorter follow-up continuation. Verifies metrics on both llama-servers.
@@ -126,7 +126,7 @@ PROMPT_SIZES = [
 ]
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "prompt_tokens,continue_tokens,timeout_sec",
@@ -138,7 +138,7 @@ async def test_large_prompt_with_metrics_and_continuation(
     continue_tokens: int,
     timeout_sec: int,
 ):
-    session_id = f"e2e-lg-{uuid4().hex[:12]}"
+    session_id = f"system-lg-{uuid4().hex[:12]}"
 
     init_prompt = generate_text(prompt_tokens)
     continue_prompt = generate_text(continue_tokens)
