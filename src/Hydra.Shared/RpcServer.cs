@@ -164,6 +164,10 @@ public abstract class RpcServer : IAsyncDisposable
 		if (payloadLen <= 0)
 			return [];
 
+		if (payloadLen > Array.MaxLength)
+			throw new ArgumentOutOfRangeException(nameof(payloadLen),
+				$"ReadPayloadAsync is for small JSON bodies only (max {Array.MaxLength} bytes); got {payloadLen}. Stream large payloads via pipe instead.");
+
 		var data = new byte[payloadLen];
 		int offset = 0;
 		while (offset < data.Length)
