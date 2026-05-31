@@ -1,5 +1,5 @@
 """
-Full real workflow E2E test through Coordinator HTTP API.
+Full real workflow system test through Coordinator HTTP API.
 
 Tests the complete stack end-to-end with real running services:
   Coordinator :9000 → Agent RTX :9601 / Agent P100 :9602 → llama-server → Store :9500
@@ -40,7 +40,7 @@ MAX_TOKENS = 100
 
 @pytest.fixture
 def session_id() -> str:
-    return f"e2e-full-{uuid4().hex[:12]}"
+    return f"system-full-{uuid4().hex[:12]}"
 
 
 @pytest.fixture
@@ -107,7 +107,7 @@ async def _get_sessions(base_url: str) -> dict:
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_health_endpoint(coord_url: str):
     """GET /health returns healthy or degraded status with node details."""
@@ -123,7 +123,7 @@ async def test_health_endpoint(coord_url: str):
     assert "store" in body
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_status_endpoint(coord_url: str):
     """GET /status returns sessions, routing_stats, and node details."""
@@ -137,7 +137,7 @@ async def test_status_endpoint(coord_url: str):
     assert body["routing_stats"]["total"] >= 0
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_completion_nonstream(coord_url: str, session_id: str):
     """POST /v1/chat/completions (stream=false) returns choices with hydra metadata."""
@@ -159,7 +159,7 @@ async def test_completion_nonstream(coord_url: str, session_id: str):
     assert "node" in body["hydra"]
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_completion_stream(coord_url: str, session_id: str):
     """POST /v1/chat/completions (stream=true) returns SSE events with choices."""
@@ -186,7 +186,7 @@ async def test_completion_stream(coord_url: str, session_id: str):
     assert any(all_outputs), "no 'content' or 'reasoning_content' across all stream events"
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_session_lifecycle(coord_url: str, session_id: str):
     """Session appears in GET /sessions after completion, then can be evicted."""
@@ -213,7 +213,7 @@ async def test_session_lifecycle(coord_url: str, session_id: str):
     assert session_id not in after_ids, f"Session {session_id} still present after eviction"
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_prefix_checkpoint(coord_url: str):
     """POST /prefix/{name}/save and /restore return OK."""
@@ -236,7 +236,7 @@ async def test_prefix_checkpoint(coord_url: str):
     assert restore_body["restored"] is True
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_migrate_session(coord_url: str, session_id: str):
     """POST /sessions/{id}/migrate moves session to target node."""
@@ -269,7 +269,7 @@ async def test_migrate_session(coord_url: str, session_id: str):
         pytest.fail(f"Session {session_id} not found in status after migration")
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_migration_cache_hit(coord_url: str, session_id: str):
     """
@@ -329,7 +329,7 @@ async def test_migration_cache_hit(coord_url: str, session_id: str):
     )
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_eviction_with_save(coord_url: str, session_id: str):
     """DELETE /sessions/{id} saves state before evicting, then session is removed."""
@@ -353,7 +353,142 @@ async def test_eviction_with_save(coord_url: str, session_id: str):
             pytest.fail(f"Session {session_id} still present after eviction")
 
 
-@pytest.mark.e2e
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_slot_id_resolved_after_first_completion(coord_url: str):
+    """
+    Full-stack verification that slot_id is resolved after first completion.
+
+    llama.cpp's OAI-compat /v1/chat/completions never returns slot_id in the
+    response body.  The coordinator must query /slots on the llama node after
+    each completion and match the slot by n_past (= total_tokens from usage).
+
+    This test validates the full path: new session (slot_id=None) →
+    completion → /slots query → slot_id resolved correctly.
+    """
+    sess_id = f"system-slot-resolve-{uuid4().hex[:12]}"
+
+    # Turn 1: new session — slot_id starts as None, resolved after completion
+    resp = await _do_completion(
+        coord_url,
+        _make_messages("What is 2+2? Answer briefly."),
+        session_id=sess_id,
+        stream=False,
+        max_tokens=30,
+    )
+    assert resp.status_code == 200, f"Turn 1 failed: {resp.text}"
+
+    status = await _get_status(coord_url)
+    session = next((s for s in status["sessions"]["sessions"] if s["session_id"] == sess_id), None)
+    assert session is not None, f"Session {sess_id} not found in status"
+    slot_id_1 = session["slot_id"]
+    assert isinstance(slot_id_1, int), (
+        f"slot_id should be an int after resolution, got {type(slot_id_1).__name__}={slot_id_1}"
+    )
+
+    # Turn 2: same session — slot_id should be stable (affinity routing)
+    resp2 = await _do_completion(
+        coord_url,
+        _make_messages("What is 3+3? Answer briefly."),
+        session_id=sess_id,
+        stream=False,
+        max_tokens=30,
+    )
+    assert resp2.status_code == 200, f"Turn 2 failed: {resp2.text}"
+
+    status2 = await _get_status(coord_url)
+    session2 = next((s for s in status2["sessions"]["sessions"] if s["session_id"] == sess_id), None)
+    assert session2 is not None
+    slot_id_2 = session2["slot_id"]
+    assert slot_id_2 == slot_id_1, (
+        f"slot_id changed between turns: {slot_id_1} → {slot_id_2}. "
+        f"Affinity routing should keep the same slot."
+    )
+
+    # Turn 3: streaming — also resolves slot_id correctly
+    resp3 = await _do_completion(
+        coord_url,
+        _make_messages("What is 4+4? Answer briefly."),
+        session_id=sess_id,
+        stream=True,
+        max_tokens=30,
+    )
+    assert resp3.status_code == 200, f"Turn 3 (stream) failed: {resp3.text}"
+    events = await _parse_sse(resp3)
+    assert len(events) > 0
+
+    status3 = await _get_status(coord_url)
+    session3 = next((s for s in status3["sessions"]["sessions"] if s["session_id"] == sess_id), None)
+    assert session3 is not None
+    slot_id_3 = session3["slot_id"]
+    assert slot_id_3 == slot_id_1, (
+        f"slot_id changed after streaming turn: {slot_id_1} → {slot_id_3}"
+    )
+
+    # Cleanup
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        await client.delete(f"{coord_url}/sessions/{sess_id}")
+
+
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_slot_id_persists_across_session_lifecycle(coord_url: str):
+    """
+    Verify slot_id remains correct through: save → evict → restore cycle.
+
+    1. New session → completion → slot_id resolved
+    2. Evict session (saves to Store, removes from active)
+    3. New completion with same session_id → restore → slot_id preserved
+    """
+    sess_id = f"system-slot-lifecycle-{uuid4().hex[:12]}"
+
+    # Step 1: first completion resolves slot_id
+    resp = await _do_completion(
+        coord_url,
+        _make_messages("What is 2+2? Answer briefly."),
+        session_id=sess_id,
+        stream=False,
+        max_tokens=30,
+    )
+    assert resp.status_code == 200, f"Completion failed: {resp.text}"
+
+    status = await _get_status(coord_url)
+    session = next((s for s in status["sessions"]["sessions"] if s["session_id"] == sess_id), None)
+    assert session is not None
+    slot_id_before = session["slot_id"]
+    assert isinstance(slot_id_before, int), f"slot_id not resolved: {slot_id_before}"
+
+    # Step 2: evict (saves to store, slot_id → None in table)
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        del_resp = await client.delete(f"{coord_url}/sessions/{sess_id}")
+    assert del_resp.status_code == 200, f"Eviction failed: {del_resp.text}"
+    assert del_resp.json()["evicted"] is True
+
+    # Step 3: restore via new completion — store_restore routing should
+    # restore slot_id from the Store-manifest metadata
+    resp2 = await _do_completion(
+        coord_url,
+        _make_messages("What is 2+2? Answer briefly."),
+        session_id=sess_id,
+        stream=False,
+        max_tokens=30,
+    )
+    assert resp2.status_code == 200, f"Restore completion failed: {resp2.text}"
+
+    status2 = await _get_status(coord_url)
+    session2 = next((s for s in status2["sessions"]["sessions"] if s["session_id"] == sess_id), None)
+    assert session2 is not None, "Session should be restored"
+    # After restore, slot_id might be on a different node but should be a valid int
+    assert isinstance(session2["slot_id"], int), (
+        f"slot_id not resolved after restore: {session2['slot_id']}"
+    )
+
+    # Cleanup
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        await client.delete(f"{coord_url}/sessions/{sess_id}")
+
+
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_full_cycle_completion_migrate_continuation(coord_url: str, session_id: str):
     """
