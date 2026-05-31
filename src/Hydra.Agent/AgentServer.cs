@@ -76,7 +76,7 @@ public sealed class AgentServer : RpcServer
         {
             var parts = sessionId.Split(':');
             var sid = parts[0];
-            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : await _llama.FindIdleSlotAsync(ct) ?? 0;
+            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : await _llama.WaitForIdleSlotAsync(30_000, ct);
 
             var result = await _handler.SaveToStoreAsync(
                 ExtractSessionId(sid, slotId), slotId,
@@ -200,7 +200,7 @@ public sealed class AgentServer : RpcServer
         {
             var parts = sessionId.Split(':');
             var sid = parts[0];
-            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : await _llama.FindIdleSlotAsync(ct) ?? 0;
+            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : await _llama.WaitForIdleSlotAsync(30_000, ct);
 
             var result = await _handler.SaveToStoreChunkedAsync(
                 ExtractSessionId(sid, slotId), slotId,
@@ -279,54 +279,61 @@ public sealed class AgentServer : RpcServer
 
     public Task StartDebugEndpointAsync(CancellationToken ct)
     {
-        var builder = WebApplication.CreateBuilder();
-        builder.WebHost.UseSetting(WebHostDefaults.ServerUrlsKey, $"http://{_cfg.Host}:{_cfg.DebugHttpPort}");
-
-        var app = builder.Build();
-
-        app.UseMetricServer();
-
-        app.MapGet("/version", () => Results.Json(new
-        {
-            service = "hydra-agent",
-            version = HydraLogging.ServiceVersion,
-        }));
-
-        app.MapGet("/debug", async (HttpContext ctx) =>
-        {
-            var uptimeS = (Stopwatch.GetTimestamp() - _startedAt) / Stopwatch.Frequency;
-            var isHealthy = await _llama.HealthAsync(ct);
-            var slots = await _llama.GetSlotsAsync(ct);
-
-            AgentMetrics.LlamaHealthy.WithLabels(_cfg.NodeName).Set(isHealthy ? 1 : 0);
-            AgentMetrics.SlotsIdle.WithLabels(_cfg.NodeName).Set(slots.Count(s => !s.IsProcessing));
-
-            var debugInfo = new
-            {
-                status = isHealthy ? "ok" : "degraded",
-                version = HydraLogging.ServiceVersion,
-                node_name = _cfg.NodeName,
-                llama_healthy = isHealthy,
-                slots = slots.Select(s => new { s.Id, s.NPast, s.IsProcessing }),
-                pending_ops = 0,
-                local_kv_files = 0,
-                store_connected = true,
-                uptime_s = (int)uptimeS,
-            };
-
-            return Results.Json(debugInfo);
-        });
-
-        ct.Register(async () => await app.StopAsync());
         return Task.Run(async () =>
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                await app.RunAsync();
-            }
-            catch (Exception ex)
-            {
-                _log.Error(ex, "Debug HTTP endpoint crashed");
+                try
+                {
+                    var builder = WebApplication.CreateBuilder();
+                    builder.WebHost.UseSetting(WebHostDefaults.ServerUrlsKey, $"http://{_cfg.Host}:{_cfg.DebugHttpPort}");
+                    var app = builder.Build();
+
+                    app.UseMetricServer();
+
+                    app.MapGet("/version", () => Results.Json(new
+                    {
+                        service = "hydra-agent",
+                        version = HydraLogging.ServiceVersion,
+                    }));
+
+                    app.MapGet("/debug", async (HttpContext _ctx) =>
+                    {
+                        var uptimeS = (Stopwatch.GetTimestamp() - _startedAt) / Stopwatch.Frequency;
+                        var isHealthy = await _llama.HealthAsync(ct);
+                        var slots = await _llama.GetSlotsAsync(ct);
+
+                        AgentMetrics.LlamaHealthy.WithLabels(_cfg.NodeName).Set(isHealthy ? 1 : 0);
+                        AgentMetrics.SlotsIdle.WithLabels(_cfg.NodeName).Set(slots.Count(s => !s.IsProcessing));
+
+                        return Results.Json(new
+                        {
+                            status = isHealthy ? "ok" : "degraded",
+                            version = HydraLogging.ServiceVersion,
+                            node_name = _cfg.NodeName,
+                            llama_healthy = isHealthy,
+                            slots = slots.Select(s => new { s.Id, s.NPast, s.IsProcessing }),
+                            pending_ops = 0,
+                            local_kv_files = 0,
+                            store_connected = true,
+                            uptime_s = (int)uptimeS,
+                        });
+                    });
+
+                    ct.Register(async () => await app.StopAsync());
+                    await app.RunAsync();
+                    break; // clean shutdown via ct
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(ex, "Debug HTTP endpoint crashed, restarting in 5s");
+                    try { await Task.Delay(TimeSpan.FromSeconds(5), ct); }
+                    catch (OperationCanceledException) { break; }
+                }
             }
         }, ct);
     }

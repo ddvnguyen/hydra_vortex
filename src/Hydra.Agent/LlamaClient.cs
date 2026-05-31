@@ -137,6 +137,18 @@ public sealed class LlamaClient : IDisposable
         return slots.FirstOrDefault(s => !s.IsProcessing)?.Id;
     }
 
+    public async Task<int> WaitForIdleSlotAsync(int timeoutMs, CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            var slot = await FindIdleSlotAsync(ct);
+            if (slot.HasValue) return slot.Value;
+            await Task.Delay(500, ct);
+        }
+        return 0;
+    }
+
     public void Dispose()
     {
         _http.Dispose();
