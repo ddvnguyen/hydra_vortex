@@ -47,21 +47,20 @@ public sealed class StateHandler
         var sw = ValueStopwatch.StartNew();
 
         var meta = await _llama.GetStateMetaAsync(slotId, ct);
-        var stateStream = await _llama.GetStateAsync(slotId, ct);
-        var stateSize = meta.StateSize;
+        var (stateStream, contentLength) = await _llama.GetStateAsync(slotId, ct);
 
-        _log.Information("Saving session {SessionId} slot {SlotId} state (size={Size}) to store",
-            sessionId, slotId, stateSize);
+        _log.Information("Saving session {SessionId} slot {SlotId} state (meta_size={MetaSize}, body_len={BodyLen}) to store",
+            sessionId, slotId, meta.StateSize, contentLength);
 
         await _store.RequestStreamBodyAsync(
-            OpCode.Put, $"kv/{sessionId}", stateStream, stateSize,
+            OpCode.Put, $"kv/{sessionId}", stateStream, contentLength,
             traceId, ct);
 
         var elapsed = sw.ElapsedMilliseconds;
         _log.Information("Saved session {SessionId} slot {SlotId} to store in {Elapsed}ms",
             sessionId, slotId, elapsed);
 
-        return new SaveResult(sessionId, slotId, meta.NPast, stateSize, elapsed);
+        return new SaveResult(sessionId, slotId, meta.NPast, contentLength, elapsed);
     }
 
      public async Task<RestoreSessionResult> RestoreFromStoreAsync(
@@ -124,11 +123,10 @@ public sealed class StateHandler
         var sw = ValueStopwatch.StartNew();
 
         var meta = await _llama.GetStateMetaAsync(slotId, ct);
-        var stateStream = await _llama.GetStateAsync(slotId, ct);
-        var stateSize = meta.StateSize;
+        var (stateStream, contentLength) = await _llama.GetStateAsync(slotId, ct);
 
-        _log.Information("Saving session {SessionId} slot {SlotId} state chunked (size={Size})",
-            sessionId, slotId, stateSize);
+        _log.Information("Saving session {SessionId} slot {SlotId} state chunked (meta_size={MetaSize}, body_len={BodyLen})",
+            sessionId, slotId, meta.StateSize, contentLength);
 
         var hashes = new List<string>();
         var buffer = new byte[1024 * 1024];
@@ -147,7 +145,7 @@ public sealed class StateHandler
             await using (teeStream)
             {
                 var response = await _store.RequestStreamBodyAsync(
-                    OpCode.PutChunked, storeKey, teeStream, stateSize,
+                    OpCode.PutChunked, storeKey, teeStream, contentLength,
                     traceId, ct);
 
                 if (response.Meta is not null)
@@ -168,7 +166,7 @@ public sealed class StateHandler
         _log.Information("Saved chunked session {SessionId} slot {SlotId} in {Elapsed}ms (chunks={Total}, deduped={Deduped})",
             sessionId, slotId, elapsed, total, deduped);
 
-        return new SaveResult(sessionId, slotId, meta.NPast, stateSize, elapsed);
+        return new SaveResult(sessionId, slotId, meta.NPast, contentLength, elapsed);
     }
 
     public async Task<RestoreSessionResult> RestoreFromStoreChunkedAsync(

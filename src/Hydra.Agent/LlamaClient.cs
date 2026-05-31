@@ -57,13 +57,16 @@ public sealed class LlamaClient : IDisposable
         _http = http;
     }
 
-    public async Task<Stream> GetStateAsync(int slotId, CancellationToken ct)
+    public async Task<(Stream Content, long ContentLength)> GetStateAsync(int slotId, CancellationToken ct)
     {
         var response = await _http.GetAsync(
             $"{_baseUrl}/slots/{slotId}/state",
             HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsStreamAsync(ct);
+        var contentLength = response.Content.Headers.ContentLength
+            ?? throw new InvalidOperationException("Missing Content-Length in state response");
+        var stream = await response.Content.ReadAsStreamAsync(ct);
+        return (stream, contentLength);
     }
 
     public async Task<RestoreResult> PutStateAsync(int slotId, Stream data, long contentLength, CancellationToken ct)
