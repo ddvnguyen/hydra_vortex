@@ -185,7 +185,13 @@ public sealed class StoreServer : RpcServer
 			var totalChunks = chunks.Count;
 			var deduped = totalChunks - totalNew;
 
-			var manifest = ChunkEngine.CreateManifest(key, 0, payloadLen, chunks);
+			// Read n_past written earlier by PutMeta; clear the temp file afterward.
+			var storedNpast = await _chunkStore.GetMetaAsync(key, "n_past", ct);
+			var nPast = storedNpast ?? 0;
+			if (storedNpast.HasValue)
+				await _chunkStore.SaveMetaAsync(key, "n_past", "", ct);
+
+			var manifest = ChunkEngine.CreateManifest(key, nPast, payloadLen, chunks);
 			await _chunkStore.SaveManifestAsync(key, manifest, ct);
 
 			StoreMetrics.OpsTotal.WithLabels("put_chunked").Inc();
@@ -247,12 +253,12 @@ public sealed class StoreServer : RpcServer
 				var path = _chunkStore.GetChunkPath(mc.Hash);
 				if (path is null) continue;
 
-				var chunkData = await File.ReadAllBytesAsync(path, ct);
-				// Write: [4B index][4B size][N bytes data] — WriteAsync already advances internally.
+				// Write framing [4B index][4B size], flush, then sendfile to avoid
+				// reading the entire chunk into heap before sending.
 				await writer.WriteAsync(BitConverter.GetBytes(mc.Index), ct);
-				await writer.WriteAsync(BitConverter.GetBytes(chunkData.Length), ct);
-				await writer.WriteAsync(chunkData, ct);
+				await writer.WriteAsync(BitConverter.GetBytes(mc.Size), ct);
 				await writer.FlushAsync(ct);
+				await SendFileAsync(client, path, ct);
 			}
 
 			StoreMetrics.OpsTotal.WithLabels("get_chunked").Inc();
