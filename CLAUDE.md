@@ -147,8 +147,42 @@ Prometheus alerting rules in `infra/prometheus/alerts.yml` — covers service do
 ### 1. Ask for decisions via `question` tool
 When there are multiple options, solutions, or design choices — always use the `question` tool with structured selections to get a clear decision from the user before proceeding.
 
+**Example:**
+```
+question(questions=[{
+  "header": "Storage backend",
+  "question": "Which storage backend should we use for KV cache?",
+  "options": [
+    {"label": "Redis", "description": "In-memory, fast but volatile"},
+    {"label": "tmpfs", "description": "Local RAM disk, simplest setup"},
+    {"label": "S3", "description": "Persistent, slower but durable"}
+  ]
+}])
+```
+
 ### 2. Track tasks with `todowrite` always
 Always use `todowrite` to track work, even for seemingly simple tasks. Keeps progress visible and ensures nothing is skipped.
 
+**Pattern:**
+```
+todowrite(todos=[
+  {content: "Implement Store RPC server", status: "in_progress", priority: "high"},
+  {content: "Add integration tests",      status: "pending",     priority: "medium"},
+  {content: "Update docs",                status: "pending",     priority: "low"}
+])
+```
+Update status as work progresses — exactly one `in_progress` at a time. Mark `completed` only after verification (test pass, lint clean, etc.).
+
 ### 3. End with a final result block
 After completing work, output a clear summary block prefixed with `---` or a code-free section that highlights what was done, changed, or needs attention. Make the result stand out so the user can quickly understand the outcome.
+
+**Example:**
+```
+---
+
+**Summary:**
+- Implemented `SlotService` in `src/Hydra.Store/Services/SlotService.cs`
+- Added `GET /slots/{id}/state` endpoint to llama.cpp fork
+- Fixed: n_tokens guard in Coordinator (must be > n_past)
+- Pending: integration test for cross-GPU migration
+```
