@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 from typing import Optional
@@ -49,6 +50,9 @@ def create_router(
     router = APIRouter()
     _start_time = time.time()
     _routing_stats = {"total": 0, "affinity": 0, "store_restore": 0, "long_prompt": 0, "least_loaded": 0}
+    # Tracks which (node_name, system_prompt_hash) pairs have a saved prefix checkpoint.
+    # Prevents repeated saves after the first completion on each node.
+    _saved_prefixes: set[str] = set()
 
     def node_url(node_name: str) -> str:
         for n in config.nodes:
@@ -98,6 +102,29 @@ def create_router(
         if not decision.session_found:
             session_table.register(sess_id, decision.node_name, decision.slot_id or 0)
             _routing_stats["least_loaded"] += 1
+
+            # --- Prefix warm-start (M2.3) ---
+            # For new sessions: restore a saved prefix checkpoint so the session
+            # starts with KV cache already prefilled (skips system-prompt re-prefill).
+            if config.prefix_checkpoint_enabled:
+                system_msg = next((m for m in req.messages if m.role == "system"), None)
+                if system_msg:
+                    prompt_hash = hashlib.sha256(system_msg.content.encode()).hexdigest()[:16]
+                    try:
+                        meta = await state_manager.restore_prefix_checkpoint(
+                            prompt_hash,
+                            decision.node_config.host,
+                            decision.node_config.rpc_port,
+                            slot_id=decision.slot_id or 0,
+                        )
+                        n_past_prefix = meta.get("n_past", 0) if meta else 0
+                        if n_past_prefix > 0:
+                            session_table.update_n_past(sess_id, n_past_prefix)
+                            log.info("prefix_restored", session_id=sess_id,
+                                     checkpoint=prompt_hash, n_past=n_past_prefix)
+                    except Exception:
+                        pass  # no checkpoint yet — will be saved after first completion
+
         elif decision.action == "route" and decision.session_found:
             _routing_stats["affinity"] += 1
 
@@ -129,6 +156,31 @@ def create_router(
 
         node_url_base = node_url(decision.node_name)
 
+        # Determine system prompt hash once for use in prefix save-once logic below.
+        _system_msg = next((m for m in req.messages if m.role == "system"), None)
+        _prompt_hash = (
+            hashlib.sha256(_system_msg.content.encode()).hexdigest()[:16]
+            if _system_msg and config.prefix_checkpoint_enabled else None
+        )
+        _prefix_key = f"{decision.node_name}:{_prompt_hash}" if _prompt_hash else None
+
+        async def _maybe_save_prefix():
+            if _prefix_key and _prefix_key not in _saved_prefixes:
+                _saved_prefixes.add(_prefix_key)
+                try:
+                    entry = session_table.lookup(sess_id)
+                    slot = entry.slot_id if entry and entry.slot_id is not None else 0
+                    await state_manager.save_prefix_checkpoint(
+                        _prompt_hash,  # type: ignore[arg-type]
+                        decision.node_config.host,
+                        decision.node_config.rpc_port,
+                        slot_id=slot,
+                    )
+                    log.info("prefix_saved", checkpoint=_prompt_hash, node=decision.node_name)
+                except Exception as exc:
+                    _saved_prefixes.discard(_prefix_key)
+                    log.warning("prefix_save_failed", checkpoint=_prompt_hash, error=str(exc))
+
         if req.stream:
             async def stream_with_npast():
                 last_usage = None
@@ -147,6 +199,7 @@ def create_router(
                         entry = session_table.lookup(sess_id)
                         if entry:
                             session_table.update_n_past(sess_id, total)
+                await _maybe_save_prefix()
 
             return StreamingResponse(
                 stream_with_npast(),
@@ -161,6 +214,7 @@ def create_router(
                 entry = session_table.lookup(sess_id)
                 if entry:
                     session_table.update_n_past(sess_id, total)
+            await _maybe_save_prefix()
             return JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": trace_id, "X-Hydra-Node": decision.node_name},
