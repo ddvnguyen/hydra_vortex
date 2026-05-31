@@ -395,6 +395,7 @@ def create_router(
                 to_config.host,
                 to_config.rpc_port,
                 to_config.name,
+                from_node_name=entry.node_name,
             )
             return {"migrated": True, "session_id": session_id, "target": req.target_node, "result": result}
         except Exception as e:

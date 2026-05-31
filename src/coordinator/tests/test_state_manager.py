@@ -54,6 +54,7 @@ async def test_restore_flow():
             "session_id": "sess_abc",
             "slot_id": 0,
             "n_past": 100,
+            "restored": True,
             "restore_ms": 2000,
         }
 
