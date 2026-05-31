@@ -272,7 +272,7 @@ Extracts `&impl->queue_tasks` and `&impl->queue_results` (PUBLIC members) instea
 - **M0.1** — Hydra.Shared (C# RPC lib): Protocol.cs, RpcServer/Client base classes
 - **M0.2** — Hydra.Store (C# tmpfs backend): StorageEngine, StoreServer, sendfile
 - **M0.3** — Hydra.Agent (C# GPU sidecar): LlamaClient, StateHandler, AgentServer
-- **M0.4** — E2E test: RTX → Store → P100 full migration with cache_n > 0 verification
+- **M0.4** — System test: RTX → Store → P100 full migration with cache_n > 0 verification
 
 ---
 

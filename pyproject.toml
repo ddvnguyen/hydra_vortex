@@ -39,7 +39,7 @@ hydra-coordinator = "coordinator.main:run"
 asyncio_mode = "auto"
 testpaths = ["src/coordinator/tests", "tests"]
 markers = [
-    "e2e: marks E2E tests that require real services (llama-servers, Store, Agents)",
+    "system: marks system tests that require real services (llama-servers, Store, Agents)",
 ]
 
 [tool.ruff]

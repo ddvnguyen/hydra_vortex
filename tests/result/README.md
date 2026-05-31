@@ -1,9 +1,9 @@
-# E2E Test Results
+# System Test Results
 
-Each E2E test run produces a JSON result file in this directory:
+Each system test run produces a JSON result file in this directory:
 `{test_name}_{ISO-timestamp}.json`
 
-## How to Run E2E Tests
+## How to Run System Tests
 
 **Prerequisites** — all 6 services running:
 
@@ -17,13 +17,13 @@ Each E2E test run produces a JSON result file in this directory:
 | Coordinator      | `localhost:9000`                  |
 
 ```bash
-# Full E2E suite
-python -m pytest tests/e2e/ -v -m e2e
+# Full system test suite
+python -m pytest tests/system/ -v -m system
 
 # Individual suites
-python -m pytest tests/e2e/test_full_workflow_e2e.py -v -m e2e
-python -m pytest tests/e2e/test_stress_e2e.py -v -m e2e
-python -m pytest tests/e2e/test_large_prompt_e2e.py -v -m e2e
+python -m pytest tests/system/test_full_workflow_system.py -v -m system
+python -m pytest tests/system/test_stress_system.py -v -m system
+python -m pytest tests/system/test_large_prompt_system.py -v -m system
 ```
 
 ## Result File Fields

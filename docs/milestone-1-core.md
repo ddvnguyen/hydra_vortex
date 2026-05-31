@@ -135,7 +135,7 @@ POST /sessions/{id}/migrate → force migration
 
 ---
 
-## Task M1.4: Integration + E2E
+## Task M1.4: Integration + System Test
 
 ### M1.4.1: Coordinator ↔ Agent Integration (`tests/integration/test_coordinator_agent.py`)
 - Start Store, 2 Agents (mocked llama), Coordinator
@@ -143,7 +143,7 @@ POST /sessions/{id}/migrate → force migration
 - Send second turn → same agent (affinity)
 - Simulate RTX full → migration to P100
 
-### M1.4.2: Full E2E (`tests/e2e/test_e2e.py` extended)
+### M1.4.2: Full System Test (`tests/system/test_system.py` extended)
 - Start all services + real llama-servers
 - Multi-turn conversation through coordinator
 - Verify cache_n > 0 on turns 2+
@@ -170,8 +170,8 @@ POST /sessions/{id}/migrate → force migration
 | M1.3.2  | coordinator | 80    | test_router.py               | M1.1-M1.3.1 |
 | M1.3.3  | coordinator | 40    | manual                       | all above   |
 | M1.4.1  | integration | 80    | test_coordinator_agent.py    | all above   |
-| M1.4.2  | e2e         | 80    | test_e2e.py                  | all above   |
-| M1.4.3  | e2e         | —     | manual with 3 clients        | all above   |
+| M1.4.2  | system      | 80    | test_system.py               | all above   |
+| M1.4.3  | system      | —     | manual with 3 clients        | all above   |
 
 **Parallel work:** M1.1 (routing) and M1.2 (state mgmt) can be built in parallel.
 M1.3 depends on both. M1.4 integrates everything.

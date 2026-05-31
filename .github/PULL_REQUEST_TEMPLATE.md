@@ -21,4 +21,4 @@
 
 - [ ] Unit tests pass (`dotnet test` / `pytest`)
 - [ ] Integration tests pass
-- [ ] E2E tests pass (if applicable)
+- [ ] System tests pass (if applicable)

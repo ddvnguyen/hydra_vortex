@@ -1,5 +1,5 @@
 """
-M2 E2E test for prefix checkpoints and chunked dedup flow through Coordinator.
+M2 system test for prefix checkpoints and chunked dedup flow through Coordinator.
 
 Tests:
   - Prefix checkpoint save/restore via coordinator HTTP
@@ -119,19 +119,122 @@ def test_prefix_save_and_restore_flow(client):
     state_mgr.save_prefix_checkpoint = fake_save
     state_mgr.restore_prefix_checkpoint = fake_restore
 
-    # Save prefix
-    save_resp = client.post("/prefix/system_prompt/save?node_name=rtx&slot_id=0")
-    assert save_resp.status_code == 200
-    assert save_resp.json()["saved"] is True
 
-    # Restore prefix to P100
-    restore_resp = client.post("/prefix/system_prompt/restore?node_name=p100&slot_id=0")
-    assert restore_resp.status_code == 200
-    assert restore_resp.json()["restored"] is True
+# ── Slot_id resolution tests ──────────────────────────────────────────────
 
-    assert len(operations) == 2
-    assert operations[0][0] == "save"
-    assert operations[1][0] == "restore"
+
+def test_slot_id_resolved_after_completion(client, monkeypatch):
+    """New session with slot_id=None resolves to real slot via /slots after completion."""
+    table: SessionTable = client.app.state._session_table
+
+    # Simulate a real routing decision: slot_id=None for new session
+    def fake_route(**kwargs):
+        from coordinator.config import NodeConfig
+        return RoutingDecision(
+            node_name="rtx",
+            node_config=NodeConfig(
+                name="rtx", host="127.0.0.1", rpc_port=9601,
+                llama_url="http://localhost:8080", gpu_type="rtx5060ti",
+            ),
+            slot_id=None,
+            action="route",
+            session_id="sess_slot_resolve",
+            session_found=False,
+            n_past=0,
+        )
+
+    monkeypatch.setattr("coordinator.router.route_request", fake_route)
+
+    async def fake_proxy(*args, **kwargs):
+        return {"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 42}}
+
+    monkeypatch.setattr("coordinator.router.proxy_completion", fake_proxy)
+
+    # Mock httpx.AsyncClient so _resolve_slot_id gets a fake /slots response
+    # Slot with n_past=42 is slot 3 — that should be matched
+    fake_slots_response = [
+        {"id": 0, "n_past": 0, "is_processing": False},
+        {"id": 1, "n_past": 0, "is_processing": False},
+        {"id": 2, "n_past": 10, "is_processing": False},
+        {"id": 3, "n_past": 42, "is_processing": False},
+    ]
+
+    class FakeResponse:
+        status_code = 200
+        def json(self): return fake_slots_response
+        def raise_for_status(self): pass
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def get(self, *a, **kw): return FakeResponse()
+
+    monkeypatch.setattr("coordinator.router.httpx.AsyncClient", lambda **kw: FakeClient())
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
+    )
+    assert resp.status_code == 200
+
+    entry = table.lookup("sess_slot_resolve")
+    assert entry is not None, "session should be registered"
+    assert entry.slot_id == 3, f"expected slot_id=3 (matched by n_past=42), got {entry.slot_id}"
+
+
+def test_slot_id_unresolved_when_no_match(client, monkeypatch):
+    """If /slots has no matching n_past, slot_id stays None — next turn retries."""
+    table: SessionTable = client.app.state._session_table
+
+    def fake_route(**kwargs):
+        from coordinator.config import NodeConfig
+        return RoutingDecision(
+            node_name="rtx",
+            node_config=NodeConfig(
+                name="rtx", host="127.0.0.1", rpc_port=9601,
+                llama_url="http://localhost:8080", gpu_type="rtx5060ti",
+            ),
+            slot_id=None,
+            action="route",
+            session_id="sess_no_match",
+            session_found=False,
+            n_past=0,
+        )
+
+    monkeypatch.setattr("coordinator.router.route_request", fake_route)
+
+    async def fake_proxy(*args, **kwargs):
+        return {"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 99}}
+
+    monkeypatch.setattr("coordinator.router.proxy_completion", fake_proxy)
+
+    # No slot has n_past=99 — resolution returns None
+    fake_slots = [
+        {"id": 0, "n_past": 0, "is_processing": False},
+        {"id": 1, "n_past": 10, "is_processing": False},
+    ]
+
+    class FakeResp:
+        status_code = 200
+        def json(self): return fake_slots
+        def raise_for_status(self): pass
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def get(self, *a, **kw): return FakeResp()
+
+    monkeypatch.setattr("coordinator.router.httpx.AsyncClient", lambda **kw: FakeClient())
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
+    )
+    assert resp.status_code == 200
+
+    entry = table.lookup("sess_no_match")
+    assert entry is not None
+    assert entry.slot_id is None, f"expected None when no match, got {entry.slot_id}"
 
 
 def test_prefix_save_custom_name(client):

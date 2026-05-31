@@ -54,7 +54,7 @@ Build RTX: GGML_CUDA_FORCE_CUBLAS=ON, sm_120. Build P100: sm_60.
 ## Milestones
 | MS | Goal                                          | Est.      |
 |----|-----------------------------------------------|-----------|
-| M0 | llama fork + Store + Agent + E2E test         | 3-4 days  |
+| M0 | llama fork + Store + Agent + System test       | 3-4 days  |
 | M1 | Coordinator + routing + session + migration   | 1-2 weeks |
 | M2 | Chunked dedup + prefix checkpoints            | 1 week    |
 | M3 | Persistence + Grafana + Langfuse              | 1-2 weeks |
@@ -141,3 +141,14 @@ Prometheus alerting rules in `infra/prometheus/alerts.yml` — covers service do
 4. llama-server: tokens/s, requests processing, KV cache usage
 5. Service Health: up/down table, llama health per node, agent slot status
 6. Logs: all service logs with trace_id filter
+
+## Coding Agent Rules
+
+### 1. Ask for decisions via `question` tool
+When there are multiple options, solutions, or design choices — always use the `question` tool with structured selections to get a clear decision from the user before proceeding.
+
+### 2. Track tasks with `todowrite` always
+Always use `todowrite` to track work, even for seemingly simple tasks. Keeps progress visible and ensures nothing is skipped.
+
+### 3. End with a final result block
+After completing work, output a clear summary block prefixed with `---` or a code-free section that highlights what was done, changed, or needs attention. Make the result stand out so the user can quickly understand the outcome.

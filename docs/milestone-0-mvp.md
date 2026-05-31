@@ -6,7 +6,7 @@ llama.cpp fork adds binary streaming endpoints → Agent pipes stream directly
 to/from Store → no disk round-trip anywhere.
 
 ## What "Done" Means
-Run `pytest tests/e2e/test_e2e.py` and see:
+Run `pytest tests/system/test_system.py` and see:
 ```
 ✅ GET /slots/0/state streams binary KV state from RTX llama-server
 ✅ PUT /slots/0/state restores binary KV state on P100 llama-server
@@ -422,7 +422,7 @@ public sealed class AgentServer(AgentConfig cfg, StateHandler handler,
 
 ---
 
-## Task M0.4: Integration + E2E
+## Task M0.4: Integration + System Test
 
 ### M0.4.1: Store ↔ Agent Integration (`Tests.Integration/StoreAgentTests.cs`)
 - Start real Store server on random port
@@ -431,7 +431,7 @@ public sealed class AgentServer(AgentConfig cfg, StateHandler handler,
 - RESTORE_STATE: Store has file → mock llama receives stream
 - Verify trace_id appears in both service logs
 
-### M0.4.2: E2E with Real llama-servers (`tests/e2e/test_e2e.py`)
+### M0.4.2: System Test with Real llama-servers (`tests/system/test_system.py`)
 **Python script** — runs against real patched llama-servers + C# services.
 
 ```python
@@ -470,11 +470,11 @@ async def test_full_migration():
 | M0.3.2  | C#   | Agent     | 80    | StateHandlerTests.cs        | After M0.3.1|
 | M0.3.3  | C#   | Agent     | 60    | —                           | After M0.3.2|
 | M0.4.1  | C#   | Integration| 60   | StoreAgentTests.cs          | After M0.2+M0.3|
-| M0.4.2  | Python| E2E      | 60    | test_e2e.py                 | After all above|
+| M0.4.2  | Python| System   | 60    | test_system.py              | After all above|
 
 **Dependency order:**
 ```
-M0.0 (C++ llama fork) ──► M0.4.2 (E2E needs patched servers)
+M0.0 (C++ llama fork) ──► M0.4.2 (System test needs patched servers)
 M0.1 (Shared lib)     ──► M0.2 and M0.3 (both depend on shared)
 M0.2 and M0.3         run in parallel
 M0.4.1                ──► M0.2 + M0.3 both done

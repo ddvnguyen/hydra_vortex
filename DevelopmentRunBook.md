@@ -121,8 +121,8 @@ dotnet test src/Tests.Integration --filter "FullyQualifiedName~Chunked" -v m
 # Python tests
 pytest src/coordinator/tests -v        # 46 tests
 pytest src/coordinator/tests/test_prefix_checkpoint.py -v  # 4 M2 tests
-pytest tests/e2e/test_e2e.py -v -m e2e                # M0 E2E (RPC save/restore)
-pytest tests/e2e/test_full_workflow_e2e.py -v -m e2e  # M1+M2 full workflow via Coordinator HTTP
+pytest tests/system/test_system.py -v -m system                  # M0 System test (RPC save/restore)
+pytest tests/system/test_full_workflow_system.py -v -m system    # M1+M2 full workflow via Coordinator HTTP
 ```
 
 ---
@@ -201,7 +201,7 @@ src/
 ├── Tests.Store/           # 44 tests — Storage engine + ChunkEngine + ChunkStore
 ├── Tests.Agent/           # 23 tests — LlamaClient + StateHandler + LocalChunkCache
 ├── Tests.Integration/     # 18 tests — Store ↔ Agent + chunked ops + prefix checkpoint
-├── tests/                 # Python E2E tests
+├── tests/                 # Python system tests
 └── python_shared/         # Shared Python utilities
 ```
 

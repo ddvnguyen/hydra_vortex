@@ -1,5 +1,5 @@
 """
-E2E test for full KV state migration across GPU nodes.
+System test for full KV state migration across GPU nodes.
 
 Tests the complete path:
   llama RTX → Agent saves to Store → Agent restores to P100 → continuation
@@ -14,7 +14,7 @@ Environment variables:
   P100_LLAMA_URL      http://192.168.122.21:8086
   RTX_AGENT_HOST      127.0.0.1
   RTX_AGENT_PORT      9601
-  P100_AGENT_HOST     192.168.122.21
+  P100_AGENT_HOST     127.0.0.1
   P100_AGENT_PORT     9602
   STORE_HOST          127.0.0.1
   STORE_PORT          9500
@@ -31,10 +31,10 @@ RTX_LLAMA_URL = os.environ.get("RTX_LLAMA_URL", "http://localhost:8080")
 P100_LLAMA_URL = os.environ.get("P100_LLAMA_URL", "http://192.168.122.21:8086")
 RTX_AGENT_HOST = os.environ.get("RTX_AGENT_HOST", "127.0.0.1")
 RTX_AGENT_PORT = int(os.environ.get("RTX_AGENT_PORT", "9601"))
-P100_AGENT_HOST = os.environ.get("P100_AGENT_HOST", "192.168.122.21")
+P100_AGENT_HOST = os.environ.get("P100_AGENT_HOST", "127.0.0.1")
 P100_AGENT_PORT = int(os.environ.get("P100_AGENT_PORT", "9602"))
 
-TEST_SESSION = "e2e-test-session"
+TEST_SESSION = "system-test-session"
 PROMPT = "What is the capital of France?"
 NEW_QUESTION = " What is its population?"
 
@@ -82,7 +82,7 @@ async def rpc_restore_state(
         await client.close()
 
 
-@pytest.mark.e2e
+@pytest.mark.system
 @pytest.mark.asyncio
 async def test_full_migration():
     # 1. Send prompt to RTX llama-server
@@ -90,7 +90,7 @@ async def test_full_migration():
         RTX_LLAMA_URL,
         [{"role": "user", "content": PROMPT}],
         max_tokens=50,
-        trace_id="e2e-prompt-rtx",
+        trace_id="system-prompt-rtx",
     )
     assert "choices" in response, f"RTX completion response missing choices: {response}"
     assistant_reply = response["choices"][0]["message"]["content"]
@@ -100,7 +100,7 @@ async def test_full_migration():
         RTX_AGENT_HOST,
         RTX_AGENT_PORT,
         TEST_SESSION,
-        trace_id="e2e-save-rtx",
+        trace_id="system-save-rtx",
     )
     assert save_meta.get("size", 0) > 0, f"SaveState returned no size: {save_meta}"
 
@@ -110,7 +110,7 @@ async def test_full_migration():
         P100_AGENT_PORT,
         TEST_SESSION,
         slot_id=0,
-        trace_id="e2e-restore-p100",
+        trace_id="system-restore-p100",
     )
     assert restore_meta.get("restored"), f"RestoreState failed: {restore_meta}"
 
@@ -123,7 +123,7 @@ async def test_full_migration():
             {"role": "user", "content": NEW_QUESTION},
         ],
         max_tokens=50,
-        trace_id="e2e-continuation-p100",
+        trace_id="system-continuation-p100",
     )
 
     timings = continuation.get("timings", {})

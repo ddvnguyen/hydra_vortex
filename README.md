@@ -24,7 +24,7 @@ HTTP only at edges: client-facing API and agent-to-local-llama-server.
 
 | MS | Name       | Scope                                        |
 |----|------------|----------------------------------------------|
-| M0 | MVP Test   | Store + Agent + E2E save/restore             |
+| M0 | MVP Test   | Store + Agent + system test (save/restore)    |
 | M1 | Core       | Coordinator + routing + session + migration  |
 | M2 | Advanced   | Chunked dedup + prefix checkpoints           |
 | M3 | Production | Persistence + Grafana + Langfuse + model dist|

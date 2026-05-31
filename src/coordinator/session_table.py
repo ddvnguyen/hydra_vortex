@@ -21,7 +21,7 @@ class SessionTable:
     def lookup(self, session_id: str) -> Optional[SessionEntry]:
         return self._sessions.get(session_id)
 
-    def register(self, session_id: str, node_name: str, slot_id: int, n_past: int = 0):
+    def register(self, session_id: str, node_name: str, slot_id: int | None = None, n_past: int = 0):
         now = time.time()
         entry = SessionEntry(
             session_id=session_id,
