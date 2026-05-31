@@ -43,3 +43,6 @@ jobs:
                and do NOT submit a review that would appear as changes_requested
 
             Do NOT flag style nits or minor formatting issues. Only report substantive problems.
+
+            Also check: does the PR description contain a closing keyword (Closes/Fixes/Resolves #XX)?
+            If not, post a comment reminding the author to add one so the linked issue is auto-closed on merge.
