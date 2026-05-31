@@ -184,21 +184,26 @@ def create_router(
         if req.stream:
             async def stream_with_npast():
                 last_usage = None
+                last_slot_id = None
                 async for chunk in proxy_completion_stream(node_url_base, request_dict, trace_id):
                     if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
                         try:
                             data = json.loads(chunk[6:])
                             if "usage" in data:
                                 last_usage = data["usage"]
+                            if "slot_id" in data:
+                                last_slot_id = data["slot_id"]
                         except Exception:
                             pass
                     yield chunk
-                if last_usage:
-                    total = last_usage.get("total_tokens", 0)
-                    if total > 0:
-                        entry = session_table.lookup(sess_id)
-                        if entry:
+                entry = session_table.lookup(sess_id)
+                if entry:
+                    if last_usage:
+                        total = last_usage.get("total_tokens", 0)
+                        if total > 0:
                             session_table.update_n_past(sess_id, total)
+                    if last_slot_id is not None:
+                        entry.slot_id = last_slot_id
                 await _maybe_save_prefix()
 
             return StreamingResponse(
@@ -210,10 +215,13 @@ def create_router(
             result = await proxy_completion(node_url_base, request_dict, trace_id)
             usage = result.get("usage", {})
             total = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
-            if total > 0:
-                entry = session_table.lookup(sess_id)
-                if entry:
+            entry = session_table.lookup(sess_id)
+            if entry:
+                if total > 0:
                     session_table.update_n_past(sess_id, total)
+                slot_id_from_llama = result.get("slot_id")
+                if slot_id_from_llama is not None:
+                    entry.slot_id = slot_id_from_llama
             await _maybe_save_prefix()
             return JSONResponse(
                 content=result,

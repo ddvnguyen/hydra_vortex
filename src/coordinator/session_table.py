@@ -54,7 +54,8 @@ class SessionTable:
         return [s for s in self._sessions.values() if s.node_name == node_name]
 
     def get_lru_session(self, node_name: str) -> Optional[SessionEntry]:
-        sessions = self.get_sessions_on_node(node_name)
+        sessions = [s for s in self.get_sessions_on_node(node_name)
+                    if s.slot_id is not None]
         if not sessions:
             return None
         return min(sessions, key=lambda s: s.last_used)
