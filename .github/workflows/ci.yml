@@ -38,6 +38,16 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Cancel duplicate queued runs
+        run: |
+          gh run list --workflow CI --branch "${{ github.ref_name }}" \
+            --json databaseId,status --jq '.[] | select(.status == "queued") | .databaseId' |
+          while read id; do
+            [ "$id" != "${{ github.run_id }}" ] && gh run cancel "$id" 2>/dev/null || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: actions/checkout@v4
 
       - name: Restore & build (.NET)
