@@ -87,7 +87,11 @@ exports in step 3 must be present in the shell that launches each agent.
 - **Plan / status** → Plane. When picking up or finishing roadmap work, update the
   matching Plane work item (state, comments). Milestones are the Plane modules above.
 - **Code / review / CI** → GitHub via `gh`, exactly as `CLAUDE.md` already mandates
-  (issue → branch → PR → merge). CI/monitoring auto-issues stay on GitHub.
+  (issue → branch → PR → merge). CI/monitoring auto-issues stay on GitHub only.
+- **Findings (two-way)** → file new review findings in **both**: GitHub
+  (`gh issue create --label review-finding`, the source of truth) *and* the Plane
+  **"Backlog — Findings"** module, cross-linked by GitHub `#`. Re-seeding does not
+  touch findings — they are synced as they arise.
 - **Linking** → when a Plane work item gets a GitHub PR/issue, paste the GitHub URL
   into the Plane item (and reference the Plane item in the PR body). Manual, explicit,
   no fragile sync.

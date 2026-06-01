@@ -97,7 +97,9 @@ Plane modules). Agents drive it via the **Plane MCP server** (configured in
 `.mcp.json` for Claude Code and `opencode.json` for opencode). The GitHub bridge is
 at the **agent layer**: use Plane for planning/status and GitHub (`gh`) for
 code/PRs/CI issues — there is no native Plane↔GitHub sync. When a Plane work item
-gets a PR, cross-link the URLs by hand. Setup + convention: `docs/PLANE_SETUP.md`.
+gets a PR, cross-link the URLs by hand. New review findings go in **both** GitHub
+(`review-finding` label, source of truth) and the Plane **Backlog — Findings**
+module, cross-linked by issue `#`. Setup + convention: `docs/PLANE_SETUP.md`.
 
 ## Starting Point
 1. M0.0 first: fork llama.cpp, add 3 endpoints (~80 lines C++), verify with curl

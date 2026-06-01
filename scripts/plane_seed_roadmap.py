@@ -30,6 +30,9 @@ PROJECT_IDENTIFIER = "HYDRA"
 
 # (module_name, module_status, module_desc, [ (item_name, priority, desc, done) ])
 ROADMAP = [
+    ("M0 — MVP Test", "completed", "llama fork + Store + Agent + system verify. Done.", []),
+    ("M1 — Core System", "completed", "Coordinator + routing + session + migration. Done.", []),
+    ("M2 — Advanced", "completed", "Chunked dedup + prefix checkpoints. Done.", []),
     ("Phase 0 — Stabilize", "in-progress",
      "Foundation: green CI/CD, restore obs, rebase local onto remote.", [
         ("Phase 0 · Reverse obs-strip + restore slot-wait", "high",
@@ -54,6 +57,12 @@ ROADMAP = [
      "NVMe write-behind persistence (re-spec'd for C# Store) + harden observability.", [
         ("M3 · NVMe write-behind persistence (C# re-spec)", "high",
          "SQLite metadata + write-behind tmpfs->NVMe + startup recovery, re-spec'd for the C# Store. Enables reboot survival (store is volatile tmpfs today).", False),
+        ("M3.1.1 · SQLite metadata (C# Microsoft.Data.Sqlite)", "medium",
+         "Session + chunk metadata table; backup tracking.", False),
+        ("M3.1.2 · Write-behind task (tmpfs->NVMe, BackgroundService)", "medium",
+         "Periodic copy of unbacked chunks tmpfs->NVMe; mark backed_up.", False),
+        ("M3.1.3 · Startup recovery (restore hot sessions)", "medium",
+         "On boot, restore top-N recent sessions NVMe->tmpfs within 30s.", False),
         ("M3 · Harden monitoring/obs for real", "medium",
          "Real metrics on Grafana: save/restore/migration latency, draft acceptance, cache-hit. The obs-for-real payoff.", False),
      ]),
@@ -65,13 +74,17 @@ ROADMAP = [
          "Hot-swap / load models on demand without a full stack restart.", False),
         ("M4 · Vision / embedding / audio model support", "low",
          "Serve multimodal models (vision, embedding, audio) alongside the LLM.", False),
+        ("M4 · systemd lifecycle (ramdisk->store->agents->coordinator)", "low",
+         "Boot-ordered systemd units; builds on the P100 rootless systemctl --user work.", False),
      ]),
     ("M5 — LLM Obs & Agentic", "planned",
      "Langfuse tracing, A/B testing, agentic orchestration.", [
         ("M5 · Langfuse tracing", "low",
          "Optional/feature-flagged request tracing: token counts, routing decisions, migration spans.", False),
-        ("M5 · A/B testing + agentic system", "low",
-         "A/B routing experiments; agentic orchestration layer.", False),
+        ("M5 · A/B testing", "low",
+         "A/B routing experiments across model/quant/draft/policy variants.", False),
+        ("M5 · Agentic system", "low",
+         "Agentic orchestration over the Coordinator (tool use, multi-turn, sub-agents).", False),
      ]),
 ]
 
