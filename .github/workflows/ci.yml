@@ -442,9 +442,9 @@ jobs:
       - name: Deploy llama-server to P100
         run: |
           rsync -az --checksum \
-            src/llama-cpp/build_sm60/bin/llama-server \
+            /mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm60/bin/llama-server \
             hydra-p100:/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
-          ssh hydra-p100 "sudo systemctl restart llama-p100"
+          ssh hydra-p100 "systemctl --user restart llama-p100"
           sleep 8
           curl -sf http://192.168.122.21:8086/health && echo "llama-p100 OK" || echo "WARNING: llama-p100 health check failed (non-fatal)"
 

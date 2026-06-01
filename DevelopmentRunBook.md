@@ -42,30 +42,41 @@ Client (HTTP) → Coordinator :9000     [Python/FastAPI]
 
 ---
 
-## Quick Start (Docker Compose)
+## Quick Start
+
+### One command (recommended)
 
 ```bash
-# All Hydra services (Store + Agents + Coordinator + Observability)
-cd infra
-docker compose up -d
+bash scripts/start-env.sh
+```
 
-# llama-server RTX (native, needs GPU)
-./build-rtx/bin/llama-server \
-  -m /path/to/model.gguf \
-  --port 8080 --rpc-port 9501 \
-  -ngl 99 --ctx-size 131072 --parallel 2 \
-  --cont-batching --flash-attn on
+Idempotent — checks what is already running and only starts what is missing. Handles:
+- Hydra infra stack (Store + Agents + Coordinator + Observability) via podman-compose
+- llama-server RTX via the `infra/llama-rtx-node/` container (mounts `build_sm120/` directly)
+- llama-server P100 via SSH + user systemd on the VM (no sudo needed)
 
-# llama-server P100 (on VM 192.168.122.21)
-# SSH into VM, then:
-./llama-server \
-  -m /path/to/model.gguf \
-  --port 8086 --rpc-port 9502 \
-  -ngl 99 --ctx-size 131072 --parallel 1 \
-  --cont-batching --flash-attn on
+Requires pre-built llama binaries (see **Infrastructure** section). Use `--skip-p100` if the
+P100 VM is unavailable.
 
-# Verify all services
-curl -s :9000/health
+```bash
+bash scripts/start-env.sh --skip-p100   # RTX only
+```
+
+### Manual (if needed)
+
+```bash
+# Hydra control plane + observability
+cd infra && podman-compose up -d
+
+# llama-server RTX (containerised, mounts build_sm120/ directly)
+cd infra/llama-rtx-node && podman-compose up -d
+podman network connect hydra_default llama-cpp   # so agents can reach it
+
+# llama-server P100 (user systemd on VM, no sudo)
+ssh hydra-p100 "systemctl --user start llama-p100"
+
+# Verify
+curl -s http://localhost:9000/health
 ```
 
 > **Note:** The Agent connects to llama via **HTTP** (slots/state endpoints), not via
@@ -154,23 +165,57 @@ Store and Agent config is compiled-in. Use VS Code launch `env` blocks or modify
 ```bash
 sudo bash infra/setup-ramdisk.sh
 # Mounts 30 GB tmpfs at /mnt/llm-ram
+# NOTE: not needed when running Store via podman-compose (tmpfs managed by container)
 ```
 
 ### llama-server patched build
+
+Build dirs are gitignored — binaries live only on the host filesystem and are picked up
+by the RTX container (via volume mount) and rsynced to the P100 VM by CI/deploy scripts.
+
 ```bash
-# RTX (Blackwell sm_120, cuBLAS)
-cmake -B build-rtx -G Ninja \
+cd src/llama-cpp
+
+# RTX (Blackwell sm_120, cuBLAS) — output: build_sm120/bin/llama-server
+cmake -B build_sm120 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=120 \
   -DGGML_CUDA=ON \
-  -DGGML_CUDA_FORCE_CUBLAS=ON
-cmake --build build-rtx --target llama-server -j4
+  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_NATIVE=ON
+cmake --build build_sm120 --target llama-server -j4
 
-# P100 (Pascal sm_60, build inside VM)
-cmake -B build-p100 -G Ninja \
+# P100 (Pascal sm_60) — output: build_sm60/bin/llama-server
+# Build on this host then deploy via start-env.sh or setup-p100.sh
+cmake -B build_sm60 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=60 \
-  -DGGML_CUDA=ON
-cmake --build build-p100 --target llama-server -j4
+  -DGGML_CUDA=ON \
+  -DGGML_NATIVE=ON
+cmake --build build_sm60 --target llama-server -j4
 ```
+
+The RTX container (`infra/llama-rtx-node/docker-compose.yml`) mounts `build_sm120/` directly —
+restarting the container picks up any newly built binary automatically.
+
+### P100 VM — first-time setup
+
+```bash
+# One-time: install user systemd service on the VM (no sudo required)
+bash scripts/setup-p100.sh
+```
+
+This deploys the binary, installs `~/.config/systemd/user/llama-p100.service` on the VM,
+enables it for auto-start, and sets up promtail log shipping.
+
+After first-time setup, day-to-day use is just `bash scripts/start-env.sh`.
+
+### CI/CD deploy
+
+The `deploy-llama` workflow (`.github/workflows/ci.yml`) reuses the local build cache:
+- **RTX**: `podman-compose up -d` in `infra/llama-rtx-node/` — container mounts `build_sm120/` via absolute volume path
+- **P100**: `rsync build_sm60/bin/llama-server hydra-p100:...` then `systemctl --user restart llama-p100`
+
+Triggered manually via `workflow_dispatch` (set `deploy-llama=true`) or by pushing a
+`llama.cpp*` tag after rebuilding the binaries.
 
 ---
 

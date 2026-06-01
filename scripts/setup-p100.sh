@@ -1,20 +1,43 @@
 #!/usr/bin/env bash
-# One-time setup for P100 VM: systemd services for llama-server and promtail log shipping.
+# One-time setup for the P100 VM: installs llama-server as a user systemd service
+# and sets up promtail for log shipping.
+#
 # Run from the repo root: bash scripts/setup-p100.sh
+#
+# No sudo required on the VM — everything installs in user scope (~/.config/systemd/user/).
+# After this runs, use: bash scripts/start-env.sh   (day-to-day startup)
 set -euo pipefail
 
 VM="hydra-p100"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo "==> Creating directories in VM"
-ssh "$VM" "sudo mkdir -p /var/log/hydra /etc/promtail /var/lib/promtail && sudo chown vm1:vm1 /var/log/hydra"
+echo "==> Checking SSH access to $VM"
+ssh -o ConnectTimeout=10 -o BatchMode=yes "$VM" true || {
+  echo "ERROR: Cannot SSH to $VM. Check ~/.ssh/config has a 'hydra-p100' entry."
+  exit 1
+}
 
-echo "==> Installing llama-p100 systemd service"
-scp "$REPO_ROOT/infra/systemd/llama-p100.service" "$VM":/tmp/
-ssh "$VM" "sudo cp /tmp/llama-p100.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable llama-p100"
-echo "    NOTE: llama-p100 service enabled but NOT started (stop the tmux session first)"
+echo "==> Creating required directories on VM"
+ssh "$VM" "
+  mkdir -p \$HOME/.config/systemd/user
+  mkdir -p /mnt/kv_slots 2>/dev/null || true
+"
 
-echo "==> Installing promtail binary (v3.4.3)"
+echo "==> Deploying P100 llama-server binary"
+rsync -az --checksum --progress \
+  "$REPO_ROOT/src/llama-cpp/build_sm60/bin/llama-server" \
+  "$VM:/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server"
+
+echo "==> Installing llama-p100 user systemd service"
+scp "$REPO_ROOT/infra/systemd/llama-p100-user.service" "$VM:/tmp/llama-p100.service"
+ssh "$VM" "
+  cp /tmp/llama-p100.service \$HOME/.config/systemd/user/llama-p100.service
+  systemctl --user daemon-reload
+  systemctl --user enable llama-p100
+  echo 'Service enabled (not started yet)'
+"
+
+echo "==> Installing promtail for log shipping"
 ssh "$VM" "
   set -euo pipefail
   if command -v promtail &>/dev/null; then
@@ -29,8 +52,8 @@ ssh "$VM" "
 "
 
 echo "==> Deploying promtail config and service"
-scp "$REPO_ROOT/infra/promtail/promtail-p100.yml" "$VM":/tmp/
-scp "$REPO_ROOT/infra/systemd/promtail-p100.service" "$VM":/tmp/
+scp "$REPO_ROOT/infra/promtail/promtail-p100.yml" "$VM:/tmp/"
+scp "$REPO_ROOT/infra/systemd/promtail-p100.service" "$VM:/tmp/"
 ssh "$VM" "
   sudo cp /tmp/promtail-p100.yml /etc/promtail/config.yml
   sudo cp /tmp/promtail-p100.service /etc/systemd/system/
@@ -38,11 +61,9 @@ ssh "$VM" "
 "
 
 echo ""
-echo "==> Setup complete. Next steps:"
-echo "    1. Stop the tmux llama session in the VM:"
-echo "       ssh hydra-p100 'tmux kill-session -t llama-session'"
-echo "    2. Start the systemd service:"
-echo "       ssh hydra-p100 'sudo systemctl start llama-p100'"
-echo "    3. Verify:"
-echo "       ssh hydra-p100 'systemctl status llama-p100 promtail-p100'"
-echo "       curl http://192.168.122.21:8086/health"
+echo "==> Setup complete. To start llama-server P100:"
+echo "    bash scripts/start-env.sh"
+echo ""
+echo "    Or manually:"
+echo "    ssh $VM 'systemctl --user start llama-p100'"
+echo "    curl http://192.168.122.21:8086/health   # ready after ~90s model load"

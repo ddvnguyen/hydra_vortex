@@ -318,53 +318,72 @@ pytest src/coordinator/tests/test_prefix_checkpoint.py -v
 ### 7.1 Host Machine (RTX)
 
 ```bash
-# 0. Prerequisites: Docker + Docker Compose (for Hydra control plane + observability)
-docker --version          # must be 24+
-docker compose version
+# 0. Prerequisites: podman + podman-compose
+podman --version
+podman-compose --version
 
-# 1. Mount tmpfs (30 GB ramdisk for Store)
-# NOTE: Not needed when running Store via Docker Compose (tmpfs is managed by Docker)
-sudo bash infra/setup-ramdisk.sh
-# Verify: mountpoint -q /mnt/llm-ram && echo OK
-
-# 2. Check .NET 10
+# 1. Check .NET 10
 dotnet --version   # must be 10.x
 
-# 3. Check Python 3.14+
-python3 --version  # must be 3.14+ (project uses 3.13+)
+# 2. Check Python 3.13+
+python3 --version
 
-# 4. Install Python deps
+# 3. Install Python deps
 pip install -e ".[dev]"
-# or: uv sync
 
-# 5. Build llama.cpp (RTX sm_120)
+# 4. Build llama.cpp — RTX (sm_120, cuBLAS)
+#    Output: src/llama-cpp/build_sm120/bin/llama-server  (gitignored, stays on filesystem)
 cd src/llama-cpp
-cmake -B build-rtx -G Ninja \
+cmake -B build_sm120 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=120 \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DGGML_NATIVE=ON
-cmake --build build-rtx --target llama-server -j4
-# Binary: src/llama-cpp/build-rtx/bin/llama-server
+cmake --build build_sm120 --target llama-server -j4
+cd ../..
+
+# 5. Build llama.cpp — P100 (sm_60)
+#    Output: src/llama-cpp/build_sm60/bin/llama-server  (rsynced to VM by scripts)
+cd src/llama-cpp
+cmake -B build_sm60 -G Ninja \
+  -DCMAKE_CUDA_ARCHITECTURES=60 \
+  -DGGML_CUDA=ON \
+  -DGGML_NATIVE=ON
+cmake --build build_sm60 --target llama-server -j4
+cd ../..
+
+# 6. One-time P100 VM setup (no sudo needed)
+bash scripts/setup-p100.sh
 ```
 
 ### 7.2 P100 VM (192.168.122.21)
 
+The P100 VM runs llama-server as a **user systemd service** — no `sudo` required.
+
 ```bash
-# 1. SSH in
-ssh user@192.168.122.21
+# One-time setup (run from repo root on the host):
+bash scripts/setup-p100.sh
 
-# 2. Copy source or build in VM
-# Option A: build from shared source
-cd /path/to/llama-cpp-source
-cmake -B build-p100 -G Ninja \
-  -DCMAKE_CUDA_ARCHITECTURES=60 \
-  -DGGML_CUDA=ON \
-  -DGGML_NATIVE=ON
-cmake --build build-p100 --target llama-server -j4
+# This installs:
+#   ~/.config/systemd/user/llama-p100.service  (on the VM)
+#   /usr/local/bin/promtail                    (on the VM, for log shipping)
 
-# Option B: copy binary from host (if compatible glibc)
-scp src/llama-cpp/build-p100/bin/llama-server user@192.168.122.21:~/
+# Day-to-day: managed by scripts/start-env.sh
+# Manual control:
+ssh hydra-p100 "systemctl --user status llama-p100"
+ssh hydra-p100 "systemctl --user restart llama-p100"
+
+# Logs:
+ssh hydra-p100 "journalctl --user -u llama-p100 -f"
+```
+
+SSH alias `hydra-p100` must be configured in `~/.ssh/config`:
+```
+Host hydra-p100 192.168.122.21
+  HostName 192.168.122.21
+  User vm1
+  IdentityFile ~/.ssh/vm_agent_01
+  IdentitiesOnly yes
 ```
 
 ### 7.3 Submodule Check
@@ -382,22 +401,26 @@ cd src/llama-cpp && git checkout hydra-state-streaming
 
 ## 8. Running Services
 
-### 8.0 Quick Start (Docker Compose)
-
-The Hydra control plane (Store + Agent + Coordinator + observability) runs via Docker Compose.
-llama-server runs natively on each GPU machine (not containerized).
+### 8.0 Quick Start
 
 ```bash
-# Start all Hydra services + Prometheus + Loki + Grafana
-cd infra
-docker compose up -d
+# Start everything (idempotent, safe to re-run)
+bash scripts/start-env.sh
 
-# Verify:
+# RTX only (if P100 VM unavailable)
+bash scripts/start-env.sh --skip-p100
+```
+
+Starts: Store + Agents + Coordinator + Observability (podman-compose), llama-server RTX
+(container with `build_sm120/` volume), llama-server P100 (user systemd on VM).
+
+Manual verification:
+```bash
 curl -s http://localhost:9501/debug    # Store health
-curl -s http://localhost:9611/debug    # Agent health
-curl -s http://localhost:9000/health   # Coordinator health
-curl -s http://localhost:9090/targets  # Prometheus targets
-open http://localhost:3000             # Grafana (hydra dashboard)
+curl -s http://localhost:9611/debug    # Agent RTX health
+curl -s http://localhost:9000/health   # Coordinator health (healthy / degraded)
+curl -s http://localhost:9091/targets  # Prometheus scrape targets
+open http://localhost:3000             # Grafana dashboard
 ```
 
 ### 8.1 Start Order (Native)
@@ -410,37 +433,39 @@ If running outside Docker, always start in this order:
 
 ### 8.2 llama-server RTX
 
+Runs as a **container** via `infra/llama-rtx-node/docker-compose.yml`.
+The container mounts `src/llama-cpp/build_sm120/` directly — no copy needed.
+
 ```bash
-cd src/llama-cpp
-./build-rtx/bin/llama-server \
-  -m /path/to/Darwin-36B-Opus-APEX-I-Balanced.gguf \
-  --port 8080 \
-  --rpc-port 8090 \
-  --parallel 4 \
-  --ctx-size 131072 \
-  -ngl 99 \
-  --log-format json
+cd infra/llama-rtx-node
+podman-compose up -d
+# Connect to internal network so Agents can resolve "llama-cpp" hostname:
+podman network connect hydra_default llama-cpp
 ```
 
-**Flags:**
-- `--rpc-port 8090` — Hydra binary RPC for KV state transfer (our addition)
-- `--parallel 4` — 4 concurrent slots (continuous batching)
-- `--ctx-size 131072` — 128K context window
-- `-ngl 99` — offload all layers to GPU
+Full launch args are in `infra/llama-rtx-node/docker-compose.yml`.  
+Ports: HTTP `:8080`, Hydra RPC `:9501`
 
 ### 8.3 llama-server P100
 
+Runs as a **user systemd service** on the P100 VM (no sudo required).
+
 ```bash
-# On VM (192.168.122.21):
-./llama-server \
-  -m /path/to/Darwin-36B-Opus-APEX-I-Balanced.gguf \
-  --port 8086 \
-  --rpc-port 8091 \
-  --parallel 4 \
-  --ctx-size 131072 \
-  -ngl 99 \
-  --log-format json
+# Start
+ssh hydra-p100 "systemctl --user start llama-p100"
+
+# Status / logs
+ssh hydra-p100 "systemctl --user status llama-p100"
+ssh hydra-p100 "journalctl --user -u llama-p100 -f"
+
+# Restart after binary update
+ssh hydra-p100 "systemctl --user restart llama-p100"
 ```
+
+Service file: `infra/systemd/llama-p100-user.service`  
+Binary: deployed to VM via `rsync` from `src/llama-cpp/build_sm60/bin/llama-server`  
+Ports: HTTP `:8086`, Hydra RPC `:9502`  
+Model load time: ~90 seconds
 
 ### 8.4 Hydra Store (Docker Compose)
 
