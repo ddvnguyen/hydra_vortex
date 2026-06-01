@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "plane": {
+      "type": "local",
+      "command": ["uvx", "plane-mcp-server", "stdio"],
+      "enabled": true,
+      "environment": {
+        "PLANE_API_KEY": "{env:PLANE_API_KEY}",
+        "PLANE_WORKSPACE_SLUG": "{env:PLANE_WORKSPACE_SLUG}",
+        "PLANE_BASE_URL": "https://api.plane.so"
+      }
+    }
+  }
+}
