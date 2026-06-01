@@ -7,7 +7,9 @@ Multi-GPU LLM inference system. Routes requests across RTX 5060 Ti and Tesla P10
 ## Read These First
 1. `PROJECT_PLAN.md` — architecture, structure, tech stack (10 min)
 2. `specs/rpc-protocol.md` — binary wire format (5 min)
-3. `docs/milestone-0-mvp.md` — start here for implementation
+3. `## Task Lifecycle` (below) + `docs/workflow/` — how to work a task end-to-end
+4. Active milestone `docs/milestone-perf.md` (M-Perf) + `DevelopmentRunBook.md` for
+   build/run/test. Live board in Plane (`docs/PLANE_SETUP.md`).
 
 ## Architecture
 ```
@@ -67,6 +69,30 @@ track (**M-Perf supersedes the old "M3 Production"**). Live roadmap in Plane
 | M4      | Model mgmt & multi-modal (dist, dynamic load, vision/…)    | planned |
 | M5      | LLM obs & agentic (Langfuse, A/B testing, agentic)         | planned |
 
+## Task Lifecycle (MANDATORY)
+Every unit of work follows this loop. Each step's detail is in `docs/workflow/` —
+**open the linked doc when you reach that step**. Plane = planning/status, GitHub =
+code/PRs/CI; you are the bridge (cross-link by hand, there is no native sync).
+Commands live in `DevelopmentRunBook.md`; this loop just sequences them.
+
+1. **Pick up** — choose from the Plane board (active module, currently M-Perf) +
+   `gh issue list --label review-finding --state open`; set the Plane work item →
+   In Progress. → `docs/workflow/01-pickup.md`
+2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
+   follow the milestone doc. → `docs/workflow/02-implement.md`
+3. **Test / verify** — unit (`dotnet test`, `pytest src/coordinator/tests`) + E2E
+   (`dotnet test src/Tests.Integration`, `pytest tests/system`) green before PR.
+   → `docs/workflow/03-test-verify.md`
+4. **Commit & PR** — conventional commits + `Co-Authored-By`; `gh pr create …
+   Closes #N`; cross-link PR ↔ Plane. → `docs/workflow/04-commit-pr.md`
+5. **Deploy** (if runtime/fork) — build sm_120/sm_60; push the fork + bump the
+   `src/llama-cpp` submodule pointer. → `docs/workflow/05-deploy.md`
+6. **Check monitoring** — Grafana :3000 + alerts; no regressions.
+   → `docs/workflow/06-monitoring.md`
+7. **Issue + Plane close-out** — new problem → `gh issue create` + mirror to Plane
+   **Backlog — Findings**; set the finished work item → Done.
+   → `docs/workflow/07-issue-and-plane.md`
+
 ## GitHub Workflow (MANDATORY for all coding agents)
 
 The full development cycle: **feature → issue → implement → review → merge → deploy → monitoring → (problem → issue)**
@@ -102,9 +128,9 @@ gets a PR, cross-link the URLs by hand. New review findings go in **both** GitHu
 module, cross-linked by issue `#`. Setup + convention: `docs/PLANE_SETUP.md`.
 
 ## Starting Point
-1. M0.0 first: fork llama.cpp, add 3 endpoints (~80 lines C++), verify with curl
-2. Then M0.1: Hydra.Shared (C# RPC library) — everything else depends on it
-3. M0.2 (Store) and M0.3 (Agent) can be built in parallel after M0.1
+Core M0–M2 are done. Start from the **Plane board's active module** (currently
+**M-Perf** — `docs/milestone-perf.md`) and follow the **Task Lifecycle** above.
+Build/run/test commands are in `DevelopmentRunBook.md`.
 
 ## Key Design Decisions (do not relitigate)
 - No Ray until possible M4+ (2 nodes, not needed)
