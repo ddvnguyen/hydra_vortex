@@ -114,6 +114,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Shutdown lingering build servers
+        run: dotnet build-server shutdown
+
       - name: Build
         run: dotnet build Hydra.sln -c Release --nologo -v minimal
 
