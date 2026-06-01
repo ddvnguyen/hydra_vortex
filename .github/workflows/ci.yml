@@ -71,13 +71,30 @@ jobs:
             --logger "trx;LogFileName=agent.trx" \
             --results-directory TestResults/
 
-      - name: Publish test results
+
+      - name: Unit tests — Coordinator (Python)
+        run: |
+          python3 -m pytest src/coordinator/tests/test_router.py -v \
+            --junit-xml=TestResults/coordinator.xml
+
+      - name: Publish .NET test results
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: Unit Test Results
+          name: .NET Unit Tests
           path: TestResults/*.trx
           reporter: dotnet-trx
+          fail-on-error: false
+          fail-on-empty: false
+
+
+      - name: Publish Python test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Python Unit Tests
+          path: TestResults/coordinator.xml
+          reporter: python-pytest
           fail-on-error: false
           fail-on-empty: false
 
@@ -86,7 +103,9 @@ jobs:
         if: always()
         with:
           name: unit-test-results-${{ github.run_number }}
-          path: TestResults/*.trx
+          path: |
+            TestResults/*.trx
+            TestResults/coordinator.xml
           retention-days: 30
 
       - name: Clean .NET download cache
