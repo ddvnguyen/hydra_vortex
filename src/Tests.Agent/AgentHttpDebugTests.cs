@@ -138,6 +138,130 @@ public sealed class AgentHttpDebugTests : IAsyncLifetime
         Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
     }
 
+    [Fact]
+    public async Task GET_AgentDebug_LlamaUnreachable_Returns500()
+    {
+        Assert.NotNull(_httpClient);
+        Assert.NotNull(_storeServer);
+
+        // Create a new llama client that always returns 500
+        var badLlamaHandler = new MockHttpHandler(async (request, ct) =>
+        {
+            return new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("llama unreachable"),
+            };
+        });
+
+        var badLlamaClient = new LlamaClient(new HttpClient(badLlamaHandler), "http://localhost:8080");
+
+        // Create a new agent server with the bad llama client on a different port
+        var agentLog = HydraLogging.CreateLogger("test-agent-bad-llama");
+        var stateHandler = new StateHandler(badLlamaClient, _storeRpcClient!, null!, agentLog);
+
+        var agentCfg = new AgentConfig
+        {
+            Host = "127.0.0.1",
+            Port = 0,
+            DebugHttpPort = _debugPort + 5,
+            NodeName = "test-agent-bad-llama",
+            LlamaUrl = "http://localhost:8080",
+            StoreHost = "127.0.0.1",
+            StorePort = _storeServer.Port,
+            SlotSavePath = _storeDir!.FullName + "/slots",
+            ChunkCacheDir = _storeDir.FullName + "/chunks",
+        };
+
+        var agentServer = new AgentServer(agentCfg, stateHandler, badLlamaClient, agentLog);
+        var testCts = new CancellationTokenSource();
+
+        // Start debug endpoint on different port
+        var debugTask = Task.Run(async () =>
+        {
+            await agentServer.StartDebugEndpointAsync(testCts.Token);
+        });
+
+        // Wait for the debug port to start listening
+        await Task.Delay(1000);
+
+        try
+        {
+            // The /debug endpoint should return 500 when llama-server is unreachable
+            var response = await _httpClient.GetAsync($"http://127.0.0.1:{_debugPort + 5}/debug");
+
+            Assert.Equal(System.Net.HttpStatusCode.InternalServerError, response.StatusCode);
+        }
+        finally
+        {
+            testCts.Cancel();
+            try { await debugTask; } catch (OperationCanceledException) { }
+        }
+    }
+
+    [Fact]
+    public async Task GET_AgentDebug_LlamaHealthOk_Slots500_Returns500()
+    {
+        Assert.NotNull(_httpClient);
+        Assert.NotNull(_storeServer);
+
+        // Llama /health returns 200 but /slots returns 500 (partial failure)
+        var partialLlamaHandler = new MockHttpHandler(async (request, ct) =>
+        {
+            var path = request.RequestUri!.ToString();
+            if (path.Contains("/health"))
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("ok"),
+                };
+            // All other llama endpoints return 500
+            return new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("llama slots error"),
+            };
+        });
+
+        var partialLlamaClient = new LlamaClient(new HttpClient(partialLlamaHandler), "http://localhost:8080");
+
+        var agentLog = HydraLogging.CreateLogger("test-agent-partial-fail");
+        var stateHandler = new StateHandler(partialLlamaClient, _storeRpcClient!, null!, agentLog);
+
+        var agentCfg = new AgentConfig
+        {
+            Host = "127.0.0.1",
+            Port = 0,
+            DebugHttpPort = _debugPort + 6,
+            NodeName = "test-agent-partial-fail",
+            LlamaUrl = "http://localhost:8080",
+            StoreHost = "127.0.0.1",
+            StorePort = _storeServer.Port,
+            SlotSavePath = _storeDir!.FullName + "/slots",
+            ChunkCacheDir = _storeDir.FullName + "/chunks",
+        };
+
+        var agentServer = new AgentServer(agentCfg, stateHandler, partialLlamaClient, agentLog);
+        var testCts = new CancellationTokenSource();
+
+        var debugTask = Task.Run(async () =>
+        {
+            await agentServer.StartDebugEndpointAsync(testCts.Token);
+        });
+
+        await Task.Delay(1000);
+
+        try
+        {
+            // /health returns 200 so isHealthy=true, but GetSlotsAsync throws 500 → debug endpoint 500
+            var response = await _httpClient.GetAsync($"http://127.0.0.1:{_debugPort + 6}/debug");
+
+            Assert.Equal(System.Net.HttpStatusCode.InternalServerError, response.StatusCode);
+        }
+        finally
+        {
+            testCts.Cancel();
+            try { await debugTask; } catch (OperationCanceledException) { }
+        }
+    }
+
     public async Task DisposeAsync()
     {
         try
