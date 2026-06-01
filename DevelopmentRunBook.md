@@ -161,12 +161,7 @@ Store and Agent config is compiled-in. Use VS Code launch `env` blocks or modify
 
 ## Infrastructure
 
-### tmpfs (required for Store)
-```bash
-sudo bash infra/setup-ramdisk.sh
-# Mounts 30 GB tmpfs at /mnt/llm-ram
-# NOTE: not needed when running Store via podman-compose (tmpfs managed by container)
-```
+*(tmpfs for Store is managed automatically by compose — no host setup needed)*
 
 ### llama-server patched build
 

@@ -143,7 +143,7 @@ Build/run/test commands are in `DevelopmentRunBook.md`.
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host machine, i7-12700K, 64 GB
 - Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM at 192.168.122.21
-- tmpfs 30 GB at /mnt/llm-ram on host, shared to VM via virtiofs
+- tmpfs 30 GB at /mnt/llm-ram (compose-managed inside Store container)
 - Model: Darwin-36B-Opus-APEX-I-Balanced.gguf (~25.5 GB, qwen35moe arch)
 
 ## Monitoring & Observability

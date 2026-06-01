@@ -47,7 +47,7 @@ HTTP only at two edges: Client → Coordinator, and Agent → local llama-server
 | KVM VM | Tesla P100 16 GB | sm_60 | 192.168.122.21 | Decode + llama:8086 + Agent:9602 |
 
 **Model:** `Darwin-36B-Opus-APEX-I-Balanced.gguf` (~25.5 GB, qwen35moe arch)  
-**Model path:** assumed at `/mnt/llm-ram/` or local path — check actual location.
+**Model path:** `/mnt/SSD/` on host (mounted into llama container).
 
 ---
 
@@ -63,7 +63,7 @@ hydra_vortex/
 │   ├── milestone-0-mvp.md       ← M0 task breakdown with code samples
 │   └── hydra_llama_cpp_PLAN.md  ← llama fork implementation log
 ├── infra/
-│   └── setup-ramdisk.sh         ← mount 30 GB tmpfs at /mnt/llm-ram
+│   └── docker-compose.yml       ← compose-managed tmpfs for Store
 ├── Hydra.sln                    ← C# solution (all projects)
 ├── pyproject.toml               ← Python deps (coordinator + tests)
 └── src/

@@ -41,7 +41,6 @@ src/llama-cpp/build/
 Thumbs.db
 
 # Hydra-specific
-/mnt/llm-ram/
 deploy.log
 # Test results
 tests/result/*.json
