@@ -14,10 +14,10 @@ from coordinator.routing import RoutingDecision
 @pytest.fixture
 def config():
     return CoordinatorConfig(
-        rtx_host="127.0.0.1",
-        rtx_port=9601,
-        p100_host="192.168.122.21",
-        p100_port=9602,
+        nodes=[
+            NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, gpu_type="rtx5060ti"),
+            NodeConfig(name="p100", host="192.168.122.21", rpc_port=9602, gpu_type="p100"),
+        ],
     )
 
 
