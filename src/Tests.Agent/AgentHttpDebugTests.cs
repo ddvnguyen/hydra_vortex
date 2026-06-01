@@ -12,6 +12,7 @@ public sealed class AgentHttpDebugTests : IAsyncLifetime
     private HttpClient? _httpClient;
     private int _debugPort;
     private CancellationTokenSource? _cts = new();
+    private Task? _serverTask;
     private RpcClient? _storeRpcClient;
     private StoreServer? _storeServer;
 
@@ -31,7 +32,7 @@ public sealed class AgentHttpDebugTests : IAsyncLifetime
         };
 
         _storeServer = new StoreServer(storeCfg, engine, chunkStore);
-        var serverTask = Task.Run(() => _storeServer!.RunAsync(CancellationToken.None));
+        _serverTask = Task.Run(() => _storeServer!.RunAsync(_cts.Token));
         while (_storeServer!.Port == 0)
             await Task.Delay(10);
 
@@ -86,17 +87,36 @@ public sealed class AgentHttpDebugTests : IAsyncLifetime
         
         var agentServer = new AgentServer(agentCfg, stateHandler, llamaClient, agentLog);
 
-        // Create HttpClient after server setup
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-
         // Start debug endpoint on separate task
         var debugTask = Task.Run(async () =>
         {
             await agentServer.StartDebugEndpointAsync(_cts.Token);
         });
 
-        // Give it time to start
-        await Task.Delay(1000);
+        // Wait for debug port to become available via polling
+        var retryCount = 0;
+        while (retryCount < 50)
+        {
+            try
+            {
+                using var testClient = new HttpClient { Timeout = TimeSpan.FromMilliseconds(200) };
+                await testClient.GetAsync($"http://127.0.0.1:{_debugPort}/version");
+                break; // Server is ready
+            }
+            catch (HttpRequestException)
+            {
+                retryCount++;
+                await Task.Delay(50);
+            }
+        }
+
+        if (retryCount >= 50)
+        {
+            throw new TimeoutException("Agent debug HTTP endpoint did not start within timeout");
+        }
+
+        // Create HttpClient after server is confirmed running
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
     }
 
     [Fact]
@@ -181,8 +201,29 @@ public sealed class AgentHttpDebugTests : IAsyncLifetime
             await agentServer.StartDebugEndpointAsync(testCts.Token);
         });
 
-        // Wait for the debug port to start listening
-        await Task.Delay(1000);
+        // Wait for debug port to become available via polling
+        var retryCount = 0;
+        while (retryCount < 50)
+        {
+            try
+            {
+                using var testClient = new HttpClient { Timeout = TimeSpan.FromMilliseconds(200) };
+                await testClient.GetAsync($"http://127.0.0.1:{_debugPort + 5}/version");
+                break; // Server is ready
+            }
+            catch (HttpRequestException)
+            {
+                retryCount++;
+                await Task.Delay(50);
+            }
+        }
+
+        if (retryCount >= 50)
+        {
+            testCts.Cancel();
+            try { await debugTask; } catch (OperationCanceledException) { }
+            Assert.Fail("Debug endpoint did not start within timeout");
+        }
 
         try
         {
@@ -246,7 +287,29 @@ public sealed class AgentHttpDebugTests : IAsyncLifetime
             await agentServer.StartDebugEndpointAsync(testCts.Token);
         });
 
-        await Task.Delay(1000);
+        // Wait for debug port to become available via polling
+        var retryCount = 0;
+        while (retryCount < 50)
+        {
+            try
+            {
+                using var testClient = new HttpClient { Timeout = TimeSpan.FromMilliseconds(200) };
+                await testClient.GetAsync($"http://127.0.0.1:{_debugPort + 6}/version");
+                break; // Server is ready
+            }
+            catch (HttpRequestException)
+            {
+                retryCount++;
+                await Task.Delay(50);
+            }
+        }
+
+        if (retryCount >= 50)
+        {
+            testCts.Cancel();
+            try { await debugTask; } catch (OperationCanceledException) { }
+            Assert.Fail("Debug endpoint did not start within timeout");
+        }
 
         try
         {
@@ -267,18 +330,33 @@ public sealed class AgentHttpDebugTests : IAsyncLifetime
         try
         {
             _cts?.Cancel();
-            await Task.Delay(500);
+
+            // Await background tasks
+            if (_serverTask is not null && !_serverTask.IsCompleted)
+            {
+                await Task.WhenAny(_serverTask, Task.Delay(TimeSpan.FromSeconds(2)));
+            }
         }
         finally
         {
-            _httpClient?.Dispose();
-            if (_storeRpcClient is not null)
-                await _storeRpcClient.DisposeAsync();
-            if (_storeServer is not null)
-                await _storeServer.DisposeAsync();
-            _cts?.Dispose();
-            if (_storeDir is not null && _storeDir.Exists)
-                _storeDir.Delete(recursive: true);
+            try
+            {
+                _httpClient?.Dispose();
+                if (_storeRpcClient is not null)
+                    await _storeRpcClient.DisposeAsync();
+                if (_storeServer is not null)
+                    await _storeServer.DisposeAsync();
+                _cts?.Dispose();
+            }
+            finally
+            {
+                if (_storeDir is not null && _storeDir.Exists)
+                    try
+                    {
+                        _storeDir.Delete(recursive: true);
+                    }
+                    catch { /* Ignore cleanup failures */ }
+            }
         }
     }
 

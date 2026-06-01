@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
 
@@ -91,6 +91,7 @@ def test_prefix_restore_invalid_node_returns_400(client):
 
 
 def test_evict_session_success(client):
+    """Test session eviction returns 200 with evicted=True."""
     table = client.app.state._session_table
     table.register("sess_evict", "rtx", 0)
 
@@ -103,6 +104,20 @@ def test_evict_session_success(client):
         assert data["evicted"] is True
         assert data["session_id"] == "sess_evict"
 
+def test_evict_session_missing_body_returns_ok(client):
+    """Test session eviction works without request body (body parsed as None)."""
+    table = client.app.state._session_table
+    table.register("sess_evict2", "rtx", 0)
+
+    with patch.object(StateManager, "save_session", new_callable=AsyncMock) as mock_save:
+        mock_save.return_value = {}
+        # Send request without JSON body - endpoint should handle None body gracefully
+        resp = client.delete("/sessions/sess_evict2")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["evicted"] is True
+        assert data["session_id"] == "sess_evict2"
+
 
 def test_health_returns_200(client):
     resp = client.get("/health")
@@ -111,6 +126,13 @@ def test_health_returns_200(client):
     assert "status" in data
     assert "nodes" in data
 
+
+
+def test_health_shows_nodes(client):
+    resp = client.get("/health")
+    data = resp.json()
+    assert "rtx" in data["nodes"]
+    assert "p100" in data["nodes"]
 
 def test_status_returns_200(client):
     resp = client.get("/status")
@@ -222,11 +244,4 @@ def test_migrate_missing_target_node_returns_422(client):
     assert resp.status_code == 422
 
 
-def test_evict_session_missing_body_returns_ok(client):
-    table = client.app.state._session_table
-    table.register("sess_evict2", "rtx", 0)
 
-    with patch.object(StateManager, "save_session", new_callable=AsyncMock) as mock_save:
-        mock_save.return_value = {}
-        resp = client.delete("/sessions/sess_evict2")
-        assert resp.status_code == 200

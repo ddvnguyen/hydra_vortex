@@ -8,8 +8,9 @@ using Hydra.Shared;
 
 namespace Tests.Agent;
 
-public sealed class StateHandlerTests : IAsyncLifetime
+  public sealed class StateHandlerTests : IAsyncLifetime
 {
+    private CancellationTokenSource? _cts;
     private TestStoreServer? _storeServer;
     private Task? _storeServerTask;
     private static int _nextPort = 18000;
@@ -24,16 +25,27 @@ public sealed class StateHandlerTests : IAsyncLifetime
             _port = _nextPort++;
         }
         _storeServer = new TestStoreServer(_port);
-        _storeServerTask = Task.Run(() => _storeServer.RunAsync(CancellationToken.None));
-        while (_storeServer.Port == 0)
+        _cts = new CancellationTokenSource();
+        _storeServerTask = Task.Run(() => _storeServer!.RunAsync(_cts.Token));
+        while (_storeServer!.Port == 0)
             await Task.Delay(10);
-        await Task.Delay(100);
     }
 
     public async Task DisposeAsync()
     {
-        if (_storeServer is not null)
-            await _storeServer.DisposeAsync();
+        try
+        {
+            _cts?.Cancel();
+            if (_storeServerTask is not null && !_storeServerTask.IsCompleted)
+            {
+                await Task.WhenAny(_storeServerTask, Task.Delay(TimeSpan.FromSeconds(2)));
+            }
+        }
+        finally
+        {
+            if (_storeServer is not null)
+                await _storeServer.DisposeAsync();
+        }
     }
 
     [Fact]

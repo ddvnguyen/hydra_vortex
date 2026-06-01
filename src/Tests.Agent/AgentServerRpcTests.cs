@@ -19,6 +19,7 @@ namespace Tests.Agent;
 /// </summary>
 public sealed class AgentServerRpcTests : IAsyncLifetime
 {
+    private CancellationTokenSource? _cts;
     private StoreServer? _store;
     private Task? _storeTask;
     private AgentServer? _server;
@@ -50,8 +51,8 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
         };
         var engine = new StorageEngine(_storeDir);
         _store = new StoreServer(storeCfg, engine, new ChunkStore(_storeDir));
-        _storeTask = Task.Run(() => _store.RunAsync(CancellationToken.None));
-        await Task.Delay(500, CancellationToken.None);
+        _cts = new CancellationTokenSource();
+        _storeTask = Task.Run(() => _store.RunAsync(_cts.Token));
 
         // Start AgentServer with mocked llama-client
         var agentCfg = new AgentConfig
@@ -78,14 +79,11 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
                 };
             }
 
-            if (path.Contains("/slots/0/state") && request.Method == HttpMethod.Get)
+            if (path.Contains("/slots/") && path.Contains("?action=erase"))
             {
-                var data = new byte[50000];
-                new Random(42).NextBytes(data);
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StreamContent(new MemoryStream(data)),
-                };
+                // Consume request body to avoid hanging the connection
+                if (request.Content != null) await request.Content.ReadAsByteArrayAsync(ct);
+                return new HttpResponseMessage(HttpStatusCode.OK);
             }
 
             if (path.Contains("/health"))
@@ -93,12 +91,13 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
                 return new HttpResponseMessage(HttpStatusCode.OK);
             }
 
-            if (path.Contains("/slots"))
+            if (path.Contains("/slots/0/state") && request.Method == HttpMethod.Get)
             {
-                var slots = """[{"id":0,"n_past":2964,"is_processing":false},{"id":1,"n_past":0,"is_processing":true}]""";
+                var data = new byte[50000];
+                new Random(42).NextBytes(data);
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(slots, Encoding.UTF8, "application/json"),
+                    Content = new StreamContent(new MemoryStream(data)),
                 };
             }
 
@@ -112,11 +111,13 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
                 };
             }
 
-            if (path.Contains("/slots/") && path.Contains("?action=erase"))
+            if (path.Contains("/slots"))
             {
-                // Consume request body to avoid hanging the connection
-                if (request.Content != null) await request.Content.ReadAsByteArrayAsync(ct);
-                return new HttpResponseMessage(HttpStatusCode.OK);
+                var slots = """[{"id":0,"n_past":2964,"is_processing":false},{"id":1,"n_past":0,"is_processing":true}]""";
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(slots, Encoding.UTF8, "application/json"),
+                };
             }
 
 
@@ -132,20 +133,50 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
         var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         _server = new AgentServer(agentCfg, handler, llamaClient, log);
-        _serverTask = Task.Run(() => _server.RunAsync(CancellationToken.None));
-        await Task.Delay(500, CancellationToken.None);
+        _serverTask = Task.Run(() => _server.RunAsync(_cts.Token));
     }
 
     public async Task DisposeAsync()
     {
+        // Cancel tasks first to stop the servers
+        try
+        {
+            _cts?.Cancel();
+        }
+        catch (ObjectDisposedException) { }
+
+        // Wait for background tasks to complete
+        if (_serverTask is not null && !_serverTask.IsCompleted)
+        {
+            await Task.WhenAny(_serverTask, Task.Delay(TimeSpan.FromSeconds(2)));
+        }
+
+        if (_storeTask is not null && !_storeTask.IsCompleted)
+        {
+            await Task.WhenAny(_storeTask, Task.Delay(TimeSpan.FromSeconds(2)));
+        }
+
+        // Dispose servers
         if (_server is not null)
             await _server.DisposeAsync();
 
         if (_store is not null)
             await _store.DisposeAsync();
 
-        _chunkCacheDir.Delete(recursive: true);
-        _storeDir.Delete(recursive: true);
+        // Cleanup temp dirs
+        try
+        {
+            if (_chunkCacheDir.Exists)
+                _chunkCacheDir.Delete(recursive: true);
+        }
+        catch { /* Ignore cleanup failures */ }
+
+        try
+        {
+            if (_storeDir.Exists)
+                _storeDir.Delete(recursive: true);
+        }
+        catch { /* Ignore cleanup failures */ }
     }
 
     [Fact]
