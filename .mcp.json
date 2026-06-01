@@ -1,5 +1,9 @@
 {
   "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
     "plane": {
       "command": "uvx",
       "args": ["plane-mcp-server", "stdio"],

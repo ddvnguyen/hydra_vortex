@@ -11,6 +11,6 @@
    alerts — **do not close a monitoring issue without root-causing it**.
 3. **Logs** — Grafana Explore (Loki); filter by `$trace_id` to follow a request across
    Coordinator / Agent / Store.
-4. If anything regressed or a new alert fired → `07-issue-and-plane.md`.
+4. If anything regressed or a new alert fired → `07-issue-and-close.md`.
 
-→ Next: `07-issue-and-plane.md`
+→ Next: `07-issue-and-close.md`
