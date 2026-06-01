@@ -52,40 +52,52 @@ Without these patches, nothing else in the system makes sense.
 Build RTX: GGML_CUDA_FORCE_CUBLAS=ON, sm_120. Build P100: sm_60.
 
 ## Milestones
-| MS | Goal                                          | Est.      |
-|----|-----------------------------------------------|-----------|
-| M0 | llama fork + Store + Agent + System test       | 3-4 days  |
-| M1 | Coordinator + routing + session + migration   | 1-2 weeks |
-| M2 | Chunked dedup + prefix checkpoints            | 1 week    |
-| M3 | Persistence + Grafana + Langfuse              | 1-2 weeks |
+Core M0–M2 built. Roadmap **restructured 2026-06** around the Tier-1 performance
+track (**M-Perf supersedes the old "M3 Production"**). Live roadmap in Plane
+(`docs/PLANE_SETUP.md`); detail in `docs/milestone-*.md`.
+
+| MS      | Goal                                                       | Status  |
+|---------|------------------------------------------------------------|---------|
+| M0      | llama fork + Store + Agent + System test                   | ✅ done  |
+| M1      | Coordinator + routing + session + migration                | ✅ done  |
+| M2      | Chunked dedup + prefix checkpoints                         | ✅ done  |
+| Phase 0 | Stabilize: green CI, restore obs, rebase onto remote       | ▶ now   |
+| M-Perf  | Heterogeneous perf: spec-decode → P/D streaming → pipeline | ▶ next  |
+| M3      | Persistence (NVMe write-behind, **C# re-spec**) + obs harden | planned |
+| M4      | Model mgmt & multi-modal (dist, dynamic load, vision/…)    | planned |
+| M5      | LLM obs & agentic (Langfuse, A/B testing, agentic)         | planned |
 
 ## GitHub Workflow (MANDATORY for all coding agents)
 
 The full development cycle: **feature → issue → implement → review → merge → deploy → monitoring → (problem → issue)**
 
-### Review → Issue
-After writing or updating `reviews/mN-review.md`:
-```bash
-python scripts/sync_reviews_to_github.py
-```
-Creates GitHub issues for all new open findings and writes `**Issue:** #N` back into the review file. Idempotent — safe to re-run. The `reviews.yml` GitHub Actions workflow also runs this automatically on push.
+### Findings → Issues
+Review findings are tracked **directly as GitHub issues** labelled `review-finding`
+(grouped per milestone, e.g. `[M2] …`). There is **no** `reviews/` markdown tree,
+`sync_reviews_to_github.py`, or `reviews.yml` — those were removed. File findings
+with `gh issue create --label review-finding`; list them with
+`gh issue list --label review-finding --state open`.
+
+Title convention: `[M{n}] short title`, or `[M{n}-P{sev}-{seq}]` for a specific
+finding. P0 = correctness/data-loss, P1 = behavioural bug, P2 = minor/perf.
 
 ### Fix → Branch → PR
-1. Read `reviews/INDEX.md` and `reviews/mN-review.md` — note `**Issue:** #N` for the finding to fix
-2. Create a branch from the issue:
-   ```bash
-   gh issue develop N --name fix/MN-Psev-seq
-   ```
-3. Implement the fix; mark `**Status:** resolved` in the review file; update `INDEX.md` counts
-4. Create the PR:
-   ```bash
-   gh pr create --title "fix: [MN-Psev-seq] short title" --body "Closes #N"
-   ```
-5. Add `**PR:** #M` to the finding block in the review file
+1. Pick the finding: `gh issue list --label review-finding --state open`
+2. Branch from it: `gh issue develop N --name fix/mN-Psev-seq`
+3. Implement the fix.
+4. Open the PR: `gh pr create --title "fix: [MN-Psev-seq] short title" --body "Closes #N"`
 
 ### Monitoring issues
 Auto-created by `monitor.yml` (Prometheus alerts) and `ci.yml` failure handlers.
 Do not manually close a monitoring issue without investigating the root cause.
+
+## Planning (Plane)
+Roadmap/planning lives in **Plane Cloud** (project "Hydra Vortex"; milestones =
+Plane modules). Agents drive it via the **Plane MCP server** (configured in
+`.mcp.json` for Claude Code and `opencode.json` for opencode). The GitHub bridge is
+at the **agent layer**: use Plane for planning/status and GitHub (`gh`) for
+code/PRs/CI issues — there is no native Plane↔GitHub sync. When a Plane work item
+gets a PR, cross-link the URLs by hand. Setup + convention: `docs/PLANE_SETUP.md`.
 
 ## Starting Point
 1. M0.0 first: fork llama.cpp, add 3 endpoints (~80 lines C++), verify with curl

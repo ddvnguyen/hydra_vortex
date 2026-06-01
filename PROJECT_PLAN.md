@@ -111,7 +111,7 @@ All source code lives under `src/`.
 │   │   ├── health.py
 │   │   └── proxy.py
 │   │
-│   ├── python-shared/           Python — shared lib (RPC client, models)
+│   ├── python_shared/           Python — shared lib (RPC client, models)
 │   │   ├── __init__.py
 │   │   ├── rpc_client.py        Python RPC client (protocol impl)
 │   │   ├── models.py            Pydantic schemas
@@ -132,12 +132,22 @@ All source code lives under `src/`.
 ```
 
 ## Milestones
-| MS | Name         | Scope                                          | Est.      |
-|----|--------------|------------------------------------------------|-----------|
-| M0 | MVP Test     | llama fork + Store + Agent + system verify     | 3-4 days  |
-| M1 | Core System  | Coordinator + routing + session + migration    | 1-2 weeks |
-| M2 | Advanced     | Chunked dedup + prefix checkpoints             | 1 week    |
-| M3 | Production   | Persistence + Grafana + Langfuse + model dist  | 1-2 weeks |
+Core M0–M2 is built. The roadmap was **restructured 2026-06** around the Tier-1
+heterogeneous-performance track: **M-Perf supersedes the old monolithic "M3
+Production"**, and the old M3 scope was re-homed into M3/M4/M5 below. Live roadmap
+is tracked in Plane (`docs/PLANE_SETUP.md`); per-milestone detail in
+`docs/milestone-*.md`.
+
+| MS      | Name                           | Scope                                                       | Status   |
+|---------|--------------------------------|-------------------------------------------------------------|----------|
+| M0      | MVP Test                       | llama fork + Store + Agent + system verify                  | ✅ done   |
+| M1      | Core System                    | Coordinator + routing + session + migration                 | ✅ done   |
+| M2      | Advanced                       | Chunked dedup + prefix checkpoints                          | ✅ done   |
+| Phase 0 | Stabilize                      | Green CI/CD, restore obs, rebase local onto remote          | ▶ now    |
+| M-Perf  | Heterogeneous Performance      | spec-decode → P/D streaming → pipeline (Tier-1, ~6–8 wk)    | ▶ next   |
+| M3      | Persistence & Real Obs         | NVMe write-behind persistence (**C# re-spec**) + obs harden | planned  |
+| M4      | Model Management & Multi-Modal  | model distribution, dynamic load, vision/embed/audio        | planned  |
+| M5      | LLM Obs & Agentic              | Langfuse tracing, A/B testing, agentic system               | planned  |
 
 ## Verified Facts
 | Fact                         | Value        |

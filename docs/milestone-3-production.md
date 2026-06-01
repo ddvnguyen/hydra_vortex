@@ -1,8 +1,18 @@
-# Milestone 3 — Production Readiness
+# Milestone 3 — Persistence & Real Obs
+
+> **Restructured 2026-06.** This milestone was narrowed. Its scope is now **NVMe
+> write-behind persistence + observability hardening**. The other former-M3 work was
+> re-homed: **Langfuse → M5** (`docs/milestone-5-agentic.md`); **model distribution
+> + systemd lifecycle → M4** (`docs/milestone-4-models.md`). **M3.2 Observability is
+> already built** (metrics modules + Grafana/Loki/Prometheus). The big remaining
+> piece is **M3.1 persistence — and it must be RE-SPEC'd for C#** (the task below is
+> written in Python/aiosqlite, but the Store is C#/.NET: use `Microsoft.Data.Sqlite`
+> + a write-behind `BackgroundService` + startup recovery).
 
 ## Goal
-Persistence across restarts. Grafana dashboards for monitoring. Langfuse integration
-for LLM request tracing. Model weight distribution via Store.
+Persistence across restarts (Store is volatile tmpfs today) and hardened, real
+observability. *(Original goal text below retained for the persistence/obs tasks;
+ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 
 ## What "Done" Means
 ```
