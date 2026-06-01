@@ -19,7 +19,11 @@ import urllib.request
 
 BASE = os.environ.get("PLANE_BASE_URL", "https://api.plane.so").rstrip("/")
 KEY = os.environ.get("PLANE_API_KEY")
-SLUG = os.environ.get("PLANE_WORKSPACE_SLUG")
+# Accept a full URL fragment (e.g. "app.plane.so/hydra-vortex") and reduce to the slug.
+SLUG = (os.environ.get("PLANE_WORKSPACE_SLUG", "").strip().rstrip("/").split("/")[-1]) or None
+
+# A browser-like UA avoids Cloudflare blocking the request (HTTP 403, error 1010).
+_UA = "Mozilla/5.0 (X11; Linux x86_64) hydra-seed/1.0"
 
 PROJECT_NAME = "Hydra Vortex"
 PROJECT_IDENTIFIER = "HYDRA"
@@ -78,6 +82,8 @@ def _req(method, path, body=None):
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("X-API-Key", KEY)
     req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", _UA)
     try:
         with urllib.request.urlopen(req) as r:
             raw = r.read().decode()

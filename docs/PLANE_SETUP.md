@@ -40,6 +40,11 @@ export PLANE_WORKSPACE_SLUG=your-workspace-slug
 # PLANE_BASE_URL defaults to https://api.plane.so (cloud) — no need to set it.
 ```
 
+> **Slug** is just the workspace identifier (`hydra-vortex`), not the full URL — but
+> the seed script also tolerates a pasted `app.plane.so/hydra-vortex` and reduces it.
+> The script sends a browser User-Agent because Cloudflare otherwise blocks the API
+> request with `HTTP 403, error code 1010`.
+
 ### 4. Tooling
 `uvx` (from `uv`) runs the MCP server with no install. Verify: `uvx --version`.
 (Already present at `~/.local/bin/uvx` on this box.)
