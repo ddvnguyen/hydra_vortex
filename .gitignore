@@ -45,3 +45,6 @@ deploy.log
 # Test results
 tests/result/*.json
 src/Tests.Integration/TestResults/test_results*
+
+# Node.js
+**/node_modules/**
