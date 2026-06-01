@@ -42,6 +42,9 @@ Thumbs.db
 
 # Hydra-specific
 deploy.log
+
+# Secrets / keys
+*.pem
 # Test results
 tests/result/*.json
 src/Tests.Integration/TestResults/test_results*
