@@ -314,7 +314,7 @@ def test_migration_save_erase_restore_cycle(client, monkeypatch):
     state_mgr: StateManager = client.app.state._state_manager
     operations = []
 
-    async def fake_migrate(session_id, from_host, from_port, to_host, to_port, to_node_name):
+    async def fake_migrate(session_id, from_host, from_port, to_host, to_port, to_node_name, from_node_name=""):
         operations.append(("migrate", session_id, to_node_name))
         table.lookup(session_id).node_name = to_node_name
         return {"saved": True, "slot_id": 0, "n_past": 512, "restored": True}
