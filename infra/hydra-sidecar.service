@@ -1,0 +1,16 @@
+[Unit]
+Description=Hydra sidecar — sequential container starter
+After=podman.socket network-online.target
+Requires=podman.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/bin/podman rm -f hydra-sidecar 2>/dev/null || true
+ExecStart=/usr/bin/podman run --rm --name hydra-sidecar \
+  -v /run/user/%U/podman/podman.sock:/var/run/docker.sock:ro \
+  localhost/hydra-sidecar:latest
+ExecStop=/usr/bin/bash /mnt/WorkDisk/Workplace/hydra_vortex/infra/sidecar/stop.sh
+
+[Install]
+WantedBy=default.target
