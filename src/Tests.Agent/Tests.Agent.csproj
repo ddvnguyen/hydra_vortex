@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Hydra.Agent\Hydra.Agent.csproj" />
     <ProjectReference Include="..\Hydra.Shared\Hydra.Shared.csproj" />
+    <ProjectReference Include="..\Hydra.Store\Hydra.Store.csproj" />
   </ItemGroup>
 
 </Project>
