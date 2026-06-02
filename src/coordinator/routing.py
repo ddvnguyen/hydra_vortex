@@ -5,6 +5,11 @@ from typing import Optional
 from coordinator.config import NodeConfig
 from coordinator.session_table import SessionTable
 
+# Incremented on every new-session routing decision so that ties in load are
+# broken by rotating across nodes rather than always picking the first in dict
+# order (which would always be RTX, starving P100 when both are idle).
+_rr_counter: int = 0
+
 
 @dataclass
 class RoutingDecision:
@@ -74,11 +79,13 @@ def route_request(
         if info.get("gpu_type") == "rtx5060ti"
     }
 
-    def load(node_name: str) -> int:
+    def load_fraction(node_name: str) -> float:
+        """Busy-slot fraction [0.0, 1.0]. Normalises by capacity so RTX (2 slots)
+        and P100 (1 slot) are compared fairly: 1 busy slot on each = 0.5 vs 1.0."""
         info = healthy_nodes.get(node_name, {})
-        total = info.get("slots_total", 1)
+        total = max(info.get("slots_total", 1), 1)
         idle = info.get("slots_idle", 0)
-        return total - idle
+        return (total - idle) / total
 
     if entry:
         if entry.node_name in healthy_nodes:
@@ -97,7 +104,7 @@ def route_request(
         if entry.has_store_state:
             sorted_healthy = sorted(
                 (n for n in nodes if n.name in healthy_nodes),
-                key=lambda n: load(n.name),
+                key=lambda n: load_fraction(n.name),
             )
             target = sorted_healthy[0] if sorted_healthy else None
             if target:
@@ -121,10 +128,17 @@ def route_request(
             session_id=session_id,
         )
 
-    sorted_healthy = sorted(healthy_nodes.keys(), key=load)
+    sorted_healthy = sorted(healthy_nodes.keys(), key=load_fraction)
 
     if sorted_healthy:
-        target_name = sorted_healthy[0]
+        global _rr_counter
+        min_load = load_fraction(sorted_healthy[0])
+        # Collect all nodes tied at the minimum load and rotate between them so
+        # P100 gets a turn even when both nodes are fully idle.
+        tied = [n for n in sorted_healthy if load_fraction(n) == min_load]
+        target_name = tied[_rr_counter % len(tied)]
+        _rr_counter += 1
+
         node_cfg = next(n for n in nodes if n.name == target_name)
         return RoutingDecision(
             node_name=target_name,

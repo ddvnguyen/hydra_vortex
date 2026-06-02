@@ -1,4 +1,5 @@
 import pytest
+import coordinator.routing as _routing_module
 from coordinator.routing import (
     route_request,
     derive_session_id,
@@ -161,3 +162,44 @@ def test_n_tokens_guard_metadata():
 
     assert decision.n_past == 100
     assert estimate_request_tokens([{"role": "user", "content": "hi"}], 4.0) <= 100
+
+
+def test_round_robin_distributes_across_idle_nodes():
+    """When both nodes are idle (load tied at 0), consecutive new sessions
+    must alternate between nodes — P100 must eventually get a turn."""
+    table = SessionTable()
+    health = make_health(rtx_idle=2, p100_idle=2)
+
+    # Reset counter so the test is deterministic regardless of run order
+    _routing_module._rr_counter = 0
+
+    nodes_seen = set()
+    for _ in range(4):
+        decision = route_request(
+            [{"role": "user", "content": "hi"}],
+            SessionTable(),
+            NODES,
+            health,
+        )
+        nodes_seen.add(decision.node_name)
+
+    assert "rtx" in nodes_seen, "RTX should receive at least one session"
+    assert "p100" in nodes_seen, "P100 should receive at least one session (round-robin)"
+
+
+def test_load_fraction_prefers_less_loaded_node():
+    """When RTX has 1 busy slot and P100 is fully idle, P100 wins even though
+    RTX still has a free slot — fractional load ensures fair comparison."""
+    table = SessionTable()
+    # RTX: 1/2 slots busy (load_fraction=0.5), P100: 0/1 slots busy (0.0)
+    health = {
+        "rtx": {"healthy": True, "slots_total": 2, "slots_idle": 1, "gpu_type": "rtx5060ti"},
+        "p100": {"healthy": True, "slots_total": 1, "slots_idle": 1, "gpu_type": "p100"},
+    }
+    decision = route_request(
+        [{"role": "user", "content": "short prompt"}],
+        table,
+        NODES,
+        health,
+    )
+    assert decision.node_name == "p100"
