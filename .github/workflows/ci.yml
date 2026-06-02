@@ -84,7 +84,7 @@ jobs:
         with:
           name: Python Unit Tests
           path: TestResults/coordinator.xml
-          reporter: python-pytest
+          reporter: java-junit
           fail-on-error: false
           fail-on-empty: false
 
