@@ -1,11 +1,11 @@
 import hashlib
 import json
 import time
-from typing import Optional
+from typing import Optional, Union
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
 
 import httpx
 
@@ -54,11 +54,25 @@ async def _resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) 
 
 
 class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     role: str
-    content: str
+    content: Union[str, list, None] = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def flatten_content(cls, v):
+        if isinstance(v, list):
+            return " ".join(
+                part.get("text", "") for part in v
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        return v
 
 
 class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     model: str = "darwin"
     messages: list[ChatMessage]
     max_tokens: int = 512
