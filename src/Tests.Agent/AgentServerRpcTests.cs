@@ -54,6 +54,10 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
         _cts = new CancellationTokenSource();
         _storeTask = Task.Run(() => _store.RunAsync(_cts.Token));
 
+        // Wait for StoreServer port to be ready before connecting
+        while (_store.Port == 0)
+            await Task.Delay(10);
+
         // Start AgentServer with mocked llama-client
         var agentCfg = new AgentConfig
         {
@@ -134,6 +138,10 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
 
         _server = new AgentServer(agentCfg, handler, llamaClient, log);
         _serverTask = Task.Run(() => _server.RunAsync(_cts.Token));
+
+        // Wait for AgentServer port to be ready before tests connect
+        while (_server.Port == 0)
+            await Task.Delay(10);
     }
 
     public async Task DisposeAsync()

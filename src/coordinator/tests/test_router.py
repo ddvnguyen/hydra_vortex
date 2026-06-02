@@ -101,6 +101,69 @@ def test_evict_session_missing_body_returns_ok(client):
     assert resp.json()["evicted"] is True
 
 
+def test_completion_missing_messages_returns_422(client):
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"max_tokens": 512},
+    )
+    assert resp.status_code == 422
+
+
+
+def test_migrate_invalid_target_node_returns_400(client):
+    # Need session to exist first, then migrate to invalid target
+    table = client.app.state._session_table
+    table.register("sess_existing", "rtx", 0)
+
+    resp = client.post(
+        "/sessions/sess_existing/migrate",
+        json={"target_node": "nonexistent_node"},
+    )
+    assert resp.status_code == 400
+    assert "not configured" in resp.json()["detail"]
+
+
+def test_prefix_save_invalid_node_returns_400(client):
+    resp = client.post("/prefix/test_checkpoint/save?node_name=ghost")
+    assert resp.status_code == 400
+    assert "not configured" in resp.json()["detail"]
+
+
+def test_prefix_restore_invalid_node_returns_400(client):
+    resp = client.post("/prefix/test_checkpoint/restore?node_name=ghost")
+    assert resp.status_code == 400
+    assert "not configured" in resp.json()["detail"]
+
+
+def test_evict_session_success(client):
+    """Test session eviction returns 200 with evicted=True."""
+    table = client.app.state._session_table
+    table.register("sess_evict", "rtx", 0)
+
+    # Mock the state_manager save_session to avoid RPC calls during test
+    with patch.object(StateManager, "save_session", new_callable=AsyncMock) as mock_save:
+        mock_save.return_value = {}
+        resp = client.delete("/sessions/sess_evict")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["evicted"] is True
+        assert data["session_id"] == "sess_evict"
+
+def test_evict_session_missing_body_returns_ok(client):
+    """Test session eviction works without request body (body parsed as None)."""
+    table = client.app.state._session_table
+    table.register("sess_evict2", "rtx", 0)
+
+    with patch.object(StateManager, "save_session", new_callable=AsyncMock) as mock_save:
+        mock_save.return_value = {}
+        # Send request without JSON body - endpoint should handle None body gracefully
+        resp = client.delete("/sessions/sess_evict2")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["evicted"] is True
+        assert data["session_id"] == "sess_evict2"
+
+
 def test_health_returns_200(client):
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -109,12 +172,12 @@ def test_health_returns_200(client):
     assert "nodes" in data
 
 
+
 def test_health_shows_nodes(client):
     resp = client.get("/health")
     data = resp.json()
     assert "rtx" in data["nodes"]
     assert "p100" in data["nodes"]
-
 
 def test_status_returns_200(client):
     resp = client.get("/status")
