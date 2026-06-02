@@ -60,6 +60,37 @@ ssh "$VM" "
   sudo systemctl daemon-reload && sudo systemctl enable --now promtail-p100
 "
 
+echo "==> Installing node-exporter for system metrics"
+ssh "$VM" "mkdir -p ~/.local/bin ~/.config/systemd/user"
+ssh "$VM" "
+  if [ -f ~/.local/bin/node_exporter ]; then
+    echo 'node_exporter already installed'
+  else
+    curl -sLO https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+    tar xf node_exporter-1.8.2.linux-amd64.tar.gz
+    mv node_exporter-1.8.2.linux-amd64/node_exporter ~/.local/bin/
+    rm -rf node_exporter-1.8.2.linux-amd64*
+    echo 'node_exporter installed'
+  fi
+"
+scp "$REPO_ROOT/infra/systemd/node-exporter-p100.service" "$VM:~/.config/systemd/user/node-exporter.service"
+ssh "$VM" "systemctl --user daemon-reload && systemctl --user enable --now node-exporter"
+
+echo "==> Installing nvidia-gpu-exporter for GPU metrics"
+ssh "$VM" "
+  if [ -f ~/.local/bin/nvidia_gpu_exporter ]; then
+    echo 'nvidia_gpu_exporter already installed'
+  else
+    curl -sLO https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.2.1/nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz
+    tar xf nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz
+    mv nvidia_gpu_exporter ~/.local/bin/
+    rm -f nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz LICENSE README.md 2>/dev/null || true
+    echo 'nvidia_gpu_exporter installed'
+  fi
+"
+scp "$REPO_ROOT/infra/systemd/nvidia-exporter-p100.service" "$VM:~/.config/systemd/user/nvidia-exporter.service"
+ssh "$VM" "systemctl --user daemon-reload && systemctl --user enable --now nvidia-exporter"
+
 echo ""
 echo "==> Setup complete. To start llama-server P100:"
 echo "    bash scripts/start-env.sh"

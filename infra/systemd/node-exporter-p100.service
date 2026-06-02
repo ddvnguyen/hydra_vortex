@@ -1,0 +1,11 @@
+[Unit]
+Description=Node Exporter (P100 system metrics)
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/node_exporter --web.listen-address=:9100
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -40,6 +40,7 @@ services:
       - store
     labels:
       component: agent
+      node: rtx
     restart: unless-stopped
 
   agent-p100:
@@ -62,6 +63,7 @@ services:
       - store
     labels:
       component: agent
+      node: p100
     restart: unless-stopped
 
   coordinator:
