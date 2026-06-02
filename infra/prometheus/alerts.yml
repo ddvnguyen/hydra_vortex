@@ -84,19 +84,19 @@ groups:
           description: "llama-server at {{ $labels.instance }} has been unreachable for 30s"
 
       - alert: GPUMemoryPressure
-        expr: DCGM_FI_DEV_FB_FREE / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) < 0.1
+        expr: (DCGM_FI_DEV_FB_FREE{job="hydra-gpu"} / (DCGM_FI_DEV_FB_USED{job="hydra-gpu"} + DCGM_FI_DEV_FB_FREE{job="hydra-gpu"}) < 0.1) or (nvidia_smi_memory_free_bytes{job="hydra-gpu-p100"} / nvidia_smi_memory_total_bytes{job="hydra-gpu-p100"} < 0.1)
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "GPU {{ $labels.gpu }} memory pressure"
-          description: "GPU {{ $labels.gpu }} has < 10% free memory ({{ $value | humanizePercentage }} free)"
+          description: "GPU {{ $labels.gpu }} ({{ $labels.node }}) has < 10% free memory ({{ $value | humanizePercentage }} free)"
 
       - alert: HighGPUTemperature
-        expr: DCGM_FI_DEV_GPU_TEMP > 85
+        expr: DCGM_FI_DEV_GPU_TEMP{job="hydra-gpu"} > 85 or nvidia_smi_temperature_gpu{job="hydra-gpu-p100"} > 85
         for: 2m
         labels:
           severity: warning
         annotations:
           summary: "GPU {{ $labels.gpu }} temperature high"
-          description: "GPU {{ $labels.gpu }} is at {{ $value }}°C (threshold 85°C)"
+          description: "GPU {{ $labels.gpu }} ({{ $labels.node }}) is at {{ $value }}°C (threshold 85°C)"
