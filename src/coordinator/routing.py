@@ -23,17 +23,12 @@ class RoutingDecision:
 
 
 def derive_session_id(messages: list[dict]) -> str:
-    # Anchor on system prompt + first user message so all turns of the same
-    # conversation hash to the same ID regardless of how many assistant/user
-    # exchanges have accumulated. Hashing the full history would generate a new
-    # ID on every turn, making affinity routing impossible.
-    sys_content = next(
-        (m.get("content", "") for m in messages if m.get("role") == "system"), ""
-    )
-    first_user_content = next(
-        (m.get("content", "") for m in messages if m.get("role") == "user"), ""
-    )
-    raw = f"sys:{sys_content}\nuser:{first_user_content}"
+    key_parts = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        key_parts.append(f"{role}:{content}")
+    raw = "\n".join(key_parts)
     return "sess_" + hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 

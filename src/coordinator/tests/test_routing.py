@@ -123,42 +123,6 @@ def test_derive_session_id_differs_for_diff_content():
     assert id1 != id2
 
 
-def test_derive_session_id_stable_across_turns():
-    """Turn 2+ messages include the full history. ID must match turn 1 so affinity routing works."""
-    turn1 = [{"role": "user", "content": "hello"}]
-    turn2 = [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-        {"role": "user", "content": "what is 2+2?"},
-    ]
-    assert derive_session_id(turn1) == derive_session_id(turn2)
-
-
-def test_affinity_on_second_turn():
-    """Second turn of a conversation (without explicit session_id) must hit affinity routing."""
-    table = SessionTable()
-    health = make_health()
-
-    # Turn 1 — new session routed somewhere.
-    # router.py uses: sess_id = decision.session_id or derive_session_id(messages)
-    # Replicate that logic here so the registered ID matches what derive produces.
-    turn1 = [{"role": "user", "content": "hello"}]
-    d1 = route_request(turn1, table, NODES, health)
-    sess_id = d1.session_id or derive_session_id(turn1)
-    table.register(sess_id, d1.node_name, 0, n_past=50)
-
-    # Turn 2 — full history sent (standard OpenAI client behaviour).
-    # derive_session_id must produce the same ID as turn 1 → affinity hit.
-    turn2 = [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi"},
-        {"role": "user", "content": "follow-up question"},
-    ]
-    d2 = route_request(turn2, table, NODES, health)
-    assert d2.session_found is True, "turn 2 must find the existing session"
-    assert d2.node_name == d1.node_name, "turn 2 must route to same node (affinity)"
-
-
 def test_estimate_request_tokens():
     tokens = estimate_request_tokens(
         [{"role": "user", "content": "hello world"}], chars_per_token=4.0

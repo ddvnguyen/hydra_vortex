@@ -41,7 +41,7 @@ class CoordinatorConfig(BaseSettings):
     health_max_failures: int = 3
 
     chars_per_token: float = 4.0
-    long_prompt_threshold: int = 16000
+    long_prompt_threshold: int = 8192
 
     session_idle_timeout_s: int = 3600
 
