@@ -22,11 +22,11 @@ services:
     memswap_limit: 36g
     oom_kill_disable: false
 
-    volumes: 
-      - ./init:/init:ro 
-      # - /opt/software/llama-official/stable:/llama:ro 
-      - /mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm120:/llama:ro 
-      - /mnt/SSD:/models:ro 
+    volumes:
+      - ./init:/init:ro
+      # - /opt/software/llama-official/stable:/llama:ro
+      - /mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm120:/llama:ro
+      - /mnt/SSD:/models:ro
       - /mnt/SSD/kv_slots:/slots
 
     working_dir: /llama
@@ -36,26 +36,25 @@ services:
      LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
     command: >
       llama-server
-      -m /models/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf 
-      --chat-template-file /models/qwen3.6_merged_template.jinja 
-      --slot-save-path /slots/ 
-      --host 0.0.0.0 --port 8080 
-      --ctx-size 360000 
-      --temp 0.86 --repeat-penalty 1.06 --top-k 20 --top-p 0.95 
-      --flash-attn on --cache-type-v q8_0 --cache-type-k q8_0 --kv-unified 
+      -m /models/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf
+      --chat-template-file /models/qwen3.6_merged_template.jinja
+      --slot-save-path /slots/
+      --host 0.0.0.0 --port 8080
+      --ctx-size 360000
+      --temp 0.86 --repeat-penalty 1.06 --top-k 20 --top-p 0.95
+      --flash-attn on --cache-type-v q8_0 --cache-type-k q8_0 --kv-unified
       --log-timestamps --log-prefix --log-colors on --metrics --slots --perf --log-verbosity 4
-      --cont-batching --parallel 2 --cache-prompt --cache-reuse 64 
-      --prio 3 --prio-batch 1 
-      --n-cpu-moe 36 --n-gpu-layers all 
+      --cont-batching --parallel 2 --cache-prompt --cache-reuse 64
+      --prio 3 --prio-batch 1
+      --n-cpu-moe 36 --n-gpu-layers all
       --context-shift
       --slot-prompt-similarity 0.6
-      --swa-full
-      --reasoning on --jinja 
-      --rope-scaling yarn 
-      --rope-scale 12 
+      --reasoning on --jinja
+      --rope-scaling yarn
+      --rope-scale 12
       --yarn-orig-ctx 32768
       --timeout 1800
-      --spec-type draft-mtp --spec-draft-n-max 3 
+      --spec-type draft-mtp --spec-draft-n-max 3
       --mmproj /models/Qwen3.6-35B-A3B-mmproj-F16.gguf
       --rpc-port 9501
-#      --direct-io
+#      --swa-full --direct-io

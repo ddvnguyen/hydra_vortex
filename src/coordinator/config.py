@@ -37,7 +37,7 @@ class CoordinatorConfig(BaseSettings):
     store_host: str = "127.0.0.1"
     store_port: int = 9500
 
-    health_poll_interval_s: int = 10
+    health_poll_interval_s: int = 20
     health_max_failures: int = 3
 
     chars_per_token: float = 4.0
