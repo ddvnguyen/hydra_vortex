@@ -181,8 +181,13 @@ services:
       - grafana-data:/var/lib/grafana
     environment:
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/hydra-dashboard.json
+      # Hybrid auth: anonymous = read-only, admin user (created on first Grafana
+      # start) = full. Don't set GF_SECURITY_ADMIN_USER / _PASSWORD — the
+      # grafana-data volume is already initialized and those env vars are
+      # ignored after first start. Use the admin password from the first-start
+      # log to log in; reset via Grafana API / UI if forgotten.
       - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     depends_on:
       - prometheus
       - loki
