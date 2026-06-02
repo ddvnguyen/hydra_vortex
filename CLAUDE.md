@@ -9,7 +9,7 @@ Multi-GPU LLM inference system. Routes requests across RTX 5060 Ti and Tesla P10
 2. `specs/rpc-protocol.md` — binary wire format (5 min)
 3. `## Task Lifecycle` (below) + `docs/workflow/` — how to work a task end-to-end
 4. Active milestone `docs/milestone-perf.md` (M-Perf) + `DevelopmentRunBook.md` for
-   build/run/test. Live board in Plane (`docs/PLANE_SETUP.md`).
+   build/run/test. Live board: GitHub Project (`docs/GITHUB_PROJECT_SETUP.md`).
 
 ## Architecture
 ```
@@ -55,8 +55,9 @@ Build RTX: GGML_CUDA_FORCE_CUBLAS=ON, sm_120. Build P100: sm_60.
 
 ## Milestones
 Core M0–M2 built. Roadmap **restructured 2026-06** around the Tier-1 performance
-track (**M-Perf supersedes the old "M3 Production"**). Live roadmap in Plane
-(`docs/PLANE_SETUP.md`); detail in `docs/milestone-*.md`.
+track (**M-Perf supersedes the old "M3 Production"**). Tracked in the GitHub Project
+"Hydra Vortex" + native Milestones (`docs/GITHUB_PROJECT_SETUP.md`); detail in
+`docs/milestone-*.md`.
 
 | MS      | Goal                                                       | Status  |
 |---------|------------------------------------------------------------|---------|
@@ -71,12 +72,13 @@ track (**M-Perf supersedes the old "M3 Production"**). Live roadmap in Plane
 
 ## Task Lifecycle (MANDATORY)
 Every unit of work follows this loop. Each step's detail is in `docs/workflow/` —
-**open the linked doc when you reach that step**. Plane = planning/status, GitHub =
-code/PRs/CI; you are the bridge (cross-link by hand, there is no native sync).
-Commands live in `DevelopmentRunBook.md`; this loop just sequences them.
+**open the linked doc when you reach that step**. **GitHub Projects is the single
+source of truth** (issues = work items, PRs link via `Closes #N`, board status is
+automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
 
-1. **Pick up** — choose from the Plane board (active module, currently M-Perf) +
-   `gh issue list --label review-finding --state open`; set the Plane work item →
+1. **Pick up** — choose from the **GitHub Project board** (`gh project item-list` /
+   GitHub MCP), filtered by Milestone (currently M-Perf), or
+   `gh issue list --label review-finding --state open`; set the item's Status →
    In Progress. → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
    follow the milestone doc. → `docs/workflow/02-implement.md`
@@ -84,14 +86,14 @@ Commands live in `DevelopmentRunBook.md`; this loop just sequences them.
    (`dotnet test src/Tests.Integration`, `pytest tests/system`) green before PR.
    → `docs/workflow/03-test-verify.md`
 4. **Commit & PR** — conventional commits + `Co-Authored-By`; `gh pr create …
-   Closes #N`; cross-link PR ↔ Plane. → `docs/workflow/04-commit-pr.md`
+   Closes #N` (this link auto-moves the Project item). → `docs/workflow/04-commit-pr.md`
 5. **Deploy** (if runtime/fork) — build sm_120/sm_60; push the fork + bump the
    `src/llama-cpp` submodule pointer. → `docs/workflow/05-deploy.md`
 6. **Check monitoring** — Grafana :3000 + alerts; no regressions.
    → `docs/workflow/06-monitoring.md`
-7. **Issue + Plane close-out** — new problem → `gh issue create` + mirror to Plane
-   **Backlog — Findings**; set the finished work item → Done.
-   → `docs/workflow/07-issue-and-plane.md`
+7. **Issue + close-out** — new problem → `gh issue create --label review-finding`
+   (auto-added to the Project); finished item's Status → Done (auto on PR-merge/close).
+   → `docs/workflow/07-issue-and-close.md`
 
 ## GitHub Workflow (MANDATORY for all coding agents)
 
@@ -117,20 +119,22 @@ finding. P0 = correctness/data-loss, P1 = behavioural bug, P2 = minor/perf.
 Auto-created by `monitor.yml` (Prometheus alerts) and `ci.yml` failure handlers.
 Do not manually close a monitoring issue without investigating the root cause.
 
-## Planning (Plane)
-Roadmap/planning lives in **Plane Cloud** (project "Hydra Vortex"; milestones =
-Plane modules). Agents drive it via the **Plane MCP server** (configured in
-`.mcp.json` for Claude Code and `opencode.json` for opencode). The GitHub bridge is
-at the **agent layer**: use Plane for planning/status and GitHub (`gh`) for
-code/PRs/CI issues — there is no native Plane↔GitHub sync. When a Plane work item
-gets a PR, cross-link the URLs by hand. New review findings go in **both** GitHub
-(`review-finding` label, source of truth) and the Plane **Backlog — Findings**
-module, cross-linked by issue `#`. Setup + convention: `docs/PLANE_SETUP.md`.
+## Planning (GitHub Projects)
+Roadmap/planning lives in the **GitHub Project v2 "Hydra Vortex"** (same repo as code).
+Milestones = native GitHub **Milestones** (`Phase 0`, `M-Perf`, `M3`, `M4`, `M5`);
+work items = **issues** with Status / Priority fields on the board. PRs link to issues
+via `Closes #N`; built-in workflows auto-add items and set **Status → Done** on
+merge/close — **no manual cross-linking**. Drive it with `gh project` / `gh issue`
+(Bash) or the **GitHub MCP** (configured in `.mcp.json` / `opencode.json`). Board
+layout + setup: `docs/GITHUB_PROJECT_SETUP.md`.
+
+> **Plane is legacy.** `docs/PLANE_SETUP.md` runs in parallel during evaluation and is
+> kept for reference — **do not use it for new work.** GitHub Projects is the source of truth.
 
 ## Starting Point
-Core M0–M2 are done. Start from the **Plane board's active module** (currently
-**M-Perf** — `docs/milestone-perf.md`) and follow the **Task Lifecycle** above.
-Build/run/test commands are in `DevelopmentRunBook.md`.
+Core M0–M2 are done. Start from the **GitHub Project board**, filtered to the active
+Milestone (currently **M-Perf** — `docs/milestone-perf.md`), and follow the **Task
+Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
 
 ## Key Design Decisions (do not relitigate)
 - No Ray until possible M4+ (2 nodes, not needed)

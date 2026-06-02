@@ -38,6 +38,12 @@ git tag -a "v$NEW" -m "Hydra v$NEW"
 echo "Building images..."
 cd infra
 
+# Ensure Podman socket is active before starting containers that mount it (promtail)
+systemctl --user start podman.socket
+# Touch the socket to force lazy activation — without this the socket file may not
+# exist yet when crun tries to bind-mount it into the promtail container
+podman system info > /dev/null 2>&1 || true
+
 # Build and start Hydra stack
 podman-compose build 2>&1 | tail -3
 podman-compose up -d 2>&1 | tail -5

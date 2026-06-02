@@ -2,12 +2,12 @@ import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 
 from coordinator.health import HealthMonitor
-from coordinator.config import NodeConfig
+from coordinator.config import WorkerNodeConfig
 
 
 NODES = [
-    NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, gpu_type="rtx5060ti"),
-    NodeConfig(name="p100", host="192.168.122.21", rpc_port=9602, gpu_type="p100"),
+    WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
+    WorkerNodeConfig(name="p100", host="192.168.122.21", rpc_port=9602, llama_url="http://192.168.122.21:8086"),
 ]
 
 

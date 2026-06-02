@@ -1,16 +1,21 @@
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Literal
+import os
+from pydantic import BaseModel, Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict, JsonConfigSettingsSource
 
 
-class NodeConfig(BaseSettings):
-    model_config = SettingsConfigDict()
-
-    name: str = "rtx"
-    host: str = "127.0.0.1"
-    rpc_port: int = 9601
-    llama_url: str = "http://localhost:8080"
-    gpu_type: Literal["rtx5060ti", "p100"] = "rtx5060ti"
+class WorkerNodeConfig(BaseModel):
+    name: str
+    host: str
+    rpc_port: int
+    llama_url: str
+    # Bitwise worker type: 1=prefill, 2=decode, 3=mixed (prefill+decode)
+    worker_type: int = 3
+    slots: int = 1
+    # Lower priority number = preferred (1 is best, ties allowed)
+    prefill_priority: int = 1
+    decode_priority: int = 1
+    # Estimated decode speed for smart scheduling
+    decode_speed_tps: float = 30.0
 
 
 class CoordinatorConfig(BaseSettings):
@@ -20,28 +25,18 @@ class CoordinatorConfig(BaseSettings):
     port: int = 9000
     log_level: str = "INFO"
 
-    # Legacy two-node env fields (docker-compose sets HYDRA_COORD_RTX_*/P100_*).
-    # Kept for deployment compatibility; when `nodes` is not supplied explicitly it
-    # is derived from these by the validator below.
-    rtx_host: str = "127.0.0.1"
-    rtx_port: int = 9601
-    rtx_llama_url: str = "http://localhost:8080"
-    p100_host: str = "192.168.122.21"
-    p100_port: int = 9602
-    p100_llama_url: str = "http://192.168.122.21:8086"
-
-    # Preferred node list (enables N-node setups). Empty => derived from the
-    # rtx_/p100_ fields above. Construct explicitly in tests / multi-node configs.
-    nodes: list[NodeConfig] = Field(default_factory=list)
+    # Worker nodes — required. Set via HYDRA_COORD_WORKERS (JSON array) or
+    # HYDRA_COORD_CONFIG_FILE (path to a JSON file containing this config).
+    workers: list[WorkerNodeConfig] = Field(default_factory=list)
 
     store_host: str = "127.0.0.1"
     store_port: int = 9500
 
-    health_poll_interval_s: int = 10
+    health_poll_interval_s: int = 20
     health_max_failures: int = 3
 
     chars_per_token: float = 4.0
-    long_prompt_threshold: int = 4096
+    long_prompt_threshold: int = 8192
 
     session_idle_timeout_s: int = 3600
 
@@ -50,11 +45,27 @@ class CoordinatorConfig(BaseSettings):
     prefix_checkpoint_name: str = "system_prompt"
     prefix_checkpoint_enabled: bool = True
 
+    # "fast": one node handles both prefill and decode (minimises KV migration)
+    # "concurrency": P/D disaggregation — prefill worker → store → decode worker
+    run_mode: str = "fast"
+
+    # If a worker has been busy for less than this many seconds, the scheduler
+    # considers it "just started" and routes new requests elsewhere.
+    smart_schedule_wait_threshold_s: float = 3.0
+
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, **kwargs):
+        sources = tuple(kwargs.values())
+        config_path = os.environ.get("HYDRA_COORD_CONFIG_FILE", "")
+        if config_path and os.path.exists(config_path):
+            return sources + (JsonConfigSettingsSource(settings_cls, json_file=config_path),)
+        return sources
+
     @model_validator(mode="after")
-    def _derive_nodes(self):
-        if not self.nodes:
-            self.nodes = [
-                NodeConfig(name="rtx", host=self.rtx_host, rpc_port=self.rtx_port, llama_url=self.rtx_llama_url, gpu_type="rtx5060ti"),
-                NodeConfig(name="p100", host=self.p100_host, rpc_port=self.p100_port, llama_url=self.p100_llama_url, gpu_type="p100"),
-            ]
+    def _validate_workers(self):
+        if not self.workers:
+            raise ValueError(
+                "No workers configured. Set HYDRA_COORD_WORKERS (JSON array) "
+                "or HYDRA_COORD_CONFIG_FILE pointing to a JSON config file."
+            )
         return self

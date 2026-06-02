@@ -40,6 +40,7 @@ services:
       - store
     labels:
       component: agent
+      node: rtx
     restart: unless-stopped
 
   agent-p100:
@@ -62,6 +63,7 @@ services:
       - store
     labels:
       component: agent
+      node: p100
     restart: unless-stopped
 
   coordinator:
@@ -74,15 +76,11 @@ services:
     environment:
       - HYDRA_COORD_HOST=0.0.0.0
       - HYDRA_COORD_PORT=9000
-      - HYDRA_COORD_RTX_HOST=agent-rtx
-      - HYDRA_COORD_RTX_PORT=9601
-      - HYDRA_COORD_RTX_LLAMA_URL=http://llama-cpp:8080
-      - HYDRA_COORD_P100_HOST=agent-p100
-      - HYDRA_COORD_P100_PORT=9602
-      - HYDRA_COORD_P100_LLAMA_URL=http://192.168.122.21:8086
       - HYDRA_COORD_STORE_HOST=store
       - HYDRA_COORD_STORE_PORT=9500
       - HYDRA_COORD_LOG_LEVEL=DEBUG
+      - HYDRA_COORD_RUN_MODE=fast
+      - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"agent-rtx","rpc_port":9601,"llama_url":"http://llama-cpp:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"agent-p100","rpc_port":9602,"llama_url":"http://192.168.122.21:8086","worker_type":3,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
     depends_on:
       - store
     labels:

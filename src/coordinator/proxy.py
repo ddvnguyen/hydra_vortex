@@ -34,11 +34,6 @@ async def proxy_completion(
     resp.raise_for_status()
     data = resp.json()
 
-    data["hydra"] = {
-        "trace_id": trace_id,
-        "node": node_url,
-        "proxy": "hydra-coordinator",
-    }
     return data
 
 
@@ -62,7 +57,6 @@ async def proxy_completion_stream(
             if line:
                 yield f"{line}\n\n"
 
-        yield f"data: {json.dumps({'hydra': {'trace_id': trace_id, 'node': node_url, 'proxy': 'hydra-coordinator'}})}\n\n"
 
 
 async def shutdown():

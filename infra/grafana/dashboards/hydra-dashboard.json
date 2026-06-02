@@ -179,11 +179,11 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(hydra_agent_save_duration_seconds_bucket[1m]))",
+          "expr": "histogram_quantile(0.50, rate(hydra_agent_save_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
           "legendFormat": "p50"
         },
         {
-          "expr": "histogram_quantile(0.95, rate(hydra_agent_save_duration_seconds_bucket[1m]))",
+          "expr": "histogram_quantile(0.95, rate(hydra_agent_save_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
           "legendFormat": "p95"
         }
       ],
@@ -210,11 +210,11 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(hydra_agent_restore_duration_seconds_bucket[1m]))",
+          "expr": "histogram_quantile(0.50, rate(hydra_agent_restore_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
           "legendFormat": "p50"
         },
         {
-          "expr": "histogram_quantile(0.95, rate(hydra_agent_restore_duration_seconds_bucket[1m]))",
+          "expr": "histogram_quantile(0.95, rate(hydra_agent_restore_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
           "legendFormat": "p95"
         }
       ],
@@ -251,8 +251,8 @@
       },
       "targets": [
         {
-          "expr": "DCGM_FI_DEV_GPU_UTIL",
-          "legendFormat": "{{gpu}}"
+          "expr": "max by(gpu, modelName) (DCGM_FI_DEV_GPU_UTIL{job=\"hydra-gpu\"})",
+          "legendFormat": "{{modelName}} (GPU{{gpu}})"
         }
       ],
       "unit": "percent",
@@ -295,8 +295,8 @@
       },
       "targets": [
         {
-          "expr": "DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100",
-          "legendFormat": "{{gpu}}"
+          "expr": "max by(gpu, modelName) (DCGM_FI_DEV_FB_USED{job=\"hydra-gpu\"}) / (max by(gpu, modelName) (DCGM_FI_DEV_FB_USED{job=\"hydra-gpu\"}) + max by(gpu, modelName) (DCGM_FI_DEV_FB_FREE{job=\"hydra-gpu\"})) * 100",
+          "legendFormat": "{{modelName}} (GPU{{gpu}})"
         }
       ],
       "unit": "percent",
@@ -339,8 +339,8 @@
       },
       "targets": [
         {
-          "expr": "DCGM_FI_DEV_GPU_TEMP",
-          "legendFormat": "{{gpu}}"
+          "expr": "max by(gpu, modelName) (DCGM_FI_DEV_GPU_TEMP{job=\"hydra-gpu\"})",
+          "legendFormat": "{{modelName}} (GPU{{gpu}})"
         }
       ],
       "unit": "celsius",
@@ -364,8 +364,8 @@
       },
       "targets": [
         {
-          "expr": "DCGM_FI_DEV_POWER_USAGE",
-          "legendFormat": "{{gpu}}"
+          "expr": "max by(gpu, modelName) (DCGM_FI_DEV_POWER_USAGE{job=\"hydra-gpu\"})",
+          "legendFormat": "{{modelName}} (GPU{{gpu}})"
         }
       ],
       "unit": "watt",

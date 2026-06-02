@@ -44,16 +44,6 @@ store_dedup_ratio = Gauge(
     "hydra_store_dedup_ratio", "Deduplication ratio",
 )
 
-agent_save_duration = Histogram(
-    "hydra_agent_save_duration_seconds", "Agent save duration",
-    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, float("inf")),
-)
-
-agent_restore_duration = Histogram(
-    "hydra_agent_restore_duration_seconds", "Agent restore duration",
-    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, float("inf")),
-)
-
 agent_slot_utilization = Gauge(
     "hydra_agent_slot_utilization", "Slot utilization by node", ["node"],
 )
