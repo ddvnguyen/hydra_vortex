@@ -24,7 +24,7 @@ def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor, c
             "coordinator_start",
             version=VERSION,
             revision=REVISION,
-            nodes=[n.name for n in config.nodes],
+            workers=[w.name for w in config.workers],
             store_host=config.store_host,
             store_port=config.store_port,
         )
@@ -70,7 +70,7 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
     # Singletons — created once, shared everywhere.
     session_table = SessionTable()
     health_monitor = HealthMonitor(
-        nodes=config.nodes,
+        nodes=config.workers,
         poll_interval_s=config.health_poll_interval_s,
         max_failures=config.health_max_failures,
     )

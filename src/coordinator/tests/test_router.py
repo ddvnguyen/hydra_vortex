@@ -3,29 +3,34 @@ from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
 
-from coordinator.config import CoordinatorConfig, NodeConfig
+from coordinator.config import CoordinatorConfig, WorkerNodeConfig
 from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
 from coordinator.router import create_router
-from coordinator.routing import RoutingDecision
+from coordinator.routing import RoutingDecision, WORKER_MIXED
+
+
+RTX_CFG = WorkerNodeConfig(
+    name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080",
+    worker_type=WORKER_MIXED, slots=2, prefill_priority=1, decode_priority=2,
+)
+P100_CFG = WorkerNodeConfig(
+    name="p100", host="192.168.122.21", rpc_port=9602, llama_url="http://192.168.122.21:8086",
+    worker_type=WORKER_MIXED, slots=1, prefill_priority=2, decode_priority=1,
+)
 
 
 @pytest.fixture
 def config():
-    return CoordinatorConfig(
-        nodes=[
-            NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, gpu_type="rtx5060ti"),
-            NodeConfig(name="p100", host="192.168.122.21", rpc_port=9602, gpu_type="p100"),
-        ],
-    )
+    return CoordinatorConfig(workers=[RTX_CFG, P100_CFG])
 
 
 @pytest.fixture
 def app(config):
     app = FastAPI()
     table = SessionTable()
-    health = HealthMonitor(config.nodes)
+    health = HealthMonitor(config.workers)
     sm = StateManager(table, "127.0.0.1", 9500)
     router = create_router(config, table, health, sm)
     app.include_router(router)
@@ -38,42 +43,26 @@ def client(app):
     return TestClient(app)
 
 
-def make_decision(
-    node_name="rtx",
-    action="route",
-    session_id="sess_test",
-    n_past=0,
-):
-    cfg = NodeConfig(name=node_name, host="127.0.0.1", rpc_port=9601, gpu_type="rtx5060ti")
+def make_decision(node_name="rtx", action="route", session_id="sess_test", n_past=0):
+    cfg = WorkerNodeConfig(
+        name=node_name, host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080",
+        worker_type=WORKER_MIXED,
+    )
     return RoutingDecision(
-        node_name=node_name,
-        node_config=cfg,
-        slot_id=0,
-        action=action,
-        session_id=session_id,
-        session_found=False,
-        n_past=n_past,
+        node_name=node_name, node_config=cfg, slot_id=0,
+        action=action, session_id=session_id, session_found=False, n_past=n_past,
     )
 
 
 def test_completion_missing_messages_returns_422(client):
-    resp = client.post(
-        "/v1/chat/completions",
-        json={"max_tokens": 512},
-    )
+    resp = client.post("/v1/chat/completions", json={"max_tokens": 512})
     assert resp.status_code == 422
 
 
-
 def test_migrate_invalid_target_node_returns_400(client):
-    # Need session to exist first, then migrate to invalid target
     table = client.app.state._session_table
     table.register("sess_existing", "rtx", 0)
-
-    resp = client.post(
-        "/sessions/sess_existing/migrate",
-        json={"target_node": "nonexistent_node"},
-    )
+    resp = client.post("/sessions/sess_existing/migrate", json={"target_node": "nonexistent_node"})
     assert resp.status_code == 400
     assert "not configured" in resp.json()["detail"]
 
@@ -91,32 +80,25 @@ def test_prefix_restore_invalid_node_returns_400(client):
 
 
 def test_evict_session_success(client):
-    """Test session eviction returns 200 with evicted=True."""
     table = client.app.state._session_table
     table.register("sess_evict", "rtx", 0)
-
-    # Mock the state_manager save_session to avoid RPC calls during test
     with patch.object(StateManager, "save_session", new_callable=AsyncMock) as mock_save:
         mock_save.return_value = {}
         resp = client.delete("/sessions/sess_evict")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["evicted"] is True
-        assert data["session_id"] == "sess_evict"
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["evicted"] is True
+    assert data["session_id"] == "sess_evict"
+
 
 def test_evict_session_missing_body_returns_ok(client):
-    """Test session eviction works without request body (body parsed as None)."""
     table = client.app.state._session_table
     table.register("sess_evict2", "rtx", 0)
-
     with patch.object(StateManager, "save_session", new_callable=AsyncMock) as mock_save:
         mock_save.return_value = {}
-        # Send request without JSON body - endpoint should handle None body gracefully
         resp = client.delete("/sessions/sess_evict2")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["evicted"] is True
-        assert data["session_id"] == "sess_evict2"
+    assert resp.status_code == 200
+    assert resp.json()["evicted"] is True
 
 
 def test_health_returns_200(client):
@@ -127,12 +109,12 @@ def test_health_returns_200(client):
     assert "nodes" in data
 
 
-
 def test_health_shows_nodes(client):
     resp = client.get("/health")
     data = resp.json()
     assert "rtx" in data["nodes"]
     assert "p100" in data["nodes"]
+
 
 def test_status_returns_200(client):
     resp = client.get("/status")
@@ -147,78 +129,56 @@ def test_status_returns_200(client):
 def test_list_sessions_empty(client):
     resp = client.get("/sessions")
     assert resp.status_code == 200
-    data = resp.json()
-    assert "sessions" in data
-    assert len(data["sessions"]) == 0
+    assert resp.json()["sessions"] == []
 
 
 def test_completion_returns_503_when_no_healthy_nodes(client):
     with patch("coordinator.router.route_request") as mock_route:
-        mock_route.side_effect = RuntimeError("No healthy nodes available")
+        mock_route.side_effect = RuntimeError("No healthy workers available")
         resp = client.post(
             "/v1/chat/completions",
-            json={
-                "messages": [{"role": "user", "content": "hello"}],
-                "stream": False,
-            },
+            json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
         )
     assert resp.status_code == 503
 
 
 def test_completion_non_streaming(client):
-    with patch("coordinator.router.proxy_completion") as mock_proxy:
+    with patch("coordinator.router.proxy_completion") as mock_proxy, \
+         patch("coordinator.router.route_request") as mock_route:
         mock_proxy.return_value = {
             "choices": [{"message": {"content": "hi"}}],
             "usage": {"total_tokens": 5},
         }
-
-        with patch("coordinator.router.route_request") as mock_route:
-            mock_route.return_value = make_decision()
-
-            resp = client.post(
-                "/v1/chat/completions",
-                json={
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "stream": False,
-                },
-            )
-
+        mock_route.return_value = make_decision()
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
+        )
     assert resp.status_code == 200
-    data = resp.json()
-    assert "choices" in data
+    assert "choices" in resp.json()
 
 
 def test_delete_session_not_found(client):
-    resp = client.delete("/sessions/nonexistent")
-    assert resp.status_code == 404
+    assert client.delete("/sessions/nonexistent").status_code == 404
 
 
 def test_migrate_session_not_found(client):
-    resp = client.post(
-        "/sessions/nonexistent/migrate",
-        json={"target_node": "p100"},
-    )
+    resp = client.post("/sessions/nonexistent/migrate", json={"target_node": "p100"})
     assert resp.status_code == 404
 
 
 def test_completion_derives_session_id(client):
-    with patch("coordinator.router.proxy_completion") as mock_proxy:
+    with patch("coordinator.router.proxy_completion") as mock_proxy, \
+         patch("coordinator.router.route_request") as mock_route:
         mock_proxy.return_value = {
             "choices": [{"message": {"content": "hi"}}],
             "usage": {"total_tokens": 5},
         }
-
-        with patch("coordinator.router.route_request") as mock_route:
-            mock_route.return_value = make_decision()
-
-            resp = client.post(
-                "/v1/chat/completions",
-                json={
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "stream": False,
-                },
-            )
-
+        mock_route.return_value = make_decision()
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
+        )
     assert resp.status_code == 200
 
 
@@ -232,16 +192,9 @@ def test_version_returns_200(client):
 
 
 def test_metrics_returns_200(client):
-    resp = client.get("/metrics")
-    assert resp.status_code == 200
+    assert client.get("/metrics").status_code == 200
 
 
 def test_migrate_missing_target_node_returns_422(client):
-    resp = client.post(
-        "/sessions/sess/migrate",
-        json={},
-    )
+    resp = client.post("/sessions/sess/migrate", json={})
     assert resp.status_code == 422
-
-
-

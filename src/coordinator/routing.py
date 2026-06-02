@@ -1,20 +1,25 @@
 import hashlib
+import time
 from dataclasses import dataclass
 from typing import Optional
 
-from coordinator.config import NodeConfig
+from coordinator.config import WorkerNodeConfig
 from coordinator.session_table import SessionTable
 
+WORKER_PREFILL = 1
+WORKER_DECODE = 2
+WORKER_MIXED = 3
+
 # Incremented on every new-session routing decision so that ties in load are
-# broken by rotating across nodes rather than always picking the first in dict
-# order (which would always be RTX, starving P100 when both are idle).
+# broken by rotating across nodes rather than always picking the first in sort
+# order (which would always be the same node when priorities are equal).
 _rr_counter: int = 0
 
 
 @dataclass
 class RoutingDecision:
     node_name: str
-    node_config: NodeConfig
+    node_config: WorkerNodeConfig
     slot_id: Optional[int] = None
     action: str = "route"  # "route" or "store_restore"
     session_id: Optional[str] = None
@@ -39,61 +44,117 @@ def estimate_request_tokens(messages: list[dict], chars_per_token: float = 4.0) 
     return max(1, int(total_chars / chars_per_token))
 
 
+def _load_fraction(
+    worker_name: str,
+    health_info: dict[str, dict],
+    in_flight: Optional[dict[str, int]] = None,
+) -> float:
+    """Busy-slot fraction [0.0, 1.0]. Combines health-poll data with in-flight
+    counter so concurrent requests see up-to-date load without waiting for the
+    next poll (which can be up to health_poll_interval_s stale)."""
+    info = health_info.get(worker_name, {})
+    total = max(info.get("slots_total", 1), 1)
+    idle = info.get("slots_idle", 0)
+    inflight = (in_flight or {}).get(worker_name, 0)
+    busy = min(total, (total - idle) + inflight)
+    return busy / total
+
+
+def _sort_key_prefill(
+    worker: WorkerNodeConfig,
+    health_info: dict[str, dict],
+    in_flight: Optional[dict[str, int]],
+) -> tuple:
+    """Sort key for prefill worker selection: priority ASC, then load ASC."""
+    return (worker.prefill_priority, _load_fraction(worker.name, health_info, in_flight))
+
+
+def _sort_key_decode(
+    worker: WorkerNodeConfig,
+    health_info: dict[str, dict],
+    in_flight: Optional[dict[str, int]],
+) -> tuple:
+    """Sort key for decode worker selection: priority ASC, then load ASC."""
+    return (worker.decode_priority, _load_fraction(worker.name, health_info, in_flight))
+
+
+def select_prefill_worker(
+    workers: list[WorkerNodeConfig],
+    health_info: dict[str, dict],
+    in_flight: Optional[dict[str, int]] = None,
+    exclude: Optional[str] = None,
+) -> Optional[WorkerNodeConfig]:
+    """Return the highest-priority healthy PREFILL-capable worker with capacity."""
+    healthy_prefill = [
+        w for w in workers
+        if (w.worker_type & WORKER_PREFILL)
+        and health_info.get(w.name, {}).get("healthy", False)
+        and w.name != exclude
+    ]
+    if not healthy_prefill:
+        return None
+    return min(healthy_prefill, key=lambda w: _sort_key_prefill(w, health_info, in_flight))
+
+
+def select_decode_worker(
+    workers: list[WorkerNodeConfig],
+    health_info: dict[str, dict],
+    in_flight: Optional[dict[str, int]] = None,
+    exclude: Optional[str] = None,
+) -> Optional[WorkerNodeConfig]:
+    """Return the highest-priority healthy DECODE-capable worker with capacity."""
+    healthy_decode = [
+        w for w in workers
+        if (w.worker_type & WORKER_DECODE)
+        and health_info.get(w.name, {}).get("healthy", False)
+        and w.name != exclude
+    ]
+    if not healthy_decode:
+        return None
+    return min(healthy_decode, key=lambda w: _sort_key_decode(w, health_info, in_flight))
+
+
 def route_request(
     request_messages: list[dict],
     session_table: SessionTable,
-    nodes: list[NodeConfig],
+    workers: list[WorkerNodeConfig],
     health_info: dict[str, dict],
     chars_per_token: float = 4.0,
-    long_prompt_threshold: int = 4096,
+    long_prompt_threshold: int = 8192,
     session_id: Optional[str] = None,
+    in_flight: Optional[dict[str, int]] = None,
 ) -> RoutingDecision:
+    global _rr_counter
+
+    # --- Session lookup ---
     if session_id:
         entry = session_table.lookup(session_id)
     else:
         entry = None
 
-    # Only fall back to derived session_id when caller did NOT provide one.
-    # When caller provides session_id and it's not found, keep it as-is so
-    # the caller can register it as a new session (without being overridden
-    # by a derived ID that may collide with a different session on the same
-    # message content).
     if not entry and not session_id:
         derived_id = derive_session_id(request_messages)
         entry = session_table.lookup(derived_id)
         if entry:
             session_id = derived_id
 
-    healthy_nodes = {
-        name: info
-        for name, info in health_info.items()
-        if info.get("healthy", False)
+    healthy_workers = {
+        w.name: health_info[w.name]
+        for w in workers
+        if health_info.get(w.name, {}).get("healthy", False)
     }
 
-    if not healthy_nodes:
-        raise RuntimeError("No healthy nodes available")
+    if not healthy_workers:
+        raise RuntimeError("No healthy workers available")
 
-    rtx_nodes = {
-        name: info
-        for name, info in healthy_nodes.items()
-        if info.get("gpu_type") == "rtx5060ti"
-    }
-
-    def load_fraction(node_name: str) -> float:
-        """Busy-slot fraction [0.0, 1.0]. Normalises by capacity so RTX (2 slots)
-        and P100 (1 slot) are compared fairly: 1 busy slot on each = 0.5 vs 1.0."""
-        info = healthy_nodes.get(node_name, {})
-        total = max(info.get("slots_total", 1), 1)
-        idle = info.get("slots_idle", 0)
-        return (total - idle) / total
-
+    # --- Session affinity ---
     if entry:
-        if entry.node_name in healthy_nodes:
-            node_cfg = next((n for n in nodes if n.name == entry.node_name), None)
-            if node_cfg:
+        if entry.node_name in healthy_workers:
+            cfg = next((w for w in workers if w.name == entry.node_name), None)
+            if cfg:
                 return RoutingDecision(
                     node_name=entry.node_name,
-                    node_config=node_cfg,
+                    node_config=cfg,
                     slot_id=entry.slot_id,
                     action="route",
                     session_id=entry.session_id,
@@ -102,12 +163,13 @@ def route_request(
                 )
 
         if entry.has_store_state:
-            sorted_healthy = sorted(
-                (n for n in nodes if n.name in healthy_nodes),
-                key=lambda n: load_fraction(n.name),
-            )
-            target = sorted_healthy[0] if sorted_healthy else None
-            if target:
+            # Session evicted to store — restore on least-loaded worker
+            healthy_list = [w for w in workers if w.name in healthy_workers]
+            if healthy_list:
+                target = min(
+                    healthy_list,
+                    key=lambda w: _load_fraction(w.name, health_info, in_flight),
+                )
                 return RoutingDecision(
                     node_name=target.name,
                     node_config=target,
@@ -117,34 +179,32 @@ def route_request(
                     n_past=entry.n_past,
                 )
 
+    # --- Long-prompt: prefer a PREFILL-capable worker ---
     estimated = estimate_request_tokens(request_messages, chars_per_token)
-    if estimated >= long_prompt_threshold and rtx_nodes:
-        target_name = next(iter(rtx_nodes))
-        node_cfg = next(n for n in nodes if n.name == target_name)
-        return RoutingDecision(
-            node_name=target_name,
-            node_config=node_cfg,
-            action="route",
-            session_id=session_id,
-        )
+    if estimated >= long_prompt_threshold:
+        prefill_worker = select_prefill_worker(workers, health_info, in_flight)
+        if prefill_worker:
+            return RoutingDecision(
+                node_name=prefill_worker.name,
+                node_config=prefill_worker,
+                action="route",
+                session_id=session_id,
+            )
 
-    sorted_healthy = sorted(healthy_nodes.keys(), key=load_fraction)
+    # --- Least-loaded with round-robin tiebreak ---
+    healthy_list = [w for w in workers if w.name in healthy_workers]
+    if not healthy_list:
+        raise RuntimeError("No healthy workers available")
 
-    if sorted_healthy:
-        global _rr_counter
-        min_load = load_fraction(sorted_healthy[0])
-        # Collect all nodes tied at the minimum load and rotate between them so
-        # P100 gets a turn even when both nodes are fully idle.
-        tied = [n for n in sorted_healthy if load_fraction(n) == min_load]
-        target_name = tied[_rr_counter % len(tied)]
-        _rr_counter += 1
+    healthy_list.sort(key=lambda w: _load_fraction(w.name, health_info, in_flight))
+    min_load = _load_fraction(healthy_list[0].name, health_info, in_flight)
+    tied = [w for w in healthy_list if _load_fraction(w.name, health_info, in_flight) == min_load]
+    target = tied[_rr_counter % len(tied)]
+    _rr_counter += 1
 
-        node_cfg = next(n for n in nodes if n.name == target_name)
-        return RoutingDecision(
-            node_name=target_name,
-            node_config=node_cfg,
-            action="route",
-            session_id=session_id,
-        )
-
-    raise RuntimeError("No healthy nodes available")
+    return RoutingDecision(
+        node_name=target.name,
+        node_config=target,
+        action="route",
+        session_id=session_id,
+    )

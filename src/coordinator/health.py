@@ -6,7 +6,7 @@ from typing import Optional
 
 from python_shared.log_config import get_logger, new_trace_id
 from python_shared.rpc_client import RpcClient, OpCode
-from coordinator.config import NodeConfig
+from coordinator.config import WorkerNodeConfig
 
 log = get_logger()
 
@@ -32,7 +32,7 @@ class NodeInfo:
 class HealthMonitor:
     def __init__(
         self,
-        nodes: list[NodeConfig],
+        nodes: list[WorkerNodeConfig],
         poll_interval_s: int = 10,
         max_failures: int = 3,
     ):
@@ -81,7 +81,7 @@ class HealthMonitor:
                 info.node_name = health_data.get("node_name", node_name)
                 info.slots_total = health_data.get("slots_total", 0)
                 info.slots_idle = health_data.get("slots_idle", 0)
-                info.gpu_type = health_data.get("gpu_type", config.gpu_type)
+                info.gpu_type = health_data.get("gpu_type", "")
                 info.llama_url = health_data.get("llama_url", config.llama_url)
                 info.consecutive_failures = 0
                 info.last_check = time.time()
