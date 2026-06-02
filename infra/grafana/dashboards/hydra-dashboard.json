@@ -1,6 +1,6 @@
 {
   "title": "Hydra Dashboard",
-  "version": 3,
+  "version": 4,
   "timezone": "browser",
   "editable": true,
   "panels": [
@@ -798,97 +798,6 @@
           }
         }
       }
-    },
-    {
-      "type": "row",
-      "title": "Logs",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 41
-      }
-    },
-    {
-      "id": 10,
-      "type": "logs",
-      "title": "All Logs",
-      "datasource": {
-        "type": "loki",
-        "uid": "Loki"
-      },
-      "targets": [
-        {
-          "expr": "{component=~\"store|agent|coordinator\"}",
-          "refId": "A"
-        }
-      ],
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 42
-      },
-      "options": {
-        "showTime": true,
-        "showLabels": true
-      }
-    },
-    {
-      "type": "logs",
-      "title": "llama-server Logs",
-      "datasource": {
-        "type": "loki",
-        "uid": "Loki"
-      },
-      "targets": [
-        {
-          "expr": "{component=\"llama-server\"}",
-          "legendFormat": "{{node}}"
-        }
-      ],
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 50
-      },
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      }
     }
-  ],
-  "templating": {
-    "list": [
-      {
-        "name": "trace_id",
-        "type": "textbox",
-        "query": "",
-        "current": {
-          "value": ""
-        },
-        "label": "Trace ID",
-        "description": "Filter logs by trace_id"
-      }
-    ]
-  },
-  "annotations": {
-    "list": [
-      {
-        "name": "Trace ID Logs",
-        "datasource": {
-          "type": "loki",
-          "uid": "Loki"
-        },
-        "expr": "{component=~\"store|agent|coordinator\"} |~ \"`$trace_id`\"",
-        "enable": true,
-        "iconColor": "rgba(255, 96, 96, 1)"
-      }
-    ]
-  }
+  ]
 }
