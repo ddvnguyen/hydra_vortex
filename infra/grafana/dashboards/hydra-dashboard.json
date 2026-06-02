@@ -179,11 +179,11 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(hydra_agent_save_duration_seconds_bucket[1m]))",
+          "expr": "histogram_quantile(0.50, rate(hydra_agent_save_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
           "legendFormat": "p50"
         },
         {
-          "expr": "histogram_quantile(0.95, rate(hydra_agent_save_duration_seconds_bucket[1m]))",
+          "expr": "histogram_quantile(0.95, rate(hydra_agent_save_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
           "legendFormat": "p95"
         }
       ],
@@ -210,11 +210,11 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(hydra_agent_restore_duration_seconds_bucket[1m]))",
+          "expr": "histogram_quantile(0.50, rate(hydra_agent_restore_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
           "legendFormat": "p50"
         },
         {
-          "expr": "histogram_quantile(0.95, rate(hydra_agent_restore_duration_seconds_bucket[1m]))",
+          "expr": "histogram_quantile(0.95, rate(hydra_agent_restore_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
           "legendFormat": "p95"
         }
       ],

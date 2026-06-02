@@ -3,7 +3,7 @@ import time
 from python_shared.log_config import get_logger, new_trace_id
 from python_shared.rpc_client import RpcClient, OpCode
 from coordinator.session_table import SessionTable
-from coordinator.metrics import agent_save_duration, agent_restore_duration, migrations_total, migration_latency
+from coordinator.metrics import migrations_total, migration_latency
 
 log = get_logger()
 
@@ -26,7 +26,6 @@ class StateManager:
         return RpcClient(self._store_host, self._store_port)
 
     async def save_session(self, session_id: str, node_host: str, node_port: int) -> dict:
-        t0 = time.monotonic()
         trace_id = new_trace_id()
         entry = self._session_table.lookup(session_id)
         slot_id = entry.slot_id if entry and entry.slot_id is not None else 0
@@ -38,7 +37,6 @@ class StateManager:
                 self._session_table.update_n_past(session_id, n_past)
                 self._session_table.mark_evicted(session_id)
             log.info("state_saved", session_id=session_id, meta=resp.meta)
-            agent_save_duration.observe(time.monotonic() - t0)
             return resp.meta or {}
         finally:
             await client.close()
@@ -46,7 +44,6 @@ class StateManager:
     async def restore_session(
         self, session_id: str, target_host: str, target_port: int
     ) -> dict:
-        t0 = time.monotonic()
         trace_id = new_trace_id()
         entry = self._session_table.lookup(session_id)
         slot_id = entry.slot_id if entry and entry.slot_id is not None else 0
@@ -63,7 +60,6 @@ class StateManager:
                 entry.n_past = n_past
                 entry.has_store_state = not restored
             log.info("state_restored", session_id=session_id, slot_id=slot_id, n_past=n_past)
-            agent_restore_duration.observe(time.monotonic() - t0)
             return resp.meta or {}
         finally:
             await client.close()
