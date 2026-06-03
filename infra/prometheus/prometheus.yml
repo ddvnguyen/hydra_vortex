@@ -8,34 +8,34 @@ rule_files:
 scrape_configs:
   - job_name: hydra-store
     static_configs:
-      - targets: ["store:9501"]
+      - targets: ["localhost:9501"]
         labels:
           component: store
 
   - job_name: hydra-agent
     static_configs:
-      - targets: ["agent-rtx:9611"]
+      - targets: ["localhost:9611"]
         labels:
           component: agent
           node: rtx
 
   - job_name: hydra-agent-p100
     static_configs:
-      - targets: ["agent-p100:9622"]
+      - targets: ["localhost:9622"]
         labels:
           component: agent
           node: p100
 
   - job_name: hydra-coordinator
     static_configs:
-      - targets: ["coordinator:9000"]
+      - targets: ["localhost:9000"]
         labels:
           component: coordinator
 
   - job_name: hydra-llama-rtx
     metrics_path: /metrics
     static_configs:
-      - targets: ["llama-cpp:8080"]
+      - targets: ["localhost:8080"]
         labels:
           component: llama-server
           node: rtx
@@ -50,14 +50,14 @@ scrape_configs:
 
   - job_name: hydra-node
     static_configs:
-      - targets: ["node-exporter:9100"]
+      - targets: ["localhost:9100"]
         labels:
           component: node
 
   - job_name: hydra-gpu
     metrics_path: /metrics
     static_configs:
-      - targets: ["nvidia-exporter:9400"]
+      - targets: ["localhost:9835"]
         labels:
           component: gpu
           node: rtx

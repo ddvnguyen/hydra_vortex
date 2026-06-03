@@ -153,8 +153,9 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
+    network_mode: "host"
     ports:
-      - "9091:9090"
+      - "9091:9091"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -162,6 +163,7 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
+      - --web.listen-address=0.0.0.0:9091
     depends_on:
       - store
       - agent-rtx
