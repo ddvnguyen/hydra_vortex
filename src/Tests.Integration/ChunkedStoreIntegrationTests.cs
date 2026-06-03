@@ -5,6 +5,7 @@ using StoreServer = Hydra.Store.StoreServer;
 using ChunkStore = Hydra.Store.ChunkStore;
 using StorageEngine = Hydra.Store.StorageEngine;
 using ChunkEngine = Hydra.Store.ChunkEngine;
+using StoreMetadata = Hydra.Store.StoreMetadata;
 
 namespace Tests.Integration;
 
@@ -12,6 +13,7 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
 {
     private readonly DirectoryInfo _storeDir;
     private StoreServer? _storeServer;
+    private StoreMetadata? _metadata;
     private Task? _storeServerTask;
 
     public ChunkedStoreIntegrationTests()
@@ -29,9 +31,20 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
             StoreDir = _storeDir.FullName,
         };
 
+        var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
+            ?? "Host=localhost;Database=hydra_store;Username=hydra;Password=hydra";
+        _metadata = new StoreMetadata(connStr);
+        await _metadata.EnsureSchemaAsync(CancellationToken.None);
+
+        // Clean test data from previous runs
+        await using var cleanConn = await _metadata.DataSource.OpenConnectionAsync();
+        await using var cleanCmd = cleanConn.CreateCommand();
+        cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
+        await cleanCmd.ExecuteNonQueryAsync();
+
         var engine = new StorageEngine(_storeDir);
         var chunkStore = new ChunkStore(_storeDir);
-        _storeServer = new StoreServer(cfg, engine, chunkStore);
+        _storeServer = new StoreServer(cfg, engine, chunkStore, _metadata);
         _storeServerTask = Task.Run(() => _storeServer.RunAsync(CancellationToken.None));
         await Task.Delay(500);
     }
@@ -40,6 +53,9 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
     {
         if (_storeServer is not null)
             await _storeServer.DisposeAsync();
+
+        if (_metadata is not null)
+            await _metadata.DisposeAsync();
 
         if (_storeDir.Exists)
             _storeDir.Delete(recursive: true);

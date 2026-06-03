@@ -8,6 +8,8 @@
     <RootNamespace>Hydra.Store</RootNamespace>
   </PropertyGroup>
 
+
+
   <ItemGroup>
     <ProjectReference Include="..\Hydra.Shared\Hydra.Shared.csproj" />
   </ItemGroup>
@@ -15,6 +17,7 @@
   <ItemGroup>
     <PackageReference Include="prometheus-net" Version="8.2.1" />
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
+    <PackageReference Include="Npgsql" Version="8.0.6" />
   </ItemGroup>
 
   <ItemGroup>
