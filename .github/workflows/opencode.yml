@@ -1,0 +1,49 @@
+name: opencode
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  opencode:
+    if: |
+      contains(github.event.comment.body, '/oc') ||
+      contains(github.event.comment.body, '/opencode')
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: Check if local OpenCode is available
+        id: check-local
+        run: |
+          if curl -sf --max-time 5 https://opencode.ddvnguyen.com/health > /dev/null 2>&1; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout repository
+        if: steps.check-local.outputs.available == 'false'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Generate App Token
+        id: app-token
+        if: steps.check-local.outputs.available == 'false'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          installation-id: ${{ secrets.APP_INSTALLATION_ID }}
+
+      - name: Run OpenCode (fallback — local server is down)
+        if: steps.check-local.outputs.available == 'false'
+        uses: anomalyco/opencode/github@latest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          model: anthropic/claude-sonnet-4-20250514
+          token: ${{ steps.app-token.outputs.token }}

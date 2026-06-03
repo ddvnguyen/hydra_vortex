@@ -1,0 +1,13 @@
+# ── SPLIT ─────────────────────────────────────────────────────────────
+# This file was split into two independent compose files:
+#
+#   Hydra services (host networking) → docker-compose.hydra.yml
+#   Infra / observability           → docker-compose.infra.yml
+#
+# Usage:
+#   Start all:  docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up -d
+#   Hydra only: docker compose -f docker-compose.hydra.yml up -d
+#   Infra only: docker compose -f docker-compose.infra.yml up -d
+# ──────────────────────────────────────────────────────────────────────
+name: hydra-deprecated
+services: {}

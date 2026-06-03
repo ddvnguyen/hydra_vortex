@@ -1,0 +1,47 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+*.csproj.user
+*.nupkg
+packages/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+.env
+
+# C++ and llama.cpp
+build/
+src/llama-cpp/**/*build*/
+*.o
+*.a
+*.so
+*.dll
+*.dylib
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hydra-specific
+deploy.log
+
+# TEST results
+/tests/result/**

@@ -1,0 +1,78 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: hydra-store
+    static_configs:
+      - targets: ["localhost:9501"]
+        labels:
+          component: store
+
+  - job_name: hydra-agent
+    static_configs:
+      - targets: ["localhost:9611"]
+        labels:
+          component: agent
+          node: rtx
+
+  - job_name: hydra-agent-p100
+    static_configs:
+      - targets: ["localhost:9622"]
+        labels:
+          component: agent
+          node: p100
+
+  - job_name: hydra-coordinator
+    static_configs:
+      - targets: ["localhost:9000"]
+        labels:
+          component: coordinator
+
+  - job_name: hydra-llama-rtx
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:8080"]
+        labels:
+          component: llama-server
+          node: rtx
+
+  - job_name: hydra-llama-p100
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["192.168.122.21:8086"]
+        labels:
+          component: llama-server
+          node: p100
+
+  - job_name: hydra-node
+    static_configs:
+      - targets: ["localhost:9100"]
+        labels:
+          component: node
+
+  - job_name: hydra-gpu
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:9835"]
+        labels:
+          component: gpu
+          node: rtx
+
+  - job_name: hydra-node-p100
+    static_configs:
+      - targets: ["192.168.122.21:9100"]
+        labels:
+          component: node
+          node: p100
+
+  - job_name: hydra-gpu-p100
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["192.168.122.21:9835"]
+        labels:
+          component: gpu
+          node: p100

@@ -1,0 +1,53 @@
+[Unit]
+Description=Hydra llama-server P100
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin
+ExecStart=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server \
+  -m /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf \
+  --chat-template-file /mnt/readonly_data/qwen3.6_merged_template.jinja \
+  --slot-save-path /mnt/kv_slots/ \
+  --host 0.0.0.0 \
+  --port 8086 \
+  --rpc-port 9502 \
+  --ctx-size 180000 \
+  --temp 0.86 \
+  --repeat-penalty 1.06 \
+  --top-k 20 \
+  --top-p 0.95 \
+  --n-gpu-layers all \
+  --n-cpu-moe 26 \
+  --flash-attn on \
+  --cache-type-v q8_0 \
+  --cache-type-k q8_0 \
+  --kv-unified \
+  --log-timestamps \
+  --log-prefix \
+  --metrics \
+  --slots \
+  --perf \
+  --log-verbosity 4 \
+  --cont-batching \
+  --cache-prompt \
+  --context-shift \
+  --parallel 1 \
+  --prio 3 \
+  --prio-batch 1 \
+  --cache-reuse 64 \
+  --swa-full \
+  --yarn-orig-ctx 32768 \
+  --rope-scaling yarn \
+  --rope-scale 6 \
+  --reasoning on \
+  --timeout 1800 \
+  --spec-type draft-mtp \
+  --spec-draft-n-max 3 \
+  --jinja \
+  --chat-template-kwargs '{"preserve_thinking": true}'
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

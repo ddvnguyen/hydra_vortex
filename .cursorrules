@@ -1,0 +1,42 @@
+# Hydra — Agent Rules
+
+## Project
+- Name: Hydra — Multi-GPU LLM inference with KV state management
+- Languages: C# (.NET 10) for Store + Agent | Python 3.14+ for Coordinator
+
+## Architecture — One Protocol Rule
+ALL inter-service traffic: Hydra binary RPC (TCP).
+HTTP ONLY at edges: Client→Coordinator and Agent→local llama-server (localhost).
+Never use HTTP between Coordinator↔Agent or Agent↔Store.
+
+## C# Rules (Store + Agent)
+- System.IO.Pipelines for ALL RPC protocol parsing — never manual byte arrays
+- Socket.SendFileAsync for zero-copy file transfer from tmpfs
+- BinaryPrimitives for all LE integer read/write
+- Records for immutable data, sealed classes for services
+- ILogger<T> everywhere, Serilog JSON formatter
+- xUnit + Moq for testing
+- NativeAOT-compatible: no dynamic reflection, no unbound generics at runtime
+- appsettings.json + IConfiguration for config (no hardcoded values)
+- Never buffer full 800 MB in memory — stream via PipeReader/PipeWriter
+
+## Python Rules (Coordinator only)
+- asyncio only — no threading, no multiprocessing
+- httpx (async) for all HTTP calls
+- structlog for JSON logging
+- pydantic v2 for all schemas
+- pydantic-settings for config
+- Never buffer full state in memory — stream chunk-by-chunk
+
+## Critical SSM Constraint
+NEVER send a request where n_tokens ≤ n_past to a restored slot.
+SSM truncation is broken on qwen35moe. Coordinator MUST guard this.
+
+## Logging
+Every log line MUST include: ts, level, component, trace_id, event.
+trace_id flows through every hop: Coordinator → Agent RPC → Store RPC.
+
+## Before Writing Code
+1. Read relevant docs/ and specs/ for the task
+2. Output execution plan (files to create/modify)
+3. Wait for confirmation
