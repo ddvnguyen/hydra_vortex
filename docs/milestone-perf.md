@@ -3,7 +3,7 @@
 > Committed next milestone (~6–8 weeks). Supersedes the old monolithic "M3
 > Production". Source rationale: the heterogeneous-inference research synthesis
 > (spec-decoding, P/D disaggregation, prima.cpp/Halda) — see
-> `src/REVOLUSION_PLAN_01_JUN.MD`.
+> `src/docs/REVOLUSION_PLAN_01_JUN.MD`.
 
 ## Why
 Hydra's existing "prefill-on-RTX → migrate KV → decode-on-P100" path is already

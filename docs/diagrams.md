@@ -167,7 +167,7 @@ packet-beta
 
 ```mermaid
 mindmap
-  root((Hydra RPC\nOp Codes))
+  root((Hydra RPC Op Codes))
     Store Ops
       0x01 PUT
       0x02 GET
