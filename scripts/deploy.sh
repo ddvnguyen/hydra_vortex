@@ -40,10 +40,11 @@ cd infra
 
 # Full down first — up -d on running containers in rootless podman
 # corrupts overlay mounts and rootlessport forwarding.
-podman-compose down -t 0 2>&1 | tail -3
-podman rm -f $(podman ps -aq --filter name=hydra_) 2>/dev/null || true
-podman-compose build 2>&1 | tail -3
-podman-compose up -d 2>&1 | tail -5
+# Only targets hydra-core; infra (observability) stays running independently.
+podman-compose -f docker-compose.hydra.yml down -t 0 2>&1 | tail -3
+podman rm -f $(podman ps -aq --filter name=hydra-core_) 2>/dev/null || true
+podman-compose -f docker-compose.hydra.yml build 2>&1 | tail -3
+podman-compose -f docker-compose.hydra.yml up -d 2>&1 | tail -5
 
 # Build and start llama-cpp server
 echo "Starting llama-cpp server..."
@@ -54,21 +55,7 @@ else
     podman-compose -f "$LLAMA_DIR/docker-compose.yml" up -d 2>&1 | tail -3
 fi
 
-# Connect llama-cpp to hydra_default network so agents can reach it
-HYDRA_NET="hydra_default"
-if podman network exists "$HYDRA_NET"; then
-    podman network connect "$HYDRA_NET" llama-cpp 2>/dev/null && echo "llama-cpp joined $HYDRA_NET" || echo "llama-cpp already on $HYDRA_NET"
-fi
-
 cd "$(git rev-parse --show-toplevel)"
-
-# Restart host-based log shipper and promtail (containerized promtail
-# doesn't work with rootless podman — journald files are root-owned mode 600,
-# and podman's Docker-compatible API has a NULL-JSON bug with promtail).
-echo "Restarting log shipper and promtail..."
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-systemctl --user restart container-log-shipper promtail 2>/dev/null || true
 
 REV=$(git rev-parse --short HEAD)
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $NEW ($REV) deployed" >> deploy.log

@@ -4,7 +4,8 @@
 ("llama-server build", "P100 VM setup", "Quick Start").
 
 1. **Services (C#/Python):** redeploy via the control plane —
-   `cd infra && docker compose up -d` (or `start-env.sh`). Confirm health endpoints.
+   `cd infra && docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up -d`
+   (or `start-env.sh`). Confirm health endpoints.
 2. **llama.cpp fork change — two parts, both required:**
    - Build per node: RTX **sm_120** (`GGML_CUDA_FORCE_CUBLAS=ON`) → `build_sm120/`,
      P100 **sm_60** → `build_sm60/`; deploy via `start-env.sh` / `setup-p100.sh`.

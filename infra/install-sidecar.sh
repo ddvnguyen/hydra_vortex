@@ -24,7 +24,7 @@ echo ""
 
 # ── Step 3: Rebuild compose images (or skip if cached okay) ──
 echo "[3/3] Rebuilding hydra compose images..."
-podman-compose -f "$SELF_DIR/docker-compose.yml" build
+podman-compose -f "$SELF_DIR/docker-compose.hydra.yml" build
 echo ""
 
 echo "=== Install complete ==="

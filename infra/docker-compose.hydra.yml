@@ -1,0 +1,81 @@
+name: hydra-core
+
+services:
+  store:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: store
+    network_mode: host
+    tmpfs:
+      - /mnt/llm-ram:size=30G
+    environment:
+      - HYDRA_STORE_HOST=0.0.0.0
+      - HYDRA_STORE_PORT=9500
+      - HYDRA_STORE_DIR=/mnt/llm-ram/store
+      - HYDRA_STORE_DEBUG_PORT=9501
+    labels:
+      component: store
+    restart: unless-stopped
+
+  agent-rtx:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: agent
+    network_mode: host
+    environment:
+      - HYDRA_AGENT_HOST=0.0.0.0
+      - HYDRA_AGENT_PORT=9601
+      - HYDRA_AGENT_NODE_NAME=rtx
+      - HYDRA_AGENT_LLAMA_URL=http://localhost:8080
+      - HYDRA_AGENT_STORE_HOST=localhost
+      - HYDRA_AGENT_STORE_PORT=9500
+      - HYDRA_AGENT_DEBUG_HTTP_PORT=9611
+    depends_on:
+      - store
+    labels:
+      component: agent
+      node: rtx
+    restart: unless-stopped
+
+  agent-p100:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: agent
+    network_mode: host
+    environment:
+      - HYDRA_AGENT_HOST=0.0.0.0
+      - HYDRA_AGENT_PORT=9602
+      - HYDRA_AGENT_NODE_NAME=p100
+      - HYDRA_AGENT_LLAMA_URL=http://192.168.122.21:8086
+      - HYDRA_AGENT_STORE_HOST=localhost
+      - HYDRA_AGENT_STORE_PORT=9500
+      - HYDRA_AGENT_DEBUG_HTTP_PORT=9622
+    depends_on:
+      - store
+    labels:
+      component: agent
+      node: p100
+    restart: unless-stopped
+
+  coordinator:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: coordinator
+    network_mode: host
+    environment:
+      - HYDRA_COORD_HOST=0.0.0.0
+      - HYDRA_COORD_PORT=9000
+      - HYDRA_COORD_STORE_HOST=localhost
+      - HYDRA_COORD_STORE_PORT=9500
+      - HYDRA_COORD_LOG_LEVEL=DEBUG
+      - HYDRA_COORD_RUN_MODE=fast
+      - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"localhost","rpc_port":9601,"llama_url":"http://localhost:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"localhost","rpc_port":9602,"llama_url":"http://192.168.122.21:8086","worker_type":3,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
+    depends_on:
+      - store
+    labels:
+      component: coordinator
+    restart: unless-stopped

@@ -1,24 +1,16 @@
-# Host-based promtail config.
-# NOT used in a container — runs directly on the host as a systemd --user service.
-# Scrapes log files written by container-log-shipper.service (which tails podman logs -f).
-# Installed at ~/.local/bin/promtail; config at ~/.config/promtail/promtail-config.yml.
-#
-# Why host-based: podman 5.7.0's Docker-compatible API has a NULL-JSON bug that
-# breaks promtail's docker_sd_configs, and rootless containers cannot read systemd
-# journal files (mode 600, root-owned).
-#
-# Installation: see container-log-shipper.service and promtail.service under
-# ~/.config/systemd/user/ on the host.
+# Containerized promtail config (used by hydra docker-compose).
+# Scrapes container logs via the Podman Docker API and CRI-log files.
+# For the host-based variant (systemd --user), see promtail-host.yml.
 
 server:
   http_listen_port: 9080
   grpc_listen_port: 0
 
 positions:
-  filename: /home/ddv/.local/share/promtail/positions.yaml
+  filename: /var/lib/promtail/positions.yaml
 
 clients:
-  - url: http://localhost:3100/loki/api/v1/push
+  - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
   - job_name: container-logs

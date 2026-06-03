@@ -16,7 +16,8 @@
 | llama-server RTX | C++ fork | `:8080` (HTTP) | host container (`llama-cpp`, separate compose) |
 | llama-server P100 | C++ fork | `:8086` (HTTP) | **KVM VM** `192.168.122.21` (bare process, not containerised) |
 
-All host services run via `infra/docker-compose.yml`. Agent P100's
+All host services run via `infra/docker-compose.hydra.yml` (hydra core, host networking) and
+`infra/docker-compose.infra.yml` (observability stack). Agent P100's
 `HYDRA_AGENT_LLAMA_URL=http://192.168.122.21:8086` crosses the NAT bridge into the VM.
 The KVM VM hosts only the P100 llama-server; it has no Agent, Store, or Coordinator.
 
