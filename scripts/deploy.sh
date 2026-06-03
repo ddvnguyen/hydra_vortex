@@ -44,7 +44,9 @@ systemctl --user start podman.socket
 # exist yet when crun tries to bind-mount it into the promtail container
 podman system info > /dev/null 2>&1 || true
 
-# Build and start Hydra stack
+# Full down first — up -d on running containers in rootless podman
+# corrupts overlay mounts and rootlessport forwarding.
+podman-compose down 2>&1 | tail -3
 podman-compose build 2>&1 | tail -3
 podman-compose up -d 2>&1 | tail -5
 

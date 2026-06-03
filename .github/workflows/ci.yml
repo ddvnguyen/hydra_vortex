@@ -217,8 +217,17 @@ jobs:
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
           cd infra
+          # Full down first — up -d on running containers in rootless podman
+          # corrupts overlay mounts and rootlessport forwarding (ports drop off
+          # ss, podman exec fails with "transport endpoint is not connected").
+          podman-compose down 2>&1 | tee /tmp/hydra-down.log | tail -3
           podman-compose build 2>&1 | tee /tmp/hydra-build.log | tail -5
           podman-compose up -d 2>&1 | tee /tmp/hydra-up.log | tail -5
+          # Reconnect llama-cpp: down removes hydra_default network, so the
+          # separate llama-rtx-node compose container loses its connection.
+          if podman network exists hydra_default; then
+            podman network connect hydra_default llama-cpp 2>/dev/null || true
+          fi
 
       - name: Record deploy log
         run: |
