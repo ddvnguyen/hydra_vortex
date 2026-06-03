@@ -1,4 +1,5 @@
- using System.Diagnostics;
+ using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -128,45 +129,146 @@ public sealed class StateHandler
         _log.Information("Saving session {SessionId} slot {SlotId} state chunked (meta_size={MetaSize}, body_len={BodyLen})",
             sessionId, slotId, meta.StateSize, contentLength);
 
-        var hashes = new List<string>();
-        var buffer = new byte[1024 * 1024];
         var storeKey = $"kv/{sessionId}";
-        int deduped = 0;
-        int total = 0;
 
-        // Send n_past to Store so it can update the manifest after PushChunks.
-        var nPastPayload = JsonSerializer.SerializeToUtf8Bytes(new { n_past = meta.NPast });
-        await _store.RequestAsync(OpCode.PutMeta, storeKey, nPastPayload, traceId, ct);
+        // ── Pass 1: chunk the state locally — hash + cache every 1 MB block, build the
+        //   full ordered chunk list. Bodies land in LocalChunkCache so we can push only
+        //   the missing ones without re-reading the GPU state. ──────────────────────────
+        var (chunks, totalSize) = await ChunkStateLocallyAsync(stateStream, sessionId, ct);
+        var orderedHashes = chunks.Select(c => c.Hash).ToList();
 
-        // Configure TeeStream to also save chunk data locally during streaming.
-        var teeStream = new ChunkHashTeeStream(stateStream, hashes, buffer, _chunkCache, sessionId);
+        // ── Step 2: ask the Store which of these chunks it does NOT already have. ───────
+        var missing = await SyncMissingAsync(storeKey, orderedHashes, traceId, ct);
 
-        {
-            await using (teeStream)
-            {
-                var response = await _store.RequestStreamBodyAsync(
-                    OpCode.PutChunked, storeKey, teeStream, contentLength,
-                    traceId, ct);
+        // ── Step 3: push only the missing chunk bodies (batched, memory-bounded). ───────
+        var pushed = await PushMissingChunksAsync(storeKey, sessionId, missing, traceId, ct);
 
-                if (response.Meta is not null)
-                {
-                    using var doc = JsonDocument.Parse(response.Meta);
-                    if (doc.RootElement.TryGetProperty("deduped_chunks", out var d))
-                        deduped = d.GetInt32();
-                    if (doc.RootElement.TryGetProperty("total_chunks", out var t))
-                        total = t.GetInt32();
-                }
-            }
-        }
+        // ── Step 4: write the authoritative ordered manifest (validates residency). ─────
+        await PutManifestAsync(storeKey, meta.NPast, totalSize, chunks, traceId, ct);
 
-        await _chunkCache.SaveHashesAsync(sessionId, hashes, ct);
+        await _chunkCache.SaveHashesAsync(sessionId, orderedHashes, ct);
         _chunkCache.EvictLRU();
 
         var elapsed = sw.ElapsedMilliseconds;
-        _log.Information("Saved chunked session {SessionId} slot {SlotId} in {Elapsed}ms (chunks={Total}, deduped={Deduped})",
-            sessionId, slotId, elapsed, total, deduped);
+        var deduped = chunks.Count - missing.Count;
+        _log.Information("Saved chunked session {SessionId} slot {SlotId} in {Elapsed}ms " +
+            "(chunks={Total}, pushed={Pushed}, deduped={Deduped}, bytes_total={Total_Bytes})",
+            sessionId, slotId, elapsed, chunks.Count, pushed, deduped, totalSize);
 
-        return new SaveResult(sessionId, slotId, meta.NPast, contentLength, elapsed);
+        return new SaveResult(sessionId, slotId, meta.NPast, totalSize, elapsed);
+    }
+
+    // Read the GPU state stream in fixed 1 MB blocks; hash each block (SHA-256, hex-lower
+    // — matches the Store's ChunkEngine), cache its body locally, and record an ordered
+    // ChunkRef. Index i ⇒ bytes [i*ChunkSize, …], which is exactly how restore reassembles.
+    private async Task<(List<ChunkRef> chunks, long totalSize)> ChunkStateLocallyAsync(
+        Stream stream, string sessionId, CancellationToken ct)
+    {
+        var chunks = new List<ChunkRef>();
+        var buffer = new byte[ChunkEngine.ChunkSize];
+        long totalSize = 0;
+        int index = 0;
+
+        while (true)
+        {
+            int filled = 0;
+            while (filled < buffer.Length)
+            {
+                int read = await stream.ReadAsync(buffer.AsMemory(filled, buffer.Length - filled), ct);
+                if (read == 0) break;
+                filled += read;
+            }
+            if (filled == 0) break;
+
+            var slice = buffer.AsSpan(0, filled);
+            var hash = Convert.ToHexStringLower(SHA256.HashData(slice));
+            await _chunkCache.SaveChunkDataAsync(sessionId, hash, slice.ToArray(), ct);
+            chunks.Add(new ChunkRef(index, hash, filled));
+            totalSize += filled;
+            index++;
+
+            if (filled < buffer.Length) break; // short read ⇒ final chunk
+        }
+
+        return (chunks, totalSize);
+    }
+
+    // SYNC_MISSING (0x12): send the full ordered hash list, get back the subset the Store
+    // lacks (distinct). Empty/duplicate-only states return no missing.
+    private async Task<List<string>> SyncMissingAsync(
+        string storeKey, List<string> hashes, string traceId, CancellationToken ct)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(hashes);
+        var resp = await _store.RequestAsync(OpCode.SyncMissing, storeKey, payload, traceId, ct);
+        if (resp.Status != (byte)StatusCode.Ok)
+            throw new InvalidDataException($"SYNC_MISSING failed (status=0x{resp.Status:X2})");
+
+        var missing = new List<string>();
+        if (resp.Payload is { Length: > 0 })
+        {
+            using var doc = JsonDocument.Parse(resp.Payload);
+            if (doc.RootElement.TryGetProperty("missing_hashes", out var arr))
+                foreach (var h in arr.EnumerateArray())
+                {
+                    var s = h.GetString();
+                    if (!string.IsNullOrEmpty(s)) missing.Add(s);
+                }
+        }
+        return missing;
+    }
+
+    // PUSH_CHUNKS (0x13): upload only the missing chunk bodies, framed [4B size LE][body],
+    // batched so peak memory is bounded regardless of total state size.
+    private async Task<int> PushMissingChunksAsync(
+        string storeKey, string sessionId, List<string> missing, string traceId, CancellationToken ct)
+    {
+        if (missing.Count == 0) return 0;
+
+        const int BatchBytes = 32 * 1024 * 1024;
+        using var batch = new MemoryStream();
+        int pushed = 0;
+
+        async Task FlushAsync()
+        {
+            if (batch.Length == 0) return;
+            await _store.RequestAsync(OpCode.PushChunks, storeKey, batch.ToArray(), traceId, ct);
+            batch.SetLength(0);
+        }
+
+        var header = new byte[4];
+        foreach (var hash in missing)
+        {
+            var body = await _chunkCache.GetChunkDataAsync(sessionId, hash, ct);
+            if (body is null || body.Length == 0) continue;
+
+            BinaryPrimitives.WriteInt32LittleEndian(header, body.Length);
+            batch.Write(header);
+            batch.Write(body);
+            pushed++;
+
+            if (batch.Length >= BatchBytes) await FlushAsync();
+        }
+        await FlushAsync();
+        return pushed;
+    }
+
+    // PUT_MANIFEST (0x15): write the authoritative ordered manifest. The Store refuses if
+    // any referenced chunk is not resident, so a partial push can never corrupt restore.
+    private async Task PutManifestAsync(
+        string storeKey, int nPast, long totalSize, List<ChunkRef> chunks,
+        string traceId, CancellationToken ct)
+    {
+        var manifest = new
+        {
+            n_past = nPast,
+            total_size = totalSize,
+            chunks = chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size }),
+        };
+        var payload = JsonSerializer.SerializeToUtf8Bytes(manifest);
+        var resp = await _store.RequestAsync(OpCode.PutManifest, storeKey, payload, traceId, ct);
+        if (resp.Status != (byte)StatusCode.Ok)
+            throw new InvalidDataException(
+                $"PUT_MANIFEST failed (status=0x{resp.Status:X2}): {resp.Meta}");
     }
 
     public async Task<RestoreSessionResult> RestoreFromStoreChunkedAsync(

@@ -104,12 +104,12 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
             Assert.Equal(50_000, result.Size);
             Assert.True(result.ElapsedMs >= 0);
 
-            // Verify data integrity via GetChunked (chunked data cannot be read via raw Get)
+            // Verify data integrity via GetChunked (framed [index][size][body] — de-frame it).
             var verifyResp = await storeClient.RequestAsync(
                 OpCode.GetChunked, "kv/chunked-session", ReadOnlyMemory<byte>.Empty,
                 "trace-verify-chunked", CancellationToken.None);
             Assert.Equal((byte)StatusCode.Ok, verifyResp.Status);
-            Assert.Equal(stateData, verifyResp.Payload);
+            Assert.Equal(stateData, ChunkedTestUtil.Reassemble(verifyResp.Payload));
         }
         finally
         {
@@ -197,12 +197,12 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
                 "dedup-session", 1, "trace-dedup-2", CancellationToken.None);
             Assert.Equal(baseData.Length, result2.Size);
 
-            // Verify data round-trips correctly via GetChunked
+            // Verify data round-trips correctly via GetChunked (de-frame the response).
             var verifyResp = await storeClient1.RequestAsync(
                 OpCode.GetChunked, "kv/dedup-session", ReadOnlyMemory<byte>.Empty,
                 "trace-verify-dedup", CancellationToken.None);
             Assert.Equal((byte)StatusCode.Ok, verifyResp.Status);
-            Assert.Equal(baseData, verifyResp.Payload);
+            Assert.Equal(baseData, ChunkedTestUtil.Reassemble(verifyResp.Payload));
 
             // Clean up second cache
             if (Directory.Exists(chunksDir2))
@@ -266,6 +266,16 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
         var llamaRestoreHandler = new MockHttpHandler(async (request, ct) =>
         {
             var path = request.RequestUri!.ToString();
+
+            // Post-restore n_past verification (GetStateMetaAsync).
+            if (path.Contains("/state/meta"))
+            {
+                var meta = """{"slot_id":1,"n_past":1500,"state_size":50000,"is_processing":false}""";
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(meta, Encoding.UTF8, "application/json"),
+                };
+            }
 
             if (path.Contains("/state") && request.Method == HttpMethod.Put)
             {
@@ -359,6 +369,14 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
             var llamaRestoreHandler = new MockHttpHandler(async (request, ct) =>
             {
                 var path = request.RequestUri!.ToString();
+                // Post-restore n_past verification (GetStateMetaAsync).
+                if (path.Contains("/state/meta"))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"slot_id":1,"n_past":3000,"state_size":50000,"is_processing":false}""", Encoding.UTF8, "application/json"),
+                    };
+                }
                 if (path.Contains("/state") && request.Method == HttpMethod.Put)
                 {
                     receivedBody = await request.Content!.ReadAsByteArrayAsync(ct);
@@ -371,18 +389,22 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
             });
 
             var llamaRestoreClient = new LlamaClient(new HttpClient(llamaRestoreHandler), "http://localhost:8080");
-            var restoreHandler = new StateHandler(llamaRestoreClient, storeClient, chunkCache, log);
+            // Cold cache (different node) → restore must fetch the full state from the
+            // store and PUT it into llama. (A warm same-node cache would correctly
+            // short-circuit via the full-cache-hit path — covered by the round-trip test.)
+            var restoreCache = new LocalChunkCache(_chunkCacheDir + "-coldrestore");
+            var restoreHandler = new StateHandler(llamaRestoreClient, storeClient, restoreCache, log);
 
             var restoreResult = await restoreHandler.RestoreFromStoreChunkedAsync(
                 "cached-session", 1, "trace-cache-restore", CancellationToken.None);
 
-            // Restore should still get full data from store
-            // Client-side delta restore is not yet implemented
             Assert.True(restoreResult.Restored);
             Assert.NotNull(receivedBody);
-            Assert.Equal(stateData, receivedBody);
+            Assert.Equal(stateData, receivedBody);   // full state reassembled byte-identical
 
             llamaRestoreClient.Dispose();
+            if (Directory.Exists(_chunkCacheDir + "-coldrestore"))
+                Directory.Delete(_chunkCacheDir + "-coldrestore", recursive: true);
         }
         finally
         {
