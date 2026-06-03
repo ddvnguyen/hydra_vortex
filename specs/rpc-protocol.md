@@ -64,8 +64,14 @@ meta_len      payload_len  payload — raw bytes (streamed)
                     Request:  key="kv/{session_id}", payload=JSON ["<hash>",...]
                     Response: meta={"total_size":<N>,"missing_count":<N>}
                               payload=[4B index][4B size][chunk data]... (missing chunks only)
-0x12  SYNC_PLAN     Client sends hashes, server returns missing list (reserved, future use)
-0x13  PUSH_CHUNKS   Client sends batch of new chunks (reserved, future use)
+0x12  SYNC_PLAN     Client sends known hashes, server returns the missing-chunk list
+                    Request:  key="kv/{session_id}", payload=JSON ["<hash>",...]
+                    Response: meta={"missing":["<hash>",...],"total_chunks":<N>}
+                    (implemented in StoreServer; not yet called by the Agent save path — see #58)
+0x13  PUSH_CHUNKS   Client uploads only the missing chunks (delta save)
+                    Request:  key="kv/{session_id}", payload=[hashlen+hash+size+data]...
+                    Response: meta={"stored":<N>,"deduped":<N>}
+                    (implemented in StoreServer; not yet called by the Agent save path — see #58)
 0x14  PUT_META      Store n_past metadata before chunk manifest exists
                     Request:  key="kv/{session_id}", payload={"n_past":<N>}
                     Response: meta={"stored":true}
@@ -90,7 +96,8 @@ meta_len      payload_len  payload — raw bytes (streamed)
                           Response: meta={"slot_id":<N>,"erased":true}
 0x24  NODE_HEALTH         Get llama-server health + slot summary
                           Response: meta={} payload={"healthy":<bool>,"slots_total":<N>,"slots_idle":<N>,...}
-0x25  COMPLETION          Proxy a chat completion request (reserved; completion goes via HTTP)
+0x25  (retired)           Was COMPLETION. Completions go Coordinator→llama-server over
+                          HTTP (proxy.py), never through the Agent. Opcode removed from enums.
 0x26  SAVE_STATE_CHUNKED  Save slot KV state → push to Store with content-addressed dedup
                           Request:  key="{session_id}:{slot_id}", payload_len=0
                           Response: meta={...,"chunked":true,"save_ms":<N>}

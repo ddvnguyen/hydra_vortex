@@ -129,17 +129,21 @@ Offset  Size  Type     Field
 | 0x05 | LIST | Store | M0 |
 | 0x10 | PUT_CHUNKED | Store | M2 |
 | 0x11 | GET_CHUNKED | Store | M2 |
-| 0x12 | SYNC_PLAN | Store | M2 |
-| 0x13 | PUSH_CHUNKS | Store | M2 |
-| 0x20 | SAVE_STATE | Agent | M0 |
-| 0x21 | RESTORE_STATE | Agent | M0 |
+| 0x12 | SYNC_PLAN | Store | M2 (impl; unused — see #58) |
+| 0x13 | PUSH_CHUNKS | Store | M2 (impl; unused — see #58) |
+| 0x14 | PUT_META | Store | M2 |
+| 0x20 | SAVE_STATE | Agent | M0 (raw; superseded by 0x26) |
+| 0x21 | RESTORE_STATE | Agent | M0 (raw; superseded by 0x27) |
 | 0x22 | SLOT_STATUS | Agent | M0 |
 | 0x23 | SLOT_ERASE | Agent | M0 |
 | 0x24 | NODE_HEALTH | Agent | M0 |
-| 0x25 | COMPLETION | Agent | M0 |
+| 0x25 | (retired) | — | completions are HTTP-direct |
+| 0x26 | SAVE_STATE_CHUNKED | Agent | M2 (active default) |
+| 0x27 | RESTORE_STATE_CHUNKED | Agent | M2 (active default) |
 | 0x30 | STATE_GET | llama direct | M0 |
 | 0x31 | STATE_PUT | llama direct | M0 |
 | 0x32 | STATE_META | llama direct | M0 |
+| 0x33 | GET_MANIFEST | Store | M2 |
 
 ### Connection rules
 - Persistent: client sends multiple sequential requests on one TCP connection

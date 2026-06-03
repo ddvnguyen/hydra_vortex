@@ -66,12 +66,11 @@
 }
 ```
 
-### COMPLETION (0x25) [M1]
-- Key: none
-- Payload: JSON-encoded ChatCompletionRequest
-- Behavior: proxy to llama-server POST /v1/chat/completions
-- Response payload: JSON-encoded response (or SSE stream)
-- This avoids coordinator needing direct HTTP to llama-server
+### COMPLETION (0x25) — RETIRED
+- Originally designed to proxy completions through the Agent. **Not implemented.**
+- Completions go **Coordinator → llama-server over HTTP** directly (`coordinator/proxy.py`),
+  which is simpler and already works. The Agent RPC surface is state-only
+  (save/restore/erase/health). Opcode removed from `Protocol.cs` / `rpc_client.py`.
 
 ## Configuration
 

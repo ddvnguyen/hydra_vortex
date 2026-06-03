@@ -169,15 +169,22 @@ public class ProtocolTests
         Assert.Equal(0x03, (byte)OpCode.Del);
         Assert.Equal(0x04, (byte)OpCode.Stat);
         Assert.Equal(0x05, (byte)OpCode.List);
+        Assert.Equal(0x10, (byte)OpCode.PutChunked);
+        Assert.Equal(0x11, (byte)OpCode.GetChunked);
+        Assert.Equal(0x12, (byte)OpCode.SyncPlan);
+        Assert.Equal(0x13, (byte)OpCode.PushChunks);
+        Assert.Equal(0x14, (byte)OpCode.PutMeta);
         Assert.Equal(0x20, (byte)OpCode.SaveState);
         Assert.Equal(0x21, (byte)OpCode.RestoreState);
         Assert.Equal(0x22, (byte)OpCode.SlotStatus);
         Assert.Equal(0x23, (byte)OpCode.SlotErase);
         Assert.Equal(0x24, (byte)OpCode.NodeHealth);
-        Assert.Equal(0x25, (byte)OpCode.Completion);
+        Assert.Equal(0x26, (byte)OpCode.SaveStateChunked);
+        Assert.Equal(0x27, (byte)OpCode.RestoreStateChunked);
         Assert.Equal(0x30, (byte)OpCode.StateGet);
         Assert.Equal(0x31, (byte)OpCode.StatePut);
         Assert.Equal(0x32, (byte)OpCode.StateMeta);
+        Assert.Equal(0x33, (byte)OpCode.GetManifest);
     }
 
     [Fact]

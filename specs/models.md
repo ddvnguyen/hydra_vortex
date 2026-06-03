@@ -16,12 +16,16 @@ class OpCode(IntEnum):
     GET_CHUNKED = 0x11
     SYNC_PLAN = 0x12
     PUSH_CHUNKS = 0x13
+    PUT_META = 0x14
     SAVE_STATE = 0x20
     RESTORE_STATE = 0x21
     SLOT_STATUS = 0x22
     SLOT_ERASE = 0x23
     NODE_HEALTH = 0x24
-    COMPLETION = 0x25
+    # 0x25 retired (was COMPLETION; completions are HTTP-direct, not Agent RPC)
+    SAVE_STATE_CHUNKED = 0x26
+    RESTORE_STATE_CHUNKED = 0x27
+    GET_MANIFEST = 0x33
 
 class StatusCode(IntEnum):
     OK = 0x00
