@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from python_shared.log_config import get_logger, new_trace_id
-from python_shared.rpc_client import RpcClient, OpCode
+from python_shared.rpc_client import RpcClient, OpCode, RpcError, StatusCode
 from coordinator.config import WorkerNodeConfig
 
 log = get_logger()
@@ -85,6 +85,9 @@ class HealthMonitor:
             client = RpcClient(self._store_host, self._store_port)
             try:
                 await client.request(OpCode.Stat, "__health__", trace_id=trace_id)
+            except RpcError as e:
+                if e.status != StatusCode.NotFound:
+                    raise
             finally:
                 await client.close()
             self._store_healthy = True
