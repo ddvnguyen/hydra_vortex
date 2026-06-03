@@ -5,9 +5,12 @@ services:
       dockerfile: Dockerfile
     image: llama-cpp:sm120-cuda13.2
     container_name: llama-cpp
+    labels:
+      component: llama-server
+      node: rtx
     restart: always
     ports:
-     - "8080:8080"
+      - "8080:8080"
 
     devices:
       - nvidia.com/gpu=all

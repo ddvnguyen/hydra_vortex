@@ -63,7 +63,8 @@ hydra_vortex/
 │   ├── milestone-0-mvp.md       ← M0 task breakdown with code samples
 │   └── hydra_llama_cpp_PLAN.md  ← llama fork implementation log
 ├── infra/
-│   └── docker-compose.yml       ← compose-managed tmpfs for Store
+│   ├── docker-compose.hydra.yml ← Hydra core services (host networking)
+│   └── docker-compose.infra.yml ← Observability stack + exporters
 ├── Hydra.sln                    ← C# solution (all projects)
 ├── pyproject.toml               ← Python deps (coordinator + tests)
 └── src/
@@ -768,14 +769,13 @@ Serilog JSON output already includes `trace_id`, `component`, `source_context`.
 - Logs panel: all service logs with label filters
 - **Trace ID filter**: textbox variable `$trace_id` — enter trace ID to see all related logs in Grafana
 
-**Docker Compose** (`infra/docker-compose.yml`):
-- Builds and runs Store + Agent RTX + Coordinator + Loki + Prometheus + Grafana
-- Promtail runs on the host (not in Docker) — see host service activation below
+**Docker Compose** (`infra/docker-compose.hydra.yml` + `infra/docker-compose.infra.yml`):
+- `docker-compose.hydra.yml`: Store + Agent RTX + Coordinator (host networking)
+- `docker-compose.infra.yml`: Loki + Promtail + Prometheus + Grafana
 - llama-server runs natively on each GPU machine (not containerized)
 
 ```bash
-cd infra && docker compose up -d
-systemctl --user start container-log-shipper promtail   # host log shipping
+cd infra && docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up -d
 curl -s localhost:9501/metrics | head
 curl -s localhost:9611/metrics | head
 curl -s localhost:9000/metrics | head
@@ -978,15 +978,16 @@ src/python-shared/                 ← shared libs (RPC client, logging)
 ### Implementing Observability
 ```
 infra/Dockerfile                                  ← Multi-target: store, agent, coordinator (one SDK pull)
-infra/docker-compose.yml                          ← Hydra services + Loki + Prometheus + Grafana
+infra/docker-compose.hydra.yml                     ← Hydra core services (host networking)
+infra/docker-compose.infra.yml                     ← Observability stack + exporters
 infra/prometheus/prometheus.yml                   ← scrape target config (network_mode: host)
 infra/loki/loki-config.yml                        ← log storage config
-infra/promtail/promtail-config.yml                ← host promtail file-scraping config
+infra/promtail/promtail-config.yml                ← container promtail docker_sd_configs
 infra/grafana/datasources/datasources.yml          ← datasource provisioning
 infra/grafana/dashboards/hydra-dashboard.json      ← metrics + logs + trace_id filter panel
 infra/grafana/dashboards/dashboard-providers.yml   ← auto-load dashboards
 
-~/.config/promtail/promtail-config.yml             ← LIVE host promtail config (symlinked)
+# promtail config lives in the repo: infra/promtail/promtail-config.yml
 ~/.config/systemd/user/promtail.service            ← host promtail systemd unit
 ~/.local/bin/promtail                              ← host promtail binary
 ~/.local/bin/container-log-shipper.sh              ← tails podman logs -f to /tmp/container-logs/

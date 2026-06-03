@@ -155,16 +155,18 @@ Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
 - Model: Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf (qwen35moe arch, MTP spec-decode, vision mmproj)
 
 ## Monitoring & Observability
-Prometheus + Loki + Grafana run as containers in `infra/docker-compose.yml`.
-Promtail runs as a **host systemd --user service** (not in Docker — see below).
+Prometheus + Loki + Grafana + Promtail run in `infra/docker-compose.infra.yml`;
+Hydra services (Store, Agents, Coordinator) run in `infra/docker-compose.hydra.yml`.
 Grafana at :3000, Prometheus at :9091, Loki at :3100.
 
 ### Start everything
 ```bash
-cd infra && docker compose up -d
+cd infra
+docker compose -f docker-compose.infra.yml up -d
+docker compose -f docker-compose.hydra.yml up -d
 
-# Host log shipping services (systemd --user)
-systemctl --user start container-log-shipper promtail
+# Also start the llama-cpp server (RTX):
+docker compose -f llama-rtx-node/docker-compose.yml up -d
 ```
 
 ### Key dashboards/metrics endpoints

@@ -65,32 +65,31 @@ if [[ "$SKIP_P100" == false ]]; then
   fi
 fi
 
-# ── 2. Hydra infra stack ──────────────────────────────────────────────────────
-step "Hydra infra stack (Store + Agents + Coordinator + Observability)"
+# ── 2. Infra / observability stack ────────────────────────────────────────────
+step "Infra stack (Loki + Promtail + Prometheus + Grafana)"
 
 cd "$REPO_ROOT/infra"
-RUNNING=$(podman-compose ps 2>/dev/null | grep -c " Up " || true)
-if [[ "$RUNNING" -ge 8 ]]; then
-  ok "Infra stack already running ($RUNNING containers up)"
+INFRA_UP=$(podman-compose -f docker-compose.infra.yml ps 2>/dev/null | grep -c " Up " || true)
+if [[ "$INFRA_UP" -ge 4 ]]; then
+  ok "Infra stack already running ($INFRA_UP containers up)"
 else
   echo "  Starting containers..."
-  podman-compose up -d 2>&1 | tail -3
+  podman-compose -f docker-compose.infra.yml up -d 2>&1 | tail -3
   ok "Infra stack started"
 fi
-cd "$REPO_ROOT"
 
-# ── 2b. Host log shipper + promtail ──────────────────────────────────────────
-step "Host log shipping (container-log-shipper + promtail)"
+# ── 2b. Hydra core stack ──────────────────────────────────────────────────────
+step "Hydra core (Store + Agents + Coordinator, host networking)"
 
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-if systemctl --user is-active container-log-shipper &>/dev/null && \
-   systemctl --user is-active promtail &>/dev/null; then
-  ok "Both services already running"
+HYDRA_UP=$(podman-compose -f docker-compose.hydra.yml ps 2>/dev/null | grep -c " Up " || true)
+if [[ "$HYDRA_UP" -ge 3 ]]; then
+  ok "Hydra core already running ($HYDRA_UP containers up)"
 else
-  systemctl --user restart container-log-shipper promtail 2>/dev/null && \
-    ok "Started" || warn "Could not start (services may not be installed)"
+  echo "  Starting containers..."
+  podman-compose -f docker-compose.hydra.yml up -d 2>&1 | tail -3
+  ok "Hydra core started"
 fi
+cd "$REPO_ROOT"
 
 # ── 3. llama-server RTX ──────────────────────────────────────────────────────
 step "llama-server RTX (:8080)"
@@ -105,13 +104,8 @@ else
   ok "Started"
 fi
 
-# Always ensure llama-cpp is on hydra_default (container recreation drops this)
-HYDRA_NET="hydra_default"
-if podman network exists "$HYDRA_NET" 2>/dev/null; then
-  podman network connect "$HYDRA_NET" llama-cpp 2>/dev/null \
-    && ok "llama-cpp joined $HYDRA_NET" \
-    || ok "llama-cpp already on $HYDRA_NET"
-fi
+# Host networking: Hydra services reach llama-cpp at localhost:8080 directly.
+# No cross-compose network connect needed.
 
 # ── 4. llama-server P100 ─────────────────────────────────────────────────────
 if [[ "$SKIP_P100" == false ]]; then
@@ -178,11 +172,9 @@ esac
 check_http "Grafana          :3000"    "http://localhost:3000"
 check_http "Prometheus       :9091"    "http://localhost:9091"
 
-# Check host log services
-printf "  %-35s" "log-shipper systemd"
-systemctl --user is-active container-log-shipper &>/dev/null && ok "active" || warn "inactive"
-printf "  %-35s" "promtail systemd"
-systemctl --user is-active promtail &>/dev/null && ok "active" || warn "inactive"
+# Check containerized promtail
+printf "  %-35s" "promtail container"
+podman ps --filter name=promtail --format '{{.Status}}' 2>/dev/null | grep -q Up && ok "active" || warn "inactive"
 
 echo ""
 echo -e "${GREEN}${BOLD}Done.${NC}"

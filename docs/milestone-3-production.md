@@ -75,7 +75,7 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 - **Coordinator** (Python, prometheus_client): `hydra_requests_total`, `hydra_cache_hits_total`, `hydra_migrations_total`, `hydra_active_sessions` — exposed on `:9000/metrics`
 - Each service adds a `GET /metrics` endpoint alongside its debug HTTP server
 - `Prometheus` in docker-compose scrapes all three targets
-- **Done when:** `docker compose up` — Prometheus scrapes all targets (check `:9090/targets`)
+- **Done when:** `docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up` — Prometheus scrapes all targets (check `:9090/targets`)
 
 ### M3.2.2: Grafana Dashboard (`infra/grafana/dashboards/hydra-dashboard.json`)
 - Provisioned dashboard JSON, auto-loaded by Grafana at startup
@@ -83,7 +83,7 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 - Logs panel (Loki): all service logs with label filters
 - **Trace ID filter**: textbox variable `$trace_id` in dashboard — enter a trace ID to filter
 - Docker compose: Prometheus + Loki + Grafana provisioned automatically
-- **Done when:** `docker compose up` → Grafana at `:3000` shows working dashboard
+- **Done when:** `docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up` → Grafana at `:3000` shows working dashboard
 
 ### M3.2.3: Request Trace Logging (Loki + Grafana)
 - Serilog JSON stdout includes `@t`, `@mt`, `component`, `trace_id`, `source_context`

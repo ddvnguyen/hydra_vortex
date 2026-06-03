@@ -9,7 +9,7 @@
 2. **If behaviour/runtime changed (integration + E2E):**
    - Integration: `dotnet test src/Tests.Integration`
    - System / E2E: `pytest tests/system` (mocked first; full-stack needs the live
-     stack up — `cd infra && docker compose up -d`, see `DevelopmentRunBook.md`).
+      stack up — `cd infra && docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up -d`, see `DevelopmentRunBook.md`).
 3. **All green is required before opening a PR.** If you cannot run a tier (e.g. the
    GPU stack isn't up), say so explicitly in the PR and note what was/wasn't verified.
 4. Builds must be clean (`dotnet build Hydra.sln -c Release`); treat new warnings as
