@@ -7,6 +7,7 @@ namespace Tests.Store;
 /// Requires Postgres accessible via HYDRA_STORE_PG_CONN or the default connection string.
 /// Starts with: docker compose up -d postgres  (from infra/)
 /// </summary>
+[Collection("SerializedPG")]
 public sealed class StoreMetadataTests : IAsyncLifetime
 {
     private readonly DirectoryInfo _storeDir;
@@ -173,8 +174,13 @@ public sealed class StoreMetadataTests : IAsyncLifetime
         await _meta.UpsertManifestAsync("sess_gc", 0, 128,
             [new ChunkRef(0, "gc_ref_chunk", 128)]);
 
-        // Create an unreferenced chunk (orphan)
+        // Create an unreferenced chunk (orphan) with a past timestamp
         await _meta.RegisterChunkAsync("gc_orphan", 64);
+        await using var ageConn = await _meta.DataSource.OpenConnectionAsync();
+        await using var ageCmd = ageConn.CreateCommand();
+        ageCmd.CommandText =
+            "UPDATE chunks SET created_at = now() - interval '5 minutes' WHERE hash = 'gc_orphan'";
+        await ageCmd.ExecuteNonQueryAsync();
         var orphanPath = Path.Combine(_storeDir.FullName, "gc_orphan");
         await File.WriteAllBytesAsync(orphanPath, new byte[64]);
 

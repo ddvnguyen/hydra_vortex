@@ -15,6 +15,7 @@ Environment:
 
 import json
 import os
+import re
 import uuid
 
 import httpx
@@ -33,6 +34,14 @@ PG_DSN = os.environ.get(
 )
 
 TRACE_TAG = "persistence-sys"
+_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _validate_id(val: str, label: str) -> str:
+    """Guard against SQL injection by rejecting non-alphanumeric IDs."""
+    if not _ID_RE.match(val):
+        raise ValueError(f"{label} contains unsafe characters: {val!r}")
+    return val
 
 
 def _sid() -> str:
@@ -51,12 +60,15 @@ async def _rpc(op: OpCode, key: str, payload: bytes = b"", trace: str = "") -> .
         await client.close()
 
 
-async def _query_pg(sql: str) -> list[dict]:
-    """Execute a SQL query via psql subprocess and return rows as dicts."""
+async def _query_pg(sql: str, *params: str) -> list[list[str]]:
+    """Execute a SQL query via psql subprocess with positional params ($1..$N)."""
     import subprocess
 
+    args = ["psql", PG_DSN, "-t", "-A", "-F", "|", "-c", sql]
+    for p in params:
+        args.extend(["-v", f"p{params.index(p) + 1}={p}"])
     result = subprocess.run(
-        ["psql", PG_DSN, "-t", "-A", "-F", "|", "-c", sql],
+        args,
         capture_output=True,
         text=True,
         timeout=10,
@@ -120,9 +132,10 @@ async def test_manifest_after_save():
         assert resp.status_code == 200
 
     # 3. Verify PG has the session
+    safe_sid = _validate_id(sid, "session_id")
     rows = await _query_pg(
         f"SELECT session_id, n_past, total_size FROM sessions "
-        f"WHERE session_id = '{sid}'"
+        f"WHERE session_id = '{safe_sid}'"
     )
     assert len(rows) == 1, f"Session {sid} not found in PG: {rows}"
     row = rows[0]
@@ -133,7 +146,7 @@ async def test_manifest_after_save():
         f"SELECT sc.idx, sc.hash, c.size "
         f"FROM session_chunks sc "
         f"JOIN chunks c ON c.hash = sc.hash "
-        f"WHERE sc.session_id = '{sid}' "
+        f"WHERE sc.session_id = '{safe_sid}' "
         f"ORDER BY sc.idx"
     )
     assert len(chunk_rows) > 0, "No session_chunks found in PG"

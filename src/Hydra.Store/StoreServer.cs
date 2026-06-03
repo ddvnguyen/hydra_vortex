@@ -17,6 +17,7 @@ public sealed class StoreServer : RpcServer
 	private readonly StorageEngine _engine;
 	private readonly ChunkStore _chunkStore;
 	private readonly StoreMetadata? _metadata;
+	private static readonly Serilog.ILogger _log = Serilog.Log.ForContext<StoreServer>();
 
 	public StoreServer(StoreConfig cfg, StorageEngine engine, ChunkStore chunkStore, StoreMetadata? metadata = null)
 		 : base(cfg.Host, cfg.Port)
@@ -196,6 +197,7 @@ public sealed class StoreServer : RpcServer
 
 			var storedNpast = await Metadata.GetNPastAsync(key, ct);
 			var nPast = storedNpast ?? 0;
+			await Metadata.SetNPastAsync(key, 0, ct);
 
 			await Metadata.UpsertManifestAsync(key, nPast, payloadLen, chunks, ct);
 
@@ -304,8 +306,18 @@ public sealed class StoreServer : RpcServer
 			var missingHashes = new List<string>();
 			foreach (var h in candidateHashes.Distinct())
 			{
-				if (!_chunkStore.HasChunk(h) && !await Metadata.HasChunkAsync(h, ct))
+				if (_chunkStore.HasChunk(h))
+					continue;
+				if (!await Metadata.HasChunkAsync(h, ct))
+				{
 					missingHashes.Add(h);
+				}
+				else
+				{
+					_log.Warning("SyncMissing: hash {Hash} exists in PG but missing from disk — deleting stale PG row", h);
+					await Metadata.DeleteChunkAsync(h, ct);
+					missingHashes.Add(h);
+				}
 			}
 
 			var payload = JsonSerializer.SerializeToUtf8Bytes(new { missing_hashes = missingHashes });

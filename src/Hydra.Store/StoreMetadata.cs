@@ -103,6 +103,7 @@ public sealed class StoreMetadata : IAsyncDisposable
         IReadOnlyList<ChunkRef> chunks, CancellationToken ct = default)
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
 
         await using var upsertSession = conn.CreateCommand();
         upsertSession.CommandText = """
@@ -116,11 +117,13 @@ public sealed class StoreMetadata : IAsyncDisposable
         upsertSession.Parameters.AddWithValue("sid", sessionId);
         upsertSession.Parameters.AddWithValue("np", nPast);
         upsertSession.Parameters.AddWithValue("ts", totalSize);
+        upsertSession.Transaction = tx;
         await upsertSession.ExecuteNonQueryAsync(ct);
 
         await using var deleteOld = conn.CreateCommand();
         deleteOld.CommandText = "DELETE FROM session_chunks WHERE session_id = @sid";
         deleteOld.Parameters.AddWithValue("sid", sessionId);
+        deleteOld.Transaction = tx;
         await deleteOld.ExecuteNonQueryAsync(ct);
 
         if (chunks.Count > 0)
@@ -139,8 +142,11 @@ public sealed class StoreMetadata : IAsyncDisposable
             }
             insert.CommandText = sb.ToString();
             insert.Parameters.AddWithValue("sid", sessionId);
+            insert.Transaction = tx;
             await insert.ExecuteNonQueryAsync(ct);
         }
+
+        await tx.CommitAsync(ct);
     }
 
     public async Task SetNPastAsync(string sessionId, int nPast, CancellationToken ct = default)
@@ -156,6 +162,15 @@ public sealed class StoreMetadata : IAsyncDisposable
             """;
         cmd.Parameters.AddWithValue("sid", sessionId);
         cmd.Parameters.AddWithValue("np", nPast);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task DeleteChunkAsync(string hash, CancellationToken ct = default)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM chunks WHERE hash = @hash";
+        cmd.Parameters.AddWithValue("hash", hash);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -256,20 +271,48 @@ public sealed class StoreMetadata : IAsyncDisposable
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM chunks WHERE hash NOT IN (SELECT DISTINCT hash FROM session_chunks) RETURNING hash";
+        cmd.CommandText = """
+            DELETE FROM chunks
+            WHERE hash NOT IN (SELECT DISTINCT hash FROM session_chunks)
+              AND created_at < now() - interval '60 seconds'
+            RETURNING hash
+            """;
 
-        var removed = 0;
+        var hashes = new List<string>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
+            hashes.Add(reader.GetString(0));
+        await reader.CloseAsync();
+
+        foreach (var hash in hashes)
         {
-            var hash = reader.GetString(0);
             var path = Path.Combine(chunksDir.FullName, hash);
             if (File.Exists(path))
                 File.Delete(path);
-            removed++;
         }
 
-        return removed;
+        if (hashes.Count > 0)
+        {
+            await using var delSc = conn.CreateCommand();
+            delSc.CommandText = """
+                DELETE FROM session_chunks
+                WHERE session_id IN (
+                    SELECT s.session_id FROM sessions s
+                    LEFT JOIN session_chunks sc ON sc.session_id = s.session_id
+                    GROUP BY s.session_id
+                    HAVING COUNT(sc.idx) = 0)
+                """;
+            await delSc.ExecuteNonQueryAsync(ct);
+
+            await using var delS = conn.CreateCommand();
+            delS.CommandText = """
+                DELETE FROM sessions
+                WHERE session_id NOT IN (SELECT DISTINCT session_id FROM session_chunks)
+                """;
+            await delS.ExecuteNonQueryAsync(ct);
+        }
+
+        return hashes.Count;
     }
 
     public async Task ReconcileBootAsync(DirectoryInfo chunksDir, CancellationToken ct = default)
@@ -307,6 +350,15 @@ public sealed class StoreMetadata : IAsyncDisposable
             del.Parameters.AddWithValue("hash", hash);
             await del.ExecuteNonQueryAsync(ct);
         }
+
+        await using var delZombie = conn.CreateCommand();
+        delZombie.CommandText = """
+            DELETE FROM sessions
+            WHERE session_id NOT IN (SELECT DISTINCT session_id FROM session_chunks)
+            """;
+        var zombieCount = await delZombie.ExecuteNonQueryAsync(ct);
+        if (zombieCount > 0)
+            _log.Information("Boot reconciliation: removed {Count} zombie sessions with no chunks", zombieCount);
     }
 
     public async ValueTask DisposeAsync()

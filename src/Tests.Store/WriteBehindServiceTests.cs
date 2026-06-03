@@ -2,6 +2,7 @@ using Hydra.Store;
 
 namespace Tests.Store;
 
+[Collection("SerializedPG")]
 public sealed class WriteBehindServiceTests : IAsyncLifetime
 {
     private readonly DirectoryInfo _storeDir;

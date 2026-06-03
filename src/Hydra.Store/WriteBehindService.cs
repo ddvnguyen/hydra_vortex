@@ -64,22 +64,24 @@ public sealed class WriteBehindService
             var srcPath = Path.Combine(_chunkStore.ChunksDirectory.FullName, hash);
             var dstPath = Path.Combine(backupChunksDir.FullName, hash);
 
-            if (!File.Exists(srcPath))
-                continue;
-
             try
             {
+                if (!File.Exists(srcPath))
+                    continue;
+
                 File.Copy(srcPath, dstPath, overwrite: false);
+                await _metadata.MarkBackedUpAsync(hash, dstPath, ct);
+                copied++;
+                bytesCopied += size;
             }
             catch (IOException) when (File.Exists(dstPath))
             {
                 await _metadata.MarkBackedUpAsync(hash, dstPath, ct);
-                continue;
             }
-
-            await _metadata.MarkBackedUpAsync(hash, dstPath, ct);
-            copied++;
-            bytesCopied += size;
+            catch (IOException)
+            {
+                _log.Warning("Write-behind: failed to copy {Hash} (source likely deleted)", hash);
+            }
         }
 
         sw.Stop();
