@@ -308,7 +308,85 @@ is 5s.
 
 ---
 
-## 13. llama.cpp Fork
+## 13. Container Orchestration
+
+The `infra/` directory contains **two independent compose files** with separate lifecycles:
+
+| File | Project name | Services | Networking |
+|---|---|---|---|
+| `docker-compose.hydra.yml` | `hydra-core` | Store, Agent RTX, Agent P100, Coordinator | `network_mode: host` |
+| `docker-compose.infra.yml` | `hydra-infra` | Prometheus, Grafana, Loki, Promtail, node-exporter, nvidia-exporter | host for prometheus/grafana/exporters; default bridge for loki/promtail |
+
+### Rationale for the split
+
+- **Independent lifecycle** — restarting hydra core (code deploy, config change) does not bounce observability. Prometheus continues scraping, Grafana dashboards stay live, Loki retains logs.
+- **Host networking for hydra** — services communicate over loopback (`localhost:PORT`), eliminating cross-compose DNS, container networking overhead, and the need for a shared compose network. Agents reach store at `localhost:9500`, coordinator reaches agents at `localhost:9601/9602`.
+- **Infra stability** — observability images (prom/prometheus, grafana/grafana, grafana/loki) change infrequently and do not need per-deploy rebuilds. The CI deploy job only touches `docker-compose.hydra.yml`.
+
+### Inter-stack communication
+
+Despite being separate compose projects, infra and hydra interact seamlessly because:
+
+- **Prometheus uses `host` networking** — its scrape config targets `localhost:PORT` for all hydra services (store `:9501`, agents `:9611`/`:9622`, coordinator `:9000`), the same way it scrapes node-exporter and nvidia-exporter.
+- **Promtail uses Docker service discovery** — it reads the podman socket to discover all running containers regardless of compose project. Hydra services carry `component: store|agent|coordinator` labels used as Loki selectors. Infra services carry `component: observability` and are dropped from scraping (`relabel_configs`) to avoid self-scrape loops.
+
+### Networking model
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  host network                                           │
+│                                                         │
+│  ┌─ hydra-core (docker-compose.hydra.yml) ───────────┐  │
+│  │  store:9500, agent-rtx:9601/9611,                  │  │
+│  │  agent-p100:9602/9622, coordinator:9000            │  │
+│  │  └── all communicate via localhost:PORT            │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ hydra-infra (docker-compose.infra.yml) ──────────┐  │
+│  │  prometheus:9091 (host), grafana:3000 (host),      │  │
+│  │  node-exporter:9100 (host), nvidia-exporter:9835,  │  │
+│  │  loki:3100 (bridge), promtail (bridge)              │  │
+│  │  └── prometheus scrapes hydra services via host     │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ llama-rtx-node (separate compose) ───────────────┐  │
+│  │  llama-server:8080 (port-mapped)                    │  │
+│  └────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Port allocation
+
+With host networking, hydra services bind directly to host ports. Avoid conflicts with:
+
+| Port | Service |
+|---|---|
+| `:9500` | Store RPC |
+| `:9501` | Store debug HTTP / Prometheus metrics |
+| `:9601` | Agent RTX RPC |
+| `:9611` | Agent RTX debug HTTP / Prometheus metrics |
+| `:9602` | Agent P100 RPC |
+| `:9622` | Agent P100 debug HTTP / Prometheus metrics |
+| `:9000` | Coordinator HTTP (client-facing + Prometheus metrics) |
+
+### Typical commands
+
+```bash
+# Start everything
+docker compose -f docker-compose.infra.yml up -d
+docker compose -f docker-compose.hydra.yml up -d
+
+# Restart hydra only (e.g. after deploy)
+docker compose -f docker-compose.hydra.yml down -t 0
+docker compose -f docker-compose.hydra.yml up -d
+
+# Observability stays up during hydra restarts
+docker compose -f docker-compose.infra.yml ps
+```
+
+---
+
+## 14. llama.cpp Fork
 
 Branch: `hydra-state-streaming` off llama.cpp mainline.
 Only `tools/server/server.cpp` is modified (~80 lines, 3 endpoints).
