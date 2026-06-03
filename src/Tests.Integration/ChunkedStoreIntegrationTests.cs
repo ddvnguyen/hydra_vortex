@@ -168,8 +168,10 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
             Assert.True(totalSize > 0);
 
             var expectedMissingSize = chunks[3].Size + chunks[4].Size;
-            Assert.Equal(expectedMissingSize, getResp.Payload.Length);
+            // total_size (meta) is bodies-only; the wire payload also carries 8B of
+            // framing ([index][size]) per chunk.
             Assert.Equal(expectedMissingSize, totalSize);
+            Assert.Equal(expectedMissingSize + missingCount * 8, getResp.Payload.Length);
         }
         finally
         {
@@ -235,37 +237,133 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SyncPlan_ReturnsOnlyMissingHashes()
+    public async Task DeltaSave_SyncPushManifest_RoundTrips()
     {
+        // Exercise the exact wire sequence the Agent uses: SYNC_MISSING → PUSH_CHUNKS
+        // (missing bodies, framed [4B size LE][body]) → PUT_MANIFEST (ordered list) →
+        // GET_CHUNKED reassembles byte-identical state.
         var client = new RpcClient("127.0.0.1", _storeServer!.Port);
         await client.ConnectAsync(CancellationToken.None);
         try
         {
-            var data = new byte[4 * 1024 * 1024];
+            var data = new byte[3 * 1024 * 1024 + 12345]; // 3 full + 1 partial chunk
+            new Random(7).NextBytes(data);
+            var chunks = ChunkEngine.ChunkAndHash(data); // List<ChunkRef>(Index,Hash,Size)
+
+            // 1. SYNC_MISSING — fresh store lacks all.
+            var hashesJson = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+                chunks.Select(c => c.Hash).ToList());
+            var sync = await client.RequestAsync(
+                OpCode.SyncMissing, "kv/delta", hashesJson, "t-sync", CancellationToken.None);
+            using (var d = System.Text.Json.JsonDocument.Parse(sync.Meta!))
+                Assert.Equal(chunks.Count, d.RootElement.GetProperty("missing_count").GetInt32());
+
+            // 2. PUSH_CHUNKS — frame every chunk body [4B size LE][body].
+            using var push = new MemoryStream();
+            foreach (var c in chunks)
+            {
+                var body = new byte[c.Size];
+                Array.Copy(data, c.Index * ChunkEngine.CHUNK_SIZE, body, 0, c.Size);
+                var sz = new byte[4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(sz, body.Length);
+                push.Write(sz); push.Write(body);
+            }
+            var pushResp = await client.RequestAsync(
+                OpCode.PushChunks, "kv/delta", push.ToArray(), "t-push", CancellationToken.None);
+            using (var d = System.Text.Json.JsonDocument.Parse(pushResp.Meta!))
+                Assert.Equal(chunks.Count, d.RootElement.GetProperty("stored").GetInt32());
+
+            // 3. PUT_MANIFEST — authoritative ordered list.
+            var manifest = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                n_past = 1234,
+                total_size = (long)data.Length,
+                chunks = chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size }),
+            });
+            var mResp = await client.RequestAsync(
+                OpCode.PutManifest, "kv/delta", manifest, "t-manifest", CancellationToken.None);
+            Assert.Equal((byte)StatusCode.Ok, mResp.Status);
+
+            // 4. GET_CHUNKED (empty known) → de-frame → byte-identical.
+            var getResp = await client.RequestAsync(
+                OpCode.GetChunked, "kv/delta", ReadOnlyMemory<byte>.Empty, "t-get", CancellationToken.None);
+            Assert.Equal((byte)StatusCode.Ok, getResp.Status);
+            Assert.Equal(data, ChunkedTestUtil.Reassemble(getResp.Payload));
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task PutManifest_RejectsUnresidentChunks()
+    {
+        // Guard: a manifest referencing a chunk the store doesn't have must be refused,
+        // not written (else restore reconstructs garbage).
+        var client = new RpcClient("127.0.0.1", _storeServer!.Port);
+        await client.ConnectAsync(CancellationToken.None);
+        try
+        {
+            var manifest = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                n_past = 1,
+                total_size = 1024L,
+                chunks = new[] { new { index = 0, hash = new string('f', 64), size = 1024 } },
+            });
+            var resp = await client.RequestAsync(
+                OpCode.PutManifest, "kv/bad", manifest, "t-bad", CancellationToken.None);
+            Assert.Equal((byte)StatusCode.Partial, resp.Status);
+
+            // And no manifest should have been written → GET_MANIFEST not found.
+            var getm = await client.RequestAsync(
+                OpCode.GetManifest, "kv/bad", ReadOnlyMemory<byte>.Empty, "t-bad2", CancellationToken.None);
+            Assert.NotEqual((byte)StatusCode.Ok, getm.Status);
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task SyncMissing_ReturnsHashesTheStoreLacks()
+    {
+        // SYNC_MISSING is save-direction: given the hashes the client wants to store,
+        // return the subset the global chunk index does NOT already have.
+        var client = new RpcClient("127.0.0.1", _storeServer!.Port);
+        await client.ConnectAsync(CancellationToken.None);
+        try
+        {
+            // Seed the store with one session's chunks so those hashes are resident.
+            var data = new byte[4 * 1024 * 1024]; // 4 chunks
             new Random(222).NextBytes(data);
-
             await client.RequestAsync(
-                OpCode.PutChunked, "kv/syncplan-test", data,
-                "trace-put", CancellationToken.None);
+                OpCode.PutChunked, "kv/seed", data, "trace-seed", CancellationToken.None);
 
-            var chunks = ChunkEngine.ChunkAndHash(data);
-            var knownHashes = chunks.Take(2).Select(c => c.Hash).ToList();
-            var knownJson = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(knownHashes);
+            var resident = ChunkEngine.ChunkAndHash(data).Select(c => c.Hash).ToList();
+            // Mix resident hashes (store has) with two fabricated absent hashes.
+            var absent = new[]
+            {
+                new string('a', 64),
+                new string('b', 64),
+            };
+            var candidates = resident.Concat(absent).ToList();
+            var json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(candidates);
 
             var resp = await client.RequestAsync(
-                OpCode.SyncPlan, "kv/syncplan-test", knownJson,
-                "trace-syncplan", CancellationToken.None);
+                OpCode.SyncMissing, "kv/seed", json, "trace-sync", CancellationToken.None);
 
             Assert.Equal((byte)StatusCode.Ok, resp.Status);
-            Assert.NotNull(resp.Meta);
+            using var metaDoc = System.Text.Json.JsonDocument.Parse(resp.Meta!);
+            Assert.Equal(2, metaDoc.RootElement.GetProperty("missing_count").GetInt32());
 
-            using var metaDoc = System.Text.Json.JsonDocument.Parse(resp.Meta);
-            var missingCount = metaDoc.RootElement.GetProperty("missing_count").GetInt32();
-
-            Assert.Equal(2, missingCount);
-            Assert.NotEmpty(resp.Payload);
-            var payloadStr = Encoding.UTF8.GetString(resp.Payload);
-            Assert.Contains("missing_hashes", payloadStr);
+            using var payloadDoc = System.Text.Json.JsonDocument.Parse(resp.Payload);
+            var missing = payloadDoc.RootElement.GetProperty("missing_hashes")
+                .EnumerateArray().Select(e => e.GetString()).ToHashSet();
+            Assert.Equal(absent.ToHashSet(), missing);   // exactly the absent ones
+            foreach (var h in resident)
+                Assert.DoesNotContain(h, missing);        // resident ones never reported
         }
         finally
         {
@@ -296,9 +394,10 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
                 "trace-prefix-restore", CancellationToken.None);
             Assert.Equal((byte)StatusCode.Ok, restoreResp.Status);
 
-            Assert.Equal(prefixData.Length, restoreResp.Payload.Length);
-            Assert.True(restoreResp.Payload.AsSpan().SequenceEqual(prefixData),
-                $"Prefix data mismatch: expected {prefixData.Length} bytes, got {restoreResp.Payload.Length}");
+            var restored = ChunkedTestUtil.Reassemble(restoreResp.Payload);
+            Assert.Equal(prefixData.Length, restored.Length);
+            Assert.True(restored.AsSpan().SequenceEqual(prefixData),
+                $"Prefix data mismatch: expected {prefixData.Length} bytes, got {restored.Length}");
         }
         finally
         {

@@ -64,14 +64,20 @@ meta_len      payload_len  payload — raw bytes (streamed)
                     Request:  key="kv/{session_id}", payload=JSON ["<hash>",...]
                     Response: meta={"total_size":<N>,"missing_count":<N>}
                               payload=[4B index][4B size][chunk data]... (missing chunks only)
-0x12  SYNC_PLAN     Client sends known hashes, server returns the missing-chunk list
-                    Request:  key="kv/{session_id}", payload=JSON ["<hash>",...]
-                    Response: meta={"missing":["<hash>",...],"total_chunks":<N>}
-                    (implemented in StoreServer; not yet called by the Agent save path — see #58)
-0x13  PUSH_CHUNKS   Client uploads only the missing chunks (delta save)
-                    Request:  key="kv/{session_id}", payload=[hashlen+hash+size+data]...
-                    Response: meta={"stored":<N>,"deduped":<N>}
-                    (implemented in StoreServer; not yet called by the Agent save path — see #58)
+0x12  SYNC_MISSING  Delta-save step 1: of the hashes the client intends to store, return
+                    the subset the global chunk index does NOT already have.
+                    Request:  key="kv/{session_id}", payload=JSON ["<hash>",...] (full ordered set)
+                    Response: meta={"missing_count":<N>,"candidate_count":<N>}
+                              payload=JSON {"missing_hashes":["<hash>",...]}
+0x13  PUSH_CHUNKS   Delta-save step 2: upload only the missing chunk bodies. Pure blob
+                    writes (content-addressed dedup); does NOT touch the manifest.
+                    Request:  key="kv/{session_id}", payload=[4B size LE][body]...
+                    Response: meta={"stored":<N>,"received":<N>}
+0x15  PUT_MANIFEST  Delta-save step 3: write the authoritative ordered manifest. Refuses
+                    (status PARTIAL) if any referenced chunk is not resident.
+                    Request:  key="kv/{session_id}",
+                              payload=JSON {"n_past":N,"total_size":T,"chunks":[{"index":i,"hash":h,"size":s},...]}
+                    Response: meta={"written":true,"chunks":<N>,"n_past":<N>}
 0x14  PUT_META      Store n_past metadata before chunk manifest exists
                     Request:  key="kv/{session_id}", payload={"n_past":<N>}
                     Response: meta={"stored":true}

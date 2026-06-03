@@ -145,6 +145,17 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         {
             var path = request.RequestUri!.ToString();
 
+            // Post-restore n_past verification (RestoreFromStoreAsync queries /state/meta).
+            if (path.Contains("/state/meta"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"slot_id":0,"n_past":2964,"state_size":10000,"is_processing":false}""",
+                        Encoding.UTF8, "application/json"),
+                };
+            }
+
             if (path.Contains("/state") && request.Method == HttpMethod.Put)
             {
                 restoredCalled = true;

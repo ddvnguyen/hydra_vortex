@@ -18,9 +18,10 @@ class OpCode(IntEnum):
     List = 0x05
     PutChunked = 0x10
     GetChunked = 0x11
-    SyncPlan = 0x12
+    SyncMissing = 0x12
     PushChunks = 0x13
     PutMeta = 0x14
+    PutManifest = 0x15
     SaveState = 0x20
     RestoreState = 0x21
     SlotStatus = 0x22
