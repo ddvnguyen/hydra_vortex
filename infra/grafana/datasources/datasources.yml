@@ -4,13 +4,13 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: http://10.89.0.1:9091
+    url: http://localhost:9091
     isDefault: true
 
   - name: Loki
     type: loki
     access: proxy
-    url: http://loki:3100
+    url: http://localhost:3100
     jsonData:
       timeout: 60
       maxLines: 1000
