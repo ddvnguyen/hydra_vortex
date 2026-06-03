@@ -52,6 +52,7 @@ class HealthMonitor:
         self._store_last_check = 0.0
 
     async def start(self):
+        await self._poll_all()
         self._task = asyncio.create_task(self._poll_loop())
 
     async def stop(self):
@@ -63,12 +64,10 @@ class HealthMonitor:
                 pass
 
     async def _poll_loop(self):
-        # Poll immediately on first iteration so nodes are healthy before first request.
-        # Then sleep between subsequent polls.
         while True:
             try:
-                await self._poll_all()
                 await asyncio.sleep(self._poll_interval)
+                await self._poll_all()
             except asyncio.CancelledError:
                 break
             except Exception:
