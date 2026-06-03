@@ -35,12 +35,21 @@ class HealthMonitor:
         nodes: list[WorkerNodeConfig],
         poll_interval_s: int = 10,
         max_failures: int = 3,
+        store_host: Optional[str] = None,
+        store_port: Optional[int] = None,
     ):
         self._nodes = {n.name: NodeInfo() for n in nodes}
         self._node_configs = {n.name: n for n in nodes}
         self._poll_interval = poll_interval_s
         self._max_failures = max_failures
         self._task: Optional[asyncio.Task] = None
+        # Store liveness — probed each poll via a cheap Stat on a sentinel key.
+        # None host means "not configured" → treated as healthy (no probe).
+        self._store_host = store_host
+        self._store_port = store_port
+        self._store_healthy = store_host is None
+        self._store_failures = 0
+        self._store_last_check = 0.0
 
     async def start(self):
         self._task = asyncio.create_task(self._poll_loop())
@@ -65,7 +74,34 @@ class HealthMonitor:
             except Exception:
                 log.exception("health_poll_error")
 
+    async def _poll_store(self):
+        """Probe Store liveness with a cheap Stat on a sentinel key. A NotFound
+        response still proves the Store is up — only a connection failure (after the
+        RpcClient's own retries) counts against us."""
+        if self._store_host is None or self._store_port is None:
+            return
+        try:
+            trace_id = new_trace_id()
+            client = RpcClient(self._store_host, self._store_port)
+            try:
+                await client.request(OpCode.Stat, "__health__", trace_id=trace_id)
+            finally:
+                await client.close()
+            self._store_healthy = True
+            self._store_failures = 0
+            self._store_last_check = time.time()
+        except Exception as e:
+            self._store_failures += 1
+            if self._store_failures >= self._max_failures:
+                self._store_healthy = False
+            log.warning(
+                "store_health_fail",
+                failures=self._store_failures,
+                error=str(e) if not isinstance(e, type) else type(e).__name__,
+            )
+
     async def _poll_all(self):
+        await self._poll_store()
         for node_name, config in self._node_configs.items():
             info = self._nodes[node_name]
             try:
@@ -101,6 +137,16 @@ class HealthMonitor:
     def is_healthy(self, node_name: str) -> bool:
         info = self._nodes.get(node_name)
         return info.healthy if info else False
+
+    def is_store_healthy(self) -> bool:
+        return self._store_healthy
+
+    def store_health(self) -> dict:
+        return {
+            "healthy": self._store_healthy,
+            "consecutive_failures": self._store_failures,
+            "last_check": self._store_last_check,
+        }
 
     def get_node_info(self, node_name: str) -> Optional[NodeInfo]:
         return self._nodes.get(node_name)

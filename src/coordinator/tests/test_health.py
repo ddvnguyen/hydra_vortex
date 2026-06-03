@@ -139,3 +139,41 @@ async def test_get_health_summary():
     summary = monitor.get_health_summary()
     assert "rtx" in summary
     assert summary["rtx"]["healthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_store_not_probed_when_unconfigured():
+    # No store host → store treated as healthy, never probed.
+    monitor = HealthMonitor(NODES, poll_interval_s=1, max_failures=3)
+    assert monitor.is_store_healthy() is True
+
+
+@pytest.mark.asyncio
+async def test_store_healthy_after_successful_probe():
+    monitor = HealthMonitor(
+        NODES, poll_interval_s=1, max_failures=3,
+        store_host="127.0.0.1", store_port=9500,
+    )
+    monitor._node_configs = {}  # isolate the store probe from agent polling
+    with patch("coordinator.health.RpcClient") as MockRpc:
+        MockRpc.return_value = make_rpc_mock()  # request() returns → store alive
+        await monitor._poll_all()
+    assert monitor.is_store_healthy() is True
+    assert monitor.store_health()["consecutive_failures"] == 0
+
+
+@pytest.mark.asyncio
+async def test_store_unhealthy_after_three_failures():
+    monitor = HealthMonitor(
+        NODES, poll_interval_s=1, max_failures=3,
+        store_host="127.0.0.1", store_port=9500,
+    )
+    monitor._node_configs = {}
+    with patch("coordinator.health.RpcClient") as MockRpc:
+        inst = MagicMock()
+        inst.request = AsyncMock(side_effect=ConnectionError("refused"))
+        inst.close = AsyncMock()
+        MockRpc.return_value = inst
+        for _ in range(3):
+            await monitor._poll_all()
+    assert monitor.is_store_healthy() is False

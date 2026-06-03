@@ -179,6 +179,32 @@ def test_health_shows_nodes(client):
     assert "rtx" in data["nodes"]
     assert "p100" in data["nodes"]
 
+
+def test_health_reports_store(client):
+    # store_host unconfigured in this fixture → store probe is a no-op (healthy default)
+    resp = client.get("/health")
+    data = resp.json()
+    assert "store" in data
+    assert "healthy" in data["store"]
+
+
+def test_health_degraded_when_store_down(config):
+    # Build a router whose HealthMonitor reports the Store as down.
+    table = SessionTable()
+    monitor = HealthMonitor(config.workers, store_host="127.0.0.1", store_port=9500)
+    monitor._store_healthy = False  # simulate failed store probe
+    # Nodes report healthy so only the store drives the degraded status.
+    for info in monitor._nodes.values():
+        info.healthy = True
+    sm = StateManager(table, "127.0.0.1", 9500)
+    app = FastAPI()
+    app.include_router(create_router(config, table, monitor, sm))
+
+    resp = TestClient(app).get("/health")
+    data = resp.json()
+    assert data["status"] == "degraded"
+    assert data["store"]["healthy"] is False
+
 def test_status_returns_200(client):
     resp = client.get("/status")
     assert resp.status_code == 200

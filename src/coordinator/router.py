@@ -412,14 +412,16 @@ def create_router(
     @router.get("/health")
     async def health():
         summary = health_monitor.get_health_summary()
-        all_ok = all(v["healthy"] for v in summary.values())
+        store = health_monitor.store_health()
+        nodes_ok = all(v["healthy"] for v in summary.values())
+        all_ok = nodes_ok and store["healthy"]
         status = "healthy" if all_ok else "degraded"
         return {
             "status": status,
             "version": VERSION,
             "revision": REVISION,
             "nodes": summary,
-            "store": {"healthy": True},
+            "store": store,
         }
 
     @router.get("/status")
