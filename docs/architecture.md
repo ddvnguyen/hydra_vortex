@@ -7,14 +7,18 @@
 
 ## 1. Service Map
 
-| Service | Lang | Port(s) | Host |
+| Service | Lang | Port(s) | Runs on |
 |---|---|---|---|
-| Coordinator | Python / FastAPI | `:9000` (HTTP) | host |
-| Agent RTX | C# / .NET 10 | `:9601` (RPC), `:9611` (HTTP debug/metrics) | host |
-| Agent P100 | C# / .NET 10 | `:9602` (RPC), `:9622` (HTTP debug/metrics) | KVM VM `192.168.122.21` |
-| Hydra Store | C# / .NET 10 | `:9500` (RPC), `:9501` (HTTP debug/metrics) | host |
-| llama-server RTX | C++ fork | `:8080` (HTTP) | host |
-| llama-server P100 | C++ fork | `:8086` (HTTP) | KVM VM |
+| Coordinator | Python / FastAPI | `:9000` (HTTP) | host container |
+| Agent RTX | C# / .NET 10 | `:9601` (RPC), `:9611` (HTTP debug/metrics) | host container |
+| Agent P100 | C# / .NET 10 | `:9602` (RPC), `:9622` (HTTP debug/metrics) | host container (connects to llama in VM) |
+| Hydra Store | C# / .NET 10 | `:9500` (RPC), `:9501` (HTTP debug/metrics) | host container |
+| llama-server RTX | C++ fork | `:8080` (HTTP) | host container (`llama-cpp`, separate compose) |
+| llama-server P100 | C++ fork | `:8086` (HTTP) | **KVM VM** `192.168.122.21` (bare process, not containerised) |
+
+All host services run via `infra/docker-compose.yml`. Agent P100's
+`HYDRA_AGENT_LLAMA_URL=http://192.168.122.21:8086` crosses the NAT bridge into the VM.
+The KVM VM hosts only the P100 llama-server; it has no Agent, Store, or Coordinator.
 
 **Protocol rule:** All inter-service traffic is Hydra binary RPC except the two HTTP
 edges: `Client → Coordinator` (OpenAI-compat) and `Agent → local llama-server`.
@@ -284,7 +288,11 @@ logs with a `trace_id` field for cross-service correlation (`X-Trace-Id` header)
 ## 13. llama.cpp Fork
 
 Branch: `hydra-state-streaming` off llama.cpp mainline.
-Only `tools/server/server.cpp` is modified (~80 lines, 3 endpoints):
+Only `tools/server/server.cpp` is modified (~80 lines, 3 endpoints).
+
+**Active model (RTX):** `Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf` (qwen35moe arch).
+RTX llama config uses `--spec-type draft-mtp --spec-draft-n-max 3` (MTP speculative decoding
+already enabled), `--mmproj` (vision), `--ctx-size 360000`, `--parallel 2`.
 
 | Endpoint | Direction | Size | Notes |
 |---|---|---|---|
@@ -297,4 +305,4 @@ abort and to filter `LLAMA_TOKEN_NULL` in multimodal-safe builds.
 
 Build flags:
 - RTX host: `GGML_CUDA_FORCE_CUBLAS=ON`, `-arch sm_120`
-- P100 VM: `-arch sm_60`
+- P100 KVM VM: `-arch sm_60`

@@ -21,22 +21,22 @@ graph TB
         CO[Router + Session Manager\nrouting.py · session_table.py\nstate_manager.py]
     end
 
-    subgraph Host["Host Machine  (i7-12700K · 64 GB)"]
+    subgraph Host["Host Machine  (i7-12700K · 64 GB) — all containers"]
         subgraph AgentRTX["Agent RTX :9601  [C# / .NET 10]"]
             AR[AgentServer\nStateHandler\nLlamaClient]
         end
-        subgraph LlamaRTX["llama-server :8080  [C++ fork]"]
+        subgraph LlamaRTX["llama-server :8080  [C++ fork]  separate compose"]
             LR[RTX 5060 Ti 16 GB\nsm_120 · CUDA 13.2]
         end
         subgraph Store["Hydra Store :9500  [C# / .NET 10]"]
             ST[StoreServer\nStorageEngine\ntmpfs 30 GB]
         end
-    end
-
-    subgraph VM["KVM VM  (192.168.122.21)"]
-        subgraph AgentP100["Agent P100 :9602  [C# / .NET 10]"]
+        subgraph AgentP100["Agent P100 :9602  [C# / .NET 10]  host container"]
             AP[AgentServer\nStateHandler\nLlamaClient]
         end
+    end
+
+    subgraph VM["KVM VM  (192.168.122.21) — bare process"]
         subgraph LlamaP100["llama-server :8086  [C++ fork]"]
             LP[Tesla P100 16 GB\nsm_60 · CUDA 12.9]
         end

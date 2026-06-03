@@ -1,8 +1,10 @@
 # Hydra — Claude Handoff
 
 ## What Is This
-Multi-GPU LLM inference system. Routes requests across RTX 5060 Ti and Tesla P100
-(in KVM VM), migrates 800 MB KV cache state between GPUs without re-prefill.
+Multi-GPU LLM inference system. Routes requests across RTX 5060 Ti and Tesla P100.
+All Hydra services (including Agent P100) run as containers on the host; only
+llama-server P100 lives in a KVM VM (192.168.122.21:8086). Migrates ~800 MB KV
+cache state between GPUs without re-prefill.
 
 ## Read These First
 1. `PROJECT_PLAN.md` — vision, structure, milestones (10 min)
@@ -148,9 +150,9 @@ Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
 
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host machine, i7-12700K, 64 GB
-- Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM at 192.168.122.21
+- Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM at 192.168.122.21 (llama-server only; Agent P100 runs on host)
 - tmpfs 30 GB at /mnt/llm-ram (compose-managed inside Store container)
-- Model: Darwin-36B-Opus-APEX-I-Balanced.gguf (~25.5 GB, qwen35moe arch)
+- Model: Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf (qwen35moe arch, MTP spec-decode, vision mmproj)
 
 ## Monitoring & Observability
 Full prometheus + loki + promtail + grafana stack in infra/docker-compose.yml.
