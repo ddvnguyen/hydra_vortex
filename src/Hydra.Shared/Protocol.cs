@@ -37,7 +37,7 @@ public enum OpCode : byte
     SlotStatus    = 0x22,
     SlotErase     = 0x23,
     NodeHealth    = 0x24,
-    Completion    = 0x25,
+    // 0x25 retired: completions go Coordinator→llama-server over HTTP, not via Agent RPC.
     SaveStateChunked    = 0x26,
     RestoreStateChunked = 0x27,
     StateGet      = 0x30,

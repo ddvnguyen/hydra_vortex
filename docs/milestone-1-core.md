@@ -104,7 +104,7 @@ Full structured logging with trace_id across all 3 services.
 ### M1.3.1: Streaming Proxy (`coordinator/proxy.py`)
 - `async proxy_completion(node_url, request, trace_id)` → for non-streaming
 - `async proxy_completion_stream(node_url, request, trace_id)` → async generator of SSE bytes
-- Uses httpx to forward to llama-server directly (via Agent COMPLETION or direct HTTP)
+- Uses httpx to forward to llama-server directly over HTTP (no Agent hop; 0x25 retired)
 - Adds `hydra` metadata to non-streaming responses
 - **Lines:** ~60
 - **Test:** mock httpx, verify SSE lines forwarded correctly

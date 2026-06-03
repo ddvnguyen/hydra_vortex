@@ -66,27 +66,26 @@ graph TB
 ## 2. Normal Inference Request Flow
 
 A request arriving while a session's KV state already lives on one GPU.
+**Completions are proxied Coordinator → llama-server over HTTP** (`proxy.py`), not via
+the Agent. The Agent RPC channel is used only for state save/restore/erase/health.
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Coord as Coordinator :9000
-    participant Agent as Agent (chosen GPU) :9601/9602
-    participant Llama as llama-server :8080/:8086
+    participant Llama as llama-server (chosen GPU) :8080/:8086
 
     Client->>+Coord: POST /v1/chat/completions\n(OpenAI-compat JSON)
 
-    Note over Coord: 1. Look up session_id in session_table\n2. routing.py picks best GPU\n3. Session already active on chosen GPU
+    Note over Coord: 1. Look up session_id in session_table\n2. routing.py picks best GPU\n3. n_past guard: n_tokens > n_past ⚠️
 
-    Coord->>+Agent: RPC COMPLETION (0x25)\nkey=session_id, payload=request JSON
+    Coord->>+Llama: HTTP POST {llama_url}/v1/chat/completions\n(proxy.py — direct, no Agent hop)
 
-    Agent->>+Llama: POST /v1/chat/completions\n(HTTP local, n_tokens > n_past ⚠️)
+    Llama-->>-Coord: SSE token stream / JSON response
 
-    Llama-->>-Agent: SSE token stream / JSON response
+    Note over Coord: Update n_past from usage.total_tokens\nMaybe save prefix checkpoint (via Agent RPC)
 
-    Agent-->>-Coord: RPC response\nmeta={n_past, tokens_out}
-
-    Coord-->>-Client: SSE stream / JSON\n(OpenAI format)
+    Coord-->>-Client: SSE stream / JSON\n(OpenAI format, X-Hydra-Node header)
 ```
 
 ---
@@ -110,31 +109,30 @@ sequenceDiagram
     Note over Coord: Session table shows KV state\ncurrently on RTX. Must migrate.
 
     rect rgb(255, 243, 205)
-        Note over Coord,Store: ── Phase 1: Save from source GPU ──
-        Coord->>+AgentSrc: RPC SAVE_STATE (0x20)\nkey=session_id
+        Note over Coord,Store: ── Phase 1: Save from source GPU (chunked dedup) ──
+        Coord->>+AgentSrc: RPC SAVE_STATE_CHUNKED (0x26)\nkey="session_id:slot_id"
         AgentSrc->>+LlamaSrc: GET /slots/0/state\n(binary stream ~800 MB)
         LlamaSrc-->>-AgentSrc: HTTP 200 + raw KV bytes\nX-Hydra-N-Past: 2968
-        AgentSrc->>+Store: RPC PUT (0x01)\nkey="kv/{session_id}"\npayload=stream (piped, no buffer)
-        Store-->>-AgentSrc: RPC OK\n(bytes written to tmpfs)
-        AgentSrc-->>-Coord: SaveResult\n{n_past:2968, bytes:800MB}
+        AgentSrc->>+Store: RPC PUT_CHUNKED (0x10) + PUT_META (0x14)\nkey="kv/{session_id}"
+        Store-->>-AgentSrc: RPC OK\n(deduped chunks → tmpfs)
+        AgentSrc-->>-Coord: SaveResult\n{n_past:2968, chunked:true}
+        Coord->>AgentSrc: RPC SLOT_ERASE (0x23)\n(free source VRAM)
     end
 
     rect rgb(204, 229, 255)
         Note over Coord,LlamaDst: ── Phase 2: Restore to destination GPU ──
-        Coord->>+AgentDst: RPC RESTORE_STATE (0x21)\nkey=session_id
-        AgentDst->>+Store: RPC GET (0x02)\nkey="kv/{session_id}"
-        Store-->>-AgentDst: RPC OK + stream\n(sendfile() zero-copy from tmpfs)
-        AgentDst->>+LlamaDst: PUT /slots/0/state\n(binary stream ~800 MB)
+        Coord->>+AgentDst: RPC RESTORE_STATE_CHUNKED (0x27)\nkey="session_id:slot_id"
+        AgentDst->>+Store: RPC GET_CHUNKED (0x11, known hashes)\n+ GET_MANIFEST (0x33)
+        Store-->>-AgentDst: RPC OK + missing chunks\n(sendfile() zero-copy from tmpfs)
+        AgentDst->>+LlamaDst: PUT /slots/0/state\n(reassembled ~800 MB)
         LlamaDst-->>-AgentDst: {"restored":true, "n_past":2968}
         AgentDst-->>-Coord: RestoreResult\n{n_past:2968}
     end
 
     Note over Coord: Update session_table:\nsession now on P100, slot 0
 
-    Coord->>+AgentDst: RPC COMPLETION (0x25)\nn_tokens MUST be > 2968 ⚠️
-    AgentDst->>+LlamaDst: POST /v1/chat/completions\n(includes full prior context)
-    LlamaDst-->>-AgentDst: response (cache_n=2968 ✅)
-    AgentDst-->>-Coord: tokens
+    Coord->>+LlamaDst: HTTP POST /v1/chat/completions\n(proxy.py — direct; n_tokens > 2968 ⚠️)
+    LlamaDst-->>-Coord: response (cache_n=2968 ✅)
     Coord-->>Client: response\n(no re-prefill — 12 min saved)
 ```
 
@@ -177,8 +175,8 @@ mindmap
     Store Chunked M2
       0x10 PUT_CHUNKED
       0x11 GET_CHUNKED
-      0x12 SYNC_PLAN reserved
-      0x13 PUSH_CHUNKS reserved
+      0x12 SYNC_PLAN impl not-yet-called see58
+      0x13 PUSH_CHUNKS impl not-yet-called see58
       0x14 PUT_META
       0x33 GET_MANIFEST
     Agent Ops
@@ -187,7 +185,6 @@ mindmap
       0x22 SLOT_STATUS
       0x23 SLOT_ERASE
       0x24 NODE_HEALTH
-      0x25 COMPLETION reserved
       0x26 SAVE_STATE_CHUNKED active
       0x27 RESTORE_STATE_CHUNKED active
     llama-server Direct
