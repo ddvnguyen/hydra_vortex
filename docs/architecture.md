@@ -283,11 +283,27 @@ Prometheus metrics: `hydra_agent_llama_healthy`, `hydra_agent_slots_idle`.
 Grafana at `:3000`. All services emit structured JSON logs with a `trace_id` field for
 cross-service correlation (`X-Trace-Id` header).
 
-**Log pipeline:** `podman logs -f` → `container-log-shipper` (host systemd --user)
-→ `/tmp/container-logs/<name>.log` → `promtail` (host systemd --user, file scraping) → Loki.
+### Log Pipeline
 
-Promtail runs on the host, not in Docker. See `CLAUDE.md` `## Monitoring & Observability`
-for details on why.
+```
+Container (k8s-file)
+  └─ ctr.log (CRI format: <ts> stderr F <msg>)
+       └─ Promtail (docker_sd_configs ← podman socket)
+            ├─ relabel_configs: component/node/container/job labels from Docker labels
+            ├─ drop: component=observability (avoids scraping self/grafana/loki)
+            └─ cri: {} parser → timestamp, stream (stdout/stderr), message
+                └─ Loki :3100
+                    └─ Grafana Explore / Hydra dashboard
+```
+
+**Prerequisite:** Podman must use `log_driver = "k8s-file"` (set in
+`~/.config/containers/containers.conf`). The default `journald` driver provides no
+file-backed `ctr.log` files for Promtail to scrape via `docker_sd_configs`.
+
+Promtail runs as a container (`hydra_promtail_1`) in the same compose stack. It mounts
+the podman socket at `/run/user/1000/podman/podman.sock` for container discovery and
+`/mnt/containers/` for reading `ctr.log` files.  The `docker_sd_configs` refresh interval
+is 5s.
 
 ---
 

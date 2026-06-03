@@ -102,15 +102,15 @@ else
   cd "$REPO_ROOT/infra/llama-rtx-node"
   podman-compose up -d 2>&1 | tail -3
   cd "$REPO_ROOT"
-
-  # Connect to hydra_default so Agents can reach it by hostname
-  HYDRA_NET="hydra_default"
-  if podman network exists "$HYDRA_NET" 2>/dev/null; then
-    podman network connect "$HYDRA_NET" llama-cpp 2>/dev/null \
-      && ok "llama-cpp joined $HYDRA_NET" \
-      || ok "llama-cpp already on $HYDRA_NET"
-  fi
   ok "Started"
+fi
+
+# Always ensure llama-cpp is on hydra_default (container recreation drops this)
+HYDRA_NET="hydra_default"
+if podman network exists "$HYDRA_NET" 2>/dev/null; then
+  podman network connect "$HYDRA_NET" llama-cpp 2>/dev/null \
+    && ok "llama-cpp joined $HYDRA_NET" \
+    || ok "llama-cpp already on $HYDRA_NET"
 fi
 
 # ── 4. llama-server P100 ─────────────────────────────────────────────────────

@@ -21,8 +21,8 @@ Client (HTTP) → Coordinator :9000 [Python/FastAPI]
                     │ RPC           │ RPC
                     ▼               ▼
               Agent RTX :9601   Agent P100 :9602  [C#/.NET 10]
-                │ HTTP local      │ HTTP local
-                ▼                 ▼
+                │ HTTP local        │ HTTP local
+                ▼                   ▼
            llama :8080        llama :8086          [C++ fork]
                 │ RPC               │ RPC
                 └────────┬──────────┘
@@ -179,17 +179,20 @@ systemctl --user start container-log-shipper promtail
 - GPU exporter: http://localhost:9835/metrics
 
 ### Logs
-All container logs shipped via Promtail → Loki.
+Container logs shipped via containerized Promtail → Loki using Docker service
+discovery (`docker_sd_configs`). Promtail discovers all containers from the
+podman socket and reads k8s-file (CRI-format) logs directly from
+`/mnt/containers/overlay-containers/<id>/userdata/ctr.log`.
+
 View in Grafana Explore (Loki datasource) or the Logs panel in the Hydra dashboard.
 Filter by `$trace_id` template variable to correlate logs across services.
 
-**Log pipeline (host):** `podman logs -f` → `container-log-shipper` (host systemd --user)
-→ `/tmp/container-logs/<name>.log` → `promtail` (host systemd --user, file scraping) → Loki.
+**Log pipeline:** `k8s-file` → `ctr.log` (CRI) → `docker_sd_configs` →
+`relabel_configs` (component/node/container/job) → `cri` parser → Loki.
 
-Note: Promtail does NOT run in Docker — podman 5.7.0's Docker-compatible API has a
-NULL-JSON bug that breaks promtail's `docker_sd_configs`, and rootless containers
-cannot read systemd journal files (mode 600, root-owned). The host-based log shipper
-and promtail avoid both issues.
+**Prerequisite:** Podman's log driver must be `k8s-file` (set in
+`~/.config/containers/containers.conf`) — journald has no file-backed logs for
+Promtail to scrape.
 
 ### Alerts
 Prometheus alerting rules in `infra/prometheus/alerts.yml` — covers service down, high latency, GPU memory/temp, migration issues.

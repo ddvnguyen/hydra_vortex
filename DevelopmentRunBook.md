@@ -39,6 +39,14 @@ Client (HTTP) → Coordinator :9000     [Python/FastAPI]
 - Python >= 3.13 with `pip install -e .[all]` (from project root)
 - VS Code extensions: C# Dev Kit, Python, Pylance, EditorConfig
 - tmpfs mount: `sudo bash infra/setup-ramdisk.sh`
+- Podman log driver set to `k8s-file` (create/edit `~/.config/containers/containers.conf`):
+  ```ini
+  [containers]
+  log_driver = "k8s-file"
+  ```
+  **Required:** Promtail scrapes container log files directly via `docker_sd_configs`;
+  the default `journald` driver has no file-backed logs to scrape. Existing containers
+  must be recreated after changing this setting.
 
 ---
 
@@ -203,7 +211,7 @@ bash scripts/setup-p100.sh
 ```
 
 This deploys the binary, installs `~/.config/systemd/user/llama-p100.service` on the VM,
-enables it for auto-start, and sets up promtail log shipping.
+and enables it for auto-start.
 
 After first-time setup, day-to-day use is just `bash scripts/start-env.sh`.
 

@@ -69,3 +69,31 @@ scrape_configs:
                 template: "p100"
             - labels:
                 node:
+
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: [__meta_docker_container_label_component]
+        target_label: component
+        action: replace
+
+      - target_label: job
+        replacement: docker-containers
+
+      - source_labels: [__meta_docker_container_label_node]
+        target_label: node
+        action: replace
+
+      - source_labels: [__meta_docker_container_name]
+        regex: "/(.*)"
+        target_label: container
+        action: replace
+
+      - source_labels: [component]
+        regex: observability
+        action: drop
+
+    pipeline_stages:
+      - cri: {}
