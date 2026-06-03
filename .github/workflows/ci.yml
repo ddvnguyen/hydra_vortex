@@ -1,5 +1,9 @@
 name: CI
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: ["**"]
@@ -14,6 +18,14 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      deploy-hydra:
+        description: "Deploy Hydra services (Store, Agents, Coordinator)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run-system-full:
         description: "Run full-stack system tests (requires all 6 services healthy)"
         required: false
@@ -43,16 +55,6 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Cancel duplicate queued runs
-        run: |
-          gh run list --workflow CI --branch "${{ github.ref_name }}" \
-            --json databaseId,status --jq '.[] | select(.status == "queued") | .databaseId' |
-          while read id; do
-            [ "$id" != "${{ github.run_id }}" ] && gh run cancel "$id" 2>/dev/null || true
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: actions/checkout@v4
 
       - name: Restore & build (.NET)
@@ -203,12 +205,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  deploy:
-    name: Deploy
+  deploy-hydra:
+    name: Deploy Hydra
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 10
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -363,15 +365,16 @@ jobs:
   system-full:
     name: System Tests (full stack)
     runs-on: self-hosted
-    needs: [build-test, deploy]
+    needs: [build-test, deploy-hydra, deploy-llama]
     timeout-minutes: 60
-    # Runs automatically after a successful deploy on main.
-    # Opt-in on other branches: add 'run-e2e' label to PR, '[run-e2e]' in commit msg, or workflow_dispatch.
+    # Runs after a deploy (Hydra and/or llama). At least one deploy must succeed,
+    # or an opt-in override (run-e2e label, [run-e2e] commit, or run-system-full input).
     if: |
       always() &&
       needs.build-test.result == 'success' &&
       (
-        needs.deploy.result == 'success' ||
+        needs.deploy-hydra.result == 'success' ||
+        needs.deploy-llama.result == 'success' ||
         contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
         contains(github.event.push.head_commit.message, '[run-e2e]') ||
         (github.event_name == 'workflow_dispatch' && github.event.inputs.run-system-full == 'true')
@@ -458,6 +461,7 @@ jobs:
   deploy-llama:
     name: Deploy llama-server
     runs-on: self-hosted
+    needs: build-test
     timeout-minutes: 10
     if: |
       startsWith(github.ref, 'refs/tags/llama.cpp') ||
