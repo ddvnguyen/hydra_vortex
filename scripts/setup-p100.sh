@@ -23,6 +23,9 @@ ssh "$VM" "
   mkdir -p /mnt/kv_slots 2>/dev/null || true
 "
 
+echo "==> Enabling user session lingering (survive SSH logout)"
+ssh "$VM" "loginctl enable-linger" || true
+
 echo "==> Deploying P100 llama-server binary"
 rsync -az --checksum --progress \
   "$REPO_ROOT/src/llama-cpp/build_sm60/bin/llama-server" \
