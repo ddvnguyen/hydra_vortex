@@ -28,5 +28,16 @@ agentic workflows on top of the inference fabric.
   (tool use, multi-turn, sub-agents), reusing session affinity + KV migration.
 - **Done when:** a representative multi-step agentic task runs end-to-end on Hydra.
 
+### M5.4 — Agent-driven context management (#120, re-homed from M-Perf.6c)
+- The **semantic "what to keep / when to condense"** decision for a conversation's
+  history — moved out of the M-Perf compression track because it's an agentic judgement
+  (the agent understands the task/conversation), not a fixed Coordinator heuristic.
+- Keeps the original zero-model `compress_messages()` mechanics (system / first / last-K
+  verbatim, condense the middle) as the **executor** the agent's policy drives.
+- M-Perf keeps only the trivial token-budget *trigger*; the model-based compression
+  (M-Perf.5.1–5.4) is the mechanical prefill-reduction layer this sits above.
+- **Done when:** the agent decides per-turn what context to retain/condense, and the
+  Coordinator executes it deterministically (preserving KV-cache reuse).
+
 ## Out of scope (for now)
 - Building a general agent framework from scratch; eval harnesses beyond A/B.

@@ -1,73 +1,99 @@
 # Milestone M-Perf — Heterogeneous Performance (Tier-1)
 
-> Committed next milestone (~6–8 weeks). Supersedes the old monolithic "M3
-> Production". Source rationale: the heterogeneous-inference research synthesis
-> (spec-decoding, P/D disaggregation, prima.cpp/Halda) — see
+> Committed next milestone. Supersedes the old monolithic "M3 Production". Source
+> rationale: the heterogeneous-inference research synthesis — see
 > `src/docs/REVOLUSION_PLAN_01_JUN.MD`.
+>
+> **Restructured 2026-06 around prompt compression.** The original spec-decoding track
+> (M-Perf.1 DeviceProfiler #82, M-Perf.2 heterogeneous spec-decode #83) is **dropped** —
+> see "Why the pivot" below.
 
-## Why
-Hydra's existing "prefill-on-RTX → migrate KV → decode-on-P100" path is already
-proto prefill/decode disaggregation. The P100's 720 GB/s HBM2 (> RTX's 448 GB/s)
-makes it a strong **decode/draft** node. This track *extends what exists* to close
-the biggest waste (P100 idle during RTX decode) and cut long-context TTFT.
+## Why the pivot — attack prefill, not decode
+The headline pain is **prefill**: an 80K-token prompt takes ~12 min on the P100 because
+attention prefill is **O(N²)** in prompt length N. Speculative decoding (and MTP, already
+enabled via `--spec-type draft-mtp`) only accelerates the **decode** loop — it does
+**nothing** for prefill. So spec-decode can't touch the 12-min wall.
 
-Realistic expectation: **1.5–2×**, not the papers' 5–17× (that win hides disk-load
-latency Hydra doesn't have — 64 GB RAM + 32 GB VRAM).
+The lever that *does*: **reduce N**. A small "gatekeeper" model shortens the prompt
+**before** the big model prefills it → N drops → prefill drops quadratically. This is
+prompt compression / context distillation (LLMLingua / Selective-Context family).
+
+**Key advantage over spec-decode:** compression works in **text space** — the gatekeeper
+scores importance in its own tokens, we emit *text*, and the big model re-tokenizes. So
+there is **no draft↔target vocab-parity requirement** (the blocker that sank #83).
+
+Realistic expectation: large TTFT cuts on long prompts (the dominant agentic/RAG case),
+bounded by a quality gate.
+
+## Architecture — the compression gatekeeper
+```
+Client → Coordinator
+  ├─ token-budget trigger: prompt over budget?  (trivial threshold; the "what to keep"
+  │                                               policy is agentic — see M5/#120)
+  ├─ if over budget → gatekeeper llama-server (small model on P100) scores per-token
+  │     surprisal via the /completion prompt_logprobs flag (M-Perf.5.1)
+  ├─ prune low-information sentences (5.2) and/or summarize the middle (5.3)
+  └─ send the shortened prompt → big model (RTX) prefill + decode
+```
+Cross-cutting rules for every compression step:
+- **Text-space, no vocab parity** — any small model works as the gatekeeper.
+- **Deterministic** (greedy, fixed params): identical input → identical compressed output,
+  or Hydra's KV-cache reuse breaks (every request would prefill a fresh sequence).
+- **System prefix kept verbatim** → the existing prefix-checkpoint cache still hits;
+  compress only the document/history *middle*.
+- **No new container.** The gatekeeper is a small-model `llama-server` instance (a systemd
+  unit on the P100 — bare metal, not Docker). Pruning/summary **policy lives in the
+  Coordinator**. The only llama.cpp fork change is the `prompt_logprobs` flag (5.1).
+- **Gatekeeper model:** a small model (Qwen3.5-0.8B / 2B), used purely as compressor.
 
 ## Tasks
 
-### M-Perf.1 — `DeviceProfiler` measurement spike — BUILD FIRST
-Every downstream choice is gated on numbers we don't have. Agent-side (C#)
-microbench surfaced via the debug endpoint + Prometheus, plus a Coordinator
-aggregator. Measure at 1K/8K/32K/80K context:
-- P100 decode tok/s with **35B-A3B target + 0.5B draft both resident** → gate ≥15–20.
-- Draft acceptance rate (Qwen3-0.5B vs MoE+SSM target) on representative prompts → gate ≥30–40%.
-- NAT-bridge bandwidth via `iperf3` → <500 MB/s ⇒ streaming essential.
-- SSM `--cache-prompt` bug repro + scope → decides if layer-streamed KV is safe.
+### M-Perf.5.1 — Fork: prompt-token logprobs on `/completion`  (#125)
+The **only** fork change, kept minimal + upstream-mergeable. Add a `prompt_logprobs` flag
+to `/completion` that returns per-prompt-token logprob/surprisal from one forward pass
+(mirrors vLLM `prompt_logprobs`). No compression logic in the server — it exposes data; the
+Coordinator owns policy. **Files:** `src/llama-cpp/tools/server/server.cpp` (~50–80 lines).
 
-**Deliverable:** a go/no-go decision doc; results feed every step below.
-**Files:** new `src/Hydra.Agent/DeviceProfiler.cs`, extend `AgentMetrics.cs`,
-`infra/llama-rtx-node/init/start.sh`; new `src/coordinator/profiler.py`.
-**Done when:** the 4 measurements are recorded and gates evaluated.
+### M-Perf.5.2 — Surprisal sentence pruning (model-based)  (#119)
+Coordinator uses 5.1's prompt logprobs from the gatekeeper to prune the lowest-information
+**sentences/segments** down to the token budget; keep system + first user msg + last-K turns
+verbatim. No new RPC opcode, no Agent hop (HTTP-direct to the gatekeeper, like `proxy.py`).
+**Files:** new `src/coordinator/compression.py` (pruning); wire into `router.py`/`proxy.py`.
 
-### M-Perf.2 — Heterogeneous speculative decoding (no fork)
-Contingent on M-Perf.1 gates. Launch RTX `llama-server` with `--model-draft`
-(Qwen3-0.5B) hosted on the P100 via llama.cpp's RPC backend; add a
-`SpecOrchestrator` in the Coordinator for acceptance reporting + `ngram-mod`
-fallback. Research-verified 1.4–1.8× lossless decode.
-**Files:** `src/Hydra.Agent/AgentConfig.cs` + llama-server launch (`start.sh`);
-new `src/coordinator/spec_orchestrator.py`; wire into `router.py`/`proxy.py`.
-**Scope note:** changes the P100's role (draft host via RPC vs. today's full
-Agent+`llama-server`); reconcile the P100 Agent's responsibilities.
-**Done when:** decode tok/s ≥1.4× single-RTX baseline, lossless.
+### M-Perf.5.3 — Semantic summary compression  (#121)
+For document-heavy prompts where pruning is insufficient, replace the compressible middle
+with a short gatekeeper-generated summary (deterministic; sentinel marker). Quality-gated by
+5.4. **Files:** extend `src/coordinator/compression.py`.
 
-### M-Perf.3 — Streaming chunked-prefill KV / P/D
-Evolve the Store/Agent save-restore from "full blob after prefill" to
-"layer-chunked KV streamed as each layer completes," hiding transfer behind RTX
-prefill compute. Target TTFT on 80K prompts ↓≥3×.
-**⚠️ Fork required:** the fork today exposes only *full*-state endpoints
-(`/slots/{id}/state`). Layer-granular streaming needs **new fork endpoints (or a
-small C extension)** for per-layer state. Plus the SSM-bug workaround: stream
-attention-KV layer-by-layer, ship the small SSM state once at the end.
-**Files:** `src/llama-cpp` (new layer-state endpoints), new
-`src/Hydra.Agent/KVStreamer.cs`, new `src/coordinator/kv_router.py`, extend
-`Hydra.Store` chunk API from session-level → layer-level.
-**Done when:** TTFT on 80K prompts down ≥3× vs the current sequential path.
+### M-Perf.5.4 — Compression quality + TTFT harness  (#126)
+Replaces the dropped DeviceProfiler's measurement/gating role. Measure TTFT before/after,
+token savings, perplexity delta, answer-match, and the gatekeeper's own forward-pass cost at
+1K/8K/32K/80K; Prometheus + Grafana; a go/no-go decision doc with recommended defaults.
+**Files:** new `src/coordinator/compression_bench.py`; extend metrics.
 
-### M-Perf.4 — Pipeline scaffolding
-Refactor Coordinator from load-balancer → asyncio dataflow of `Stage`s; migrate
-the existing session-migration path onto it. Foundation for any future Tier-2
-(prima.cpp PRP / Halda) — which stays **deferred** until measurements justify it.
-**Files:** new `src/coordinator/pipeline.py`; refactor `router.py`/`state_manager.py`.
+### M-Perf.6 — Streaming chunked-prefill KV / P/D  (#84) — *deprioritized*
+A **complementary** prefill lever (hide KV transfer behind RTX prefill compute), independent
+of compression. ⚠️ Fork-heavy (needs per-layer state endpoints). Revisit after the
+compression TTFT numbers (5.4) land.
+
+### M-Perf.7 — Pipeline scaffolding  (#85) — *deprioritized*
+Refactor Coordinator from load-balancer → asyncio `Stage` dataflow; foundation for any future
+Tier-2 work. Later.
+
+## Owned elsewhere
+- **Agent-driven context management (#120 → M5).** The *zero-model* heuristic "what history to
+  keep / when to condense" decision is a **semantic, agentic** concern — it moved to the M5
+  Agentic milestone. M-Perf keeps only the trivial token-budget trigger.
 
 ## Explicitly NOT in scope
+- Speculative decoding / MTP as a *prefill* optimization (it only helps decode) — dropped.
 - TP-over-TCP (infeasible without forking ggml; loses Blackwell sm_120 + MoE opts).
 - Helix MILP / HexGen graph-partition (cluster-scale; 2 nodes don't need it).
 - Full Tier-2 PRP/Halda subsystem (only after Tier-1 numbers justify it).
-- draft-on-CPU (i7-12700K AVX2-only; P100 is the better draft host).
 
 ## Verification
-- Benchmark harness: before/after decode tok/s + TTFT at 1K/8K/32K/80K, recorded.
-- Acceptance-rate + draft-hit + save/restore/migration latency as Prometheus
-  metrics on the existing Grafana dashboard.
-- Go/no-go gates from M-Perf.1 written to a decision doc before M-Perf.2+ start.
+- TTFT before/after at 1K/8K/32K/80K recorded (5.4); net win = `prefill_saved −
+  compressor_cost > 0` demonstrated per context size.
+- Compression ratio + ppl delta + answer-match + save/restore latency as Prometheus metrics
+  on the existing Grafana dashboard.
+- Quality gate (5.4) passed before aggressive compression ships; decision doc committed.
