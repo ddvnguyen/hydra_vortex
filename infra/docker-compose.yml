@@ -204,3 +204,4 @@ volumes:
   loki-data:
   prometheus-data:
   grafana-data:
+  promtail-positions:

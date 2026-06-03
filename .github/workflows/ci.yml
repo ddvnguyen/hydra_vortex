@@ -218,20 +218,14 @@ jobs:
       - name: Check for source code changes
         id: source-check
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | \
-               grep -qE '^src/|^infra/Dockerfile|^infra/docker-compose.yml|^infra/Dockerfile\.|^scripts/|^\.github/workflows/ci\.yml'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No source code changes detected -- skipping deploy"
-          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Deploy (podman-compose)
         if: steps.source-check.outputs.changed == 'true'
         id: deploy
         run: |
+          set -eo pipefail
+
           REV=$(git rev-parse --short HEAD)
           VERSION=$(cat VERSION)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -241,7 +235,8 @@ jobs:
           # Full down first — up -d on running containers in rootless podman
           # corrupts overlay mounts and rootlessport forwarding (ports drop off
           # ss, podman exec fails with "transport endpoint is not connected").
-          podman-compose down -t 0 2>&1 | tee /tmp/hydra-down.log | tail -3
+          # down is best-effort; the rm -f below is the real cleanup.
+          podman-compose down -t 0 2>&1 | tee /tmp/hydra-down.log | tail -3 || true
           podman rm -f $(podman ps -aq --filter name=hydra_) 2>/dev/null || true
           podman-compose build 2>&1 | tee /tmp/hydra-build.log | tail -5
           podman-compose up -d 2>&1 | tee /tmp/hydra-up.log | tail -5
