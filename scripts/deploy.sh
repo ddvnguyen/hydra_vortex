@@ -38,15 +38,10 @@ git tag -a "v$NEW" -m "Hydra v$NEW"
 echo "Building images..."
 cd infra
 
-# Ensure Podman socket is active before starting containers that mount it (promtail)
-systemctl --user start podman.socket
-# Touch the socket to force lazy activation — without this the socket file may not
-# exist yet when crun tries to bind-mount it into the promtail container
-podman system info > /dev/null 2>&1 || true
-
 # Full down first — up -d on running containers in rootless podman
 # corrupts overlay mounts and rootlessport forwarding.
-podman-compose down 2>&1 | tail -3
+podman-compose down -t 0 2>&1 | tail -3
+podman rm -f $(podman ps -aq --filter name=hydra_) 2>/dev/null || true
 podman-compose build 2>&1 | tail -3
 podman-compose up -d 2>&1 | tail -5
 
@@ -66,6 +61,14 @@ if podman network exists "$HYDRA_NET"; then
 fi
 
 cd "$(git rev-parse --show-toplevel)"
+
+# Restart host-based log shipper and promtail (containerized promtail
+# doesn't work with rootless podman — journald files are root-owned mode 600,
+# and podman's Docker-compatible API has a NULL-JSON bug with promtail).
+echo "Restarting log shipper and promtail..."
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+systemctl --user restart container-log-shipper promtail 2>/dev/null || true
 
 REV=$(git rev-parse --short HEAD)
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $NEW ($REV) deployed" >> deploy.log
