@@ -416,7 +416,8 @@ bash scripts/start-env.sh --skip-p100
 ```
 
 Starts: Store + Agents + Coordinator + Observability (podman-compose), llama-server RTX
-(container with `build_sm120/` volume), llama-server P100 (user systemd on VM).
+(container with `build_sm120/` volume), llama-server P100 (user systemd on VM), and host
+log shipping services (`container-log-shipper` + `promtail` — systemd --user).
 
 Manual verification:
 ```bash
@@ -756,7 +757,10 @@ Coordinator exposes prefix checkpoint HTTP endpoints.
 - `Agent` (:9611/metrics) — save/restore count + duration histogram, slots idle gauge (`AgentMetrics.cs`)
 - `Coordinator` (:9000/metrics) — request counter, cache hits, active sessions (`metrics.py`)
 
-**Loki + Promtail** — Promtail scrapes Docker container logs → sends to Loki with `service` + `component` labels.
+**Loki + Promtail** — Promtail runs on the host (not in Docker). Pipeline:
+`container-log-shipper` (host systemd --user) tails `podman logs -f` to
+`/tmp/container-logs/<name>.log` → `promtail` (host systemd --user) scrapes files → Loki.
+Labels: `container`, `component`, `node` mapped via pipeline stages.
 Serilog JSON output already includes `trace_id`, `component`, `source_context`.
 
 **Grafana dashboard** (`infra/grafana/dashboards/hydra-dashboard.json`):
@@ -765,11 +769,13 @@ Serilog JSON output already includes `trace_id`, `component`, `source_context`.
 - **Trace ID filter**: textbox variable `$trace_id` — enter trace ID to see all related logs in Grafana
 
 **Docker Compose** (`infra/docker-compose.yml`):
-- Builds and runs Store + Agent RTX + Coordinator + Loki + Promtail + Prometheus + Grafana
+- Builds and runs Store + Agent RTX + Coordinator + Loki + Prometheus + Grafana
+- Promtail runs on the host (not in Docker) — see host service activation below
 - llama-server runs natively on each GPU machine (not containerized)
 
 ```bash
 cd infra && docker compose up -d
+systemctl --user start container-log-shipper promtail   # host log shipping
 curl -s localhost:9501/metrics | head
 curl -s localhost:9611/metrics | head
 curl -s localhost:9000/metrics | head
@@ -972,13 +978,20 @@ src/python-shared/                 ← shared libs (RPC client, logging)
 ### Implementing Observability
 ```
 infra/Dockerfile                                  ← Multi-target: store, agent, coordinator (one SDK pull)
-infra/docker-compose.yml                          ← Hydra services + Loki + Promtail + Prometheus + Grafana
-infra/prometheus/prometheus.yml                   ← scrape target config
+infra/docker-compose.yml                          ← Hydra services + Loki + Prometheus + Grafana
+infra/prometheus/prometheus.yml                   ← scrape target config (network_mode: host)
 infra/loki/loki-config.yml                        ← log storage config
-infra/promtail/promtail-config.yml                ← Docker log scraping
+infra/promtail/promtail-config.yml                ← host promtail file-scraping config
 infra/grafana/datasources/datasources.yml          ← datasource provisioning
 infra/grafana/dashboards/hydra-dashboard.json      ← metrics + logs + trace_id filter panel
 infra/grafana/dashboards/dashboard-providers.yml   ← auto-load dashboards
+
+~/.config/promtail/promtail-config.yml             ← LIVE host promtail config (symlinked)
+~/.config/systemd/user/promtail.service            ← host promtail systemd unit
+~/.local/bin/promtail                              ← host promtail binary
+~/.local/bin/container-log-shipper.sh              ← tails podman logs -f to /tmp/container-logs/
+~/.config/systemd/user/container-log-shipper.service  ← log shipper systemd unit
+
 src/Hydra.Store/StoreMetrics.cs                   ← Store Prometheus metrics
 src/Hydra.Agent/AgentMetrics.cs                   ← Agent Prometheus metrics
 src/coordinator/metrics.py                        ← Coordinator Prometheus metrics

@@ -5,6 +5,11 @@ on:
     branches: ["**"]
     tags:
       - "llama.cpp*"
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -208,7 +213,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check for source code changes
+        id: source-check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | \
+               grep -qE '^src/|^infra/Dockerfile|^infra/docker-compose.yml|^infra/Dockerfile\.|^scripts/|^\.github/workflows/ci\.yml'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No source code changes detected -- skipping deploy"
+          fi
+
       - name: Deploy (podman-compose)
+        if: steps.source-check.outputs.changed == 'true'
         id: deploy
         run: |
           REV=$(git rev-parse --short HEAD)
@@ -220,16 +239,18 @@ jobs:
           # Full down first — up -d on running containers in rootless podman
           # corrupts overlay mounts and rootlessport forwarding (ports drop off
           # ss, podman exec fails with "transport endpoint is not connected").
-          podman-compose down 2>&1 | tee /tmp/hydra-down.log | tail -3
+          podman-compose down -t 0 2>&1 | tee /tmp/hydra-down.log | tail -3
+          podman rm -f $(podman ps -aq --filter name=hydra_) 2>/dev/null || true
           podman-compose build 2>&1 | tee /tmp/hydra-build.log | tail -5
           podman-compose up -d 2>&1 | tee /tmp/hydra-up.log | tail -5
-          # Reconnect llama-cpp: down removes hydra_default network, so the
-          # separate llama-rtx-node compose container loses its connection.
+          # Reconnect llama-cpp to hydra_default if compose recreated the network.
+          # Only needed if llama-cpp is running and was attached before down.
           if podman network exists hydra_default; then
             podman network connect hydra_default llama-cpp 2>/dev/null || true
           fi
 
       - name: Record deploy log
+        if: steps.source-check.outputs.changed == 'true'
         run: |
           REV="${{ steps.deploy.outputs.rev }}"
           VERSION="${{ steps.deploy.outputs.version }}"
@@ -267,6 +288,7 @@ jobs:
           SUMMARY
 
       - name: Verify services healthy
+        if: steps.source-check.outputs.changed == 'true'
         run: |
           echo "Waiting for services to stabilise..."
           sleep 10
@@ -464,6 +486,13 @@ jobs:
           podman-compose up -d
           sleep 8
           curl -sf http://localhost:8080/health && echo "llama-rtx OK" || echo "WARNING: llama-rtx health check failed (non-fatal)"
+
+      - name: Restart host log shipper and promtail
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          systemctl --user restart container-log-shipper promtail 2>/dev/null || \
+            echo "WARNING: host log shipper/promtail not found"
 
       - name: Deploy llama-server to P100
         run: |

@@ -280,8 +280,14 @@ Prometheus metrics: `hydra_agent_llama_healthy`, `hydra_agent_slots_idle`.
 | `:9100/metrics` | Node exporter: host CPU/RAM |
 | `:9835/metrics` | DCGM GPU exporter: utilization, temp, power, mem |
 
-Grafana at `:3000`. Loki log shipping via Promtail. All services emit structured JSON
-logs with a `trace_id` field for cross-service correlation (`X-Trace-Id` header).
+Grafana at `:3000`. All services emit structured JSON logs with a `trace_id` field for
+cross-service correlation (`X-Trace-Id` header).
+
+**Log pipeline:** `podman logs -f` → `container-log-shipper` (host systemd --user)
+→ `/tmp/container-logs/<name>.log` → `promtail` (host systemd --user, file scraping) → Loki.
+
+Promtail runs on the host, not in Docker. See `CLAUDE.md` `## Monitoring & Observability`
+for details on why.
 
 ---
 
