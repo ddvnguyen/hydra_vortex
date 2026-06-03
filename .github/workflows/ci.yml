@@ -240,10 +240,6 @@ jobs:
         if: steps.source-check.outputs.changed == 'true'
         id: deploy
         env:
-          # Runner runs in system.slice without a user DBus session. Setting
-          # these lets Podman reach the user's systemd DBus so it can place
-          # fuse-overlayfs daemons in proper user-slice scopes — they survive
-          # the CI job's process cleanup instead of dying when the job exits.
           XDG_RUNTIME_DIR: /run/user/1000
           DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/1000/bus
         run: |
@@ -253,19 +249,48 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
-          cd infra
-          # Full down first — avoids mixed-age container state that breaks
-          # dependency links and rootlessport forwarding on up -d.
-          # down is best-effort; rm -f is the real cleanup.
+          # Write deploy script to a temp file to avoid quoting issues with
+          # systemd-run. The heredoc is single-quoted (literal) so $GITHUB_WORKSPACE
+          # is passed via --setenv and bash-expanded at runtime.
+          cat > /tmp/hydra-deploy.sh << 'DEPLOYEOF'
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE/infra"
           podman-compose down -t 0 2>&1 | tee /tmp/hydra-down.log | tail -3 || true
           podman rm -f $(podman ps -aq --filter name=hydra_) 2>/dev/null || true
           podman-compose build 2>&1 | tee /tmp/hydra-build.log | tail -5
           podman-compose up -d 2>&1 | tee /tmp/hydra-up.log | tail -5
-          # Reconnect llama-cpp to hydra_default if compose recreated the network.
-          # Only needed if llama-cpp is running and was attached before down.
           if podman network exists hydra_default; then
             podman network connect hydra_default llama-cpp 2>/dev/null || true
           fi
+          # Verify conmon survived for every hydra container.
+          # If systemd scope creation failed, conmon stays in system.slice and
+          # gets killed when the CI job exits — leaving containers headless with
+          # broken overlay mounts. Fast-fail here instead of 60s later.
+          for c in hydra_store_1 hydra_coordinator_1 hydra_agent-rtx_1 hydra_agent-p100_1; do
+            pid=$(pgrep -f "conmon.*-n $c\b" | head -1)
+            if [ -z "$pid" ]; then
+              echo "FATAL: conmon for $c not found — scope creation failed"
+              exit 1
+            fi
+            cg=$(cat /proc/$pid/cgroup 2>/dev/null)
+            if ! echo "$cg" | grep -q 'user\.slice'; then
+              echo "FATAL: conmon for $c is in wrong cgroup ($cg) — will be killed"
+              exit 1
+            fi
+          done
+          echo "All conmon processes confirmed in user.slice"
+          DEPLOYEOF
+          chmod +x /tmp/hydra-deploy.sh
+
+          # Run deploy inside a user.slice scope. The CI runner runs in
+          # system.slice; without this wrapper, Podman's scope creation for
+          # conmon+fuse-overlayfs+rootlessport fails because it can't cross
+          # into user.slice. Wrapping the entire deploy in a user scope
+          # means Podman's podman-<pid>.scope creation succeeds — conmon and
+          # fuse daemons land in user.slice and survive CI job cleanup.
+          systemd-run --user --scope --collect \
+            --setenv=GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            -- bash /tmp/hydra-deploy.sh
 
       - name: Record deploy log
         if: steps.source-check.outputs.changed == 'true'
@@ -383,17 +408,14 @@ jobs:
     runs-on: self-hosted
     needs: [build-test, deploy]
     timeout-minutes: 60
-    # Runs automatically after a successful deploy on main.
-    # Opt-in on other branches: add 'run-e2e' label to PR, '[run-e2e]' in commit msg, or workflow_dispatch.
+    # Only runs on explicit workflow_dispatch with run-system-full=true.
+    # Full-stack tests require all 6 services healthy (llama RTX, llama P100,
+    # Store, Agents, Coordinator, Observability) — never automatic.
     if: |
       always() &&
       needs.build-test.result == 'success' &&
-      (
-        needs.deploy.result == 'success' ||
-        contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
-        contains(github.event.push.head_commit.message, '[run-e2e]') ||
-        (github.event_name == 'workflow_dispatch' && github.event.inputs.run-system-full == 'true')
-      )
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.run-system-full == 'true'
 
     steps:
       - uses: actions/checkout@v4
