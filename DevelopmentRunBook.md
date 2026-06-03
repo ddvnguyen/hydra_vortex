@@ -54,6 +54,7 @@ Idempotent — checks what is already running and only starts what is missing. H
 - Hydra infra stack (Store + Agents + Coordinator + Observability) via podman-compose
 - llama-server RTX via the `infra/llama-rtx-node/` container (mounts `build_sm120/` directly)
 - llama-server P100 via SSH + user systemd on the VM (no sudo needed)
+- Host log shipping: `container-log-shipper` + `promtail` (systemd --user, see **Monitoring**)
 
 Requires pre-built llama binaries (see **Infrastructure** section). Use `--skip-p100` if the
 P100 VM is unavailable.
@@ -67,6 +68,9 @@ bash scripts/start-env.sh --skip-p100   # RTX only
 ```bash
 # Hydra control plane + observability
 cd infra && podman-compose up -d
+
+# Host log shipping (promtail runs on host, not in Docker — see troubleshooting below)
+systemctl --user start container-log-shipper promtail
 
 # llama-server RTX (containerised, mounts build_sm120/ directly)
 cd infra/llama-rtx-node && podman-compose up -d
@@ -214,6 +218,48 @@ Triggered manually via `workflow_dispatch` (set `deploy-llama=true`) or by pushi
 
 ---
 
+## Monitoring
+
+### Host log shipping (systemd --user)
+
+Promtail runs on the host (not in Docker). Pipeline:
+`podman logs -f` → `container-log-shipper` → `/tmp/container-logs/*.log` → `promtail` → Loki
+
+```bash
+# Status
+systemctl --user status container-log-shipper promtail
+
+# Restart (after deploy or if logs stop appearing)
+systemctl --user restart container-log-shipper promtail
+
+# Configs
+cat ~/.config/systemd/user/container-log-shipper.service   # tails podman logs
+cat ~/.config/systemd/user/promtail.service                 # promtail binary
+cat ~/.config/promtail/promtail-config.yml                  # label mapping
+cat ~/.local/bin/container-log-shipper.sh                   # log shipper script
+```
+
+**Why host-based:** Containerized promtail was removed from docker-compose.yml because:
+1. Podman 5.7.0's Docker API returns NULL for a JSON field → `sql: Scan error` in promtail's `docker_sd_configs`
+2. Systemd journal files are `-rw------- root:root` — rootless containers cannot read them
+3. The host-based log shipper (`podman logs -f` → files) plus host promtail (file scraping) avoids both issues
+
+### Metrics endpoints
+
+| Endpoint | What |
+|---|---|
+| `:9000/metrics` | Coordinator |
+| `:9501/metrics` | Store |
+| `:9611/metrics` | Agent RTX |
+| `:9622/metrics` | Agent P100 |
+| `:8080/metrics` | llama-server RTX |
+| `:9100/metrics` | Node exporter (host) |
+| `:9835/metrics` | GPU exporter |
+
+See `CLAUDE.md` `## Monitoring & Observability` for dashboards, alerts, and panel details.
+
+---
+
 ## Architecture Notes
 
 - **State streaming**: Agent pipes llama state directly to Store via RPC — no disk round-trip
@@ -279,3 +325,5 @@ curl -s :9000/health
 | Agent chunk cache not persisting | `ChunkCacheDir` not writable | Check `HYDRA_AGENT_CHUNK_CACHE_DIR` (default: `/tmp/hydra-chunk-cache`) |
 | `PUT_CHUNKED` returns error | Manifest already exists with different session_id | Session IDs must be unique. Delete manifest first or use different ID |
 | GC removed in-use chunks | GC ran while session active | GC only removes chunks NOT referenced by any manifest. Active sessions have manifests. Run GC only during idle periods. |
+| Logs not appearing in Grafana | Host log services not running | `systemctl --user restart container-log-shipper promtail` — see **Monitoring** below |
+| Promtail scrape errors in promtail logs | Old journal-scraping config | Promtail runs on host with file scraping (`static_configs` for `/tmp/container-logs/*.log`). Config at `~/.config/promtail/promtail-config.yml` |

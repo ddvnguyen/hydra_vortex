@@ -9,8 +9,13 @@
 2. **Alerts** — Prometheus (http://localhost:9091) + `infra/prometheus/alerts.yml`.
    No new firing alerts. `monitor.yml` auto-creates/closes `monitoring` issues from
    alerts — **do not close a monitoring issue without root-causing it**.
-3. **Logs** — Grafana Explore (Loki); filter by `$trace_id` to follow a request across
+3. **Host log services** — verify they are active:
+   ```bash
+   systemctl --user is-active container-log-shipper promtail
+   ```
+   If either is not running, restart: `systemctl --user restart container-log-shipper promtail`.
+4. **Logs** — Grafana Explore (Loki); filter by `$trace_id` to follow a request across
    Coordinator / Agent / Store.
-4. If anything regressed or a new alert fired → `07-issue-and-close.md`.
+5. If anything regressed or a new alert fired → `07-issue-and-close.md`.
 
 → Next: `07-issue-and-close.md`

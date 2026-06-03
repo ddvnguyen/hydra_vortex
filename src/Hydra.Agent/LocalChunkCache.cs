@@ -65,16 +65,16 @@ public sealed class LocalChunkCache : IDisposable
         File.WriteAllBytes(chunkPath, chunkData);
     }
 
-    public Task<byte[]?> GetChunkDataAsync(string sessionId, string hash, CancellationToken ct)
+    public async Task<byte[]?> GetChunkDataAsync(string sessionId, string hash, CancellationToken ct)
     {
-        if (_disposed) return Task.FromResult<byte[]>(null);
+        if (_disposed) return null;
 
         var safeSessionId = sessionId.Replace('/', '_').Replace('\\', '_');
         var chunkPath = Path.Combine(_cacheDir.FullName, $"{safeSessionId}.{hash}");
         if (!File.Exists(chunkPath))
-            return Task.FromResult<byte[]?>(null);
+            return null;
 
-        return File.ReadAllBytesAsync(chunkPath, ct);
+        return await File.ReadAllBytesAsync(chunkPath, ct);
     }
 
     public async Task<List<string>> LoadHashesAsync(string sessionId, CancellationToken ct)

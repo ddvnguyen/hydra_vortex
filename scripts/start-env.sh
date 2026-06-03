@@ -79,6 +79,19 @@ else
 fi
 cd "$REPO_ROOT"
 
+# ── 2b. Host log shipper + promtail ──────────────────────────────────────────
+step "Host log shipping (container-log-shipper + promtail)"
+
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+if systemctl --user is-active container-log-shipper &>/dev/null && \
+   systemctl --user is-active promtail &>/dev/null; then
+  ok "Both services already running"
+else
+  systemctl --user restart container-log-shipper promtail 2>/dev/null && \
+    ok "Started" || warn "Could not start (services may not be installed)"
+fi
+
 # ── 3. llama-server RTX ──────────────────────────────────────────────────────
 step "llama-server RTX (:8080)"
 
@@ -164,6 +177,12 @@ esac
 
 check_http "Grafana          :3000"    "http://localhost:3000"
 check_http "Prometheus       :9091"    "http://localhost:9091"
+
+# Check host log services
+printf "  %-35s" "log-shipper systemd"
+systemctl --user is-active container-log-shipper &>/dev/null && ok "active" || warn "inactive"
+printf "  %-35s" "promtail systemd"
+systemctl --user is-active promtail &>/dev/null && ok "active" || warn "inactive"
 
 echo ""
 echo -e "${GREEN}${BOLD}Done.${NC}"

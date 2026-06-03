@@ -87,7 +87,10 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 
 ### M3.2.3: Request Trace Logging (Loki + Grafana)
 - Serilog JSON stdout includes `@t`, `@mt`, `component`, `trace_id`, `source_context`
-- Promtail scrapes Docker container logs → sends to Loki with `service` and `component` labels
+- Log pipeline: `container-log-shipper` (host systemd --user) tails `podman logs -f` to
+  `/tmp/container-logs/<name>.log` → `promtail` (host systemd --user) scrapes files → Loki
+- Promtail runs on the host (not in Docker) because podman 5.7.0's Docker API has a
+  NULL-JSON bug breaking `docker_sd_configs`, and journald files are root-owned mode 600
 - Grafana dashboard includes a **Trace ID** textbox variable `$trace_id`
   - Enter a trace ID → filter all log panels by `{service=~".*"} |~ "$trace_id"`
   - Shows the full request lifecycle across Store, Agent, and Coordinator

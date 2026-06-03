@@ -171,7 +171,8 @@ public class ProtocolTests
         Assert.Equal(0x05, (byte)OpCode.List);
         Assert.Equal(0x10, (byte)OpCode.PutChunked);
         Assert.Equal(0x11, (byte)OpCode.GetChunked);
-        Assert.Equal(0x12, (byte)OpCode.SyncPlan);
+        Assert.Equal(0x12, (byte)OpCode.SyncMissing);
+        Assert.Equal(0x15, (byte)OpCode.PutManifest);
         Assert.Equal(0x13, (byte)OpCode.PushChunks);
         Assert.Equal(0x14, (byte)OpCode.PutMeta);
         Assert.Equal(0x20, (byte)OpCode.SaveState);

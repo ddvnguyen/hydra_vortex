@@ -155,12 +155,16 @@ Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
 - Model: Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf (qwen35moe arch, MTP spec-decode, vision mmproj)
 
 ## Monitoring & Observability
-Full prometheus + loki + promtail + grafana stack in infra/docker-compose.yml.
+Prometheus + Loki + Grafana run as containers in `infra/docker-compose.yml`.
+Promtail runs as a **host systemd --user service** (not in Docker — see below).
 Grafana at :3000, Prometheus at :9091, Loki at :3100.
 
 ### Start everything
 ```bash
 cd infra && docker compose up -d
+
+# Host log shipping services (systemd --user)
+systemctl --user start container-log-shipper promtail
 ```
 
 ### Key dashboards/metrics endpoints
@@ -178,6 +182,14 @@ cd infra && docker compose up -d
 All container logs shipped via Promtail → Loki.
 View in Grafana Explore (Loki datasource) or the Logs panel in the Hydra dashboard.
 Filter by `$trace_id` template variable to correlate logs across services.
+
+**Log pipeline (host):** `podman logs -f` → `container-log-shipper` (host systemd --user)
+→ `/tmp/container-logs/<name>.log` → `promtail` (host systemd --user, file scraping) → Loki.
+
+Note: Promtail does NOT run in Docker — podman 5.7.0's Docker-compatible API has a
+NULL-JSON bug that breaks promtail's `docker_sd_configs`, and rootless containers
+cannot read systemd journal files (mode 600, root-owned). The host-based log shipper
+and promtail avoid both issues.
 
 ### Alerts
 Prometheus alerting rules in `infra/prometheus/alerts.yml` — covers service down, high latency, GPU memory/temp, migration issues.

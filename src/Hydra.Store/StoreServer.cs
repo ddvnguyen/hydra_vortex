@@ -55,11 +55,14 @@ public sealed class StoreServer : RpcServer
 			case OpCode.GetManifest:
 				await HandleGetManifestAsync(key, writer, ct);
 				break;
-			case OpCode.SyncPlan:
-				await HandleSyncPlanAsync(key, payloadLen, reader, writer, ct);
+			case OpCode.SyncMissing:
+				await HandleSyncMissingAsync(key, payloadLen, reader, writer, ct);
 				break;
 			case OpCode.PushChunks:
 				await HandlePushChunksAsync(key, payloadLen, reader, writer, ct);
+				break;
+			case OpCode.PutManifest:
+				await HandlePutManifestAsync(key, payloadLen, reader, writer, ct);
 				break;
 			case OpCode.PutMeta:
 				await HandlePutMetaAsync(key, payloadLen, reader, writer, ct);
@@ -234,25 +237,33 @@ public sealed class StoreServer : RpcServer
 
 			var missingChunks = _chunkStore.DiffPlanWithInfo(manifest, knownHashes);
 
-			long totalSize = 0;
+			// Resolve once so the declared payload length exactly matches what we write:
+			// each resident chunk contributes 8 bytes of framing ([4B index][4B size])
+			// plus its body. (Previously total_size counted bodies only, so the client
+			// read a stream short by 8 bytes per chunk and dropped the tail — corrupting
+			// restore.)
+			var resident = new List<(ChunkRef Chunk, string Path, long Length)>();
+			long bodyBytes = 0;
 			foreach (var mc in missingChunks)
 			{
 				var path = _chunkStore.GetChunkPath(mc.Hash);
 				if (path is null) continue;
-				totalSize += new FileInfo(path).Length;
+				var len = new FileInfo(path).Length;
+				resident.Add((mc, path, len));
+				bodyBytes += len;
 			}
+			ulong framedLen = (ulong)bodyBytes + (ulong)(resident.Count * 8);
 
-			var meta = $$"""{"missing_count":{{missingChunks.Count}},"total_size":{{totalSize}}}""";
+			// total_size in meta stays bodies-only (what the chunks actually weigh);
+			// payload_len on the wire includes the per-chunk framing.
+			var meta = $$"""{"missing_count":{{resident.Count}},"total_size":{{bodyBytes}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
 
-			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, (ulong)totalSize, ct);
+			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, framedLen, ct);
 			await WriteMetaAsync(writer, meta, ct);
 
-			foreach (var mc in missingChunks)
+			foreach (var (mc, path, _) in resident)
 			{
-				var path = _chunkStore.GetChunkPath(mc.Hash);
-				if (path is null) continue;
-
 				// Write framing [4B index][4B size], flush, then sendfile to avoid
 				// reading the entire chunk into heap before sending.
 				await writer.WriteAsync(BitConverter.GetBytes(mc.Index), ct);
@@ -262,8 +273,8 @@ public sealed class StoreServer : RpcServer
 			}
 
 			StoreMetrics.OpsTotal.WithLabels("get_chunked").Inc();
-			StoreMetrics.BytesSent.Inc(totalSize);
-			StoreMetrics.ChunksSent.Inc(missingChunks.Count);
+			StoreMetrics.BytesSent.Inc(bodyBytes);
+			StoreMetrics.ChunksSent.Inc(resident.Count);
 		}
 		catch (Exception ex)
 		{
@@ -271,54 +282,49 @@ public sealed class StoreServer : RpcServer
 		}
 	}
 
-	private async Task HandleSyncPlanAsync(
+	// Delta-save step 1: of the hashes the client intends to store, return the subset
+	// the global chunk index does NOT already have. No manifest required (save direction).
+	// Request payload: JSON ["hash", ...]   Response payload: JSON {"missing_hashes":[...]}.
+	private async Task HandleSyncMissingAsync(
 		 string key, long payloadLen, PipeReader reader, PipeWriter writer, CancellationToken ct)
 	{
-		using var _ = StoreMetrics.OpDuration.WithLabels("sync_plan").NewTimer();
+		using var _ = StoreMetrics.OpDuration.WithLabels("sync_missing").NewTimer();
 
 		try
 		{
-			var manifest = await _chunkStore.LoadManifestAsync(key, ct);
-			if (manifest is null)
-			{
-				StoreMetrics.OpsTotal.WithLabels("sync_plan_not_found").Inc();
-				await WriteErrorAsync(writer, "not_found", ct, StatusCode.NotFound);
-				return;
-			}
-
-			List<string> knownHashes = [];
+			List<string> candidateHashes = [];
 			if (payloadLen > 0)
 			{
-				var clientHashesJson = await ReadPayloadAsync(reader, payloadLen, ct);
-				knownHashes = JsonSerializer.Deserialize<List<string>>(clientHashesJson) ?? [];
+				var json = await ReadPayloadAsync(reader, payloadLen, ct);
+				candidateHashes = JsonSerializer.Deserialize<List<string>>(json) ?? [];
 			}
 
-			var missingHashes = _chunkStore.DiffPlan(manifest, knownHashes);
-
-			long totalSize = 0;
-			foreach (var hash in missingHashes)
-			{
-				var path = _chunkStore.GetChunkPath(hash);
-				if (path is not null)
-					totalSize += new FileInfo(path).Length;
-			}
+			// Distinct preserves "ask once per unique chunk"; the store either has it or not.
+			var missingHashes = candidateHashes
+				.Distinct()
+				.Where(h => !_chunkStore.HasChunk(h))
+				.ToList();
 
 			var payload = JsonSerializer.SerializeToUtf8Bytes(new { missing_hashes = missingHashes });
-			var meta = $$"""{"missing_count":{{missingHashes.Count}},"total_size":{{totalSize}}}""";
+			var meta = $$"""{"missing_count":{{missingHashes.Count}},"candidate_count":{{candidateHashes.Count}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
 
 			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, (ulong)payload.Length, ct);
 			await WriteMetaAsync(writer, meta, ct);
 			await writer.WriteAsync(payload, ct);
 
-			StoreMetrics.OpsTotal.WithLabels("sync_plan").Inc();
+			StoreMetrics.OpsTotal.WithLabels("sync_missing").Inc();
 		}
 		catch (Exception ex)
 		{
-			await WriteErrorAsync(writer, $"sync_plan failed: {ex.Message}", ct);
+			await WriteErrorAsync(writer, $"sync_missing failed: {ex.Message}", ct);
 		}
 	}
 
+	// Delta-save step 2: store the chunk bodies the client was told are missing. Pure
+	// blob writes (content-addressed dedup) — does NOT touch the manifest. The manifest
+	// is written authoritatively by PUT_MANIFEST, so partial pushes can never corrupt it.
+	// Request payload: [4B size LE][body] ...
 	private async Task HandlePushChunksAsync(
 		 string key, long payloadLen, PipeReader reader, PipeWriter writer, CancellationToken ct)
 	{
@@ -329,7 +335,7 @@ public sealed class StoreServer : RpcServer
 			var pushedBytes = await ReadPayloadAsync(reader, payloadLen, ct);
 			var offset = 0;
 			var stored = 0;
-			var chunkRefs = new List<ChunkRef>();
+			var received = 0;
 			var totalPushedSize = 0L;
 
 			while (offset < pushedBytes.Length)
@@ -339,35 +345,18 @@ public sealed class StoreServer : RpcServer
 									 (pushedBytes[offset + 2] << 16) | (pushedBytes[offset + 3] << 24);
 				offset += 4;
 
-				if (offset + chunkSize > pushedBytes.Length) break;
+				if (chunkSize <= 0 || offset + chunkSize > pushedBytes.Length) break;
 				var chunkData = pushedBytes.AsSpan(offset, chunkSize).ToArray();
 				offset += chunkSize;
 
 				var hash = ChunkEngine.ComputeHash(chunkData);
-				chunkRefs.Add(new ChunkRef(chunkRefs.Count, hash, chunkSize));
+				received++;
 				totalPushedSize += chunkSize;
 				if (await _chunkStore.StoreChunkAsync(hash, chunkData, ct))
 					stored++;
 			}
 
-			// Write manifest if one doesn't exist yet
-			var existingManifest = await _chunkStore.LoadManifestAsync(key, ct);
-			if (existingManifest is null)
-			{
-				int nPast = 0;
-				// Check for pre-stored n_past from PutMeta call.
-				var storedNpast = await _chunkStore.GetMetaAsync(key, "n_past", ct);
-				if (storedNpast.HasValue)
-					nPast = storedNpast.Value;
-
-				var manifest = ChunkEngine.CreateManifest(key, nPast, totalPushedSize, chunkRefs);
-				await _chunkStore.SaveManifestAsync(key, manifest, ct);
-
-				// Clean up the temp meta file.
-				await _chunkStore.SaveMetaAsync(key, "n_past", "", ct);
-			}
-
-			var meta = $$"""{"stored":{{stored}},"total":{{chunkRefs.Count}}}""";
+			var meta = $$"""{"stored":{{stored}},"received":{{received}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
 			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
 			await WriteMetaAsync(writer, meta, ct);
@@ -378,6 +367,76 @@ public sealed class StoreServer : RpcServer
 		catch (Exception ex)
 		{
 			await WriteErrorAsync(writer, $"push_chunks failed: {ex.Message}", ct);
+		}
+	}
+
+	// Delta-save step 3: write the authoritative ordered manifest. Every referenced chunk
+	// must already be resident (pushed now or deduped from a prior save); if any is missing
+	// we refuse rather than write a manifest that would reconstruct to garbage on restore.
+	// Request payload: JSON {"n_past":N,"total_size":T,"chunks":[{"index":i,"hash":h,"size":s},...]}.
+	private async Task HandlePutManifestAsync(
+		 string key, long payloadLen, PipeReader reader, PipeWriter writer, CancellationToken ct)
+	{
+		using var _ = StoreMetrics.OpDuration.WithLabels("put_manifest").NewTimer();
+
+		try
+		{
+			if (payloadLen <= 0)
+			{
+				await WriteErrorAsync(writer, "empty manifest", ct, StatusCode.BadRequest);
+				return;
+			}
+
+			var json = await ReadPayloadAsync(reader, payloadLen, ct);
+			var doc = JsonDocument.Parse(json);
+			var root = doc.RootElement;
+
+			int nPast = root.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0;
+			long totalSize = root.TryGetProperty("total_size", out var ts) ? ts.GetInt64() : 0;
+
+			var chunks = new List<ChunkRef>();
+			var missing = new List<string>();
+			if (root.TryGetProperty("chunks", out var chunksEl) && chunksEl.ValueKind == JsonValueKind.Array)
+			{
+				foreach (var c in chunksEl.EnumerateArray())
+				{
+					var idx = c.GetProperty("index").GetInt32();
+					var hash = c.GetProperty("hash").GetString() ?? "";
+					var size = c.GetProperty("size").GetInt32();
+					chunks.Add(new ChunkRef(idx, hash, size));
+					if (!_chunkStore.HasChunk(hash))
+						missing.Add(hash);
+				}
+			}
+
+			if (missing.Count > 0)
+			{
+				// Refuse — a manifest referencing absent chunks would corrupt restore.
+				StoreMetrics.OpsTotal.WithLabels("put_manifest_missing_chunks").Inc();
+				var errPayload = JsonSerializer.SerializeToUtf8Bytes(new { missing_hashes = missing });
+				var errMeta = $$"""{"error":"manifest references {{missing.Count}} unresident chunks"}""";
+				var errMetaBytes = Encoding.UTF8.GetBytes(errMeta);
+				await WriteResponseHeaderAsync(writer, (byte)StatusCode.Partial, (uint)errMetaBytes.Length, (ulong)errPayload.Length, ct);
+				await WriteMetaAsync(writer, errMeta, ct);
+				await writer.WriteAsync(errPayload, ct);
+				return;
+			}
+
+			// Order by declared index so reassembly (index * ChunkSize) is correct.
+			chunks.Sort((a, b) => a.Index.CompareTo(b.Index));
+			var manifest = ChunkEngine.CreateManifest(key, nPast, totalSize, chunks);
+			await _chunkStore.SaveManifestAsync(key, manifest, ct);
+
+			var meta = $$"""{"written":true,"chunks":{{chunks.Count}},"n_past":{{nPast}}}""";
+			var metaBytes = Encoding.UTF8.GetBytes(meta);
+			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+			await WriteMetaAsync(writer, meta, ct);
+
+			StoreMetrics.OpsTotal.WithLabels("put_manifest").Inc();
+		}
+		catch (Exception ex)
+		{
+			await WriteErrorAsync(writer, $"put_manifest failed: {ex.Message}", ct);
 		}
 	}
 
@@ -393,10 +452,12 @@ public sealed class StoreServer : RpcServer
 			return;
 		}
 
+		// Lowercase property names — matches PUT_MANIFEST's input and the Agent's
+		// restore parser (RestoreFromStoreChunkedAsync reads "index"/"hash"/"size").
 		var payload = JsonSerializer.SerializeToUtf8Bytes(new {
 			n_past = manifest.NPast,
 			total_size = manifest.TotalSize,
-			chunks = manifest.Chunks.Select(c => new { c.Index, c.Hash, c.Size })
+			chunks = manifest.Chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size })
 		});
 
 		var meta = $$"""{"chunk_count":{{manifest.Chunks.Count}}}""";
