@@ -177,15 +177,19 @@ mindmap
     Store Chunked M2
       0x10 PUT_CHUNKED
       0x11 GET_CHUNKED
-      0x12 SYNC_PLAN
-      0x13 PUSH_CHUNKS
+      0x12 SYNC_PLAN reserved
+      0x13 PUSH_CHUNKS reserved
+      0x14 PUT_META
+      0x33 GET_MANIFEST
     Agent Ops
-      0x20 SAVE_STATE
-      0x21 RESTORE_STATE
+      0x20 SAVE_STATE raw
+      0x21 RESTORE_STATE raw
       0x22 SLOT_STATUS
       0x23 SLOT_ERASE
       0x24 NODE_HEALTH
-      0x25 COMPLETION
+      0x25 COMPLETION reserved
+      0x26 SAVE_STATE_CHUNKED active
+      0x27 RESTORE_STATE_CHUNKED active
     llama-server Direct
       0x30 STATE_GET
       0x31 STATE_PUT
@@ -340,41 +344,43 @@ flowchart LR
 
 ---
 
-## 8. Coordinator Session Routing Logic
+## 8. Coordinator Routing Algorithm (4-tier)
 
-Decision tree for routing an incoming request.
+Actual decision tree in `routing.py:route_request()`.
 
 ```mermaid
 flowchart TD
-    A([Incoming request\nPOST /v1/chat/completions]) --> B{session_id\nin request?}
+    A([POST /v1/chat/completions]) --> B{session_table\nlookup}
 
-    B -->|No| C[Create new session\nAssign to least-loaded GPU]
-    B -->|Yes| D{session_table\nlookup}
+    B -->|Found AND node healthy| T1["Tier 1 — Session Affinity\nRoute to existing node\n(zero overhead)"]
+    B -->|Found AND has_store_state| T2["Tier 2 — Store Restore\nRESTORE_STATE_CHUNKED\non least-loaded worker"]
+    B -->|Not found| C{estimated_tokens\n≥ long_prompt_threshold?}
 
-    D -->|Not found| E[Return 404\nor create new]
-    D -->|Found| F{KV state\nlocation?}
+    C -->|Yes| T3["Tier 3 — Long-prompt\nSelect highest-priority\nPREFILL worker\n(prefill_priority ASC, load ASC)"]
+    C -->|No| T4["Tier 4 — Least-loaded\nload = busy_fraction\n= (total−idle+in_flight)/total\nRound-robin tiebreak"]
 
-    F -->|On target GPU| G[Forward directly\nRPC COMPLETION → Agent]
-    F -->|On other GPU| H{Target GPU\nhealthy?}
-    F -->|In Store\nnot on any GPU| I[Restore to\nbest GPU first]
+    T2 --> POST[Update session_table\nnode + n_past]
+    T3 --> NEW[register() new session]
+    T4 --> NEW
 
-    H -->|Yes| J[Migrate KV state\nSAVE → PUT → RESTORE]
-    H -->|No| K[Restore on\nhealthy GPU]
+    POST --> GUARD{n_past guard:\nestimated < n_past × 0.85?}
+    NEW --> PREFIX["Prefix checkpoint?\nRESTORE 'prefix/{prompt_hash}'\nif same system prompt seen before"]
+    T1 --> GUARD
 
-    I --> G
-    J --> G
-    K --> G
-    C --> G
+    PREFIX --> GUARD
+    GUARD -->|Yes ⚠️| RESET["reset n_past=0\nSLOT_ERASE\n(re-prefill silently)"]
+    GUARD -->|No ✅| FWD
 
-    G --> L{n_tokens >\nn_past? ⚠️}
-    L -->|Yes ✅| M[Forward to Agent\nRPC COMPLETION]
-    L -->|No ❌| N[Append dummy token\nor refuse — cache\nwould be nuked]
+    RESET --> FWD["Forward to Agent\n(HTTP proxy to llama-server)"]
+    FWD --> STREAM([SSE stream → Client\nX-Hydra-Node header])
+    STREAM --> NPAST["Update n_past from\nusage.total_tokens\nMaybe save prefix checkpoint"]
 
-    M --> O([Stream response\nback to client])
-
-    style L fill:#fff3cd,stroke:#856404
-    style N fill:#f8d7da,stroke:#721c24
-    style M fill:#d4edda,stroke:#155724
+    style T1 fill:#d4edda,stroke:#155724
+    style T2 fill:#cce5ff,stroke:#004085
+    style T3 fill:#fff3cd,stroke:#856404
+    style T4 fill:#f8f9fa,stroke:#6c757d
+    style GUARD fill:#fff3cd,stroke:#856404
+    style RESET fill:#f8d7da,stroke:#721c24
 ```
 
 ---
@@ -436,5 +442,46 @@ timeline
 
 ---
 
-*Generated from architecture specs in `PROJECT_PLAN.md`, `specs/rpc-protocol.md`,
-and `docs/milestone-0-mvp.md`.*
+## 11. P/D Disaggregation Flow (`run_mode = "concurrency"`)
+
+Implemented in `router.py`. RTX prefills; P100 decodes. Targets M-Perf.3.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Coord as Coordinator :9000
+    participant AgentRTX as Agent RTX :9601
+    participant LlamaRTX as llama RTX :8080
+    participant Store as Hydra Store :9500
+    participant AgentP100 as Agent P100 :9602
+    participant LlamaP100 as llama P100 :8086
+
+    Client->>Coord: POST /v1/chat/completions
+
+    rect rgb(255, 243, 205)
+        Note over Coord,LlamaRTX: Phase 1 — Prefill on RTX (fast, sm_120)
+        Coord->>AgentRTX: HTTP proxy max_tokens=1 (fill KV only)
+        AgentRTX->>LlamaRTX: POST /v1/chat/completions (stream=false, max_tokens=1)
+        LlamaRTX-->>AgentRTX: {usage.total_tokens=N}  ← n_past after prefill
+        Coord->>AgentRTX: RPC SAVE_STATE_CHUNKED (0x26)
+        AgentRTX->>LlamaRTX: GET /slots/{id}/state (~800 MB)
+        AgentRTX->>Store: RPC PUT_CHUNKED (0x10) + PUT_META (0x14)
+        AgentRTX->>AgentRTX: SLOT_ERASE (free RTX VRAM)
+    end
+
+    rect rgb(204, 229, 255)
+        Note over Coord,LlamaP100: Phase 2 — Decode on P100 (parallel, HBM2)
+        Coord->>AgentP100: RPC RESTORE_STATE_CHUNKED (0x27)
+        AgentP100->>Store: RPC GET_CHUNKED (0x11, known hashes)
+        AgentP100->>LlamaP100: PUT /slots/{id}/state
+        Coord->>AgentP100: HTTP proxy (full request, stream=true)
+        AgentP100->>LlamaP100: POST /v1/chat/completions (KV pre-loaded)
+        LlamaP100-->>AgentP100: SSE token stream (28 tok/s, no re-prefill)
+    end
+
+    AgentP100-->>Client: SSE stream\nX-Hydra-Node: p100\nX-Hydra-Prefill-Node: rtx
+```
+
+---
+
+*See `docs/architecture.md` for conceptual detail. Source of truth: `specs/rpc-protocol.md`, `src/coordinator/router.py`, `src/Hydra.Agent/StateHandler.cs`.*

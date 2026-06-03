@@ -47,6 +47,22 @@ across heterogeneous GPU nodes, enabling session migration without re-prefill.
 All inter-service traffic uses Hydra binary RPC.
 HTTP only at two edges: Client→Coordinator and Agent→local llama-server.
 
+## Worker Node Model
+Each GPU node is configured as a `WorkerNodeConfig`:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `worker_type` | `3` | Bitwise: `1`=prefill-only, `2`=decode-only, `3`=mixed |
+| `prefill_priority` | `1` | Lower = preferred for prefill (1 is best) |
+| `decode_priority` | `1` | Lower = preferred for decode |
+| `decode_speed_tps` | `30.0` | Estimated decode tok/s (scheduling hint) |
+
+**Run modes** (`HYDRA_COORD_RUN_MODE`):
+- `fast` (default) — session affinity; one GPU handles both prefill and decode per session
+- `concurrency` — P/D disaggregation: prefill on RTX, KV saved to Store, decode on P100
+
+See `docs/architecture.md` for the 4-tier routing algorithm and session lifecycle detail.
+
 ## Tech Stack Detail
 | Concern          | C# Services      | Python Coordinator |
 |------------------|------------------|--------------------|
@@ -64,79 +80,79 @@ HTTP only at two edges: Client→Coordinator and Agent→local llama-server.
 ## Project Structure
 All source code lives under `src/`.
 ```
-├── CLAUDE.md
-├── .cursorrules
-├── .gitignore
-├── .gitmodules
-├── README.md
-├── PROJECT_PLAN.md
+├── CLAUDE.md                    # agent instructions (single source of truth)
+├── docs/architecture.md         # architecture reference (this doc's detail layer)
+├── docs/diagrams.md             # Mermaid diagrams for all major flows
+├── specs/rpc-protocol.md        # binary wire format + opcode reference
 ├── pyproject.toml
 ├── Hydra.sln
 │
-├── src/                         # ALL source code
+├── src/
+│   ├── Hydra.Shared/            C# — protocol, RPC base, shared types
+│   │   ├── Protocol.cs          wire format, header pack/unpack, OpCode/StatusCode enums
+│   │   ├── RpcServer.cs         base TCP RPC server (System.IO.Pipelines)
+│   │   ├── RpcClient.cs         TCP RPC client (reconnect, stream body)
+│   │   ├── ChunkModels.cs       ChunkRef record (index, hash, size)
+│   │   ├── AsyncEnumerableStream.cs  IAsyncEnumerable<byte[]> → Stream adapter
+│   │   └── HydraLogging.cs      Serilog setup, trace scope helpers
 │   │
-│   ├── Hydra.Shared/            C# — protocol, models, RPC base
-│   │   ├── Protocol.cs          wire format, header pack/unpack
-│   │   ├── RpcServer.cs         base TCP RPC server
-│   │   ├── RpcClient.cs         base TCP RPC client
-│   │   ├── Models.cs            C# records (SlotInfo, SessionEntry, etc.)
-│   │   ├── HydraLogging.cs      Serilog setup, trace scope
-│   │   └── Constants.cs         op codes, status codes
-│   │
-│   ├── Hydra.Store/             C# — KV state store
-│   │   ├── StorageEngine.cs     file I/O on tmpfs
-│   │   ├── StoreServer.cs       RPC handlers, sendfile
+│   ├── Hydra.Store/             C# — KV state store (tmpfs-backed)
+│   │   ├── StorageEngine.cs     raw file I/O on tmpfs (PUT/GET/DEL/STAT/LIST)
+│   │   ├── ChunkEngine.cs       1 MB chunk + SHA-256 hash pipeline
+│   │   ├── ChunkStore.cs        content-addressed chunk storage + manifest management
+│   │   ├── StoreServer.cs       RPC handlers (PUT_CHUNKED, GET_CHUNKED, GET_MANIFEST …)
+│   │   ├── StoreMetrics.cs      Prometheus counters/histograms
 │   │   ├── StoreConfig.cs       appsettings binding
-│   │   └── Program.cs           entry point
+│   │   └── Program.cs
 │   │
 │   ├── Hydra.Agent/             C# — GPU node sidecar
-│   │   ├── LlamaClient.cs       httpx wrapper for llama-server
-│   │   ├── StateHandler.cs      save/restore orchestration
-│   │   ├── AgentServer.cs       RPC handlers
+│   │   ├── LlamaClient.cs       HTTP client for llama-server state endpoints
+│   │   ├── StateHandler.cs      save/restore orchestration (raw + chunked)
+│   │   │                          incl. ChunkHashTeeStream, ValueStopwatch
+│   │   ├── LocalChunkCache.cs   agent-side cache of chunk data (partial-restore support)
+│   │   ├── AgentServer.cs       RPC handlers (SAVE/RESTORE_STATE_CHUNKED, NODE_HEALTH …)
+│   │   ├── AgentMetrics.cs      Prometheus counters/histograms
 │   │   ├── AgentConfig.cs       appsettings binding
-│   │   └── Program.cs           entry point
+│   │   └── Program.cs
 │   │
-│   ├── Tests.Shared/            xUnit tests
-│   ├── Tests.Store/             xUnit tests
-│   ├── Tests.Agent/             xUnit tests
-│   ├── Tests.Integration/       xUnit integration tests
+│   ├── Tests.Shared/            xUnit — Protocol, RpcClient, RpcServer
+│   ├── Tests.Store/             xUnit — ChunkEngine, ChunkStore, StorageEngine, StoreServer
+│   ├── Tests.Agent/             xUnit — StateHandler, LlamaClient, LocalChunkCache, AgentServer
+│   ├── Tests.Integration/       xUnit integration — Agent↔Store, chunked dedup spike
 │   │
-│   ├── coordinator/             Python — Coordinator service
-│   │   ├── __init__.py
-│   │   ├── app.py
-│   │   ├── router.py
-│   │   ├── routing.py
-│   │   ├── session_table.py
-│   │   ├── state_manager.py
-│   │   ├── health.py
-│   │   └── proxy.py
+│   ├── coordinator/             Python — Coordinator service (FastAPI)
+│   │   ├── app.py               FastAPI app factory
+│   │   ├── router.py            /v1/chat/completions, /sessions, /prefix, /migrate
+│   │   ├── routing.py           4-tier routing algorithm + load metric
+│   │   ├── session_table.py     SessionEntry, SessionTable (in-memory)
+│   │   ├── state_manager.py     save/restore/migrate/evict/prefix-checkpoint
+│   │   ├── health.py            HealthMonitor (polls NODE_HEALTH every 20 s)
+│   │   ├── proxy.py             HTTP proxy to llama-server (streaming + non-streaming)
+│   │   ├── config.py            CoordinatorConfig + WorkerNodeConfig (pydantic-settings)
+│   │   ├── metrics.py           Prometheus metrics (requests, sessions, migrations)
+│   │   └── version.py           reads VERSION file
 │   │
-│   ├── python_shared/           Python — shared lib (RPC client, models)
-│   │   ├── __init__.py
-│   │   ├── rpc_client.py        Python RPC client (protocol impl)
-│   │   ├── models.py            Pydantic schemas
-│   │   ├── logging.py           structlog setup
-│   │   └── tail.py
+│   ├── coordinator/tests/       pytest — router, routing, session_table, state_manager, …
+│   │
+│   ├── python_shared/           Python — shared lib
+│   │   ├── rpc_client.py        Python RPC client (async, full protocol impl)
+│   │   └── log_config.py        structlog JSON setup, trace_id generator
 │   │
 │   ├── llama-cpp/               git submodule — hydra-state-streaming branch
 │   │
-│   └── tests/                   Python tests (coordinator + system)
-│       ├── __init__.py
-│       ├── coordinator/
-│       ├── integration/
-│       └── system/
+│   └── tests/                   Python system/E2E tests
 │
-├── specs/                       # protocol & service specs
-├── infra/                       # deployment scripts
-└── docs/                        # milestone docs
+├── infra/                       docker-compose monitoring stack (Prometheus, Loki, Grafana)
+├── specs/                       protocol & service specs
+└── docs/                        milestone docs + architecture + diagrams
 ```
 
 ## Milestones
 Core M0–M2 is built. The roadmap was **restructured 2026-06** around the Tier-1
 heterogeneous-performance track: **M-Perf supersedes the old monolithic "M3
 Production"**, and the old M3 scope was re-homed into M3/M4/M5 below. Live roadmap
-is tracked in Plane (`docs/PLANE_SETUP.md`); per-milestone detail in
-`docs/milestone-*.md`.
+is in **GitHub Projects "Hydra Vortex"** (see `docs/GITHUB_PROJECT_SETUP.md`);
+per-milestone detail in `docs/milestone-*.md`.
 
 | MS      | Name                           | Scope                                                       | Status   |
 |---------|--------------------------------|-------------------------------------------------------------|----------|

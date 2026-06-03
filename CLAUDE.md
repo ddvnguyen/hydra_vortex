@@ -5,10 +5,12 @@ Multi-GPU LLM inference system. Routes requests across RTX 5060 Ti and Tesla P10
 (in KVM VM), migrates 800 MB KV cache state between GPUs without re-prefill.
 
 ## Read These First
-1. `PROJECT_PLAN.md` — architecture, structure, tech stack (10 min)
-2. `specs/rpc-protocol.md` — binary wire format (5 min)
-3. `## Task Lifecycle` (below) + `docs/workflow/` — how to work a task end-to-end
-4. Active milestone `docs/milestone-perf.md` (M-Perf) + `DevelopmentRunBook.md` for
+1. `PROJECT_PLAN.md` — vision, structure, milestones (10 min)
+2. `docs/architecture.md` — implemented design: routing, run modes, session lifecycle,
+   chunked dedup, prefix checkpoints, n_past guard (10 min)
+3. `specs/rpc-protocol.md` — binary wire format + all opcodes (5 min)
+4. `## Task Lifecycle` (below) + `docs/workflow/` — how to work a task end-to-end
+5. Active milestone `docs/milestone-perf.md` (M-Perf) + `DevelopmentRunBook.md` for
    build/run/test. Live board: GitHub Project (`docs/GITHUB_PROJECT_SETUP.md`).
 
 ## Architecture

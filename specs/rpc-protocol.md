@@ -57,20 +57,48 @@ meta_len      payload_len  payload — raw bytes (streamed)
 
 ### Store Chunked Operations [M2]
 ```
-0x10  PUT_CHUNKED   Store with content-addressable chunking
-0x11  GET_CHUNKED   Retrieve, sending only chunks client lacks
-0x12  SYNC_PLAN     Client sends hashes, server returns missing list
-0x13  PUSH_CHUNKS   Client sends batch of new chunks
+0x10  PUT_CHUNKED   Store with content-addressable chunking (1 MB chunks, SHA-256)
+                    Request:  key="kv/{session_id}", payload=raw KV stream
+                    Response: meta={"stored":true,"total_chunks":<N>,"deduped_chunks":<N>}
+0x11  GET_CHUNKED   Retrieve missing chunks only (client sends known hash list)
+                    Request:  key="kv/{session_id}", payload=JSON ["<hash>",...]
+                    Response: meta={"total_size":<N>,"missing_count":<N>}
+                              payload=[4B index][4B size][chunk data]... (missing chunks only)
+0x12  SYNC_PLAN     Client sends hashes, server returns missing list (reserved, future use)
+0x13  PUSH_CHUNKS   Client sends batch of new chunks (reserved, future use)
+0x14  PUT_META      Store n_past metadata before chunk manifest exists
+                    Request:  key="kv/{session_id}", payload={"n_past":<N>}
+                    Response: meta={"stored":true}
+0x33  GET_MANIFEST  Retrieve chunk manifest (chunk list + n_past) for a key
+                    Request:  key="kv/{session_id}", payload_len=0
+                    Response: meta={} payload={"n_past":<N>,"chunks":[{"index":<N>,"hash":"<hex>","size":<N>},...]}
 ```
 
 ### Agent Operations
 ```
-0x20  SAVE_STATE      Save slot KV state → push to Store
-0x21  RESTORE_STATE   Pull from Store → restore to slot
-0x22  SLOT_STATUS     Get slot metadata (n_past, is_processing)
-0x23  SLOT_ERASE      Erase a slot (free VRAM)
-0x24  NODE_HEALTH     Get llama-server health + slot summary
-0x25  COMPLETION      Proxy a chat completion request
+0x20  SAVE_STATE          Save slot KV state → push to Store (raw, no dedup)
+                          Request:  key="{session_id}:{slot_id}", payload_len=0
+                          Response: meta={"session_id":"...","slot_id":<N>,"n_past":<N>,"size":<N>,"save_ms":<N>}
+0x21  RESTORE_STATE       Pull from Store → restore to slot (raw, no dedup)
+                          Request:  key="{session_id}:{slot_id}", payload_len=0
+                          Response: meta={"session_id":"...","slot_id":<N>,"n_past":<N>,"restored":<bool>,"restore_ms":<N>}
+0x22  SLOT_STATUS         Get slot metadata (n_past, is_processing)
+                          Request:  key="<slot_id>" (or "" for all slots)
+                          Response: payload=JSON slot array
+0x23  SLOT_ERASE          Erase a slot (free VRAM)
+                          Request:  key="<slot_id>"
+                          Response: meta={"slot_id":<N>,"erased":true}
+0x24  NODE_HEALTH         Get llama-server health + slot summary
+                          Response: meta={} payload={"healthy":<bool>,"slots_total":<N>,"slots_idle":<N>,...}
+0x25  COMPLETION          Proxy a chat completion request (reserved; completion goes via HTTP)
+0x26  SAVE_STATE_CHUNKED  Save slot KV state → push to Store with content-addressed dedup
+                          Request:  key="{session_id}:{slot_id}", payload_len=0
+                          Response: meta={...,"chunked":true,"save_ms":<N>}
+                          (active default — coordinator always calls this, not 0x20)
+0x27  RESTORE_STATE_CHUNKED Pull from Store → restore to slot using chunked dedup
+                          Request:  key="{session_id}:{slot_id}", payload_len=0
+                          Response: meta={...,"chunked":true,"restore_ms":<N>}
+                          (active default — coordinator always calls this, not 0x21)
 ```
 
 ### llama-server Direct Operations  (via --rpc-port, implemented in M0)
