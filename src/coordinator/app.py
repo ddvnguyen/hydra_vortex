@@ -73,6 +73,8 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
         nodes=config.workers,
         poll_interval_s=config.health_poll_interval_s,
         max_failures=config.health_max_failures,
+        store_host=config.store_host,
+        store_port=config.store_port,
     )
     state_manager = StateManager(
         session_table=session_table,
