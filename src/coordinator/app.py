@@ -9,7 +9,7 @@ from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
 from coordinator.router import create_router
-from coordinator.proxy import shutdown as proxy_shutdown
+from coordinator.proxy import shutdown as proxy_shutdown, configure_timeout
 from coordinator.version import VERSION, REVISION
 
 log = get_logger()
@@ -66,6 +66,10 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
     """
     if config is None:
         config = CoordinatorConfig()
+
+    # Upstream read budget must outlast a large-prompt prefill (#134), else the proxy aborts
+    # mid-prefill and the client retries forever. Set before any request is served.
+    configure_timeout(config.llama_request_timeout_s)
 
     # Singletons — created once, shared everywhere.
     session_table = SessionTable()

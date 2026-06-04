@@ -9,11 +9,32 @@ log = get_logger()
 # Reuses TCP connections and SSL sessions, avoiding per-request overhead.
 _http_client: httpx.AsyncClient | None = None
 
+# Read budget for upstream llama-server requests. A large-prompt prefill can take many
+# minutes; if this is shorter than the prefill, httpx aborts mid-flight, llama cancels the
+# task, and the client retries → endless re-prefill loop (#134). Configured at startup via
+# configure_timeout(); defaults high to match llama's --timeout.
+_read_timeout_s: float = 1800.0
+
+
+def configure_timeout(read_timeout_s: float) -> None:
+    """Set the upstream read timeout. Call once at startup before the first request.
+
+    Resets any existing client so the new timeout takes effect on the next request.
+    """
+    global _read_timeout_s, _http_client
+    _read_timeout_s = float(read_timeout_s)
+    _http_client = None
+
 
 async def _get_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(timeout=300)
+        # Generous read budget for long prefills; tight connect/pool so genuine
+        # connectivity failures still surface quickly.
+        timeout = httpx.Timeout(
+            connect=10.0, read=_read_timeout_s, write=30.0, pool=10.0
+        )
+        _http_client = httpx.AsyncClient(timeout=timeout)
     return _http_client
 
 

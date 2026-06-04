@@ -24,10 +24,40 @@ from coordinator.config import CoordinatorConfig
 from coordinator.metrics import (
     metrics_endpoint, requests_total, active_sessions,
     prefix_cache_hits, prefix_cache_misses, prefix_warmups_total,
+    upstream_coalesced_total, upstream_timeouts_total,
 )
 from coordinator.version import VERSION, REVISION
 
 log = get_logger()
+
+
+# Single-flight registry: coalesce identical concurrent upstream completions so a retried or
+# duplicated mega-prompt doesn't stack a second full prefill (#134). Keyed by node URL + body.
+_inflight_upstream: dict[str, "asyncio.Future[dict]"] = {}
+
+
+def _upstream_key(node_url: str, body: dict) -> str:
+    payload = json.dumps(body, sort_keys=True, default=str)
+    return hashlib.sha256(f"{node_url}|{payload}".encode()).hexdigest()
+
+
+async def _proxy_completion_coalesced(node_url: str, body: dict, trace_id: str) -> dict:
+    """proxy_completion with single-flight: identical concurrent calls share one upstream
+    request instead of each launching a full (expensive) prefill."""
+    key = _upstream_key(node_url, body)
+    existing = _inflight_upstream.get(key)
+    if existing is not None and not existing.done():
+        upstream_coalesced_total.inc()
+        log.info("upstream_coalesced", trace_id=trace_id)
+        return await existing
+    fut: "asyncio.Future[dict]" = asyncio.ensure_future(
+        proxy_completion(node_url, body, trace_id)
+    )
+    _inflight_upstream[key] = fut
+    try:
+        return await fut
+    finally:
+        _inflight_upstream.pop(key, None)
 
 
 async def _resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -> int | None:
@@ -295,7 +325,15 @@ def create_router(
                 )
             else:
                 try:
-                    result = await proxy_completion(node_url_base, request_dict, trace_id)
+                    result = await _proxy_completion_coalesced(node_url_base, request_dict, trace_id)
+                except httpx.TimeoutException as e:
+                    upstream_timeouts_total.inc()
+                    log.warning("completion_timeout", session_id=sess_id,
+                                timeout_s=config.llama_request_timeout_s, error=str(e))
+                    raise HTTPException(
+                        status_code=504,
+                        detail=f"Completion exceeded {config.llama_request_timeout_s}s",
+                    )
                 finally:
                     _decrement_inflight()
                 usage = result.get("usage", {})
@@ -325,7 +363,16 @@ def create_router(
         # Send prefill-only request (non-streaming, max_tokens=1 to just fill KV).
         prefill_dict = {**request_dict, "stream": False, "max_tokens": 1}
         try:
-            prefill_result = await proxy_completion(prefill_url, prefill_dict, trace_id)
+            prefill_result = await _proxy_completion_coalesced(prefill_url, prefill_dict, trace_id)
+        except httpx.TimeoutException as e:
+            _decrement_inflight()
+            upstream_timeouts_total.inc()
+            log.warning("prefill_timeout", session_id=sess_id,
+                        timeout_s=config.llama_request_timeout_s, error=str(e))
+            raise HTTPException(
+                status_code=504,
+                detail=f"Prefill exceeded {config.llama_request_timeout_s}s",
+            )
         except Exception as e:
             _decrement_inflight()
             log.error("prefill_failed", session_id=sess_id, error=str(e))
