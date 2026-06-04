@@ -10,6 +10,7 @@ class SessionEntry:
     slot_id: Optional[int]
     n_past: int = 0
     has_store_state: bool = False
+    prefix_hash: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
 
@@ -21,13 +22,14 @@ class SessionTable:
     def lookup(self, session_id: str) -> Optional[SessionEntry]:
         return self._sessions.get(session_id)
 
-    def register(self, session_id: str, node_name: str, slot_id: int | None = None, n_past: int = 0):
+    def register(self, session_id: str, node_name: str, slot_id: int | None = None, n_past: int = 0, prefix_hash: str | None = None):
         now = time.time()
         entry = SessionEntry(
             session_id=session_id,
             node_name=node_name,
             slot_id=slot_id,
             n_past=n_past,
+            prefix_hash=prefix_hash,
             created_at=now,
             last_used=now,
         )
