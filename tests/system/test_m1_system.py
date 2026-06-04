@@ -19,7 +19,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from coordinator.config import CoordinatorConfig
+from coordinator.config import CoordinatorConfig, WorkerNodeConfig
 from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
@@ -58,12 +58,16 @@ def _make_app_config() -> CoordinatorConfig:
     cfg = CoordinatorConfig(
         host="127.0.0.1",
         port=0,
-        rtx_host="127.0.0.1",
-        rtx_port=9601,
-        rtx_llama_url="http://localhost:8080",
-        p100_host="127.0.0.1",
-        p100_port=9602,
-        p100_llama_url="http://192.168.122.21:8086",
+        workers=[
+            WorkerNodeConfig(
+                name="rtx", host="127.0.0.1", rpc_port=9601,
+                llama_url="http://localhost:8080",
+            ),
+            WorkerNodeConfig(
+                name="p100", host="127.0.0.1", rpc_port=9602,
+                llama_url="http://192.168.122.21:8086",
+            ),
+        ],
         store_host="127.0.0.1",
         store_port=9500,
         health_poll_interval_s=9999,
@@ -71,6 +75,7 @@ def _make_app_config() -> CoordinatorConfig:
         long_prompt_threshold=4096,
         prefix_checkpoint_enabled=True,
         prefix_checkpoint_name="system_prompt",
+        run_mode="fast",
     )
     return cfg
 
@@ -98,7 +103,7 @@ def mock_rpc():
 def app(mock_rpc):
     cfg = _make_app_config()
     table = SessionTable()
-    health = HealthMonitor(cfg.nodes, poll_interval_s=9999)
+    health = HealthMonitor(cfg.workers, poll_interval_s=9999)
     state_mgr = StateManager(table, cfg.store_host, cfg.store_port)
     app = FastAPI()
     router = create_router(cfg, table, health, state_mgr)
@@ -138,10 +143,9 @@ def test_completion_basic_non_streaming(client, monkeypatch):
 
     def fake_route(*args, **kwargs):
         called["route"] = True
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="rtx",
-            node_config=NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080", gpu_type="rtx5060ti"),
+            node_config=WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
             slot_id=0,
             action="route",
             session_id="sess_test",
@@ -174,10 +178,9 @@ def test_completion_basic_non_streaming(client, monkeypatch):
 def test_completion_streaming(client, monkeypatch):
     """Streaming completion returns SSE stream."""
     def fake_route(*args, **kwargs):
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="rtx",
-            node_config=NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080", gpu_type="rtx5060ti"),
+            node_config=WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
             slot_id=0,
             action="route",
             session_id="sess_stream",
@@ -206,10 +209,9 @@ def test_completion_session_id_provided(client, monkeypatch):
 
     def fake_route(**kwargs):
         route_args.update(kwargs)
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="rtx",
-            node_config=NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080", gpu_type="rtx5060ti"),
+            node_config=WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
             slot_id=0,
             action="route",
             session_id="sess_client_provided",
@@ -258,10 +260,9 @@ def test_multi_turn_session_affinity(client, monkeypatch):
         n_past = entry.n_past if entry else 0
         slot_id = entry.slot_id if entry else 0
         calls.append(sess_id)
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="rtx" if not entry else entry.node_name,
-            node_config=NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080", gpu_type="rtx5060ti"),
+            node_config=WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
             slot_id=slot_id or 0,
             action="route",
             session_id=sess_id,
