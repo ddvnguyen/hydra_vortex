@@ -3,7 +3,6 @@ from coordinator.routing import (
     derive_session_id,
     estimate_request_tokens,
     compute_prefix_hash,
-    compute_full_prefix_hash,
     pick_best_prefill_worker,
     pick_best_decode_worker,
     pick_best_mixed_worker,
@@ -74,19 +73,6 @@ def test_compute_prefix_hash_with_system():
     h = compute_prefix_hash(msgs)
     assert h is not None
     assert len(h) == 16
-
-
-def test_compute_full_prefix_hash():
-    msgs = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "first q"},
-        {"role": "assistant", "content": "answer a"},
-        {"role": "user", "content": "follow up"},
-    ]
-    h = compute_full_prefix_hash(msgs)
-    assert h is not None
-    # same input → same hash
-    assert h == compute_full_prefix_hash(msgs)
 
 
 def test_pick_best_prefill_worker_respects_priority():

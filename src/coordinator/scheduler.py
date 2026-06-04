@@ -17,7 +17,6 @@ from coordinator.routing import (
     estimate_request_tokens,
     derive_session_id,
     compute_prefix_hash,
-    compute_full_prefix_hash,
     resolve_slot_id,
     verify_warm_slot,
     pick_best_prefill_worker,
@@ -34,10 +33,6 @@ from coordinator.proxy import proxy_completion, proxy_completion_stream
 from coordinator.metrics import (
     requests_total,
     active_sessions,
-    prefix_cache_hits,
-    prefix_cache_misses,
-    prefix_warmups_total,
-    upstream_coalesced_total,
     upstream_timeouts_total,
 )
 
@@ -105,12 +100,15 @@ class WorkerScheduler:
         max_tokens: int,
         prefix_hash: Optional[str] = None,
     ) -> Union[StreamingResponse, JSONResponse]:
+        if not self._running:
+            raise HTTPException(status_code=503, detail="Server shutting down")
         if len(self._queue) >= self._max_queue_size:
             raise HTTPException(status_code=503, detail="Server busy")
 
         trace_id = new_trace_id()
         estimated = estimate_request_tokens(messages, self._config.chars_per_token)
-        future = asyncio.get_event_loop().create_future()
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
         item = WorkItem(
             request=req,
             messages=messages,
@@ -157,7 +155,9 @@ class WorkerScheduler:
                 continue
             if not self._routable(wname):
                 continue
-            if w.max_prefill_tokens != -1 and item.estimated_tokens > w.max_prefill_tokens:
+            # Use estimated_new_tokens, not accumulated estimated_tokens,
+            # so resumed sessions on P100 are not permanently excluded.
+            if w.max_prefill_tokens != -1 and item.estimated_new_tokens > w.max_prefill_tokens:
                 continue
             return w
         return None
@@ -190,6 +190,7 @@ class WorkerScheduler:
 
                 if not handled:
                     self._new_item.clear()
+                    self._worker_freed.clear()
                     await self._wait_for_wakeup()
             except Exception as exc:
                 log.exception("scheduler_loop_error")
@@ -203,6 +204,8 @@ class WorkerScheduler:
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=30.0)
             for t in pending:
                 t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         except Exception:
             pass
 
@@ -215,15 +218,9 @@ class WorkerScheduler:
             if entry and entry.slot_id is not None:
                 if entry.node_name == worker.name:
                     if await verify_warm_slot(worker, entry, item.trace_id):
-                        self._tracker.release(worker.name)
-                        self._worker_freed.set()
                         await self._execute_affinity(item, worker, entry)
                         return
-                    self._tracker.release(worker.name)
-                    self._worker_freed.set()
                 else:
-                    self._tracker.release(worker.name)
-                    self._worker_freed.set()
                     target = self._worker_by_name(entry.node_name)
                     if target and self._tracker.is_free(target.name) and self._routable(target.name):
                         if self._tracker.acquire(target.name, "decode"):
@@ -294,7 +291,12 @@ class WorkerScheduler:
                                 pass
                         yield chunk
                     await self._track_after_stream(sess_id, node_url, last_usage, item)
+                except Exception:
+                    self._tracker.on_error(worker.name)
+                    raise
                 finally:
+                    self._tracker.release(worker.name)
+                    self._tracker.on_success(worker.name)
                     self._worker_freed.set()
 
             item.future.set_result(StreamingResponse(
@@ -303,14 +305,20 @@ class WorkerScheduler:
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": worker.name},
             ))
         else:
+            self._tracker.release(worker.name)
             try:
                 result = await proxy_completion(node_url, item.request, item.trace_id)
             except httpx.TimeoutException as e:
                 upstream_timeouts_total.inc()
+                self._tracker.on_error(worker.name)
                 log.warning("affinity_timeout", session_id=sess_id, timeout_s=self._config.llama_request_timeout_s, error=str(e))
                 raise HTTPException(status_code=504, detail=f"Completion exceeded {self._config.llama_request_timeout_s}s")
+            except Exception:
+                self._tracker.on_error(worker.name)
+                raise
             finally:
                 self._worker_freed.set()
+            self._tracker.on_success(worker.name)
             await self._track_after_completion(sess_id, node_url, result, item)
             item.future.set_result(JSONResponse(
                 content=result,
@@ -340,7 +348,7 @@ class WorkerScheduler:
             self._tracker.on_error(decode_worker.name)
             raise HTTPException(status_code=503, detail=f"Restore failed: {e}")
 
-        self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_entry)
+        self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_entry, prefix_hash=item.prefix_hash)
 
         requests_total.labels(node=decode_worker.name, reason="store_restore").inc()
         for w in self._config.workers:
@@ -371,6 +379,9 @@ class WorkerScheduler:
                                 pass
                         yield chunk
                     await self._track_after_stream(sess_id, decode_url, last_usage, item)
+                except Exception:
+                    self._tracker.on_error(decode_worker.name)
+                    raise
                 finally:
                     self._tracker.release(decode_worker.name)
                     self._tracker.on_success(decode_worker.name)
@@ -386,7 +397,11 @@ class WorkerScheduler:
                 result = await proxy_completion(decode_url, item.request, item.trace_id)
             except httpx.TimeoutException as e:
                 upstream_timeouts_total.inc()
+                self._tracker.on_error(decode_worker.name)
                 raise HTTPException(status_code=504, detail=f"Completion exceeded {self._config.llama_request_timeout_s}s")
+            except Exception:
+                self._tracker.on_error(decode_worker.name)
+                raise
             finally:
                 self._tracker.release(decode_worker.name)
                 self._tracker.on_success(decode_worker.name)
@@ -424,7 +439,11 @@ class WorkerScheduler:
                                 pass
                         yield chunk
                     await self._track_after_stream(sess_id, node_url, last_usage, item)
-                    await self._maybe_save_prefix(item, worker)
+                    if item.prefix_hash:
+                        await self._maybe_save_prefix(item, worker)
+                except Exception:
+                    self._tracker.on_error(worker.name)
+                    raise
                 finally:
                     self._tracker.release(worker.name)
                     self._tracker.on_success(worker.name)
@@ -440,13 +459,18 @@ class WorkerScheduler:
                 result = await proxy_completion(node_url, item.request, item.trace_id)
             except httpx.TimeoutException as e:
                 upstream_timeouts_total.inc()
+                self._tracker.on_error(worker.name)
                 raise HTTPException(status_code=504, detail=f"Completion exceeded {self._config.llama_request_timeout_s}s")
+            except Exception:
+                self._tracker.on_error(worker.name)
+                raise
             finally:
                 self._tracker.release(worker.name)
                 self._tracker.on_success(worker.name)
                 self._worker_freed.set()
             await self._track_after_completion(sess_id, node_url, result, item)
-            await self._maybe_save_prefix(item, worker)
+            if item.prefix_hash:
+                await self._maybe_save_prefix(item, worker)
             item.future.set_result(JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": worker.name},
@@ -526,7 +550,7 @@ class WorkerScheduler:
             self._worker_freed.set()
             raise HTTPException(status_code=503, detail=f"KV restore failed: {e}")
 
-        self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_after)
+        self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_after, prefix_hash=item.prefix_hash)
         log.info("cold_concurrency_decode", session_id=sess_id, node=decode_worker.name, n_past=n_past_after)
 
         async def stream_concurrency():
@@ -542,7 +566,11 @@ class WorkerScheduler:
                             pass
                     yield chunk
                 await self._track_after_stream(sess_id, decode_url, last_usage, item)
-                await self._maybe_save_prefix(item, decode_worker)
+                if item.prefix_hash:
+                    await self._maybe_save_prefix(item, decode_worker)
+            except Exception:
+                self._tracker.on_error(decode_worker.name)
+                raise
             finally:
                 self._tracker.release(decode_worker.name)
                 self._tracker.on_success(decode_worker.name)

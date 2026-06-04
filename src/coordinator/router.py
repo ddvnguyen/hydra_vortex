@@ -1,12 +1,9 @@
-import asyncio
-import hashlib
-import json
 import time
 from typing import Optional, Union
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from python_shared.log_config import get_logger, new_trace_id
 from coordinator.session_table import SessionTable
@@ -14,18 +11,13 @@ from coordinator.routing import (
     estimate_request_tokens,
     derive_session_id,
     compute_prefix_hash,
-    WORKER_PREFILL,
-    WORKER_DECODE,
-    WORKER_MIXED,
 )
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
 from coordinator.scheduler import WorkerScheduler
-from coordinator.proxy import proxy_completion, proxy_completion_stream
 from coordinator.config import CoordinatorConfig
 from coordinator.metrics import (
-    metrics_endpoint, requests_total, active_sessions,
-    upstream_timeouts_total,
+    metrics_endpoint,
 )
 from coordinator.version import VERSION, REVISION
 
