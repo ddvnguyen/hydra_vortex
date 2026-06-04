@@ -189,13 +189,13 @@ class WorkerScheduler:
                         break
 
                 if not handled:
-                    self._new_item.clear()
-                    self._worker_freed.clear()
                     await self._wait_for_wakeup()
             except Exception as exc:
                 log.exception("scheduler_loop_error")
 
     async def _wait_for_wakeup(self):
+        self._new_item.clear()
+        self._worker_freed.clear()
         tasks = [
             asyncio.create_task(self._worker_freed.wait()),
             asyncio.create_task(self._new_item.wait()),
@@ -212,12 +212,15 @@ class WorkerScheduler:
     # ── process ──────────────────────────────────────────────────────────
 
     async def _process(self, item: WorkItem, worker: WorkerNodeConfig):
+        affinity_dispatched = False
         try:
             entry = self._session_table.lookup(item.session_id)
 
             if entry and entry.slot_id is not None:
                 if entry.node_name == worker.name:
                     if await verify_warm_slot(worker, entry, item.trace_id):
+                        if not item.request.get("stream", False):
+                            affinity_dispatched = True
                         await self._execute_affinity(item, worker, entry)
                         return
                 else:
@@ -250,7 +253,8 @@ class WorkerScheduler:
             raise
         except Exception as e:
             log.error("scheduler_process_failed", session_id=item.session_id, error=str(e))
-            self._tracker.release(worker.name)
+            if not affinity_dispatched:
+                self._tracker.release(worker.name)
             self._worker_freed.set()
             if not item.future.done():
                 item.future.set_exception(HTTPException(status_code=503, detail=str(e)))
