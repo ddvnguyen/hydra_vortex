@@ -14,6 +14,12 @@ services:
       - HYDRA_STORE_PORT=9500
       - HYDRA_STORE_DIR=/mnt/llm-ram/store
       - HYDRA_STORE_DEBUG_PORT=9501
+      - HYDRA_STORE_PG_CONN=Host=localhost;Database=hydra_store;Username=hydra;Password=hydra
+      - HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup
+      - HYDRA_STORE_RESTORE_TOP_N=10
+    depends_on:
+      postgres:
+        condition: service_healthy
     labels:
       component: store
     restart: unless-stopped
@@ -79,3 +85,24 @@ services:
     labels:
       component: coordinator
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    network_mode: host
+    environment:
+      - POSTGRES_DB=hydra_store
+      - POSTGRES_USER=hydra
+      - POSTGRES_PASSWORD=hydra
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydra -d hydra_store"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    labels:
+      component: store
+    restart: unless-stopped
+
+volumes:
+  pg-data:

@@ -17,6 +17,15 @@ RPC connections are patched in-process. Run on any machine, any time.
 | `test_m1_system.py` | Coordinator HTTP: routing, session affinity, migration, eviction, health/status endpoints |
 | `test_m2_system.py` | Prefix checkpoints, chunked dedup routing, store_restore action, n_past guard |
 
+### Tier 1.5 — Standalone Store + PG (only Store + PostgreSQL needed, no GPUs)
+
+Requires Store and PostgreSQL, but no GPU services.  Start with:
+`docker compose up -d postgres store`
+
+| File | What it tests |
+|------|---------------|
+| `test_store_persistence_e2e.py` | Store RPC persistence: PutChunked/GetChunked dedup, manifest CRUD, debug endpoint, write-behind verification, Store restart + recovery |
+
 ### Tier 2 — Full stack (real services required)
 
 All 6 services must be up and healthy before running. GPU hardware required.
@@ -27,6 +36,20 @@ All 6 services must be up and healthy before running. GPU hardware required.
 | `test_full_workflow_system.py` | Full stack through Coordinator: completions, streaming, session lifecycle, migration, prefix checkpoints |
 | `test_large_prompt_system.py` | Large prompts (8K–48K tokens) through Coordinator, llama metrics verification, continuation |
 | `test_stress_system.py` | 4 concurrent completions, cross-session consistency, timing ratio assertions |
+| `test_persistence_system.py` | PG metadata verification after real migration: sessions/chunks tables populated correctly, Store debug stats |
+
+---
+
+## Run — Tier 1.5 (Store + PostgreSQL, no GPU)
+
+Requires only Store + PG from the compose file:
+
+```bash
+docker compose up -d postgres store
+pytest tests/system/test_store_persistence_e2e.py -v
+```
+
+This exercises the full Store persistence layer (chunked ops, manifest CRUD, dedup, write-behind, restart recovery) without needing any GPU services.
 
 ---
 
@@ -103,6 +126,8 @@ All have defaults matching the standard local setup. Override only when addresse
 | `P100_AGENT_PORT` | `9602` | P100 agent RPC port |
 | `STORE_HOST` | `127.0.0.1` | Store RPC host |
 | `STORE_PORT` | `9500` | Store RPC port |
+| `STORE_DEBUG_URL` | `http://127.0.0.1:9501` | Store HTTP debug endpoint |
+| `PG_DSN` | `postgresql://hydra:hydra@localhost:5432/hydra_store` | PostgreSQL DSN for persistence verification |
 
 ### Run commands
 
