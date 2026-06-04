@@ -10,6 +10,7 @@ class SessionEntry:
     slot_id: Optional[int]
     n_past: int = 0
     has_store_state: bool = False
+    prefix_hash: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
 
