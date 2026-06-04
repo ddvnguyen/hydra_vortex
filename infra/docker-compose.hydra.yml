@@ -20,6 +20,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     labels:
       component: store
     restart: unless-stopped
@@ -40,6 +46,12 @@ services:
       - HYDRA_AGENT_DEBUG_HTTP_PORT=9611
     depends_on:
       - store
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9611"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     labels:
       component: agent
       node: rtx
@@ -61,6 +73,12 @@ services:
       - HYDRA_AGENT_DEBUG_HTTP_PORT=9622
     depends_on:
       - store
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9622"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     labels:
       component: agent
       node: p100
@@ -84,6 +102,12 @@ services:
       - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"localhost","rpc_port":9601,"llama_url":"http://localhost:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"localhost","rpc_port":9602,"llama_url":"http://192.168.122.21:8086","worker_type":3,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
     depends_on:
       - store
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     labels:
       component: coordinator
     restart: unless-stopped
