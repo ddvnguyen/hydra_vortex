@@ -1,4 +1,5 @@
 import hashlib
+from dataclasses import dataclass
 from typing import Optional
 
 import httpx
@@ -11,6 +12,17 @@ from coordinator.session_table import SessionEntry
 WORKER_PREFILL = 1
 WORKER_DECODE = 2
 WORKER_MIXED = 3
+
+
+@dataclass
+class RoutingDecision:
+    node_name: str
+    node_config: WorkerNodeConfig
+    slot_id: Optional[int] = None
+    action: str = "route"
+    session_id: Optional[str] = None
+    session_found: bool = False
+    n_past: int = 0
 
 
 def derive_session_id(messages: list[dict]) -> str:
