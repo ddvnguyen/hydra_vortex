@@ -1,0 +1,1526 @@
+{
+  "name": "hydra-vortex-0.7.7",
+  "description": "High-throughput multi-GPU LLM inference system with KV state management. Routes requests across RTX 5060 Ti and Tesla P100 GPUs, migrating ~800 MB KV cache between GPUs without re-prefill.",
+  "languages": [
+    "cpp_dockerfile",
+    "csharp",
+    "csproj",
+    "dockerfile",
+    "example",
+    "javascript",
+    "json",
+    "jsonc",
+    "markdown",
+    "props",
+    "python",
+    "runsettings",
+    "service",
+    "shell",
+    "sln",
+    "toml",
+    "xml",
+    "yaml"
+  ],
+  "frameworks": [
+    "GitHub Actions",
+    "aiofiles",
+    "aiosqlite",
+    "fastapi",
+    "langfuse",
+    "prometheus-client",
+    "pydantic",
+    "structlog",
+    "uvicorn"
+  ],
+  "files": [
+    {
+      "path": ".cursorrules",
+      "language": "unknown",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".dockerignore",
+      "language": "unknown",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".editorconfig",
+      "language": "unknown",
+      "sizeLines": 58,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".env.example",
+      "language": "example",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".github/PULL_REQUEST_TEMPLATE.md",
+      "language": "markdown",
+      "sizeLines": 24,
+      "fileCategory": "docs"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "language": "yaml",
+      "sizeLines": 605,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/claude-code-review.yml",
+      "language": "yaml",
+      "sizeLines": 48,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/monitor.yml",
+      "language": "yaml",
+      "sizeLines": 30,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/opencode-resolve.yml",
+      "language": "yaml",
+      "sizeLines": 28,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/opencode.yml",
+      "language": "yaml",
+      "sizeLines": 49,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/pr-issue-link.yml",
+      "language": "yaml",
+      "sizeLines": 101,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".gitignore",
+      "language": "unknown",
+      "sizeLines": 54,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".gitmodules",
+      "language": "unknown",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".opencodeignore",
+      "language": "unknown",
+      "sizeLines": 47,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".understand-anything/.understandignore",
+      "language": "unknown",
+      "sizeLines": 50,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".understand-anything/tmp/ua-scan.js",
+      "language": "javascript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".understand-anything/tmp/ua-scan.py",
+      "language": "python",
+      "sizeLines": 38,
+      "fileCategory": "code"
+    },
+    {
+      "path": "AGENTS.md",
+      "language": "markdown",
+      "sizeLines": 13,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "AGENT_TOOLS_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 123,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "language": "markdown",
+      "sizeLines": 70,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "CLAUDE.md",
+      "language": "markdown",
+      "sizeLines": 256,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "DevelopmentRunBook.md",
+      "language": "markdown",
+      "sizeLines": 333,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "GITHUB_WORKFLOW_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 331,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "Hydra.runsettings",
+      "language": "runsettings",
+      "sizeLines": 6,
+      "fileCategory": "code"
+    },
+    {
+      "path": "Hydra.sln",
+      "language": "sln",
+      "sizeLines": 126,
+      "fileCategory": "code"
+    },
+    {
+      "path": "PROJECT_PLAN.md",
+      "language": "markdown",
+      "sizeLines": 178,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "README.md",
+      "language": "markdown",
+      "sizeLines": 51,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "TestResults/e2e-full.xml",
+      "language": "xml",
+      "sizeLines": 75,
+      "fileCategory": "config"
+    },
+    {
+      "path": "TestResults/e2e-mocked.xml",
+      "language": "xml",
+      "sizeLines": 1,
+      "fileCategory": "config"
+    },
+    {
+      "path": "VERSION",
+      "language": "unknown",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "docs/GITHUB_PROJECT_SETUP.md",
+      "language": "markdown",
+      "sizeLines": 58,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/REVOLUSION_PLAN_01_JUN.MD",
+      "language": "markdown",
+      "sizeLines": 112,
+      "fileCategory": "code"
+    },
+    {
+      "path": "docs/RUNBOOK.md",
+      "language": "markdown",
+      "sizeLines": 1038,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/[Depricated]PLANE_SETUP.md",
+      "language": "markdown",
+      "sizeLines": 115,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/architecture.md",
+      "language": "markdown",
+      "sizeLines": 409,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/diagrams.md",
+      "language": "markdown",
+      "sizeLines": 484,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/hydra_llama_cpp_PLAN.md",
+      "language": "markdown",
+      "sizeLines": 281,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/milestone-0-mvp.md",
+      "language": "markdown",
+      "sizeLines": 482,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/milestone-1-core.md",
+      "language": "markdown",
+      "sizeLines": 177,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/milestone-2-advanced.md",
+      "language": "markdown",
+      "sizeLines": 127,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/milestone-3-production.md",
+      "language": "markdown",
+      "sizeLines": 154,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/milestone-4-models.md",
+      "language": "markdown",
+      "sizeLines": 40,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/milestone-5-agentic.md",
+      "language": "markdown",
+      "sizeLines": 43,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/milestone-perf.md",
+      "language": "markdown",
+      "sizeLines": 99,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/poc-results.md",
+      "language": "markdown",
+      "sizeLines": 40,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/store-redesign.md",
+      "language": "markdown",
+      "sizeLines": 113,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/workflow/00-overview.md",
+      "language": "markdown",
+      "sizeLines": 33,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/workflow/01-pickup.md",
+      "language": "markdown",
+      "sizeLines": 16,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/workflow/02-implement.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/workflow/03-test-verify.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/workflow/04-commit-pr.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/workflow/05-deploy.md",
+      "language": "markdown",
+      "sizeLines": 17,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/workflow/06-monitoring.md",
+      "language": "markdown",
+      "sizeLines": 21,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/workflow/07-issue-and-close.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "infra/Dockerfile",
+      "language": "dockerfile",
+      "sizeLines": 44,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/cloudflare-worker/.wrangler/cache/wrangler-account.json",
+      "language": "json",
+      "sizeLines": 6,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/cloudflare-worker/index.js",
+      "language": "javascript",
+      "sizeLines": 74,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/cloudflare-worker/package-lock.json",
+      "language": "json",
+      "sizeLines": 4244,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/cloudflare-worker/package.json",
+      "language": "json",
+      "sizeLines": 8,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/cloudflare-worker/wrangler.toml",
+      "language": "toml",
+      "sizeLines": 11,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/docker-compose.hydra.yml",
+      "language": "yaml",
+      "sizeLines": 134,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "infra/docker-compose.infra.yml",
+      "language": "yaml",
+      "sizeLines": 133,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "infra/grafana/dashboards/dashboard-providers.yml",
+      "language": "yaml",
+      "sizeLines": 11,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/grafana/dashboards/hydra-dashboard.json",
+      "language": "json",
+      "sizeLines": 803,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/grafana/dashboards/hydra-logs.json",
+      "language": "json",
+      "sizeLines": 184,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/grafana/datasources/datasources.yml",
+      "language": "yaml",
+      "sizeLines": 18,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/hydra-sidecar.service",
+      "language": "service",
+      "sizeLines": 17,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/install-sidecar.sh",
+      "language": "shell",
+      "sizeLines": 37,
+      "fileCategory": "script"
+    },
+    {
+      "path": "infra/llama-rtx-node/Dockerfile",
+      "language": "dockerfile",
+      "sizeLines": 37,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/llama-rtx-node/docker-compose.yml",
+      "language": "yaml",
+      "sizeLines": 63,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "infra/llama-rtx-node/init/start.sh",
+      "language": "shell",
+      "sizeLines": 21,
+      "fileCategory": "script"
+    },
+    {
+      "path": "infra/llama-rtx-node/init/verify_and_start.sh",
+      "language": "shell",
+      "sizeLines": 32,
+      "fileCategory": "script"
+    },
+    {
+      "path": "infra/llama-rtx-node/llama.cpp_Dockerfile",
+      "language": "cpp_dockerfile",
+      "sizeLines": 44,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/loki/loki-config.yml",
+      "language": "yaml",
+      "sizeLines": 34,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/prometheus/alerts.yml",
+      "language": "yaml",
+      "sizeLines": 102,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/prometheus/prometheus.yml",
+      "language": "yaml",
+      "sizeLines": 78,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/promtail/promtail-config.yml",
+      "language": "yaml",
+      "sizeLines": 85,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/promtail/promtail-p100.yml",
+      "language": "yaml",
+      "sizeLines": 23,
+      "fileCategory": "config"
+    },
+    {
+      "path": "infra/sidecar/Dockerfile",
+      "language": "dockerfile",
+      "sizeLines": 5,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/sidecar/entrypoint.sh",
+      "language": "shell",
+      "sizeLines": 41,
+      "fileCategory": "script"
+    },
+    {
+      "path": "infra/sidecar/stop.sh",
+      "language": "shell",
+      "sizeLines": 12,
+      "fileCategory": "script"
+    },
+    {
+      "path": "infra/systemd/llama-p100-user.service",
+      "language": "service",
+      "sizeLines": 53,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/systemd/llama-p100.service",
+      "language": "service",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/systemd/node-exporter-p100.service",
+      "language": "service",
+      "sizeLines": 11,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/systemd/nvidia-exporter-p100.service",
+      "language": "service",
+      "sizeLines": 15,
+      "fileCategory": "code"
+    },
+    {
+      "path": "infra/systemd/promtail-p100.service",
+      "language": "service",
+      "sizeLines": 11,
+      "fileCategory": "code"
+    },
+    {
+      "path": "monitoring/MONITORING_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 183,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "monitoring/report-2026-05-28T1206Z.md",
+      "language": "markdown",
+      "sizeLines": 276,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "opencode.json",
+      "language": "json",
+      "sizeLines": 21,
+      "fileCategory": "config"
+    },
+    {
+      "path": "opencode.jsonc",
+      "language": "jsonc",
+      "sizeLines": 4,
+      "fileCategory": "config"
+    },
+    {
+      "path": "pyproject.toml",
+      "language": "toml",
+      "sizeLines": 48,
+      "fileCategory": "config"
+    },
+    {
+      "path": "scripts/create_monitoring_issues.py",
+      "language": "python",
+      "sizeLines": 165,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scripts/deploy.sh",
+      "language": "shell",
+      "sizeLines": 62,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/gh_seed_project.py",
+      "language": "python",
+      "sizeLines": 136,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scripts/hydra-token.sh",
+      "language": "shell",
+      "sizeLines": 25,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/plane_seed_roadmap.py",
+      "language": "python",
+      "sizeLines": 215,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scripts/setup-env.sh",
+      "language": "shell",
+      "sizeLines": 124,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/setup-p100.sh",
+      "language": "shell",
+      "sizeLines": 103,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/setup_github_labels.sh",
+      "language": "shell",
+      "sizeLines": 29,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/start-env.sh",
+      "language": "shell",
+      "sizeLines": 17,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/start-hydra.sh",
+      "language": "shell",
+      "sizeLines": 158,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/start-infra.sh",
+      "language": "shell",
+      "sizeLines": 65,
+      "fileCategory": "script"
+    },
+    {
+      "path": "specs/agent-service.md",
+      "language": "markdown",
+      "sizeLines": 105,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "specs/coordinator-api.yaml",
+      "language": "yaml",
+      "sizeLines": 86,
+      "fileCategory": "config"
+    },
+    {
+      "path": "specs/models.md",
+      "language": "markdown",
+      "sizeLines": 105,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "specs/rpc-protocol.md",
+      "language": "markdown",
+      "sizeLines": 167,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "specs/store-service.md",
+      "language": "markdown",
+      "sizeLines": 92,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "src/Directory.Build.props",
+      "language": "props",
+      "sizeLines": 8,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Agent/AgentConfig.cs",
+      "language": "csharp",
+      "sizeLines": 20,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Agent/AgentMetrics.cs",
+      "language": "csharp",
+      "sizeLines": 24,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Agent/AgentServer.cs",
+      "language": "csharp",
+      "sizeLines": 358,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Agent/Hydra.Agent.csproj",
+      "language": "csproj",
+      "sizeLines": 23,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Agent/LlamaClient.cs",
+      "language": "csharp",
+      "sizeLines": 184,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Agent/LocalChunkCache.cs",
+      "language": "csharp",
+      "sizeLines": 191,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Agent/Program.cs",
+      "language": "csharp",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Agent/StateHandler.cs",
+      "language": "csharp",
+      "sizeLines": 556,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Shared/AsyncEnumerableStream.cs",
+      "language": "csharp",
+      "sizeLines": 72,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Shared/ChunkModels.cs",
+      "language": "csharp",
+      "sizeLines": 19,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Shared/Hydra.Shared.csproj",
+      "language": "csproj",
+      "sizeLines": 15,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Shared/HydraLogging.cs",
+      "language": "csharp",
+      "sizeLines": 30,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Shared/Protocol.cs",
+      "language": "csharp",
+      "sizeLines": 107,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Shared/RpcClient.cs",
+      "language": "csharp",
+      "sizeLines": 350,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Shared/RpcResponse.cs",
+      "language": "csharp",
+      "sizeLines": 7,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Shared/RpcServer.cs",
+      "language": "csharp",
+      "sizeLines": 257,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/AssemblyInfo.cs",
+      "language": "csharp",
+      "sizeLines": 3,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/ChunkEngine.cs",
+      "language": "csharp",
+      "sizeLines": 132,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/ChunkModels.cs",
+      "language": "csharp",
+      "sizeLines": 29,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/ChunkStore.cs",
+      "language": "csharp",
+      "sizeLines": 65,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/Hydra.Store.csproj",
+      "language": "csproj",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/Program.cs",
+      "language": "csharp",
+      "sizeLines": 111,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/StatResult.cs",
+      "language": "csharp",
+      "sizeLines": 7,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/StorageEngine.cs",
+      "language": "csharp",
+      "sizeLines": 138,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/StoreConfig.cs",
+      "language": "csharp",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/StoreMetadata.cs",
+      "language": "csharp",
+      "sizeLines": 384,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/StoreMetrics.cs",
+      "language": "csharp",
+      "sizeLines": 33,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/StoreServer.cs",
+      "language": "csharp",
+      "sizeLines": 595,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Hydra.Store/WriteBehindService.cs",
+      "language": "csharp",
+      "sizeLines": 95,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Agent/AgentHttpDebugTests.cs",
+      "language": "csharp",
+      "sizeLines": 374,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Agent/AgentServerRpcTests.cs",
+      "language": "csharp",
+      "sizeLines": 421,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Agent/GlobalUsings.cs",
+      "language": "csharp",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Agent/LlamaClientTests.cs",
+      "language": "csharp",
+      "sizeLines": 214,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Agent/LocalChunkCacheTests.cs",
+      "language": "csharp",
+      "sizeLines": 130,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Agent/StateHandlerTests.cs",
+      "language": "csharp",
+      "sizeLines": 363,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Agent/Tests.Agent.csproj",
+      "language": "csproj",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Integration/AgentChunkedSaveRestoreTests.cs",
+      "language": "csharp",
+      "sizeLines": 445,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Integration/ChunkDedupSpikeTests.cs",
+      "language": "csharp",
+      "sizeLines": 243,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Integration/ChunkedStoreIntegrationTests.cs",
+      "language": "csharp",
+      "sizeLines": 523,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Integration/ChunkedTestUtil.cs",
+      "language": "csharp",
+      "sizeLines": 37,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Integration/GlobalUsings.cs",
+      "language": "csharp",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Integration/SerializedCollection.cs",
+      "language": "csharp",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Integration/StoreAgentIntegrationTests.cs",
+      "language": "csharp",
+      "sizeLines": 466,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Integration/TestResults/test.xml",
+      "language": "xml",
+      "sizeLines": 38,
+      "fileCategory": "config"
+    },
+    {
+      "path": "src/Tests.Integration/Tests.Integration.csproj",
+      "language": "csproj",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Shared/GlobalUsings.cs",
+      "language": "csharp",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Shared/ProtocolTests.cs",
+      "language": "csharp",
+      "sizeLines": 200,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Shared/RpcClientTests.cs",
+      "language": "csharp",
+      "sizeLines": 239,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Shared/RpcServerTests.cs",
+      "language": "csharp",
+      "sizeLines": 186,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Shared/TestRpcServer.cs",
+      "language": "csharp",
+      "sizeLines": 51,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Shared/Tests.Shared.csproj",
+      "language": "csproj",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/ChunkEngineTests.cs",
+      "language": "csharp",
+      "sizeLines": 160,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/ChunkStoreTests.cs",
+      "language": "csharp",
+      "sizeLines": 122,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/GlobalUsings.cs",
+      "language": "csharp",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/SerializedCollection.cs",
+      "language": "csharp",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/StorageEngineTests.cs",
+      "language": "csharp",
+      "sizeLines": 275,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/StoreHttpDebugTests.cs",
+      "language": "csharp",
+      "sizeLines": 143,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/StoreMetadataTests.cs",
+      "language": "csharp",
+      "sizeLines": 239,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/StoreServerTests.cs",
+      "language": "csharp",
+      "sizeLines": 269,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/Tests.Store.csproj",
+      "language": "csproj",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/Tests.Store/WriteBehindServiceTests.cs",
+      "language": "csharp",
+      "sizeLines": 140,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/app.py",
+      "language": "python",
+      "sizeLines": 107,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/config.py",
+      "language": "python",
+      "sizeLines": 76,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/health.py",
+      "language": "python",
+      "sizeLines": 170,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/main.py",
+      "language": "python",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/metrics.py",
+      "language": "python",
+      "sizeLines": 79,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/proxy.py",
+      "language": "python",
+      "sizeLines": 87,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/router.py",
+      "language": "python",
+      "sizeLines": 602,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/routing.py",
+      "language": "python",
+      "sizeLines": 230,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/session_table.py",
+      "language": "python",
+      "sizeLines": 83,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/state_manager.py",
+      "language": "python",
+      "sizeLines": 187,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_concurrency_mode.py",
+      "language": "python",
+      "sizeLines": 119,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_health.py",
+      "language": "python",
+      "sizeLines": 179,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_prefix_checkpoint.py",
+      "language": "python",
+      "sizeLines": 100,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_proxy.py",
+      "language": "python",
+      "sizeLines": 108,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_router.py",
+      "language": "python",
+      "sizeLines": 308,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_routing.py",
+      "language": "python",
+      "sizeLines": 216,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_session_table.py",
+      "language": "python",
+      "sizeLines": 89,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_state_manager.py",
+      "language": "python",
+      "sizeLines": 139,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_streaming_and_migration.py",
+      "language": "python",
+      "sizeLines": 120,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/tests/test_timeout_coalesce.py",
+      "language": "python",
+      "sizeLines": 132,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/coordinator/version.py",
+      "language": "python",
+      "sizeLines": 30,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/llama-cpp",
+      "language": "unknown",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/python_shared/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/python_shared/log_config.py",
+      "language": "python",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/python_shared/rpc_client.py",
+      "language": "python",
+      "sizeLines": 253,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/integration/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/result/README.md",
+      "language": "markdown",
+      "sizeLines": 59,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "tests/result/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 178,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "tests/system/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/conftest.py",
+      "language": "python",
+      "sizeLines": 157,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_agent_workflow_system.py",
+      "language": "python",
+      "sizeLines": 524,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_full_workflow_system.py",
+      "language": "python",
+      "sizeLines": 546,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_large_prompt_system.py",
+      "language": "python",
+      "sizeLines": 225,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_m1_system.py",
+      "language": "python",
+      "sizeLines": 430,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_m2_system.py",
+      "language": "python",
+      "sizeLines": 454,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_persistence_system.py",
+      "language": "python",
+      "sizeLines": 209,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_store_persistence_e2e.py",
+      "language": "python",
+      "sizeLines": 276,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_stress_system.py",
+      "language": "python",
+      "sizeLines": 204,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/system/test_system.py",
+      "language": "python",
+      "sizeLines": 141,
+      "fileCategory": "code"
+    }
+  ],
+  "totalFiles": 212,
+  "filteredByIgnore": 0,
+  "estimatedComplexity": "very-large",
+  "importMap": {
+    ".cursorrules": [],
+    ".dockerignore": [],
+    ".editorconfig": [],
+    ".env.example": [],
+    ".github/PULL_REQUEST_TEMPLATE.md": [],
+    ".github/workflows/ci.yml": [],
+    ".github/workflows/claude-code-review.yml": [],
+    ".github/workflows/monitor.yml": [],
+    ".github/workflows/opencode-resolve.yml": [],
+    ".github/workflows/opencode.yml": [],
+    ".github/workflows/pr-issue-link.yml": [],
+    ".gitignore": [],
+    ".gitmodules": [],
+    ".opencodeignore": [],
+    ".understand-anything/.understandignore": [],
+    ".understand-anything/tmp/ua-scan.js": [],
+    ".understand-anything/tmp/ua-scan.py": [],
+    "AGENTS.md": [],
+    "AGENT_TOOLS_GUIDE.md": [],
+    "CHANGELOG.md": [],
+    "CLAUDE.md": [],
+    "DevelopmentRunBook.md": [],
+    "GITHUB_WORKFLOW_GUIDE.md": [],
+    "Hydra.runsettings": [],
+    "Hydra.sln": [],
+    "PROJECT_PLAN.md": [],
+    "README.md": [],
+    "TestResults/e2e-full.xml": [],
+    "TestResults/e2e-mocked.xml": [],
+    "VERSION": [],
+    "docs/GITHUB_PROJECT_SETUP.md": [],
+    "docs/REVOLUSION_PLAN_01_JUN.MD": [],
+    "docs/RUNBOOK.md": [],
+    "docs/[Depricated]PLANE_SETUP.md": [],
+    "docs/architecture.md": [],
+    "docs/diagrams.md": [],
+    "docs/hydra_llama_cpp_PLAN.md": [],
+    "docs/milestone-0-mvp.md": [],
+    "docs/milestone-1-core.md": [],
+    "docs/milestone-2-advanced.md": [],
+    "docs/milestone-3-production.md": [],
+    "docs/milestone-4-models.md": [],
+    "docs/milestone-5-agentic.md": [],
+    "docs/milestone-perf.md": [],
+    "docs/poc-results.md": [],
+    "docs/store-redesign.md": [],
+    "docs/workflow/00-overview.md": [],
+    "docs/workflow/01-pickup.md": [],
+    "docs/workflow/02-implement.md": [],
+    "docs/workflow/03-test-verify.md": [],
+    "docs/workflow/04-commit-pr.md": [],
+    "docs/workflow/05-deploy.md": [],
+    "docs/workflow/06-monitoring.md": [],
+    "docs/workflow/07-issue-and-close.md": [],
+    "infra/Dockerfile": [],
+    "infra/cloudflare-worker/.wrangler/cache/wrangler-account.json": [],
+    "infra/cloudflare-worker/index.js": [],
+    "infra/cloudflare-worker/package-lock.json": [],
+    "infra/cloudflare-worker/package.json": [],
+    "infra/cloudflare-worker/wrangler.toml": [],
+    "infra/docker-compose.hydra.yml": [],
+    "infra/docker-compose.infra.yml": [],
+    "infra/grafana/dashboards/dashboard-providers.yml": [],
+    "infra/grafana/dashboards/hydra-dashboard.json": [],
+    "infra/grafana/dashboards/hydra-logs.json": [],
+    "infra/grafana/datasources/datasources.yml": [],
+    "infra/hydra-sidecar.service": [],
+    "infra/install-sidecar.sh": [],
+    "infra/llama-rtx-node/Dockerfile": [],
+    "infra/llama-rtx-node/docker-compose.yml": [],
+    "infra/llama-rtx-node/init/start.sh": [],
+    "infra/llama-rtx-node/init/verify_and_start.sh": [],
+    "infra/llama-rtx-node/llama.cpp_Dockerfile": [],
+    "infra/loki/loki-config.yml": [],
+    "infra/prometheus/alerts.yml": [],
+    "infra/prometheus/prometheus.yml": [],
+    "infra/promtail/promtail-config.yml": [],
+    "infra/promtail/promtail-p100.yml": [],
+    "infra/sidecar/Dockerfile": [],
+    "infra/sidecar/entrypoint.sh": [],
+    "infra/sidecar/stop.sh": [],
+    "infra/systemd/llama-p100-user.service": [],
+    "infra/systemd/llama-p100.service": [],
+    "infra/systemd/node-exporter-p100.service": [],
+    "infra/systemd/nvidia-exporter-p100.service": [],
+    "infra/systemd/promtail-p100.service": [],
+    "monitoring/MONITORING_GUIDE.md": [],
+    "monitoring/report-2026-05-28T1206Z.md": [],
+    "opencode.json": [],
+    "opencode.jsonc": [],
+    "pyproject.toml": [],
+    "scripts/create_monitoring_issues.py": [],
+    "scripts/deploy.sh": [],
+    "scripts/gh_seed_project.py": [],
+    "scripts/hydra-token.sh": [],
+    "scripts/plane_seed_roadmap.py": [],
+    "scripts/setup-env.sh": [],
+    "scripts/setup-p100.sh": [],
+    "scripts/setup_github_labels.sh": [],
+    "scripts/start-env.sh": [],
+    "scripts/start-hydra.sh": [],
+    "scripts/start-infra.sh": [],
+    "specs/agent-service.md": [],
+    "specs/coordinator-api.yaml": [],
+    "specs/models.md": [],
+    "specs/rpc-protocol.md": [],
+    "specs/store-service.md": [],
+    "src/Directory.Build.props": [],
+    "src/Hydra.Agent/AgentConfig.cs": [],
+    "src/Hydra.Agent/AgentMetrics.cs": [],
+    "src/Hydra.Agent/AgentServer.cs": [],
+    "src/Hydra.Agent/Hydra.Agent.csproj": [],
+    "src/Hydra.Agent/LlamaClient.cs": [],
+    "src/Hydra.Agent/LocalChunkCache.cs": [],
+    "src/Hydra.Agent/Program.cs": [],
+    "src/Hydra.Agent/StateHandler.cs": [],
+    "src/Hydra.Shared/AsyncEnumerableStream.cs": [],
+    "src/Hydra.Shared/ChunkModels.cs": [],
+    "src/Hydra.Shared/Hydra.Shared.csproj": [],
+    "src/Hydra.Shared/HydraLogging.cs": [],
+    "src/Hydra.Shared/Protocol.cs": [],
+    "src/Hydra.Shared/RpcClient.cs": [],
+    "src/Hydra.Shared/RpcResponse.cs": [],
+    "src/Hydra.Shared/RpcServer.cs": [],
+    "src/Hydra.Store/AssemblyInfo.cs": [],
+    "src/Hydra.Store/ChunkEngine.cs": [],
+    "src/Hydra.Store/ChunkModels.cs": [],
+    "src/Hydra.Store/ChunkStore.cs": [],
+    "src/Hydra.Store/Hydra.Store.csproj": [],
+    "src/Hydra.Store/Program.cs": [],
+    "src/Hydra.Store/StatResult.cs": [],
+    "src/Hydra.Store/StorageEngine.cs": [],
+    "src/Hydra.Store/StoreConfig.cs": [],
+    "src/Hydra.Store/StoreMetadata.cs": [],
+    "src/Hydra.Store/StoreMetrics.cs": [],
+    "src/Hydra.Store/StoreServer.cs": [],
+    "src/Hydra.Store/WriteBehindService.cs": [],
+    "src/Tests.Agent/AgentHttpDebugTests.cs": [],
+    "src/Tests.Agent/AgentServerRpcTests.cs": [],
+    "src/Tests.Agent/GlobalUsings.cs": [],
+    "src/Tests.Agent/LlamaClientTests.cs": [],
+    "src/Tests.Agent/LocalChunkCacheTests.cs": [],
+    "src/Tests.Agent/StateHandlerTests.cs": [],
+    "src/Tests.Agent/Tests.Agent.csproj": [],
+    "src/Tests.Integration/AgentChunkedSaveRestoreTests.cs": [],
+    "src/Tests.Integration/ChunkDedupSpikeTests.cs": [],
+    "src/Tests.Integration/ChunkedStoreIntegrationTests.cs": [],
+    "src/Tests.Integration/ChunkedTestUtil.cs": [],
+    "src/Tests.Integration/GlobalUsings.cs": [],
+    "src/Tests.Integration/SerializedCollection.cs": [],
+    "src/Tests.Integration/StoreAgentIntegrationTests.cs": [],
+    "src/Tests.Integration/TestResults/test.xml": [],
+    "src/Tests.Integration/Tests.Integration.csproj": [],
+    "src/Tests.Shared/GlobalUsings.cs": [],
+    "src/Tests.Shared/ProtocolTests.cs": [],
+    "src/Tests.Shared/RpcClientTests.cs": [],
+    "src/Tests.Shared/RpcServerTests.cs": [],
+    "src/Tests.Shared/TestRpcServer.cs": [],
+    "src/Tests.Shared/Tests.Shared.csproj": [],
+    "src/Tests.Store/ChunkEngineTests.cs": [],
+    "src/Tests.Store/ChunkStoreTests.cs": [],
+    "src/Tests.Store/GlobalUsings.cs": [],
+    "src/Tests.Store/SerializedCollection.cs": [],
+    "src/Tests.Store/StorageEngineTests.cs": [],
+    "src/Tests.Store/StoreHttpDebugTests.cs": [],
+    "src/Tests.Store/StoreMetadataTests.cs": [],
+    "src/Tests.Store/StoreServerTests.cs": [],
+    "src/Tests.Store/Tests.Store.csproj": [],
+    "src/Tests.Store/WriteBehindServiceTests.cs": [],
+    "src/coordinator/__init__.py": [],
+    "src/coordinator/app.py": [],
+    "src/coordinator/config.py": [],
+    "src/coordinator/health.py": [],
+    "src/coordinator/main.py": [],
+    "src/coordinator/metrics.py": [],
+    "src/coordinator/proxy.py": [],
+    "src/coordinator/router.py": [],
+    "src/coordinator/routing.py": [],
+    "src/coordinator/session_table.py": [],
+    "src/coordinator/state_manager.py": [],
+    "src/coordinator/tests/__init__.py": [],
+    "src/coordinator/tests/test_concurrency_mode.py": [],
+    "src/coordinator/tests/test_health.py": [],
+    "src/coordinator/tests/test_prefix_checkpoint.py": [],
+    "src/coordinator/tests/test_proxy.py": [],
+    "src/coordinator/tests/test_router.py": [],
+    "src/coordinator/tests/test_routing.py": [],
+    "src/coordinator/tests/test_session_table.py": [],
+    "src/coordinator/tests/test_state_manager.py": [],
+    "src/coordinator/tests/test_streaming_and_migration.py": [],
+    "src/coordinator/tests/test_timeout_coalesce.py": [],
+    "src/coordinator/version.py": [],
+    "src/llama-cpp": [],
+    "src/python_shared/__init__.py": [],
+    "src/python_shared/log_config.py": [],
+    "src/python_shared/rpc_client.py": [],
+    "tests/__init__.py": [],
+    "tests/integration/__init__.py": [],
+    "tests/result/README.md": [],
+    "tests/result/__init__.py": [],
+    "tests/system/GUIDE.md": [],
+    "tests/system/__init__.py": [],
+    "tests/system/conftest.py": [],
+    "tests/system/test_agent_workflow_system.py": [],
+    "tests/system/test_full_workflow_system.py": [],
+    "tests/system/test_large_prompt_system.py": [],
+    "tests/system/test_m1_system.py": [],
+    "tests/system/test_m2_system.py": [],
+    "tests/system/test_persistence_system.py": [],
+    "tests/system/test_store_persistence_e2e.py": [],
+    "tests/system/test_stress_system.py": [],
+    "tests/system/test_system.py": []
+  }
+}

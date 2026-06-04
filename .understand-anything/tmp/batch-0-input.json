@@ -1,0 +1,182 @@
+{
+  "projectRoot": "/mnt/WorkDisk/Workplace/hydra_vortex",
+  "batchFiles": [
+    {
+      "path": ".cursorrules",
+      "language": "unknown",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".dockerignore",
+      "language": "unknown",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".editorconfig",
+      "language": "unknown",
+      "sizeLines": 58,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".env.example",
+      "language": "example",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".github/PULL_REQUEST_TEMPLATE.md",
+      "language": "markdown",
+      "sizeLines": 24,
+      "fileCategory": "docs"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "language": "yaml",
+      "sizeLines": 605,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/claude-code-review.yml",
+      "language": "yaml",
+      "sizeLines": 48,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/monitor.yml",
+      "language": "yaml",
+      "sizeLines": 30,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/opencode-resolve.yml",
+      "language": "yaml",
+      "sizeLines": 28,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/opencode.yml",
+      "language": "yaml",
+      "sizeLines": 49,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".github/workflows/pr-issue-link.yml",
+      "language": "yaml",
+      "sizeLines": 101,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".gitignore",
+      "language": "unknown",
+      "sizeLines": 54,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".gitmodules",
+      "language": "unknown",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".opencodeignore",
+      "language": "unknown",
+      "sizeLines": 47,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".understand-anything/.understandignore",
+      "language": "unknown",
+      "sizeLines": 50,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".understand-anything/tmp/ua-scan.js",
+      "language": "javascript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".understand-anything/tmp/ua-scan.py",
+      "language": "python",
+      "sizeLines": 38,
+      "fileCategory": "code"
+    },
+    {
+      "path": "AGENTS.md",
+      "language": "markdown",
+      "sizeLines": 13,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "AGENT_TOOLS_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 123,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "language": "markdown",
+      "sizeLines": 70,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "CLAUDE.md",
+      "language": "markdown",
+      "sizeLines": 256,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "DevelopmentRunBook.md",
+      "language": "markdown",
+      "sizeLines": 333,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "GITHUB_WORKFLOW_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 331,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "Hydra.runsettings",
+      "language": "runsettings",
+      "sizeLines": 6,
+      "fileCategory": "code"
+    },
+    {
+      "path": "Hydra.sln",
+      "language": "sln",
+      "sizeLines": 126,
+      "fileCategory": "code"
+    }
+  ],
+  "batchImportData": {
+    ".cursorrules": [],
+    ".dockerignore": [],
+    ".editorconfig": [],
+    ".env.example": [],
+    ".github/PULL_REQUEST_TEMPLATE.md": [],
+    ".github/workflows/ci.yml": [],
+    ".github/workflows/claude-code-review.yml": [],
+    ".github/workflows/monitor.yml": [],
+    ".github/workflows/opencode-resolve.yml": [],
+    ".github/workflows/opencode.yml": [],
+    ".github/workflows/pr-issue-link.yml": [],
+    ".gitignore": [],
+    ".gitmodules": [],
+    ".opencodeignore": [],
+    ".understand-anything/.understandignore": [],
+    ".understand-anything/tmp/ua-scan.js": [],
+    ".understand-anything/tmp/ua-scan.py": [],
+    "AGENTS.md": [],
+    "AGENT_TOOLS_GUIDE.md": [],
+    "CHANGELOG.md": [],
+    "CLAUDE.md": [],
+    "DevelopmentRunBook.md": [],
+    "GITHUB_WORKFLOW_GUIDE.md": [],
+    "Hydra.runsettings": [],
+    "Hydra.sln": []
+  }
+}

@@ -49,7 +49,7 @@ services:
       --log-timestamps --log-prefix --log-colors on --metrics --slots --perf --log-verbosity 4
       --cont-batching --parallel 2 --cache-prompt --cache-reuse 64
       --prio 3 --prio-batch 1
-      --n-cpu-moe 36 --n-gpu-layers all
+      --n-cpu-moe 32 --n-gpu-layers all
       --context-shift
       --slot-prompt-similarity 0.6
       --reasoning on --jinja
@@ -58,6 +58,6 @@ services:
       --yarn-orig-ctx 32768
       --timeout 1800
       --spec-type draft-mtp --spec-draft-n-max 3
-      --mmproj /models/Qwen3.6-35B-A3B-mmproj-F16.gguf
       --rpc-port 9501
+#      --mmproj /models/Qwen3.6-35B-A3B-mmproj-F16.gguf
 #      --swa-full --direct-io
