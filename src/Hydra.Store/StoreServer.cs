@@ -16,14 +16,20 @@ public sealed class StoreServer : RpcServer
 	private readonly StoreConfig _cfg;
 	private readonly StorageEngine _engine;
 	private readonly ChunkStore _chunkStore;
+	private readonly StoreMetadata? _metadata;
+	private static readonly Serilog.ILogger _log = Serilog.Log.ForContext<StoreServer>();
 
-	public StoreServer(StoreConfig cfg, StorageEngine engine, ChunkStore chunkStore)
+	public StoreServer(StoreConfig cfg, StorageEngine engine, ChunkStore chunkStore, StoreMetadata? metadata = null)
 		 : base(cfg.Host, cfg.Port)
 	{
 		_cfg = cfg;
 		_engine = engine;
 		_chunkStore = chunkStore;
+		_metadata = metadata;
 	}
+
+	private StoreMetadata Metadata => _metadata ?? throw new InvalidOperationException(
+		"StoreMetadata not configured: metadata-dependent operations require Postgres");
 
 	protected override async Task HandleAsync(
 		OpCode op, string key, string traceId, long payloadLen,
@@ -173,7 +179,7 @@ public sealed class StoreServer : RpcServer
 			var chunks = new List<ChunkRef>();
 			var totalNew = 0;
 
- await ChunkEngine.ChunkAndHashFromPipeAsync(reader, payloadLen,
+			 await ChunkEngine.ChunkAndHashFromPipeAsync(reader, payloadLen,
 				 async (chunkData, hash, innerCt) =>
 				 {
 					 var chunkRef = new ChunkRef(chunks.Count, hash, chunkData.Length);
@@ -181,6 +187,7 @@ public sealed class StoreServer : RpcServer
 
 					 if (await _chunkStore.StoreChunkAsync(hash, chunkData, innerCt))
 					 {
+						 await Metadata.RegisterChunkAsync(hash, chunkData.Length, innerCt);
 						 Interlocked.Increment(ref totalNew);
 					 }
 				 }, ct);
@@ -188,14 +195,11 @@ public sealed class StoreServer : RpcServer
 			var totalChunks = chunks.Count;
 			var deduped = totalChunks - totalNew;
 
-			// Read n_past written earlier by PutMeta; clear the temp file afterward.
-			var storedNpast = await _chunkStore.GetMetaAsync(key, "n_past", ct);
+			var storedNpast = await Metadata.GetNPastAsync(key, ct);
 			var nPast = storedNpast ?? 0;
-			if (storedNpast.HasValue)
-				await _chunkStore.SaveMetaAsync(key, "n_past", "", ct);
+			await Metadata.SetNPastAsync(key, 0, ct);
 
-			var manifest = ChunkEngine.CreateManifest(key, nPast, payloadLen, chunks);
-			await _chunkStore.SaveManifestAsync(key, manifest, ct);
+			await Metadata.UpsertManifestAsync(key, nPast, payloadLen, chunks, ct);
 
 			StoreMetrics.OpsTotal.WithLabels("put_chunked").Inc();
 			StoreMetrics.BytesStored.Inc(payloadLen);
@@ -220,7 +224,7 @@ public sealed class StoreServer : RpcServer
 
 		try
 		{
-			var manifest = await _chunkStore.LoadManifestAsync(key, ct);
+			var manifest = await Metadata.GetManifestAsync(key, ct);
 			if (manifest is null)
 			{
 				StoreMetrics.OpsTotal.WithLabels("get_chunked_not_found").Inc();
@@ -235,7 +239,7 @@ public sealed class StoreServer : RpcServer
 				knownHashes = JsonSerializer.Deserialize<List<string>>(clientHashesJson) ?? [];
 			}
 
-			var missingChunks = _chunkStore.DiffPlanWithInfo(manifest, knownHashes);
+			var missingChunks = ChunkEngine.DiffPlanWithInfo(manifest, knownHashes);
 
 			// Resolve once so the declared payload length exactly matches what we write:
 			// each resident chunk contributes 8 bytes of framing ([4B index][4B size])
@@ -299,11 +303,22 @@ public sealed class StoreServer : RpcServer
 				candidateHashes = JsonSerializer.Deserialize<List<string>>(json) ?? [];
 			}
 
-			// Distinct preserves "ask once per unique chunk"; the store either has it or not.
-			var missingHashes = candidateHashes
-				.Distinct()
-				.Where(h => !_chunkStore.HasChunk(h))
-				.ToList();
+			var missingHashes = new List<string>();
+			foreach (var h in candidateHashes.Distinct())
+			{
+				if (_chunkStore.HasChunk(h))
+					continue;
+				if (!await Metadata.HasChunkAsync(h, ct))
+				{
+					missingHashes.Add(h);
+				}
+				else
+				{
+					_log.Warning("SyncMissing: hash {Hash} exists in PG but missing from disk — deleting stale PG row", h);
+					await Metadata.DeleteChunkAsync(h, ct);
+					missingHashes.Add(h);
+				}
+			}
 
 			var payload = JsonSerializer.SerializeToUtf8Bytes(new { missing_hashes = missingHashes });
 			var meta = $$"""{"missing_count":{{missingHashes.Count}},"candidate_count":{{candidateHashes.Count}}}""";
@@ -353,7 +368,10 @@ public sealed class StoreServer : RpcServer
 				received++;
 				totalPushedSize += chunkSize;
 				if (await _chunkStore.StoreChunkAsync(hash, chunkData, ct))
+				{
+					await Metadata.RegisterChunkAsync(hash, chunkSize, ct);
 					stored++;
+				}
 			}
 
 			var meta = $$"""{"stored":{{stored}},"received":{{received}}}""";
@@ -404,14 +422,13 @@ public sealed class StoreServer : RpcServer
 					var hash = c.GetProperty("hash").GetString() ?? "";
 					var size = c.GetProperty("size").GetInt32();
 					chunks.Add(new ChunkRef(idx, hash, size));
-					if (!_chunkStore.HasChunk(hash))
+					if (!_chunkStore.HasChunk(hash) && !await Metadata.HasChunkAsync(hash, ct))
 						missing.Add(hash);
 				}
 			}
 
 			if (missing.Count > 0)
 			{
-				// Refuse — a manifest referencing absent chunks would corrupt restore.
 				StoreMetrics.OpsTotal.WithLabels("put_manifest_missing_chunks").Inc();
 				var errPayload = JsonSerializer.SerializeToUtf8Bytes(new { missing_hashes = missing });
 				var errMeta = $$"""{"error":"manifest references {{missing.Count}} unresident chunks"}""";
@@ -422,10 +439,8 @@ public sealed class StoreServer : RpcServer
 				return;
 			}
 
-			// Order by declared index so reassembly (index * ChunkSize) is correct.
 			chunks.Sort((a, b) => a.Index.CompareTo(b.Index));
-			var manifest = ChunkEngine.CreateManifest(key, nPast, totalSize, chunks);
-			await _chunkStore.SaveManifestAsync(key, manifest, ct);
+			await Metadata.UpsertManifestAsync(key, nPast, totalSize, chunks, ct);
 
 			var meta = $$"""{"written":true,"chunks":{{chunks.Count}},"n_past":{{nPast}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
@@ -444,7 +459,7 @@ public sealed class StoreServer : RpcServer
 	{
 		using var _ = StoreMetrics.OpDuration.WithLabels("get_manifest").NewTimer();
 
-		var manifest = await _chunkStore.LoadManifestAsync(key, ct);
+		var manifest = await Metadata.GetManifestAsync(key, ct);
 		if (manifest is null)
 		{
 			StoreMetrics.OpsTotal.WithLabels("get_manifest_not_found").Inc();
@@ -493,25 +508,7 @@ public sealed class StoreServer : RpcServer
 			}
 
 			int nPast = npEl.GetInt32();
-
-			var manifest = await _chunkStore.LoadManifestAsync(key, ct);
-			if (manifest is not null)
-			{
-				var updated = new Manifest(
-					SessionId: manifest.SessionId,
-					Version: manifest.Version,
-					NPast: nPast,
-					TotalSize: manifest.TotalSize,
-					Chunks: manifest.Chunks,
-					CreatedAt: manifest.CreatedAt
-				);
-				await _chunkStore.SaveManifestAsync(key, updated, ct);
-			}
-			else
-			{
-				// Manifest doesn't exist yet (new save). Store n_past as temp metadata.
-				await _chunkStore.SaveMetaAsync(key, "n_past", nPast.ToString(), ct);
-			}
+			await Metadata.SetNPastAsync(key, nPast, ct);
 
 			var meta = $$"""{"n_past":{{nPast}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
@@ -526,9 +523,9 @@ public sealed class StoreServer : RpcServer
 		}
 	}
 
-	private async Task<int> RunGCAsync(HashSet<string> keepSessions)
+	private async Task<int> RunGCAsync(CancellationToken ct)
 	{
-		var removed = _chunkStore.GC(keepSessions);
+		var removed = await Metadata.GcOrphanChunksAsync(_chunkStore.ChunksDirectory, ct);
 		if (removed > 0)
 			StoreMetrics.ChunksRemoved.Inc(removed);
 		return removed;
@@ -567,18 +564,14 @@ public sealed class StoreServer : RpcServer
 			});
 		});
 
-		app.MapPost("/debug/gc", async (HttpContext ctx) =>
+		app.MapPost("/debug/gc", async () =>
 		{
-			var keepSessions = new HashSet<string>();
-			var body = await ctx.Request.ReadFromJsonAsync<GcRequest>(ct);
-			if (body?.KeepSessions is not null)
-				keepSessions = [.. body.KeepSessions];
-
-			var removed = _chunkStore.GC(keepSessions);
+			if (_metadata is null)
+				return new { chunks_removed = 0 };
+			var removed = await _metadata.GcOrphanChunksAsync(_chunkStore.ChunksDirectory, CancellationToken.None);
 			if (removed > 0)
 				StoreMetrics.ChunksRemoved.Inc(removed);
-
-			return Results.Json(new { chunks_removed = removed });
+			return new { chunks_removed = removed };
 		});
 
 		app.UseMetricServer();
@@ -588,7 +581,4 @@ public sealed class StoreServer : RpcServer
 	}
 }
 
-public sealed record GcRequest
-{
-	public List<string>? KeepSessions { get; init; }
-}
+

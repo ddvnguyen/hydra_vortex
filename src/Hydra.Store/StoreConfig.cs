@@ -9,6 +9,10 @@ public sealed record StoreConfig
     public string StoreDir { get; init; } = EnvString("HYDRA_STORE_DIR", "/mnt/llm-ram/store");
     public long MaxPayloadBytes { get; init; } = 4_294_967_296;
     public int DebugHttpPort { get; init; } = EnvInt("HYDRA_STORE_DEBUG_PORT", 9501);
+    public string PgConn { get; init; } = EnvString("HYDRA_STORE_PG_CONN",
+        "Host=postgres;Database=hydra_store;Username=hydra;Password=hydra");
+    public string BackupDir { get; init; } = EnvString("HYDRA_STORE_BACKUP_DIR", "/mnt/SSD/hydra-backup");
+    public int RestoreTopN { get; init; } = EnvInt("HYDRA_STORE_RESTORE_TOP_N", 10);
 
     [JsonIgnore]
     public DirectoryInfo StoreDirectory => new(StoreDir);

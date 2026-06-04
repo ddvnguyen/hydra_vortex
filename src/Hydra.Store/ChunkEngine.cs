@@ -121,4 +121,12 @@ public static class ChunkEngine
             .Select(c => c.Hash)
             .ToList();
     }
+
+    public static List<ChunkRef> DiffPlanWithInfo(Manifest manifest, List<string> clientHashes)
+    {
+        var clientSet = new HashSet<string>(clientHashes);
+        return manifest.Chunks
+            .Where(c => !clientSet.Contains(c.Hash))
+            .ToList();
+    }
 }
