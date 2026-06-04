@@ -76,6 +76,10 @@ track (**M-Perf supersedes the old "M3 Production"**). Tracked in the GitHub Pro
 | M3      | Persistence (NVMe write-behind, **C# re-spec**) + obs harden | planned |
 | M4      | Model mgmt & multi-modal (dist, dynamic load, vision/…)    | planned |
 | M5      | LLM obs & agentic (Langfuse, A/B testing, agentic)         | planned |
+| Phase 5 | Semantic KV: KV DAG + git-aware prefix cache (#107)        | planned |
+
+Phase 5 (Store v2 "Semantic KV", #107) design: `docs/kv-dag-architecture.md` (KV DAG, git-aware
+reuse, content-defined chunking; quantization excluded), decomposed as issues #107-A … #107-I.
 
 ## Task Lifecycle (MANDATORY)
 Every unit of work follows this loop. Each step's detail is in `docs/workflow/` —
