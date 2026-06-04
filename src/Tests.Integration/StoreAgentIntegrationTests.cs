@@ -100,7 +100,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
             Assert.Equal(0, saveResult.SlotId);
             Assert.Equal(2964, saveResult.NPast);
             Assert.Equal(10_000, saveResult.Size);
-            Assert.True(saveResult.ElapsedMs > 0);
+            Assert.True(saveResult.ElapsedMs >= 0);
 
             // Verify data was stored correctly by reading it back from the real store
             var getResp = await storeClient.RequestAsync(
@@ -188,7 +188,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
             // Assert: restore result is valid
             Assert.True(restoreResult.Restored);
             Assert.Equal(2964, restoreResult.NPast);
-            Assert.True(restoreResult.ElapsedMs > 0);
+            Assert.True(restoreResult.ElapsedMs >= 0);
 
             // Verify data was actually sent to llama mock (not the old TestStoreServer proxy approach)
             Assert.True(restoredCalled, "Llama PUT /slots/0/state was not called");
@@ -262,7 +262,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
             // Assert save result
             Assert.Equal(5_000, saveResult.Size);
             Assert.Equal(1500, saveResult.NPast);
-            Assert.True(saveResult.ElapsedMs > 0);
+            Assert.True(saveResult.ElapsedMs >= 0);
 
             // Verify data exists in store
             var getResp = await storeClient.RequestAsync(

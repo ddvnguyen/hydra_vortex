@@ -27,7 +27,11 @@ def config():
 
 
 @pytest.fixture
-def app(config):
+def config_fast():
+    return CoordinatorConfig(workers=[RTX_CFG, P100_CFG], run_mode="fast")
+
+
+def _make_app(config: CoordinatorConfig) -> FastAPI:
     app = FastAPI()
     table = SessionTable()
     health = HealthMonitor(config.workers)
@@ -39,8 +43,23 @@ def app(config):
 
 
 @pytest.fixture
+def app(config):
+    return _make_app(config)
+
+
+@pytest.fixture
+def app_fast(config_fast):
+    return _make_app(config_fast)
+
+
+@pytest.fixture
 def client(app):
     return TestClient(app)
+
+
+@pytest.fixture
+def client_fast(app_fast):
+    return TestClient(app_fast)
 
 
 def make_decision(node_name="rtx", action="route", session_id="sess_test", n_past=0):
@@ -231,7 +250,7 @@ def test_completion_returns_503_when_no_healthy_nodes(client):
     assert resp.status_code == 503
 
 
-def test_completion_non_streaming(client):
+def test_completion_non_streaming(client_fast):
     with patch("coordinator.router.proxy_completion") as mock_proxy, \
          patch("coordinator.router.route_request") as mock_route:
         mock_proxy.return_value = {
@@ -239,7 +258,7 @@ def test_completion_non_streaming(client):
             "usage": {"total_tokens": 5},
         }
         mock_route.return_value = make_decision()
-        resp = client.post(
+        resp = client_fast.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
         )
@@ -256,7 +275,7 @@ def test_migrate_session_not_found(client):
     assert resp.status_code == 404
 
 
-def test_completion_derives_session_id(client):
+def test_completion_derives_session_id(client_fast):
     with patch("coordinator.router.proxy_completion") as mock_proxy, \
          patch("coordinator.router.route_request") as mock_route:
         mock_proxy.return_value = {
@@ -264,7 +283,7 @@ def test_completion_derives_session_id(client):
             "usage": {"total_tokens": 5},
         }
         mock_route.return_value = make_decision()
-        resp = client.post(
+        resp = client_fast.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
         )

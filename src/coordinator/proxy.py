@@ -35,9 +35,7 @@ async def proxy_completion(
     data = resp.json()
 
     data["hydra"] = {"trace_id": trace_id}
-
     return data
-
 
 
 async def proxy_completion_stream(
@@ -59,8 +57,8 @@ async def proxy_completion_stream(
         async for line in resp.aiter_lines():
             if line:
                 yield f"{line}\n\n"
-
-    yield f'data: {{"hydra": {{"trace_id": "{trace_id}"}}}}\n\n'
+                if line.strip() == "data: [DONE]":
+                    yield f"data: {json.dumps({'hydra': {'trace_id': trace_id}})}\n\n"
 
 
 async def warmup_prefix(
