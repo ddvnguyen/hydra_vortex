@@ -60,15 +60,12 @@ async def _rpc(op: OpCode, key: str, payload: bytes = b"", trace: str = "") -> .
         await client.close()
 
 
-async def _query_pg(sql: str, *params: str) -> list[list[str]]:
-    """Execute a SQL query via psql subprocess with positional params ($1..$N)."""
+async def _query_pg(sql: str) -> list[list[str]]:
+    """Execute a SQL query via psql subprocess (caller must validate interpolated IDs)."""
     import subprocess
 
-    args = ["psql", PG_DSN, "-t", "-A", "-F", "|", "-c", sql]
-    for p in params:
-        args.extend(["-v", f"p{params.index(p) + 1}={p}"])
     result = subprocess.run(
-        args,
+        ["psql", PG_DSN, "-t", "-A", "-F", "|", "-c", sql],
         capture_output=True,
         text=True,
         timeout=10,

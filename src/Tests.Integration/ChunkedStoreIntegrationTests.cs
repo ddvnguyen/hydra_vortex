@@ -9,6 +9,7 @@ using StoreMetadata = Hydra.Store.StoreMetadata;
 
 namespace Tests.Integration;
 
+[Collection("SerializedPG")]
 public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
 {
     private readonly DirectoryInfo _storeDir;

@@ -168,6 +168,11 @@ public sealed class StoreMetadata : IAsyncDisposable
     public async Task DeleteChunkAsync(string hash, CancellationToken ct = default)
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var delSc = conn.CreateCommand();
+        delSc.CommandText = "DELETE FROM session_chunks WHERE hash = @hash";
+        delSc.Parameters.AddWithValue("hash", hash);
+        await delSc.ExecuteNonQueryAsync(ct);
+
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM chunks WHERE hash = @hash";
         cmd.Parameters.AddWithValue("hash", hash);
@@ -284,6 +289,7 @@ public sealed class StoreMetadata : IAsyncDisposable
             hashes.Add(reader.GetString(0));
         await reader.CloseAsync();
 
+        var sessionCount = 0;
         foreach (var hash in hashes)
         {
             var path = Path.Combine(chunksDir.FullName, hash);
@@ -291,26 +297,14 @@ public sealed class StoreMetadata : IAsyncDisposable
                 File.Delete(path);
         }
 
-        if (hashes.Count > 0)
-        {
-            await using var delSc = conn.CreateCommand();
-            delSc.CommandText = """
-                DELETE FROM session_chunks
-                WHERE session_id IN (
-                    SELECT s.session_id FROM sessions s
-                    LEFT JOIN session_chunks sc ON sc.session_id = s.session_id
-                    GROUP BY s.session_id
-                    HAVING COUNT(sc.idx) = 0)
-                """;
-            await delSc.ExecuteNonQueryAsync(ct);
-
-            await using var delS = conn.CreateCommand();
-            delS.CommandText = """
-                DELETE FROM sessions
-                WHERE session_id NOT IN (SELECT DISTINCT session_id FROM session_chunks)
-                """;
-            await delS.ExecuteNonQueryAsync(ct);
-        }
+        await using var delS = conn.CreateCommand();
+        delS.CommandText = """
+            DELETE FROM sessions
+            WHERE session_id NOT IN (SELECT DISTINCT session_id FROM session_chunks)
+            """;
+        sessionCount = await delS.ExecuteNonQueryAsync(ct);
+        if (sessionCount > 0)
+            _log.Information("GC: removed {Count} zombie sessions with no remaining chunks", sessionCount);
 
         return hashes.Count;
     }
