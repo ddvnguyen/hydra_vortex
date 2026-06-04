@@ -77,6 +77,43 @@ async def test_restore_prefix_checkpoint_not_found():
 
 
 @pytest.mark.asyncio
+async def test_warmup_and_save_prefix():
+    table = SessionTable()
+    sm = StateManager(table, "127.0.0.1", 9500)
+
+    with patch("coordinator.state_manager.warmup_prefix", new=AsyncMock(return_value=45)) as mock_warm, \
+         patch.object(sm, "_resolve_warm_slot", new=AsyncMock(return_value=2)), \
+         patch.object(sm, "save_prefix_checkpoint", new=AsyncMock(return_value={"n_past": 45})) as mock_save:
+
+        n_past = await sm.warmup_and_save_prefix(
+            "abc123",
+            "You are a helpful assistant.",
+            "127.0.0.1",
+            9601,
+            "http://127.0.0.1:8080",
+        )
+
+    assert n_past == 45
+    mock_warm.assert_awaited_once()
+    # checkpoint saved with the resolved warm slot, not slot 0
+    mock_save.assert_awaited_once_with("abc123", "127.0.0.1", 9601, slot_id=2)
+
+
+@pytest.mark.asyncio
+async def test_warmup_and_save_prefix_zero_npast_raises():
+    table = SessionTable()
+    sm = StateManager(table, "127.0.0.1", 9500)
+
+    with patch("coordinator.state_manager.warmup_prefix", new=AsyncMock(return_value=0)), \
+         patch.object(sm, "save_prefix_checkpoint", new=AsyncMock()) as mock_save:
+        with pytest.raises(RuntimeError, match="n_past=0"):
+            await sm.warmup_and_save_prefix(
+                "abc123", "sys", "127.0.0.1", 9601, "http://127.0.0.1:8080",
+            )
+    mock_save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_save_prefix_checkpoint_custom_name():
     table = SessionTable()
     sm = StateManager(table, "127.0.0.1", 9500)

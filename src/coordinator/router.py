@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import time
@@ -20,7 +21,10 @@ from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
 from coordinator.proxy import proxy_completion, proxy_completion_stream
 from coordinator.config import CoordinatorConfig
-from coordinator.metrics import metrics_endpoint, requests_total, active_sessions
+from coordinator.metrics import (
+    metrics_endpoint, requests_total, active_sessions,
+    prefix_cache_hits, prefix_cache_misses, prefix_warmups_total,
+)
 from coordinator.version import VERSION, REVISION
 
 log = get_logger()
@@ -175,10 +179,15 @@ def create_router(
                         n_past_prefix = meta.get("n_past", 0) if meta else 0
                         if n_past_prefix > 0:
                             session_table.update_n_past(sess_id, n_past_prefix)
+                            prefix_cache_hits.inc()
                             log.info("prefix_restored", session_id=sess_id,
                                      checkpoint=prompt_hash, n_past=n_past_prefix)
+                        else:
+                            prefix_cache_misses.inc()
                     except Exception:
-                        pass
+                        # No checkpoint yet (first time this system prompt is seen)
+                        # or restore failed — counts as a miss; warm-up below saves it.
+                        prefix_cache_misses.inc()
 
         elif decision.action == "route" and decision.session_found:
             _routing_stats["affinity"] += 1
@@ -213,21 +222,32 @@ def create_router(
         _prefix_key = f"{decision.node_name}:{_prompt_hash}" if _prompt_hash else None
 
         async def _maybe_save_prefix():
-            if _prefix_key and _prefix_key not in _saved_prefixes:
-                _saved_prefixes.add(_prefix_key)
+            # Fire a one-off background warm-up that prefills ONLY the system prompt
+            # and checkpoints that KV state (n_past ~= system_tokens). Saving the
+            # post-completion slot instead would store n_past = system+user+response,
+            # which the n_past guard would then reject on every restore — making the
+            # cache a no-op. Runs detached so it never blocks the client response.
+            if not (_prefix_key and _prefix_key not in _saved_prefixes):
+                return
+            _saved_prefixes.add(_prefix_key)
+
+            async def _do_warmup():
                 try:
-                    entry = session_table.lookup(sess_id)
-                    slot = entry.slot_id if entry and entry.slot_id is not None else 0
-                    await state_manager.save_prefix_checkpoint(
+                    n_past = await state_manager.warmup_and_save_prefix(
                         _prompt_hash,  # type: ignore[arg-type]
+                        _system_msg.content,  # type: ignore[union-attr]
                         decision.node_config.host,
                         decision.node_config.rpc_port,
-                        slot_id=slot,
+                        worker_url(decision.node_name),
                     )
-                    log.info("prefix_saved", checkpoint=_prompt_hash, node=decision.node_name)
+                    prefix_warmups_total.inc()
+                    log.info("prefix_warmed", checkpoint=_prompt_hash,
+                             node=decision.node_name, n_past=n_past)
                 except Exception as exc:
                     _saved_prefixes.discard(_prefix_key)
-                    log.warning("prefix_save_failed", checkpoint=_prompt_hash, error=str(exc))
+                    log.warning("prefix_warmup_failed", checkpoint=_prompt_hash, error=str(exc))
+
+            asyncio.create_task(_do_warmup())
 
         # ── fast mode: one worker handles both prefill and decode ──────────────
         if config.run_mode != "concurrency":
