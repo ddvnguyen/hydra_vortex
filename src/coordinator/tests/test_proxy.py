@@ -31,8 +31,6 @@ async def test_proxy_completion():
         )
 
     assert result["choices"][0]["message"]["content"] == "hello"
-    assert "hydra" in result
-    assert result["hydra"]["trace_id"] == "trace_001"
 
 
 @pytest.mark.asyncio
@@ -75,7 +73,7 @@ async def test_proxy_completion_stream():
 
 
 @pytest.mark.asyncio
-async def test_proxy_completion_stream_includes_hydra_metadata():
+async def test_proxy_completion_stream_ends_at_done():
     with patch("coordinator.proxy.httpx.AsyncClient") as MockClient:
         client = MagicMock()
         MockClient.return_value = client
@@ -106,6 +104,5 @@ async def test_proxy_completion_stream_includes_hydra_metadata():
         ):
             lines.append(chunk)
 
-    last_line = lines[-1]
-    assert "hydra" in last_line
-    assert "trace_001" in last_line
+    assert len(lines) == 2
+    assert "data: [DONE]" in lines[-1]

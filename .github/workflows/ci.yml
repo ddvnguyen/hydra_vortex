@@ -223,7 +223,9 @@ jobs:
     name: Deploy Infra
     runs-on: self-hosted
     timeout-minutes: 10
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-infra == 'true'
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-infra == 'true')
 
     steps:
       - uses: actions/checkout@v4
@@ -264,7 +266,9 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 10
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true'
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true')
 
     steps:
       - uses: actions/checkout@v4
@@ -543,7 +547,9 @@ jobs:
     name: Deploy llama-server
     runs-on: self-hosted
     timeout-minutes: 10
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true'
+    if: |
+      startsWith(github.ref, 'refs/tags/llama.cpp') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true')
 
     steps:
       - uses: actions/checkout@v4
