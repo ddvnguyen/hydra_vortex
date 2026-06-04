@@ -126,8 +126,10 @@ Select **All Services (Store + Agent RTX + Coordinator)** from the Run dropdown 
 ## Running Tests
 
 ```bash
-# All .NET tests (160+)
-dotnet test Hydra.sln --verbosity normal
+# All .NET tests (160+) — projects run sequentially to avoid PG contention
+dotnet test Hydra.sln -c Release --settings Hydra.runsettings -m:1 --verbosity normal
+
+# (the -m:1 disables MSBuild-level parallel project execution, preventing PG contention)
 
 # Individual projects
 dotnet test src/Tests.Shared           # 29 tests
@@ -327,6 +329,7 @@ curl -s :9000/health
 | Chunked save slow | First save = all chunks new (800 MB → ~800 chunks) | Normal. Second save of same session should be fast (delta only) |
 | Agent chunk cache not persisting | `ChunkCacheDir` not writable | Check `HYDRA_AGENT_CHUNK_CACHE_DIR` (default: `/tmp/hydra-chunk-cache`) |
 | `PUT_CHUNKED` returns error | Manifest already exists with different session_id | Session IDs must be unique. Delete manifest first or use different ID |
+| `dotnet test Hydra.sln` hangs | MSBuild-level parallel project execution → PG port/connection contention | Use `--settings Hydra.runsettings -m:1` (serializes assemblies + single MSBuild node) or run per-project |
 | GC removed in-use chunks | GC ran while session active | GC only removes chunks NOT referenced by any manifest. Active sessions have manifests. Run GC only during idle periods. |
 | Logs not appearing in Grafana | Promtail container not running | `cd infra && podman-compose -f docker-compose.infra.yml restart promtail` — see **Monitoring** |
 | Promtail scrape errors in promtail logs | Docker SD config pointing at wrong socket | Check socket path in `infra/promtail/promtail-config.yml` and volume mount |

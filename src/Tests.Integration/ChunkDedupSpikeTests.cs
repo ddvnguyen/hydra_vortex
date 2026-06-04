@@ -6,6 +6,7 @@ using StoreServer = Hydra.Store.StoreServer;
 using StorageEngine = Hydra.Store.StorageEngine;
 using ChunkStore = Hydra.Store.ChunkStore;
 using ChunkEngine = Hydra.Store.ChunkEngine;
+using StoreMetadata = Hydra.Store.StoreMetadata;
 
 namespace Tests.Integration;
 
@@ -21,11 +22,13 @@ namespace Tests.Integration;
 ///
 /// Record the printed dedup ratios in a comment on GitHub issue #56.
 /// </summary>
+[Collection("SerializedPG")]
 [Trait("Category", "spike")]
 public sealed class ChunkDedupSpikeTests : IAsyncLifetime
 {
     private readonly DirectoryInfo _storeDir;
     private StoreServer? _storeServer;
+    private StoreMetadata? _metadata;
     private Task? _storeServerTask;
     private Hydra.Store.ChunkStore? _chunkStore;
     private int _storePort;
@@ -45,9 +48,18 @@ public sealed class ChunkDedupSpikeTests : IAsyncLifetime
             StoreDir = _storeDir.FullName,
         };
 
+        var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
+            ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
+        _metadata = new StoreMetadata(connStr);
+        await _metadata.EnsureSchemaAsync(CancellationToken.None);
+        await using var cleanConn = await _metadata.DataSource.OpenConnectionAsync();
+        await using var cleanCmd = cleanConn.CreateCommand();
+        cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
+        await cleanCmd.ExecuteNonQueryAsync();
+
         var engine = new StorageEngine(_storeDir);
         _chunkStore = new Hydra.Store.ChunkStore(_storeDir);
-        _storeServer = new StoreServer(cfg, engine, _chunkStore);
+        _storeServer = new StoreServer(cfg, engine, _chunkStore, _metadata);
         _storeServerTask = Task.Run(() => _storeServer.RunAsync(CancellationToken.None));
         await Task.Delay(500);
         _storePort = _storeServer.Port;
@@ -57,6 +69,14 @@ public sealed class ChunkDedupSpikeTests : IAsyncLifetime
     {
         if (_storeServer is not null)
             await _storeServer.DisposeAsync();
+        if (_metadata is not null)
+        {
+            await using var cleanConn = await _metadata.DataSource.OpenConnectionAsync();
+            await using var cleanCmd = cleanConn.CreateCommand();
+            cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
+            await cleanCmd.ExecuteNonQueryAsync();
+            await _metadata.DisposeAsync();
+        }
         if (_storeDir.Exists)
             _storeDir.Delete(recursive: true);
     }
@@ -173,13 +193,11 @@ public sealed class ChunkDedupSpikeTests : IAsyncLifetime
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    private static byte[] MakeStableData(int size, byte seed)
+    private static byte[] MakeStableData(int size, int seed)
     {
-        // Deterministic but non-trivial: repeating pattern shifted by seed.
-        // On real hardware this should be replaced with actual llama KV state.
+        var rng = new Random(seed);
         var data = new byte[size];
-        for (int i = 0; i < size; i++)
-            data[i] = (byte)((i ^ seed ^ (i >> 8)) & 0xFF);
+        rng.NextBytes(data);
         return data;
     }
 

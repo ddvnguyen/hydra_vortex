@@ -24,7 +24,7 @@ public sealed class StoreMetadataTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
-            ?? "Host=localhost;Database=hydra_store;Username=hydra;Password=hydra";
+            ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
 
         _meta = new StoreMetadata(connStr);
         await _meta.EnsureSchemaAsync(CancellationToken.None);
@@ -38,7 +38,13 @@ public sealed class StoreMetadataTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         if (_meta is not null)
+        {
+            await using var cleanConn = await _meta.DataSource.OpenConnectionAsync();
+            await using var cleanCmd = cleanConn.CreateCommand();
+            cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
+            await cleanCmd.ExecuteNonQueryAsync();
             await _meta.DisposeAsync();
+        }
         if (_storeDir.Exists)
             _storeDir.Delete(recursive: true);
     }

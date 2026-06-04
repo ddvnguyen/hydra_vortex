@@ -21,7 +21,7 @@ public sealed class WriteBehindServiceTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
-            ?? "Host=localhost;Database=hydra_store;Username=hydra;Password=hydra";
+            ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
 
         _meta = new StoreMetadata(connStr);
         await _meta.EnsureSchemaAsync(CancellationToken.None);

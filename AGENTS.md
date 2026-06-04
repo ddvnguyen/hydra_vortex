@@ -10,3 +10,4 @@ Quick map:
 - **Code / PRs / CI issues → GitHub** (`gh`; review findings use the `review-finding`
   label). There is no native Plane↔GitHub sync — you are the bridge; cross-link by hand.
 - **Build / run / test commands → `DevelopmentRunBook.md`.**
+  - Full-solution `dotnet test` requires `--settings Hydra.runsettings` to serialize assemblies (avoid PG contention); alternatively run per-project.**

@@ -8,6 +8,7 @@ using Hydra.Shared;
 using StoreConfig = Hydra.Store.StoreConfig;
 using StoreServer = Hydra.Store.StoreServer;
 using StorageEngine = Hydra.Store.StorageEngine;
+using StoreMetadata = Hydra.Store.StoreMetadata;
 
 namespace Tests.Agent;
 
@@ -21,6 +22,7 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
 {
     private CancellationTokenSource? _cts;
     private StoreServer? _store;
+    private StoreMetadata? _metadata;
     private Task? _storeTask;
     private AgentServer? _server;
     private Task? _serverTask;
@@ -49,8 +51,18 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
             Port = storePort,
             StoreDir = _storeDir.FullName,
         };
+
+        var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
+            ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
+        _metadata = new StoreMetadata(connStr);
+        await _metadata.EnsureSchemaAsync(CancellationToken.None);
+        await using var cleanConn = await _metadata.DataSource.OpenConnectionAsync();
+        await using var cleanCmd = cleanConn.CreateCommand();
+        cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
+        await cleanCmd.ExecuteNonQueryAsync();
+
         var engine = new StorageEngine(_storeDir);
-        _store = new StoreServer(storeCfg, engine, new ChunkStore(_storeDir));
+        _store = new StoreServer(storeCfg, engine, new ChunkStore(_storeDir), _metadata);
         _cts = new CancellationTokenSource();
         _storeTask = Task.Run(() => _store.RunAsync(_cts.Token));
 
@@ -170,6 +182,9 @@ public sealed class AgentServerRpcTests : IAsyncLifetime
 
         if (_store is not null)
             await _store.DisposeAsync();
+
+        if (_metadata is not null)
+            await _metadata.DisposeAsync();
 
         // Cleanup temp dirs
         try

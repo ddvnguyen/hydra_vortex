@@ -6,6 +6,7 @@ using StoreConfig = Hydra.Store.StoreConfig;
 using StoreServer = Hydra.Store.StoreServer;
 using StorageEngine = Hydra.Store.StorageEngine;
 using ChunkStore = Hydra.Store.ChunkStore;
+using StoreMetadata = Hydra.Store.StoreMetadata;
 
 namespace Tests.Integration;
 
@@ -13,10 +14,12 @@ namespace Tests.Integration;
 /// Tests the Agent's chunked save/restore methods against a real Store server.
 /// M2.2.1: StateHandler chunked operations with LocalChunkCache integration.
 /// </summary>
+[Collection("SerializedPG")]
 public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
 {
     private readonly DirectoryInfo _storeDir;
     private StoreServer? _storeServer;
+    private StoreMetadata? _metadata;
     private Task? _storeServerTask;
     private readonly string _chunkCacheDir;
 
@@ -36,9 +39,18 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
             StoreDir = _storeDir.FullName,
         };
 
+        var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
+            ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
+        _metadata = new StoreMetadata(connStr);
+        await _metadata.EnsureSchemaAsync(CancellationToken.None);
+        await using var cleanConn = await _metadata.DataSource.OpenConnectionAsync();
+        await using var cleanCmd = cleanConn.CreateCommand();
+        cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
+        await cleanCmd.ExecuteNonQueryAsync();
+
         var engine = new StorageEngine(_storeDir);
         var chunkStore = new ChunkStore(_storeDir);
-        _storeServer = new StoreServer(cfg, engine, chunkStore);
+        _storeServer = new StoreServer(cfg, engine, chunkStore, _metadata);
         _storeServerTask = Task.Run(() => _storeServer.RunAsync(CancellationToken.None));
         await Task.Delay(500);
     }
@@ -47,6 +59,15 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
     {
         if (_storeServer is not null)
             await _storeServer.DisposeAsync();
+
+        if (_metadata is not null)
+        {
+            await using var cleanConn = await _metadata.DataSource.OpenConnectionAsync();
+            await using var cleanCmd = cleanConn.CreateCommand();
+            cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
+            await cleanCmd.ExecuteNonQueryAsync();
+            await _metadata.DisposeAsync();
+        }
 
         if (_storeDir.Exists)
             _storeDir.Delete(recursive: true);
