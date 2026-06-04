@@ -78,6 +78,18 @@ def _sort_key_decode(
     return (worker.decode_priority, _load_fraction(worker.name, health_info, in_flight))
 
 
+def _has_capacity(
+    worker_name: str,
+    health_info: dict[str, dict],
+    in_flight: Optional[dict[str, int]] = None,
+) -> bool:
+    info = health_info.get(worker_name, {})
+    total = info.get("slots_total", 0)
+    idle = info.get("slots_idle", 0)
+    inflight = (in_flight or {}).get(worker_name, 0)
+    return (total - idle + inflight) < total
+
+
 def select_prefill_worker(
     workers: list[WorkerNodeConfig],
     health_info: dict[str, dict],
@@ -90,6 +102,7 @@ def select_prefill_worker(
         if (w.worker_type & WORKER_PREFILL)
         and health_info.get(w.name, {}).get("healthy", False)
         and w.name != exclude
+        and _has_capacity(w.name, health_info, in_flight)
     ]
     if not healthy_prefill:
         return None
@@ -108,6 +121,7 @@ def select_decode_worker(
         if (w.worker_type & WORKER_DECODE)
         and health_info.get(w.name, {}).get("healthy", False)
         and w.name != exclude
+        and _has_capacity(w.name, health_info, in_flight)
     ]
     if not healthy_decode:
         return None
@@ -147,24 +161,30 @@ def route_request(
     if not healthy_workers:
         raise RuntimeError("No healthy workers available")
 
-    # --- Session affinity ---
+    # --- Session affinity (with capacity check) ---
     if entry:
         if entry.node_name in healthy_workers:
             cfg = next((w for w in workers if w.name == entry.node_name), None)
             if cfg:
-                return RoutingDecision(
-                    node_name=entry.node_name,
-                    node_config=cfg,
-                    slot_id=entry.slot_id,
-                    action="route",
-                    session_id=entry.session_id,
-                    session_found=True,
-                    n_past=entry.n_past,
-                )
+                load = _load_fraction(entry.node_name, health_info, in_flight)
+                if load < 1.0:
+                    return RoutingDecision(
+                        node_name=entry.node_name,
+                        node_config=cfg,
+                        slot_id=entry.slot_id,
+                        action="route",
+                        session_id=entry.session_id,
+                        session_found=True,
+                        n_past=entry.n_past,
+                    )
 
         if entry.has_store_state:
-            # Session evicted to store — restore on least-loaded worker
-            healthy_list = [w for w in workers if w.name in healthy_workers]
+            # Session evicted to store — restore on least-loaded worker with capacity
+            healthy_list = [
+                w for w in workers
+                if w.name in healthy_workers
+                and _has_capacity(w.name, health_info, in_flight)
+            ]
             if healthy_list:
                 target = min(
                     healthy_list,
