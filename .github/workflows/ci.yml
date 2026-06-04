@@ -22,6 +22,14 @@ on:
         options:
           - "false"
           - "true"
+      deploy-infra:
+        description: "Deploy infra/observability services (Prometheus, Grafana, Loki, Promtail)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       deploy-hydra:
         description: "Deploy Hydra services (Store, Agents, Coordinator)"
         required: false
@@ -211,8 +219,50 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  deploy:
-    name: Deploy
+  deploy-infra:
+    name: Deploy Infra
+    runs-on: self-hosted
+    timeout-minutes: 10
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-infra == 'true')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for infra source changes
+        id: source-check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | \
+               grep -qE '^infra/docker-compose\.infra\.yml|^infra/prometheus/|^infra/grafana/|^infra/loki/|^infra/promtail/'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No infra changes detected -- skipping deploy"
+          fi
+
+      - name: Deploy infra stack
+        if: steps.source-check.outputs.changed == 'true'
+        run: |
+          cd /mnt/WorkDisk/Workplace/hydra_vortex/infra
+          podman-compose -f docker-compose.infra.yml up -d 2>&1 | tail -5
+
+      - name: Verify infra services
+        if: steps.source-check.outputs.changed == 'true'
+        run: |
+          sleep 5
+          for url in "http://localhost:9091" "http://localhost:3000" "http://localhost:3100"; do
+            if curl -sf "$url" --connect-timeout 5 &>/dev/null; then
+              echo "OK: $url"
+            else
+              echo "WARNING: $url not responding"
+            fi
+          done
+
+  deploy-hydra:
+    name: Deploy Hydra
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 10
@@ -404,7 +454,7 @@ jobs:
   system-full:
     name: System Tests (full stack)
     runs-on: self-hosted
-    needs: [build-test, deploy]
+    needs: [build-test, deploy-hydra, deploy-infra]
     timeout-minutes: 60
     # Only runs on explicit workflow_dispatch with run-system-full=true.
     # Full-stack tests require all 6 services healthy (llama RTX, llama P100,

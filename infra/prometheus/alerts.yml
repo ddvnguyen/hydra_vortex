@@ -89,8 +89,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "GPU {{ $labels.gpu }} memory pressure"
-          description: "GPU {{ $labels.gpu }} ({{ $labels.node }}) has < 10% free memory ({{ $value | humanizePercentage }} free)"
+          summary: "GPU {{ $labels.node }} memory pressure"
+          description: "GPU {{ $labels.node }} ({{ $labels.node }}) has < 10% free memory ({{ $value | humanizePercentage }} free)"
 
       - alert: HighGPUTemperature
         expr: DCGM_FI_DEV_GPU_TEMP{job="hydra-gpu"} > 85 or nvidia_smi_temperature_gpu{job="hydra-gpu-p100"} > 85
@@ -98,5 +98,5 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "GPU {{ $labels.gpu }} temperature high"
-          description: "GPU {{ $labels.gpu }} ({{ $labels.node }}) is at {{ $value }}°C (threshold 85°C)"
+          summary: "GPU {{ $labels.node }} temperature high"
+          description: "GPU {{ $labels.node }} ({{ $labels.node }}) is at {{ $value }}°C (threshold 85°C)"

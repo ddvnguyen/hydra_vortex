@@ -40,6 +40,9 @@ ssh "$VM" "
   echo 'Service enabled (not started yet)'
 "
 
+echo "==> Creating log directory"
+ssh "$VM" "sudo mkdir -p /var/log/hydra"
+
 echo "==> Installing promtail for log shipping"
 ssh "$VM" "
   set -euo pipefail

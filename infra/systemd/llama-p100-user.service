@@ -46,6 +46,8 @@ ExecStart=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server \
   --spec-draft-n-max 3 \
   --jinja \
   --chat-template-kwargs '{"preserve_thinking": true}'
+StandardOutput=append:/var/log/hydra/llama-p100.log
+StandardError=append:/var/log/hydra/llama-p100.log
 Restart=on-failure
 RestartSec=10
 
