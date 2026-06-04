@@ -15,6 +15,19 @@ cache_hits_total = Counter(
     "hydra_cache_hits_total", "Total cache hit count",
 )
 
+prefix_cache_hits = Counter(
+    "hydra_prefix_cache_hits_total", "System-prompt KV cache hits (restored prefix)",
+)
+
+prefix_cache_misses = Counter(
+    "hydra_prefix_cache_misses_total",
+    "System-prompt KV cache misses (first-time or evicted prefix)",
+)
+
+prefix_warmups_total = Counter(
+    "hydra_prefix_warmups_total", "System-prompt warm-up requests fired",
+)
+
 migrations_total = Counter(
     "hydra_migrations_total", "Total migrations", ["from_node", "to_node"],
 )
