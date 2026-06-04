@@ -28,6 +28,16 @@ prefix_warmups_total = Counter(
     "hydra_prefix_warmups_total", "System-prompt warm-up requests fired",
 )
 
+upstream_coalesced_total = Counter(
+    "hydra_upstream_coalesced_total",
+    "Identical in-flight upstream completions coalesced via single-flight (#134)",
+)
+
+upstream_timeouts_total = Counter(
+    "hydra_upstream_timeouts_total",
+    "Upstream completion/prefill requests that hit the read timeout (#134)",
+)
+
 migrations_total = Counter(
     "hydra_migrations_total", "Total migrations", ["from_node", "to_node"],
 )

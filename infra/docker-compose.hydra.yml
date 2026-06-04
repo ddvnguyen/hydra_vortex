@@ -79,6 +79,8 @@ services:
       - HYDRA_COORD_STORE_PORT=9500
       - HYDRA_COORD_LOG_LEVEL=DEBUG
       - HYDRA_COORD_RUN_MODE=concurrency
+      # Upstream read budget — must outlast worst-case prefill, aligned with llama --timeout 1800 (#134).
+      - HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S=1800
       - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"localhost","rpc_port":9601,"llama_url":"http://localhost:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"localhost","rpc_port":9602,"llama_url":"http://192.168.122.21:8086","worker_type":3,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
     depends_on:
       - store

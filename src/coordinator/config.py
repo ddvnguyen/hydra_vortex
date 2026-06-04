@@ -38,6 +38,11 @@ class CoordinatorConfig(BaseSettings):
     chars_per_token: float = 4.0
     long_prompt_threshold: int = 8192
 
+    # Upstream llama-server request read budget. Must be >= the worst-case prefill time
+    # for a large prompt, otherwise the coordinator kills the request mid-prefill and the
+    # client retries → endless re-prefill loop (see #134). Align with llama's --timeout.
+    llama_request_timeout_s: int = 1800
+
     session_idle_timeout_s: int = 3600
 
     max_tokens_default: int = 512
