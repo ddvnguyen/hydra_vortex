@@ -71,6 +71,24 @@ agent_slot_utilization = Gauge(
     "hydra_agent_slot_utilization", "Slot utilization by node", ["node"],
 )
 
+worker_busy_seconds = Gauge(
+    "hydra_worker_busy_seconds",
+    "Seconds worker has been in busy state (0 = free). Monotonically increasing = tracker leak.",
+    ["node"],
+)
+
+cross_node_affinity_total = Counter(
+    "hydra_cross_node_affinity_total",
+    "Cross-node affinity dispatches (prefill worker never released on success)",
+)
+
+
+def set_worker_busy_metrics(scheduler) -> None:
+    for w in scheduler._config.workers:
+        worker_busy_seconds.labels(node=w.name).set(
+            scheduler._tracker.elapsed_seconds(w.name)
+        )
+
 
 async def metrics_endpoint(request: Request) -> Response:
     return Response(

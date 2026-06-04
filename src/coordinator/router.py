@@ -18,6 +18,7 @@ from coordinator.scheduler import WorkerScheduler
 from coordinator.config import CoordinatorConfig
 from coordinator.metrics import (
     metrics_endpoint,
+    set_worker_busy_metrics,
 )
 from coordinator.version import VERSION, REVISION
 
@@ -87,6 +88,7 @@ def create_router(
 
     @router.get("/metrics")
     async def metrics():
+        set_worker_busy_metrics(scheduler)
         return await metrics_endpoint(None)
 
     @router.get("/version")

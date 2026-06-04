@@ -34,6 +34,7 @@ from coordinator.metrics import (
     requests_total,
     active_sessions,
     upstream_timeouts_total,
+    cross_node_affinity_total,
 )
 
 log = get_logger()
@@ -50,6 +51,7 @@ class WorkItem:
     estimated_new_tokens: int
     future: asyncio.Future
     retry_count: int = 0
+    _start_time: float = field(default_factory=time.time)
 
 
 class WorkerScheduler:
@@ -78,6 +80,10 @@ class WorkerScheduler:
             self._tracker.init_worker(w.name)
 
         self._prefix_set: set[str] = set()
+
+    @staticmethod
+    def _elapsed_ms(item: WorkItem) -> int:
+        return int((time.time() - item._start_time) * 1000)
 
     async def start(self):
         self._running = True
@@ -121,6 +127,16 @@ class WorkerScheduler:
         )
         self._queue.append(item)
         self._new_item.set()
+
+        log.info("request_received",
+                 trace_id=trace_id,
+                 session_id=session_id,
+                 estimated_tokens=estimated,
+                 estimated_new_tokens=max_tokens,
+                 stream=req.get("stream", False),
+                 prefix_hash=prefix_hash,
+                 queue_size=len(self._queue),
+        )
 
         try:
             return await asyncio.wait_for(future, timeout=1800.0)
@@ -227,6 +243,7 @@ class WorkerScheduler:
                     if target and self._tracker.is_free(target.name) and self._routable(target.name):
                         if self._tracker.acquire(target.name, "decode"):
                             if await verify_warm_slot(target, entry, item.trace_id):
+                                cross_node_affinity_total.inc()
                                 await self._execute_affinity(item, target, entry)
                                 return
                             self._tracker.release(target.name)
@@ -251,7 +268,12 @@ class WorkerScheduler:
         except HTTPException:
             raise
         except Exception as e:
-            log.error("scheduler_process_failed", session_id=item.session_id, error=str(e))
+            log.error("scheduler_process_failed",
+                       trace_id=item.trace_id, session_id=item.session_id, node=worker.name,
+                       elapsed_ms=self._elapsed_ms(item), error=str(e),
+                       estimated_tokens=item.estimated_tokens,
+                       estimated_new_tokens=item.estimated_new_tokens,
+                       stream=item.request.get("stream", False))
             if not affinity_dispatched:
                 self._tracker.release(worker.name)
             self._worker_freed.set()
@@ -262,7 +284,13 @@ class WorkerScheduler:
 
     async def _execute_affinity(self, item: WorkItem, worker: WorkerNodeConfig, entry):
         sess_id = item.session_id
-        log.info("affinity_route", session_id=sess_id, node=worker.name, slot=entry.slot_id)
+        log.info("affinity_route",
+                 trace_id=item.trace_id, session_id=sess_id, node=worker.name, slot=entry.slot_id,
+                 estimated_tokens=item.estimated_tokens,
+                 estimated_new_tokens=item.estimated_new_tokens,
+                 n_past=entry.n_past,
+                 stream=item.request.get("stream", False),
+                 elapsed_ms=self._elapsed_ms(item))
 
         self._session_table.update_last_used(sess_id)
 
@@ -270,12 +298,15 @@ class WorkerScheduler:
             estimated = estimate_request_tokens(item.messages, self._config.chars_per_token)
             if estimated < entry.n_past * 0.85:
                 self._session_table.update_n_past(sess_id, 0)
-                log.warning("n_past_guard_triggered", session_id=sess_id, n_past=entry.n_past, estimated=estimated)
+                log.warning("n_past_guard_triggered",
+                             trace_id=item.trace_id, session_id=sess_id, node=worker.name,
+                             n_past=entry.n_past, estimated=estimated)
                 client = RpcClient(worker.host, worker.rpc_port)
                 try:
                     await client.request(OpCode.SlotErase, str(entry.slot_id or 0), trace_id=item.trace_id)
                 except Exception as e:
-                    log.warning("n_past_guard_slot_erase_failed", error=str(e))
+                    log.warning("n_past_guard_slot_erase_failed",
+                                 trace_id=item.trace_id, session_id=sess_id, node=worker.name, error=str(e))
                 finally:
                     await client.close()
 
@@ -314,7 +345,10 @@ class WorkerScheduler:
             except httpx.TimeoutException as e:
                 upstream_timeouts_total.inc()
                 self._tracker.on_error(worker.name)
-                log.warning("affinity_timeout", session_id=sess_id, timeout_s=self._config.llama_request_timeout_s, error=str(e))
+                log.warning("affinity_timeout",
+                             trace_id=item.trace_id, session_id=sess_id, node=worker.name,
+                             timeout_s=self._config.llama_request_timeout_s,
+                             elapsed_ms=self._elapsed_ms(item), error=str(e))
                 raise HTTPException(status_code=504, detail=f"Completion exceeded {self._config.llama_request_timeout_s}s")
             except Exception:
                 self._tracker.on_error(worker.name)
@@ -332,7 +366,12 @@ class WorkerScheduler:
 
     async def _execute_store_restore(self, item: WorkItem):
         sess_id = item.session_id
-        log.info("store_restore_route", session_id=sess_id)
+        log.info("store_restore_route",
+                 trace_id=item.trace_id, session_id=sess_id,
+                 estimated_tokens=item.estimated_tokens,
+                 estimated_new_tokens=item.estimated_new_tokens,
+                 stream=item.request.get("stream", False),
+                 elapsed_ms=self._elapsed_ms(item))
 
         decode_worker = pick_best_decode_worker(
             self._config.workers, self._tracker, self._health,
@@ -363,7 +402,9 @@ class WorkerScheduler:
             estimated = estimate_request_tokens(item.messages, self._config.chars_per_token)
             if estimated < n_past_entry * 0.85:
                 self._session_table.update_n_past(sess_id, 0)
-                log.warning("restore_n_past_guard", session_id=sess_id, n_past=n_past_entry, estimated=estimated)
+                log.warning("restore_n_past_guard",
+                             trace_id=item.trace_id, session_id=sess_id,
+                             n_past=n_past_entry, estimated=estimated)
 
         self._session_table.update_last_used(sess_id)
         decode_url = decode_worker.llama_url
@@ -420,7 +461,12 @@ class WorkerScheduler:
     async def _execute_atomic(self, item: WorkItem, worker: WorkerNodeConfig):
         sess_id = item.session_id
         node_url = worker.llama_url
-        log.info("cold_atomic", session_id=sess_id, node=worker.name)
+        log.info("cold_atomic",
+                 trace_id=item.trace_id, session_id=sess_id, node=worker.name,
+                 estimated_tokens=item.estimated_tokens,
+                 estimated_new_tokens=item.estimated_new_tokens,
+                 stream=item.request.get("stream", False),
+                 elapsed_ms=self._elapsed_ms(item))
 
         await self._maybe_restore_prefix_checkpoint(item, worker)
 
@@ -484,7 +530,12 @@ class WorkerScheduler:
     async def _execute_concurrency(self, item: WorkItem, prefill_worker: WorkerNodeConfig):
         sess_id = item.session_id
         prefill_url = prefill_worker.llama_url
-        log.info("cold_concurrency_prefill", session_id=sess_id, node=prefill_worker.name)
+        log.info("cold_concurrency_prefill",
+                 trace_id=item.trace_id, session_id=sess_id, node=prefill_worker.name,
+                 estimated_tokens=item.estimated_tokens,
+                 estimated_new_tokens=item.estimated_new_tokens,
+                 stream=item.request.get("stream", False),
+                 elapsed_ms=self._elapsed_ms(item))
 
         await self._maybe_restore_prefix_checkpoint(item, prefill_worker)
 
@@ -554,7 +605,9 @@ class WorkerScheduler:
             raise HTTPException(status_code=503, detail=f"KV restore failed: {e}")
 
         self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_after, prefix_hash=item.prefix_hash)
-        log.info("cold_concurrency_decode", session_id=sess_id, node=decode_worker.name, n_past=n_past_after)
+        log.info("cold_concurrency_decode",
+                 trace_id=item.trace_id, session_id=sess_id, node=decode_worker.name,
+                 n_past=n_past_after, elapsed_ms=self._elapsed_ms(item))
 
         async def stream_concurrency():
             last_usage = None
@@ -602,7 +655,8 @@ class WorkerScheduler:
             resolved = await resolve_slot_id(node_url, total, item.trace_id)
             if resolved is not None:
                 entry.slot_id = resolved
-                log.info("slot_resolved", session_id=sess_id, slot_id=resolved, n_past=total)
+                log.info("slot_resolved", trace_id=item.trace_id, session_id=sess_id,
+                         slot_id=resolved, n_past=total)
 
     async def _track_after_completion(self, sess_id: str, node_url: str, result: dict, item: WorkItem):
         usage = result.get("usage", {})
@@ -614,7 +668,8 @@ class WorkerScheduler:
             resolved = await resolve_slot_id(node_url, total, item.trace_id)
             if resolved is not None:
                 entry.slot_id = resolved
-                log.info("slot_resolved_nonstream", session_id=sess_id, slot_id=resolved, n_past=total)
+                log.info("slot_resolved_nonstream", trace_id=item.trace_id, session_id=sess_id,
+                         slot_id=resolved, n_past=total)
 
     async def _maybe_restore_prefix_checkpoint(self, item: WorkItem, worker: WorkerNodeConfig):
         if not self._config.prefix_checkpoint_enabled:
@@ -632,8 +687,11 @@ class WorkerScheduler:
                 n_past_prefix = meta.get("n_past", 0)
                 if n_past_prefix > 0:
                     self._session_table.update_n_past(item.session_id, n_past_prefix)
-                    log.info("prefix_restored", session_id=item.session_id,
-                             checkpoint=item.prefix_hash, n_past=n_past_prefix)
+                    log.info("prefix_restored",
+                             trace_id=item.trace_id, session_id=item.session_id,
+                             node=worker.name,
+                             checkpoint=item.prefix_hash, n_past=n_past_prefix,
+                             elapsed_ms=self._elapsed_ms(item))
         except Exception:
             pass
 
@@ -655,6 +713,9 @@ class WorkerScheduler:
                 worker.rpc_port,
                 slot_id=slot,
             )
-            log.info("prefix_saved", checkpoint=item.prefix_hash, node=worker.name)
+            log.info("prefix_saved",
+                     trace_id=item.trace_id, session_id=item.session_id,
+                     checkpoint=item.prefix_hash, node=worker.name,
+                     elapsed_ms=self._elapsed_ms(item))
         except Exception:
             self._prefix_set.discard(prefix_key)
