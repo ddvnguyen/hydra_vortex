@@ -219,8 +219,7 @@ class WorkerScheduler:
             if entry and entry.slot_id is not None:
                 if entry.node_name == worker.name:
                     if await verify_warm_slot(worker, entry, item.trace_id):
-                        if not item.request.get("stream", False):
-                            affinity_dispatched = True
+                        affinity_dispatched = True
                         await self._execute_affinity(item, worker, entry)
                         return
                 else:
