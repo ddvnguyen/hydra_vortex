@@ -16,6 +16,8 @@ class WorkerNodeConfig(BaseModel):
     decode_priority: int = 1
     # Estimated decode speed for smart scheduling
     decode_speed_tps: float = 30.0
+    # -1 = unlimited (RTX). Set to 8000 for P100 to prevent large prefills.
+    max_prefill_tokens: int = -1
 
 
 class CoordinatorConfig(BaseSettings):
@@ -57,6 +59,13 @@ class CoordinatorConfig(BaseSettings):
     # If a worker has been busy for less than this many seconds, the scheduler
     # considers it "just started" and routes new requests elsewhere.
     smart_schedule_wait_threshold_s: float = 3.0
+
+    # Requests with estimated_new_tokens <= this threshold use the fast path
+    # (one mixed worker, no KV migration). Requests above it use P/D disaggregation.
+    atomic_token_threshold: int = 2048
+
+    # Consecutive errors before a worker is marked unhealthy by the tracker.
+    worker_error_threshold: int = 3
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

@@ -10,13 +10,15 @@ from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
 from coordinator.router import create_router
 from coordinator.proxy import shutdown as proxy_shutdown, configure_timeout
+from coordinator.worker_tracker import WorkerTracker
+from coordinator.scheduler import WorkerScheduler
 from coordinator.version import VERSION, REVISION
 
 log = get_logger()
 
 
-def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor, config: CoordinatorConfig):
-    """Return a lifespan context manager that starts/stops health monitor + eviction loop."""
+def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor,
+                   scheduler: WorkerScheduler, config: CoordinatorConfig):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         setup_logging(config.log_level)
@@ -34,7 +36,9 @@ def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor, c
         )
 
         await health_monitor.start()
+        await scheduler.start()
         yield
+        scheduler.stop()
         eviction_task.cancel()
         await health_monitor.stop()
         await proxy_shutdown()
@@ -44,7 +48,6 @@ def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor, c
 
 
 async def _eviction_loop(session_table: SessionTable, timeout_s: int, interval_s: int = 60):
-    """Periodically evict stale sessions."""
     try:
         while True:
             await asyncio.sleep(interval_s)
@@ -56,22 +59,11 @@ async def _eviction_loop(session_table: SessionTable, timeout_s: int, interval_s
 
 
 def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
-    """
-    Create the FastAPI application.
-
-    All singletons (SessionTable, HealthMonitor, StateManager) are created once here
-    and shared directly with both the router and the lifespan hook.  The previous
-    implementation created separate instances in lifespan() vs create_router(), so the
-    router's session_table was always empty regardless of registered sessions.
-    """
     if config is None:
         config = CoordinatorConfig()
 
-    # Upstream read budget must outlast a large-prompt prefill (#134), else the proxy aborts
-    # mid-prefill and the client retries forever. Set before any request is served.
     configure_timeout(config.llama_request_timeout_s)
 
-    # Singletons — created once, shared everywhere.
     session_table = SessionTable()
     health_monitor = HealthMonitor(
         nodes=config.workers,
@@ -85,22 +77,32 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
         store_host=config.store_host,
         store_port=config.store_port,
     )
+    tracker = WorkerTracker(error_threshold=config.worker_error_threshold)
+    scheduler = WorkerScheduler(
+        config=config,
+        session_table=session_table,
+        health_monitor=health_monitor,
+        state_manager=state_manager,
+        tracker=tracker,
+    )
 
     app = FastAPI(
         title="Hydra Coordinator",
         version=VERSION,
-        lifespan=_make_lifespan(session_table, health_monitor, config),
+        lifespan=_make_lifespan(session_table, health_monitor, scheduler, config),
     )
     app.state.config = config
     app.state.session_table = session_table
     app.state.health_monitor = health_monitor
     app.state.state_manager = state_manager
+    app.state.scheduler = scheduler
 
     router = create_router(
         config=config,
         session_table=session_table,
         health_monitor=health_monitor,
         state_manager=state_manager,
+        scheduler=scheduler,
     )
     app.include_router(router)
 
