@@ -47,7 +47,7 @@ class CoordinatorConfig(BaseSettings):
 
     # "fast": one node handles both prefill and decode (minimises KV migration)
     # "concurrency": P/D disaggregation — prefill worker → store → decode worker
-    run_mode: str = "fast"
+    run_mode: str = "concurrency"
 
     # If a worker has been busy for less than this many seconds, the scheduler
     # considers it "just started" and routes new requests elsewhere.
