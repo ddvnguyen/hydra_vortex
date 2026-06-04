@@ -34,7 +34,10 @@ async def proxy_completion(
     resp.raise_for_status()
     data = resp.json()
 
+    data["hydra"] = {"trace_id": trace_id}
+
     return data
+
 
 
 async def proxy_completion_stream(
@@ -57,6 +60,43 @@ async def proxy_completion_stream(
             if line:
                 yield f"{line}\n\n"
 
+    yield f'data: {{"hydra": {{"trace_id": "{trace_id}"}}}}\n\n'
+
+
+async def warmup_prefix(
+    node_url: str,
+    system_content: str,
+    trace_id: str,
+) -> int:
+    """Prefill ONLY the system prompt and return n_past (~= system_tokens).
+
+    Sends a minimal completion (system msg + 1-space user msg, max_tokens=1,
+    greedy) so the resulting KV state covers just the system prefix. This is the
+    state we checkpoint so a later session can restore the system-prefix KV and
+    skip re-prefilling it — without tripping the coordinator n_past guard.
+    """
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": " "},
+        ],
+        "max_tokens": 1,
+        "temperature": 0,
+        "stream": False,
+    }
+    client = await _get_client()
+    resp = await client.post(
+        f"{node_url.rstrip('/')}/v1/chat/completions",
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Trace-Id": trace_id,
+        },
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    usage = data.get("usage", {})
+    return usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
 
 
 async def shutdown():
