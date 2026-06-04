@@ -13,6 +13,12 @@ services:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
       - --path.rootfs=/rootfs
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9100/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       component: observability
     restart: unless-stopped
@@ -23,6 +29,12 @@ services:
       - "9835:9400"
     cap_add:
       - SYS_ADMIN
+    healthcheck:
+      test: ["CMD", "/usr/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9400"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       component: observability
     restart: unless-stopped
@@ -43,6 +55,12 @@ services:
       - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
       - loki-data:/loki
     command: -config.file=/etc/loki/loki-config.yml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     labels:
       component: observability
     restart: unless-stopped
@@ -72,6 +90,12 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --web.listen-address=0.0.0.0:9091
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9091/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       component: observability
     restart: unless-stopped
@@ -92,6 +116,12 @@ services:
     depends_on:
       - prometheus
       - loki
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     labels:
       component: observability
     restart: unless-stopped
