@@ -423,6 +423,69 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PutManifest_WithUnregisteredChunkOnDisk_NoFkViolation()
+    {
+        // Regression for #138: a chunk body resident on disk (in-memory index) but DELETED
+        // from PG `chunks` (simulating a GC race or divergence) must not cause
+        // session_chunks_hash_fkey when PUT_MANIFEST references it. The manifest upsert
+        // self-registers the chunk in-tx before inserting session_chunks.
+        var client = new RpcClient("127.0.0.1", _storeServer!.Port);
+        await client.ConnectAsync(CancellationToken.None);
+        try
+        {
+            // 1. Push a chunk body (creates file + PG row + in-memory index entry).
+            var chunkBody = "fk-regression-test-body"u8.ToArray();
+            var hash = ChunkEngine.ComputeHash(chunkBody);
+            var pushPayload = new byte[4 + chunkBody.Length];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
+                pushPayload.AsSpan(0, 4), chunkBody.Length);
+            chunkBody.CopyTo(pushPayload, 4);
+            var pushResp = await client.RequestAsync(
+                OpCode.PushChunks, "kv/fk-test", pushPayload, "t-push", CancellationToken.None);
+            Assert.Equal((byte)StatusCode.Ok, pushResp.Status);
+
+            // Verify the chunk file exists on disk.
+            var chunkPath = Path.Combine(_storeDir.FullName, "chunks", hash);
+            Assert.True(File.Exists(chunkPath), "Chunk file must exist on disk");
+
+            // 2. Delete the PG row (simulates GC race — file on disk, PG row gone).
+            await using var delConn = await _metadata!.DataSource.OpenConnectionAsync();
+            await using var delCmd = delConn.CreateCommand();
+            delCmd.CommandText = "DELETE FROM chunks WHERE hash = @hash";
+            delCmd.Parameters.AddWithValue("hash", hash);
+            await delCmd.ExecuteNonQueryAsync();
+            Assert.False(await _metadata.HasChunkAsync(hash));
+
+            // 3. PUT_MANIFEST referencing the unregistered chunk — must NOT throw FK.
+            var manifest = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                n_past = 1,
+                total_size = (long)chunkBody.Length,
+                chunks = new[] { new { index = 0, hash, size = chunkBody.Length } },
+            });
+            var mResp = await client.RequestAsync(
+                OpCode.PutManifest, "kv/fk-test", manifest, "t-manifest", CancellationToken.None);
+            Assert.Equal((byte)StatusCode.Ok, mResp.Status);
+
+            // 4. GET_MANIFEST round-trips correctly.
+            var getResp = await client.RequestAsync(
+                OpCode.GetManifest, "kv/fk-test", ReadOnlyMemory<byte>.Empty, "t-get", CancellationToken.None);
+            Assert.Equal((byte)StatusCode.Ok, getResp.Status);
+            using var doc = System.Text.Json.JsonDocument.Parse(getResp.Payload);
+            var chunks = doc.RootElement.GetProperty("chunks");
+            Assert.Equal(1, chunks.GetArrayLength());
+            Assert.Equal(hash, chunks[0].GetProperty("hash").GetString());
+
+            // PG row was re-created by the self-registration.
+            Assert.True(await _metadata.HasChunkAsync(hash));
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task PushChunks_StoresChunksIndividually()
     {
         var client = new RpcClient("127.0.0.1", _storeServer!.Port);

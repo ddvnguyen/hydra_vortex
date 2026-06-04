@@ -307,7 +307,17 @@ public sealed class StoreServer : RpcServer
 			foreach (var h in candidateHashes.Distinct())
 			{
 				if (_chunkStore.HasChunk(h))
+				{
+					// On disk but potentially absent from PG — backfill to keep PG consistent.
+					if (!await Metadata.HasChunkAsync(h, ct))
+					{
+						var path = _chunkStore.GetChunkPath(h);
+						var size = path is not null ? new FileInfo(path).Length : 0;
+						await Metadata.RegisterChunkAsync(h, (int)size, ct);
+						_log.Debug("SyncMissing: backfilled PG row for on-disk chunk {Hash}", h);
+					}
 					continue;
+				}
 				if (!await Metadata.HasChunkAsync(h, ct))
 				{
 					missingHashes.Add(h);
@@ -368,10 +378,11 @@ public sealed class StoreServer : RpcServer
 				received++;
 				totalPushedSize += chunkSize;
 				if (await _chunkStore.StoreChunkAsync(hash, chunkData, ct))
-				{
-					await Metadata.RegisterChunkAsync(hash, chunkSize, ct);
 					stored++;
-				}
+				// Register in PG for EVERY pushed chunk, not only newly-written files: a body that
+				// already exists on disk but lacks a PG row would otherwise stay unregistered and
+				// later fail the session_chunks FK (#138). Idempotent (ON CONFLICT DO NOTHING).
+				await Metadata.RegisterChunkAsync(hash, chunkSize, ct);
 			}
 
 			var meta = $$"""{"stored":{{stored}},"received":{{received}}}""";
