@@ -1,5 +1,6 @@
 using System.Text;
 using Hydra.Shared;
+using Npgsql;
 using StoreConfig = Hydra.Store.StoreConfig;
 using StoreServer = Hydra.Store.StoreServer;
 using ChunkStore = Hydra.Store.ChunkStore;
@@ -34,6 +35,7 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
 
         var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
             ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
+        await EnsureDatabaseAsync(connStr);
         _metadata = new StoreMetadata(connStr);
         await _metadata.EnsureSchemaAsync(CancellationToken.None);
 
@@ -462,5 +464,15 @@ public sealed class ChunkedStoreIntegrationTests : IAsyncLifetime
         {
             await client.DisposeAsync();
         }
+    }
+
+    private static async Task EnsureDatabaseAsync(string connStr)
+    {
+        var adminConnStr = connStr.Replace("Database=hydra_test", "Database=postgres");
+        await using var ds = new NpgsqlDataSourceBuilder(adminConnStr).Build();
+        await using var conn = await ds.OpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "CREATE DATABASE hydra_test";
+        try { await cmd.ExecuteNonQueryAsync(); } catch (PostgresException ex) when (ex.SqlState == "42P04") { }
     }
 }
