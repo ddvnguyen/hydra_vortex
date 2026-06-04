@@ -128,6 +128,28 @@ public sealed class StoreMetadata : IAsyncDisposable
 
         if (chunks.Count > 0)
         {
+            // Ensure every referenced chunk has a parent row in `chunks` before inserting
+            // session_chunks — otherwise the FK session_chunks_hash_fkey fails when a chunk is
+            // resident on disk but absent from PG (e.g. pushed body that already existed, or a
+            // GC race). Residency was already verified by PUT_MANIFEST, so this is truthful.
+            // Idempotent (ON CONFLICT DO NOTHING) and atomic (same transaction).
+            await using var registerChunks = conn.CreateCommand();
+            var rsb = new System.Text.StringBuilder();
+            rsb.Append("INSERT INTO chunks (hash, size) VALUES ");
+            var ridx = 0;
+            foreach (var c in chunks)
+            {
+                if (ridx > 0) rsb.Append(',');
+                rsb.Append($"(@rh{ridx},@rs{ridx})");
+                registerChunks.Parameters.AddWithValue($"rh{ridx}", c.Hash);
+                registerChunks.Parameters.AddWithValue($"rs{ridx}", c.Size);
+                ridx++;
+            }
+            rsb.Append(" ON CONFLICT (hash) DO NOTHING");
+            registerChunks.CommandText = rsb.ToString();
+            registerChunks.Transaction = tx;
+            await registerChunks.ExecuteNonQueryAsync(ct);
+
             await using var insert = conn.CreateCommand();
             var sb = new System.Text.StringBuilder();
             sb.Append("INSERT INTO session_chunks (session_id, idx, hash) VALUES ");

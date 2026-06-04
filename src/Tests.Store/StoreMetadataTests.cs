@@ -107,6 +107,33 @@ public sealed class StoreMetadataTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UpsertManifest_WithUnregisteredChunk_SelfRegisters_NoFkViolation()
+    {
+        // Regression for #138: a chunk referenced by a manifest but NOT pre-registered in the
+        // `chunks` table (e.g. resident on disk but absent from PG) must not violate
+        // session_chunks_hash_fkey — UpsertManifestAsync upserts chunks in-tx before session_chunks.
+        var chunks = new List<ChunkRef>
+        {
+            new(0, "unreg_chunk_a", 1024),
+            new(1, "unreg_chunk_b", 2048),
+        };
+
+        Assert.False(await _meta!.HasChunkAsync("unreg_chunk_a"));
+        Assert.False(await _meta.HasChunkAsync("unreg_chunk_b"));
+
+        // Must NOT throw (previously threw 23503 FK violation).
+        await _meta.UpsertManifestAsync("sess_unreg", 7, 3072, chunks);
+
+        // Chunks were self-registered, and the manifest round-trips.
+        Assert.True(await _meta.HasChunkAsync("unreg_chunk_a"));
+        Assert.True(await _meta.HasChunkAsync("unreg_chunk_b"));
+        var loaded = await _meta.GetManifestAsync("sess_unreg");
+        Assert.NotNull(loaded);
+        Assert.Equal(2, loaded.Chunks.Count);
+        Assert.Equal("unreg_chunk_a", loaded.Chunks[0].Hash);
+    }
+
+    [Fact]
     public async Task GetManifest_NonExistent_ReturnsNull()
     {
         var loaded = await _meta!.GetManifestAsync("nonexistent_session");
