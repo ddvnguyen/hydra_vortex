@@ -38,20 +38,6 @@ def compute_prefix_hash(messages: list[dict]) -> Optional[str]:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
-def compute_full_prefix_hash(messages: list[dict]) -> Optional[str]:
-    system_msg = next((m for m in messages if m.get("role") == "system"), None)
-    first_user = next((m for m in messages if m.get("role") == "user"), None)
-    parts = []
-    if system_msg:
-        parts.append(f"system:{system_msg.get('content', '')}")
-    if first_user:
-        parts.append(f"user:{first_user.get('content', '')}")
-    if not parts:
-        return None
-    raw = "\n".join(parts)
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
 async def resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -> Optional[int]:
     if expected_n_past <= 0:
         return None

@@ -38,7 +38,7 @@ def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor,
         await health_monitor.start()
         await scheduler.start()
         yield
-        scheduler.stop()
+        await scheduler.stop()
         eviction_task.cancel()
         await health_monitor.stop()
         await proxy_shutdown()
@@ -77,7 +77,7 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
         store_host=config.store_host,
         store_port=config.store_port,
     )
-    tracker = WorkerTracker(error_threshold=config.worker_error_threshold)
+    tracker = WorkerTracker(_error_threshold=config.worker_error_threshold)
     scheduler = WorkerScheduler(
         config=config,
         session_table=session_table,
