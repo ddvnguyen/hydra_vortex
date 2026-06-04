@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from coordinator.config import CoordinatorConfig
+from coordinator.config import CoordinatorConfig, WorkerNodeConfig
 from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
@@ -58,12 +58,16 @@ def app(mock_rpc):
     cfg = CoordinatorConfig(
         host="127.0.0.1",
         port=0,
-        rtx_host="127.0.0.1",
-        rtx_port=9601,
-        rtx_llama_url="http://localhost:8080",
-        p100_host="127.0.0.1",
-        p100_port=9602,
-        p100_llama_url="http://192.168.122.21:8086",
+        workers=[
+            WorkerNodeConfig(
+                name="rtx", host="127.0.0.1", rpc_port=9601,
+                llama_url="http://localhost:8080",
+            ),
+            WorkerNodeConfig(
+                name="p100", host="127.0.0.1", rpc_port=9602,
+                llama_url="http://192.168.122.21:8086",
+            ),
+        ],
         store_host="127.0.0.1",
         store_port=9500,
         health_poll_interval_s=9999,
@@ -71,9 +75,10 @@ def app(mock_rpc):
         long_prompt_threshold=4096,
         prefix_checkpoint_enabled=True,
         prefix_checkpoint_name="system_prompt",
+        run_mode="fast",
     )
     table = SessionTable()
-    health = HealthMonitor(cfg.nodes, poll_interval_s=9999)
+    health = HealthMonitor(cfg.workers, poll_interval_s=9999)
     state_mgr = StateManager(table, cfg.store_host, cfg.store_port)
     app = FastAPI()
     router = create_router(cfg, table, health, state_mgr)
@@ -119,6 +124,16 @@ def test_prefix_save_and_restore_flow(client):
     state_mgr.save_prefix_checkpoint = fake_save
     state_mgr.restore_prefix_checkpoint = fake_restore
 
+    resp = client.post("/prefix/system_prompt/save?node_name=rtx&slot_id=0")
+    assert resp.status_code == 200
+    assert resp.json()["saved"] is True
+    assert len(operations) == 1 and operations[0][0] == "save"
+
+    resp = client.post("/prefix/system_prompt/restore?node_name=p100&slot_id=0")
+    assert resp.status_code == 200
+    assert resp.json()["restored"] is True
+    assert len(operations) == 2 and operations[1][0] == "restore"
+
 
 # ── Slot_id resolution tests ──────────────────────────────────────────────
 
@@ -129,13 +144,9 @@ def test_slot_id_resolved_after_completion(client, monkeypatch):
 
     # Simulate a real routing decision: slot_id=None for new session
     def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="rtx",
-            node_config=NodeConfig(
-                name="rtx", host="127.0.0.1", rpc_port=9601,
-                llama_url="http://localhost:8080", gpu_type="rtx5060ti",
-            ),
+            node_config=WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
             slot_id=None,
             action="route",
             session_id="sess_slot_resolve",
@@ -187,13 +198,9 @@ def test_slot_id_unresolved_when_no_match(client, monkeypatch):
     table: SessionTable = client.app.state._session_table
 
     def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="rtx",
-            node_config=NodeConfig(
-                name="rtx", host="127.0.0.1", rpc_port=9601,
-                llama_url="http://localhost:8080", gpu_type="rtx5060ti",
-            ),
+            node_config=WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
             slot_id=None,
             action="route",
             session_id="sess_no_match",
@@ -276,10 +283,9 @@ def test_store_restore_routing_action(client, monkeypatch):
     state_mgr.restore_session = fake_restore
 
     def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="p100",
-            node_config=NodeConfig(name="p100", host="127.0.0.1", rpc_port=9602, llama_url="http://192.168.122.21:8086", gpu_type="p100"),
+            node_config=WorkerNodeConfig(name="p100", host="127.0.0.1", rpc_port=9602, llama_url="http://192.168.122.21:8086"),
             slot_id=0,
             action="store_restore",
             session_id="sess_restored",
@@ -362,10 +368,9 @@ def test_n_past_guard_resets_when_estimated_too_small(client, monkeypatch):
     table.register("sess_npast", "rtx", slot_id=0, n_past=500)
 
     def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="rtx",
-            node_config=NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080", gpu_type="rtx5060ti"),
+            node_config=WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
             slot_id=0,
             action="route",
             session_id="sess_npast",
@@ -399,10 +404,9 @@ def test_n_past_guard_does_not_reset_when_estimated_larger(client, monkeypatch):
     table.register("sess_npast_safe", "rtx", slot_id=0, n_past=500)
 
     def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
         return RoutingDecision(
             node_name="rtx",
-            node_config=NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080", gpu_type="rtx5060ti"),
+            node_config=WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080"),
             slot_id=0,
             action="route",
             session_id="sess_npast_safe",
