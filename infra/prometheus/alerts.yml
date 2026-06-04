@@ -100,3 +100,12 @@ groups:
         annotations:
           summary: "GPU {{ $labels.node }} temperature high"
           description: "GPU {{ $labels.node }} ({{ $labels.node }}) is at {{ $value }}°C (threshold 85°C)"
+
+      - alert: TrackerLeak
+        expr: hydra_worker_busy_seconds > 600
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tracker leak on {{ $labels.node }}"
+          description: "Worker {{ $labels.node }} has been busy for {{ $value }}s — likely a tracker never released"
