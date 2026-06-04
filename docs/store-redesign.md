@@ -79,6 +79,8 @@ On boot, restore the top-N most-recently-updated sessions' chunks NVMe→tmpfs (
 <30 s) so hot sessions survive reboot. Sessions not yet recovered fault-in on demand.
 
 ### Phase 5 — Semantic KV features  *(#107)*
+> Full epic design (KV DAG, git-aware reuse, content-defined chunking; quantization excluded):
+> **`docs/kv-dag-architecture.md`**. Decomposed into issues #107-A … #107-I.
 - **Checkpoints / revert:** `checkpoints` table = named manifest versions per session;
   `git`-like — each turn appends a manifest version, revert = restore an earlier one.
 - **System-prompt base cache:** detect + tag prefix manifests (`prefix/<hash>`), shared
