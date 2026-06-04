@@ -43,7 +43,10 @@ Client (HTTP) → Coordinator :9000 [Python/FastAPI]
 - P100 prefill: 110 tok/s → 80K context = 12 minutes. RTX handles large prefill.
 - P100 decode: 28 tok/s — acceptable.
 - Cross-GPU save/restore: WORKS. cache_n=2964 after restore.
-- SSM truncation: BROKEN. --cache-prompt useless for qwen35moe.
+- Prompt-cache reuse: FIXED for qwen35moe via the fork patch (recurrent/hybrid context
+  checkpoints, port of ik_llama.cpp#1762). Follow-up turns now reuse cached KV
+  (`restored context checkpoint`) instead of full re-prefill — verified live 2026-06-04
+  (turn-2 cached_tokens 1229/1251). Was: "SSM truncation BROKEN; --cache-prompt useless."
 - n_tokens MUST be > n_past or cache is nuked. Coordinator must guard this.
 - KV state at 60-80K context: ~800 MB.
 
