@@ -47,7 +47,7 @@ public sealed class LlamaClient : IDisposable
         _http = new HttpClient
         {
             BaseAddress = new Uri(_baseUrl),
-            Timeout = System.Threading.Timeout.InfiniteTimeSpan,
+            Timeout = TimeSpan.FromSeconds(300),
         };
     }
 
