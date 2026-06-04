@@ -179,18 +179,18 @@ public sealed class StoreServer : RpcServer
 			var chunks = new List<ChunkRef>();
 			var totalNew = 0;
 
-			 await ChunkEngine.ChunkAndHashFromPipeAsync(reader, payloadLen,
-				 async (chunkData, hash, innerCt) =>
-				 {
-					 var chunkRef = new ChunkRef(chunks.Count, hash, chunkData.Length);
-					 chunks.Add(chunkRef);
+ 		await ChunkEngine.ChunkAndHashFromPipeAsync(reader, payloadLen,
+ 				 async (chunkData, hash, innerCt) =>
+ 				 {
+ 					 var chunkRef = new ChunkRef(chunks.Count, hash, chunkData.Length);
+ 					 chunks.Add(chunkRef);
 
-					 if (await _chunkStore.StoreChunkAsync(hash, chunkData, innerCt))
-					 {
-						 await Metadata.RegisterChunkAsync(hash, chunkData.Length, innerCt);
-						 Interlocked.Increment(ref totalNew);
-					 }
-				 }, ct);
+ 					 if (await _chunkStore.StoreChunkAsync(hash, chunkData, innerCt))
+ 					 {
+ 						 await Metadata.RegisterChunkAsync(hash, chunkData.Length, innerCt);
+ 						 Interlocked.Increment(ref totalNew);
+ 					 }
+ 				 }, ct);
 
 			var totalChunks = chunks.Count;
 			var deduped = totalChunks - totalNew;

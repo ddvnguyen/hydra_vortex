@@ -17,9 +17,7 @@ scrape_configs:
           node: p100
           __path__: /var/log/hydra/llama-p100.log
     pipeline_stages:
-      - json:
-          expressions:
-            level: level
-            msg: msg
+      - regex:
+          expression: '^(?:\d+\.\d+\.\d+\.\d+\s+)?(?P<level>[IWED])\s'
       - labels:
           level:
