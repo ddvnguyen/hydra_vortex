@@ -1,6 +1,5 @@
 using Hydra.Store;
-using Npgsql;
- 
+
 namespace Tests.Store;
 
 [Collection("SerializedPG")]
@@ -22,8 +21,7 @@ public sealed class WriteBehindServiceTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
-            ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
-        await EnsureDatabaseAsync(connStr);
+            ?? "Host=localhost;Database=hydra_store;Username=hydra;Password=hydra";
 
         _meta = new StoreMetadata(connStr);
         await _meta.EnsureSchemaAsync(CancellationToken.None);
@@ -138,15 +136,5 @@ public sealed class WriteBehindServiceTests : IAsyncLifetime
         checkCmd.Parameters.AddWithValue("hash", hash);
         var result = await checkCmd.ExecuteScalarAsync();
         Assert.Equal(true, result);
-    }
-
-    private static async Task EnsureDatabaseAsync(string connStr)
-    {
-        var adminConnStr = connStr.Replace("Database=hydra_test", "Database=postgres");
-        await using var ds = new NpgsqlDataSourceBuilder(adminConnStr).Build();
-        await using var conn = await ds.OpenConnectionAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "CREATE DATABASE hydra_test";
-        try { await cmd.ExecuteNonQueryAsync(); } catch (PostgresException ex) when (ex.SqlState == "42P04") { }
     }
 }

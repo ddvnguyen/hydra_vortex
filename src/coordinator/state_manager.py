@@ -1,11 +1,8 @@
 import time
 
-import httpx
-
 from python_shared.log_config import get_logger, new_trace_id
 from python_shared.rpc_client import RpcClient, OpCode
 from coordinator.session_table import SessionTable
-from coordinator.proxy import warmup_prefix
 from coordinator.metrics import migrations_total, migration_latency
 
 log = get_logger()
@@ -155,60 +152,6 @@ class StateManager:
             return resp.meta
         finally:
             await client.close()
-
-    async def _resolve_warm_slot(
-        self, llama_url: str, expected_n_past: int, trace_id: str
-    ) -> int | None:
-        """Find the llama-server slot whose n_past matches the warm-up result."""
-        if expected_n_past <= 0:
-            return None
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(
-                    f"{llama_url.rstrip('/')}/slots",
-                    headers={"X-Trace-Id": trace_id},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as exc:
-            log.warning("resolve_warm_slot_failed", url=llama_url, error=str(exc))
-            return None
-
-        slots = data if isinstance(data, list) else data.get("slots", [])
-        for slot in slots:
-            if slot.get("n_past", 0) == expected_n_past:
-                return slot.get("id")
-        return None
-
-    async def warmup_and_save_prefix(
-        self,
-        checkpoint_name: str,
-        system_content: str,
-        node_host: str,
-        node_port: int,
-        llama_url: str,
-    ) -> int:
-        """Prefill the system prompt only, then checkpoint that KV state.
-
-        Saves n_past ~= system_tokens (not a full conversation), so a later
-        restore + real request clears the n_past guard and reuses the prefix KV.
-        Returns the warmed n_past.
-        """
-        trace_id = new_trace_id()
-        n_past = await warmup_prefix(llama_url, system_content, trace_id)
-        if n_past <= 0:
-            raise RuntimeError("prefix warmup returned n_past=0")
-        slot_id = await self._resolve_warm_slot(llama_url, n_past, trace_id)
-        await self.save_prefix_checkpoint(
-            checkpoint_name, node_host, node_port, slot_id=slot_id or 0
-        )
-        log.info(
-            "prefix_warmed",
-            checkpoint=checkpoint_name,
-            n_past=n_past,
-            slot_id=slot_id,
-        )
-        return n_past
 
     async def restore_prefix_checkpoint(
         self,

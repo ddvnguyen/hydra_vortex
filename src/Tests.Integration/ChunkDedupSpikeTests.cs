@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Json;
 using Hydra.Shared;
-using Npgsql;
 using StoreConfig = Hydra.Store.StoreConfig;
 using StoreServer = Hydra.Store.StoreServer;
 using StorageEngine = Hydra.Store.StorageEngine;
@@ -50,8 +49,7 @@ public sealed class ChunkDedupSpikeTests : IAsyncLifetime
         };
 
         var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
-            ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
-        await EnsureDatabaseAsync(connStr);
+            ?? "Host=localhost;Database=hydra_store;Username=hydra;Password=hydra";
         _metadata = new StoreMetadata(connStr);
         await _metadata.EnsureSchemaAsync(CancellationToken.None);
         await using var cleanConn = await _metadata.DataSource.OpenConnectionAsync();
@@ -72,13 +70,7 @@ public sealed class ChunkDedupSpikeTests : IAsyncLifetime
         if (_storeServer is not null)
             await _storeServer.DisposeAsync();
         if (_metadata is not null)
-        {
-            await using var cleanConn = await _metadata.DataSource.OpenConnectionAsync();
-            await using var cleanCmd = cleanConn.CreateCommand();
-            cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
-            await cleanCmd.ExecuteNonQueryAsync();
             await _metadata.DisposeAsync();
-        }
         if (_storeDir.Exists)
             _storeDir.Delete(recursive: true);
     }
@@ -247,15 +239,5 @@ public sealed class ChunkDedupSpikeTests : IAsyncLifetime
             .OrderBy(c => c.GetProperty("index").GetInt32())
             .Select(c => c.GetProperty("hash").GetString() ?? "")
             .ToList();
-    }
-
-    private static async Task EnsureDatabaseAsync(string connStr)
-    {
-        var adminConnStr = connStr.Replace("Database=hydra_test", "Database=postgres");
-        await using var ds = new NpgsqlDataSourceBuilder(adminConnStr).Build();
-        await using var conn = await ds.OpenConnectionAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "CREATE DATABASE hydra_test";
-        try { await cmd.ExecuteNonQueryAsync(); } catch (PostgresException ex) when (ex.SqlState == "42P04") { }
     }
 }

@@ -1,6 +1,5 @@
 using Hydra.Store;
-using Npgsql;
- 
+
 namespace Tests.Store;
 
 /// <summary>
@@ -25,8 +24,7 @@ public sealed class StoreMetadataTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var connStr = Environment.GetEnvironmentVariable("HYDRA_STORE_PG_CONN")
-            ?? "Host=localhost;Database=hydra_test;Username=hydra;Password=hydra";
-        await EnsureDatabaseAsync(connStr);
+            ?? "Host=localhost;Database=hydra_store;Username=hydra;Password=hydra";
 
         _meta = new StoreMetadata(connStr);
         await _meta.EnsureSchemaAsync(CancellationToken.None);
@@ -40,13 +38,7 @@ public sealed class StoreMetadataTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         if (_meta is not null)
-        {
-            await using var cleanConn = await _meta.DataSource.OpenConnectionAsync();
-            await using var cleanCmd = cleanConn.CreateCommand();
-            cleanCmd.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
-            await cleanCmd.ExecuteNonQueryAsync();
             await _meta.DisposeAsync();
-        }
         if (_storeDir.Exists)
             _storeDir.Delete(recursive: true);
     }
@@ -216,15 +208,5 @@ public sealed class StoreMetadataTests : IAsyncLifetime
 
         Assert.False(await _meta.HasChunkAsync("reconcile_test"));
         Assert.True(await _meta.HasChunkAsync("reconcile_keep"));
-    }
-
-    private static async Task EnsureDatabaseAsync(string connStr)
-    {
-        var adminConnStr = connStr.Replace("Database=hydra_test", "Database=postgres");
-        await using var ds = new NpgsqlDataSourceBuilder(adminConnStr).Build();
-        await using var conn = await ds.OpenConnectionAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "CREATE DATABASE hydra_test";
-        try { await cmd.ExecuteNonQueryAsync(); } catch (PostgresException ex) when (ex.SqlState == "42P04") { }
     }
 }
