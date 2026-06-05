@@ -57,6 +57,10 @@ async def _eviction_loop(
     timeout_s: int,
     interval_s: int = 60,
 ):
+    # Best-effort eviction: save stale sessions to Store before removing them
+    # from the in-memory table. If save fails (agent down, store unreachable),
+    # the KV state is lost — but the session is still removed to prevent
+    # unbounded memory growth in the coordinator.
     try:
         while True:
             await asyncio.sleep(interval_s)
@@ -74,6 +78,9 @@ async def _eviction_loop(
                     except Exception as e:
                         log.warning("evict_stale_save_failed",
                                     session_id=sid, node=entry.node_name, error=str(e))
+                else:
+                    log.warning("evict_stale_worker_not_found",
+                                session_id=sid, node=entry.node_name)
                 session_table.remove(sid)
             log.info("evicted_stale_sessions",
                      count=len(stale), timeout_s=timeout_s)

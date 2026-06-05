@@ -46,16 +46,17 @@ class StateManager:
             await client.close()
 
     async def restore_session(
-        self, session_id: str, target_host: str, target_port: int
+        self, session_id: str, target_host: str, target_port: int,
+        slot_id: int | None = None,
     ) -> dict:
         trace_id = new_trace_id()
         entry = self._session_table.lookup(session_id)
-        if not entry or entry.slot_id is None:
-            log.warning("restore_session_no_slot",
+        if slot_id is None:
+            slot_id = entry.slot_id if entry else None
+        if slot_id is None:
+            log.warning("restore_session_skipped_no_slot",
                         session_id=session_id, trace_id=trace_id)
-            slot_id = 0
-        else:
-            slot_id = entry.slot_id
+            return {}
         client = self._agent_client(target_host, target_port)
         try:
             resp = await client.request(OpCode.RestoreStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
@@ -87,18 +88,19 @@ class StateManager:
         log.info("migrate_start", session_id=session_id, to=to_node_name)
 
         entry = self._session_table.lookup(session_id)
-        slot_id = str(entry.slot_id) if entry and entry.slot_id is not None else ""
+        capture_slot_id = entry.slot_id if entry and entry.slot_id is not None else None
+        slot_id_str = str(capture_slot_id) if capture_slot_id is not None else ""
 
         save_meta = await self.save_session(session_id, from_host, from_port)
 
         erase_client = self._agent_client(from_host, from_port)
         try:
             trace_id = new_trace_id()
-            await erase_client.request(OpCode.SlotErase, slot_id, trace_id=trace_id)
+            await erase_client.request(OpCode.SlotErase, slot_id_str, trace_id=trace_id)
         finally:
             await erase_client.close()
 
-        restore_meta = await self.restore_session(session_id, to_host, to_port)
+        restore_meta = await self.restore_session(session_id, to_host, to_port, slot_id=capture_slot_id)
 
         entry = self._session_table.lookup(session_id)
         if entry:

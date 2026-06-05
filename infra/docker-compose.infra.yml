@@ -108,6 +108,7 @@ services:
       - ./grafana/dashboards/dashboard-providers.yml:/etc/grafana/provisioning/dashboards/dashboard-providers.yml:ro
       - ./grafana/dashboards/hydra-dashboard.json:/var/lib/grafana/dashboards/hydra-dashboard.json:ro
       - ./grafana/dashboards/hydra-logs.json:/var/lib/grafana/dashboards/hydra-logs.json:ro
+      - ./grafana/dashboards/hydra-coordinator.json:/var/lib/grafana/dashboards/hydra-coordinator.json:ro
       - grafana-data:/var/lib/grafana
     environment:
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/hydra-dashboard.json
