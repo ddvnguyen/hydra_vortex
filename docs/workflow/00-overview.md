@@ -30,4 +30,3 @@ Principles:
   set Status (item added → Todo; PR merged / issue closed → Done).
 - **Commands live in `DevelopmentRunBook.md`** — these docs reference them, not copy them.
 - Track sub-steps with todos; exactly one in-progress.
-- **Plane is legacy** (`docs/PLANE_SETUP.md`, parallel during evaluation) — not for new work.
