@@ -272,4 +272,76 @@ public sealed class StorageEngineTests : IDisposable
         Assert.Equal(5, stats.FileCount);
         Assert.Equal(500, stats.TotalBytes);
     }
+
+    [Fact]
+    public async Task PutAsync_WriteFailure_DoesNotLeavePartialFile()
+    {
+        var key = "partial/aborted.bin";
+        var data = new byte[5_000_000];
+        new Random(42).NextBytes(data);
+
+        var pipe = new Pipe();
+
+        _ = Task.Run(async () =>
+        {
+            await pipe.Writer.WriteAsync(data);
+            await pipe.Writer.CompleteAsync();
+        });
+
+        var reader = new FailingPipeReader(pipe.Reader, failAfterBytes: 1_000_000);
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => _engine.PutAsync(key, reader, data.Length, CancellationToken.None));
+
+        var file = await _engine.GetAsync(key, CancellationToken.None);
+        Assert.Null(file);
+    }
+
+    [Fact]
+    public async Task PutAsync_AtomicRename_NoTempFileLeftBehind()
+    {
+        var key = "atomic/normal.bin";
+        var data = "atomic write"u8.ToArray();
+
+        var pipe = new Pipe();
+        await pipe.Writer.WriteAsync(data);
+        await pipe.Writer.CompleteAsync();
+
+        await _engine.PutAsync(key, pipe.Reader, data.Length, CancellationToken.None);
+
+        var file = await _engine.GetAsync(key, CancellationToken.None);
+        Assert.NotNull(file);
+        Assert.True(file!.Exists);
+
+        var tmpPath = file.FullName + ".tmp";
+        Assert.False(File.Exists(tmpPath), "temp file should be cleaned up after successful write");
+    }
+
+    private sealed class FailingPipeReader : PipeReader
+    {
+        private readonly PipeReader _inner;
+        private readonly long _failAfterBytes;
+        private long _bytesRead;
+
+        public FailingPipeReader(PipeReader inner, long failAfterBytes)
+        {
+            _inner = inner;
+            _failAfterBytes = failAfterBytes;
+        }
+
+        public override async ValueTask<ReadResult> ReadAsync(CancellationToken ct = default)
+        {
+            var result = await _inner.ReadAsync(ct);
+            _bytesRead += result.Buffer.Length;
+            if (_bytesRead >= _failAfterBytes)
+                throw new IOException("Simulated disk full");
+            return result;
+        }
+
+        public override void AdvanceTo(SequencePosition consumed) => _inner.AdvanceTo(consumed);
+        public override void AdvanceTo(SequencePosition consumed, SequencePosition examined) => _inner.AdvanceTo(consumed, examined);
+        public override void CancelPendingRead() => _inner.CancelPendingRead();
+        public override void Complete(Exception? exception = null) => _inner.Complete(exception);
+        public override bool TryRead(out ReadResult result) => _inner.TryRead(out result);
+    }
 }
