@@ -68,6 +68,9 @@ class StateManager:
             if entry:
                 entry.node_name = node_name
                 entry.slot_id = slot_id
+                # Keep has_store_state=true from a prior mark_evicted even when
+                # the Agent's restore response doesn't set restored=true (Agent
+                # may not include the field). Falls back to existing value.
                 entry.has_store_state = restored or entry.has_store_state
             log.info("state_restored", session_id=session_id, slot_id=slot_id, n_past=n_past)
             return resp.meta or {}
