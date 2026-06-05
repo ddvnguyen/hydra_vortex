@@ -578,6 +578,12 @@ class WorkerScheduler:
             self._worker_freed.set()
             self._tracker.on_error(prefill_worker.name)
             upstream_timeouts_total.inc()
+            raise HTTPException(status_code=504, detail=f"Prefill exceeded {self._config.llama_request_timeout_s}s")
+        except Exception as e:
+            self._tracker.release(prefill_worker.name)
+            self._worker_freed.set()
+            self._tracker.on_error(prefill_worker.name)
+            raise HTTPException(status_code=503, detail=f"Prefill failed: {e}")
 
         # Use id_slot from response if available (llama-server fork), fallback to captured slot
         response_slot = prefill_result.get("id_slot")
@@ -588,12 +594,6 @@ class WorkerScheduler:
             log.debug("prefill_slot_from_response",
                       trace_id=item.trace_id, session_id=sess_id,
                       slot_id=response_slot)
-            raise HTTPException(status_code=504, detail=f"Prefill exceeded {self._config.llama_request_timeout_s}s")
-        except Exception as e:
-            self._tracker.release(prefill_worker.name)
-            self._worker_freed.set()
-            self._tracker.on_error(prefill_worker.name)
-            raise HTTPException(status_code=503, detail=f"Prefill failed: {e}")
 
         n_past_after = (
             prefill_result.get("usage", {}).get("total_tokens", 0)
