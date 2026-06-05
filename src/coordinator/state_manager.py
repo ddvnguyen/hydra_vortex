@@ -33,9 +33,10 @@ class StateManager:
                         session_id=session_id, trace_id=trace_id)
             return {}
         slot_id = entry.slot_id
+        n_past_hint = entry.n_past or 0
         client = self._agent_client(node_host, node_port)
         try:
-            resp = await client.request(OpCode.SaveStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
+            resp = await client.request(OpCode.SaveStateChunked, f"{session_id}:{slot_id}:{n_past_hint}", trace_id=trace_id)
             n_past = resp.meta.get("n_past", 0) if resp.meta else entry.n_past if entry else 0
             if entry:
                 self._session_table.mark_evicted(session_id)
@@ -58,7 +59,8 @@ class StateManager:
             return {}
         client = self._agent_client(target_host, target_port)
         try:
-            resp = await client.request(OpCode.RestoreStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
+            n_past_hint = entry.n_past if entry else 0
+            resp = await client.request(OpCode.RestoreStateChunked, f"{session_id}:{slot_id}:{n_past_hint}", trace_id=trace_id)
             restored = resp.meta.get("restored", False) if resp.meta else False
             n_past = resp.meta.get("n_past", 0) if resp.meta else 0
             slot_id = resp.meta.get("slot_id", slot_id) if resp.meta else slot_id

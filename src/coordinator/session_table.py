@@ -23,6 +23,7 @@ class SessionTable:
         return self._sessions.get(session_id)
 
     def register(self, session_id: str, node_name: str, slot_id: int | None = None, n_past: int = 0, prefix_hash: str | None = None):
+        prev = self._sessions.get(session_id)
         now = time.time()
         entry = SessionEntry(
             session_id=session_id,
@@ -30,9 +31,11 @@ class SessionTable:
             slot_id=slot_id,
             n_past=n_past,
             prefix_hash=prefix_hash,
-            created_at=now,
+            created_at=prev.created_at if prev else now,
             last_used=now,
         )
+        if prev:
+            entry.has_store_state = prev.has_store_state
         self._sessions[session_id] = entry
         return entry
 

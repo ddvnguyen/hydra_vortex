@@ -111,7 +111,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
         try
         {
             var result = await handler.SaveToStoreChunkedAsync(
-                "chunked-session", 0, "trace-chunked-save", CancellationToken.None);
+                "chunked-session", 0, 0, "trace-chunked-save", CancellationToken.None);
 
             Assert.Equal("chunked-session", result.SessionId);
             Assert.Equal(0, result.SlotId);
@@ -175,7 +175,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
         {
             // First save — all 3 chunks should be new
             var result1 = await handler1.SaveToStoreChunkedAsync(
-                "dedup-session", 0, "trace-dedup-1", CancellationToken.None);
+                "dedup-session", 0, 0, "trace-dedup-1", CancellationToken.None);
             Assert.Equal(baseData.Length, result1.Size);
 
             // Second save with a new instance (no local cache) — same data, all deduped
@@ -209,7 +209,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
             var handler2 = new StateHandler(llamaClient2, storeClient1, chunkCache2, log);
 
             var result2 = await handler2.SaveToStoreChunkedAsync(
-                "dedup-session", 1, "trace-dedup-2", CancellationToken.None);
+                "dedup-session", 1, 0, "trace-dedup-2", CancellationToken.None);
             Assert.Equal(baseData.Length, result2.Size);
 
             // Verify data round-trips correctly via GetChunked (de-frame the response).
@@ -272,7 +272,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
         var saveHandler = new StateHandler(llamaSaveClient, storeClient, chunkCache, log);
 
         await saveHandler.SaveToStoreChunkedAsync(
-            "restore-chunked-session", 0, "trace-chunked-save", CancellationToken.None);
+            "restore-chunked-session", 0, 0, "trace-chunked-save", CancellationToken.None);
 
         // Now restore and verify data flows to llama
         byte[]? receivedBody = null;
@@ -313,7 +313,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
         try
         {
             var result = await restoreHandler.RestoreFromStoreChunkedAsync(
-                "restore-chunked-session", 1, "trace-chunked-restore", CancellationToken.None);
+                "restore-chunked-session", 1, 0, "trace-chunked-restore", CancellationToken.None);
 
             Assert.True(result.Restored);
             Assert.Equal(1500, result.NPast);
@@ -375,7 +375,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
         {
             // Save — populates local cache with chunk hashes
             var saveResult = await handler.SaveToStoreChunkedAsync(
-                "cached-session", 0, "trace-cache-save", CancellationToken.None);
+                "cached-session", 0, 0, "trace-cache-save", CancellationToken.None);
             Assert.True(saveResult.Size > 0);
 
             // Restore — always fetches full state from store regardless of cache
@@ -411,7 +411,7 @@ public sealed class AgentChunkedSaveRestoreTests : IAsyncLifetime
             var restoreHandler = new StateHandler(llamaRestoreClient, storeClient, restoreCache, log);
 
             var restoreResult = await restoreHandler.RestoreFromStoreChunkedAsync(
-                "cached-session", 1, "trace-cache-restore", CancellationToken.None);
+                "cached-session", 1, 0, "trace-cache-restore", CancellationToken.None);
 
             Assert.True(restoreResult.Restored);
             Assert.NotNull(receivedBody);
