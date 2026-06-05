@@ -1,0 +1,50 @@
+# .understandignore — patterns for files/dirs to exclude from analysis
+# Syntax: same as .gitignore (globs, # comments, ! negation, trailing / for dirs)
+# Lines below are suggestions — uncomment to activate.
+# Use ! prefix to force-include something excluded by defaults.
+#
+# Built-in defaults (always excluded unless negated):
+#   node_modules/, .git/, dist/, build/, obj/, *.lock, *.min.js, etc.
+#
+# --- From .gitignore (uncomment to exclude) ---
+
+# bin/
+# *.user
+# *.suo
+# *.userprefs
+# *.csproj.user
+# *.nupkg
+# packages/
+# *.py[cod]
+# *.egg-info/
+# *.egg
+# .env
+# src/llama-cpp/build/
+# *.o
+# *.a
+# *.so
+# *.dll
+# *.dylib
+# .vs/
+# *.swp
+# *.swo
+# *~
+# .DS_Store
+# Thumbs.db
+# deploy.log
+# *.pem
+# tests/result/*.json
+# src/Tests.Integration/TestResults/test_results*
+# **/node_modules/**
+
+# --- Detected directories (uncomment to exclude) ---
+
+# tests/
+# docs/
+# scripts/
+
+# --- Test file patterns (uncomment to exclude) ---
+
+# *.test.*
+# *.spec.*
+# *.snap

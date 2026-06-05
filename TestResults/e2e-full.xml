@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="10" time="37.488" timestamp="2026-05-31T07:22:08.921928+07:00" hostname="ddv-server"><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_health_endpoint" time="0.021" /><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_status_endpoint" time="0.015" /><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_completion_nonstream" time="4.970" /><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_completion_stream" time="3.695" /><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_session_lifecycle" time="4.065" /><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_prefix_checkpoint" time="0.026"><failure message="AssertionError: Prefix save failed: {&quot;detail&quot;:&quot;Prefix save failed: RPC error (status=0x02): {\&quot;error\&quot;:\&quot;Connection refused (host.docker.internal:8080)\&quot;}&quot;}&#10;assert 500 == 200&#10; +  where 500 = &lt;Response [500 Internal Server Error]&gt;.status_code">coord_url = 'http://localhost:9000'
+
+    @pytest.mark.e2e
+    @pytest.mark.asyncio
+    async def test_prefix_checkpoint(coord_url: str):
+        """POST /prefix/{name}/save and /restore return OK."""
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            save_resp = await client.post(
+                f"{coord_url}/prefix/system_prompt/save",
+                params={"node_name": "rtx", "slot_id": 0},
+            )
+&gt;       assert save_resp.status_code == 200, f"Prefix save failed: {save_resp.text}"
+E       AssertionError: Prefix save failed: {"detail":"Prefix save failed: RPC error (status=0x02): {\"error\":\"Connection refused (host.docker.internal:8080)\"}"}
+E       assert 500 == 200
+E        +  where 500 = &lt;Response [500 Internal Server Error]&gt;.status_code
+
+tests/e2e/test_full_workflow_e2e.py:225: AssertionError</failure></testcase><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_migrate_session" time="4.105" /><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_migration_cache_hit" time="7.998"><failure message="AssertionError: cache_n=0 — KV cache was not used after migration. Continuation may have fewer tokens than n_past, or restore failed silently.&#10;assert 0 &gt; 0">coord_url = 'http://localhost:9000', session_id = 'e2e-full-963f3872f1f2'
+
+    @pytest.mark.e2e
+    @pytest.mark.asyncio
+    async def test_migration_cache_hit(coord_url: str, session_id: str):
+        """
+        Full migration cycle with cache hit verification.
+    
+        1. Send prompt through coordinator (routes to RTX)
+        2. Migrate session to P100
+        3. Send continuation through coordinator (routes via affinity to P100)
+        4. Verify cache_n &gt; 0 (KV cache was restored)
+        5. Verify prompt_ms &lt; 5000 (fast cache path, not full re-prefill)
+        """
+        resp = await _do_completion(
+            coord_url,
+            _make_messages(PROMPT),
+            session_id=session_id,
+            stream=False,
+            max_tokens=50,
+        )
+        assert resp.status_code == 200
+        first = resp.json()
+        assert "choices" in first
+        assistant_reply = first["choices"][0]["message"]["content"]
+    
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            migrate_resp = await client.post(
+                f"{coord_url}/sessions/{session_id}/migrate",
+                json={"target_node": "p100"},
+            )
+        assert migrate_resp.status_code == 200, f"Migration failed: {migrate_resp.text}"
+    
+        continuation_messages = [
+            {"role": "user", "content": PROMPT},
+            {"role": "assistant", "content": assistant_reply},
+            {"role": "user", "content": CONTINUATION},
+        ]
+        cont_resp = await _do_completion(
+            coord_url,
+            continuation_messages,
+            session_id=session_id,
+            stream=False,
+        )
+        assert cont_resp.status_code == 200
+        cont_body = cont_resp.json()
+    
+        timings = cont_body.get("timings", {})
+        cache_n = timings.get("cache_n", 0)
+        prompt_ms = timings.get("prompt_ms", 0)
+    
+&gt;       assert cache_n &gt; 0, (
+            f"cache_n={cache_n} — KV cache was not used after migration. "
+            f"Continuation may have fewer tokens than n_past, or restore failed silently."
+        )
+E       AssertionError: cache_n=0 — KV cache was not used after migration. Continuation may have fewer tokens than n_past, or restore failed silently.
+E       assert 0 &gt; 0
+
+tests/e2e/test_full_workflow_e2e.py:321: AssertionError</failure></testcase><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_eviction_with_save" time="4.519" /><testcase classname="tests.e2e.test_full_workflow_e2e" name="test_full_cycle_completion_migrate_continuation" time="6.942" /></testsuite></testsuites>

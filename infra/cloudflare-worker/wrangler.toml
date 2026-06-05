@@ -1,0 +1,11 @@
+name = "oauth-callback"
+main = "index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Routes all traffic on oauth.ddvnguyen.com to this Worker.
+# Cloudflare dashboard: Workers & Pages → your Worker → Settings → Triggers → add the route there,
+# OR let Wrangler manage it via this config (requires zone_id or zone_name to match your CF account).
+routes = [
+  { pattern = "oauth.ddvnguyen.com/*", zone_name = "ddvnguyen.com" }
+]

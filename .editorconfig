@@ -1,0 +1,58 @@
+root = true
+
+[*]
+indent_style = tab
+indent_size = 3
+tab_width = 3
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_style = tab
+indent_size = 2
+
+[*.json]
+indent_style = tab
+indent_size = 2
+
+[*.cs]
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+
+# Indentation
+csharp_indent_style = tab
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+
+# Spacing
+csharp_space_after_cast = false
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_space_between_parentheses = false
+csharp_space_before_colon_in_inheritance_clause = true
+csharp_space_after_colon_in_inheritance_clause = true
+csharp_space_around_binary_operators = before_and_after
+
+# Usings
+dotnet_sort_system_directives_first = true
+csharp_prefer_system_using_directives = false
+
+[*.{py,pyi}]
+indent_style = tab
+indent_size = 3
+tab_width = 3
+
+[*.{c,cpp,h,hpp}]
+indent_style = tab
+indent_size = 3
+tab_width = 3

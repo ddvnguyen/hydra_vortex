@@ -1,0 +1,85 @@
+# Containerized promtail config (used by docker-compose.infra.yml).
+# Scrapes all container logs via podman Docker API + applies
+# component/node labels from container name in pipeline stages.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: [__meta_docker_container_label_component]
+        target_label: component
+        action: replace
+
+      - target_label: job
+        replacement: docker-containers
+
+      - source_labels: [__meta_docker_container_label_node]
+        target_label: node
+        action: replace
+
+      - source_labels: [__meta_docker_container_name]
+        regex: "/(.*)"
+        target_label: container
+        action: replace
+
+      - source_labels: [component]
+        regex: observability
+        action: drop
+
+    pipeline_stages:
+      - cri: {}
+
+      - match:
+          selector: '{container="llama-cpp"}'
+          stages:
+            - replace:
+                expression: '\x1b\[[0-9;]*[a-zA-Z]'
+                replace: ''
+            - regex:
+                expression: '^(?:\d+\.\d+\.\d+\.\d+\s+)?(?P<level>[IWED])\s'
+            - labels:
+                level:
+            - template:
+                source: "component"
+                template: "llama-server"
+            - labels:
+                component:
+
+      - match:
+          selector: '{container=~"hydra_.*"}'
+          stages:
+            - regex:
+                source: "container"
+                expression: "hydra_(?P<component>[^-_]+).*"
+            - labels:
+                component:
+
+      - match:
+          selector: '{container=~"hydra_agent-rtx_1|llama-cpp"}'
+          stages:
+            - template:
+                source: "node"
+                template: "rtx"
+            - labels:
+                node:
+
+      - match:
+          selector: '{container="hydra_agent-p100_1"}'
+          stages:
+            - template:
+                source: "node"
+                template: "p100"
+            - labels:
+                node:

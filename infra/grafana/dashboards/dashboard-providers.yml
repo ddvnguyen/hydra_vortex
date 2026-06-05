@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Hydra
+    orgId: 1
+    folder: Hydra
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

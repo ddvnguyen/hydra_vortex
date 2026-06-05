@@ -1,0 +1,23 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://192.168.122.1:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: llama-p100
+    static_configs:
+      - targets: [localhost]
+        labels:
+          component: llama-server
+          node: p100
+          __path__: /var/log/hydra/llama-p100.log
+    pipeline_stages:
+      - regex:
+          expression: '^(?:\d+\.\d+\.\d+\.\d+\s+)?(?P<level>[IWED])\s'
+      - labels:
+          level:
