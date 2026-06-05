@@ -255,6 +255,8 @@ class WorkerScheduler:
                 entry = self._session_table.lookup(item.session_id)
 
             if entry and entry.has_store_state:
+                self._tracker.release(worker.name)
+                self._worker_freed.set()
                 await self._execute_store_restore(item)
                 return
 
@@ -478,8 +480,10 @@ class WorkerScheduler:
 
         await self._maybe_restore_prefix_checkpoint(item, worker)
 
+        prefill_slot = await _pick_idle_slot(node_url, item.trace_id)
+
         self._session_table.register(
-            sess_id, worker.name, None, n_past=0, prefix_hash=item.prefix_hash,
+            sess_id, worker.name, prefill_slot, n_past=0, prefix_hash=item.prefix_hash,
         )
 
         if item.request.get("stream", False):
@@ -496,6 +500,7 @@ class WorkerScheduler:
                                 pass
                         yield chunk
                     await self._track_after_stream(sess_id, node_url, last_usage, item)
+                    await self._state.save_session(sess_id, worker.host, worker.rpc_port)
                     if item.prefix_hash:
                         await self._maybe_save_prefix(item, worker)
                 except Exception:
@@ -530,6 +535,7 @@ class WorkerScheduler:
             await self._track_after_completion(sess_id, node_url, result, item)
             if item.prefix_hash:
                 await self._maybe_save_prefix(item, worker)
+            await self._state.save_session(sess_id, worker.host, worker.rpc_port)
             item.future.set_result(JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": worker.name},

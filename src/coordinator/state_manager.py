@@ -38,7 +38,6 @@ class StateManager:
             resp = await client.request(OpCode.SaveStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
             n_past = resp.meta.get("n_past", 0) if resp.meta else entry.n_past if entry else 0
             if entry:
-                self._session_table.update_n_past(session_id, n_past)
                 self._session_table.mark_evicted(session_id)
             log.info("state_saved", session_id=session_id, meta=resp.meta)
             return resp.meta or {}
@@ -67,8 +66,7 @@ class StateManager:
             if entry:
                 entry.node_name = node_name
                 entry.slot_id = slot_id
-                entry.n_past = n_past
-                entry.has_store_state = not restored
+                entry.has_store_state = restored or entry.has_store_state
             log.info("state_restored", session_id=session_id, slot_id=slot_id, n_past=n_past)
             return resp.meta or {}
         finally:
