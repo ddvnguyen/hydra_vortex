@@ -139,8 +139,6 @@ merge/close — **no manual cross-linking**. Drive it with `gh project` / `gh is
 (Bash) or the **GitHub MCP** (configured in `.mcp.json` / `opencode.json`). Board
 layout + setup: `docs/GITHUB_PROJECT_SETUP.md`.
 
-> **Plane is legacy.** `docs/PLANE_SETUP.md` runs in parallel during evaluation and is
-> kept for reference — **do not use it for new work.** GitHub Projects is the source of truth.
 
 ## Starting Point
 Core M0–M2 are done. Start from the **GitHub Project board**, filtered to the active

@@ -1,8 +1,5 @@
 {
   "name": "oauth-callback",
   "version": "1.0.0",
-  "private": true,
-  "dependencies": {
-    "@makeplane/plane-node-sdk": "latest"
-  }
+  "private": true
 }
