@@ -28,6 +28,11 @@ class NodeInfo:
     consecutive_failures: int = 0
     last_check: float = 0.0
     stuck_slots: int = 0
+    slots: list[dict] = None
+
+    def __post_init__(self):
+        if self.slots is None:
+            self.slots = []
 
 
 class HealthMonitor:
@@ -138,6 +143,7 @@ class HealthMonitor:
                 info.slots_idle = health_data.get("slots_idle", 0)
                 info.gpu_type = health_data.get("gpu_type", "")
                 info.llama_url = health_data.get("llama_url", config.llama_url)
+                info.slots = health_data.get("slots", [])
                 info.consecutive_failures = 0
                 info.last_check = time.time()
 
@@ -164,6 +170,18 @@ class HealthMonitor:
         if info.stuck_slots > 0:
             return False
         return True
+
+    def get_slots(self, node_name: str) -> list[dict]:
+        info = self._nodes.get(node_name)
+        if not info:
+            return []
+        return info.slots
+
+    def get_idle_slot(self, node_name: str) -> int | None:
+        for s in self.get_slots(node_name):
+            if not s.get("is_processing"):
+                return s.get("id")
+        return None
 
     def is_store_healthy(self) -> bool:
         return self._store_healthy

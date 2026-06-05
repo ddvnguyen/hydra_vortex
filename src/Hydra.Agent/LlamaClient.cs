@@ -14,6 +14,10 @@ public sealed class SlotInfo
     public bool IsProcessing { get; init; }
     [JsonPropertyName("n_remain")]
     public int NRemain { get; init; }
+    [JsonPropertyName("n_decoded")]
+    public int NDecoded { get; init; }
+    [JsonPropertyName("id_task")]
+    public int IdTask { get; init; }
 }
 
 public sealed class SlotMeta
