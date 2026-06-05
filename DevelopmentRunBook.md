@@ -176,52 +176,90 @@ Store and Agent config is compiled-in. Use VS Code launch `env` blocks or modify
 
 ### llama-server patched build
 
-Build dirs are gitignored — binaries live only on the host filesystem and are picked up
-by the RTX container (via volume mount) and rsynced to the P100 VM by CI/deploy scripts.
+The fork lives in `src/llama-cpp` (submodule, branch `hydra-state-streaming`).
+Build dirs are at `/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm{60,120}/`.
+Binaries are picked up by the RTX container (volume mount) and copied to the P100 VM.
+
+**Prerequisites:** CUDA 12.9 + CUDA 13.2 at `/opt/software/cuda/`, GCC 14 at `/usr/bin/gcc-14`.
 
 ```bash
-cd src/llama-cpp
+WORK=/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp
+cd $WORK
+```
 
-# RTX (Blackwell sm_120, cuBLAS) — output: build_sm120/bin/llama-server
-cmake -B build_sm120 -G Ninja \
+#### RTX (Blackwell sm_120, CUDA 13.2)
+
+```bash
+export PATH=/opt/software/cuda/13.2/bin:/opt/software/gcc/14/bin:$PATH
+export CC=gcc-14 CXX=g++-14
+cmake -B build_sm120 \
   -DCMAKE_CUDA_ARCHITECTURES=120 \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
-  -DGGML_NATIVE=ON
-cmake --build build_sm120 --target llama-server -j4
-
-# P100 (Pascal sm_60) — output: build_sm60/bin/llama-server
-# Build on this host then deploy via start-env.sh or setup-p100.sh
-cmake -B build_sm60 -G Ninja \
-  -DCMAKE_CUDA_ARCHITECTURES=60 \
-  -DGGML_CUDA=ON \
-  -DGGML_NATIVE=ON
-cmake --build build_sm60 --target llama-server -j4
+  -DGGML_NATIVE=ON \
+  -DCMAKE_CUDA_COMPILER=/opt/software/cuda/13.2/bin/nvcc
+cmake --build build_sm120 --target llama-server -j$(nproc)
 ```
 
-The RTX container (`infra/llama-rtx-node/docker-compose.yml`) mounts `build_sm120/` directly —
-restarting the container picks up any newly built binary automatically.
-
-### P100 VM — first-time setup
+#### P100 (Pascal sm_60, CUDA 12.9)
 
 ```bash
-# One-time: install user systemd service on the VM (no sudo required)
-bash scripts/setup-p100.sh
+export PATH=/opt/software/cuda/12.9/bin:/opt/software/gcc/14/bin:$PATH
+export CC=gcc-14 CXX=g++-14
+cmake -B build_sm60 \
+  -DCMAKE_CUDA_ARCHITECTURES=60 \
+  -DGGML_CUDA=ON \
+  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_NATIVE=ON \
+  -DCMAKE_CUDA_COMPILER=/opt/software/cuda/12.9/bin/nvcc
+cmake --build build_sm60 --target llama-server -j$(nproc)
 ```
 
-This deploys the binary, installs `~/.config/systemd/user/llama-p100.service` on the VM,
-and enables it for auto-start.
+#### Deploy RTX
 
-After first-time setup, day-to-day use is just `bash scripts/start-env.sh`.
+The RTX container (`infra/llama-rtx-node/docker-compose.yml`) mounts
+`/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm120/` at `/llama`.
+Restarting the container picks up the new binary automatically:
 
-### CI/CD deploy
+```bash
+cd infra/llama-rtx-node && podman-compose restart
+```
 
-The `deploy-llama` workflow (`.github/workflows/ci.yml`) reuses the local build cache:
-- **RTX**: `podman-compose up -d` in `infra/llama-rtx-node/` — container mounts `build_sm120/` via absolute volume path
-- **P100**: `rsync build_sm60/bin/llama-server hydra-p100:...` then `systemctl --user restart llama-p100`
+#### Deploy P100
 
-Triggered manually via `workflow_dispatch` (set `deploy-llama=true`) or by pushing a
-`llama.cpp*` tag after rebuilding the binaries.
+The P100 VM runs llama-server via a user systemd service. The binary lives at
+`/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server` on the VM.
+Sudo is required to replace it (VM has passwordless sudo for user `vm1`).
+
+```bash
+# 1. Copy to VM (scp uses ~/.ssh/config alias hydra-p100 → vm1@192.168.122.21)
+scp build_sm60/bin/llama-server hydra-p100:/tmp/llama-server-new
+
+# 2. Deploy on the VM (must be run interactively — sudo needs a terminal)
+
+ssh hydra-p100
+sudo mv /tmp/llama-server-new /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+sudo chmod +x /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+systemctl --user restart llama-p100
+# Wait ~30s for model to load, then verify:
+curl http://192.168.122.21:8086/health
+```
+
+> **CI alternative:** The `deploy-llama` GitHub workflow handles P100 deploy via
+> `rsync` + SSH (CI runner has direct terminal access).
+
+#### Verify id_slot in response
+
+After deploying both, confirm the fork change took effect:
+
+```bash
+# Non-streaming request should include "id_slot" in OAI response
+curl -s -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen35moe","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('id_slot','MISSING'))"
+# Expected: id_slot=0 or id_slot=1
+```
 
 ---
 
