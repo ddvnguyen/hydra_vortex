@@ -1,13 +1,17 @@
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from typing import Optional
 
 import httpx
 
+from python_shared.log_config import get_logger
 from coordinator.config import WorkerNodeConfig
 from coordinator.worker_tracker import WorkerTracker
 from coordinator.health import HealthMonitor
 from coordinator.session_table import SessionEntry
+
+log = get_logger()
 
 WORKER_PREFILL = 1
 WORKER_DECODE = 2
@@ -53,21 +57,36 @@ def compute_prefix_hash(messages: list[dict]) -> Optional[str]:
 async def resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -> Optional[int]:
     if expected_n_past <= 0:
         return None
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(
-                f"{llama_url.rstrip('/')}/slots",
-                headers={"X-Trace-Id": trace_id},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception:
+
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{llama_url.rstrip('/')}/slots",
+                    headers={"X-Trace-Id": trace_id},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            log.debug("resolve_slot_id_failed",
+                       trace_id=trace_id, llama_url=llama_url,
+                       expected_n_past=expected_n_past,
+                       attempt=attempt + 1, error=str(e))
+            if attempt == 0:
+                await asyncio.sleep(3)
+            continue
+
+        slots = data if isinstance(data, list) else data.get("slots", [])
+        for slot in slots:
+            if slot.get("n_past", 0) == expected_n_past:
+                return slot.get("id")
+
+        log.debug("resolve_slot_id_no_match",
+                   trace_id=trace_id, llama_url=llama_url,
+                   expected_n_past=expected_n_past,
+                   slot_count=len(slots))
         return None
 
-    slots = data if isinstance(data, list) else data.get("slots", [])
-    for slot in slots:
-        if slot.get("n_past", 0) == expected_n_past:
-            return slot.get("id")
     return None
 
 
@@ -93,9 +112,15 @@ async def verify_warm_slot(
             headers={"X-Trace-Id": trace_id},
         )
         if resp.status_code != 200:
+            log.debug("verify_warm_slot_http_error",
+                       trace_id=trace_id, node=worker.name,
+                       slot_id=entry.slot_id, status=resp.status_code)
             return False
         data = resp.json()
-    except Exception:
+    except Exception as e:
+        log.debug("verify_warm_slot_failed",
+                   trace_id=trace_id, node=worker.name,
+                   slot_id=entry.slot_id, error=str(e))
         return False
     finally:
         if not client_provided:
@@ -106,14 +131,30 @@ async def verify_warm_slot(
         if slot.get("id") != entry.slot_id:
             continue
         if slot.get("is_processing") and slot.get("n_remain", 1) == 0:
+            log.debug("verify_warm_slot_stuck",
+                       trace_id=trace_id, node=worker.name,
+                       slot_id=entry.slot_id)
             return False
         if slot.get("n_past", 0) < (entry.n_past or 0):
+            log.debug("verify_warm_slot_n_past_mismatch",
+                       trace_id=trace_id, node=worker.name,
+                       slot_id=entry.slot_id,
+                       slot_n_past=slot.get("n_past", 0),
+                       expected_n_past=entry.n_past)
             return False
         if entry.prefix_hash:
             slot_prefix = slot.get("prefix_hash") or slot.get("prompt_prefix_hash")
             if slot_prefix and slot_prefix != entry.prefix_hash:
+                log.debug("verify_warm_slot_prefix_mismatch",
+                           trace_id=trace_id, node=worker.name,
+                           slot_id=entry.slot_id,
+                           expected=entry.prefix_hash, got=slot_prefix)
                 return False
         return True
+    log.debug("verify_warm_slot_no_match",
+               trace_id=trace_id, node=worker.name,
+               slot_id=entry.slot_id,
+               slot_count=len(slots), n_past=entry.n_past)
     return False
 
 
