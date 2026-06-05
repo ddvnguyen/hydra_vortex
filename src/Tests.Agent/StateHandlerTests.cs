@@ -88,7 +88,7 @@ namespace Tests.Agent;
         var chunkCache = new LocalChunkCache(_chunkCacheDir);
         var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
-        var result = await handler.SaveToStoreAsync("test-session", 0, "trace-save", CancellationToken.None);
+        var result = await handler.SaveToStoreAsync("test-session", 0, 0, "trace-save", CancellationToken.None);
 
         Assert.Equal("test-session", result.SessionId);
         Assert.Equal(0, result.SlotId);
@@ -163,7 +163,7 @@ namespace Tests.Agent;
         var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         var result = await handler.RestoreFromStoreAsync(
-            "restore-session", 1, "trace-restore", CancellationToken.None);
+            "restore-session", 1, 0, "trace-restore", CancellationToken.None);
 
         Assert.Equal("restore-session", result.SessionId);
         Assert.Equal(1, result.SlotId);
@@ -197,7 +197,7 @@ namespace Tests.Agent;
         var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
         var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
-            handler.RestoreFromStoreAsync("nonexistent", 0, "trace-nf", CancellationToken.None));
+            handler.RestoreFromStoreAsync("nonexistent", 0, 0, "trace-nf", CancellationToken.None));
 
         Assert.Contains("nonexistent", ex.Message);
         Assert.Contains("not found", ex.Message);
@@ -245,7 +245,7 @@ namespace Tests.Agent;
         var chunkCache = new LocalChunkCache(_chunkCacheDir);
         var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
-        var result = await handler.SaveToStoreAsync("large-session", 0, "trace-large", CancellationToken.None);
+        var result = await handler.SaveToStoreAsync("large-session", 0, 0, "trace-large", CancellationToken.None);
 
         Assert.Equal(1_000_000, result.Size);
 

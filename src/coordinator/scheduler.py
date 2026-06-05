@@ -172,10 +172,10 @@ class WorkerScheduler:
             w = self._worker_by_name(wname)
             if not w:
                 continue
+            if not (w.worker_type & WORKER_PREFILL):
+                continue
             if not self._routable(wname):
                 continue
-            # Use estimated_new_tokens, not accumulated estimated_tokens,
-            # so resumed sessions on P100 are not permanently excluded.
             if w.max_prefill_tokens != -1 and item.estimated_new_tokens > w.max_prefill_tokens:
                 continue
             return w
