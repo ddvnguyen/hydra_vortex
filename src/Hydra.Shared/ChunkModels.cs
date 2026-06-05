@@ -13,7 +13,7 @@ public sealed record ChunkRef(
 /// <summary>
 /// Constants and utilities for chunking KV cache state.
 /// </summary>
-public static class ChunkEngine
+public static class ChunkConstants
 {
     public const int ChunkSize = 1 * 1024 * 1024; // 1 MB per chunk
 }
