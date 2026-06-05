@@ -18,6 +18,7 @@ from coordinator.routing import (
     derive_session_id,
     compute_prefix_hash,
     resolve_slot_id,
+    _pick_idle_slot,
     verify_warm_slot,
     pick_best_prefill_worker,
     pick_best_decode_worker,
@@ -388,7 +389,7 @@ class WorkerScheduler:
         n_past_entry = entry.n_past if entry else 0
 
         try:
-            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port)
+            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0)
         except Exception as e:
             self._tracker.release(decode_worker.name)
             self._worker_freed.set()
@@ -548,8 +549,13 @@ class WorkerScheduler:
 
         await self._maybe_restore_prefix_checkpoint(item, prefill_worker)
 
+        prefill_slot = await _pick_idle_slot(prefill_url, item.trace_id)
+        log.info("cold_concurrency_slot",
+                 trace_id=item.trace_id, session_id=sess_id,
+                 node=prefill_worker.name, prefill_slot=prefill_slot)
+
         self._session_table.register(
-            sess_id, prefill_worker.name, None, n_past=0, prefix_hash=item.prefix_hash,
+            sess_id, prefill_worker.name, prefill_slot, n_past=0, prefix_hash=item.prefix_hash,
         )
 
         prefill_dict = {**item.request, "stream": False, "max_tokens": 1}
@@ -574,13 +580,9 @@ class WorkerScheduler:
         if n_past_after > 0:
             self._session_table.update_n_past(sess_id, n_past_after)
 
-        prefill_slot = await resolve_slot_id(prefill_url, n_past_after, item.trace_id)
         entry = self._session_table.lookup(sess_id)
-        if prefill_slot is not None:
-            if entry:
-                entry.slot_id = prefill_slot
-        elif n_past_after > 0:
-            log.warning("slot_resolve_failed",
+        if entry and entry.slot_id is None:
+            log.warning("slot_resolve_failed_no_prefill_slot",
                         trace_id=item.trace_id, session_id=sess_id,
                         node=prefill_worker.name, n_past=n_past_after,
                         elapsed_ms=self._elapsed_ms(item))
@@ -625,7 +627,7 @@ class WorkerScheduler:
         decode_url = decode_worker.llama_url
 
         try:
-            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port)
+            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0)
         except Exception as e:
             self._tracker.release(decode_worker.name)
             self._tracker.on_error(decode_worker.name)
