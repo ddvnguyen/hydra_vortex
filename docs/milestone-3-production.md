@@ -69,7 +69,7 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 
 ## Task M3.2: Observability — Grafana
 
-### M3.2.1: Prometheus Metrics (`src/coordinator/metrics.py`, `src/Hydra.Store/StoreMetrics.cs`, `src/Hydra.Agent/AgentMetrics.cs`)
+### M3.2.1: Prometheus Metrics (`src/coordinator/metrics.py`, `src/core/Hydra.Store/StoreMetrics.cs`, `src/core/Hydra.Agent/AgentMetrics.cs`)
 - **Store** (.NET, prometheus-net): `hydra_store_ops_total`, `hydra_store_bytes_stored`, `hydra_store_bytes_sent`, `hydra_store_op_duration_seconds` — exposed on `:9501/metrics`
 - **Agent** (.NET, prometheus-net): `hydra_agent_save_ops_total`, `hydra_agent_restore_ops_total`, `hydra_agent_save_duration_seconds`, `hydra_agent_restore_duration_seconds`, `hydra_agent_slots_idle`, `hydra_agent_llama_healthy` — exposed on `:9611/metrics`
 - **Coordinator** (Python, prometheus_client): `hydra_requests_total`, `hydra_cache_hits_total`, `hydra_migrations_total`, `hydra_active_sessions` — exposed on `:9000/metrics`

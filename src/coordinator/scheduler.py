@@ -9,8 +9,8 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi import HTTPException
 import httpx
 
-from python_shared.log_config import get_logger, new_trace_id
-from python_shared.rpc_client import RpcClient, OpCode
+from coordinator.lib.log_config import get_logger, new_trace_id
+from coordinator.lib.rpc_client import RpcClient, OpCode
 from coordinator.config import CoordinatorConfig, WorkerNodeConfig
 from coordinator.worker_tracker import WorkerTracker
 from coordinator.routing import (

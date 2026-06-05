@@ -481,4 +481,4 @@ sequenceDiagram
 
 ---
 
-*See `docs/architecture.md` for conceptual detail. Source of truth: `specs/rpc-protocol.md`, `src/coordinator/router.py`, `src/Hydra.Agent/StateHandler.cs`.*
+*See `docs/architecture.md` for conceptual detail. Source of truth: `specs/rpc-protocol.md`, `src/coordinator/router.py`, `src/core/Hydra.Agent/StateHandler.cs`.*

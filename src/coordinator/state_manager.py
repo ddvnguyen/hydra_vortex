@@ -1,7 +1,7 @@
 import time
 
-from python_shared.log_config import get_logger, new_trace_id
-from python_shared.rpc_client import RpcClient, OpCode
+from coordinator.lib.log_config import get_logger, new_trace_id
+from coordinator.lib.rpc_client import RpcClient, OpCode
 from coordinator.session_table import SessionTable
 from coordinator.metrics import migrations_total, migration_latency
 

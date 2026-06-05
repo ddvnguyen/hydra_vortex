@@ -5,7 +5,7 @@ from typing import Optional
 
 import httpx
 
-from python_shared.log_config import get_logger
+from coordinator.lib.log_config import get_logger
 from coordinator.config import WorkerNodeConfig
 from coordinator.worker_tracker import WorkerTracker
 from coordinator.health import HealthMonitor
