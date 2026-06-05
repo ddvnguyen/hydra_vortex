@@ -93,7 +93,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
             var chunkCache = new LocalChunkCache(_chunkCacheDir);
             var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
-            var saveResult = await handler.SaveToStoreAsync("test-session", 0, 0, "trace-save-e2e", CancellationToken.None);
+            var saveResult = await handler.SaveToStoreAsync("test-session", 0, "trace-save-e2e", CancellationToken.None);
 
             // Assert: Save result is valid
             Assert.Equal("test-session", saveResult.SessionId);
@@ -183,7 +183,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
             var chunkCache = new LocalChunkCache(_chunkCacheDir);
             var handler = new StateHandler(llamaClient, storeClient, chunkCache, log);
 
-            var restoreResult = await handler.RestoreFromStoreAsync("restore-session", 0, 0, "trace-restore-e2e", CancellationToken.None);
+            var restoreResult = await handler.RestoreFromStoreAsync("restore-session", 0, "trace-restore-e2e", CancellationToken.None);
 
             // Assert: restore result is valid
             Assert.True(restoreResult.Restored);
@@ -257,7 +257,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         try
         {
             // Act: Save state to store
-            var saveResult = await handler.SaveToStoreAsync("roundtrip-session", 0, 0, "trace-roundtrip-save", CancellationToken.None);
+            var saveResult = await handler.SaveToStoreAsync("roundtrip-session", 0, "trace-roundtrip-save", CancellationToken.None);
 
             // Assert save result
             Assert.Equal(5_000, saveResult.Size);
@@ -273,7 +273,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
 
             // Act: Restore state from store
             var restoreResult = await handler.RestoreFromStoreAsync(
-                "roundtrip-session", 1, 0, "trace-roundtrip-restore", CancellationToken.None);
+                "roundtrip-session", 1, "trace-roundtrip-restore", CancellationToken.None);
 
             // Assert restore result
             Assert.True(restoreResult.Restored);
@@ -316,7 +316,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         {
             // Act: Should throw because session not found in store
             await Assert.ThrowsAsync<InvalidDataException>(() =>
-                handler.RestoreFromStoreAsync("nonexistent-session", 0, 0, "trace-nf-restore", CancellationToken.None));
+                handler.RestoreFromStoreAsync("nonexistent-session", 0, "trace-nf-restore", CancellationToken.None));
         }
         finally
         {
@@ -367,7 +367,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         try
         {
             // Act: Save state with a specific trace_id
-            var saveResult = await handler.SaveToStoreAsync("trace-session", 0, 0, "trace-unique-12345", CancellationToken.None);
+            var saveResult = await handler.SaveToStoreAsync("trace-session", 0, "trace-unique-12345", CancellationToken.None);
 
             // Assert: save result is valid (trace propagation is in the RPC client, verified by successful call)
             Assert.Equal(1_000, saveResult.Size);
@@ -428,7 +428,7 @@ public sealed class StoreAgentIntegrationTests : IAsyncLifetime
         try
         {
             // Act: Save large state
-            var saveResult = await handler.SaveToStoreAsync("large-session", 0, 0, "trace-large-save", CancellationToken.None);
+            var saveResult = await handler.SaveToStoreAsync("large-session", 0, "trace-large-save", CancellationToken.None);
 
             // Assert
             Assert.Equal(500_000, saveResult.Size);
