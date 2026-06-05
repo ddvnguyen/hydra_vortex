@@ -84,8 +84,10 @@ async def resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -
         log.debug("resolve_slot_id_no_match",
                    trace_id=trace_id, llama_url=llama_url,
                    expected_n_past=expected_n_past,
-                   slot_count=len(slots))
-        return None
+                   slot_count=len(slots),
+                   attempt=attempt + 1)
+        if attempt == 0:
+            await asyncio.sleep(3)
 
     return None
 
