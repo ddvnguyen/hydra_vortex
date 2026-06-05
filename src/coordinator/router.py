@@ -76,8 +76,8 @@ def create_router(
         messages_dict = [m.model_dump() for m in req.messages]
 
         sess_id = (
-            req.session_id
-            or request.headers.get("X-Session-Id")
+            request.headers.get("X-Session-Id")
+            or req.session_id
             or derive_session_id(messages_dict)
         )
         prefix_hash = compute_prefix_hash(messages_dict)
