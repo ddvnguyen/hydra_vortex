@@ -25,7 +25,7 @@ import os
 import httpx
 import pytest
 
-from python_shared.rpc_client import RpcClient, OpCode
+from coordinator.lib.rpc_client import RpcClient, OpCode
 
 RTX_LLAMA_URL = os.environ.get("RTX_LLAMA_URL", "http://localhost:8080")
 P100_LLAMA_URL = os.environ.get("P100_LLAMA_URL", "http://192.168.122.21:8086")

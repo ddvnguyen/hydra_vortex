@@ -92,13 +92,13 @@ curl -s http://localhost:9000/health
 
 > **Note:** The Agent connects to llama via **HTTP** (slots/state endpoints), not via
 > the RPC port. The llama RPC port (`--rpc-port`) is used for direct state access
-> (e.g., Python/python_shared RPC client).
+> (e.g., coordinator.lib RPC client).
 
 ---
 
 ## VS Code Debug
 
-1. Open `Hydra.sln` in VS Code
+1. Open `src/Hydra.sln` in VS Code
 2. Run > Start Debugging (F5), select a configuration:
 
 ### Individual services
@@ -127,22 +127,22 @@ Select **All Services (Store + Agent RTX + Coordinator)** from the Run dropdown 
 
 ```bash
 # All .NET tests (160+) — projects run sequentially to avoid PG contention
-dotnet test Hydra.sln --settings Hydra.runsettings --verbosity normal
+dotnet test src/Hydra.sln --settings src/Hydra.runsettings --verbosity normal
 
 # Individual projects
-dotnet test src/Tests.Shared           # 29 tests
-dotnet test src/Tests.Store            # 44 tests (23 M0 + 21 M2)
-dotnet test src/Tests.Agent            # 23 tests (13 M0 + 10 M2)
-dotnet test src/Tests.Integration      # 18 tests (6 M0 + 12 M2)
+dotnet test src/core/Tests.Shared           # 29 tests
+dotnet test src/core/Tests.Store            # 44 tests (23 M0 + 21 M2)
+dotnet test src/core/Tests.Agent            # 23 tests (13 M0 + 10 M2)
+dotnet test src/core/Tests.Integration      # 18 tests (6 M0 + 12 M2)
 
 # M2-specific tests
-dotnet test src/Tests.Store --filter "FullyQualifiedName~Chunk" -v m
-dotnet test src/Tests.Agent --filter "FullyQualifiedName~ChunkCache" -v m
-dotnet test src/Tests.Integration --filter "FullyQualifiedName~Chunked" -v m
+dotnet test src/core/Tests.Store --filter "FullyQualifiedName~Chunk" -v m
+dotnet test src/core/Tests.Agent --filter "FullyQualifiedName~ChunkCache" -v m
+dotnet test src/core/Tests.Integration --filter "FullyQualifiedName~Chunked" -v m
 
 # Python tests
-pytest src/coordinator/tests -v        # 46 tests
-pytest src/coordinator/tests/test_prefix_checkpoint.py -v  # 4 M2 tests
+pytest tests/coordinator -v        # 46 tests
+pytest tests/coordinator/test_prefix_checkpoint.py -v  # 4 M2 tests
 pytest tests/system/test_system.py -v -m system                  # M0 System test (RPC save/restore)
 pytest tests/system/test_full_workflow_system.py -v -m system    # M1+M2 full workflow via Coordinator HTTP
 ```
@@ -336,12 +336,14 @@ src/
 ├── Hydra.Store/           # M0.2/M2 — File-backed KV store + ChunkEngine + ChunkStore
 ├── Hydra.Agent/           # M0.3/M2 — Sidecar + LocalChunkCache + chunked save/restore
 ├── coordinator/           # M1/M2  — FastAPI router, session table, prefix checkpoint
-├── Tests.Shared/          # 29 tests — RPC round-trips, reconnect, streaming
-├── Tests.Store/           # 44 tests — Storage engine + ChunkEngine + ChunkStore
-├── Tests.Agent/           # 23 tests — LlamaClient + StateHandler + LocalChunkCache
-├── Tests.Integration/     # 18 tests — Store ↔ Agent + chunked ops + prefix checkpoint
-├── tests/                 # Python system tests
-└── python_shared/         # Shared Python utilities
+│   └── lib/               # RPC client + logging shared lib
+├── core/                  # C# .NET — Hydra.Shared, Store, Agent
+│   ├── Tests.Shared/      # 29 tests — RPC round-trips, reconnect, streaming
+│   ├── Tests.Store/       # 44 tests — Storage engine + ChunkEngine + ChunkStore
+│   ├── Tests.Agent/       # 23 tests — LlamaClient + StateHandler + LocalChunkCache
+│   └── Tests.Integration/ # 18 tests — Store ↔ Agent + chunked ops + prefix checkpoint
+├── llama-cpp/             # C++ fork (submodule)
+└── tests/                 # Python system + unit tests
 ```
 
 ---
@@ -350,7 +352,7 @@ src/
 
 ```bash
 # Watch + rebuild on file changes (requires dotnet-watch)
-dotnet watch --project src/Hydra.Store
+dotnet watch --project src/core/Hydra.Store
 
 # Add a new test project
 dotnet new xunit -n Tests.Xyz -o src/Tests.Xyz
@@ -377,7 +379,7 @@ curl -s :9000/health
 | Chunked save slow | First save = all chunks new (800 MB → ~800 chunks) | Normal. Second save of same session should be fast (delta only) |
 | Agent chunk cache not persisting | `ChunkCacheDir` not writable | Check `HYDRA_AGENT_CHUNK_CACHE_DIR` (default: `/tmp/hydra-chunk-cache`) |
 | `PUT_CHUNKED` returns error | Manifest already exists with different session_id | Session IDs must be unique. Delete manifest first or use different ID |
-| `dotnet test Hydra.sln` hangs | Parallel project execution → PG port/connection contention | Use `--settings Hydra.runsettings` (serializes assemblies) or run per-project (`src/Tests.Store`, `src/Tests.Agent`, etc.) |
+| `dotnet test src/Hydra.sln` hangs | Parallel project execution → PG port/connection contention | Use `--settings src/Hydra.runsettings` (serializes assemblies) or run per-project (`src/core/Tests.Store`, `src/core/Tests.Agent`, etc.) |
 | GC removed in-use chunks | GC ran while session active | GC only removes chunks NOT referenced by any manifest. Active sessions have manifests. Run GC only during idle periods. |
 | Logs not appearing in Grafana | Promtail container not running | `cd infra && podman-compose -f docker-compose.infra.yml restart promtail` — see **Monitoring** |
 | Promtail scrape errors in promtail logs | Docker SD config pointing at wrong socket | Check socket path in `infra/promtail/promtail-config.yml` and volume mount |

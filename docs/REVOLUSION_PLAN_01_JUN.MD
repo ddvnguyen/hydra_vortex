@@ -37,7 +37,7 @@ add `docs/milestone-4-models.md`, `docs/milestone-5-agentic.md`.
    stripped instrumentation in `src/coordinator/state_manager.py`
    (`agent_save_duration`, `agent_restore_duration`, `migrations_total`,
    `migration_latency`, `from_node_name`) and the `WaitForIdleSlotAsync` slot
-   polling + debug-endpoint crash-restart in `src/Hydra.Agent/AgentServer.cs` /
+   polling + debug-endpoint crash-restart in `src/core/Hydra.Agent/AgentServer.cs` /
    `LlamaClient.cs`. Decide per-item: keep (default) vs. intentionally drop.
 2. **Green `main`.** Triage CI failures #67 (build-test), #68 (E2E), #69
    (integration); fix-forward. CI/CD is already being built — fold these in.
@@ -55,7 +55,7 @@ aggregator. Measure at 1K/8K/32K/80K context:
 - NAT-bridge bandwidth via `iperf3` → <500 MB/s ⇒ streaming essential.
 - SSM `--cache-prompt` bug repro + scope → decides if layer-streamed KV is safe.
 **Deliverable:** a go/no-go decision doc; results feed every step below.
-Files: new `src/Hydra.Agent/DeviceProfiler.cs`, extend `AgentMetrics.cs`,
+Files: new `src/core/Hydra.Agent/DeviceProfiler.cs`, extend `AgentMetrics.cs`,
 `infra/llama-rtx-node/init/start.sh`; new `src/coordinator/profiler.py`.
 
 ### M-Perf.2 — Heterogeneous speculative decoding (Tier 1.1) — no fork
@@ -63,7 +63,7 @@ Contingent on M-Perf.1 gates. Launch RTX `llama-server` with `--model-draft`
 (Qwen3-0.5B) hosted on P100 via llama.cpp RPC backend; add `SpecOrchestrator` in
 Coordinator for acceptance reporting + `ngram-mod` fallback. Research-verified
 1.4–1.8× lossless decode; ends P100-idle-during-decode waste.
-Files: `src/Hydra.Agent/AgentConfig.cs` + llama-server launch (`start.sh`);
+Files: `src/core/Hydra.Agent/AgentConfig.cs` + llama-server launch (`start.sh`);
 new `src/coordinator/spec_orchestrator.py`; wire into `router.py`/`proxy.py`.
 **Scope note:** this changes the P100's role (draft host via RPC vs. today's
 full Agent+`llama-server`); reconcile the P100 Agent's responsibilities.
@@ -78,7 +78,7 @@ endpoints (or a small C extension)** for per-layer state — this is NOT pure
 Python. Plus the SSM-bug workaround: stream attention-KV layer-by-layer, ship the
 small SSM state once at the end. Gate this step on M-Perf.1's SSM + bandwidth findings.
 Files: `src/llama-cpp` (new layer-state endpoints), new
-`src/Hydra.Agent/KVStreamer.cs`, new `src/coordinator/kv_router.py`, extend
+`src/core/Hydra.Agent/KVStreamer.cs`, new `src/coordinator/kv_router.py`, extend
 `Hydra.Store` chunk API from session-level → layer-level.
 
 ### M-Perf.4 — Pipeline scaffolding (Tier 1.3)

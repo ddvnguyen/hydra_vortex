@@ -28,7 +28,7 @@ import uuid
 import httpx
 import pytest
 
-from python_shared.rpc_client import OpCode, RpcClient
+from coordinator.lib.rpc_client import OpCode, RpcClient
 
 STORE_HOST = os.environ.get("STORE_HOST", "127.0.0.1")
 STORE_PORT = int(os.environ.get("STORE_PORT", "9500"))
@@ -114,7 +114,7 @@ async def test_put_get_del_small():
         await _rpc(OpCode.Get, key, trace=_trace())
         assert False, "Expected 0x01 after delete"
     except Exception as e:
-        from python_shared.rpc_client import RpcError as RpcErr
+        from coordinator.lib.rpc_client import RpcError as RpcErr
 
         assert isinstance(e, RpcErr)
         assert e.status == 0x01
