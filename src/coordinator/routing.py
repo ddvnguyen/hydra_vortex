@@ -13,6 +13,15 @@ from coordinator.session_table import SessionEntry
 
 log = get_logger()
 
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=30)
+    return _http_client
+
 WORKER_PREFILL = 1
 WORKER_DECODE = 2
 WORKER_MIXED = 3
@@ -60,13 +69,13 @@ async def resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -
 
     for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    f"{llama_url.rstrip('/')}/slots",
-                    headers={"X-Trace-Id": trace_id},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            client = _get_client()
+            resp = await client.get(
+                f"{llama_url.rstrip('/')}/slots",
+                headers={"X-Trace-Id": trace_id},
+            )
+            resp.raise_for_status()
+            data = resp.json()
         except Exception as e:
             log.debug("resolve_slot_id_failed",
                        trace_id=trace_id, llama_url=llama_url,
@@ -77,6 +86,12 @@ async def resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -
             continue
 
         slots = data if isinstance(data, list) else data.get("slots", [])
+        if any(s.get("is_processing") for s in slots):
+            log.debug("resolve_slot_id_deferred",
+                       trace_id=trace_id, llama_url=llama_url,
+                       expected_n_past=expected_n_past,
+                       attempt=attempt + 1)
+            return None
         for slot in slots:
             if slot.get("n_past", 0) == expected_n_past:
                 return slot.get("id")
@@ -106,8 +121,7 @@ async def verify_warm_slot(
     3. slot.n_past >= entry.n_past (resident KV covers the session).
     4. prefix_hash matches (guards slot-id reuse by another session).
     """
-    client_provided = http_client is not None
-    client = http_client or httpx.AsyncClient(timeout=5)
+    client = http_client or _get_client()
     try:
         resp = await client.get(
             f"{worker.llama_url.rstrip('/')}/slots",
@@ -124,9 +138,6 @@ async def verify_warm_slot(
                    trace_id=trace_id, node=worker.name,
                    slot_id=entry.slot_id, error=str(e))
         return False
-    finally:
-        if not client_provided:
-            await client.aclose()
 
     slots = data if isinstance(data, list) else data.get("slots", [])
     for slot in slots:
