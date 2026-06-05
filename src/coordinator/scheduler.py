@@ -17,7 +17,6 @@ from coordinator.routing import (
     estimate_request_tokens,
     derive_session_id,
     compute_prefix_hash,
-    resolve_slot_id,
     _pick_idle_slot,
     verify_warm_slot,
     pick_best_prefill_worker,
@@ -480,7 +479,7 @@ class WorkerScheduler:
 
         await self._maybe_restore_prefix_checkpoint(item, worker)
 
-        prefill_slot = await _pick_idle_slot(node_url, item.trace_id)
+        prefill_slot = self._health.get_idle_slot(worker.name) or await _pick_idle_slot(node_url, item.trace_id)
 
         self._session_table.register(
             sess_id, worker.name, prefill_slot, n_past=0, prefix_hash=item.prefix_hash,
@@ -563,7 +562,7 @@ class WorkerScheduler:
 
         # Capture idle slot before prefill. May return None if all slots are busy —
         # the id_slot from the completion response (extracted below) will correct it.
-        prefill_slot = await _pick_idle_slot(prefill_url, item.trace_id)
+        prefill_slot = self._health.get_idle_slot(node_name) or await _pick_idle_slot(node_url, item.trace_id)
         log.info("cold_concurrency_slot",
                  trace_id=item.trace_id, session_id=sess_id,
                  node=prefill_worker.name, prefill_slot=prefill_slot)
@@ -705,16 +704,29 @@ class WorkerScheduler:
     async def _track_after_stream(self, sess_id: str, node_url: str, last_usage: Optional[dict], item: WorkItem):
         if not last_usage:
             return
-        total = last_usage.get("total_tokens", 0)
+        total = last_usage.get("total_tokens", 0) if isinstance(last_usage, dict) else 0
         if total > 0:
             self._session_table.update_n_past(sess_id, total)
         entry = self._session_table.lookup(sess_id)
         if entry and entry.slot_id is None and total > 0:
-            resolved = await resolve_slot_id(node_url, total, item.trace_id)
-            if resolved is not None:
-                entry.slot_id = resolved
-                log.info("slot_resolved", trace_id=item.trace_id, session_id=sess_id,
-                         slot_id=resolved, n_past=total)
+            self._resolve_slot_from_health(entry, total, item.trace_id)
+
+    async def _track_after_completion(self, sess_id: str, node_url: str, result: dict, item: WorkItem):
+        usage = result.get("usage", {})
+        total = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
+        if total > 0:
+            self._session_table.update_n_past(sess_id, total)
+        entry = self._session_table.lookup(sess_id)
+        if entry and entry.slot_id is None and total > 0:
+            self._resolve_slot_from_health(entry, total, item.trace_id)
+
+    def _resolve_slot_from_health(self, entry, total: int, trace_id: str):
+        for s in self._health.get_slots(entry.node_name):
+            if s.get("n_past", 0) == total and not s.get("is_processing"):
+                entry.slot_id = s["id"]
+                log.info("slot_resolved_health", trace_id=trace_id,
+                         session_id=entry.session_id, slot_id=s["id"], n_past=total)
+                return
 
     async def _track_after_completion(self, sess_id: str, node_url: str, result: dict, item: WorkItem):
         usage = result.get("usage", {})

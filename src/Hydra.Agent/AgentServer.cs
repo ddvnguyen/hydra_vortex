@@ -176,6 +176,15 @@ public sealed class AgentServer : RpcServer
                 slots_idle = slots.Count(s => !s.IsProcessing),
                 stuck_slots = stuckSlotsCount,
                 llama_url = _cfg.LlamaUrl,
+                slots = slots.Select(s => new
+                {
+                    id = s.Id,
+                    n_past = s.NPast,
+                    is_processing = s.IsProcessing,
+                    n_remain = s.NRemain,
+                    n_decoded = s.NDecoded,
+                    id_task = s.IdTask,
+                }).ToList(),
             });
 
             var meta = """{"component":"health"}"""u8.ToArray();
