@@ -557,7 +557,7 @@ class WorkerScheduler:
 
         # Capture idle slot before prefill. May return None if all slots are busy —
         # the id_slot from the completion response (extracted below) will correct it.
-        prefill_slot = self._health.get_idle_slot(node_name) or await _pick_idle_slot(node_url, item.trace_id)
+        prefill_slot = self._health.get_idle_slot(prefill_worker.name) or await _pick_idle_slot(prefill_url, item.trace_id)
         log.info("cold_concurrency_slot",
                  trace_id=item.trace_id, session_id=sess_id,
                  node=prefill_worker.name, prefill_slot=prefill_slot)
