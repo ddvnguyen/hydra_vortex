@@ -74,6 +74,7 @@ class WorkerScheduler:
         self._max_queue_size = len(config.workers) * 10
         self._new_item = asyncio.Event()
         self._worker_freed = asyncio.Event()
+        self._saved_prefixes: set[str] = set()
         self._running = False
         self._task: Optional[asyncio.Task] = None
 
@@ -739,20 +740,42 @@ class WorkerScheduler:
                 worker.rpc_port,
                 slot_id=0,
             )
-            if meta:
-                n_past_prefix = meta.get("n_past", 0)
-                if n_past_prefix > 0:
-                    self._session_table.update_n_past(item.session_id, n_past_prefix)
-                    log.info("prefix_restored",
-                             trace_id=item.trace_id, session_id=item.session_id,
-                             node=worker.name,
-                             checkpoint=item.prefix_hash, n_past=n_past_prefix,
-                             elapsed_ms=self._elapsed_ms(item))
-        except Exception as e:
-            log.warning("prefix_restore_failed",
-                        trace_id=item.trace_id, session_id=item.session_id,
-                        node=worker.name, checkpoint=item.prefix_hash,
-                        error=str(e), elapsed_ms=self._elapsed_ms(item))
+            if meta and meta.get("n_past", 0) > 0:
+                self._saved_prefixes.add(item.prefix_hash)
+        except Exception:
+            meta = None
+
+        if not meta and self._saved_prefixes:
+            for fallback in sorted(self._saved_prefixes, reverse=True):
+                if fallback == item.prefix_hash:
+                    continue
+                try:
+                    meta = await self._state.restore_prefix_checkpoint(
+                        fallback, worker.host, worker.rpc_port, slot_id=0,
+                    )
+                    if meta and meta.get("n_past", 0) > 0:
+                        log.info("prefix_fallback_restored",
+                                 trace_id=item.trace_id, session_id=item.session_id,
+                                 requested=item.prefix_hash, fallback=fallback,
+                                 n_past=meta.get("n_past"))
+                        break
+                except Exception:
+                    continue
+
+        if meta:
+            n_past_prefix = meta.get("n_past", 0)
+            if n_past_prefix > 0:
+                self._session_table.update_n_past(item.session_id, n_past_prefix)
+                log.info("prefix_restored",
+                         trace_id=item.trace_id, session_id=item.session_id,
+                         node=worker.name,
+                         checkpoint=item.prefix_hash, n_past=n_past_prefix,
+                         elapsed_ms=self._elapsed_ms(item))
+            return
+        log.warning("prefix_restore_failed",
+                    trace_id=item.trace_id, session_id=item.session_id,
+                    node=worker.name, checkpoint=item.prefix_hash,
+                    elapsed_ms=self._elapsed_ms(item))
 
     async def _maybe_save_prefix(self, item: WorkItem, worker: WorkerNodeConfig):
         if not self._config.prefix_checkpoint_enabled:
@@ -776,5 +799,6 @@ class WorkerScheduler:
                      trace_id=item.trace_id, session_id=item.session_id,
                      checkpoint=item.prefix_hash, node=worker.name,
                      elapsed_ms=self._elapsed_ms(item))
+            self._saved_prefixes.add(item.prefix_hash)
         except Exception:
             self._prefix_set.discard(prefix_key)
