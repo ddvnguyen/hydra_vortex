@@ -208,6 +208,8 @@ public sealed class AgentServer : RpcServer
                 ExtractSessionId(sid, slotId), slotId,
                 "agent-save-chunked", ct);
 
+            AgentMetrics.SaveOpsTotal.Inc();
+
             var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}},"chunked":true}""";
             var metaBytes = Encoding.UTF8.GetBytes(meta);
             await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
@@ -215,7 +217,14 @@ public sealed class AgentServer : RpcServer
             metaBytes.CopyTo(span);
             writer.Advance(metaBytes.Length);
             await writer.FlushAsync(ct);
-            AgentMetrics.SaveOpsTotal.Inc();
+        }
+        catch (IOException ex)
+        {
+            _log.Debug(ex, "SaveStateChunked: client disconnected after save for {SessionId}", sessionId);
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Debug("SaveStateChunked: cancelled after save for {SessionId}", sessionId);
         }
         catch (Exception ex)
         {
