@@ -42,7 +42,7 @@ public sealed class StateHandler
     }
 
     public async Task<SaveResult> SaveToStoreAsync(
-        string sessionId, int slotId, int nPastHint, string traceId, CancellationToken ct)
+        string sessionId, int slotId, string traceId, CancellationToken ct)
     {
         using var _ = _log.TraceScope(traceId);
         var sw = ValueStopwatch.StartNew();
@@ -61,11 +61,11 @@ public sealed class StateHandler
         _log.Information("Saved session {SessionId} slot {SlotId} to store in {Elapsed}ms",
             sessionId, slotId, elapsed);
 
-        return new SaveResult(sessionId, slotId, nPastHint > 0 ? nPastHint : meta.NPast, contentLength, elapsed);
+        return new SaveResult(sessionId, slotId, meta.NPast, contentLength, elapsed);
     }
 
      public async Task<RestoreSessionResult> RestoreFromStoreAsync(
-        string sessionId, int slotId, int nPastHint, string traceId, CancellationToken ct)
+        string sessionId, int slotId, string traceId, CancellationToken ct)
     {
         using var _ = _log.TraceScope(traceId);
         var sw = ValueStopwatch.StartNew();
@@ -102,24 +102,23 @@ public sealed class StateHandler
 
         // Query llama for actual n_past after restore (not from PutState response).
         var meta = await _llama.GetStateMetaAsync(slotId, ct);
-        var finalNPast = nPastHint > 0 ? nPastHint : meta.NPast;
 
         if (!restoreResult.Restored || meta.StateSize == 0)
         {
             _log.Warning("LLAMA restore failed for session {SessionId}: result={Restored}, state_size={StateSize}",
                 sessionId, restoreResult.Restored, meta.StateSize);
-            return new RestoreSessionResult(sessionId, slotId, false, finalNPast, longContentLength, sw.ElapsedMilliseconds);
+            return new RestoreSessionResult(sessionId, slotId, false, meta.NPast, longContentLength, sw.ElapsedMilliseconds);
         }
 
         var elapsed = sw.ElapsedMilliseconds;
         _log.Information("Restored session {SessionId} to slot {SlotId} in {Elapsed}ms (n_past={NPast})",
-            sessionId, slotId, elapsed, finalNPast);
+            sessionId, slotId, elapsed, meta.NPast);
 
-        return new RestoreSessionResult(sessionId, slotId, true, finalNPast, longContentLength, elapsed);
+        return new RestoreSessionResult(sessionId, slotId, true, meta.NPast, longContentLength, elapsed);
     }
 
     public async Task<SaveResult> SaveToStoreChunkedAsync(
-        string sessionId, int slotId, int nPastHint, string traceId, CancellationToken ct)
+        string sessionId, int slotId, string traceId, CancellationToken ct)
     {
         using var _ = _log.TraceScope(traceId);
         var sw = ValueStopwatch.StartNew();
@@ -145,8 +144,7 @@ public sealed class StateHandler
         var pushed = await PushMissingChunksAsync(storeKey, sessionId, missing, traceId, ct);
 
         // ── Step 4: write the authoritative ordered manifest (validates residency). ─────
-        var actualNPast = nPastHint > 0 ? nPastHint : meta.NPast;
-        await PutManifestAsync(storeKey, actualNPast, totalSize, chunks, traceId, ct);
+        await PutManifestAsync(storeKey, meta.NPast, totalSize, chunks, traceId, ct);
 
         await _chunkCache.SaveHashesAsync(sessionId, orderedHashes, ct);
         _chunkCache.EvictLRU();
@@ -157,7 +155,7 @@ public sealed class StateHandler
             "(chunks={Total}, pushed={Pushed}, deduped={Deduped}, bytes_total={Total_Bytes})",
             sessionId, slotId, elapsed, chunks.Count, pushed, deduped, totalSize);
 
-        return new SaveResult(sessionId, slotId, actualNPast, totalSize, elapsed);
+        return new SaveResult(sessionId, slotId, meta.NPast, totalSize, elapsed);
     }
 
     // Read the GPU state stream in fixed 1 MB blocks; hash each block (SHA-256, hex-lower
@@ -274,7 +272,7 @@ public sealed class StateHandler
     }
 
     public async Task<RestoreSessionResult> RestoreFromStoreChunkedAsync(
-        string sessionId, int slotId, int nPastHint, string traceId, CancellationToken ct)
+        string sessionId, int slotId, string traceId, CancellationToken ct)
     {
         using var _ = _log.TraceScope(traceId);
         var sw = ValueStopwatch.StartNew();
@@ -325,7 +323,7 @@ public sealed class StateHandler
             {
                 _log.Information("Full cache hit for session {SessionId} — using existing llama state (n_past={NPast})",
                     sessionId, restoreMeta.NPast);
-                return new RestoreSessionResult(sessionId, slotId, true, nPastHint > 0 ? nPastHint : restoreMeta.NPast, restoreMeta.StateSize, sw.ElapsedMilliseconds);
+                return new RestoreSessionResult(sessionId, slotId, true, restoreMeta.NPast, restoreMeta.StateSize, sw.ElapsedMilliseconds);
             }
 
             _log.Warning("No state data to restore for session {SessionId} (total_size={Size}, missing={Missing})",
@@ -425,9 +423,9 @@ public sealed class StateHandler
         }
 
         _log.Information("Restored session {SessionId} slot {SlotId} in {Elapsed}ms (n_past={NPast})",
-            sessionId, slotId, sw.ElapsedMilliseconds, nPastHint > 0 ? nPastHint : postRestoreMeta.NPast);
+            sessionId, slotId, sw.ElapsedMilliseconds, postRestoreMeta.NPast);
 
-        return new RestoreSessionResult(sessionId, slotId, true, nPastHint > 0 ? nPastHint : postRestoreMeta.NPast, totalSize, sw.ElapsedMilliseconds);
+        return new RestoreSessionResult(sessionId, slotId, true, postRestoreMeta.NPast, totalSize, sw.ElapsedMilliseconds);
     }
 
     internal sealed class ChunkHashTeeStream : Stream
