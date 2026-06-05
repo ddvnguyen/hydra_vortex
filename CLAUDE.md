@@ -93,8 +93,8 @@ automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
    In Progress. → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
    follow the milestone doc. → `docs/workflow/02-implement.md`
-3. **Test / verify** — unit (`dotnet test`, `pytest src/coordinator/tests`) + E2E
-   (`dotnet test src/Tests.Integration`, `pytest tests/system`) green before PR.
+3. **Test / verify** — unit (`dotnet test`, `pytest tests/coordinator`) + E2E
+   (`dotnet test src/core/Tests.Integration`, `pytest tests/system`) green before PR.
    → `docs/workflow/03-test-verify.md`
 4. **Commit & PR** — conventional commits + `Co-Authored-By`; `gh pr create …
    Closes #N` (this link auto-moves the Project item). → `docs/workflow/04-commit-pr.md`
@@ -245,7 +245,36 @@ todowrite(todos=[
 ```
 Update status as work progresses — exactly one `in_progress` at a time. Mark `completed` only after verification (test pass, lint clean, etc.).
 
-### 3. End with a final result block
+### 3. Use sub-agents aggressively (2-3 in parallel)
+
+Always launch parallel sub-agents via the `task` tool when work can be decomposed.
+This is **not optional** for multi-file or multi-domain tasks.
+
+**When to use:**
+- Research / exploration — e.g., search codebase for patterns across services (Store C#,
+  Agent C#, Coordinator Python) simultaneously
+- Multi-file changes — e.g., one agent implements the Store change, another the Agent change,
+  a third updates tests
+- Decomposition — break a large feature into 2-3 parallel scouting agents, then implement
+  based on their findings
+- Anything that would take you >30s to do serially
+
+**How to use:**
+```
+task(description="Explore Store codebase", prompt="Find all ...",
+      subagent_type="explore")
+task(description="Check Coordinator tests", prompt="Read all ...",
+      subagent_type="explore")
+```
+
+- Use `explore` for quick codebase searches, `general` for complex multi-step work.
+- Launch them in a single message (parallel tool calls).
+- Each agent returns its findings in one message — consolidate and proceed.
+
+**Don't use sub-agents for:** trivial single-file edits, reading a file you already know
+the path of, running a single command.
+
+### 4. End with a final result block
 After completing work, output a clear summary block prefixed with `---` or a code-free section that highlights what was done, changed, or needs attention. Make the result stand out so the user can quickly understand the outcome.
 
 **Example:**
@@ -253,7 +282,7 @@ After completing work, output a clear summary block prefixed with `---` or a cod
 ---
 
 **Summary:**
-- Implemented `SlotService` in `src/Hydra.Store/Services/SlotService.cs`
+- Implemented `SlotService` in `src/core/Hydra.Store/Services/SlotService.cs`
 - Added `GET /slots/{id}/state` endpoint to llama.cpp fork
 - Fixed: n_tokens guard in Coordinator (must be > n_past)
 - Pending: integration test for cross-GPU migration

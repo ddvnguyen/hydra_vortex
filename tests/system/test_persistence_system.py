@@ -21,7 +21,7 @@ import uuid
 import httpx
 import pytest
 
-from python_shared.rpc_client import OpCode, RpcClient
+from coordinator.lib.rpc_client import OpCode, RpcClient
 
 COORD_URL = os.environ.get("COORD_URL", "http://localhost:9000")
 STORE_HOST = os.environ.get("STORE_HOST", "127.0.0.1")

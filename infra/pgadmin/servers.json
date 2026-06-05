@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Hydra Store",
+      "Group": "Servers",
+      "Host": "localhost",
+      "Port": 5432,
+      "MaintenanceDB": "hydra_store",
+      "Username": "hydra",
+      "Password": "hydra",
+      "SSLMode": "prefer"
+    }
+  }
+}
