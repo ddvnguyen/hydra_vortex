@@ -46,7 +46,7 @@ services:
       --ctx-size 360000
       --temp 0.86 --repeat-penalty 1.06 --top-k 20 --top-p 0.95
       --flash-attn on --cache-type-v q8_0 --cache-type-k q8_0 --kv-unified
-      --log-timestamps --log-prefix --log-colors on --metrics --slots --perf --log-verbosity 4
+      --log-prefix --log-colors on --metrics --slots --perf --props --log-verbosity 4
       --cont-batching --parallel 2 --cache-prompt --cache-reuse 64
       --prio 3 --prio-batch 1
       --n-cpu-moe 32 --n-gpu-layers all
