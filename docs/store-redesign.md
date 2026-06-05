@@ -99,14 +99,14 @@ Each phase adds real metrics: dedup ratio + bytes-saved (Phase 1), chunk count/r
 GC (Phase 2), backed-up lag (Phase 3), recovery time (Phase 4), checkpoint count (Phase 5).
 
 ## Critical files
-- `src/Hydra.Store/StoreServer.cs` — RPC handlers (rewrite SYNC/PUSH, add PUT_MANIFEST/MODEL)
-- `src/Hydra.Store/ChunkStore.cs`, `ChunkEngine.cs` — chunk store + (Phase 2) SQLite index
-- `src/Hydra.Store/StoreMetadata.cs` *(new, Phase 2)* — SQLite schema + DAL
-- `src/Hydra.Store/WriteBehindService.cs`, `StartupRecovery.cs` *(new, Phase 3/4)*
-- `src/Hydra.Agent/StateHandler.cs`, `LocalChunkCache.cs` — delta save/restore client
-- `src/Hydra.Shared/Protocol.cs` — opcodes (PUT_MANIFEST 0x15, PUT_MODEL/GET_MODEL)
-- `src/python_shared/rpc_client.py` — enum sync
-- `src/Tests.Store`, `src/Tests.Integration` — round-trip + delta + corruption-guard tests
+- `src/core/Hydra.Store/StoreServer.cs` — RPC handlers (rewrite SYNC/PUSH, add PUT_MANIFEST/MODEL)
+- `src/core/Hydra.Store/ChunkStore.cs`, `ChunkEngine.cs` — chunk store + (Phase 2) SQLite index
+- `src/core/Hydra.Store/StoreMetadata.cs` *(new, Phase 2)* — SQLite schema + DAL
+- `src/core/Hydra.Store/WriteBehindService.cs`, `StartupRecovery.cs` *(new, Phase 3/4)*
+- `src/core/Hydra.Agent/StateHandler.cs`, `LocalChunkCache.cs` — delta save/restore client
+- `src/core/Hydra.Shared/Protocol.cs` — opcodes (PUT_MANIFEST 0x15, PUT_MODEL/GET_MODEL)
+- `src/coordinator/lib/rpc_client.py` — enum sync
+- `src/core/Tests.Store`, `src/core/Tests.Integration` — round-trip + delta + corruption-guard tests
 
 ## Verification (per phase)
 1. `dotnet test` Store + Integration green.

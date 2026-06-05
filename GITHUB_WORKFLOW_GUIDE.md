@@ -71,7 +71,7 @@ This:
 
 ### Step 2: Implement the fix
 
-Edit the files listed in the issue (e.g., `src/Hydra.Agent/StateHandler.cs:190–191`).
+Edit the files listed in the issue (e.g., `src/core/Hydra.Agent/StateHandler.cs:190–191`).
 
 Follow the fix recommendation in the issue body.
 
@@ -81,7 +81,7 @@ Run the test suite to verify:
 pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v
 
 # Or specific unit tests
-dotnet test src/Tests.Agent/ -c Release -v normal
+dotnet test src/core/Tests.Agent/ -c Release -v normal
 ```
 
 ### Step 3: Mark the finding as resolved
@@ -91,7 +91,7 @@ Edit the review file for your milestone. Find the finding block and change `**St
 **Before:**
 ```markdown
 ### [M2-P0-001] Partial-cache restore sends incomplete data
-**File:** `src/Hydra.Agent/StateHandler.cs:190–191`
+**File:** `src/core/Hydra.Agent/StateHandler.cs:190–191`
 **Status:** open
 **Issue:** #16
 **Assigned:** —
@@ -100,7 +100,7 @@ Edit the review file for your milestone. Find the finding block and change `**St
 **After:**
 ```markdown
 ### [M2-P0-001] Partial-cache restore sends incomplete data
-**File:** `src/Hydra.Agent/StateHandler.cs:190–191`
+**File:** `src/core/Hydra.Agent/StateHandler.cs:190–191`
 **Status:** resolved
 **Issue:** #16
 **Assigned:** —
@@ -111,7 +111,7 @@ Also update `reviews/INDEX.md` — decrement the count for your severity level.
 
 ### Step 4: Commit your work
 ```bash
-git add src/Hydra.Agent/StateHandler.cs reviews/m2-review.md reviews/INDEX.md
+git add src/core/Hydra.Agent/StateHandler.cs reviews/m2-review.md reviews/INDEX.md
 git commit -m "fix: [M2-P0-001] reconstruct full KV state from cached chunks
 
 Previously only missing chunks were sent to llama, corrupting the

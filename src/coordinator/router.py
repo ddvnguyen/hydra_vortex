@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from python_shared.log_config import get_logger, new_trace_id
+from coordinator.lib.log_config import get_logger, new_trace_id
 from coordinator.session_table import SessionTable
 from coordinator.routing import (
     estimate_request_tokens,

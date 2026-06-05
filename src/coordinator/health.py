@@ -4,8 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from python_shared.log_config import get_logger, new_trace_id
-from python_shared.rpc_client import RpcClient, OpCode, RpcError, StatusCode
+from coordinator.lib.log_config import get_logger, new_trace_id
+from coordinator.lib.rpc_client import RpcClient, OpCode, RpcError, StatusCode
 from coordinator.config import WorkerNodeConfig
 
 log = get_logger()
