@@ -73,12 +73,7 @@ class WorkerScheduler:
         self._new_item = asyncio.Event()
         self._worker_freed = asyncio.Event()
         self._running = False
-        self._task: Optional[asyncio.Task] = None
-
-        for w in config.workers:
-            self._tracker.init_worker(w.name)
-
-        self._prefix_npast: dict[str, int] = {}
+        self._prefix_set: set[str] = set()
 
     @staticmethod
     def _elapsed_ms(item: WorkItem) -> int:
@@ -738,10 +733,6 @@ class WorkerScheduler:
         except Exception:
             meta = None
 
-        if not meta or meta.get("n_past", 0) == 0:
-            # Exact match not found — try similar n_past from known prefixes
-            meta = await self._try_similar_prefix(item, worker)
-
         if meta and meta.get("n_past", 0) > 0:
             self._session_table.update_n_past(item.session_id, meta["n_past"])
             log.info("prefix_restored",
@@ -755,59 +746,28 @@ class WorkerScheduler:
                     node=worker.name, checkpoint=item.prefix_hash,
                     elapsed_ms=self._elapsed_ms(item))
 
-    async def _try_similar_prefix(self, item: WorkItem, worker: WorkerNodeConfig):
-        if not self._prefix_npast:
-            return None
-        candidates = sorted(
-            [(h, n) for h, n in self._prefix_npast.items() if h != item.prefix_hash],
-            key=lambda x: x[1],
-        )
-        item_npast = item.estimated_tokens
-        best, best_npast, best_diff = None, 0, float("inf")
-        for h, n in candidates:
-            diff = abs(n - item_npast) / max(n, 1)
-            if diff < 0.5 and diff < best_diff:
-                best, best_npast, best_diff = h, n, diff
-        if best is None:
-            return None
-        try:
-            meta = await self._state.restore_prefix_checkpoint(
-                best, worker.host, worker.rpc_port, slot_id=0,
-            )
-            if meta and meta.get("n_past", 0) > 0:
-                log.info("prefix_similar_restored",
-                         trace_id=item.trace_id, session_id=item.session_id,
-                         requested=item.prefix_hash, matched=best,
-                         n_past=meta.get("n_past"))
-                return meta
-        except Exception:
-            pass
-        return None
 
     async def _maybe_save_prefix(self, item: WorkItem, worker: WorkerNodeConfig):
         if not self._config.prefix_checkpoint_enabled:
             return
         if not item.prefix_hash:
             return
-        if item.prefix_hash in self._prefix_npast:
+        prefix_key = f"{worker.name}:{item.prefix_hash}"
+        if prefix_key in self._prefix_set:
             return
-        self._prefix_npast[item.prefix_hash] = item.estimated_tokens
+        self._prefix_set.add(prefix_key)
         try:
             entry = self._session_table.lookup(item.session_id)
             slot = entry.slot_id if entry and entry.slot_id is not None else None
-            meta = await self._state.save_prefix_checkpoint(
+            await self._state.save_prefix_checkpoint(
                 item.prefix_hash,
                 worker.host,
                 worker.rpc_port,
                 slot_id=slot,
             )
-            if meta:
-                actual_npast = meta.get("n_past", 0)
-                if actual_npast > 0:
-                    self._prefix_npast[item.prefix_hash] = actual_npast
             log.info("prefix_saved",
                      trace_id=item.trace_id, session_id=item.session_id,
                      checkpoint=item.prefix_hash, node=worker.name,
                      elapsed_ms=self._elapsed_ms(item))
         except Exception:
-            self._prefix_npast.pop(item.prefix_hash, None)
+            self._prefix_set.discard(prefix_key)
