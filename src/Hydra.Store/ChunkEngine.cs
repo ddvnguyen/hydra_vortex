@@ -1,6 +1,7 @@
 using System.IO.Pipelines;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Hydra.Shared;
 
 namespace Hydra.Store;
 
@@ -110,7 +111,9 @@ public static class ChunkEngine
             Directory.CreateDirectory(dir);
 
         var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
-        await File.WriteAllTextAsync(path, json, ct);
+        var tmpPath = path + ".tmp";
+        await File.WriteAllTextAsync(tmpPath, json, ct);
+        File.Move(tmpPath, path, overwrite: true);
     }
 
     public static List<string> DiffPlan(Manifest manifest, List<string> clientHashes)

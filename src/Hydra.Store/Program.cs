@@ -1,15 +1,23 @@
 using Hydra.Store;
 
 var cfg = new StoreConfig();
+cfg.Validate();
+
+using var mainCts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    mainCts.Cancel();
+};
+var ct = mainCts.Token;
+
+await using var metadata = new StoreMetadata(cfg.PgConn);
 var engine = new StorageEngine(cfg.StoreDirectory);
 var chunkStore = new ChunkStore(cfg.StoreDirectory);
-var metadata = new StoreMetadata(cfg.PgConn);
 
-// Bootstrap schema with retry (Postgres may not be ready yet).
-await metadata.EnsureSchemaAsync(CancellationToken.None);
+await metadata.EnsureSchemaAsync(ct);
 
-// Boot reconciliation: drop PG rows for unbacked chunks missing from tmpfs (fresh boot).
-await metadata.ReconcileBootAsync(chunkStore.ChunksDirectory, CancellationToken.None);
+await metadata.ReconcileBootAsync(chunkStore.ChunksDirectory, ct);
 
 // Startup recovery: if tmpfs is empty but NVMe has backups, restore hot sessions.
 var backupDir = new DirectoryInfo(cfg.BackupDir);
@@ -19,13 +27,13 @@ var hasLocalChunks = chunksDir.Exists && chunksDir.EnumerateFiles().Any();
 
 if (!hasLocalChunks && backupChunksDir.Exists)
 {
-    var recentSessions = await metadata.GetRecentSessionIdsAsync(cfg.RestoreTopN, CancellationToken.None);
+    var recentSessions = await metadata.GetRecentSessionIdsAsync(cfg.RestoreTopN, ct);
     var totalRestored = 0L;
     var totalSessions = 0;
 
     foreach (var sid in recentSessions)
     {
-        var manifest = await metadata.GetManifestAsync(sid, CancellationToken.None);
+        var manifest = await metadata.GetManifestAsync(sid, ct);
         if (manifest is null) continue;
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -66,33 +74,29 @@ else
     Serilog.Log.Information("tmpfs already populated, skipping startup recovery");
 }
 
-var server = new StoreServer(cfg, engine, chunkStore, metadata);
+await using var server = new StoreServer(cfg, engine, chunkStore, metadata);
 
-var cts = new CancellationTokenSource();
-
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    cts.Cancel();
-};
-
-var serverTask = server.RunAsync(cts.Token);
-var debugTask = server.StartDebugEndpointAsync(cts.Token);
+var serverTask = server.RunAsync(ct);
+var debugTask = server.StartDebugEndpointAsync(ct);
 
 // GC orphan chunks every 30 minutes via referential GC.
 var writeBehind = new WriteBehindService(cfg, metadata, chunkStore);
-var writeBehindTask = Task.Run(() => writeBehind.RunAsync(cts.Token), cts.Token);
+var writeBehindTask = Task.Run(() => writeBehind.RunAsync(ct), ct);
 
 var gcTask = Task.Run(async () =>
 {
-    while (!cts.Token.IsCancellationRequested)
+    while (!ct.IsCancellationRequested)
     {
         try
         {
-            await Task.Delay(TimeSpan.FromMinutes(30), cts.Token);
-            var removed = await metadata.GcOrphanChunksAsync(chunkStore.ChunksDirectory, cts.Token);
+            await Task.Delay(TimeSpan.FromMinutes(30), ct);
+            var removed = await metadata.GcOrphanChunksAsync(chunkStore.ChunksDirectory, ct);
             if (removed > 0)
+            {
+                StoreMetrics.ChunksRemoved.Inc(removed);
+                chunkStore.RefreshIndex();
                 Serilog.Log.Information("GC removed {Removed} orphaned chunks", removed);
+            }
         }
         catch (OperationCanceledException) { break; }
         catch (Exception ex)
@@ -100,7 +104,7 @@ var gcTask = Task.Run(async () =>
             Serilog.Log.Warning(ex, "GC cycle failed");
         }
     }
-}, cts.Token);
+}, ct);
 
 try
 {

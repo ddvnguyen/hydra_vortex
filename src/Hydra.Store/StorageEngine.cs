@@ -25,28 +25,39 @@ public sealed class StorageEngine
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
-        await using var fileStream = new FileStream(
-            path, FileMode.Create, FileAccess.Write, FileShare.None,
-            65536, FileOptions.Asynchronous);
-
-        long consumed = 0;
-        while (consumed < size)
+        var tmpPath = path + ".tmp";
+        try
         {
-            var result = await source.ReadAsync(ct);
-            if (result.IsCanceled)
-                throw new OperationCanceledException();
-            if (result.IsCompleted && result.Buffer.IsEmpty)
-                throw new EndOfStreamException(
-                    $"Unexpected end of stream reading '{key}' ({size - consumed} bytes remaining)");
+            await using var fileStream = new FileStream(
+                tmpPath, FileMode.Create, FileAccess.Write, FileShare.None,
+                65536, FileOptions.Asynchronous);
 
-            var slice = result.Buffer.Slice(0, Math.Min(result.Buffer.Length, size - consumed));
-            foreach (var segment in slice)
+            long consumed = 0;
+            while (consumed < size)
             {
-                await fileStream.WriteAsync(segment, ct);
-                consumed += segment.Length;
+                var result = await source.ReadAsync(ct);
+                if (result.IsCanceled)
+                    throw new OperationCanceledException();
+                if (result.IsCompleted && result.Buffer.IsEmpty)
+                    throw new EndOfStreamException(
+                        $"Unexpected end of stream reading '{key}' ({size - consumed} bytes remaining)");
+
+                var slice = result.Buffer.Slice(0, Math.Min(result.Buffer.Length, size - consumed));
+                foreach (var segment in slice)
+                {
+                    await fileStream.WriteAsync(segment, ct);
+                    consumed += segment.Length;
+                }
+
+                source.AdvanceTo(slice.End);
             }
 
-            source.AdvanceTo(slice.End);
+            File.Move(tmpPath, path, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(tmpPath); } catch { }
+            throw;
         }
     }
 
@@ -99,7 +110,10 @@ public sealed class StorageEngine
     public Task<DebugStats> GetDebugStatsAsync(CancellationToken ct)
     {
         if (!_storeDir.Exists)
+        {
+            StoreMetrics.FileCount.Set(0);
             return Task.FromResult(new DebugStats(0, 0, _storeDir.FullName));
+        }
 
         var files = _storeDir.EnumerateFiles("*", SearchOption.AllDirectories);
         var count = 0;
@@ -111,6 +125,7 @@ public sealed class StorageEngine
             totalBytes += f.Length;
         }
 
+        StoreMetrics.FileCount.Set(count);
         return Task.FromResult(new DebugStats(count, totalBytes, _storeDir.FullName));
     }
 
