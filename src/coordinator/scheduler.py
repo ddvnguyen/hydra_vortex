@@ -156,6 +156,8 @@ class WorkerScheduler:
         return None
 
     def _is_atomic(self, item: WorkItem) -> bool:
+        if self._config.run_mode == "fast":
+            return True
         return item.estimated_new_tokens <= self._config.atomic_token_threshold
 
     def _routable(self, wname: str) -> bool:
@@ -265,20 +267,21 @@ class WorkerScheduler:
                 await self._execute_atomic(item, worker)
             else:
                 await self._execute_concurrency(item, worker)
-        except HTTPException:
-            raise
         except Exception as e:
-            log.error("scheduler_process_failed",
-                       trace_id=item.trace_id, session_id=item.session_id, node=worker.name,
-                       elapsed_ms=self._elapsed_ms(item), error=str(e),
-                       estimated_tokens=item.estimated_tokens,
-                       estimated_new_tokens=item.estimated_new_tokens,
-                       stream=item.request.get("stream", False))
+            status = e.status_code if isinstance(e, HTTPException) else 503
+            log_fn = log.warning if isinstance(e, HTTPException) else log.error
+            log_fn("scheduler_process_failed",
+                   trace_id=item.trace_id, session_id=item.session_id, node=worker.name,
+                   elapsed_ms=self._elapsed_ms(item), error=str(e),
+                   status_code=status,
+                   estimated_tokens=item.estimated_tokens,
+                   estimated_new_tokens=item.estimated_new_tokens,
+                   stream=item.request.get("stream", False))
             if not affinity_dispatched:
                 self._tracker.release(worker.name)
             self._worker_freed.set()
             if not item.future.done():
-                item.future.set_exception(HTTPException(status_code=503, detail=str(e)))
+                item.future.set_exception(HTTPException(status_code=status, detail=str(e)))
 
     # ── 1. Affinity path ─────────────────────────────────────────────────
 
@@ -602,8 +605,21 @@ class WorkerScheduler:
             self._config.workers, self._tracker, self._health,
         )
         if not decode_worker:
+            free = self._tracker.free_workers()
+            busy = self._tracker.busy_workers()
+            log.warning("decode_worker_unavailable",
+                         trace_id=item.trace_id, session_id=sess_id,
+                         free_workers=free, busy_workers=busy,
+                         elapsed_ms=self._elapsed_ms(item))
             raise HTTPException(status_code=503, detail="No decode worker available")
         if not self._tracker.acquire(decode_worker.name, "decode"):
+            free = self._tracker.free_workers()
+            busy = self._tracker.busy_workers()
+            log.warning("decode_worker_acquire_failed",
+                         trace_id=item.trace_id, session_id=sess_id,
+                         worker=decode_worker.name, free_workers=free,
+                         busy_workers=busy,
+                         elapsed_ms=self._elapsed_ms(item))
             raise HTTPException(status_code=503, detail=f"Decode worker {decode_worker.name} busy")
 
         decode_url = decode_worker.llama_url
