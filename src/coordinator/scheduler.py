@@ -309,6 +309,7 @@ class WorkerScheduler:
                                  trace_id=item.trace_id, session_id=sess_id, node=worker.name, error=str(e))
                 finally:
                     await client.close()
+                entry.slot_id = None
 
         node_url = worker.llama_url
         if item.request.get("stream", False):
@@ -328,9 +329,10 @@ class WorkerScheduler:
                 except Exception:
                     self._tracker.on_error(worker.name)
                     raise
+                else:
+                    self._tracker.on_success(worker.name)
                 finally:
                     self._tracker.release(worker.name)
-                    self._tracker.on_success(worker.name)
                     self._worker_freed.set()
 
             item.future.set_result(StreamingResponse(
@@ -426,9 +428,10 @@ class WorkerScheduler:
                 except Exception:
                     self._tracker.on_error(decode_worker.name)
                     raise
+                else:
+                    self._tracker.on_success(decode_worker.name)
                 finally:
                     self._tracker.release(decode_worker.name)
-                    self._tracker.on_success(decode_worker.name)
                     self._worker_freed.set()
 
             item.future.set_result(StreamingResponse(
@@ -446,9 +449,10 @@ class WorkerScheduler:
             except Exception:
                 self._tracker.on_error(decode_worker.name)
                 raise
+            else:
+                self._tracker.on_success(decode_worker.name)
             finally:
                 self._tracker.release(decode_worker.name)
-                self._tracker.on_success(decode_worker.name)
                 self._worker_freed.set()
             await self._track_after_completion(sess_id, decode_url, result, item)
             item.future.set_result(JSONResponse(
@@ -493,9 +497,10 @@ class WorkerScheduler:
                 except Exception:
                     self._tracker.on_error(worker.name)
                     raise
+                else:
+                    self._tracker.on_success(worker.name)
                 finally:
                     self._tracker.release(worker.name)
-                    self._tracker.on_success(worker.name)
                     self._worker_freed.set()
 
             item.future.set_result(StreamingResponse(
@@ -513,9 +518,10 @@ class WorkerScheduler:
             except Exception:
                 self._tracker.on_error(worker.name)
                 raise
+            else:
+                self._tracker.on_success(worker.name)
             finally:
                 self._tracker.release(worker.name)
-                self._tracker.on_success(worker.name)
                 self._worker_freed.set()
             await self._track_after_completion(sess_id, node_url, result, item)
             if item.prefix_hash:
@@ -567,8 +573,14 @@ class WorkerScheduler:
 
         prefill_slot = await resolve_slot_id(prefill_url, n_past_after, item.trace_id)
         entry = self._session_table.lookup(sess_id)
-        if entry and prefill_slot is not None:
-            entry.slot_id = prefill_slot
+        if prefill_slot is not None:
+            if entry:
+                entry.slot_id = prefill_slot
+        elif n_past_after > 0:
+            log.warning("slot_resolve_failed",
+                        trace_id=item.trace_id, session_id=sess_id,
+                        node=prefill_worker.name, n_past=n_past_after,
+                        elapsed_ms=self._elapsed_ms(item))
 
         self._tracker.release(prefill_worker.name)
         self._worker_freed.set()
@@ -627,9 +639,10 @@ class WorkerScheduler:
             except Exception:
                 self._tracker.on_error(decode_worker.name)
                 raise
+            else:
+                self._tracker.on_success(decode_worker.name)
             finally:
                 self._tracker.release(decode_worker.name)
-                self._tracker.on_success(decode_worker.name)
                 self._worker_freed.set()
 
         item.future.set_result(StreamingResponse(
@@ -692,8 +705,11 @@ class WorkerScheduler:
                              node=worker.name,
                              checkpoint=item.prefix_hash, n_past=n_past_prefix,
                              elapsed_ms=self._elapsed_ms(item))
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("prefix_restore_failed",
+                        trace_id=item.trace_id, session_id=item.session_id,
+                        node=worker.name, checkpoint=item.prefix_hash,
+                        error=str(e), elapsed_ms=self._elapsed_ms(item))
 
     async def _maybe_save_prefix(self, item: WorkItem, worker: WorkerNodeConfig):
         if not self._config.prefix_checkpoint_enabled:
@@ -706,7 +722,7 @@ class WorkerScheduler:
         self._prefix_set.add(prefix_key)
         try:
             entry = self._session_table.lookup(item.session_id)
-            slot = entry.slot_id if entry and entry.slot_id is not None else 0
+            slot = entry.slot_id if entry and entry.slot_id is not None else None
             await self._state.save_prefix_checkpoint(
                 item.prefix_hash,
                 worker.host,

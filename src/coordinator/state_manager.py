@@ -28,7 +28,11 @@ class StateManager:
     async def save_session(self, session_id: str, node_host: str, node_port: int) -> dict:
         trace_id = new_trace_id()
         entry = self._session_table.lookup(session_id)
-        slot_id = entry.slot_id if entry and entry.slot_id is not None else 0
+        if not entry or entry.slot_id is None:
+            log.warning("save_session_skipped_no_slot",
+                        session_id=session_id, trace_id=trace_id)
+            return {}
+        slot_id = entry.slot_id
         client = self._agent_client(node_host, node_port)
         try:
             resp = await client.request(OpCode.SaveStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
@@ -46,7 +50,12 @@ class StateManager:
     ) -> dict:
         trace_id = new_trace_id()
         entry = self._session_table.lookup(session_id)
-        slot_id = entry.slot_id if entry and entry.slot_id is not None else 0
+        if not entry or entry.slot_id is None:
+            log.warning("restore_session_no_slot",
+                        session_id=session_id, trace_id=trace_id)
+            slot_id = 0
+        else:
+            slot_id = entry.slot_id
         client = self._agent_client(target_host, target_port)
         try:
             resp = await client.request(OpCode.RestoreStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
@@ -133,7 +142,11 @@ class StateManager:
         slot_id: int | None = None,
     ) -> dict:
         if slot_id is None:
-            slot_id = 0
+            log.warning(
+                "prefix_checkpoint_save_skipped_no_slot",
+                checkpoint=checkpoint_name,
+            )
+            return {}
 
         trace_id = new_trace_id()
         client = self._agent_client(node_host, node_port)

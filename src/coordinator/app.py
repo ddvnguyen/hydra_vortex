@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from python_shared.log_config import get_logger, setup_logging
-from coordinator.config import CoordinatorConfig
+from coordinator.config import CoordinatorConfig, WorkerNodeConfig
 from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
@@ -18,7 +18,8 @@ log = get_logger()
 
 
 def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor,
-                   scheduler: WorkerScheduler, config: CoordinatorConfig):
+                   scheduler: WorkerScheduler, config: CoordinatorConfig,
+                   state_manager: StateManager):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         setup_logging(config.log_level)
@@ -31,8 +32,10 @@ def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor,
             store_port=config.store_port,
         )
 
+        workers_by_name = {w.name: w for w in config.workers}
         eviction_task = asyncio.create_task(
-            _eviction_loop(session_table, config.session_idle_timeout_s)
+            _eviction_loop(session_table, state_manager, workers_by_name,
+                           config.session_idle_timeout_s)
         )
 
         await health_monitor.start()
@@ -47,13 +50,33 @@ def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor,
     return lifespan
 
 
-async def _eviction_loop(session_table: SessionTable, timeout_s: int, interval_s: int = 60):
+async def _eviction_loop(
+    session_table: SessionTable,
+    state_manager: StateManager,
+    workers_by_name: dict[str, WorkerNodeConfig],
+    timeout_s: int,
+    interval_s: int = 60,
+):
     try:
         while True:
             await asyncio.sleep(interval_s)
-            removed = session_table.evict_stale(timeout_s)
-            if removed > 0:
-                log.info("evicted_stale_sessions", count=removed, timeout_s=timeout_s)
+            stale = session_table.get_stale_session_ids(timeout_s)
+            if not stale:
+                continue
+            for sid in stale:
+                entry = session_table.lookup(sid)
+                if not entry:
+                    continue
+                wc = workers_by_name.get(entry.node_name)
+                if wc:
+                    try:
+                        await state_manager.save_session(sid, wc.host, wc.rpc_port)
+                    except Exception as e:
+                        log.warning("evict_stale_save_failed",
+                                    session_id=sid, node=entry.node_name, error=str(e))
+                session_table.remove(sid)
+            log.info("evicted_stale_sessions",
+                     count=len(stale), timeout_s=timeout_s)
     except asyncio.CancelledError:
         pass
 
@@ -89,7 +112,7 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
     app = FastAPI(
         title="Hydra Coordinator",
         version=VERSION,
-        lifespan=_make_lifespan(session_table, health_monitor, scheduler, config),
+        lifespan=_make_lifespan(session_table, health_monitor, scheduler, config, state_manager),
     )
     app.state.config = config
     app.state.session_table = session_table
