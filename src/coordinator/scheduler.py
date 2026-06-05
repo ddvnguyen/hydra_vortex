@@ -17,8 +17,7 @@ from coordinator.routing import (
     estimate_request_tokens,
     derive_session_id,
     compute_prefix_hash,
-    resolve_slot_id,
-    verify_warm_slot,
+    _pick_idle_slot,
     pick_best_prefill_worker,
     pick_best_decode_worker,
     pick_best_mixed_worker,
@@ -74,11 +73,6 @@ class WorkerScheduler:
         self._new_item = asyncio.Event()
         self._worker_freed = asyncio.Event()
         self._running = False
-        self._task: Optional[asyncio.Task] = None
-
-        for w in config.workers:
-            self._tracker.init_worker(w.name)
-
         self._prefix_set: set[str] = set()
 
     @staticmethod
@@ -171,10 +165,10 @@ class WorkerScheduler:
             w = self._worker_by_name(wname)
             if not w:
                 continue
+            if not (w.worker_type & WORKER_PREFILL):
+                continue
             if not self._routable(wname):
                 continue
-            # Use estimated_new_tokens, not accumulated estimated_tokens,
-            # so resumed sessions on P100 are not permanently excluded.
             if w.max_prefill_tokens != -1 and item.estimated_new_tokens > w.max_prefill_tokens:
                 continue
             return w
@@ -236,24 +230,22 @@ class WorkerScheduler:
 
             if entry and entry.slot_id is not None:
                 if entry.node_name == worker.name:
-                    if await verify_warm_slot(worker, entry, item.trace_id):
-                        affinity_dispatched = True
-                        await self._execute_affinity(item, worker, entry)
-                        return
+                    affinity_dispatched = True
+                    await self._execute_affinity(item, worker, entry)
+                    return
                 else:
                     target = self._worker_by_name(entry.node_name)
                     if target and self._tracker.is_free(target.name) and self._routable(target.name):
                         if self._tracker.acquire(target.name, "decode"):
-                            if await verify_warm_slot(target, entry, item.trace_id):
-                                cross_node_affinity_total.inc()
-                                await self._execute_affinity(item, target, entry)
-                                return
-                            self._tracker.release(target.name)
-                            self._worker_freed.set()
+                            cross_node_affinity_total.inc()
+                            await self._execute_affinity(item, target, entry)
+                            return
 
                 entry = self._session_table.lookup(item.session_id)
 
             if entry and entry.has_store_state:
+                self._tracker.release(worker.name)
+                self._worker_freed.set()
                 await self._execute_store_restore(item)
                 return
 
@@ -388,7 +380,7 @@ class WorkerScheduler:
         n_past_entry = entry.n_past if entry else 0
 
         try:
-            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port)
+            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0)
         except Exception as e:
             self._tracker.release(decode_worker.name)
             self._worker_freed.set()
@@ -477,8 +469,10 @@ class WorkerScheduler:
 
         await self._maybe_restore_prefix_checkpoint(item, worker)
 
+        prefill_slot = self._health.get_idle_slot(worker.name) or await _pick_idle_slot(node_url, item.trace_id)
+
         self._session_table.register(
-            sess_id, worker.name, None, n_past=0, prefix_hash=item.prefix_hash,
+            sess_id, worker.name, prefill_slot, n_past=0, prefix_hash=item.prefix_hash,
         )
 
         if item.request.get("stream", False):
@@ -497,6 +491,7 @@ class WorkerScheduler:
                     await self._track_after_stream(sess_id, node_url, last_usage, item)
                     if item.prefix_hash:
                         await self._maybe_save_prefix(item, worker)
+                    await self._state.save_session(sess_id, worker.host, worker.rpc_port)
                 except Exception:
                     self._tracker.on_error(worker.name)
                     raise
@@ -526,9 +521,16 @@ class WorkerScheduler:
             finally:
                 self._tracker.release(worker.name)
                 self._worker_freed.set()
+            # Use id_slot from response if available (llama-server fork), fallback to captured slot
+            response_slot = result.get("id_slot")
+            if response_slot is not None:
+                entry = self._session_table.lookup(sess_id)
+                if entry:
+                    entry.slot_id = response_slot
             await self._track_after_completion(sess_id, node_url, result, item)
             if item.prefix_hash:
                 await self._maybe_save_prefix(item, worker)
+            await self._state.save_session(sess_id, worker.host, worker.rpc_port)
             item.future.set_result(JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": worker.name},
@@ -548,8 +550,15 @@ class WorkerScheduler:
 
         await self._maybe_restore_prefix_checkpoint(item, prefill_worker)
 
+        # Capture idle slot before prefill. May return None if all slots are busy —
+        # the id_slot from the completion response (extracted below) will correct it.
+        prefill_slot = self._health.get_idle_slot(prefill_worker.name) or await _pick_idle_slot(prefill_url, item.trace_id)
+        log.info("cold_concurrency_slot",
+                 trace_id=item.trace_id, session_id=sess_id,
+                 node=prefill_worker.name, prefill_slot=prefill_slot)
+
         self._session_table.register(
-            sess_id, prefill_worker.name, None, n_past=0, prefix_hash=item.prefix_hash,
+            sess_id, prefill_worker.name, prefill_slot, n_past=0, prefix_hash=item.prefix_hash,
         )
 
         prefill_dict = {**item.request, "stream": False, "max_tokens": 1}
@@ -567,6 +576,16 @@ class WorkerScheduler:
             self._tracker.on_error(prefill_worker.name)
             raise HTTPException(status_code=503, detail=f"Prefill failed: {e}")
 
+        # Use id_slot from response if available (llama-server fork), fallback to captured slot
+        response_slot = prefill_result.get("id_slot")
+        if response_slot is not None:
+            entry = self._session_table.lookup(sess_id)
+            if entry:
+                entry.slot_id = response_slot
+            log.debug("prefill_slot_from_response",
+                      trace_id=item.trace_id, session_id=sess_id,
+                      slot_id=response_slot)
+
         n_past_after = (
             prefill_result.get("usage", {}).get("total_tokens", 0)
             if isinstance(prefill_result.get("usage"), dict) else 0
@@ -574,19 +593,18 @@ class WorkerScheduler:
         if n_past_after > 0:
             self._session_table.update_n_past(sess_id, n_past_after)
 
-        prefill_slot = await resolve_slot_id(prefill_url, n_past_after, item.trace_id)
         entry = self._session_table.lookup(sess_id)
-        if prefill_slot is not None:
-            if entry:
-                entry.slot_id = prefill_slot
-        elif n_past_after > 0:
-            log.warning("slot_resolve_failed",
+        if entry and entry.slot_id is None:
+            log.warning("slot_resolve_failed_no_prefill_slot",
                         trace_id=item.trace_id, session_id=sess_id,
                         node=prefill_worker.name, n_past=n_past_after,
                         elapsed_ms=self._elapsed_ms(item))
 
         self._tracker.release(prefill_worker.name)
         self._worker_freed.set()
+
+        if item.prefix_hash:
+            await self._maybe_save_prefix(item, prefill_worker)
 
         try:
             await self._state.save_session(sess_id, prefill_worker.host, prefill_worker.rpc_port)
@@ -625,7 +643,7 @@ class WorkerScheduler:
         decode_url = decode_worker.llama_url
 
         try:
-            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port)
+            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0)
         except Exception as e:
             self._tracker.release(decode_worker.name)
             self._tracker.on_error(decode_worker.name)
@@ -676,16 +694,12 @@ class WorkerScheduler:
     async def _track_after_stream(self, sess_id: str, node_url: str, last_usage: Optional[dict], item: WorkItem):
         if not last_usage:
             return
-        total = last_usage.get("total_tokens", 0)
+        total = last_usage.get("total_tokens", 0) if isinstance(last_usage, dict) else 0
         if total > 0:
             self._session_table.update_n_past(sess_id, total)
         entry = self._session_table.lookup(sess_id)
         if entry and entry.slot_id is None and total > 0:
-            resolved = await resolve_slot_id(node_url, total, item.trace_id)
-            if resolved is not None:
-                entry.slot_id = resolved
-                log.info("slot_resolved", trace_id=item.trace_id, session_id=sess_id,
-                         slot_id=resolved, n_past=total)
+            self._resolve_slot_from_health(entry, total, item.trace_id)
 
     async def _track_after_completion(self, sess_id: str, node_url: str, result: dict, item: WorkItem):
         usage = result.get("usage", {})
@@ -694,11 +708,15 @@ class WorkerScheduler:
             self._session_table.update_n_past(sess_id, total)
         entry = self._session_table.lookup(sess_id)
         if entry and entry.slot_id is None and total > 0:
-            resolved = await resolve_slot_id(node_url, total, item.trace_id)
-            if resolved is not None:
-                entry.slot_id = resolved
-                log.info("slot_resolved_nonstream", trace_id=item.trace_id, session_id=sess_id,
-                         slot_id=resolved, n_past=total)
+            self._resolve_slot_from_health(entry, total, item.trace_id)
+
+    def _resolve_slot_from_health(self, entry, total: int, trace_id: str):
+        for s in self._health.get_slots(entry.node_name):
+            if s.get("n_past", 0) == total and not s.get("is_processing"):
+                entry.slot_id = s["id"]
+                log.info("slot_resolved_health", trace_id=trace_id,
+                         session_id=entry.session_id, slot_id=s["id"], n_past=total)
+                return
 
     async def _maybe_restore_prefix_checkpoint(self, item: WorkItem, worker: WorkerNodeConfig):
         if not self._config.prefix_checkpoint_enabled:
@@ -712,20 +730,22 @@ class WorkerScheduler:
                 worker.rpc_port,
                 slot_id=0,
             )
-            if meta:
-                n_past_prefix = meta.get("n_past", 0)
-                if n_past_prefix > 0:
-                    self._session_table.update_n_past(item.session_id, n_past_prefix)
-                    log.info("prefix_restored",
-                             trace_id=item.trace_id, session_id=item.session_id,
-                             node=worker.name,
-                             checkpoint=item.prefix_hash, n_past=n_past_prefix,
-                             elapsed_ms=self._elapsed_ms(item))
-        except Exception as e:
-            log.warning("prefix_restore_failed",
-                        trace_id=item.trace_id, session_id=item.session_id,
-                        node=worker.name, checkpoint=item.prefix_hash,
-                        error=str(e), elapsed_ms=self._elapsed_ms(item))
+        except Exception:
+            meta = None
+
+        if meta and meta.get("n_past", 0) > 0:
+            self._session_table.update_n_past(item.session_id, meta["n_past"])
+            log.info("prefix_restored",
+                     trace_id=item.trace_id, session_id=item.session_id,
+                     node=worker.name,
+                     checkpoint=item.prefix_hash, n_past=meta["n_past"],
+                     elapsed_ms=self._elapsed_ms(item))
+            return
+        log.warning("prefix_restore_failed",
+                    trace_id=item.trace_id, session_id=item.session_id,
+                    node=worker.name, checkpoint=item.prefix_hash,
+                    elapsed_ms=self._elapsed_ms(item))
+
 
     async def _maybe_save_prefix(self, item: WorkItem, worker: WorkerNodeConfig):
         if not self._config.prefix_checkpoint_enabled:

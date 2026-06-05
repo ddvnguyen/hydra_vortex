@@ -23,14 +23,6 @@ def _make_lifespan(session_table: SessionTable, health_monitor: HealthMonitor,
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         setup_logging(config.log_level)
-        log.info(
-            "coordinator_start",
-            version=VERSION,
-            revision=REVISION,
-            workers=[w.name for w in config.workers],
-            store_host=config.store_host,
-            store_port=config.store_port,
-        )
 
         workers_by_name = {w.name: w for w in config.workers}
         eviction_task = asyncio.create_task(
@@ -95,6 +87,38 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
     configure_timeout(config.llama_request_timeout_s)
 
     session_table = SessionTable()
+    store_debug_url = f"http://{config.store_host}:{config.store_port}/debug?sessions=1"
+
+    log.info(
+        "coordinator_start",
+        version=VERSION,
+        revision=REVISION,
+        workers=[w.name for w in config.workers],
+        store_host=config.store_host,
+        store_port=config.store_port,
+    )
+
+    # Restore session table from Store (PG) on startup — fire and forget since
+    # the Store may still be booting. The background _background_restore_sessions
+    # in the lifespan retries until successful.
+    def _restore_sessions():
+        try:
+            import httpx
+            resp = httpx.get(store_debug_url, timeout=5.0)
+            data = resp.json()
+            for s in data.get("sessions", []):
+                sid = s.get("session_id", "")
+                n_past = s.get("n_past", 0)
+                if sid and n_past > 0:
+                    session_table.register(sid, "", None, n_past=n_past)
+                    entry = session_table.lookup(sid)
+                    if entry:
+                        entry.has_store_state = True
+            log.info("session_table_restored", count=session_table.active_count)
+        except Exception as e:
+            log.warning("session_table_restore_failed", error=str(e))
+
+    _restore_sessions()
     health_monitor = HealthMonitor(
         nodes=config.workers,
         poll_interval_s=config.health_poll_interval_s,

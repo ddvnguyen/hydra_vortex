@@ -567,12 +567,28 @@ public sealed class StoreServer : RpcServer
 		{
 			var storeStats = await _engine.GetDebugStatsAsync(ct);
 			var chunkStats = await _chunkStore.GetStatsAsync(ct);
-			return Results.Json(new
+			var pgStats = _metadata is not null
+				? await _metadata.GetStatsAsync(ct)
+				: (ManifestCount: 0, ChunkRows: 0);
+			var resp = new Dictionary<string, object>
 			{
-				version = HydraLogging.ServiceVersion,
-				raw = storeStats,
-				chunks = chunkStats
-			});
+				["version"] = HydraLogging.ServiceVersion,
+				["raw"] = storeStats,
+				["chunks"] = new { chunkStats.TotalChunks, pgStats.ManifestCount, chunkStats.TotalBytes },
+			};
+			if (_metadata is not null)
+			{
+				var ids = await _metadata.GetRecentSessionIdsAsync(200, CancellationToken.None);
+				var list = new List<object>();
+				foreach (var id in ids)
+				{
+					var m = await _metadata.GetManifestAsync(id, CancellationToken.None);
+					if (m is not null)
+						list.Add(new { session_id = id, n_past = m.NPast, total_size = m.TotalSize });
+				}
+				resp["sessions"] = list;
+			}
+			return Results.Json(resp);
 		});
 
 		app.MapPost("/debug/gc", async () =>
