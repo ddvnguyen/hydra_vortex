@@ -377,6 +377,18 @@ public sealed class StoreMetadata : IAsyncDisposable
             _log.Information("Boot reconciliation: removed {Count} zombie sessions with no chunks", zombieCount);
     }
 
+    public async Task<(int ManifestCount, int ChunkRows)> GetStatsAsync(CancellationToken ct)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM sessions";
+        var count = (int)(long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        cmd.CommandText = "SELECT COUNT(*) FROM session_chunks";
+        var chunkRows = (int)(long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        _log.Debug("PG stats: {Count} manifests, {ChunkRows} chunk rows", count, chunkRows);
+        return (count, chunkRows);
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _dataSource.DisposeAsync();
