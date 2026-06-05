@@ -39,7 +39,7 @@ class StateManager:
             resp = await client.request(OpCode.SaveStateChunked, f"{session_id}:{slot_id}:{n_past_hint}", trace_id=trace_id)
             n_past = resp.meta.get("n_past", 0) if resp.meta else entry.n_past if entry else 0
             if entry:
-                self._session_table.mark_evicted(session_id)
+                entry.has_store_state = True
             log.info("state_saved", session_id=session_id, meta=resp.meta)
             return resp.meta or {}
         finally:

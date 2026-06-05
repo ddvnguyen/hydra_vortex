@@ -35,7 +35,7 @@ async def test_save_flow():
     assert meta["session_id"] == "sess_abc"
     entry = table.lookup("sess_abc")
     assert entry.has_store_state is True
-    assert entry.slot_id is None
+    assert entry.slot_id == 0  # slot stays warm for affinity on next turn
     instance.request.assert_called_once()
 
 
@@ -63,7 +63,7 @@ async def test_restore_flow():
     assert meta["slot_id"] == 0
     entry = table.lookup("sess_abc")
     assert entry.slot_id == 0
-    assert entry.has_store_state is False
+    assert entry.has_store_state is True  # persisted from save + restored=True
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,7 @@ async def test_evict_lru():
     assert freed_slot == 0
     entry = table.lookup("sess_a")
     assert entry.has_store_state is True
-    assert entry.slot_id is None
+    assert entry.slot_id == 0  # slot_id preserved for affinity fallback
 
 
 @pytest.mark.asyncio
