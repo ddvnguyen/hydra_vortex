@@ -532,6 +532,12 @@ class WorkerScheduler:
             finally:
                 self._tracker.release(worker.name)
                 self._worker_freed.set()
+            # Use id_slot from response if available (llama-server fork), fallback to captured slot
+            response_slot = result.get("id_slot")
+            if response_slot is not None:
+                entry = self._session_table.lookup(sess_id)
+                if entry:
+                    entry.slot_id = response_slot
             await self._track_after_completion(sess_id, node_url, result, item)
             if item.prefix_hash:
                 await self._maybe_save_prefix(item, worker)
@@ -572,6 +578,16 @@ class WorkerScheduler:
             self._worker_freed.set()
             self._tracker.on_error(prefill_worker.name)
             upstream_timeouts_total.inc()
+
+        # Use id_slot from response if available (llama-server fork), fallback to captured slot
+        response_slot = prefill_result.get("id_slot")
+        if response_slot is not None:
+            entry = self._session_table.lookup(sess_id)
+            if entry:
+                entry.slot_id = response_slot
+            log.debug("prefill_slot_from_response",
+                      trace_id=item.trace_id, session_id=sess_id,
+                      slot_id=response_slot)
             raise HTTPException(status_code=504, detail=f"Prefill exceeded {self._config.llama_request_timeout_s}s")
         except Exception as e:
             self._tracker.release(prefill_worker.name)
