@@ -567,11 +567,14 @@ public sealed class StoreServer : RpcServer
 		{
 			var storeStats = await _engine.GetDebugStatsAsync(ct);
 			var chunkStats = await _chunkStore.GetStatsAsync(ct);
+			var pgStats = _metadata is not null
+				? await _metadata.GetStatsAsync(ct)
+				: (ManifestCount: 0, ChunkRows: 0);
 			return Results.Json(new
 			{
 				version = HydraLogging.ServiceVersion,
 				raw = storeStats,
-				chunks = chunkStats
+				chunks = new { chunkStats.TotalChunks, pgStats.ManifestCount, chunkStats.TotalBytes }
 			});
 		});
 
