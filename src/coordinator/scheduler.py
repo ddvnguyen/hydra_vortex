@@ -562,6 +562,8 @@ class WorkerScheduler:
 
         await self._maybe_restore_prefix_checkpoint(item, prefill_worker)
 
+        # Capture idle slot before prefill. May return None if all slots are busy —
+        # the id_slot from the completion response (extracted below) will correct it.
         prefill_slot = await _pick_idle_slot(prefill_url, item.trace_id)
         log.info("cold_concurrency_slot",
                  trace_id=item.trace_id, session_id=sess_id,
