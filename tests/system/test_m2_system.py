@@ -16,10 +16,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from coordinator.config import CoordinatorConfig
+from coordinator.config import CoordinatorConfig, WorkerNodeConfig
 from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
+from coordinator.worker_tracker import WorkerTracker
+from coordinator.scheduler import WorkerScheduler
 from coordinator.router import create_router
 from coordinator.routing import RoutingDecision
 
@@ -58,25 +60,26 @@ def app(mock_rpc):
     cfg = CoordinatorConfig(
         host="127.0.0.1",
         port=0,
-        rtx_host="127.0.0.1",
-        rtx_port=9601,
-        rtx_llama_url="http://localhost:8080",
-        p100_host="127.0.0.1",
-        p100_port=9602,
-        p100_llama_url="http://192.168.122.21:8086",
+        workers=[
+            WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080",
+                             worker_type=3, slots=2, prefill_priority=1, decode_priority=2, decode_speed_tps=200),
+            WorkerNodeConfig(name="p100", host="127.0.0.1", rpc_port=9602, llama_url="http://192.168.122.21:8086",
+                             worker_type=2, slots=1, prefill_priority=2, decode_priority=1, decode_speed_tps=28),
+        ],
         store_host="127.0.0.1",
         store_port=9500,
         health_poll_interval_s=9999,
         health_max_failures=3,
         long_prompt_threshold=4096,
         prefix_checkpoint_enabled=True,
-        prefix_checkpoint_name="system_prompt",
     )
     table = SessionTable()
-    health = HealthMonitor(cfg.nodes, poll_interval_s=9999)
+    health = HealthMonitor(cfg.workers, poll_interval_s=9999)
     state_mgr = StateManager(table, cfg.store_host, cfg.store_port)
+    tracker = WorkerTracker()
+    scheduler = WorkerScheduler(cfg, table, health, state_mgr, tracker)
     app = FastAPI()
-    router = create_router(cfg, table, health, state_mgr)
+    router = create_router(cfg, table, health, state_mgr, scheduler)
     app.include_router(router)
     app.state._config = cfg
     app.state._session_table = table

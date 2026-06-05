@@ -86,13 +86,15 @@ async def resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -
             continue
 
         slots = data if isinstance(data, list) else data.get("slots", [])
-        if any(s.get("is_processing") for s in slots):
-            log.debug("resolve_slot_id_deferred",
-                       trace_id=trace_id, llama_url=llama_url,
-                       expected_n_past=expected_n_past,
-                       attempt=attempt + 1)
-            return None
         for slot in slots:
+            if slot.get("is_processing"):
+                if slot.get("n_past", 0) == expected_n_past:
+                    log.debug("resolve_slot_id_processing_match",
+                               trace_id=trace_id, llama_url=llama_url,
+                               expected_n_past=expected_n_past,
+                               slot_id=slot.get("id"),
+                               attempt=attempt + 1)
+                continue
             if slot.get("n_past", 0) == expected_n_past:
                 return slot.get("id")
 
@@ -104,6 +106,21 @@ async def resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -
         if attempt == 0:
             await asyncio.sleep(3)
 
+    return None
+
+
+async def _pick_idle_slot(llama_url: str, trace_id: str) -> int | None:
+    client = _get_client()
+    resp = await client.get(
+        f"{llama_url.rstrip('/')}/slots",
+        headers={"X-Trace-Id": trace_id},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    slots = data if isinstance(data, list) else data.get("slots", [])
+    for slot in slots:
+        if not slot.get("is_processing"):
+            return slot.get("id")
     return None
 
 

@@ -2,7 +2,7 @@ import time
 from typing import Optional, Union
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from python_shared.log_config import get_logger, new_trace_id
@@ -70,12 +70,16 @@ def create_router(
     _routing_stats = {"total": 0}
 
     @router.post("/v1/chat/completions")
-    async def chat_completion(req: ChatCompletionRequest):
+    async def chat_completion(req: ChatCompletionRequest, request: Request):
         _routing_stats["total"] += 1
         request_dict = req.model_dump(exclude={"session_id"})
         messages_dict = [m.model_dump() for m in req.messages]
 
-        sess_id = req.session_id or derive_session_id(messages_dict)
+        sess_id = (
+            request.headers.get("X-Session-Id")
+            or req.session_id
+            or derive_session_id(messages_dict)
+        )
         prefix_hash = compute_prefix_hash(messages_dict)
 
         return await scheduler.submit(
