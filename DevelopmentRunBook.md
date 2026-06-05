@@ -193,10 +193,16 @@ cd $WORK
 export PATH=/opt/software/cuda/13.2/bin:/opt/software/gcc/14/bin:$PATH
 export CC=gcc-14 CXX=g++-14
 cmake -B build_sm120 \
-  -DCMAKE_CUDA_ARCHITECTURES=120 \
+  -DCMAKE_CUDA_ARCHITECTURES="120" \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_RPC=ON \
   -DGGML_NATIVE=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+  -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DLLAMA_BUILD_TESTS=OFF \
   -DCMAKE_CUDA_COMPILER=/opt/software/cuda/13.2/bin/nvcc
 cmake --build build_sm120 --target llama-server -j$(nproc)
 ```
@@ -207,10 +213,16 @@ cmake --build build_sm120 --target llama-server -j$(nproc)
 export PATH=/opt/software/cuda/12.9/bin:/opt/software/gcc/14/bin:$PATH
 export CC=gcc-14 CXX=g++-14
 cmake -B build_sm60 \
-  -DCMAKE_CUDA_ARCHITECTURES=60 \
+  -DCMAKE_CUDA_ARCHITECTURES="60" \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_RPC=ON \
   -DGGML_NATIVE=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+  -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DLLAMA_BUILD_TESTS=OFF \
   -DCMAKE_CUDA_COMPILER=/opt/software/cuda/12.9/bin/nvcc
 cmake --build build_sm60 --target llama-server -j$(nproc)
 ```
