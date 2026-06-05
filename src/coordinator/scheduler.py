@@ -500,9 +500,9 @@ class WorkerScheduler:
                                 pass
                         yield chunk
                     await self._track_after_stream(sess_id, node_url, last_usage, item)
-                    await self._state.save_session(sess_id, worker.host, worker.rpc_port)
                     if item.prefix_hash:
                         await self._maybe_save_prefix(item, worker)
+                    await self._state.save_session(sess_id, worker.host, worker.rpc_port)
                 except Exception:
                     self._tracker.on_error(worker.name)
                     raise
@@ -595,6 +595,9 @@ class WorkerScheduler:
 
         self._tracker.release(prefill_worker.name)
         self._worker_freed.set()
+
+        if item.prefix_hash:
+            await self._maybe_save_prefix(item, prefill_worker)
 
         try:
             await self._state.save_session(sess_id, prefill_worker.host, prefill_worker.rpc_port)
