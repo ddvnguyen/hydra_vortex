@@ -18,7 +18,6 @@ from coordinator.routing import (
     derive_session_id,
     compute_prefix_hash,
     _pick_idle_slot,
-    verify_warm_slot,
     pick_best_prefill_worker,
     pick_best_decode_worker,
     pick_best_mixed_worker,
@@ -236,20 +235,16 @@ class WorkerScheduler:
 
             if entry and entry.slot_id is not None:
                 if entry.node_name == worker.name:
-                    if await verify_warm_slot(worker, entry, item.trace_id):
-                        affinity_dispatched = True
-                        await self._execute_affinity(item, worker, entry)
-                        return
+                    affinity_dispatched = True
+                    await self._execute_affinity(item, worker, entry)
+                    return
                 else:
                     target = self._worker_by_name(entry.node_name)
                     if target and self._tracker.is_free(target.name) and self._routable(target.name):
                         if self._tracker.acquire(target.name, "decode"):
-                            if await verify_warm_slot(target, entry, item.trace_id):
-                                cross_node_affinity_total.inc()
-                                await self._execute_affinity(item, target, entry)
-                                return
-                            self._tracker.release(target.name)
-                            self._worker_freed.set()
+                            cross_node_affinity_total.inc()
+                            await self._execute_affinity(item, target, entry)
+                            return
 
                 entry = self._session_table.lookup(item.session_id)
 
@@ -727,19 +722,6 @@ class WorkerScheduler:
                 log.info("slot_resolved_health", trace_id=trace_id,
                          session_id=entry.session_id, slot_id=s["id"], n_past=total)
                 return
-
-    async def _track_after_completion(self, sess_id: str, node_url: str, result: dict, item: WorkItem):
-        usage = result.get("usage", {})
-        total = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
-        if total > 0:
-            self._session_table.update_n_past(sess_id, total)
-        entry = self._session_table.lookup(sess_id)
-        if entry and entry.slot_id is None and total > 0:
-            resolved = await resolve_slot_id(node_url, total, item.trace_id)
-            if resolved is not None:
-                entry.slot_id = resolved
-                log.info("slot_resolved_nonstream", trace_id=item.trace_id, session_id=sess_id,
-                         slot_id=resolved, n_past=total)
 
     async def _maybe_restore_prefix_checkpoint(self, item: WorkItem, worker: WorkerNodeConfig):
         if not self._config.prefix_checkpoint_enabled:
