@@ -4,8 +4,6 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-import httpx
-
 from python_shared.log_config import get_logger, new_trace_id
 from python_shared.rpc_client import RpcClient, OpCode, RpcError, StatusCode
 from coordinator.config import WorkerNodeConfig
@@ -62,33 +60,13 @@ class HealthMonitor:
                 result[name] = info.stuck_slots
         return result
 
-    async def _check_stuck_slots(self, node_name: str, llama_url: str):
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(
-                    f"{llama_url.rstrip('/')}/slots",
-                    headers={"X-Trace-Id": "health-stuck-check"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    slots = data if isinstance(data, list) else data.get("slots", [])
-                    stuck = sum(
-                        1 for s in slots
-                        if s.get("is_processing") and s.get("n_remain", 1) == 0
-                    )
-                    info = self._nodes.get(node_name)
-                    if info:
-                        info.stuck_slots = stuck
-                        if stuck > 0:
-                            log.warning("stuck_slots_detected", node=node_name, count=stuck)
-                else:
-                    info = self._nodes.get(node_name)
-                    if info:
-                        info.stuck_slots = 0
-        except Exception:
-            info = self._nodes.get(node_name)
-            if info:
-                info.stuck_slots = 0
+    async def _check_stuck_slots(self, node_name: str, health_data: dict):
+        stuck = health_data.get("stuck_slots", 0)
+        info = self._nodes.get(node_name)
+        if info:
+            info.stuck_slots = stuck
+            if stuck > 0:
+                log.warning("stuck_slots_detected", node=node_name, count=stuck)
 
     async def start(self):
         await self._poll_all()
@@ -163,7 +141,7 @@ class HealthMonitor:
                 info.consecutive_failures = 0
                 info.last_check = time.time()
 
-                await self._check_stuck_slots(node_name, config.llama_url)
+                await self._check_stuck_slots(node_name, health_data)
 
                 log.info("health_ok", node=node_name)
             except Exception as e:
