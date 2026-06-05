@@ -166,6 +166,7 @@ public sealed class AgentServer : RpcServer
             AgentMetrics.LlamaHealthy.WithLabels(_cfg.NodeName).Set(isHealthy ? 1 : 0);
             AgentMetrics.SlotsIdle.WithLabels(_cfg.NodeName).Set(slots.Count(s => !s.IsProcessing));
 
+            var stuckSlotsCount = slots.Count(s => s.IsProcessing && s.NRemain == 0);
             var healthPayload = JsonSerializer.SerializeToUtf8Bytes(new
             {
                 healthy = isHealthy,
@@ -173,6 +174,7 @@ public sealed class AgentServer : RpcServer
                 version = HydraLogging.ServiceVersion,
                 slots_total = slots.Count,
                 slots_idle = slots.Count(s => !s.IsProcessing),
+                stuck_slots = stuckSlotsCount,
                 llama_url = _cfg.LlamaUrl,
             });
 

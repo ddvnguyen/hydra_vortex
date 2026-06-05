@@ -65,10 +65,13 @@ class SessionTable:
     def active_count_on_node(self, node_name: str) -> int:
         return sum(1 for s in self._sessions.values() if s.node_name == node_name)
 
-    def evict_stale(self, timeout_s: int) -> int:
+    def get_stale_session_ids(self, timeout_s: int) -> list[str]:
         now = time.time()
-        stale = [sid for sid, entry in self._sessions.items()
-                 if now - entry.last_used > timeout_s]
+        return [sid for sid, entry in self._sessions.items()
+                if now - entry.last_used > timeout_s]
+
+    def evict_stale(self, timeout_s: int) -> int:
+        stale = self.get_stale_session_ids(timeout_s)
         for sid in stale:
             del self._sessions[sid]
         return len(stale)
