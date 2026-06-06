@@ -133,7 +133,7 @@ public sealed class LocalChunkCache : IDisposable
         return Task.CompletedTask;
     }
 
-    public int EvictLRU()
+    public async Task<int> EvictLRUAsync()
     {
         if (_disposed) return 0;
 
@@ -149,9 +149,8 @@ public sealed class LocalChunkCache : IDisposable
             var path = CachePath(oldest.SessionId);
             if (File.Exists(path))
                 File.Delete(path);
-            
-            // Also evict chunk data files
-            ClearAsync(oldest.SessionId).GetAwaiter().GetResult();
+
+            await ClearAsync(oldest.SessionId);
 
             evicted++;
         }

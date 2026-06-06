@@ -172,7 +172,7 @@ def test_prefix_save_custom_name(client):
     state_mgr: StateManager = client.app.state._state_manager
     called_with = {}
 
-    async def fake_save(checkpoint_name, host, port, slot_id=None):
+    async def fake_save(checkpoint_name, host, port, slot_id=None, trace_id=""):
         called_with["name"] = checkpoint_name
         called_with["slot_id"] = slot_id
         return {
@@ -215,7 +215,7 @@ async def test_store_restore_routing_action(client, monkeypatch):
     # Spy on restore_session
     restore_called = False
 
-    async def fake_restore(session_id, host, port, slot_id=0):
+    async def fake_restore(session_id, host, port, slot_id=0, trace_id=""):
         nonlocal restore_called
         restore_called = True
         return {"restored": True, "slot_id": 0, "n_past": 512}
@@ -261,7 +261,7 @@ def test_migration_save_erase_restore_cycle(client, monkeypatch):
     state_mgr: StateManager = client.app.state._state_manager
     operations = []
 
-    async def fake_migrate(session_id, from_host, from_port, to_host, to_port, to_node_name, from_node_name=""):
+    async def fake_migrate(session_id, from_host, from_port, to_host, to_port, to_node_name, from_node_name="", trace_id=""):
         operations.append(("migrate", session_id, to_node_name))
         table.lookup(session_id).node_name = to_node_name
         return {"saved": True, "slot_id": 0, "n_past": 512, "restored": True}
@@ -401,7 +401,7 @@ def test_evict_saves_before_removing(client):
     state_mgr: StateManager = client.app.state._state_manager
     save_called = False
 
-    async def fake_save(session_id, host, port):
+    async def fake_save(session_id, host, port, trace_id=""):
         nonlocal save_called
         save_called = True
         return {"saved": True, "size": 1000, "n_past": 256}

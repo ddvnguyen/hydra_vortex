@@ -12,6 +12,27 @@ public sealed record AgentConfig
     public string ChunkCacheDir { get; init; } = EnvString("HYDRA_AGENT_CHUNK_CACHE_DIR", "/tmp/hydra-chunk-cache");
     public int DebugHttpPort { get; init; } = EnvInt("HYDRA_AGENT_DEBUG_HTTP_PORT", 9611);
 
+    public void Validate()
+    {
+        if (Port < 1 || Port > 65535)
+            throw new InvalidOperationException($"Invalid port: {Port}");
+        if (DebugHttpPort < 1 || DebugHttpPort > 65535)
+            throw new InvalidOperationException($"Invalid debug HTTP port: {DebugHttpPort}");
+        if (DebugHttpPort == Port)
+            throw new InvalidOperationException("Debug HTTP port must differ from RPC port");
+
+        if (!Uri.TryCreate(LlamaUrl, UriKind.Absolute, out _))
+            throw new InvalidOperationException($"Invalid Llama URL: {LlamaUrl}");
+
+        var cacheDir = new DirectoryInfo(ChunkCacheDir);
+        if (!cacheDir.Exists)
+            cacheDir.Create();
+
+        var saveDir = new DirectoryInfo(SlotSavePath);
+        if (!saveDir.Exists)
+            saveDir.Create();
+    }
+
     private static string EnvString(string key, string fallback) =>
         Environment.GetEnvironmentVariable(key) ?? fallback;
 

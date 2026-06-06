@@ -1,6 +1,6 @@
 {
   "title": "Hydra Dashboard",
-  "version": 4,
+  "version": 5,
   "timezone": "browser",
   "editable": true,
   "panels": [

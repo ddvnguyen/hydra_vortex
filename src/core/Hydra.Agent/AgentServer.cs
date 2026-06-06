@@ -79,7 +79,7 @@ public sealed class AgentServer : RpcServer
         {
             var parts = sessionId.Split(':');
             var sid = parts[0];
-            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : await _llama.WaitForIdleSlotAsync(30_000, ct);
+            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : (await _llama.WaitForIdleSlotAsync(30_000, ct)).GetValueOrDefault(0);
 
             var result = await _handler.SaveToStoreAsync(
                 ExtractSessionId(sid, slotId), slotId,
@@ -224,7 +224,7 @@ public sealed class AgentServer : RpcServer
         {
             var parts = sessionId.Split(':');
             var sid = parts[0];
-            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : await _llama.WaitForIdleSlotAsync(30_000, ct);
+            var slotId = parts.Length > 1 && int.TryParse(parts[1], out var s) ? s : (await _llama.WaitForIdleSlotAsync(30_000, ct)).GetValueOrDefault(0);
 
             var result = await _handler.SaveToStoreChunkedAsync(
                 ExtractSessionId(sid, slotId), slotId,
