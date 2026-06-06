@@ -55,20 +55,6 @@ internal static class StoreMetrics
         "hydra_store_chunk_op_duration_seconds", "Chunk-level KV operation duration in seconds", "op", "node");
 
     /// <summary>
-    /// Duration of manifest operations (put_manifest, get_manifest).
-    /// Labels: op (put_manifest/get_manifest), node.
-    /// </summary>
-    public static readonly Histogram ManifestOpDuration = Metrics.CreateHistogram(
-        "hydra_store_manifest_op_duration_seconds", "Manifest operation duration in seconds", "op", "node");
-
-    /// <summary>
-    /// Duration of meta operations (put_meta, get_meta).
-    /// Labels: op (put_meta/get_meta), node.
-    /// </summary>
-    public static readonly Histogram MetaOpDuration = Metrics.CreateHistogram(
-        "hydra_store_meta_op_duration_seconds", "Meta operation duration in seconds", "op", "node");
-
-    /// <summary>
     /// Number of chunks involved in each chunked KV operation.
     /// Labels: op, size_bucket (0-1MB, 1-5MB, 5-10MB, 10+MB).
     /// </summary>
@@ -76,23 +62,16 @@ internal static class StoreMetrics
         "hydra_store_chunk_count", "Number of chunks per KV operation", "op", "size_bucket");
 
     /// <summary>
-    /// Gauge for total KV cache bytes stored per node.
-    /// Labels: node.
-    /// </summary>
-    public static readonly Gauge TotalKVBytes = Metrics.CreateGauge(
-        "hydra_store_total_kv_bytes", "Total KV cache bytes stored on disk by node", "node");
-
-    /// <summary>
     /// Gauge for candidate hashes processed in sync_missing operations.
     /// Labels: state (candidate_count, missing_count).
     /// </summary>
     public static readonly Gauge SyncCandidateCount = Metrics.CreateGauge(
-        "hydra_store_sync_candidate_count", "Number of candidate hashes per sync_missing operation", "state");
+        "hydra_store_sync_candidate_count", "Number of candidate hashes per sync_missing operation", "node", "state");
 
     /// <summary>
     /// Gauge for missing hashes returned in sync_missing operations.
     /// Labels: state (candidate_count, missing_count).
     /// </summary>
     public static readonly Gauge SyncMissingCount = Metrics.CreateGauge(
-        "hydra_store_sync_missing_count", "Number of missing hashes per sync_missing operation", "state");
+        "hydra_store_sync_missing_count", "Number of missing hashes per sync_missing operation", "node", "state");
 }
