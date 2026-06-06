@@ -18,6 +18,9 @@ class WorkerNodeConfig(BaseModel):
     decode_speed_tps: float = 30.0
     # -1 = unlimited (RTX). Set to 8000 for P100 to prevent large prefills.
     max_prefill_tokens: int = -1
+    # Router model name when llama_url points at a router server (--models-dir mode).
+    # Used for POST /models/load and /models/unload before/after each phase.
+    router_model_name: str | None = None
 
 
 class CoordinatorConfig(BaseSettings):

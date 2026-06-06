@@ -175,6 +175,38 @@ class WorkerScheduler:
             return False
         return item.estimated_new_tokens <= self._config.atomic_token_threshold
 
+    async def _router_model_load(self, router_url: str, model_name: str, trace_id: str):
+        """Load a model via the router API and wait for it to be ready."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{router_url}/models/load", json={"model": model_name})
+            resp.raise_for_status()
+        log.info("router_model_load",
+                 trace_id=trace_id, model=model_name, router_url=router_url)
+        # Poll /v1/models until model shows as loaded
+        for _ in range(60):
+            await asyncio.sleep(2)
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{router_url}/v1/models")
+                data = resp.json()
+                for m in data.get("data", []):
+                    if m.get("id") == model_name:
+                        status = m.get("status", {})
+                        if isinstance(status, dict):
+                            status = status.get("value", "")
+                        if status == "loaded":
+                            log.info("router_model_ready",
+                                     trace_id=trace_id, model=model_name)
+                            return
+        raise HTTPException(status_code=503, detail=f"Timed out waiting for model {model_name} to load")
+
+    async def _router_model_unload(self, router_url: str, model_name: str, trace_id: str):
+        """Unload a model via the router API."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(f"{router_url}/models/unload", json={"model": model_name})
+            resp.raise_for_status()
+        log.info("router_model_unload",
+                 trace_id=trace_id, model=model_name, router_url=router_url)
+
     def _routable(self, wname: str) -> bool:
         info = self._health.get_node_info(wname)
         if not info or not info.healthy:
@@ -593,9 +625,15 @@ class WorkerScheduler:
     async def _execute_concurrency(self, item: WorkItem, prefill_worker: WorkerNodeConfig):
         sess_id = item.session_id
         prefill_url = prefill_worker.llama_url
+        mix = self._config.mix_precision_enabled
+
+        if mix and prefill_worker.router_model_name:
+            await self._router_model_load(prefill_url, prefill_worker.router_model_name, item.trace_id)
+
         cold_session_starts.inc()
-        log.info("cold_concurrency_prefill",
+        log.info("mix_precision_prefill" if mix else "cold_concurrency_prefill",
                  trace_id=item.trace_id, session_id=sess_id, node=prefill_worker.name,
+                 router_model=prefill_worker.router_model_name,
                  estimated_tokens=item.estimated_tokens,
                  estimated_new_tokens=item.estimated_new_tokens,
                  stream=item.request.get("stream", False),
@@ -671,6 +709,9 @@ class WorkerScheduler:
         save_kv_duration.labels(node=prefill_worker.name, session_type="cold").observe(
             time.monotonic() - save_start)
 
+        if mix and prefill_worker.router_model_name:
+            await self._router_model_unload(prefill_url, prefill_worker.router_model_name, item.trace_id)
+
         self._session_table.mark_evicted(sess_id)
         if n_past_after > 0:
             self._session_table.update_n_past(sess_id, n_past_after)
@@ -700,6 +741,9 @@ class WorkerScheduler:
             raise HTTPException(status_code=503, detail=f"Decode worker {decode_worker.name} busy")
 
         decode_url = decode_worker.llama_url
+
+        if mix and decode_worker.router_model_name:
+            await self._router_model_load(decode_url, decode_worker.router_model_name, item.trace_id)
 
         restore_start = time.monotonic()
         try:
