@@ -36,7 +36,7 @@ async def test_save_flow():
     entry = table.lookup("sess_abc")
     assert entry.has_store_state is True
     assert entry.slot_id == 0  # slot stays warm for affinity on next turn
-    instance.request.assert_called_once()
+    assert instance.request.call_count == 2  # SaveStateChunked + PutMeta
 
 
 @pytest.mark.asyncio
@@ -80,6 +80,7 @@ async def test_migrate_flow():
                 status=0,
                 meta={"session_id": "sess_abc", "n_past": 100, "size": 800000000, "store_ms": 1500},
             ),
+            MagicMock(status=0, meta={}),  # save: PutMeta
             MagicMock(
                 status=0,
                 meta={"slot_id": 0, "erased": True},
@@ -88,6 +89,7 @@ async def test_migrate_flow():
                 status=0,
                 meta={"session_id": "sess_abc", "slot_id": 1, "n_past": 100, "restore_ms": 2000},
             ),
+            MagicMock(status=0, meta={}),  # restore: PutMeta
         ])
         MockRpc.return_value = mock1
 
