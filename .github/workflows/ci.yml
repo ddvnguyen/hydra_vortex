@@ -237,12 +237,15 @@ jobs:
         run: |
           mkdir -p ~/.config/containers/systemd/
           cp $GITHUB_WORKSPACE/infra/quadlets/infra-*.container ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/infra-host.pod ~/.config/containers/systemd/
           cp $GITHUB_WORKSPACE/infra/quadlets/*.volume ~/.config/containers/systemd/
           cp $GITHUB_WORKSPACE/infra/quadlets/hydra-coordinator.env ~/.config/containers/systemd/ 2>/dev/null || true
 
       - name: Deploy infra services
         run: |
           systemctl --user daemon-reload
+          systemctl --user stop infra-host-pod.service 2>/dev/null || true
+          sleep 1
           for s in infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin; do
             systemctl --user start "$s.service" || true
           done

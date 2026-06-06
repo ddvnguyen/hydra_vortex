@@ -1,12 +1,13 @@
 [Unit]
 Description=Grafana
+BindsTo=infra-host-pod.service
 Requires=infra-prometheus.service infra-loki.service
-After=infra-prometheus.service infra-loki.service
+After=infra-host-pod.service infra-prometheus.service infra-loki.service
 
 [Container]
 ContainerName=infra-grafana
 Image=grafana/grafana:11.6
-Network=host
+Pod=infra-host.pod
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/grafana/datasources:/etc/grafana/provisioning/datasources:ro
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/grafana/dashboards/dashboard-providers.yml:/etc/grafana/provisioning/dashboards/dashboard-providers.yml:ro
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/grafana/dashboards/hydra-dashboard.json:/var/lib/grafana/dashboards/hydra-dashboard.json:ro
