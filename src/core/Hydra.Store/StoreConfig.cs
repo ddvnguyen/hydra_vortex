@@ -29,6 +29,7 @@ public sealed record StoreConfig
 
         if (string.IsNullOrWhiteSpace(PgConn))
             throw new InvalidOperationException("PG connection string is required");
+        // StoreDir not checked — auto-created by StorageEngine/ChunkStore constructors.
     }
 
     private static string EnvString(string key, string fallback) =>

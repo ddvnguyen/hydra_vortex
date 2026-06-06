@@ -13,6 +13,14 @@ public sealed class StoreConfigTests
     }
 
     [Fact]
+    public void Validate_NonexistentStoreDir_DoesNotThrow()
+    {
+        var cfg = new StoreConfig { StoreDir = "/nonexistent/hydra-store" };
+        var ex = Record.Exception(() => cfg.Validate());
+        Assert.Null(ex);
+    }
+
+    [Fact]
     public void Validate_InvalidPort_Throws()
     {
         var cfg = new StoreConfig { Port = 0, StoreDir = "/tmp" };

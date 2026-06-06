@@ -15,6 +15,7 @@ public abstract class RpcServer : IAsyncDisposable
 	private readonly List<Task> _connections = [];
 	private readonly object _connectionsLock = new();
 	private bool _disposed;
+	private static readonly Serilog.ILogger _log = Serilog.Log.ForContext<RpcServer>();
 
 	public int Port { get; private set; }
 	public bool IsRunning => _listener is not null;
@@ -118,15 +119,19 @@ public abstract class RpcServer : IAsyncDisposable
 		}
 		catch (OperationCanceledException)
 		{
+			_log.Debug("RPC connection cancelled");
 		}
-		catch (InvalidDataException)
+		catch (InvalidDataException ex)
 		{
+			_log.Warning(ex, "RPC connection invalid data");
 		}
-		catch (IOException)
+		catch (IOException ex)
 		{
+			_log.Debug(ex, "RPC connection I/O error");
 		}
-		catch (ObjectDisposedException)
+		catch (ObjectDisposedException ex)
 		{
+			_log.Debug(ex, "RPC connection disposed");
 		}
 	}
 
@@ -252,6 +257,4 @@ public abstract class RpcServer : IAsyncDisposable
 
 		_stopCts.Dispose();
 	}
-
-	private readonly object _connectLock = new();
 }

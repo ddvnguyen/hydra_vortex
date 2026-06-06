@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO.Pipelines;
 using System.Net.Sockets;
 using System.Text;
@@ -297,12 +298,14 @@ public sealed class StoreServer : RpcServer
 			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, framedLen, ct);
 			await WriteMetaAsync(writer, meta, ct);
 
+			// Write framing [4B index][4B size], flush, then sendfile to avoid
+			// reading the entire chunk into heap before sending.
 			foreach (var (mc, path, _) in resident)
 			{
-				// Write framing [4B index][4B size], flush, then sendfile to avoid
-				// reading the entire chunk into heap before sending.
-				await writer.WriteAsync(BitConverter.GetBytes(mc.Index), ct);
-				await writer.WriteAsync(BitConverter.GetBytes(mc.Size), ct);
+				var header = new byte[8];
+				BinaryPrimitives.WriteInt32LittleEndian(header, mc.Index);
+				BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(4), mc.Size);
+				await writer.WriteAsync(header, ct);
 				await writer.FlushAsync(ct);
 				await SendFileAsync(client, path, ct);
 			}
@@ -411,8 +414,7 @@ public sealed class StoreServer : RpcServer
 			while (offset < pushedBytes.Length)
 			{
 				if (offset + 4 > pushedBytes.Length) break;
-				var chunkSize = pushedBytes[offset] | (pushedBytes[offset + 1] << 8) |
-									 (pushedBytes[offset + 2] << 16) | (pushedBytes[offset + 3] << 24);
+				var chunkSize = BinaryPrimitives.ReadInt32LittleEndian(pushedBytes.AsSpan(offset));
 				offset += 4;
 
 				if (chunkSize <= 0 || offset + chunkSize > pushedBytes.Length) break;

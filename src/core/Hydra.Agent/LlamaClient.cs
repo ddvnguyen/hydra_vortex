@@ -42,10 +42,31 @@ public sealed class RestoreResult
     public long Bytes { get; init; }
 }
 
+public sealed class StateStreamResult : IDisposable
+{
+    private readonly HttpResponseMessage _response;
+    public Stream Content { get; }
+    public long ContentLength { get; }
+
+    public StateStreamResult(HttpResponseMessage response, Stream content, long contentLength)
+    {
+        _response = response;
+        Content = content;
+        ContentLength = contentLength;
+    }
+
+    public void Dispose()
+    {
+        _response.Dispose();
+        Content.Dispose();
+    }
+}
+
 public sealed class LlamaClient : IDisposable
 {
     private readonly HttpClient _http;
     private readonly string _baseUrl;
+    private static readonly Serilog.ILogger _log = Serilog.Log.ForContext<LlamaClient>();
 
     public LlamaClient(string baseUrl)
     {
@@ -63,7 +84,7 @@ public sealed class LlamaClient : IDisposable
         _http = http;
     }
 
-    public async Task<(Stream Content, long ContentLength)> GetStateAsync(int slotId, CancellationToken ct)
+    public async Task<StateStreamResult> GetStateAsync(int slotId, CancellationToken ct)
     {
         var response = await _http.GetAsync(
             $"{_baseUrl}/slots/{slotId}/state",
@@ -72,7 +93,7 @@ public sealed class LlamaClient : IDisposable
         var contentLength = response.Content.Headers.ContentLength
             ?? throw new InvalidOperationException("Missing Content-Length in state response");
         var stream = await response.Content.ReadAsStreamAsync(ct);
-        return (stream, contentLength);
+        return new StateStreamResult(response, stream, contentLength);
     }
 
     public async Task<RestoreResult> PutStateAsync(int slotId, Stream data, long contentLength, CancellationToken ct)
@@ -110,8 +131,9 @@ public sealed class LlamaClient : IDisposable
             var response = await _http.GetAsync($"{_baseUrl}/health", ct);
             return response.IsSuccessStatusCode;
         }
-        catch
+        catch (Exception ex)
         {
+            _log.Warning(ex, "Health check failed for {BaseUrl}", _baseUrl);
             return false;
         }
     }
@@ -140,10 +162,15 @@ public sealed class LlamaClient : IDisposable
     public async Task<int?> FindIdleSlotAsync(CancellationToken ct)
     {
         var slots = await GetSlotsAsync(ct);
-        return slots.FirstOrDefault(s => !s.IsProcessing)?.Id;
+        foreach (var s in slots)
+        {
+            if (!s.IsProcessing)
+                return s.Id;
+        }
+        return null;
     }
 
-    public async Task<int> WaitForIdleSlotAsync(int timeoutMs, CancellationToken ct)
+    public async Task<int?> WaitForIdleSlotAsync(int timeoutMs, CancellationToken ct)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < timeoutMs)
@@ -152,7 +179,7 @@ public sealed class LlamaClient : IDisposable
             if (slot.HasValue) return slot.Value;
             await Task.Delay(500, ct);
         }
-        return 0;
+        return null;
     }
 
     public void Dispose()
