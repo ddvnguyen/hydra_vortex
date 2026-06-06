@@ -19,6 +19,7 @@ public sealed class ChunkStore
 
     private void RebuildIndex()
     {
+        _knownHashes.Clear();
         foreach (var file in _chunksDir.EnumerateFiles())
         {
             if (file.Name.EndsWith(".tmp")) continue;
