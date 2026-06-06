@@ -34,6 +34,17 @@ from coordinator.metrics import (
     active_sessions,
     upstream_timeouts_total,
     cross_node_affinity_total,
+    prefix_cache_hits,
+    prefix_cache_misses,
+    verify_warm_slot_duration,
+    prefill_duration,
+    decode_duration,
+    save_kv_duration,
+    restore_kv_duration,
+    n_past_guard_duration,
+    warm_session_starts,
+    cold_session_starts,
+    migration_session_starts,
 )
 
 log = get_logger()
@@ -287,15 +298,18 @@ class WorkerScheduler:
                  stream=item.request.get("stream", False),
                  elapsed_ms=self._elapsed_ms(item))
 
+        warm_session_starts.inc()
         self._session_table.update_last_used(sess_id)
 
         if entry.n_past > 0:
+            gp_start = time.monotonic()
             estimated = estimate_request_tokens(item.messages, self._config.chars_per_token)
             if estimated < entry.n_past * 0.85:
                 self._session_table.update_n_past(sess_id, 0)
                 log.warning("n_past_guard_triggered",
                              trace_id=item.trace_id, session_id=sess_id, node=worker.name,
                              n_past=entry.n_past, estimated=estimated)
+                n_past_guard_duration.labels(action="restore").observe(time.monotonic() - gp_start)
                 client = RpcClient(worker.host, worker.rpc_port)
                 try:
                     await client.request(OpCode.SlotErase, str(entry.slot_id or 0), trace_id=item.trace_id)
@@ -305,11 +319,16 @@ class WorkerScheduler:
                 finally:
                     await client.close()
                 entry.slot_id = None
+            else:
+                n_past_guard_duration.labels(action="check").observe(time.monotonic() - gp_start)
+        else:
+            n_past_guard_duration.labels(action="skip").observe(0)
 
         node_url = worker.llama_url
         if item.request.get("stream", False):
             async def stream_affinity():
                 last_usage = None
+                stream_start = time.monotonic()
                 try:
                     async for chunk in proxy_completion_stream(node_url, item.request, item.trace_id):
                         if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
@@ -327,6 +346,8 @@ class WorkerScheduler:
                 else:
                     self._tracker.on_success(worker.name)
                 finally:
+                    decode_duration.labels(node=worker.name, session_type="warm").observe(
+                        time.monotonic() - stream_start)
                     self._tracker.release(worker.name)
                     self._worker_freed.set()
 
@@ -337,6 +358,7 @@ class WorkerScheduler:
             ))
         else:
             self._tracker.release(worker.name)
+            stream_start = time.monotonic()
             try:
                 result = await proxy_completion(node_url, item.request, item.trace_id)
             except httpx.TimeoutException as e:
@@ -351,6 +373,8 @@ class WorkerScheduler:
                 self._tracker.on_error(worker.name)
                 raise
             finally:
+                decode_duration.labels(node=worker.name, session_type="warm").observe(
+                    time.monotonic() - stream_start)
                 self._worker_freed.set()
             self._tracker.on_success(worker.name)
             await self._track_after_completion(sess_id, node_url, result, item)
@@ -370,6 +394,8 @@ class WorkerScheduler:
                  stream=item.request.get("stream", False),
                  elapsed_ms=self._elapsed_ms(item))
 
+        migration_session_starts.inc()
+
         decode_worker = pick_best_decode_worker(
             self._config.workers, self._tracker, self._health,
         )
@@ -379,13 +405,16 @@ class WorkerScheduler:
         entry = self._session_table.lookup(sess_id)
         n_past_entry = entry.n_past if entry else 0
 
+        restore_start = time.monotonic()
         try:
-            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0)
+            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0, trace_id=item.trace_id)
         except Exception as e:
             self._tracker.release(decode_worker.name)
             self._worker_freed.set()
             self._tracker.on_error(decode_worker.name)
             raise HTTPException(status_code=503, detail=f"Restore failed: {e}")
+        restore_kv_duration.labels(node=decode_worker.name, session_type="migration").observe(
+            time.monotonic() - restore_start)
 
         self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_entry, prefix_hash=item.prefix_hash)
 
@@ -409,6 +438,7 @@ class WorkerScheduler:
         if item.request.get("stream", False):
             async def stream_restore():
                 last_usage = None
+                stream_start = time.monotonic()
                 try:
                     async for chunk in proxy_completion_stream(decode_url, item.request, item.trace_id):
                         if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
@@ -426,6 +456,8 @@ class WorkerScheduler:
                 else:
                     self._tracker.on_success(decode_worker.name)
                 finally:
+                    decode_duration.labels(node=decode_worker.name, session_type="migration").observe(
+                        time.monotonic() - stream_start)
                     self._tracker.release(decode_worker.name)
                     self._worker_freed.set()
 
@@ -435,6 +467,7 @@ class WorkerScheduler:
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": decode_worker.name},
             ))
         else:
+            stream_start = time.monotonic()
             try:
                 result = await proxy_completion(decode_url, item.request, item.trace_id)
             except httpx.TimeoutException as e:
@@ -447,6 +480,8 @@ class WorkerScheduler:
             else:
                 self._tracker.on_success(decode_worker.name)
             finally:
+                decode_duration.labels(node=decode_worker.name, session_type="migration").observe(
+                    time.monotonic() - stream_start)
                 self._tracker.release(decode_worker.name)
                 self._worker_freed.set()
             await self._track_after_completion(sess_id, decode_url, result, item)
@@ -460,6 +495,7 @@ class WorkerScheduler:
     async def _execute_atomic(self, item: WorkItem, worker: WorkerNodeConfig):
         sess_id = item.session_id
         node_url = worker.llama_url
+        cold_session_starts.inc()
         log.info("cold_atomic",
                  trace_id=item.trace_id, session_id=sess_id, node=worker.name,
                  estimated_tokens=item.estimated_tokens,
@@ -478,6 +514,7 @@ class WorkerScheduler:
         if item.request.get("stream", False):
             async def stream_atomic():
                 last_usage = None
+                stream_start = time.monotonic()
                 try:
                     async for chunk in proxy_completion_stream(node_url, item.request, item.trace_id):
                         if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
@@ -491,13 +528,15 @@ class WorkerScheduler:
                     await self._track_after_stream(sess_id, node_url, last_usage, item)
                     if item.prefix_hash:
                         await self._maybe_save_prefix(item, worker)
-                    await self._state.save_session(sess_id, worker.host, worker.rpc_port)
+                    await self._state.save_session(sess_id, worker.host, worker.rpc_port, trace_id=item.trace_id)
                 except Exception:
                     self._tracker.on_error(worker.name)
                     raise
                 else:
                     self._tracker.on_success(worker.name)
                 finally:
+                    decode_duration.labels(node=worker.name, session_type="cold").observe(
+                        time.monotonic() - stream_start)
                     self._tracker.release(worker.name)
                     self._worker_freed.set()
 
@@ -507,6 +546,7 @@ class WorkerScheduler:
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": worker.name},
             ))
         else:
+            stream_start = time.monotonic()
             try:
                 result = await proxy_completion(node_url, item.request, item.trace_id)
             except httpx.TimeoutException as e:
@@ -519,6 +559,8 @@ class WorkerScheduler:
             else:
                 self._tracker.on_success(worker.name)
             finally:
+                decode_duration.labels(node=worker.name, session_type="cold").observe(
+                    time.monotonic() - stream_start)
                 self._tracker.release(worker.name)
                 self._worker_freed.set()
             # Use id_slot from response if available (llama-server fork), fallback to captured slot
@@ -530,7 +572,7 @@ class WorkerScheduler:
             await self._track_after_completion(sess_id, node_url, result, item)
             if item.prefix_hash:
                 await self._maybe_save_prefix(item, worker)
-            await self._state.save_session(sess_id, worker.host, worker.rpc_port)
+            await self._state.save_session(sess_id, worker.host, worker.rpc_port, trace_id=item.trace_id)
             item.future.set_result(JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": worker.name},
@@ -541,6 +583,7 @@ class WorkerScheduler:
     async def _execute_concurrency(self, item: WorkItem, prefill_worker: WorkerNodeConfig):
         sess_id = item.session_id
         prefill_url = prefill_worker.llama_url
+        cold_session_starts.inc()
         log.info("cold_concurrency_prefill",
                  trace_id=item.trace_id, session_id=sess_id, node=prefill_worker.name,
                  estimated_tokens=item.estimated_tokens,
@@ -562,6 +605,7 @@ class WorkerScheduler:
         )
 
         prefill_dict = {**item.request, "stream": False, "max_tokens": 1}
+        prefill_start = time.monotonic()
         try:
             prefill_result = await proxy_completion(prefill_url, prefill_dict, item.trace_id)
         except httpx.TimeoutException as e:
@@ -575,6 +619,8 @@ class WorkerScheduler:
             self._worker_freed.set()
             self._tracker.on_error(prefill_worker.name)
             raise HTTPException(status_code=503, detail=f"Prefill failed: {e}")
+        prefill_duration.labels(node=prefill_worker.name, session_type="cold").observe(
+            time.monotonic() - prefill_start)
 
         # Use id_slot from response if available (llama-server fork), fallback to captured slot
         response_slot = prefill_result.get("id_slot")
@@ -606,11 +652,14 @@ class WorkerScheduler:
         if item.prefix_hash:
             await self._maybe_save_prefix(item, prefill_worker)
 
+        save_start = time.monotonic()
         try:
-            await self._state.save_session(sess_id, prefill_worker.host, prefill_worker.rpc_port)
+            await self._state.save_session(sess_id, prefill_worker.host, prefill_worker.rpc_port, trace_id=item.trace_id)
         except Exception as e:
             self._tracker.on_error(prefill_worker.name)
             raise HTTPException(status_code=503, detail=f"KV save failed: {e}")
+        save_kv_duration.labels(node=prefill_worker.name, session_type="cold").observe(
+            time.monotonic() - save_start)
 
         self._session_table.mark_evicted(sess_id)
         if n_past_after > 0:
@@ -642,13 +691,16 @@ class WorkerScheduler:
 
         decode_url = decode_worker.llama_url
 
+        restore_start = time.monotonic()
         try:
-            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0)
+            await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0, trace_id=item.trace_id)
         except Exception as e:
             self._tracker.release(decode_worker.name)
             self._tracker.on_error(decode_worker.name)
             self._worker_freed.set()
             raise HTTPException(status_code=503, detail=f"KV restore failed: {e}")
+        restore_kv_duration.labels(node=decode_worker.name, session_type="cold").observe(
+            time.monotonic() - restore_start)
 
         self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_after, prefix_hash=item.prefix_hash)
         log.info("cold_concurrency_decode",
@@ -657,6 +709,7 @@ class WorkerScheduler:
 
         async def stream_concurrency():
             last_usage = None
+            stream_start = time.monotonic()
             try:
                 async for chunk in proxy_completion_stream(decode_url, item.request, item.trace_id):
                     if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
@@ -676,6 +729,8 @@ class WorkerScheduler:
             else:
                 self._tracker.on_success(decode_worker.name)
             finally:
+                decode_duration.labels(node=decode_worker.name, session_type="cold").observe(
+                    time.monotonic() - stream_start)
                 self._tracker.release(decode_worker.name)
                 self._worker_freed.set()
 
@@ -700,6 +755,8 @@ class WorkerScheduler:
         entry = self._session_table.lookup(sess_id)
         if entry and entry.slot_id is None and total > 0:
             self._resolve_slot_from_health(entry, total, item.trace_id)
+        if total > 0 and entry:
+            prefix_cache_hits.inc()
 
     async def _track_after_completion(self, sess_id: str, node_url: str, result: dict, item: WorkItem):
         usage = result.get("usage", {})
@@ -709,6 +766,8 @@ class WorkerScheduler:
         entry = self._session_table.lookup(sess_id)
         if entry and entry.slot_id is None and total > 0:
             self._resolve_slot_from_health(entry, total, item.trace_id)
+        if total > 0 and entry:
+            prefix_cache_hits.inc()
 
     def _resolve_slot_from_health(self, entry, total: int, trace_id: str):
         for s in self._health.get_slots(entry.node_name):
@@ -729,11 +788,13 @@ class WorkerScheduler:
                 worker.host,
                 worker.rpc_port,
                 slot_id=0,
+                trace_id=item.trace_id,
             )
         except Exception:
             meta = None
 
         if meta and meta.get("n_past", 0) > 0:
+            prefix_cache_hits.inc()
             self._session_table.update_n_past(item.session_id, meta["n_past"])
             log.info("prefix_restored",
                      trace_id=item.trace_id, session_id=item.session_id,
@@ -741,6 +802,7 @@ class WorkerScheduler:
                      checkpoint=item.prefix_hash, n_past=meta["n_past"],
                      elapsed_ms=self._elapsed_ms(item))
             return
+        prefix_cache_misses.inc()
         log.warning("prefix_restore_failed",
                     trace_id=item.trace_id, session_id=item.session_id,
                     node=worker.name, checkpoint=item.prefix_hash,
@@ -764,6 +826,7 @@ class WorkerScheduler:
                 worker.host,
                 worker.rpc_port,
                 slot_id=slot,
+                trace_id=item.trace_id,
             )
             log.info("prefix_saved",
                      trace_id=item.trace_id, session_id=item.session_id,
