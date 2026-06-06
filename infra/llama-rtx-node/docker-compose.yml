@@ -27,17 +27,14 @@ services:
 
     volumes:
       - ./init:/init:ro
-      # - /opt/software/llama-official/stable:/llama:ro
       - /mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm120:/llama:ro
       - /mnt/SSD:/models:ro
-      - /mnt/SSD/kv_slots:/slots
 
     working_dir: /llama
 
     entrypoint: ["/bin/bash", "/init/verify_and_start.sh"]
     environment:
-     LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
-     LD_LIBRARY_PATH: /llama/bin
+      LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
     command: >
       llama-server
       -m /models/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf

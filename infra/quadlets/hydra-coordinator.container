@@ -16,6 +16,7 @@ Environment=HYDRA_COORD_LOG_LEVEL=DEBUG
 Environment=HYDRA_COORD_RUN_MODE=concurrency
 Environment=HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S=1800
 EnvironmentFile=%h/.config/containers/systemd/hydra-coordinator.env
+Label=component=coordinator
 HealthCmd=["/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9000"]
 HealthInterval=10s
 HealthRetries=3
