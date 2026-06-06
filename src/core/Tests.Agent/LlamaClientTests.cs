@@ -23,12 +23,12 @@ public sealed class LlamaClientTests
         });
 
         var client = new LlamaClient(new HttpClient(handler), "http://localhost:8080");
-        var (stream, contentLength) = await client.GetStateAsync(0, CancellationToken.None);
+        using var stateResult = await client.GetStateAsync(0, CancellationToken.None);
 
-        Assert.Equal(stateData.Length, contentLength);
+        Assert.Equal(stateData.Length, stateResult.ContentLength);
 
-        var memStream = new MemoryStream((int)contentLength);
-        await stream.CopyToAsync(memStream);
+        var memStream = new MemoryStream((int)stateResult.ContentLength);
+        await stateResult.Content.CopyToAsync(memStream);
 
         Assert.Equal(stateData, memStream.ToArray());
     }

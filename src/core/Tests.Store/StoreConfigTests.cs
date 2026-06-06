@@ -7,7 +7,7 @@ public sealed class StoreConfigTests
     [Fact]
     public void Validate_DefaultConfig_ThrowsOnMissingStoreDir()
     {
-        var cfg = new StoreConfig();
+        var cfg = new StoreConfig { StoreDir = "/nonexistent/hydra-store" };
         Assert.Throws<InvalidOperationException>(() => cfg.Validate());
     }
 

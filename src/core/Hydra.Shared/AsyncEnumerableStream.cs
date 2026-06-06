@@ -58,8 +58,8 @@ public sealed class AsyncEnumerableStream : Stream
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
-            _enumerator?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        if (disposing && _enumerator is not null)
+            _ = _enumerator.DisposeAsync().AsTask();
         base.Dispose(disposing);
     }
 
