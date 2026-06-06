@@ -1,10 +1,12 @@
 [Unit]
 Description=pgAdmin4
+BindsTo=infra-host-pod.service
+After=infra-host-pod.service
 
 [Container]
 ContainerName=infra-pgadmin
 Image=dpage/pgadmin4:latest
-Network=host
+Pod=infra-host.pod
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/pgadmin/servers.json:/pgadmin4/servers.json:ro
 Volume=pgadmin-data.volume:/var/lib/pgadmin
 Environment=PGADMIN_DEFAULT_EMAIL=admin@hydra.example

@@ -1,12 +1,13 @@
 [Unit]
 Description=Hydra KV Store
+BindsTo=hydra-core-pod.service
 Requires=hydra-postgres.service
-After=hydra-postgres.service
+After=hydra-core-pod.service hydra-postgres.service
 
 [Container]
 ContainerName=hydra-store
 Image=localhost/hydra-store:latest
-Network=host
+Pod=hydra-core.pod
 Environment=HYDRA_STORE_HOST=0.0.0.0
 Environment=HYDRA_STORE_PORT=9500
 Environment=HYDRA_STORE_DIR=/mnt/llm-ram/store

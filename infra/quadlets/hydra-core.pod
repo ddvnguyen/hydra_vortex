@@ -1,0 +1,6 @@
+[Pod]
+PodName=hydra-core
+Network=host
+
+[Install]
+WantedBy=default.target

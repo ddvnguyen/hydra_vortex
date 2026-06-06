@@ -1,10 +1,12 @@
 [Unit]
 Description=Prometheus
+BindsTo=infra-host-pod.service
+After=infra-host-pod.service
 
 [Container]
 ContainerName=infra-prometheus
 Image=prom/prometheus:latest
-Network=host
+Pod=infra-host.pod
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
 Volume=prometheus-data.volume:/prometheus

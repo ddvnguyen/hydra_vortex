@@ -1,12 +1,13 @@
 [Unit]
 Description=Hydra Agent RTX
+BindsTo=hydra-core-pod.service
 Requires=hydra-store.service
-After=hydra-store.service
+After=hydra-core-pod.service hydra-store.service
 
 [Container]
 ContainerName=hydra-agent-rtx
 Image=localhost/hydra-agent:latest
-Network=host
+Pod=hydra-core.pod
 Environment=HYDRA_AGENT_HOST=0.0.0.0
 Environment=HYDRA_AGENT_PORT=9601
 Environment=HYDRA_AGENT_NODE_NAME=rtx
