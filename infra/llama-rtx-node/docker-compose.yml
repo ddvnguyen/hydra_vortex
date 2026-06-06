@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: llama-cpp:sm120-cuda13.2
+    image: llama-cpp:sm120-cuda13.3
     container_name: llama-cpp
     labels:
       component: llama-server
@@ -30,6 +30,8 @@ services:
       # - /opt/software/llama-official/stable:/llama:ro
       - /mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm120:/llama:ro
       - /mnt/SSD:/models:ro
+      - /mnt/SSD/qwen3.6_merged_template.jinja:/models/qwen3.6_merged_template.jinja:ro
+      - ../models-preset.ini:/models/preset.ini:ro
       - /mnt/SSD/kv_slots:/slots
 
     working_dir: /llama
@@ -61,3 +63,17 @@ services:
       --rpc-port 9501
 #      --mmproj /models/Qwen3.6-35B-A3B-mmproj-F16.gguf
 #      --swa-full --direct-io
+
+#   # ── Mix-Precision P/D Split (Router Mode) ──
+#   # Uncomment below and comment above to enable dynamic model switching.
+#   # Router spawns child processes with per-model args from preset.ini.
+#   command: >
+#     llama-server
+#     --models-dir /models
+#     --models-preset /models/preset.ini
+#     --models-max 1
+#     --host 0.0.0.0 --port 8080
+#     --log-prefix --log-colors on --metrics --slots --perf --props --log-verbosity 4
+#     --prio 3 --prio-batch 1
+#     --timeout 1800
+#     --rpc-port 9501

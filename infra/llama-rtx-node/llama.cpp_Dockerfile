@@ -1,5 +1,5 @@
-# --- Stage 1: Build using CUDA 13.2.1 Devel on Ubuntu 24.04 ---
-FROM nvidia/cuda:13.2.1-devel-ubuntu24.04 AS builder
+# --- Stage 1: Build using CUDA 13.3 Devel on Ubuntu 24.04 ---
+FROM nvidia/cuda:13.3.0-devel-ubuntu24.04 AS builder
 
 # Install required build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,7 +13,7 @@ COPY . .
 
 RUN cmake -B build_sm120 \
   -DCMAKE_CUDA_ARCHITECTURES="120" \
-  -DCPACK_PACKAGE_NAME="llama_cpp-sm120-cuda13.2" \
+  -DCPACK_PACKAGE_NAME="llama_cpp-sm120-cuda13.3" \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DGGML_RPC=ON \
@@ -31,8 +31,8 @@ RUN cmake -B build_sm120 \
 RUN cmake --build build_sm120 --config Release --parallel 8 \
  && cmake --install build_sm120
 
-# --- Stage 2: Runtime using CUDA 13.2.1 Runtime on Ubuntu 24.04 ---
-FROM nvidia/cuda:13.2.1-runtime-ubuntu24.04
+# --- Stage 2: Runtime using CUDA 13.3 Runtime on Ubuntu 24.04 ---
+FROM nvidia/cuda:13.3.0-runtime-ubuntu24.04
 
 # Copy everything compiled and installed from the builder stage
 COPY --from=builder /usr/local /usr/local
@@ -40,5 +40,7 @@ COPY --from=builder /usr/local /usr/local
 # Ensure system looks in the correct location for CUDA runtime libraries
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
 
-# Set the default entrypoint to the main llama utility
+# Default entrypoint — supports both single-model and router mode
+# Single-model:  llama-server -m /models/model.gguf [args...]
+# Router mode:   llama-server --models-dir /models --models-preset /models/preset.ini --models-max 1
 ENTRYPOINT ["llama-server"]
