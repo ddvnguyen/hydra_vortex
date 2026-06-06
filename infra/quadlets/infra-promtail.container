@@ -1,7 +1,8 @@
 [Unit]
 Description=Grafana Promtail
+BindsTo=infra-host-pod.service
 Requires=infra-loki.service
-After=infra-loki.service
+After=infra-host-pod.service infra-loki.service
 
 [Container]
 ContainerName=infra-promtail

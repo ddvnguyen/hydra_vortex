@@ -1,0 +1,6 @@
+[Pod]
+PodName=infra-host
+Network=host
+
+[Install]
+WantedBy=default.target

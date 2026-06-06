@@ -19,14 +19,21 @@ SERVICES="infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail in
 step "Installing Quadlet files"
 mkdir -p "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/infra-*.container "$QUADLET_DIR"
+cp "$REPO_ROOT/infra/quadlets"/infra-host.pod "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/*.volume "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env "$QUADLET_DIR" 2>/dev/null || true
 
 step "Deploying infra services"
 systemctl --user daemon-reload
-for s in $SERVICES; do
-  systemctl --user start "$s.service" 2>/dev/null && ok "$s" || echo "  ${YELLOW}⚠${NC} $s"
-done
+systemctl --user stop infra-host-pod.service 2>/dev/null || true
+sleep 1
+systemctl --user start infra-node-exporter.service
+systemctl --user start infra-nvidia-exporter.service
+systemctl --user start infra-loki.service
+systemctl --user start infra-promtail.service
+systemctl --user start infra-prometheus.service
+systemctl --user start infra-grafana.service
+systemctl --user start infra-pgadmin.service
 
 step "Verifying infra services"
 sleep 10
