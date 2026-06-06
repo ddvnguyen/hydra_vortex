@@ -71,23 +71,22 @@ class StateManager:
         client = self._agent_client(target_host, target_port)
         try:
             resp = await client.request(OpCode.RestoreStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
+            restored = resp.meta.get("restored", False) if resp.meta else False
 
             # Also propagate trace to Store for cross-service correlation
             store_client = self._store_client()
             store_key = f"restore:{session_id}"
             try:
-                resp = await store_client.request(OpCode.PutMeta, store_key, payload=json.dumps({"session_id": session_id, "trace_id": trace_id}).encode(), trace_id=trace_id)
+                await store_client.request(OpCode.PutMeta, store_key, payload=json.dumps({"session_id": session_id, "trace_id": trace_id}).encode(), trace_id=trace_id)
             except Exception as e:
                 log.warning("store_meta_put_failed", session_id=session_id, error=str(e))
+
             n_past = resp.meta.get("n_past", 0) if resp.meta else 0
             slot_id = resp.meta.get("slot_id", slot_id) if resp.meta else slot_id
             node_name = resp.meta.get("node_name", entry.node_name if entry else target_host) if resp.meta else (entry.node_name if entry else target_host)
             if entry:
                 entry.node_name = node_name
                 entry.slot_id = slot_id
-                # Keep has_store_state=true from a prior mark_evicted even when
-                # the Agent's restore response doesn't set restored=true (Agent
-                # may not include the field). Falls back to existing value.
                 entry.has_store_state = restored or entry.has_store_state
             log.info("state_restored", session_id=session_id, slot_id=slot_id, n_past=n_past)
             return resp.meta or {}

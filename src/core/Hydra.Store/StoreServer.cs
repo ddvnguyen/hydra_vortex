@@ -367,13 +367,11 @@ public sealed class StoreServer : RpcServer
 			await writer.WriteAsync(payload, ct);
 
 			StoreMetrics.OpsTotal.WithLabels("sync_missing").Inc();
-			StoreMetrics.SyncCandidateCount.WithLabels(nodeLabel, "candidate").Observe(candidateHashes.Count);
-			StoreMetrics.SyncMissingCount.WithLabels(nodeLabel, "missing").Observe(missingHashes.Count);
-			StoreMetrics.SessionState.WithLabels(nodeLabel, key).Inc();
+			StoreMetrics.SyncCandidateCount.WithLabels(nodeLabel, "candidate").Set(candidateHashes.Count);
+			StoreMetrics.SyncMissingCount.WithLabels(nodeLabel, "missing").Set(missingHashes.Count);
 		}
 		catch (Exception ex)
 		{
-			StoreMetrics.SessionState.WithLabels(nodeLabel, key).Dec();
 			await WriteErrorAsync(writer, $"sync_missing failed: {ex.Message}", ct);
 		}
 	}
@@ -428,7 +426,6 @@ public sealed class StoreServer : RpcServer
 			StoreMetrics.BytesStored.Inc(totalPushedSize);
 			StoreMetrics.KVPutBytesTotal.WithLabels(nodeLabel, "push_chunks").Inc(totalPushedSize);
 			StoreMetrics.ChunkCount.WithLabels("push_chunks", stored switch { 0 => "0-chunks", < 5 => "1-4", < 20 => "5-19", _ => "20+" }).Observe(stored);
-			StoreMetrics.SessionState.WithLabels(nodeLabel, key).Inc();
 		}
 		catch (Exception ex)
 		{

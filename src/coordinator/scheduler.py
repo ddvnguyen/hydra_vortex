@@ -755,8 +755,6 @@ class WorkerScheduler:
         entry = self._session_table.lookup(sess_id)
         if entry and entry.slot_id is None and total > 0:
             self._resolve_slot_from_health(entry, total, item.trace_id)
-        if total > 0 and entry:
-            prefix_cache_hits.inc()
 
     async def _track_after_completion(self, sess_id: str, node_url: str, result: dict, item: WorkItem):
         usage = result.get("usage", {})
@@ -766,8 +764,6 @@ class WorkerScheduler:
         entry = self._session_table.lookup(sess_id)
         if entry and entry.slot_id is None and total > 0:
             self._resolve_slot_from_health(entry, total, item.trace_id)
-        if total > 0 and entry:
-            prefix_cache_hits.inc()
 
     def _resolve_slot_from_health(self, entry, total: int, trace_id: str):
         for s in self._health.get_slots(entry.node_name):
