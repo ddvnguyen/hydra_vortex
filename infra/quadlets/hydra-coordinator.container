@@ -1,12 +1,13 @@
 [Unit]
 Description=Hydra Coordinator
+BindsTo=hydra-core-pod.service
 Requires=hydra-store.service
-After=hydra-store.service
+After=hydra-core-pod.service hydra-store.service
 
 [Container]
 ContainerName=hydra-coordinator
 Image=localhost/hydra-coordinator:latest
-Network=host
+Pod=hydra-core.pod
 Environment=HYDRA_COORD_HOST=0.0.0.0
 Environment=HYDRA_COORD_PORT=9000
 Environment=HYDRA_COORD_STORE_HOST=localhost

@@ -37,6 +37,7 @@ QUADLET_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
 step "Installing Quadlet files"
 mkdir -p "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/hydra-*.container "$QUADLET_DIR" 2>/dev/null || true
+cp "$REPO_ROOT/infra/quadlets"/hydra-core.pod "$QUADLET_DIR" 2>/dev/null || true
 cp "$REPO_ROOT/infra/quadlets"/llama-rtx.container "$QUADLET_DIR" 2>/dev/null || true
 cp "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env "$QUADLET_DIR" 2>/dev/null || true
 cp "$REPO_ROOT/infra/quadlets"/pg-data.volume "$QUADLET_DIR" 2>/dev/null || true

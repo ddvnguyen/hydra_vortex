@@ -68,12 +68,16 @@ ok "Images built"
 step "Installing Quadlet files"
 mkdir -p "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/hydra-*.container "$QUADLET_DIR"
+cp "$REPO_ROOT/infra/quadlets"/hydra-core.pod "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/pg-data.volume "$QUADLET_DIR"
 
 step "Deploying hydra core"
 systemctl --user daemon-reload
-systemctl --user stop hydra-postgres hydra-store hydra-agent-rtx hydra-agent-p100 hydra-coordinator 2>/dev/null || true
+# Stop pod (cascades to all containers via BindsTo=)
+systemctl --user stop hydra-core-pod.service 2>/dev/null || true
+sleep 1
+# Pod auto-starts when first container starts
 systemctl --user start hydra-postgres.service
 echo "  Waiting for postgres to be healthy..."
 systemctl --user start hydra-store.service
