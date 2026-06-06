@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Build and deploy the Hydra core stack (postgres, store, agents, coordinator).
+# Optionally bump version before deploying.
 #
 # Usage:
-#   bash scripts/deploy-hydra.sh
+#   bash scripts/deploy-hydra.sh             # build + deploy (no version bump)
+#   bash scripts/deploy-hydra.sh patch       # bump patch + build + deploy
+#   bash scripts/deploy-hydra.sh minor       # bump minor + build + deploy
+#   bash scripts/deploy-hydra.sh major       # bump major + build + deploy
+#   bash scripts/deploy-hydra.sh 1.2.3       # set version + build + deploy
 
 set -euo pipefail
 
@@ -13,6 +18,43 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\
 ok()   { echo -e "  ${GREEN}✓${NC} $*"; }
 step() { echo -e "\n${BOLD}==> $*${NC}"; }
 die()  { echo -e "  ${RED}✗${NC} $*"; exit 1; }
+
+# ── Version bump (optional) ──────────────────────────────────────────────────
+if [ $# -gt 0 ]; then
+  cd "$REPO_ROOT"
+  CURRENT=$(cat VERSION)
+  echo "Current version: $CURRENT"
+
+  IFS='.' read -r MAJ MIN PATCH <<< "$CURRENT"
+
+  case "${1}" in
+    major) MAJ=$((MAJ + 1)); MIN=0; PATCH=0 ;;
+    minor) MIN=$((MIN + 1)); PATCH=0 ;;
+    patch) PATCH=$((PATCH + 1)) ;;
+    *)
+      if [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        NEW="$1"
+      else
+        die "Usage: $0 [patch|minor|major|<semver>]"
+      fi
+      ;;
+  esac
+
+  NEW="${NEW:-$MAJ.$MIN.$PATCH}"
+  echo "New version:     $NEW"
+
+  echo "$NEW" > VERSION
+  sed -i "s/<Version>[0-9.]*<\/Version>/<Version>$NEW<\/Version>/" src/core/Directory.Build.props
+  sed -i "s/<AssemblyVersion>[0-9.]*<\/AssemblyVersion>/<AssemblyVersion>$NEW.0<\/AssemblyVersion>/" src/core/Directory.Build.props
+  sed -i "s/<FileVersion>[0-9.]*<\/FileVersion>/<FileVersion>$NEW.0<\/FileVersion>/" src/core/Directory.Build.props
+  sed -i "s/<InformationalVersion>[0-9.]*<\/InformationalVersion>/<InformationalVersion>$NEW<\/InformationalVersion>/" src/core/Directory.Build.props
+
+  git add VERSION src/core/Directory.Build.props
+  git commit -m "v$NEW"
+  git tag -a "v$NEW" -m "Hydra v$NEW"
+  echo ""
+  cd "$REPO_ROOT"
+fi
 
 step "Building images"
 echo "  store..."
