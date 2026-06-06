@@ -50,6 +50,7 @@ QUADLET_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
 mkdir -p "$QUADLET_DIR"
 cp infra/quadlets/*.container "$QUADLET_DIR"
 cp infra/quadlets/*.volume "$QUADLET_DIR"
+cp infra/quadlets/hydra-coordinator.env "$QUADLET_DIR" 2>/dev/null || true
 systemctl --user daemon-reload
 
 echo "Deploying hydra core services..."

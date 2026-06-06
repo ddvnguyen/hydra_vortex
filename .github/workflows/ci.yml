@@ -236,8 +236,9 @@ jobs:
       - name: Install Quadlet files
         run: |
           mkdir -p ~/.config/containers/systemd/
-          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/infra-*.container ~/.config/containers/systemd/
-          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/*.volume ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/infra-*.container ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/*.volume ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/hydra-coordinator.env ~/.config/containers/systemd/ 2>/dev/null || true
 
       - name: Deploy infra services
         run: |
@@ -278,27 +279,28 @@ jobs:
         run: |
           set -eo pipefail
           # Hydra core services
-          podman build --target store -f /mnt/WorkDisk/Workplace/hydra_vortex/infra/Dockerfile \
-            -t localhost/hydra-store:latest /mnt/WorkDisk/Workplace/hydra_vortex \
+          podman build --target store -f $GITHUB_WORKSPACE/infra/Dockerfile \
+            -t localhost/hydra-store:latest $GITHUB_WORKSPACE \
             2>&1 | tee /tmp/hydra-build-store.log | tail -3
-          podman build --target agent -f /mnt/WorkDisk/Workplace/hydra_vortex/infra/Dockerfile \
-            -t localhost/hydra-agent:latest /mnt/WorkDisk/Workplace/hydra_vortex \
+          podman build --target agent -f $GITHUB_WORKSPACE/infra/Dockerfile \
+            -t localhost/hydra-agent:latest $GITHUB_WORKSPACE \
             2>&1 | tee /tmp/hydra-build-agent.log | tail -3
-          podman build --target coordinator -f /mnt/WorkDisk/Workplace/hydra_vortex/infra/Dockerfile \
-            -t localhost/hydra-coordinator:latest /mnt/WorkDisk/Workplace/hydra_vortex \
+          podman build --target coordinator -f $GITHUB_WORKSPACE/infra/Dockerfile \
+            -t localhost/hydra-coordinator:latest $GITHUB_WORKSPACE \
             2>&1 | tee /tmp/hydra-build-coord.log | tail -3
           # llama RTX
-          podman build -f /mnt/WorkDisk/Workplace/hydra_vortex/infra/llama-rtx-node/Dockerfile \
-            -t localhost/llama-rtx:latest /mnt/WorkDisk/Workplace/hydra_vortex/infra/llama-rtx-node \
+          podman build -f $GITHUB_WORKSPACE/infra/llama-rtx-node/Dockerfile \
+            -t localhost/llama-rtx:latest $GITHUB_WORKSPACE/infra/llama-rtx-node \
             2>&1 | tee /tmp/hydra-build-llama.log | tail -3
           echo "Build complete"
 
       - name: Install Quadlet files
         run: |
           mkdir -p ~/.config/containers/systemd/
-          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/hydra-*.container ~/.config/containers/systemd/
-          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/llama-rtx.container ~/.config/containers/systemd/
-          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/pg-data.volume ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/hydra-*.container ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/llama-rtx.container ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/hydra-coordinator.env ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/pg-data.volume ~/.config/containers/systemd/
 
       - name: Deploy (Quadlet systemd)
         id: deploy
@@ -497,7 +499,7 @@ jobs:
       - name: Deploy llama-server to P100
         run: |
           rsync -az --checksum \
-            /mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm60/bin/llama-server \
+            $GITHUB_WORKSPACE/src/llama-cpp/build_sm60/bin/llama-server \
             hydra-p100:/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
           ssh hydra-p100 "systemctl --user restart llama-p100"
           sleep 8
