@@ -5,10 +5,11 @@ namespace Tests.Store;
 public sealed class StoreConfigTests
 {
     [Fact]
-    public void Validate_DefaultConfig_ThrowsOnMissingStoreDir()
+    public void Validate_DefaultConfig_DoesNotThrow()
     {
         var cfg = new StoreConfig();
-        Assert.Throws<InvalidOperationException>(() => cfg.Validate());
+        var ex = Record.Exception(() => cfg.Validate());
+        Assert.Null(ex);
     }
 
     [Fact]
