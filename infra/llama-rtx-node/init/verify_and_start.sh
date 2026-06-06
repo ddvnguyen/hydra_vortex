@@ -13,6 +13,7 @@ echo '----------------------------------------'
 echo 'Checking llama-server binary compatibility...'
 
 export PATH="/llama/bin:${PATH}"
+export LD_LIBRARY_PATH="/llama/bin:${LD_LIBRARY_PATH}"
 # Test-run the server help flag to verify dependencies match up
 if llama-server -h > /dev/null 2>&1; then
   echo '✅ Success: llama-server executable is healthy and compatible.'
