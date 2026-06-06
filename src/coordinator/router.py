@@ -8,7 +8,6 @@ from fastapi.responses import JSONResponse
 from coordinator.lib.log_config import get_logger, new_trace_id
 from coordinator.session_table import SessionTable
 from coordinator.routing import (
-    estimate_request_tokens,
     derive_session_id,
     compute_prefix_hash,
 )
@@ -183,7 +182,8 @@ def create_router(
         worker_cfg = next((w for w in config.workers if w.name == entry.node_name), None)
         if worker_cfg and entry.slot_id is not None:
             try:
-                await state_manager.save_session(session_id, worker_cfg.host, worker_cfg.rpc_port)
+                trace_id = new_trace_id()
+                await state_manager.save_session(session_id, worker_cfg.host, worker_cfg.rpc_port, trace_id=trace_id)
             except Exception as e:
                 log.warning("evict_save_failed", session_id=session_id, error=str(e))
 
@@ -205,12 +205,14 @@ def create_router(
             raise HTTPException(status_code=400, detail=f"Target worker {req.target_node} not configured")
 
         try:
+            trace_id = new_trace_id()
             result = await state_manager.migrate_session(
                 session_id,
                 from_cfg.host, from_cfg.rpc_port,
                 to_cfg.host, to_cfg.rpc_port,
                 to_cfg.name,
                 from_node_name=entry.node_name,
+                trace_id=trace_id,
             )
             return {"migrated": True, "session_id": session_id, "target": req.target_node, "result": result}
         except Exception as e:
@@ -223,8 +225,9 @@ def create_router(
         if not worker_cfg:
             raise HTTPException(status_code=400, detail=f"Worker {node_name} not configured")
         try:
+            trace_id = new_trace_id()
             result = await state_manager.save_prefix_checkpoint(
-                checkpoint_name, worker_cfg.host, worker_cfg.rpc_port, slot_id)
+                checkpoint_name, worker_cfg.host, worker_cfg.rpc_port, slot_id, trace_id=trace_id)
             return {"saved": True, "checkpoint": checkpoint_name, "node": node_name, "result": result}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Prefix save failed: {e}")
@@ -235,8 +238,9 @@ def create_router(
         if not worker_cfg:
             raise HTTPException(status_code=400, detail=f"Worker {node_name} not configured")
         try:
+            trace_id = new_trace_id()
             result = await state_manager.restore_prefix_checkpoint(
-                checkpoint_name, worker_cfg.host, worker_cfg.rpc_port, slot_id)
+                checkpoint_name, worker_cfg.host, worker_cfg.rpc_port, slot_id, trace_id=trace_id)
             return {"restored": True, "checkpoint": checkpoint_name, "node": node_name, "result": result}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Prefix restore failed: {e}")

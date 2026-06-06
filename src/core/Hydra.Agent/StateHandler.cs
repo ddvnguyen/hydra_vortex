@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Hydra.Shared;
 using Serilog;
+using Serilog.Context;
 
 namespace Hydra.Agent;
 

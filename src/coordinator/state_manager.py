@@ -1,3 +1,4 @@
+import json
 import time
 
 from coordinator.lib.log_config import get_logger, new_trace_id
@@ -25,8 +26,9 @@ class StateManager:
     def _store_client(self) -> RpcClient:
         return RpcClient(self._store_host, self._store_port)
 
-    async def save_session(self, session_id: str, node_host: str, node_port: int) -> dict:
-        trace_id = new_trace_id()
+    async def save_session(self, session_id: str, node_host: str, node_port: int, trace_id: str = "") -> dict:
+        if not trace_id:
+            trace_id = new_trace_id()
         entry = self._session_table.lookup(session_id)
         if not entry or entry.slot_id is None:
             log.warning("save_session_skipped_no_slot",
@@ -36,6 +38,14 @@ class StateManager:
         client = self._agent_client(node_host, node_port)
         try:
             resp = await client.request(OpCode.SaveStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
+
+            # Also propagate trace to Store for cross-service correlation
+            store_client = self._store_client()
+            store_key = f"save:{session_id}"
+            try:
+                await store_client.request(OpCode.PutMeta, store_key, payload=json.dumps({"session_id": session_id, "trace_id": trace_id}).encode(), trace_id=trace_id)
+            except Exception as e:
+                log.warning("store_meta_put_failed", session_id=session_id, error=str(e))
             n_past = resp.meta.get("n_past", 0) if resp.meta else entry.n_past if entry else 0
             if entry:
                 entry.has_store_state = True
@@ -47,8 +57,10 @@ class StateManager:
     async def restore_session(
         self, session_id: str, target_host: str, target_port: int,
         slot_id: int | None = None,
+        trace_id: str = "",
     ) -> dict:
-        trace_id = new_trace_id()
+        if not trace_id:
+            trace_id = new_trace_id()
         entry = self._session_table.lookup(session_id)
         if slot_id is None:
             slot_id = entry.slot_id if entry else None
@@ -60,15 +72,21 @@ class StateManager:
         try:
             resp = await client.request(OpCode.RestoreStateChunked, f"{session_id}:{slot_id}", trace_id=trace_id)
             restored = resp.meta.get("restored", False) if resp.meta else False
+
+            # Also propagate trace to Store for cross-service correlation
+            store_client = self._store_client()
+            store_key = f"restore:{session_id}"
+            try:
+                await store_client.request(OpCode.PutMeta, store_key, payload=json.dumps({"session_id": session_id, "trace_id": trace_id}).encode(), trace_id=trace_id)
+            except Exception as e:
+                log.warning("store_meta_put_failed", session_id=session_id, error=str(e))
+
             n_past = resp.meta.get("n_past", 0) if resp.meta else 0
             slot_id = resp.meta.get("slot_id", slot_id) if resp.meta else slot_id
             node_name = resp.meta.get("node_name", entry.node_name if entry else target_host) if resp.meta else (entry.node_name if entry else target_host)
             if entry:
                 entry.node_name = node_name
                 entry.slot_id = slot_id
-                # Keep has_store_state=true from a prior mark_evicted even when
-                # the Agent's restore response doesn't set restored=true (Agent
-                # may not include the field). Falls back to existing value.
                 entry.has_store_state = restored or entry.has_store_state
             log.info("state_restored", session_id=session_id, slot_id=slot_id, n_past=n_past)
             return resp.meta or {}
@@ -84,7 +102,10 @@ class StateManager:
         to_port: int,
         to_node_name: str,
         from_node_name: str = "",
+        trace_id: str = "",
     ) -> dict:
+        if not trace_id:
+            trace_id = new_trace_id()
         t0 = time.monotonic()
         log.info("migrate_start", session_id=session_id, to=to_node_name)
 
@@ -92,16 +113,15 @@ class StateManager:
         capture_slot_id = entry.slot_id if entry and entry.slot_id is not None else None
         slot_id_str = str(capture_slot_id) if capture_slot_id is not None else ""
 
-        save_meta = await self.save_session(session_id, from_host, from_port)
+        save_meta = await self.save_session(session_id, from_host, from_port, trace_id=trace_id)
 
         erase_client = self._agent_client(from_host, from_port)
         try:
-            trace_id = new_trace_id()
             await erase_client.request(OpCode.SlotErase, slot_id_str, trace_id=trace_id)
         finally:
             await erase_client.close()
 
-        restore_meta = await self.restore_session(session_id, to_host, to_port, slot_id=capture_slot_id)
+        restore_meta = await self.restore_session(session_id, to_host, to_port, slot_id=capture_slot_id, trace_id=trace_id)
 
         entry = self._session_table.lookup(session_id)
         if entry:
@@ -116,21 +136,23 @@ class StateManager:
         return result
 
     async def evict_lru(
-        self, node_name: str, node_host: str, node_port: int
+        self, node_name: str, node_host: str, node_port: int, trace_id: str = ""
     ) -> int | None:
         entry = self._session_table.get_lru_session(node_name)
         if not entry or entry.slot_id is None:
             return None
 
+        if not trace_id:
+            trace_id = new_trace_id()
+
         log.info("evict_lru", session_id=entry.session_id, node=node_name)
         slot_id = entry.slot_id
 
-        await self.save_session(entry.session_id, node_host, node_port)
+        await self.save_session(entry.session_id, node_host, node_port, trace_id=trace_id)
 
         erase_client = self._agent_client(node_host, node_port)
         try:
             sid = str(slot_id) if slot_id is not None else ""
-            trace_id = new_trace_id()
             await erase_client.request(OpCode.SlotErase, sid, trace_id=trace_id)
         finally:
             await erase_client.close()
@@ -143,6 +165,7 @@ class StateManager:
         node_host: str,
         node_port: int,
         slot_id: int | None = None,
+        trace_id: str = "",
     ) -> dict:
         if slot_id is None:
             log.warning(
@@ -151,7 +174,8 @@ class StateManager:
             )
             return {}
 
-        trace_id = new_trace_id()
+        if not trace_id:
+            trace_id = new_trace_id()
         client = self._agent_client(node_host, node_port)
         try:
             resp = await client.request(
@@ -159,6 +183,15 @@ class StateManager:
                 f"prefix/{checkpoint_name}:{slot_id}",
                 trace_id=trace_id,
             )
+
+            # Also propagate trace to Store for cross-service correlation
+            store_client = self._store_client()
+            store_key = f"prefix_save:{checkpoint_name}"
+            try:
+                await store_client.request(OpCode.PutMeta, store_key, payload=json.dumps({"checkpoint": checkpoint_name, "trace_id": trace_id}).encode(), trace_id=trace_id)
+            except Exception as e:
+                log.warning("store_meta_put_failed", session_id=checkpoint_name, error=str(e))
+
             log.info(
                 "prefix_checkpoint_saved",
                 checkpoint=checkpoint_name,
@@ -175,11 +208,13 @@ class StateManager:
         target_host: str,
         target_port: int,
         slot_id: int | None = None,
+        trace_id: str = "",
     ) -> dict:
         if slot_id is None:
             slot_id = 0
 
-        trace_id = new_trace_id()
+        if not trace_id:
+            trace_id = new_trace_id()
         client = self._agent_client(target_host, target_port)
         try:
             resp = await client.request(
@@ -187,6 +222,15 @@ class StateManager:
                 f"prefix/{checkpoint_name}:{slot_id}",
                 trace_id=trace_id,
             )
+
+            # Also propagate trace to Store for cross-service correlation
+            store_client = self._store_client()
+            store_key = f"prefix_restore:{checkpoint_name}"
+            try:
+                await store_client.request(OpCode.PutMeta, store_key, payload=json.dumps({"checkpoint": checkpoint_name, "trace_id": trace_id}).encode(), trace_id=trace_id)
+            except Exception as e:
+                log.warning("store_meta_put_failed", session_id=checkpoint_name, error=str(e))
+
             log.info(
                 "prefix_checkpoint_restored",
                 checkpoint=checkpoint_name,
