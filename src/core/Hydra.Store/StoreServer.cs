@@ -546,19 +546,22 @@ public sealed class StoreServer : RpcServer
 			}
 
 			using var doc = System.Text.Json.JsonDocument.Parse(payload);
-			if (!doc.RootElement.TryGetProperty("n_past", out var npEl))
+			if (doc.RootElement.TryGetProperty("n_past", out var npEl))
 			{
-				await WriteErrorAsync(writer, "missing n_past in meta", ct, StatusCode.BadRequest);
-				return;
+				int nPast = npEl.GetInt32();
+				await Metadata.SetNPastAsync(key, nPast, ct);
+
+				var meta = $$"""{"n_past":{{nPast}}}""";
+				var metaBytes = Encoding.UTF8.GetBytes(meta);
+				await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+				await WriteMetaAsync(writer, meta, ct);
 			}
-
-			int nPast = npEl.GetInt32();
-			await Metadata.SetNPastAsync(key, nPast, ct);
-
-			var meta = $$"""{"n_past":{{nPast}}}""";
-			var metaBytes = Encoding.UTF8.GetBytes(meta);
-			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
-			await WriteMetaAsync(writer, meta, ct);
+			else
+			{
+				var meta = """{"n_past":null}"""u8.ToArray();
+				await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)meta.Length, 0, ct);
+				await writer.WriteAsync(meta, ct);
+			}
 
 			StoreMetrics.OpsTotal.WithLabels("put_meta").Inc();
 		}
