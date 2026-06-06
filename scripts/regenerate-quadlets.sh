@@ -46,6 +46,7 @@ rm -f "$TMPDIR"/*.build
 mkdir -p "$QUADLET_DIR"
 cp "$TMPDIR"/*.container "$QUADLET_DIR" 2>/dev/null || true
 cp "$TMPDIR"/*.volume "$QUADLET_DIR" 2>/dev/null || true
+cp "$TMPDIR"/*.env "$QUADLET_DIR" 2>/dev/null || true
 
 # Restore hand-crafted files
 for f in $SAVE_LIST; do

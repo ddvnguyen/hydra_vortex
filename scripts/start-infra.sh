@@ -32,6 +32,7 @@ if ! ls "$QUADLET_DIR"/infra-*.container &>/dev/null 2>&1; then
   mkdir -p "$QUADLET_DIR"
   cp "$REPO_ROOT/infra/quadlets"/infra-*.container "$QUADLET_DIR"
   cp "$REPO_ROOT/infra/quadlets"/*.volume "$QUADLET_DIR"
+  cp "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env "$QUADLET_DIR" 2>/dev/null || true
   systemctl --user daemon-reload
 fi
 

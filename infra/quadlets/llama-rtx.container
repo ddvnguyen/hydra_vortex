@@ -7,6 +7,8 @@ Image=localhost/llama-rtx:latest
 PublishPort=8080:8080
 AddDevice=nvidia.com/gpu=all
 AddCapability=SYS_ADMIN
+Environment=NVIDIA_VISIBLE_DEVICES=all
+Environment=NVIDIA_DRIVER_CAPABILITIES=compute,utility
 SecurityLabel=disable
 IPC=host
 CPUSet=4-11
