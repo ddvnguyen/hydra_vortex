@@ -127,6 +127,7 @@ def create_router(
                     "slots_idle": info.slots_idle,
                     "stuck_slots": info.stuck_slots,
                     "tracker_status": tracker_status,
+                    "busy_duration_s": round(scheduler._tracker.elapsed_seconds(w.name), 1),
                     "worker_type": w.worker_type,
                     "prefill_priority": w.prefill_priority,
                     "decode_priority": w.decode_priority,
