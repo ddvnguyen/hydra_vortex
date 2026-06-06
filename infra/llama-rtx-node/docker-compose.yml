@@ -37,6 +37,7 @@ services:
     entrypoint: ["/bin/bash", "/init/verify_and_start.sh"]
     environment:
      LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
+     LD_LIBRARY_PATH: /llama/bin
     command: >
       llama-server
       -m /models/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf
@@ -58,6 +59,6 @@ services:
       --yarn-orig-ctx 32768
       --timeout 1800
       --spec-type draft-mtp --spec-draft-n-max 3
-      --rpc-port 9501
+      --rpc-port 9503
 #      --mmproj /models/Qwen3.6-35B-A3B-mmproj-F16.gguf
 #      --swa-full --direct-io
