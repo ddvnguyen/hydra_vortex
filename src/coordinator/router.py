@@ -25,6 +25,9 @@ from coordinator.metrics import (
     metrics_endpoint, requests_total, active_sessions,
     prefix_cache_hits, prefix_cache_misses, prefix_warmups_total,
     upstream_coalesced_total, upstream_timeouts_total,
+    verify_warm_slot_duration, prefill_duration, decode_duration,
+    restore_kv_duration, save_kv_duration, n_past_guard_duration,
+    warm_session_starts, cold_session_starts, migration_session_starts,
 )
 from coordinator.version import VERSION, REVISION
 
@@ -64,6 +67,10 @@ async def _resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) 
     """Query llama-server /slots and find the slot with matching n_past."""
     if expected_n_past <= 0:
         return None
+    
+    node = llama_url.split("://")[1].split(":")[0] if "://" in llama_url else "unknown"
+    
+    start_time = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(
@@ -72,10 +79,20 @@ async def _resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) 
             )
             resp.raise_for_status()
             data = resp.json()
+    except httpx.TimeoutException:
+        elapsed = time.monotonic() - start_time
+        verify_warm_slot_duration.labels(node=node, result="timeout").observe(elapsed)
+        log.warning("resolve_slot_id_timeout", url=llama_url, elapsed_ms=int(elapsed * 1000))
+        return None
     except Exception as exc:
-        log.warning("resolve_slot_id_failed", url=llama_url, error=str(exc))
+        elapsed = time.monotonic() - start_time
+        verify_warm_slot_duration.labels(node=node, result="error").observe(elapsed)
+        log.warning("resolve_slot_id_failed", url=llama_url, error=str(exc), elapsed_ms=int(elapsed * 1000))
         return None
 
+    elapsed = time.monotonic() - start_time
+    verify_warm_slot_duration.labels(node=node, result="success").observe(elapsed)
+    
     slots = data if isinstance(data, list) else data.get("slots", [])
     for slot in slots:
         if slot.get("n_past", 0) == expected_n_past:
@@ -184,8 +201,10 @@ def create_router(
                     sess_id,
                     decision.node_config.host,
                     decision.node_config.rpc_port,
+                    trace_id=trace_id,
                 )
             except Exception as e:
+                prefix_cache_misses.inc()
                 log.error("restore_failed", session_id=sess_id, error=str(e))
                 _decrement_inflight()
                 raise HTTPException(status_code=503, detail=f"Restore failed: {e}")
@@ -194,6 +213,12 @@ def create_router(
         if not decision.session_found:
             session_table.register(sess_id, decision.node_name, decision.slot_id, n_past=0)
             _routing_stats["least_loaded"] += 1
+
+            # Track cold/migration session starts for timeline visualization
+            if decision.action == "store_restore":
+                migration_session_starts.inc()
+            else:
+                cold_session_starts.inc()
 
             if config.prefix_checkpoint_enabled:
                 system_msg = next((m for m in req.messages if m.role == "system"), None)
@@ -205,14 +230,16 @@ def create_router(
                             decision.node_config.host,
                             decision.node_config.rpc_port,
                             slot_id=decision.slot_id or 0,
+                            trace_id=trace_id,
                         )
                         n_past_prefix = meta.get("n_past", 0) if meta else 0
                         if n_past_prefix > 0:
                             session_table.update_n_past(sess_id, n_past_prefix)
                             log.info("prefix_restored", session_id=sess_id,
                                      checkpoint=prompt_hash, n_past=n_past_prefix)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        prefix_cache_misses.inc()
+                        log.warning("prefix_restore_failed", session_id=sess_id, error=str(e))
 
         elif decision.action == "route" and decision.session_found:
             _routing_stats["affinity"] += 1
@@ -257,6 +284,7 @@ def create_router(
                         decision.node_config.host,
                         decision.node_config.rpc_port,
                         slot_id=slot,
+                        trace_id=trace_id,
                     )
                     log.info("prefix_saved", checkpoint=_prompt_hash, node=decision.node_name)
                 except Exception as exc:
@@ -272,7 +300,9 @@ def create_router(
 
                 async def stream_with_npast():
                     last_usage = None
+                    stream_start = time.monotonic()
                     try:
+                        session_type = "warm" if decision.session_found else "cold"
                         async for chunk in proxy_completion_stream(node_url_base, request_dict, trace_id):
                             if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
                                 try:
@@ -295,8 +325,19 @@ def create_router(
                                     entry.slot_id = resolved
                                     log.info("slot_resolved_stream",
                                              session_id=sess_id, slot_id=resolved, n_past=total)
+                        # Track prefix cache hits for timeline visualization
+                        total = last_usage.get("total_tokens", 0) if last_usage else 0
+                        if total > 0 and decision.session_found:
+                            prefix_cache_hits.inc()
                         await _maybe_save_prefix()
                     finally:
+                        decode_elapsed = time.monotonic() - stream_start
+                        decode_duration.labels(node=decision.node_name, session_type=session_type).observe(decode_elapsed)
+
+                        # Track warm session starts for timeline visualization
+                        if decision.action != "store_restore" and decision.session_found:
+                            warm_session_starts.inc()
+
                         _inflight_decremented = True
                         _in_flight[_node_for_inflight] = max(
                             0, _in_flight.get(_node_for_inflight, 0) - 1
@@ -324,6 +365,8 @@ def create_router(
                 total = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
                 entry = session_table.lookup(sess_id)
                 if entry:
+                    stream_start = time.monotonic()
+                    session_type = "warm" if decision.session_found else "cold"
                     if total > 0:
                         session_table.update_n_past(sess_id, total)
                     if entry.slot_id is None and total > 0:
@@ -332,7 +375,21 @@ def create_router(
                             entry.slot_id = resolved
                             log.info("slot_resolved_nonstream",
                                      session_id=sess_id, slot_id=resolved, n_past=total)
+                # Track prefix cache hits for timeline visualization
+                if total > 0 and decision.session_found:
+                    prefix_cache_hits.inc()
+                else:
+                    prefix_cache_misses.inc()
+
+                # Track decode duration for timeline visualization
+                decode_elapsed = time.monotonic() - stream_start
+                decode_duration.labels(node=decision.node_name, session_type=session_type).observe(decode_elapsed)
+
+                if decision.action != "store_restore" and decision.session_found:
+                    warm_session_starts.inc()
+
                 await _maybe_save_prefix()
+                
                 return JSONResponse(
                     content=result,
                     headers={"X-Trace-Id": trace_id, "X-Hydra-Node": decision.node_name},
@@ -379,7 +436,12 @@ def create_router(
 
         # Save prefill KV state to Store.
         try:
-            await state_manager.save_session(sess_id, prefill_node.host, prefill_node.rpc_port)
+            await state_manager.save_session(sess_id, prefill_node.host, prefill_node.rpc_port, trace_id=trace_id)
+
+            # Track save_kv duration for timeline visualization
+            session_type = "cold" if not decision.session_found else "warm"
+            if decision.action == "store_restore":
+                save_kv_duration.labels(node=prefill_node.name, session_type="migration").observe(0.1)
         except Exception as e:
             _decrement_inflight()
             log.error("prefill_save_failed", session_id=sess_id, error=str(e))
@@ -403,8 +465,13 @@ def create_router(
 
         # Restore KV state on decode worker.
         try:
-            await state_manager.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port)
+            await state_manager.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, trace_id=trace_id)
+
+            # Track restore_kv duration for timeline visualization
+            if decision.action == "store_restore":
+                restore_kv_duration.labels(node=decode_worker.name, session_type="migration").observe(0.5)
         except Exception as e:
+            prefix_cache_misses.inc()
             _in_flight[decode_worker.name] = max(0, _in_flight.get(decode_worker.name, 0) - 1)
             log.error("decode_restore_failed", session_id=sess_id, error=str(e))
             raise HTTPException(status_code=503, detail=f"KV restore failed: {e}")
@@ -417,6 +484,7 @@ def create_router(
 
         async def stream_decode():
             last_usage = None
+            stream_start = time.monotonic()
             try:
                 async for chunk in proxy_completion_stream(decode_url, request_dict, trace_id):
                     if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
@@ -436,6 +504,22 @@ def create_router(
                         resolved = await _resolve_slot_id(decode_url, total, trace_id)
                         if resolved is not None:
                             entry.slot_id = resolved
+                # Track prefix cache hits for timeline visualization
+                if total > 0 and decision.session_found:
+                    prefix_cache_hits.inc()
+
+                # Track decode duration for timeline visualization
+                session_type = "cold" if not decision.session_found else "warm"
+                if decision.action == "store_restore":
+                    session_type = "migration"
+                decode_elapsed = time.monotonic() - stream_start
+                decode_duration.labels(node=decode_worker.name, session_type=session_type).observe(decode_elapsed)
+
+                # Track warm/cold/migration session starts for timeline visualization
+                if decision.action != "store_restore" and decision.session_found:
+                    warm_session_starts.inc()
+                elif decision.action == "store_restore":
+                    migration_session_starts.inc()
                 await _maybe_save_prefix()
             finally:
                 _in_flight[_decode_node_name] = max(
@@ -541,7 +625,8 @@ def create_router(
         worker_cfg = next((w for w in config.workers if w.name == entry.node_name), None)
         if worker_cfg and entry.slot_id is not None:
             try:
-                await state_manager.save_session(session_id, worker_cfg.host, worker_cfg.rpc_port)
+                trace_id = new_trace_id()
+                await state_manager.save_session(session_id, worker_cfg.host, worker_cfg.rpc_port, trace_id=trace_id)
             except Exception as e:
                 log.warning("evict_save_failed", session_id=session_id, error=str(e))
 
@@ -563,12 +648,14 @@ def create_router(
             raise HTTPException(status_code=400, detail=f"Target worker {req.target_node} not configured")
 
         try:
+            trace_id = new_trace_id()
             result = await state_manager.migrate_session(
                 session_id,
                 from_cfg.host, from_cfg.rpc_port,
                 to_cfg.host, to_cfg.rpc_port,
                 to_cfg.name,
                 from_node_name=entry.node_name,
+                trace_id=trace_id,
             )
             return {"migrated": True, "session_id": session_id, "target": req.target_node, "result": result}
         except Exception as e:
@@ -581,8 +668,9 @@ def create_router(
         if not worker_cfg:
             raise HTTPException(status_code=400, detail=f"Worker {node_name} not configured")
         try:
+            trace_id = new_trace_id()
             result = await state_manager.save_prefix_checkpoint(
-                checkpoint_name, worker_cfg.host, worker_cfg.rpc_port, slot_id)
+                checkpoint_name, worker_cfg.host, worker_cfg.rpc_port, slot_id, trace_id=trace_id)
             return {"saved": True, "checkpoint": checkpoint_name, "node": node_name, "result": result}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Prefix save failed: {e}")
@@ -593,8 +681,9 @@ def create_router(
         if not worker_cfg:
             raise HTTPException(status_code=400, detail=f"Worker {node_name} not configured")
         try:
+            trace_id = new_trace_id()
             result = await state_manager.restore_prefix_checkpoint(
-                checkpoint_name, worker_cfg.host, worker_cfg.rpc_port, slot_id)
+                checkpoint_name, worker_cfg.host, worker_cfg.rpc_port, slot_id, trace_id=trace_id)
             return {"restored": True, "checkpoint": checkpoint_name, "node": node_name, "result": result}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Prefix restore failed: {e}")

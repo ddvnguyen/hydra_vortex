@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Prometheus;
 using Serilog;
+using Serilog.Context;
 
 namespace Hydra.Store;
 
@@ -35,6 +36,8 @@ public sealed class StoreServer : RpcServer
 		OpCode op, string key, string traceId, long payloadLen,
 		PipeReader reader, PipeWriter writer, TcpClient client, CancellationToken ct)
 	{
+		using var _ = _log.TraceScope(traceId);
+
 		switch (op)
 		{
 			case OpCode.Put:
@@ -169,10 +172,19 @@ public sealed class StoreServer : RpcServer
 		await writer.WriteAsync(payload, ct);
 	}
 
-	private async Task HandlePutChunkedAsync(
+  private async Task HandlePutChunkedAsync(
 		 string key, long payloadLen, PipeReader reader, PipeWriter writer, CancellationToken ct)
 	{
-		using var _ = StoreMetrics.OpDuration.WithLabels("put_chunked").NewTimer();
+		var nodeLabel = _cfg.NodeName;
+		string sizeBucket = payloadLen switch
+		{
+			< 1_000_000 => "0-1MB",
+			< 5_000_000 => "1-5MB",
+			< 10_000_000 => "5-10MB",
+			_ => "10+MB"
+		};
+
+		using var _ = StoreMetrics.ChunkOpDuration.WithLabels("put_chunked", nodeLabel).NewTimer();
 
 		try
 		{
@@ -205,6 +217,8 @@ public sealed class StoreServer : RpcServer
 			StoreMetrics.BytesStored.Inc(payloadLen);
 			StoreMetrics.ChunksNew.Inc(totalNew);
 			StoreMetrics.ChunksDeduped.Inc(deduped);
+			StoreMetrics.KVPutBytesTotal.WithLabels(nodeLabel, "put_chunked").Inc(payloadLen);
+			StoreMetrics.ChunkCount.WithLabels("put_chunked", sizeBucket).Observe(totalChunks);
 
 			var meta = $$"""{"new_chunks":{{totalNew}},"deduped_chunks":{{deduped}},"total_chunks":{{totalChunks}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
@@ -217,10 +231,12 @@ public sealed class StoreServer : RpcServer
 		}
 	}
 
-	private async Task HandleGetChunkedAsync(
+ private async Task HandleGetChunkedAsync(
 		 string key, long payloadLen, PipeReader reader, PipeWriter writer, TcpClient client, CancellationToken ct)
 	{
-		using var _ = StoreMetrics.OpDuration.WithLabels("get_chunked").NewTimer();
+		var nodeLabel = _cfg.NodeName;
+
+		using var _ = StoreMetrics.ChunkOpDuration.WithLabels("get_chunked", nodeLabel).NewTimer();
 
 		try
 		{
@@ -258,6 +274,14 @@ public sealed class StoreServer : RpcServer
 			}
 			ulong framedLen = (ulong)bodyBytes + (ulong)(resident.Count * 8);
 
+			string sizeBucket = resident.Count switch
+			{
+				0 => "0-chunks",
+				< 5 => "1-4",
+				< 20 => "5-19",
+				_ => "20+"
+			};
+
 			// total_size in meta stays bodies-only (what the chunks actually weigh);
 			// payload_len on the wire includes the per-chunk framing.
 			var meta = $$"""{"missing_count":{{resident.Count}},"total_size":{{bodyBytes}}}""";
@@ -279,6 +303,8 @@ public sealed class StoreServer : RpcServer
 			StoreMetrics.OpsTotal.WithLabels("get_chunked").Inc();
 			StoreMetrics.BytesSent.Inc(bodyBytes);
 			StoreMetrics.ChunksSent.Inc(resident.Count);
+			StoreMetrics.KVGetBytesTotal.WithLabels(nodeLabel, "get_chunked").Inc(bodyBytes);
+			StoreMetrics.ChunkCount.WithLabels("get_chunked", sizeBucket).Observe(resident.Count);
 		}
 		catch (Exception ex)
 		{
@@ -292,7 +318,9 @@ public sealed class StoreServer : RpcServer
 	private async Task HandleSyncMissingAsync(
 		 string key, long payloadLen, PipeReader reader, PipeWriter writer, CancellationToken ct)
 	{
-		using var _ = StoreMetrics.OpDuration.WithLabels("sync_missing").NewTimer();
+		var nodeLabel = _cfg.NodeName;
+
+		using var _ = StoreMetrics.ChunkOpDuration.WithLabels("sync_missing", nodeLabel).NewTimer();
 
 		try
 		{
@@ -339,9 +367,13 @@ public sealed class StoreServer : RpcServer
 			await writer.WriteAsync(payload, ct);
 
 			StoreMetrics.OpsTotal.WithLabels("sync_missing").Inc();
+			StoreMetrics.SyncCandidateCount.WithLabels(nodeLabel, "candidate").Observe(candidateHashes.Count);
+			StoreMetrics.SyncMissingCount.WithLabels(nodeLabel, "missing").Observe(missingHashes.Count);
+			StoreMetrics.SessionState.WithLabels(nodeLabel, key).Inc();
 		}
 		catch (Exception ex)
 		{
+			StoreMetrics.SessionState.WithLabels(nodeLabel, key).Dec();
 			await WriteErrorAsync(writer, $"sync_missing failed: {ex.Message}", ct);
 		}
 	}
@@ -353,7 +385,9 @@ public sealed class StoreServer : RpcServer
 	private async Task HandlePushChunksAsync(
 		 string key, long payloadLen, PipeReader reader, PipeWriter writer, CancellationToken ct)
 	{
-		using var _ = StoreMetrics.OpDuration.WithLabels("push_chunks").NewTimer();
+		var nodeLabel = _cfg.NodeName;
+
+		using var _ = StoreMetrics.ChunkOpDuration.WithLabels("push_chunks", nodeLabel).NewTimer();
 
 		try
 		{
@@ -392,6 +426,9 @@ public sealed class StoreServer : RpcServer
 
 			StoreMetrics.OpsTotal.WithLabels("push_chunks").Inc();
 			StoreMetrics.BytesStored.Inc(totalPushedSize);
+			StoreMetrics.KVPutBytesTotal.WithLabels(nodeLabel, "push_chunks").Inc(totalPushedSize);
+			StoreMetrics.ChunkCount.WithLabels("push_chunks", stored switch { 0 => "0-chunks", < 5 => "1-4", < 20 => "5-19", _ => "20+" }).Observe(stored);
+			StoreMetrics.SessionState.WithLabels(nodeLabel, key).Inc();
 		}
 		catch (Exception ex)
 		{

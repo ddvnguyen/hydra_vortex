@@ -1,0 +1,383 @@
+{
+  "nodes": [
+    {
+      "id": "file:.cursorrules",
+      "type": "config",
+      "name": ".cursorrules",
+      "filePath": ".cursorrules",
+      "summary": "Cursor IDE configuration defining agent rules for the Hydra project — architecture constraints, language-specific coding rules (C# .NET 10 with System.IO.Pipelines, Python asyncio), critical SSM constraint (n_tokens > n_past), and logging requirements.",
+      "tags": ["ide", "agent-rules", "configuration"]
+    },
+    {
+      "id": "file:.dockerignore",
+      "type": "config",
+      "name": ".dockerignore",
+      "filePath": ".dockerignore",
+      "summary": "Docker build context exclusion rules — excludes .git, build artifacts, Python cache files, node_modules, logs, and critically excludes the llama-cpp submodule source.",
+      "tags": ["docker", "build-config"]
+    },
+    {
+      "id": "file:.editorconfig",
+      "type": "config",
+      "name": ".editorconfig",
+      "filePath": ".editorconfig",
+      "summary": "EditorConfig for consistent indentation and formatting — tabs, 3-space indent for general files, 2-space for YAML/JSON/C#, C# brace style rules, Python/C++ tab indentation.",
+      "tags": ["editor-config", "formatting"]
+    },
+    {
+      "id": "file:.env.example",
+      "type": "config",
+      "name": ".env.example",
+      "filePath": ".env.example",
+      "summary": "Environment variable template — Coordinator host/port, node configs for RTX (127.0.0.1:9601/:8080) and P100 (192.168.122.21:9602/:8081), llama-server RPC port settings.",
+      "tags": ["environment", "configuration"]
+    },
+    {
+      "id": "file:.github/PULL_REQUEST_TEMPLATE.md",
+      "type": "document",
+      "name": "PULL_REQUEST_TEMPLATE.md",
+      "filePath": ".github/PULL_REQUEST_TEMPLATE.md",
+      "summary": "GitHub PR template — requires Summary, Changes list, Closes keyword for issue linking, and a Test plan checklist (unit/integration/system tests).",
+      "tags": ["github", "pr-template"]
+    },
+    {
+      "id": "file:.github/workflows/ci.yml",
+      "type": "pipeline",
+      "name": "ci.yml",
+      "filePath": ".github/workflows/ci.yml",
+      "summary": "Main CI pipeline — 4 job types: build-test (unit tests for Shared/Store/Agent/Coordinator), integration (on main or labeled PRs), system-mocked, system-full (requires workflow_dispatch), deploy-llama (tag-based). Creates GitHub issues on failures. References Hydra.sln, VERSION file.",
+      "tags": ["ci", "github-actions", "pipeline"]
+    },
+    {
+      "id": "file:.github/workflows/claude-code-review.yml",
+      "type": "pipeline",
+      "name": "claude-code-review.yml",
+      "filePath": ".github/workflows/claude-code-review.yml",
+      "summary": "Claude Code PR review workflow — runs on pull request events, uses anthropics/claude-code-action to post inline review comments focusing on correctness bugs, security vulnerabilities, and design issues.",
+      "tags": ["ci", "github-actions", "review"]
+    },
+    {
+      "id": "file:.github/workflows/monitor.yml",
+      "type": "pipeline",
+      "name": "monitor.yml",
+      "filePath": ".github/workflows/monitor.yml",
+      "summary": "Prometheus alert monitoring — runs every 30 minutes, calls python scripts/create_monitoring_issues.py to sync firing alerts to GitHub issues. Depends on infra services (Prometheus :9091, Grafana :3000).",
+      "tags": ["monitoring", "github-actions", "pipeline"]
+    },
+    {
+      "id": "file:.github/workflows/opencode-resolve.yml",
+      "type": "pipeline",
+      "name": "opencode-resolve.yml",
+      "filePath": ".github/workflows/opencode-resolve.yml",
+      "summary": "Triggers OpenCode AI agent to resolve review comments — fires on pull_request_review submitted when claude-code-review bot posts changes_requested or commented.",
+      "tags": ["ci", "github-actions", "automation"]
+    },
+    {
+      "id": "file:.github/workflows/opencode.yml",
+      "type": "pipeline",
+      "name": "opencode.yml",
+      "filePath": ".github/workflows/opencode.yml",
+      "summary": "OpenCode AI agent activation — listens for /oc or /opencode comments on issues/PRs, falls back to GitHub Actions bot if local OpenCode server is down.",
+      "tags": ["ci", "github-actions", "automation"]
+    },
+    {
+      "id": "file:.github/workflows/pr-issue-link.yml",
+      "type": "pipeline",
+      "name": "pr-issue-link.yml",
+      "filePath": ".github/workflows/pr-issue-link.yml",
+      "summary": "PR issue linking check — validates PR body contains closing keyword (Closes/Fixes/Resolves #XX) before merge. Posts/removes warning comment. Used by ci.yml (imported).",
+      "tags": ["ci", "github-actions", "validation"]
+    },
+    {
+      "id": "file:.gitignore",
+      "type": "config",
+      "name": ".gitignore",
+      "filePath": ".gitignore",
+      "summary": "Git ignore rules — excludes .NET build outputs (bin/obj), Python artifacts, C++ build outputs, IDE files, secrets (.pem), test results, and deploy.log.",
+      "tags": ["git", "version-control"]
+    },
+    {
+      "id": "file:.gitmodules",
+      "type": "config",
+      "name": ".gitmodules",
+      "filePath": ".gitmodules",
+      "summary": "Git submodule definition — src/llama-cpp points to ggml-org/llama.cpp repo on the hydra-state-streaming branch, providing the 3 KV state streaming endpoints.",
+      "tags": ["git", "submodule"]
+    },
+    {
+      "id": "file:.opencodeignore",
+      "type": "config",
+      "name": ".opencodeignore",
+      "filePath": ".opencodeignore",
+      "summary": "OpenCode AI agent ignore rules — mirrors .gitignore exclusions for build artifacts, IDE files, and test results.",
+      "tags": ["opencode", "agent-rules"]
+    },
+    {
+      "id": "file:.understand-anything/.understandignore",
+      "type": "config",
+      "name": ".understandignore",
+      "filePath": ".understand-anything/.understandignore",
+      "summary": "Understand-anything analysis exclusion config — references patterns from .gitignore as commented suggestions for excluding build artifacts and test results from knowledge graph analysis.",
+      "tags": ["analysis", "tool-config"]
+    },
+    {
+      "id": "file:AGENTS.md",
+      "type": "document",
+      "name": "AGENTS.md",
+      "filePath": "AGENTS.md",
+      "summary": "Agent instructions — short entry point directing agents to read CLAUDE.md first, then workflow docs. Maps Plane for planning, GitHub for PRs/CI issues, DevelopmentRunBook.md for build/test commands.",
+      "tags": ["documentation", "agent-instructions"]
+    },
+    {
+      "id": "file:AGENT_TOOLS_GUIDE.md",
+      "type": "document",
+      "name": "AGENT_TOOLS_GUIDE.md",
+      "filePath": "AGENT_TOOLS_GUIDE.md",
+      "summary": "Guide for using coding agent tools (question + todowrite) — patterns for making decisions, tracking progress, and handling ambiguity during development tasks.",
+      "tags": ["documentation", "agent-tools"]
+    },
+    {
+      "id": "file:CHANGELOG.md",
+      "type": "document",
+      "name": "CHANGELOG.md",
+      "filePath": "CHANGELOG.md",
+      "summary": "Changelog following keepachangelog format — versions 0.0.1 through 0.4.0, tracking M0/M1/M2 milestones and bug fixes across Store/Agent/Coordinator services.",
+      "tags": ["documentation", "changelog"]
+    },
+    {
+      "id": "file:CLAUDE.md",
+      "type": "document",
+      "name": "CLAUDE.md",
+      "filePath": "CLAUDE.md",
+      "summary": "Main project documentation — architecture diagram, language decisions, critical facts (P100 prefill 110t/s, n_tokens > n_past constraint), llama.cpp fork endpoints, milestone table (M0-M5 + Phase 0 + M-Perf), task lifecycle, GitHub workflow, monitoring setup.",
+      "tags": ["documentation", "architecture"]
+    },
+    {
+      "id": "file:DevelopmentRunBook.md",
+      "type": "document",
+      "name": "DevelopmentRunBook.md",
+      "filePath": "DevelopmentRunBook.md",
+      "summary": "Development runbook — service map with ports, prerequisites (.NET 10 SDK, Python >=3.13, tmpfs), quick start (start-env.sh), VS Code debug configs, test commands per project, environment variables, llama-server build instructions for sm_120/sm_60, CI/CD deploy process, monitoring setup.",
+      "tags": ["documentation", "runbook"]
+    },
+    {
+      "id": "file:Hydra.runsettings",
+      "type": "config",
+      "name": "Hydra.runsettings",
+      "filePath": "Hydra.runsettings",
+      "summary": "Dotnet run settings — disables parallel assembly execution to avoid port/connection contention during test runs.",
+      "tags": ["dotnet", "test-config"]
+    },
+    {
+      "id": "file:Hydra.sln",
+      "type": "config",
+      "name": "Hydra.sln",
+      "filePath": "Hydra.sln",
+      "summary": "Visual Studio solution file — 6 C# projects: Hydra.Shared, Tests.Shared, Hydra.Store, Tests.Store, Hydra.Agent, Tests.Agent, Tests.Integration. All nested under 'src' solution folder.",
+      "tags": ["dotnet", "solution"]
+    },
+    {
+      "id": "file:PROJECT_PLAN.md",
+      "type": "document",
+      "name": "PROJECT_PLAN.md",
+      "filePath": "PROJECT_PLAN.md",
+      "summary": "Project plan — vision, architecture diagram with service ports, language decisions table, 4-tier routing algorithm reference, tech stack comparison (C# vs Python), full project structure detail for src/ hierarchy.",
+      "tags": ["documentation", "architecture"]
+    },
+    {
+      "id": "file:README.md",
+      "type": "document",
+      "name": "README.md",
+      "filePath": "README.md",
+      "summary": "Project README — high-level architecture, component table (Store/Agent/Coordinator), milestone overview, verified facts, quick start commands.",
+      "tags": ["documentation", "readme"]
+    },
+    {
+      "id": "file:VERSION",
+      "type": "config",
+      "name": "VERSION",
+      "filePath": "VERSION",
+      "summary": "Single source of truth for project version — currently 0.7.6. Used by CI deploy job, Coordinator/Agent/Store version endpoints, and structlog/Serilog structured logging.",
+      "tags": ["version", "configuration"]
+    },
+    {
+      "id": "config:.github/workflows/ci.yml",
+      "type": "pipeline",
+      "name": "CI Pipeline",
+      "filePath": ".github/workflows/ci.yml",
+      "summary": "Full CI pipeline with build-test, integration, system-mocked, system-full, deploy-hydra, deploy-llama jobs. Deploys via podman-compose using docker-compose.hydra.yml and docker-compose.infra.yml.",
+      "tags": ["ci", "pipeline"]
+    },
+    {
+      "id": "config:.github/workflows/pr-issue-link.yml",
+      "type": "pipeline",
+      "name": "PR Issue Link Check",
+      "filePath": ".github/workflows/pr-issue-link.yml",
+      "summary": "Validation pipeline ensuring PRs link to issues via closing keywords. Imported by ci.yml workflow.",
+      "tags": ["ci", "validation"]
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:.github/workflows/ci.yml",
+      "target": "file:.github/workflows/pr-issue-link.yml",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "config:.github/workflows/ci.yml",
+      "target": "file:VERSION",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:.github/workflows/ci.yml",
+      "target": "file:Hydra.sln",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "config:.github/workflows/ci.yml",
+      "target": "file:Hydra.runsettings",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:.github/workflows/ci.yml",
+      "target": "config:.github/workflows/pr-issue-link.yml",
+      "type": "triggers",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:AGENTS.md",
+      "target": "file:CLAUDE.md",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.9
+    },
+    {
+      "source": "file:AGENTS.md",
+      "target": "file:DevelopmentRunBook.md",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:CLAUDE.md",
+      "target": "file:.github/workflows/monitor.yml",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:CLAUDE.md",
+      "target": "config:.github/workflows/ci.yml",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:PROJECT_PLAN.md",
+      "target": "file:CLAUDE.md",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:DevelopmentRunBook.md",
+      "target": "file:.env.example",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:DevelopmentRunBook.md",
+      "target": "config:.github/workflows/ci.yml",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.4
+    },
+    {
+      "source": "file:.cursorrules",
+      "target": "file:CLAUDE.md",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:.github/workflows/monitor.yml",
+      "target": "config:.github/workflows/ci.yml",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.4
+    },
+    {
+      "source": "file:.github/workflows/opencode-resolve.yml",
+      "target": "file:.github/workflows/claude-code-review.yml",
+      "type": "triggers",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:README.md",
+      "target": "file:PROJECT_PLAN.md",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:CHANGELOG.md",
+      "target": "config:.github/workflows/ci.yml",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.3
+    },
+    {
+      "source": "file:.opencodeignore",
+      "target": "file:.gitignore",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:.understand-anything/.understandignore",
+      "target": "file:.gitignore",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:.dockerignore",
+      "target": "file:.gitignore",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:.github/workflows/ci.yml",
+      "target": "config:.github/workflows/pr-issue-link.yml",
+      "type": "triggers",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:DevelopmentRunBook.md",
+      "target": "config:.github/workflows/ci.yml",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:CLAUDE.md",
+      "target": "file:.gitmodules",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.4
+    }
+  ]
+}

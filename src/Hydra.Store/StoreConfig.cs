@@ -6,6 +6,7 @@ public sealed record StoreConfig
 {
     public string Host { get; init; } = EnvString("HYDRA_STORE_HOST", "0.0.0.0");
     public int Port { get; init; } = EnvInt("HYDRA_STORE_PORT", 9500);
+    public string NodeName { get; init; } = EnvString("HYDRA_STORE_NODE_NAME", "");
     public string StoreDir { get; init; } = EnvString("HYDRA_STORE_DIR", "/mnt/llm-ram/store");
     public long MaxPayloadBytes { get; init; } = 4_294_967_296;
     public int DebugHttpPort { get; init; } = EnvInt("HYDRA_STORE_DEBUG_PORT", 9501);
