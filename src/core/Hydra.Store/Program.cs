@@ -15,6 +15,12 @@ await using var metadata = new StoreMetadata(cfg.PgConn);
 var engine = new StorageEngine(cfg.StoreDirectory);
 var chunkStore = new ChunkStore(cfg.StoreDirectory);
 
+// Clean up orphaned .tmp files from previous crashes.
+foreach (var tmp in chunkStore.ChunksDirectory.EnumerateFiles("*.tmp"))
+    try { tmp.Delete(); } catch { }
+foreach (var tmp in engine.StoreDirectory.EnumerateFiles("*.tmp", SearchOption.AllDirectories))
+    try { tmp.Delete(); } catch { }
+
 await metadata.EnsureSchemaAsync(ct);
 
 await metadata.ReconcileBootAsync(chunkStore.ChunksDirectory, ct);
@@ -23,7 +29,7 @@ await metadata.ReconcileBootAsync(chunkStore.ChunksDirectory, ct);
 var backupDir = new DirectoryInfo(cfg.BackupDir);
 var backupChunksDir = new DirectoryInfo(Path.Combine(cfg.BackupDir, "chunks"));
 var chunksDir = chunkStore.ChunksDirectory;
-var hasLocalChunks = chunksDir.Exists && chunksDir.EnumerateFiles().Any();
+var hasLocalChunks = chunksDir.Exists && chunksDir.EnumerateFiles().Any(f => !f.Name.EndsWith(".tmp"));
 
 if (!hasLocalChunks && backupChunksDir.Exists)
 {

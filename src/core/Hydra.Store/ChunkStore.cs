@@ -20,7 +20,10 @@ public sealed class ChunkStore
     private void RebuildIndex()
     {
         foreach (var file in _chunksDir.EnumerateFiles())
+        {
+            if (file.Name.EndsWith(".tmp")) continue;
             _knownHashes[file.Name] = 0;
+        }
     }
 
     public int KnownChunkCount => _knownHashes.Count;
@@ -63,7 +66,10 @@ public sealed class ChunkStore
         var totalChunks = _knownHashes.Count;
         long totalBytes = 0;
         foreach (var file in _chunksDir.EnumerateFiles())
+        {
+            if (file.Name.EndsWith(".tmp")) continue;
             totalBytes += file.Length;
+        }
         return new ChunkStoreStats(totalChunks, 0, totalBytes);
     }
 }

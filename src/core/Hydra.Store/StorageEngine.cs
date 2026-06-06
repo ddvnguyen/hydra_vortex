@@ -121,6 +121,7 @@ public sealed class StorageEngine
 
         foreach (var f in files)
         {
+            if (f.Name.EndsWith(".tmp")) continue;
             count++;
             totalBytes += f.Length;
         }

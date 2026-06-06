@@ -26,9 +26,6 @@ public sealed record StoreConfig
         if (DebugHttpPort == Port)
             throw new InvalidOperationException("Debug HTTP port must differ from RPC port");
 
-        if (!Directory.Exists(StoreDir))
-            throw new InvalidOperationException($"Store directory does not exist: {StoreDir}");
-
         if (string.IsNullOrWhiteSpace(PgConn))
             throw new InvalidOperationException("PG connection string is required");
     }
