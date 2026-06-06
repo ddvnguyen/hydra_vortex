@@ -12,25 +12,25 @@
         "w": 24,
         "x": 0,
         "y": 35
-      }
-    },
-    {
-      "id": 100,
-      "type": "table",
-      "title": "Per-Request Phase Durations",
-      "datasource": {
-        "type": "loki",
-        "uid": "Loki"
       },
-      "gridPos": {
-        "h": 16,
-        "w": 24,
-        "x": 0,
-        "y": 36
-      },
-      "targets": [
+      "panels": [
         {
-          "expr": "{service=\"hydra-coordinator\"} |= \"request_timeline\"",
+          "id": 100,
+          "type": "table",
+          "title": "Per-Request Phase Durations",
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "gridPos": {
+            "h": 16,
+            "w": 24,
+            "x": 0,
+            "y": 36
+          },
+          "targets": [
+            {
+              "expr": "{component=\"coordinator\"} |= \"request_timeline\"",
           "maxLines": 20,
           "refId": "A"
         }
@@ -334,6 +334,8 @@
         ]
       }
     }
+    ]
+  }
   ],
   "schemaVersion": 39,
   "tags": [
