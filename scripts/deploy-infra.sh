@@ -27,12 +27,13 @@ step "Deploying infra services"
 systemctl --user daemon-reload
 systemctl --user stop infra-host-pod.service 2>/dev/null || true
 sleep 1
+# Note: infra-grafana restarts last to pick up dashboard file changes
 systemctl --user start infra-node-exporter.service
 systemctl --user start infra-nvidia-exporter.service
 systemctl --user start infra-loki.service
 systemctl --user start infra-promtail.service
 systemctl --user start infra-prometheus.service
-systemctl --user start infra-grafana.service
+systemctl --user restart infra-grafana.service 2>/dev/null || systemctl --user start infra-grafana.service
 systemctl --user start infra-pgadmin.service
 
 step "Verifying infra services"

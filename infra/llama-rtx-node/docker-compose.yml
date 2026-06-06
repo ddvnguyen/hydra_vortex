@@ -2,7 +2,7 @@ services:
   llama-cpp:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile_26.04_cuda13.3
     image: llama-cpp:sm120-cuda13.2
     container_name: llama-cpp
     labels:
