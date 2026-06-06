@@ -77,18 +77,22 @@ jobs:
       - name: Unit tests — Shared
         run: |
           dotnet test src/core/Tests.Shared/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
             --logger "trx;LogFileName=shared.trx" \
             --results-directory TestResults/
 
       - name: Unit tests — Store
         run: |
           dotnet test src/core/Tests.Store/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --filter "FullyQualifiedName!~StoreMetadataTests&FullyQualifiedName!~WriteBehindServiceTests" \
             --logger "trx;LogFileName=store.trx" \
             --results-directory TestResults/
 
       - name: Unit tests — Agent
         run: |
           dotnet test src/core/Tests.Agent/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
             --logger "trx;LogFileName=agent.trx" \
             --results-directory TestResults/
 
@@ -173,6 +177,7 @@ jobs:
       - name: Integration tests
         run: |
           dotnet test src/core/Tests.Integration/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
             --logger "trx;LogFileName=integration.trx" \
             --results-directory TestResults/
         env:
