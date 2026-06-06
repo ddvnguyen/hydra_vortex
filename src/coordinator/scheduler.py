@@ -45,6 +45,8 @@ from coordinator.metrics import (
     warm_session_starts,
     cold_session_starts,
     migration_session_starts,
+    mix_precision_phase_seconds,
+    mix_precision_enabled_gauge,
 )
 
 log = get_logger()
@@ -85,6 +87,12 @@ class WorkerScheduler:
         self._worker_freed = asyncio.Event()
         self._running = False
         self._prefix_set: set[str] = set()
+
+        if self._config.mix_precision_enabled:
+            log.info("mix_precision_init", mode="P/D split with separate prefill/decode quants")
+            mix_precision_enabled_gauge.set(1)
+        else:
+            mix_precision_enabled_gauge.set(0)
 
     @staticmethod
     def _elapsed_ms(item: WorkItem) -> int:
@@ -163,6 +171,8 @@ class WorkerScheduler:
     def _is_atomic(self, item: WorkItem) -> bool:
         if self._config.run_mode == "fast":
             return True
+        if self._config.mix_precision_enabled:
+            return False
         return item.estimated_new_tokens <= self._config.atomic_token_threshold
 
     def _routable(self, wname: str) -> bool:

@@ -56,6 +56,13 @@ class CoordinatorConfig(BaseSettings):
     # "concurrency": P/D disaggregation — prefill worker → store → decode worker
     run_mode: str = "concurrency"
 
+    # Mix-precision P/D split: use different GGUF model quants for prefill vs decode.
+    # Workers configured as prefill-only (worker_type=1) do prefill on a faster/smaller
+    # quant; decode-only (worker_type=2) do decode on a higher-quality quant. The
+    # scheduler forces the P/D disaggregation path for every request (skipping
+    # the atomic shortcut) to ensure prefill and decode use different workers.
+    mix_precision_enabled: bool = False
+
     # If a worker has been busy for less than this many seconds, the scheduler
     # considers it "just started" and routes new requests elsewhere.
     smart_schedule_wait_threshold_s: float = 3.0

@@ -38,6 +38,17 @@ cross_node_affinity_total = Counter(
     "Cross-node affinity dispatches (prefill worker never released on success)",
 )
 
+mix_precision_enabled_gauge = Gauge(
+    "hydra_mix_precision_enabled",
+    "Whether mix-precision P/D split is enabled (1=yes, 0=no)",
+)
+
+mix_precision_phase_seconds = Histogram(
+    "hydra_mix_precision_phase_seconds",
+    "Mix-precision phase timing in seconds",
+    ["phase"],
+)
+
 
 def set_worker_busy_metrics(scheduler) -> None:
     for w in scheduler._config.workers:
