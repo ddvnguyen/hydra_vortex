@@ -6,6 +6,7 @@ After=infra-host-pod.service infra-loki.service
 
 [Container]
 ContainerName=infra-promtail
+Pod=infra-host.pod
 Image=grafana/promtail:3.4
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
 Volume=/run/user/1000/podman/podman.sock:/var/run/docker.sock:ro
