@@ -165,7 +165,7 @@ public sealed class StateHandler
         Stream stream, string sessionId, CancellationToken ct)
     {
         var chunks = new List<ChunkRef>();
-        var buffer = new byte[ChunkEngine.ChunkSize];
+        var buffer = new byte[ChunkConstants.ChunkSize];
         long totalSize = 0;
         int index = 0;
 
@@ -373,7 +373,7 @@ public sealed class StateHandler
                 var chunkData = await _chunkCache.GetChunkDataAsync(sessionId, chunk.Hash, ct);
                 if (chunkData is not null && chunkData.Length == chunk.Size)
                 {
-                   int dataOffset = chunk.Index * ChunkEngine.ChunkSize;
+                   int dataOffset = chunk.Index * ChunkConstants.ChunkSize;
                     Array.Copy(chunkData, 0, completeState, dataOffset, chunkData.Length);
                 }
             }
@@ -396,7 +396,7 @@ public sealed class StateHandler
             if (chunkIndex < 0 || chunkSize <= 0 || storeOffset + chunkSize > storePayload.Length)
                 break;
 
-            int dataOffset = chunkIndex * ChunkEngine.ChunkSize;
+            int dataOffset = chunkIndex * ChunkConstants.ChunkSize;
             if (dataOffset + chunkSize > completeState.Length)
             {
                 _log.Warning("Chunk overflow for session {SessionId}: offset={Offset} + size={Size} > total={Total}",

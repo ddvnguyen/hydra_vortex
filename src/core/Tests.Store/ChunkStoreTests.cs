@@ -119,4 +119,36 @@ public sealed class ChunkStoreTests : IDisposable
         var expectedPath = Path.Combine(_store.ChunksDirectory.FullName, hash);
         Assert.True(File.Exists(expectedPath));
     }
+
+    [Fact]
+    public async Task StoreChunk_ConcurrentSameHash_OnlyOneStored()
+    {
+        var data = "concurrent race"u8.ToArray();
+        var hash = ChunkEngine.ComputeHash(data);
+
+        // Fire multiple concurrent stores of the same hash
+        var tasks = Enumerable.Range(0, 10)
+            .Select(_ => _store.StoreChunkAsync(hash, data.ToArray()))
+            .ToList();
+
+        var results = await Task.WhenAll(tasks);
+
+        // TryAdd guarantees exactly one call returns true
+        Assert.Equal(1, results.Count(r => r));
+        Assert.Equal(9, results.Count(r => !r));
+        Assert.True(_store.HasChunk(hash));
+    }
+
+    [Fact]
+    public async Task StoreChunk_AtomicWrite_NoTempFileLeftBehind()
+    {
+        var data = "atomic chunk"u8.ToArray();
+        var hash = ChunkEngine.ComputeHash(data);
+
+        await _store.StoreChunkAsync(hash, data);
+
+        var tmpPath = Path.Combine(_store.ChunksDirectory.FullName, hash + ".tmp");
+        Assert.False(File.Exists(tmpPath), "temp file should be cleaned up");
+        Assert.True(_store.HasChunk(hash));
+    }
 }

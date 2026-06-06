@@ -1,3 +1,4 @@
+using Hydra.Shared;
 using Npgsql;
 
 namespace Hydra.Store;
@@ -47,6 +48,7 @@ public sealed class StoreMetadata : IAsyncDisposable
     {
         var retryDelay = TimeSpan.FromSeconds(1);
         var maxDelay = TimeSpan.FromSeconds(30);
+        var maxAttempts = 10;
         var attempt = 0;
 
         while (true)
@@ -63,11 +65,11 @@ public sealed class StoreMetadata : IAsyncDisposable
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 attempt++;
-                if (retryDelay >= maxDelay)
+                if (attempt >= maxAttempts)
                     throw;
 
-                _log.Warning(ex, "Failed to bootstrap PG schema (attempt {Attempt}), retrying in {Delay}ms",
-                    attempt, retryDelay.TotalMilliseconds);
+                _log.Warning(ex, "Failed to bootstrap PG schema (attempt {Attempt}/{Max}), retrying in {Delay}ms",
+                    attempt, maxAttempts, retryDelay.TotalMilliseconds);
                 await Task.Delay(retryDelay, ct);
                 retryDelay = TimeSpan.FromMilliseconds(
                     Math.Min(retryDelay.TotalMilliseconds * 1.5, maxDelay.TotalMilliseconds));

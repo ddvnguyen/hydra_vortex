@@ -19,8 +19,12 @@ public sealed class ChunkStore
 
     private void RebuildIndex()
     {
+        _knownHashes.Clear();
         foreach (var file in _chunksDir.EnumerateFiles())
+        {
+            if (file.Name.EndsWith(".tmp")) continue;
             _knownHashes[file.Name] = 0;
+        }
     }
 
     public int KnownChunkCount => _knownHashes.Count;
@@ -28,13 +32,23 @@ public sealed class ChunkStore
 
     public async Task<bool> StoreChunkAsync(string hash, byte[] data, CancellationToken ct = default)
     {
-        if (_knownHashes.ContainsKey(hash))
+        if (!_knownHashes.TryAdd(hash, 0))
             return false;
 
         var path = Path.Combine(_chunksDir.FullName, hash);
-        await File.WriteAllBytesAsync(path, data, ct);
-        _knownHashes[hash] = 0;
-        return true;
+        var tmpPath = path + ".tmp";
+        try
+        {
+            await File.WriteAllBytesAsync(tmpPath, data, ct);
+            File.Move(tmpPath, path, overwrite: true);
+            return true;
+        }
+        catch
+        {
+            _knownHashes.TryRemove(hash, out _);
+            try { File.Delete(tmpPath); } catch { }
+            throw;
+        }
     }
 
     public bool HasChunk(string hash)
@@ -53,7 +67,10 @@ public sealed class ChunkStore
         var totalChunks = _knownHashes.Count;
         long totalBytes = 0;
         foreach (var file in _chunksDir.EnumerateFiles())
+        {
+            if (file.Name.EndsWith(".tmp")) continue;
             totalBytes += file.Length;
+        }
         return new ChunkStoreStats(totalChunks, 0, totalBytes);
     }
 }

@@ -1,12 +1,7 @@
 using System.Text.Json.Serialization;
+using Hydra.Shared;
 
 namespace Hydra.Store;
-
-public sealed record ChunkRef(
-    int Index,
-    string Hash,
-    int Size
-);
 
 public sealed record Manifest(
     string SessionId,
