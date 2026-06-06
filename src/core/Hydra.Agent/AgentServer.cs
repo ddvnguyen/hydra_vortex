@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Prometheus;
 using Serilog;
+using Serilog.Context;
 
 namespace Hydra.Agent;
 
@@ -71,7 +72,9 @@ public sealed class AgentServer : RpcServer
 
     private async Task HandleSaveStateAsync(string sessionId, PipeWriter writer, CancellationToken ct)
     {
-        using var _ = AgentMetrics.SaveDuration.NewTimer();
+        var nodeLabel = _cfg.NodeName;
+        var sessionTypeLabel = "non_chunked";
+        using var _ = AgentMetrics.SaveDuration.WithLabels(nodeLabel, sessionTypeLabel).NewTimer();
         try
         {
             var parts = sessionId.Split(':');
@@ -82,6 +85,10 @@ public sealed class AgentServer : RpcServer
                 ExtractSessionId(sid, slotId), slotId,
                 "agent-save", ct);
 
+            AgentMetrics.SaveOpsTotal.Inc();
+            if (result.Size > 0)
+                AgentMetrics.SaveBytesTotal.WithLabels(nodeLabel, sessionTypeLabel).Inc(result.Size);
+
             var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}}}""";
             var metaBytes = Encoding.UTF8.GetBytes(meta);
             await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
@@ -89,7 +96,6 @@ public sealed class AgentServer : RpcServer
             metaBytes.CopyTo(span);
             writer.Advance(metaBytes.Length);
             await writer.FlushAsync(ct);
-            AgentMetrics.SaveOpsTotal.Inc();
         }
         catch (Exception ex)
         {
@@ -100,7 +106,9 @@ public sealed class AgentServer : RpcServer
 
     private async Task HandleRestoreStateAsync(string sessionId, PipeWriter writer, CancellationToken ct)
     {
-        using var _ = AgentMetrics.RestoreDuration.NewTimer();
+        var nodeLabel = _cfg.NodeName;
+        var sessionTypeLabel = "non_chunked";
+        using var _ = AgentMetrics.RestoreDuration.WithLabels(nodeLabel, sessionTypeLabel).NewTimer();
         try
         {
             var parts = sessionId.Split(':');
@@ -109,6 +117,10 @@ public sealed class AgentServer : RpcServer
 
             var result = await _handler.RestoreFromStoreAsync(sid, slotId, "agent-restore", ct);
 
+            AgentMetrics.RestoreOpsTotal.Inc();
+            if (result.Size > 0)
+                AgentMetrics.RestoreBytesTotal.WithLabels(nodeLabel, sessionTypeLabel).Inc(result.Size);
+
             var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"restored":{{result.Restored.ToString().ToLowerInvariant()}},"restore_ms":{{result.ElapsedMs}}}""";
             var metaBytes = Encoding.UTF8.GetBytes(meta);
             await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
@@ -116,7 +128,6 @@ public sealed class AgentServer : RpcServer
             metaBytes.CopyTo(span);
             writer.Advance(metaBytes.Length);
             await writer.FlushAsync(ct);
-            AgentMetrics.RestoreOpsTotal.Inc();
         }
         catch (Exception ex)
         {
@@ -206,7 +217,9 @@ public sealed class AgentServer : RpcServer
 
     private async Task HandleSaveStateChunkedAsync(string sessionId, PipeWriter writer, CancellationToken ct)
     {
-        using var _ = AgentMetrics.SaveDuration.NewTimer();
+        var nodeLabel = _cfg.NodeName;
+        var sessionTypeLabel = "chunked";
+        using var _ = AgentMetrics.SaveDuration.WithLabels(nodeLabel, sessionTypeLabel).NewTimer();
         try
         {
             var parts = sessionId.Split(':');
@@ -218,6 +231,8 @@ public sealed class AgentServer : RpcServer
                 "agent-save-chunked", ct);
 
             AgentMetrics.SaveOpsTotal.Inc();
+            if (result.Size > 0)
+                AgentMetrics.SaveBytesTotal.WithLabels(nodeLabel, sessionTypeLabel).Inc(result.Size);
 
             var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}},"chunked":true}""";
             var metaBytes = Encoding.UTF8.GetBytes(meta);
@@ -244,7 +259,9 @@ public sealed class AgentServer : RpcServer
 
     private async Task HandleRestoreStateChunkedAsync(string sessionId, PipeWriter writer, CancellationToken ct)
     {
-        using var _ = AgentMetrics.RestoreDuration.NewTimer();
+        var nodeLabel = _cfg.NodeName;
+        var sessionTypeLabel = "chunked";
+        using var _ = AgentMetrics.RestoreDuration.WithLabels(nodeLabel, sessionTypeLabel).NewTimer();
         try
         {
             var parts = sessionId.Split(':');
@@ -253,14 +270,17 @@ public sealed class AgentServer : RpcServer
 
             var result = await _handler.RestoreFromStoreChunkedAsync(sid, slotId, "agent-restore-chunked", ct);
 
-            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"restored":{{result.Restored.ToString().ToLowerInvariant()}},"size":{{result.Size}},"restore_ms":{{result.ElapsedMs}},"chunked":true}""";
+            AgentMetrics.RestoreOpsTotal.Inc();
+            if (result.Size > 0)
+                AgentMetrics.RestoreBytesTotal.WithLabels(nodeLabel, sessionTypeLabel).Inc(result.Size);
+
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"restore_ms":{{result.ElapsedMs}},"chunked":true,"restored":{{result.Restored.ToString().ToLowerInvariant()}}}""";
             var metaBytes = Encoding.UTF8.GetBytes(meta);
             await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
             var span = writer.GetSpan(metaBytes.Length);
             metaBytes.CopyTo(span);
             writer.Advance(metaBytes.Length);
             await writer.FlushAsync(ct);
-            AgentMetrics.RestoreOpsTotal.Inc();
         }
         catch (Exception ex)
         {
