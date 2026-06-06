@@ -11,6 +11,7 @@ Environment=POSTGRES_DB=hydra_store
 Environment=POSTGRES_USER=hydra
 Environment=POSTGRES_PASSWORD=hydra
 Volume=pg-data.volume:/var/lib/postgresql/data
+Label=component=store
 HealthCmd=pg_isready -U hydra -d hydra_store
 HealthInterval=5s
 HealthRetries=5

@@ -16,6 +16,7 @@ Environment=HYDRA_STORE_PG_CONN=Host=localhost;Database=hydra_store;Username=hyd
 Environment=HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup
 Environment=HYDRA_STORE_RESTORE_TOP_N=10
 Tmpfs=/mnt/llm-ram:size=30G
+Label=component=store
 HealthCmd=["/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
 HealthInterval=10s
 HealthRetries=3
