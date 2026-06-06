@@ -103,6 +103,17 @@ migration_session_starts = Counter(
     "Count of session starts that used cross-GPU migration (warm slot + KV restore)",
 )
 
+# Prefix cache hit/miss counters for timeline visualization
+prefix_cache_hits = Counter(
+    "hydra_prefix_cache_hits_total",
+    "Count of prefix KV cache hits (cached prefix reused)",
+)
+
+prefix_cache_misses = Counter(
+    "hydra_prefix_cache_misses_total",
+    "Count of prefix KV cache misses (full prefill required)",
+)
+
 # Gauge for n_past values during warm slot verification
 n_past_value = Gauge(
     "hydra_n_past_value",
