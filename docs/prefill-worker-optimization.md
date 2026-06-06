@@ -152,27 +152,74 @@ kill %1
 | CUDA overhead | 2.0 GB | 1.5 GB |
 | **Total** | **18.7 GB ❌** | **16.0 GB ⚠️** |
 
-## Production Config
+## Decode-Phase Optimization
 
-For the P/D split architecture (#161), the prefill worker config:
+During decode, only **one** tensor can be safely moved to CPU:
 
 ```bash
-# Prefill worker (Mini Q3_K, RTX 5060 Ti):
+-ot "token_embd\.weight=CPU"
+```
+
+| Tensor | Needed for decode? | CPU-safe? |
+|--------|:---:|:---:|
+| `token_embd.weight` | Yes (each output token) | ✅ Safe — just an 8KB row lookup |
+| `output.weight` | **Yes (logits every token)** | ❌ Must stay GPU |
+| `output_norm.weight` | **Yes** | ❌ |
+| All attention/SSM/experts | **Yes** | ❌ |
+
+The `token_embd` lookup is tiny: 2048 floats (8KB) per token from a 509MB matrix. Moving it to CPU saves 509 MB VRAM with negligible performance cost — **but only helps when VRAM is tight**.
+
+### Decode results (Balanced Q5_K)
+
+| Config | pp4096 | tg64 | Δ decode |
+|--------|--------|------|:---:|
+| ncmoe=20 default | 379 | 44 | baseline |
+| ncmoe=20 + token_embd→CPU | 453 | 47 | +8% |
+| **ncmoe=18 + token_embd→CPU** | **465** | **50** | **+12%** |
+| ncmoe=16 even with CPU offload | OOM | | |
+
+Freed VRAM lets ncmoe drop 20→18 (+2 expert blocks on GPU). Nano at ncmoe=0 gets zero gain — VRAM isn't tight with 4.3 GB free.
+
+### Why decode gains are smaller than prefill
+
+- **Prefill**: compute-bound (all 256 experts per token × all prompt tokens), benefits from every expert on GPU
+- **Decode**: memory-bound (KV cache access), only 8/256 experts per token, expert placement less impactful
+- Most decode time is spent in attention over KV cache rows, not expert matmuls
+
+## Production Configs
+
+For the P/D split architecture (#161):
+
+### Prefill worker (Mini Q3_K + CPU offload)
+
+```bash
 llama-server -m Mini-Q3_K.gguf \
   -ngl 99 -ncmoe 2 -c 32768 -fa 1 \
   --cache-type-k q8_0 --cache-type-v q8_0 \
   -ot "token_embd\.weight=CPU" \
   -ot "output\.weight=CPU" \
   -ot "output_norm\.weight=CPU"
+```
+→ **1187 pp t/s** (3.5s for 4K tokens)
 
-# Decode worker (Balanced Q5_K, RTX 5060 Ti):
+### Decode worker (Balanced Q5_K + CPU offload)
+
+```bash
 llama-server -m Balanced-Q5_K.gguf \
-  -ngl 99 -ncmoe 20 -c 32768 -fa 1 \
-  --cache-type-k q8_0 --cache-type-v q8_0
+  -ngl 99 -ncmoe 18 -c 32768 -fa 1 \
+  --cache-type-k q8_0 --cache-type-v q8_0 \
+  -ot "token_embd\.weight=CPU"
+```
+→ **50 tg/s** (4.0s for 200 tokens)
+
+### Full P/D pipeline
+
+```
+Prefill: Mini Q3_K, ncmoe=2, output/embd→CPU  →  1187 pp  →  3.5s
+KV xfer: 400 MB via Store @ 540 MB/s          →             →  0.7s
+Decode:  Balanced Q5_K, ncmoe=18, embd→CPU   →   50 tg   →  4.0s
+────────────────────────────────────────────────────────────────
+Total (4K+200):                                               8.2s
 ```
 
-Prefill: 1187 pp t/s (Mini Q3_K) → 3.5s for 4K tokens
-KV transfer: ~400 MB via Store (63ms at 88 Gbps)
-Decode: 47 tg/s (Balanced Q5_K) → 4.3s for 200 tokens
-
-**Total: 7.8s for 4K+200 — 2.2x faster than production** with Q3_K prefill quality and Q5_K decode quality.
+**2.1x faster than production (17.4s)** with Q3_K prefill quality + Q5_K decode quality.
