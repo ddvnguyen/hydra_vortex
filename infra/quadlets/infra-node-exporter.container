@@ -1,0 +1,22 @@
+[Unit]
+Description=Node Exporter
+
+[Container]
+ContainerName=infra-node-exporter
+Image=prom/node-exporter:latest
+Network=host
+Volume=/proc:/host/proc:ro
+Volume=/sys:/host/sys:ro
+Volume=/:/rootfs:ro
+Exec=--path.procfs=/host/proc --path.sysfs=/host/sys --path.rootfs=/rootfs
+HealthCmd=wget -q -O /dev/null http://localhost:9100/metrics
+HealthInterval=15s
+HealthRetries=3
+HealthStartPeriod=10s
+HealthTimeout=5s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

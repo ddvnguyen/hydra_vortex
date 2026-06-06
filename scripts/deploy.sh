@@ -26,36 +26,42 @@ echo "New version:     $NEW"
 
 echo "$NEW" > VERSION
 
-sed -i "s/<Version>[0-9.]*<\/Version>/<Version>$NEW<\/Version>/" src/Directory.Build.props
-sed -i "s/<AssemblyVersion>[0-9.]*<\/AssemblyVersion>/<AssemblyVersion>$NEW.0<\/AssemblyVersion>/" src/Directory.Build.props
-sed -i "s/<FileVersion>[0-9.]*<\/FileVersion>/<FileVersion>$NEW.0<\/FileVersion>/" src/Directory.Build.props
-sed -i "s/<InformationalVersion>[0-9.]*<\/InformationalVersion>/<InformationalVersion>$NEW<\/InformationalVersion>/" src/Directory.Build.props
+sed -i "s/<Version>[0-9.]*<\/Version>/<Version>$NEW<\/Version>/" src/core/Directory.Build.props
+sed -i "s/<AssemblyVersion>[0-9.]*<\/AssemblyVersion>/<AssemblyVersion>$NEW.0<\/AssemblyVersion>/" src/core/Directory.Build.props
+sed -i "s/<FileVersion>[0-9.]*<\/FileVersion>/<FileVersion>$NEW.0<\/FileVersion>/" src/core/Directory.Build.props
+sed -i "s/<InformationalVersion>[0-9.]*<\/InformationalVersion>/<InformationalVersion>$NEW<\/InformationalVersion>/" src/core/Directory.Build.props
 
-git add VERSION src/Directory.Build.props
+git add VERSION src/core/Directory.Build.props
 git commit -m "v$NEW"
 git tag -a "v$NEW" -m "Hydra v$NEW"
 
 echo "Building images..."
-cd infra
 
-# Full down first — up -d on running containers in rootless podman
-# corrupts overlay mounts and rootlessport forwarding.
-# Only targets hydra-core; infra (observability) stays running independently.
-podman-compose -f docker-compose.hydra.yml down -t 0 2>&1 | tail -3
-podman rm -f $(podman ps -aq --filter name=hydra-core_) 2>/dev/null || true
-podman-compose -f docker-compose.hydra.yml build 2>&1 | tail -3
-podman-compose -f docker-compose.hydra.yml up -d 2>&1 | tail -5
+# Build hydra core images
+podman build --target store -f infra/Dockerfile -t localhost/hydra-store:latest .
+podman build --target agent -f infra/Dockerfile -t localhost/hydra-agent:latest .
+podman build --target coordinator -f infra/Dockerfile -t localhost/hydra-coordinator:latest .
 
-# Build and start llama-cpp server
-echo "Starting llama-cpp server..."
-LLAMA_DIR="llama-rtx-node"
-if podman ps --format '{{.Names}}' | grep -q '^llama-cpp$'; then
-    echo "llama-cpp already running"
-else
-    podman-compose -f "$LLAMA_DIR/docker-compose.yml" up -d 2>&1 | tail -3
-fi
+# Build llama-server RTX image
+podman build -f infra/llama-rtx-node/Dockerfile -t localhost/llama-rtx:latest infra/llama-rtx-node
 
-cd "$(git rev-parse --show-toplevel)"
+echo "Installing Quadlet files..."
+QUADLET_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
+mkdir -p "$QUADLET_DIR"
+cp infra/quadlets/*.container "$QUADLET_DIR"
+cp infra/quadlets/*.volume "$QUADLET_DIR"
+systemctl --user daemon-reload
+
+echo "Deploying hydra core services..."
+systemctl --user stop hydra-postgres hydra-store hydra-agent-rtx hydra-agent-p100 hydra-coordinator 2>/dev/null || true
+systemctl --user start hydra-postgres.service
+systemctl --user start hydra-store.service
+systemctl --user start hydra-agent-rtx.service hydra-agent-p100.service
+systemctl --user start hydra-coordinator.service
+
+echo "Deploying llama-server RTX..."
+systemctl --user stop llama-rtx 2>/dev/null || true
+systemctl --user start llama-rtx.service
 
 REV=$(git rev-parse --short HEAD)
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $NEW ($REV) deployed" >> deploy.log
