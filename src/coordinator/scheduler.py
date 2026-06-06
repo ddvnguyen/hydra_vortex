@@ -62,6 +62,7 @@ class WorkItem:
     future: asyncio.Future
     retry_count: int = 0
     _start_time: float = field(default_factory=time.time)
+    phases: dict = field(default_factory=dict)
 
 
 class WorkerScheduler:
@@ -235,12 +236,15 @@ class WorkerScheduler:
     # ── process ──────────────────────────────────────────────────────────
 
     async def _process(self, item: WorkItem, worker: WorkerNodeConfig):
+        item.phases["queue_wait_ms"] = int((time.time() - item._start_time) * 1000)
+        item.phases["node"] = worker.name
         affinity_dispatched = False
         try:
             entry = self._session_table.lookup(item.session_id)
 
             if entry and entry.slot_id is not None:
                 if entry.node_name == worker.name:
+                    item.phases["route_type"] = "warm"
                     affinity_dispatched = True
                     await self._execute_affinity(item, worker, entry)
                     return
@@ -248,6 +252,7 @@ class WorkerScheduler:
                     target = self._worker_by_name(entry.node_name)
                     if target and self._tracker.is_free(target.name) and self._routable(target.name):
                         if self._tracker.acquire(target.name, "decode"):
+                            item.phases["route_type"] = "cross_node"
                             cross_node_affinity_total.inc()
                             await self._execute_affinity(item, target, entry)
                             return
@@ -255,6 +260,7 @@ class WorkerScheduler:
                 entry = self._session_table.lookup(item.session_id)
 
             if entry and entry.has_store_state:
+                item.phases["route_type"] = "migration"
                 self._tracker.release(worker.name)
                 self._worker_freed.set()
                 await self._execute_store_restore(item)
@@ -267,8 +273,10 @@ class WorkerScheduler:
                 )
 
             if self._is_atomic(item):
+                item.phases["route_type"] = "cold_atomic"
                 await self._execute_atomic(item, worker)
             else:
+                item.phases["route_type"] = "cold_concurrency"
                 await self._execute_concurrency(item, worker)
         except Exception as e:
             status = e.status_code if isinstance(e, HTTPException) else 503
@@ -285,6 +293,17 @@ class WorkerScheduler:
             self._worker_freed.set()
             if not item.future.done():
                 item.future.set_exception(HTTPException(status_code=status, detail=str(e)))
+
+    @staticmethod
+    def _emit_timeline(item: WorkItem, extra: Optional[dict] = None):
+        phases = dict(item.phases)
+        if extra:
+            phases.update(extra)
+        total_ms = int((time.time() - item._start_time) * 1000)
+        phases["total_ms"] = total_ms
+        log.info("request_timeline",
+                 trace_id=item.trace_id, session_id=item.session_id,
+                 **phases)
 
     # ── 1. Affinity path ─────────────────────────────────────────────────
 
@@ -309,6 +328,7 @@ class WorkerScheduler:
                 log.warning("n_past_guard_triggered",
                              trace_id=item.trace_id, session_id=sess_id, node=worker.name,
                              n_past=entry.n_past, estimated=estimated)
+                item.phases["n_past_guard_ms"] = int((time.monotonic() - gp_start) * 1000)
                 n_past_guard_duration.labels(action="restore").observe(time.monotonic() - gp_start)
                 client = RpcClient(worker.host, worker.rpc_port)
                 try:
@@ -320,8 +340,10 @@ class WorkerScheduler:
                     await client.close()
                 entry.slot_id = None
             else:
+                item.phases["n_past_guard_ms"] = int((time.monotonic() - gp_start) * 1000)
                 n_past_guard_duration.labels(action="check").observe(time.monotonic() - gp_start)
         else:
+            item.phases["n_past_guard_ms"] = 0
             n_past_guard_duration.labels(action="skip").observe(0)
 
         node_url = worker.llama_url
@@ -346,8 +368,10 @@ class WorkerScheduler:
                 else:
                     self._tracker.on_success(worker.name)
                 finally:
+                    item.phases["decode_ms"] = int((time.monotonic() - stream_start) * 1000)
                     decode_duration.labels(node=worker.name, session_type="warm").observe(
                         time.monotonic() - stream_start)
+                    self._emit_timeline(item)
                     self._tracker.release(worker.name)
                     self._worker_freed.set()
 
@@ -373,11 +397,13 @@ class WorkerScheduler:
                 self._tracker.on_error(worker.name)
                 raise
             finally:
+                item.phases["decode_ms"] = int((time.monotonic() - stream_start) * 1000)
                 decode_duration.labels(node=worker.name, session_type="warm").observe(
                     time.monotonic() - stream_start)
                 self._worker_freed.set()
             self._tracker.on_success(worker.name)
             await self._track_after_completion(sess_id, node_url, result, item)
+            self._emit_timeline(item)
             item.future.set_result(JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": worker.name},
@@ -413,8 +439,10 @@ class WorkerScheduler:
             self._worker_freed.set()
             self._tracker.on_error(decode_worker.name)
             raise HTTPException(status_code=503, detail=f"Restore failed: {e}")
+        restore_elapsed = time.monotonic() - restore_start
+        item.phases["restore_kv_ms"] = int(restore_elapsed * 1000)
         restore_kv_duration.labels(node=decode_worker.name, session_type="migration").observe(
-            time.monotonic() - restore_start)
+            restore_elapsed)
 
         self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_entry, prefix_hash=item.prefix_hash)
 
@@ -456,8 +484,10 @@ class WorkerScheduler:
                 else:
                     self._tracker.on_success(decode_worker.name)
                 finally:
+                    item.phases["decode_ms"] = int((time.monotonic() - stream_start) * 1000)
                     decode_duration.labels(node=decode_worker.name, session_type="migration").observe(
                         time.monotonic() - stream_start)
+                    self._emit_timeline(item)
                     self._tracker.release(decode_worker.name)
                     self._worker_freed.set()
 
@@ -480,11 +510,13 @@ class WorkerScheduler:
             else:
                 self._tracker.on_success(decode_worker.name)
             finally:
+                item.phases["decode_ms"] = int((time.monotonic() - stream_start) * 1000)
                 decode_duration.labels(node=decode_worker.name, session_type="migration").observe(
                     time.monotonic() - stream_start)
                 self._tracker.release(decode_worker.name)
                 self._worker_freed.set()
             await self._track_after_completion(sess_id, decode_url, result, item)
+            self._emit_timeline(item)
             item.future.set_result(JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": decode_worker.name},
@@ -535,8 +567,10 @@ class WorkerScheduler:
                 else:
                     self._tracker.on_success(worker.name)
                 finally:
+                    item.phases["decode_ms"] = int((time.monotonic() - stream_start) * 1000)
                     decode_duration.labels(node=worker.name, session_type="cold").observe(
                         time.monotonic() - stream_start)
+                    self._emit_timeline(item)
                     self._tracker.release(worker.name)
                     self._worker_freed.set()
 
@@ -559,6 +593,7 @@ class WorkerScheduler:
             else:
                 self._tracker.on_success(worker.name)
             finally:
+                item.phases["decode_ms"] = int((time.monotonic() - stream_start) * 1000)
                 decode_duration.labels(node=worker.name, session_type="cold").observe(
                     time.monotonic() - stream_start)
                 self._tracker.release(worker.name)
@@ -573,6 +608,7 @@ class WorkerScheduler:
             if item.prefix_hash:
                 await self._maybe_save_prefix(item, worker)
             await self._state.save_session(sess_id, worker.host, worker.rpc_port, trace_id=item.trace_id)
+            self._emit_timeline(item)
             item.future.set_result(JSONResponse(
                 content=result,
                 headers={"X-Trace-Id": item.trace_id, "X-Hydra-Node": worker.name},
@@ -619,8 +655,10 @@ class WorkerScheduler:
             self._worker_freed.set()
             self._tracker.on_error(prefill_worker.name)
             raise HTTPException(status_code=503, detail=f"Prefill failed: {e}")
+        prefill_elapsed = time.monotonic() - prefill_start
+        item.phases["prefill_ms"] = int(prefill_elapsed * 1000)
         prefill_duration.labels(node=prefill_worker.name, session_type="cold").observe(
-            time.monotonic() - prefill_start)
+            prefill_elapsed)
 
         # Use id_slot from response if available (llama-server fork), fallback to captured slot
         response_slot = prefill_result.get("id_slot")
@@ -658,8 +696,10 @@ class WorkerScheduler:
         except Exception as e:
             self._tracker.on_error(prefill_worker.name)
             raise HTTPException(status_code=503, detail=f"KV save failed: {e}")
+        save_elapsed = time.monotonic() - save_start
+        item.phases["save_kv_ms"] = int(save_elapsed * 1000)
         save_kv_duration.labels(node=prefill_worker.name, session_type="cold").observe(
-            time.monotonic() - save_start)
+            save_elapsed)
 
         self._session_table.mark_evicted(sess_id)
         if n_past_after > 0:
@@ -699,8 +739,10 @@ class WorkerScheduler:
             self._tracker.on_error(decode_worker.name)
             self._worker_freed.set()
             raise HTTPException(status_code=503, detail=f"KV restore failed: {e}")
+        restore_elapsed = time.monotonic() - restore_start
+        item.phases["restore_kv_ms"] = int(restore_elapsed * 1000)
         restore_kv_duration.labels(node=decode_worker.name, session_type="cold").observe(
-            time.monotonic() - restore_start)
+            restore_elapsed)
 
         self._session_table.register(sess_id, decode_worker.name, None, n_past=n_past_after, prefix_hash=item.prefix_hash)
         log.info("cold_concurrency_decode",
@@ -729,8 +771,10 @@ class WorkerScheduler:
             else:
                 self._tracker.on_success(decode_worker.name)
             finally:
+                item.phases["decode_ms"] = int((time.monotonic() - stream_start) * 1000)
                 decode_duration.labels(node=decode_worker.name, session_type="cold").observe(
                     time.monotonic() - stream_start)
+                self._emit_timeline(item)
                 self._tracker.release(decode_worker.name)
                 self._worker_freed.set()
 
