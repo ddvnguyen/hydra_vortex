@@ -3,7 +3,7 @@
 The Hydra roadmap lives in one **GitHub Project v2 ("Hydra Vortex")** on top of the
 repo's issues/PRs. One platform: issues = work items, PRs link via `Closes #N`, the
 board status is automatic. Agents drive it with `gh project` / `gh issue` (Bash) or the
-**GitHub MCP server**. This supersedes Plane (`docs/PLANE_SETUP.md`, legacy/parallel).
+**GitHub MCP server**.
 
 ## Model
 - **Milestones** (native) = the roadmap groups: `Phase 0 — Stabilize`,

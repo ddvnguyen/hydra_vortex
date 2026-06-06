@@ -1,19 +1,30 @@
+import asyncio
 import hashlib
-import time
 from dataclasses import dataclass
 from typing import Optional
 
+import httpx
+
+from coordinator.lib.log_config import get_logger
 from coordinator.config import WorkerNodeConfig
-from coordinator.session_table import SessionTable
+from coordinator.worker_tracker import WorkerTracker
+from coordinator.health import HealthMonitor
+from coordinator.session_table import SessionEntry
+
+log = get_logger()
+
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=30)
+    return _http_client
 
 WORKER_PREFILL = 1
 WORKER_DECODE = 2
 WORKER_MIXED = 3
-
-# Incremented on every new-session routing decision so that ties in load are
-# broken by rotating across nodes rather than always picking the first in sort
-# order (which would always be the same node when priorities are equal).
-_rr_counter: int = 0
 
 
 @dataclass
@@ -21,7 +32,7 @@ class RoutingDecision:
     node_name: str
     node_config: WorkerNodeConfig
     slot_id: Optional[int] = None
-    action: str = "route"  # "route" or "store_restore"
+    action: str = "route"
     session_id: Optional[str] = None
     session_found: bool = False
     n_past: int = 0
@@ -44,167 +55,223 @@ def estimate_request_tokens(messages: list[dict], chars_per_token: float = 4.0) 
     return max(1, int(total_chars / chars_per_token))
 
 
-def _load_fraction(
-    worker_name: str,
-    health_info: dict[str, dict],
-    in_flight: Optional[dict[str, int]] = None,
-) -> float:
-    """Busy-slot fraction [0.0, 1.0]. Combines health-poll data with in-flight
-    counter so concurrent requests see up-to-date load without waiting for the
-    next poll (which can be up to health_poll_interval_s stale)."""
-    info = health_info.get(worker_name, {})
-    total = max(info.get("slots_total", 1), 1)
-    idle = info.get("slots_idle", 0)
-    inflight = (in_flight or {}).get(worker_name, 0)
-    busy = min(total, (total - idle) + inflight)
-    return busy / total
-
-
-def _sort_key_prefill(
-    worker: WorkerNodeConfig,
-    health_info: dict[str, dict],
-    in_flight: Optional[dict[str, int]],
-) -> tuple:
-    """Sort key for prefill worker selection: priority ASC, then load ASC."""
-    return (worker.prefill_priority, _load_fraction(worker.name, health_info, in_flight))
-
-
-def _sort_key_decode(
-    worker: WorkerNodeConfig,
-    health_info: dict[str, dict],
-    in_flight: Optional[dict[str, int]],
-) -> tuple:
-    """Sort key for decode worker selection: priority ASC, then load ASC."""
-    return (worker.decode_priority, _load_fraction(worker.name, health_info, in_flight))
-
-
-def select_prefill_worker(
-    workers: list[WorkerNodeConfig],
-    health_info: dict[str, dict],
-    in_flight: Optional[dict[str, int]] = None,
-    exclude: Optional[str] = None,
-) -> Optional[WorkerNodeConfig]:
-    """Return the highest-priority healthy PREFILL-capable worker with capacity."""
-    healthy_prefill = [
-        w for w in workers
-        if (w.worker_type & WORKER_PREFILL)
-        and health_info.get(w.name, {}).get("healthy", False)
-        and w.name != exclude
-    ]
-    if not healthy_prefill:
+def compute_prefix_hash(messages: list[dict]) -> Optional[str]:
+    system_msg = next((m for m in messages if m.get("role") == "system"), None)
+    if not system_msg:
         return None
-    return min(healthy_prefill, key=lambda w: _sort_key_prefill(w, health_info, in_flight))
+    content = str(system_msg.get("content", ""))
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
-def select_decode_worker(
-    workers: list[WorkerNodeConfig],
-    health_info: dict[str, dict],
-    in_flight: Optional[dict[str, int]] = None,
-    exclude: Optional[str] = None,
-) -> Optional[WorkerNodeConfig]:
-    """Return the highest-priority healthy DECODE-capable worker with capacity."""
-    healthy_decode = [
-        w for w in workers
-        if (w.worker_type & WORKER_DECODE)
-        and health_info.get(w.name, {}).get("healthy", False)
-        and w.name != exclude
-    ]
-    if not healthy_decode:
+async def resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -> Optional[int]:
+    if expected_n_past <= 0:
         return None
-    return min(healthy_decode, key=lambda w: _sort_key_decode(w, health_info, in_flight))
 
-
-def route_request(
-    request_messages: list[dict],
-    session_table: SessionTable,
-    workers: list[WorkerNodeConfig],
-    health_info: dict[str, dict],
-    chars_per_token: float = 4.0,
-    long_prompt_threshold: int = 8192,
-    session_id: Optional[str] = None,
-    in_flight: Optional[dict[str, int]] = None,
-) -> RoutingDecision:
-    global _rr_counter
-
-    # --- Session lookup ---
-    if session_id:
-        entry = session_table.lookup(session_id)
-    else:
-        entry = None
-
-    if not entry and not session_id:
-        derived_id = derive_session_id(request_messages)
-        entry = session_table.lookup(derived_id)
-        if entry:
-            session_id = derived_id
-
-    healthy_workers = {
-        w.name: health_info[w.name]
-        for w in workers
-        if health_info.get(w.name, {}).get("healthy", False)
-    }
-
-    if not healthy_workers:
-        raise RuntimeError("No healthy workers available")
-
-    # --- Session affinity ---
-    if entry:
-        if entry.node_name in healthy_workers:
-            cfg = next((w for w in workers if w.name == entry.node_name), None)
-            if cfg:
-                return RoutingDecision(
-                    node_name=entry.node_name,
-                    node_config=cfg,
-                    slot_id=entry.slot_id,
-                    action="route",
-                    session_id=entry.session_id,
-                    session_found=True,
-                    n_past=entry.n_past,
-                )
-
-        if entry.has_store_state:
-            # Session evicted to store — restore on least-loaded worker
-            healthy_list = [w for w in workers if w.name in healthy_workers]
-            if healthy_list:
-                target = min(
-                    healthy_list,
-                    key=lambda w: _load_fraction(w.name, health_info, in_flight),
-                )
-                return RoutingDecision(
-                    node_name=target.name,
-                    node_config=target,
-                    action="store_restore",
-                    session_id=entry.session_id,
-                    session_found=True,
-                    n_past=entry.n_past,
-                )
-
-    # --- Long-prompt: prefer a PREFILL-capable worker ---
-    estimated = estimate_request_tokens(request_messages, chars_per_token)
-    if estimated >= long_prompt_threshold:
-        prefill_worker = select_prefill_worker(workers, health_info, in_flight)
-        if prefill_worker:
-            return RoutingDecision(
-                node_name=prefill_worker.name,
-                node_config=prefill_worker,
-                action="route",
-                session_id=session_id,
+    for attempt in range(2):
+        try:
+            client = _get_client()
+            resp = await client.get(
+                f"{llama_url.rstrip('/')}/slots",
+                headers={"X-Trace-Id": trace_id},
             )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            log.debug("resolve_slot_id_failed",
+                       trace_id=trace_id, llama_url=llama_url,
+                       expected_n_past=expected_n_past,
+                       attempt=attempt + 1, error=str(e))
+            if attempt == 0:
+                await asyncio.sleep(3)
+            continue
 
-    # --- Least-loaded with round-robin tiebreak ---
-    healthy_list = [w for w in workers if w.name in healthy_workers]
-    if not healthy_list:
-        raise RuntimeError("No healthy workers available")
+        slots = data if isinstance(data, list) else data.get("slots", [])
+        for slot in slots:
+            if slot.get("is_processing"):
+                if slot.get("n_past", 0) == expected_n_past:
+                    log.debug("resolve_slot_id_processing_match",
+                               trace_id=trace_id, llama_url=llama_url,
+                               expected_n_past=expected_n_past,
+                               slot_id=slot.get("id"),
+                               attempt=attempt + 1)
+                continue
+            if slot.get("n_past", 0) == expected_n_past:
+                return slot.get("id")
 
-    healthy_list.sort(key=lambda w: _load_fraction(w.name, health_info, in_flight))
-    min_load = _load_fraction(healthy_list[0].name, health_info, in_flight)
-    tied = [w for w in healthy_list if _load_fraction(w.name, health_info, in_flight) == min_load]
-    target = tied[_rr_counter % len(tied)]
-    _rr_counter += 1
+        log.debug("resolve_slot_id_no_match",
+                   trace_id=trace_id, llama_url=llama_url,
+                   expected_n_past=expected_n_past,
+                   slot_count=len(slots),
+                   attempt=attempt + 1)
+        if attempt == 0:
+            await asyncio.sleep(3)
 
-    return RoutingDecision(
-        node_name=target.name,
-        node_config=target,
-        action="route",
-        session_id=session_id,
+    return None
+
+
+async def _pick_idle_slot(llama_url: str, trace_id: str) -> int | None:
+    client = _get_client()
+    resp = await client.get(
+        f"{llama_url.rstrip('/')}/slots",
+        headers={"X-Trace-Id": trace_id},
     )
+    resp.raise_for_status()
+    data = resp.json()
+    slots = data if isinstance(data, list) else data.get("slots", [])
+    for slot in slots:
+        if not slot.get("is_processing"):
+            return slot.get("id")
+    return None
+
+
+async def verify_warm_slot(
+    worker: WorkerNodeConfig,
+    entry: SessionEntry,
+    trace_id: str,
+    http_client: Optional[httpx.AsyncClient] = None,
+) -> bool:
+    """Check that the worker's slot for this session is genuinely warm.
+
+    Returns True only if all hold:
+    1. A slot with id == entry.slot_id exists.
+    2. It is not stuck (not is_processing == true && n_remain == 0).
+    3. slot.n_past >= entry.n_past (resident KV covers the session).
+    4. prefix_hash matches (guards slot-id reuse by another session).
+    """
+    client = http_client or _get_client()
+    try:
+        resp = await client.get(
+            f"{worker.llama_url.rstrip('/')}/slots",
+            headers={"X-Trace-Id": trace_id},
+        )
+        if resp.status_code != 200:
+            log.debug("verify_warm_slot_http_error",
+                       trace_id=trace_id, node=worker.name,
+                       slot_id=entry.slot_id, status=resp.status_code)
+            return False
+        data = resp.json()
+    except Exception as e:
+        log.debug("verify_warm_slot_failed",
+                   trace_id=trace_id, node=worker.name,
+                   slot_id=entry.slot_id, error=str(e))
+        return False
+
+    slots = data if isinstance(data, list) else data.get("slots", [])
+    for slot in slots:
+        if slot.get("id") != entry.slot_id:
+            continue
+        if slot.get("is_processing") and slot.get("n_remain", 1) == 0:
+            log.debug("verify_warm_slot_stuck",
+                       trace_id=trace_id, node=worker.name,
+                       slot_id=entry.slot_id)
+            return False
+        if slot.get("n_past", 0) < (entry.n_past or 0):
+            log.debug("verify_warm_slot_n_past_mismatch",
+                       trace_id=trace_id, node=worker.name,
+                       slot_id=entry.slot_id,
+                       slot_n_past=slot.get("n_past", 0),
+                       expected_n_past=entry.n_past)
+            return False
+        if entry.prefix_hash:
+            slot_prefix = slot.get("prefix_hash") or slot.get("prompt_prefix_hash")
+            if slot_prefix and slot_prefix != entry.prefix_hash:
+                log.debug("verify_warm_slot_prefix_mismatch",
+                           trace_id=trace_id, node=worker.name,
+                           slot_id=entry.slot_id,
+                           expected=entry.prefix_hash, got=slot_prefix)
+                return False
+        return True
+    log.debug("verify_warm_slot_no_match",
+               trace_id=trace_id, node=worker.name,
+               slot_id=entry.slot_id,
+               slot_count=len(slots), n_past=entry.n_past)
+    return False
+
+
+def _eligible_prefill_workers(
+    workers: list[WorkerNodeConfig],
+    tracker: WorkerTracker,
+    health: HealthMonitor,
+    max_tokens: Optional[int] = None,
+    exclude: Optional[str] = None,
+) -> list[WorkerNodeConfig]:
+    eligible = []
+    for w in workers:
+        if not (w.worker_type & WORKER_PREFILL):
+            continue
+        if w.name == exclude:
+            continue
+        if not health.is_healthy(w.name):
+            continue
+        if not tracker.is_free(w.name):
+            continue
+        if max_tokens is not None and w.max_prefill_tokens != -1:
+            if max_tokens > w.max_prefill_tokens:
+                continue
+        eligible.append(w)
+    return eligible
+
+
+def _eligible_decode_workers(
+    workers: list[WorkerNodeConfig],
+    tracker: WorkerTracker,
+    health: HealthMonitor,
+    exclude: Optional[str] = None,
+) -> list[WorkerNodeConfig]:
+    eligible = []
+    for w in workers:
+        if not (w.worker_type & WORKER_DECODE):
+            continue
+        if w.name == exclude:
+            continue
+        if not health.is_healthy(w.name):
+            continue
+        if not tracker.is_free(w.name):
+            continue
+        eligible.append(w)
+    return eligible
+
+
+def pick_best_prefill_worker(
+    workers: list[WorkerNodeConfig],
+    tracker: WorkerTracker,
+    health: HealthMonitor,
+    max_tokens: Optional[int] = None,
+    exclude: Optional[str] = None,
+) -> Optional[WorkerNodeConfig]:
+    eligible = _eligible_prefill_workers(workers, tracker, health, max_tokens, exclude)
+    if not eligible:
+        return None
+    return min(eligible, key=lambda w: (w.prefill_priority, w.name))
+
+
+def pick_best_decode_worker(
+    workers: list[WorkerNodeConfig],
+    tracker: WorkerTracker,
+    health: HealthMonitor,
+    exclude: Optional[str] = None,
+) -> Optional[WorkerNodeConfig]:
+    eligible = _eligible_decode_workers(workers, tracker, health, exclude)
+    if not eligible:
+        return None
+    return min(eligible, key=lambda w: (w.decode_priority, w.name))
+
+
+def pick_best_mixed_worker(
+    workers: list[WorkerNodeConfig],
+    tracker: WorkerTracker,
+    health: HealthMonitor,
+    max_tokens: Optional[int] = None,
+    exclude: Optional[str] = None,
+) -> Optional[WorkerNodeConfig]:
+    eligible = [
+        w for w in workers
+        if (w.worker_type & WORKER_PREFILL) and (w.worker_type & WORKER_DECODE)
+        and w.name != exclude
+        and health.is_healthy(w.name)
+        and tracker.is_free(w.name)
+        and (max_tokens is None or w.max_prefill_tokens == -1 or max_tokens <= w.max_prefill_tokens)
+    ]
+    if not eligible:
+        return None
+    return min(eligible, key=lambda w: (w.prefill_priority, w.decode_priority, w.name))

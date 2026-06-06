@@ -6,32 +6,7 @@ requests_total = Counter(
     "hydra_requests_total", "Total requests routed", ["node", "reason"],
 )
 
-request_latency = Histogram(
-    "hydra_request_latency_seconds", "Request latency in seconds", ["node"],
-    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, float("inf")),
-)
 
-cache_hits_total = Counter(
-    "hydra_cache_hits_total", "Total cache hit count",
-)
-
-prefix_cache_hits = Counter(
-    "hydra_prefix_cache_hits_total", "System-prompt KV cache hits (restored prefix)",
-)
-
-prefix_cache_misses = Counter(
-    "hydra_prefix_cache_misses_total",
-    "System-prompt KV cache misses (first-time or evicted prefix)",
-)
-
-prefix_warmups_total = Counter(
-    "hydra_prefix_warmups_total", "System-prompt warm-up requests fired",
-)
-
-upstream_coalesced_total = Counter(
-    "hydra_upstream_coalesced_total",
-    "Identical in-flight upstream completions coalesced via single-flight (#134)",
-)
 
 upstream_timeouts_total = Counter(
     "hydra_upstream_timeouts_total",
@@ -51,25 +26,24 @@ active_sessions = Gauge(
     "hydra_active_sessions", "Active sessions", ["node"],
 )
 
-store_ops_total = Counter(
-    "hydra_store_ops_total", "Store operations by type", ["op"],
+
+worker_busy_seconds = Gauge(
+    "hydra_worker_busy_seconds",
+    "Seconds worker has been in busy state (0 = free). Monotonically increasing = tracker leak.",
+    ["node"],
 )
 
-store_bytes_transferred = Counter(
-    "hydra_store_bytes_transferred", "Store bytes transferred", ["direction"],
+cross_node_affinity_total = Counter(
+    "hydra_cross_node_affinity_total",
+    "Cross-node affinity dispatches (prefill worker never released on success)",
 )
 
-store_chunks_total = Gauge(
-    "hydra_store_chunks_total", "Total chunks in store",
-)
 
-store_dedup_ratio = Gauge(
-    "hydra_store_dedup_ratio", "Deduplication ratio",
-)
-
-agent_slot_utilization = Gauge(
-    "hydra_agent_slot_utilization", "Slot utilization by node", ["node"],
-)
+def set_worker_busy_metrics(scheduler) -> None:
+    for w in scheduler._config.workers:
+        worker_busy_seconds.labels(node=w.name).set(
+            scheduler._tracker.elapsed_seconds(w.name)
+        )
 
 # Phase-level latency histograms for session timeline visualization
 verify_warm_slot_duration = Histogram(

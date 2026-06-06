@@ -12,6 +12,12 @@ public sealed class SlotInfo
     public int NPast { get; init; }
     [JsonPropertyName("is_processing")]
     public bool IsProcessing { get; init; }
+    [JsonPropertyName("n_remain")]
+    public int NRemain { get; init; }
+    [JsonPropertyName("n_decoded")]
+    public int NDecoded { get; init; }
+    [JsonPropertyName("id_task")]
+    public int IdTask { get; init; }
 }
 
 public sealed class SlotMeta
@@ -47,7 +53,7 @@ public sealed class LlamaClient : IDisposable
         _http = new HttpClient
         {
             BaseAddress = new Uri(_baseUrl),
-            Timeout = TimeSpan.FromSeconds(300),
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan,
         };
     }
 
@@ -166,6 +172,7 @@ public sealed class LlamaClient : IDisposable
                 Id = e.GetProperty("id").GetInt32(),
                 NPast = e.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0,
                 IsProcessing = e.TryGetProperty("is_processing", out var ip) && ip.GetBoolean(),
+                NRemain = e.TryGetProperty("n_remain", out var nr) ? nr.GetInt32() : 0,
             }).ToList();
         }
 
@@ -176,6 +183,7 @@ public sealed class LlamaClient : IDisposable
                 Id = e.GetProperty("id").GetInt32(),
                 NPast = e.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0,
                 IsProcessing = e.TryGetProperty("is_processing", out var ip) && ip.GetBoolean(),
+                NRemain = e.TryGetProperty("n_remain", out var nr) ? nr.GetInt32() : 0,
             }).ToList();
         }
 

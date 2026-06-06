@@ -1,42 +1,37 @@
-import { OAuthClient } from "@makeplane/plane-node-sdk";
-
 // Generic OAuth callback helper for oauth.ddvnguyen.com
 //
-//   /<service>-setup?client_id=xxx
-//       → redirects to provider's authorization page via SDK
+//   /<service>-setup?client_id=xxx&auth_url=yyy
+//       → redirects to provider's authorization page
 //
-//   /<service>-callback?app_installation_id=xxx&code=yyy
-//       → displays all received params so you can copy app_installation_id
+//   /<service>-callback?code=zzz
+//       → displays all received params so you can copy the code
+//
+// To set up a new OAuth app, deploy this worker and configure:
+//   https://oauth.ddvnguyen.com/<service>-setup?client_id=YOUR_CLIENT_ID&auth_url=https://provider.com/oauth/authorize
 
 export default {
   async fetch(request) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/+/, '') || 'unknown';
 
-    // Setup: redirect to authorization
     if (path.endsWith('-setup')) {
       const service = path.replace(/-setup$/, '');
       const clientId = url.searchParams.get('client_id');
+      const authUrl = url.searchParams.get('auth_url');
 
-      if (!clientId) {
+      if (!clientId || !authUrl) {
         return new Response(
-          `Missing client_id.\nSetup URL must be: https://oauth.ddvnguyen.com/${service}-setup?client_id=YOUR_CLIENT_ID`,
+          `Missing client_id or auth_url.\nSetup URL must be: https://oauth.ddvnguyen.com/${service}-setup?client_id=YOUR_CLIENT_ID&auth_url=PROVIDER_AUTH_URL`,
           { status: 400, headers: { 'Content-Type': 'text/plain' } }
         );
       }
 
       const redirectUri = `${url.origin}/${service}-callback`;
-      const oauth = new OAuthClient({
-        clientId,
-        clientSecret: '',
-        redirectUri,
-      });
-
-      const authUrl = oauth.getAuthorizationUrl('code','');
-      return Response.redirect(authUrl, 302);
+      const separator = authUrl.includes('?') ? '&' : '?';
+      const fullAuthUrl = `${authUrl}${separator}client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code`;
+      return Response.redirect(fullAuthUrl, 302);
     }
 
-    // Callback: display received params
     const params = Object.fromEntries(url.searchParams);
 
     if (request.headers.get('Accept')?.includes('application/json')) {

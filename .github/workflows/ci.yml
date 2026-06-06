@@ -72,30 +72,30 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Restore & build (.NET)
-        run: dotnet build Hydra.sln -c Release --nologo -v minimal
+        run: dotnet build src/Hydra.sln -c Release --nologo -v minimal
 
       - name: Unit tests — Shared
         run: |
-          dotnet test src/Tests.Shared/ -c Release --no-build --nologo -v normal \
+          dotnet test src/core/Tests.Shared/ -c Release --no-build --nologo -v normal \
             --logger "trx;LogFileName=shared.trx" \
             --results-directory TestResults/
 
       - name: Unit tests — Store
         run: |
-          dotnet test src/Tests.Store/ -c Release --no-build --nologo -v normal \
+          dotnet test src/core/Tests.Store/ -c Release --no-build --nologo -v normal \
             --logger "trx;LogFileName=store.trx" \
             --results-directory TestResults/
 
       - name: Unit tests — Agent
         run: |
-          dotnet test src/Tests.Agent/ -c Release --no-build --nologo -v normal \
+          dotnet test src/core/Tests.Agent/ -c Release --no-build --nologo -v normal \
             --logger "trx;LogFileName=agent.trx" \
             --results-directory TestResults/
 
 
       - name: Unit tests — Coordinator (Python)
         run: |
-          python3 -m pytest src/coordinator/tests/test_router.py -v \
+          python3 -m pytest tests/coordinator/test_router.py -v \
             --junit-xml=TestResults/coordinator.xml
 
       - name: Publish .NET test results
@@ -168,11 +168,11 @@ jobs:
         run: dotnet build-server shutdown
 
       - name: Build
-        run: dotnet build Hydra.sln -c Release --nologo -v minimal
+        run: dotnet build src/Hydra.sln -c Release --nologo -v minimal
 
       - name: Integration tests
         run: |
-          dotnet test src/Tests.Integration/ -c Release --no-build --nologo -v normal \
+          dotnet test src/core/Tests.Integration/ -c Release --no-build --nologo -v normal \
             --logger "trx;LogFileName=integration.trx" \
             --results-directory TestResults/
         env:
