@@ -1,0 +1,29 @@
+[Unit]
+Description=Hydra KV Store
+Requires=hydra-postgres.service
+After=hydra-postgres.service
+
+[Container]
+ContainerName=hydra-store
+Image=localhost/hydra-store:latest
+Network=host
+Environment=HYDRA_STORE_HOST=0.0.0.0
+Environment=HYDRA_STORE_PORT=9500
+Environment=HYDRA_STORE_DIR=/mnt/llm-ram/store
+Environment=HYDRA_STORE_DEBUG_PORT=9501
+Environment=HYDRA_STORE_PG_CONN=Host=localhost;Database=hydra_store;Username=hydra;Password=hydra
+Environment=HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup
+Environment=HYDRA_STORE_RESTORE_TOP_N=10
+Tmpfs=/mnt/llm-ram:size=30G
+HealthCmd=["/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
+HealthInterval=10s
+HealthRetries=3
+HealthStartPeriod=20s
+HealthTimeout=5s
+Notify=healthy
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

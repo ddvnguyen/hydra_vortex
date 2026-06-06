@@ -228,37 +228,28 @@ jobs:
     name: Deploy Infra
     runs-on: self-hosted
     timeout-minutes: 10
-    if: |
-      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-infra == 'true')
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-infra == 'true'
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check for infra source changes
-        id: source-check
+      - name: Install Quadlet files
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | \
-               grep -qE '^infra/docker-compose\.infra\.yml|^infra/prometheus/|^infra/grafana/|^infra/loki/|^infra/promtail/'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No infra changes detected -- skipping deploy"
-          fi
+          mkdir -p ~/.config/containers/systemd/
+          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/infra-*.container ~/.config/containers/systemd/
+          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/*.volume ~/.config/containers/systemd/
 
-      - name: Deploy infra stack
-        if: steps.source-check.outputs.changed == 'true'
+      - name: Deploy infra services
         run: |
-          cd /mnt/WorkDisk/Workplace/hydra_vortex/infra
-          podman-compose -f docker-compose.infra.yml up -d 2>&1 | tail -5
+          systemctl --user daemon-reload
+          for s in infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin; do
+            systemctl --user start "$s.service" || true
+          done
 
       - name: Verify infra services
-        if: steps.source-check.outputs.changed == 'true'
         run: |
-          sleep 5
-          for url in "http://localhost:9091" "http://localhost:3000" "http://localhost:3100"; do
+          sleep 10
+          for url in "http://localhost:9091" "http://localhost:3000" "http://localhost:3100" "http://localhost:8888"; do
             if curl -sf "$url" --connect-timeout 5 &>/dev/null; then
               echo "OK: $url"
             else
@@ -270,124 +261,62 @@ jobs:
     name: Deploy Hydra
     runs-on: self-hosted
     needs: build-test
-    timeout-minutes: 10
-    if: |
-      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true')
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true'
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check for source code changes
-        id: source-check
+      - name: Read version
+        id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | \
-               grep -qE '^src/|^infra/Dockerfile|^infra/docker-compose\.(hydra|infra)\.yml|^infra/Dockerfile\.|^scripts/|^\.github/workflows/ci\.yml'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No source code changes detected -- skipping deploy"
-          fi
+          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          echo "rev=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy (podman-compose)
-        if: steps.source-check.outputs.changed == 'true'
+      - name: Build images
+        id: build
+        run: |
+          set -eo pipefail
+          # Hydra core services
+          podman build --target store -f /mnt/WorkDisk/Workplace/hydra_vortex/infra/Dockerfile \
+            -t localhost/hydra-store:latest /mnt/WorkDisk/Workplace/hydra_vortex \
+            2>&1 | tee /tmp/hydra-build-store.log | tail -3
+          podman build --target agent -f /mnt/WorkDisk/Workplace/hydra_vortex/infra/Dockerfile \
+            -t localhost/hydra-agent:latest /mnt/WorkDisk/Workplace/hydra_vortex \
+            2>&1 | tee /tmp/hydra-build-agent.log | tail -3
+          podman build --target coordinator -f /mnt/WorkDisk/Workplace/hydra_vortex/infra/Dockerfile \
+            -t localhost/hydra-coordinator:latest /mnt/WorkDisk/Workplace/hydra_vortex \
+            2>&1 | tee /tmp/hydra-build-coord.log | tail -3
+          # llama RTX
+          podman build -f /mnt/WorkDisk/Workplace/hydra_vortex/infra/llama-rtx-node/Dockerfile \
+            -t localhost/llama-rtx:latest /mnt/WorkDisk/Workplace/hydra_vortex/infra/llama-rtx-node \
+            2>&1 | tee /tmp/hydra-build-llama.log | tail -3
+          echo "Build complete"
+
+      - name: Install Quadlet files
+        run: |
+          mkdir -p ~/.config/containers/systemd/
+          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/hydra-*.container ~/.config/containers/systemd/
+          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/llama-rtx.container ~/.config/containers/systemd/
+          cp /mnt/WorkDisk/Workplace/hydra_vortex/infra/quadlets/pg-data.volume ~/.config/containers/systemd/
+
+      - name: Deploy (Quadlet systemd)
         id: deploy
-        env:
-          XDG_RUNTIME_DIR: /run/user/1000
-          DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/1000/bus
         run: |
           set -eo pipefail
-          REV=$(git rev-parse --short HEAD)
-          VERSION=$(cat VERSION)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "rev=$REV" >> "$GITHUB_OUTPUT"
-
-          # Write deploy script to a temp file to avoid quoting issues with
-          # systemd-run. The heredoc is single-quoted (literal) so $GITHUB_WORKSPACE
-          # is passed via --setenv and bash-expanded at runtime.
-          cat > /tmp/hydra-deploy.sh << 'DEPLOYEOF'
-          set -eo pipefail
-          cd "$GITHUB_WORKSPACE/infra"
-          # Only targets hydra-core; infra (observability) stays running independently.
-          podman-compose -f docker-compose.hydra.yml down -t 0 2>&1 | tee /tmp/hydra-down.log | tail -3 || true
-          podman rm -f $(podman ps -aq --filter name=hydra-core_) 2>/dev/null || true
-          podman-compose -f docker-compose.hydra.yml build 2>&1 | tee /tmp/hydra-build.log | tail -5
-          podman-compose -f docker-compose.hydra.yml up -d 2>&1 | tee /tmp/hydra-up.log | tail -5
-          # Verify conmon survived for every hydra container.
-          # If systemd scope creation failed, conmon stays in system.slice and
-          # gets killed when the CI job exits — leaving containers headless with
-          # broken overlay mounts. Fast-fail here instead of 60s later.
-          for c in hydra-core_store_1 hydra-core_coordinator_1 hydra-core_agent-rtx_1 hydra-core_agent-p100_1; do
-            pid=$(pgrep -f "conmon.*-n $c\b" | head -1)
-            if [ -z "$pid" ]; then
-              echo "WARNING: conmon for $c not found — may not be running in this job"
-              continue
-            fi
-            cg=$(cat /proc/$pid/cgroup 2>/dev/null)
-            if ! echo "$cg" | grep -q 'user\.slice'; then
-              echo "FATAL: conmon for $c is in wrong cgroup ($cg) — will be killed"
-              exit 1
-            fi
-          done
-          echo "All conmon processes confirmed in user.slice"
-          DEPLOYEOF
-          chmod +x /tmp/hydra-deploy.sh
-
-          # Run deploy inside a user.slice scope. The CI runner runs in
-          # system.slice; without this wrapper, Podman's scope creation for
-          # conmon+fuse-overlayfs+rootlessport fails because it can't cross
-          # into user.slice. Wrapping the entire deploy in a user scope
-          # means Podman's podman-<pid>.scope creation succeeds — conmon and
-          # fuse daemons land in user.slice and survive CI job cleanup.
-          systemd-run --user --scope --collect \
-            --setenv=GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
-            -- bash /tmp/hydra-deploy.sh
-
-      - name: Record deploy log
-        if: steps.source-check.outputs.changed == 'true'
-        run: |
-          REV="${{ steps.deploy.outputs.rev }}"
-          VERSION="${{ steps.deploy.outputs.version }}"
-          echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $VERSION ($REV) deployed via CI by ${{ github.actor }}" >> deploy.log
-
-      - name: Write deploy summary
-        if: always()
-        run: |
-          VERSION="${{ steps.deploy.outputs.version }}"
-          REV="${{ steps.deploy.outputs.rev }}"
-          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          BUILD_LOG=$(tail -10 /tmp/hydra-build.log 2>/dev/null || echo "(no output)")
-          UP_LOG=$(tail -5 /tmp/hydra-up.log 2>/dev/null || echo "(no output)")
-
-          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-          ## Deploy Summary
-
-          | Field   | Value |
-          |---------|-------|
-          | Version | \`$VERSION\` |
-          | Commit  | \`$REV\` |
-          | Branch  | \`${{ github.ref_name }}\` |
-          | By      | ${{ github.actor }} |
-          | Time    | $TIMESTAMP |
-
-          ### Build log
-          \`\`\`
-          $BUILD_LOG
-          \`\`\`
-
-          ### Services
-          \`\`\`
-          $UP_LOG
-          \`\`\`
-          SUMMARY
+          systemctl --user daemon-reload
+          systemctl --user stop hydra-postgres hydra-store hydra-agent-rtx hydra-agent-p100 hydra-coordinator 2>/dev/null || true
+          # Start in dependency order
+          systemctl --user start hydra-postgres.service
+          systemctl --user start hydra-store.service
+          systemctl --user start hydra-agent-rtx.service hydra-agent-p100.service
+          systemctl --user start hydra-coordinator.service
+          echo "Deploy complete"
 
       - name: Verify services healthy
-        if: steps.source-check.outputs.changed == 'true'
         run: |
           echo "Waiting for services to stabilise..."
-          sleep 10
+          sleep 15
           for i in 1 2 3 4 5; do
             STATUS=$(curl -sf http://localhost:9000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])" 2>/dev/null || echo "unreachable")
             echo "Attempt $i: coordinator status=$STATUS"
@@ -399,24 +328,6 @@ jobs:
           done
           echo "Coordinator did not come up healthy after deploy"
           exit 1
-
-      - name: Manage build cache (dangling-only; avoid prune -a)
-        if: always()
-        run: |
-          # Only remove dangling images (tagless <none>:<none>).
-          # WARNING: podman image prune -a in rootless mode can strip
-          # image layers that stopped containers need, causing
-          # "transport endpoint is not connected" on overlay mounts.
-          podman image prune -f
-          podman system df
-
-      - name: Upload deploy log artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: deploy-log-${{ github.run_number }}
-          path: deploy.log
-          retention-days: 90
 
   system-mocked:
     name: System Tests (mocked)

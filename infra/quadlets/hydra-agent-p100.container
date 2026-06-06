@@ -1,0 +1,28 @@
+[Unit]
+Description=Hydra Agent P100
+Requires=hydra-store.service
+After=hydra-store.service
+
+[Container]
+ContainerName=hydra-agent-p100
+Image=localhost/hydra-agent:latest
+Network=host
+Environment=HYDRA_AGENT_HOST=0.0.0.0
+Environment=HYDRA_AGENT_PORT=9602
+Environment=HYDRA_AGENT_NODE_NAME=p100
+Environment=HYDRA_AGENT_LLAMA_URL=http://192.168.122.21:8086
+Environment=HYDRA_AGENT_STORE_HOST=localhost
+Environment=HYDRA_AGENT_STORE_PORT=9500
+Environment=HYDRA_AGENT_DEBUG_HTTP_PORT=9622
+HealthCmd=["/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9622"]
+HealthInterval=10s
+HealthRetries=3
+HealthStartPeriod=20s
+HealthTimeout=5s
+Notify=healthy
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

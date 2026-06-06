@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Start the Hydra application services (core + llama backends).
+# Start the Hydra application services via Quadlet systemd services.
 # Safe to re-run — checks state before starting anything.
 #
 # Usage:
 #   bash scripts/start-hydra.sh [--skip-p100]
 #
 # Requirements:
-#   - podman + podman-compose
+#   - podman (Quadlet reads from ~/.config/containers/systemd/)
+#   - Pre-built images: hydra-store, hydra-agent, hydra-coordinator, llama-rtx
 #   - SSH access to hydra-p100 (192.168.122.21) via ~/.ssh/vm_agent_01
-#   - Pre-built llama binaries:
-#       RTX : src/llama-cpp/build_sm120/bin/llama-server
-#       P100: src/llama-cpp/build_sm60/bin/llama-server  (skipped if missing)
 
 set -euo pipefail
 
@@ -28,52 +26,39 @@ die()  { fail "$*"; exit 1; }
 # ── 1. Prerequisites ──────────────────────────────────────────────────────────
 step "Checking prerequisites"
 
-command -v podman         &>/dev/null && ok "podman"         || die "podman not installed"
-command -v podman-compose &>/dev/null && ok "podman-compose" || die "podman-compose not installed"
-command -v python3        &>/dev/null && ok "python3"        || die "python3 not installed"
-command -v curl           &>/dev/null && ok "curl"           || die "curl not installed"
+command -v systemctl &>/dev/null && ok "systemctl" || die "systemctl not found"
+command -v podman    &>/dev/null && ok "podman"    || die "podman not installed"
+command -v python3   &>/dev/null && ok "python3"   || die "python3 not installed"
+command -v curl      &>/dev/null && ok "curl"      || die "curl not installed"
 
-if [[ -x "$REPO_ROOT/src/llama-cpp/build_sm120/bin/llama-server" ]]; then
-  ok "llama-server RTX binary (build_sm120)"
-else
-  die "RTX binary missing: src/llama-cpp/build_sm120/bin/llama-server
-     Build it:
-       cd src/llama-cpp
-       cmake -B build_sm120 -G Ninja \\
-         -DCMAKE_CUDA_ARCHITECTURES=120 \\
-         -DGGML_CUDA=ON -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_NATIVE=ON
-       cmake --build build_sm120 --target llama-server -j4"
-fi
+QUADLET_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
 
-if [[ "$SKIP_P100" == false ]]; then
-  if [[ -x "$REPO_ROOT/src/llama-cpp/build_sm60/bin/llama-server" ]]; then
-    ok "llama-server P100 binary (build_sm60)"
-  else
-    warn "P100 binary missing: src/llama-cpp/build_sm60/bin/llama-server — skipping P100"
-    SKIP_P100=true
-  fi
-
-  if [[ "$SKIP_P100" == false ]]; then
-    if ssh -o ConnectTimeout=5 -o BatchMode=yes hydra-p100 true 2>/dev/null; then
-      ok "SSH to hydra-p100"
-    else
-      warn "Cannot reach hydra-p100 via SSH — skipping P100 (check ~/.ssh/config)"
-      SKIP_P100=true
-    fi
-  fi
-fi
+# Ensure Quadlet files are installed
+step "Installing Quadlet files"
+mkdir -p "$QUADLET_DIR"
+cp "$REPO_ROOT/infra/quadlets"/hydra-*.container "$QUADLET_DIR" 2>/dev/null || true
+cp "$REPO_ROOT/infra/quadlets"/llama-rtx.container "$QUADLET_DIR" 2>/dev/null || true
+cp "$REPO_ROOT/infra/quadlets"/pg-data.volume "$QUADLET_DIR" 2>/dev/null || true
+systemctl --user daemon-reload
 
 # ── 2. Hydra core stack ───────────────────────────────────────────────────────
-step "Hydra core (Store + Agents + Coordinator, host networking)"
+step "Hydra core (Store + Agents + Coordinator)"
 
-HYDRA_UP=$(podman-compose -f "$REPO_ROOT/infra/docker-compose.hydra.yml" ps 2>/dev/null | grep -c " Up " || true)
-if [[ "$HYDRA_UP" -ge 3 ]]; then
-  ok "Hydra core already running ($HYDRA_UP containers up)"
-else
-  echo "  Starting containers..."
-  podman-compose -f "$REPO_ROOT/infra/docker-compose.hydra.yml" up -d 2>&1 | tail -3
-  ok "Hydra core started"
-fi
+HYDRA_SERVICES="hydra-postgres hydra-store hydra-agent-rtx hydra-agent-p100 hydra-coordinator"
+
+# Start in dependency order
+echo "  Starting hydra-postgres..."
+systemctl --user start hydra-postgres.service 2>/dev/null && ok "hydra-postgres" || warn "hydra-postgres"
+
+echo "  Starting hydra-store..."
+systemctl --user start hydra-store.service 2>/dev/null && ok "hydra-store" || warn "hydra-store"
+
+echo "  Starting agents..."
+systemctl --user start hydra-agent-rtx.service 2>/dev/null && ok "hydra-agent-rtx" || warn "hydra-agent-rtx"
+systemctl --user start hydra-agent-p100.service 2>/dev/null && ok "hydra-agent-p100" || warn "hydra-agent-p100"
+
+echo "  Starting hydra-coordinator..."
+systemctl --user start hydra-coordinator.service 2>/dev/null && ok "hydra-coordinator" || warn "hydra-coordinator"
 
 # ── 3. llama-server RTX ───────────────────────────────────────────────────────
 step "llama-server RTX (:8080)"
@@ -81,9 +66,8 @@ step "llama-server RTX (:8080)"
 if curl -sf http://localhost:8080/health &>/dev/null; then
   ok "Already running"
 else
-  echo "  Starting llama-cpp container..."
-  podman-compose -f "$REPO_ROOT/infra/llama-rtx-node/docker-compose.yml" up -d 2>&1 | tail -3
-  ok "Started"
+  echo "  Starting llama-rtx..."
+  systemctl --user start llama-rtx.service 2>/dev/null && ok "llama-rtx" || warn "llama-rtx start issued"
 fi
 
 # ── 4. llama-server P100 ──────────────────────────────────────────────────────
@@ -93,22 +77,27 @@ if [[ "$SKIP_P100" == false ]]; then
   if curl -sf http://192.168.122.21:8086/health --connect-timeout 5 &>/dev/null; then
     ok "Already running"
   else
-    echo "  Deploying binary..."
-    rsync -az --checksum \
-      "$REPO_ROOT/src/llama-cpp/build_sm60/bin/llama-server" \
-      hydra-p100:/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+    if ! ssh -o ConnectTimeout=5 -o BatchMode=yes hydra-p100 true 2>/dev/null; then
+      warn "Cannot reach hydra-p100 via SSH — skipping P100 (check ~/.ssh/config)"
+      SKIP_P100=true
+    else
+      echo "  Deploying binary..."
+      rsync -az --checksum \
+        "$REPO_ROOT/src/llama-cpp/build_sm60/bin/llama-server" \
+        hydra-p100:/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
 
-    echo "  Installing user systemd service..."
-    scp "$REPO_ROOT/infra/systemd/llama-p100-user.service" \
-        hydra-p100:/tmp/llama-p100.service
+      echo "  Installing user systemd service..."
+      scp "$REPO_ROOT/infra/systemd/llama-p100-user.service" \
+          hydra-p100:/tmp/llama-p100.service
 
-    ssh hydra-p100 "
-      mkdir -p ~/.config/systemd/user
-      cp /tmp/llama-p100.service ~/.config/systemd/user/llama-p100.service
-      systemctl --user daemon-reload
-      systemctl --user enable --now llama-p100
-    "
-    ok "Started (model loading ~90s, check with: curl http://192.168.122.21:8086/health)"
+      ssh hydra-p100 "
+        mkdir -p ~/.config/systemd/user
+        cp /tmp/llama-p100.service ~/.config/systemd/user/llama-p100.service
+        systemctl --user daemon-reload
+        systemctl --user enable --now llama-p100
+      "
+      ok "Started (model loading ~90s, check with: curl http://192.168.122.21:8086/health)"
+    fi
   fi
 fi
 
