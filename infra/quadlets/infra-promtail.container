@@ -1,0 +1,19 @@
+[Unit]
+Description=Grafana Promtail
+Requires=infra-loki.service
+After=infra-loki.service
+
+[Container]
+ContainerName=infra-promtail
+Image=grafana/promtail:3.4
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+Volume=/run/user/1000/podman/podman.sock:/var/run/docker.sock:ro
+Volume=/mnt/containers/:/mnt/containers/:ro
+Volume=promtail-positions.volume:/var/lib/promtail
+Exec=-config.file=/etc/promtail/promtail-config.yml
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
