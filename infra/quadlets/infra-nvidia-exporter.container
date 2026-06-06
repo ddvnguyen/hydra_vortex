@@ -1,0 +1,20 @@
+[Unit]
+Description=NVIDIA DCGM Exporter
+
+[Container]
+ContainerName=infra-nvidia-exporter
+Image=nvidia/dcgm-exporter:latest
+PublishPort=9835:9400
+AddCapability=SYS_ADMIN
+AddDevice=nvidia.com/gpu=all
+HealthCmd=["/usr/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9400"]
+HealthInterval=15s
+HealthRetries=3
+HealthStartPeriod=10s
+HealthTimeout=5s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

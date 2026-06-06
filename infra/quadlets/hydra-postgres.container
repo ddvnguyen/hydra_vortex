@@ -1,0 +1,22 @@
+[Unit]
+Description=Hydra PostgreSQL
+
+[Container]
+ContainerName=hydra-postgres
+Image=postgres:16
+Network=host
+Environment=POSTGRES_DB=hydra_store
+Environment=POSTGRES_USER=hydra
+Environment=POSTGRES_PASSWORD=hydra
+Volume=pg-data.volume:/var/lib/postgresql/data
+HealthCmd=pg_isready -U hydra -d hydra_store
+HealthInterval=5s
+HealthRetries=5
+HealthTimeout=3s
+Notify=healthy
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

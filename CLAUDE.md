@@ -93,7 +93,7 @@ automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
    In Progress. → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
    follow the milestone doc. → `docs/workflow/02-implement.md`
-3. **Test / verify** — unit (`dotnet test`, `pytest tests/coordinator`) + E2E
+3. **Test / verify** — unit (`dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Store/ && dotnet test src/core/Tests.Agent/`, `pytest tests/coordinator`) + E2E
    (`dotnet test src/core/Tests.Integration`, `pytest tests/system`) green before PR.
    → `docs/workflow/03-test-verify.md`
 4. **Commit & PR** — conventional commits + `Co-Authored-By`; `gh pr create …
@@ -160,18 +160,19 @@ Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
 - Model: Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf (qwen35moe arch, MTP spec-decode, vision mmproj)
 
 ## Monitoring & Observability
-Prometheus + Loki + Grafana + Promtail run in `infra/docker-compose.infra.yml`;
-Hydra services (Store, Agents, Coordinator) run in `infra/docker-compose.hydra.yml`.
-Grafana at :3000, Prometheus at :9091, Loki at :3100.
+Prometheus + Loki + Grafana + Promtail run as Quadlet systemd user services
+(files in `infra/quadlets/`); Hydra services (Store, Agents, Coordinator) also
+run as Quadlet services. Grafana at :3000, Prometheus at :9091, Loki at :3100.
 
 ### Start everything
 ```bash
-cd infra
-docker compose -f docker-compose.infra.yml up -d
-docker compose -f docker-compose.hydra.yml up -d
+# Install Quadlet files and start all services
+bash scripts/start-env.sh
 
-# Also start the llama-cpp server (RTX):
-docker compose -f llama-rtx-node/docker-compose.yml up -d
+# Or start individual stacks:
+bash scripts/start-infra.sh           # infra observability only
+bash scripts/start-hydra.sh           # hydra core + llama backends
+bash scripts/start-hydra.sh --skip-p100  # skip P100 llama-server
 ```
 
 ### Key dashboards/metrics endpoints

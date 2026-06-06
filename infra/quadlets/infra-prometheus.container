@@ -1,0 +1,22 @@
+[Unit]
+Description=Prometheus
+
+[Container]
+ContainerName=infra-prometheus
+Image=prom/prometheus:latest
+Network=host
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+Volume=prometheus-data.volume:/prometheus
+Exec=--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=0.0.0.0:9091
+HealthCmd=wget -q -O /dev/null http://localhost:9091/-/ready
+HealthInterval=15s
+HealthRetries=3
+HealthStartPeriod=10s
+HealthTimeout=5s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
