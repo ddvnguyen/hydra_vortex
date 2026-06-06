@@ -5,6 +5,14 @@ namespace Tests.Store;
 public sealed class StoreConfigTests
 {
     [Fact]
+    public void Validate_DefaultConfig_DoesNotThrow()
+    {
+        var cfg = new StoreConfig();
+        var ex = Record.Exception(() => cfg.Validate());
+        Assert.Null(ex);
+    }
+
+    [Fact]
     public void Validate_NonexistentStoreDir_DoesNotThrow()
     {
         var cfg = new StoreConfig { StoreDir = "/nonexistent/hydra-store" };

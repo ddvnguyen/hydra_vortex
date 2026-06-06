@@ -1,0 +1,26 @@
+[Unit]
+Description=pgAdmin4
+BindsTo=infra-host-pod.service
+After=infra-host-pod.service
+
+[Container]
+ContainerName=infra-pgadmin
+Image=dpage/pgadmin4:latest
+Pod=infra-host.pod
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/pgadmin/servers.json:/pgadmin4/servers.json:ro
+Volume=pgadmin-data.volume:/var/lib/pgadmin
+Environment=PGADMIN_DEFAULT_EMAIL=admin@hydra.example
+Environment=PGADMIN_DEFAULT_PASSWORD=hydra
+Environment=PGADMIN_LISTEN_PORT=8888
+Environment=PGADMIN_SERVER_JSON_FILE=/pgadmin4/servers.json
+HealthCmd=wget -q -O /dev/null http://localhost:8888/misc/ping
+HealthInterval=15s
+HealthRetries=3
+HealthStartPeriod=15s
+HealthTimeout=5s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

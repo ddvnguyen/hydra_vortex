@@ -1,0 +1,23 @@
+[Unit]
+Description=Grafana Loki
+BindsTo=infra-host-pod.service
+After=infra-host-pod.service
+
+[Container]
+ContainerName=infra-loki
+Image=grafana/loki:3.4
+Pod=infra-host.pod
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+Volume=loki-data.volume:/loki
+Exec=-config.file=/etc/loki/loki-config.yml
+HealthCmd=wget -q -O /dev/null http://localhost:3100/ready
+HealthInterval=15s
+HealthRetries=3
+HealthStartPeriod=15s
+HealthTimeout=5s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

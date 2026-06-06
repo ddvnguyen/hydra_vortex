@@ -6,6 +6,8 @@ services:
       context: ..
       dockerfile: infra/Dockerfile
       target: store
+      tags:
+        - localhost/hydra-store:latest
     network_mode: host
     tmpfs:
       - /mnt/llm-ram:size=30G
@@ -18,8 +20,7 @@ services:
       - HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup
       - HYDRA_STORE_RESTORE_TOP_N=10
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     healthcheck:
       test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
       interval: 10s
@@ -35,6 +36,8 @@ services:
       context: ..
       dockerfile: infra/Dockerfile
       target: agent
+      tags:
+        - localhost/hydra-agent:latest
     network_mode: host
     environment:
       - HYDRA_AGENT_HOST=0.0.0.0
@@ -62,6 +65,8 @@ services:
       context: ..
       dockerfile: infra/Dockerfile
       target: agent
+      tags:
+        - localhost/hydra-agent:latest
     network_mode: host
     environment:
       - HYDRA_AGENT_HOST=0.0.0.0
@@ -89,6 +94,8 @@ services:
       context: ..
       dockerfile: infra/Dockerfile
       target: coordinator
+      tags:
+        - localhost/hydra-coordinator:latest
     network_mode: host
     environment:
       - HYDRA_COORD_HOST=0.0.0.0

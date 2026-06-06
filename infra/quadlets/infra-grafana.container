@@ -1,0 +1,30 @@
+[Unit]
+Description=Grafana
+BindsTo=infra-host-pod.service
+Requires=infra-prometheus.service infra-loki.service
+After=infra-host-pod.service infra-prometheus.service infra-loki.service
+
+[Container]
+ContainerName=infra-grafana
+Image=grafana/grafana:11.6
+Pod=infra-host.pod
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/grafana/dashboards/dashboard-providers.yml:/etc/grafana/provisioning/dashboards/dashboard-providers.yml:ro
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/grafana/dashboards/hydra-dashboard.json:/var/lib/grafana/dashboards/hydra-dashboard.json:ro
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/grafana/dashboards/hydra-logs.json:/var/lib/grafana/dashboards/hydra-logs.json:ro
+Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/grafana/dashboards/hydra-coordinator.json:/var/lib/grafana/dashboards/hydra-coordinator.json:ro
+Volume=grafana-data.volume:/var/lib/grafana
+Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/hydra-dashboard.json
+Environment=GF_AUTH_ANONYMOUS_ENABLED=true
+Environment=GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+HealthCmd=wget -q -O /dev/null http://localhost:3000/api/health
+HealthInterval=15s
+HealthRetries=3
+HealthStartPeriod=15s
+HealthTimeout=5s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
