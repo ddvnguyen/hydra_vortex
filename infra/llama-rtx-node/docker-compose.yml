@@ -39,7 +39,6 @@ services:
     entrypoint: ["/bin/bash", "/init/verify_and_start.sh"]
     environment:
       LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
-      LD_LIBRARY_PATH: '/llama/bin:${LD_LIBRARY_PATH}'
     command: >
       llama-server
       -m /models/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf
