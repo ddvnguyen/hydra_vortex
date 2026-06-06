@@ -10,18 +10,20 @@ Tests:
 Requires no real services — RPC connections are mocked.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from coordinator.config import CoordinatorConfig
+from coordinator.config import CoordinatorConfig, WorkerNodeConfig
 from coordinator.session_table import SessionTable
 from coordinator.health import HealthMonitor
 from coordinator.state_manager import StateManager
+from coordinator.worker_tracker import WorkerTracker
+from coordinator.scheduler import WorkerScheduler, WorkItem
 from coordinator.router import create_router
-from coordinator.routing import RoutingDecision
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -58,30 +60,32 @@ def app(mock_rpc):
     cfg = CoordinatorConfig(
         host="127.0.0.1",
         port=0,
-        rtx_host="127.0.0.1",
-        rtx_port=9601,
-        rtx_llama_url="http://localhost:8080",
-        p100_host="127.0.0.1",
-        p100_port=9602,
-        p100_llama_url="http://192.168.122.21:8086",
+        workers=[
+            WorkerNodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080",
+                             worker_type=3, slots=2, prefill_priority=1, decode_priority=2, decode_speed_tps=200),
+            WorkerNodeConfig(name="p100", host="127.0.0.1", rpc_port=9602, llama_url="http://192.168.122.21:8086",
+                             worker_type=2, slots=1, prefill_priority=2, decode_priority=1, decode_speed_tps=28),
+        ],
         store_host="127.0.0.1",
         store_port=9500,
         health_poll_interval_s=9999,
         health_max_failures=3,
         long_prompt_threshold=4096,
         prefix_checkpoint_enabled=True,
-        prefix_checkpoint_name="system_prompt",
     )
     table = SessionTable()
-    health = HealthMonitor(cfg.nodes, poll_interval_s=9999)
+    health = HealthMonitor(cfg.workers, poll_interval_s=9999)
     state_mgr = StateManager(table, cfg.store_host, cfg.store_port)
+    tracker = WorkerTracker()
+    scheduler = WorkerScheduler(cfg, table, health, state_mgr, tracker)
     app = FastAPI()
-    router = create_router(cfg, table, health, state_mgr)
+    router = create_router(cfg, table, health, state_mgr, scheduler)
     app.include_router(router)
     app.state._config = cfg
     app.state._session_table = table
     app.state._health_monitor = health
     app.state._state_manager = state_mgr
+    app.state._scheduler = scheduler
     return app
 
 
@@ -123,117 +127,43 @@ def test_prefix_save_and_restore_flow(client):
 # ── Slot_id resolution tests ──────────────────────────────────────────────
 
 
-def test_slot_id_resolved_after_completion(client, monkeypatch):
-    """New session with slot_id=None resolves to real slot via /slots after completion."""
+def test_slot_id_resolved_after_completion(client):
+    """After completion, _resolve_slot_from_health matches n_past to a health slot."""
     table: SessionTable = client.app.state._session_table
+    health: HealthMonitor = client.app.state._health_monitor
+    scheduler: WorkerScheduler = client.app.state._scheduler
 
-    # Simulate a real routing decision: slot_id=None for new session
-    def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
-        return RoutingDecision(
-            node_name="rtx",
-            node_config=NodeConfig(
-                name="rtx", host="127.0.0.1", rpc_port=9601,
-                llama_url="http://localhost:8080", gpu_type="rtx5060ti",
-            ),
-            slot_id=None,
-            action="route",
-            session_id="sess_slot_resolve",
-            session_found=False,
-            n_past=0,
-        )
-
-    monkeypatch.setattr("coordinator.router.route_request", fake_route)
-
-    async def fake_proxy(*args, **kwargs):
-        return {"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 42}}
-
-    monkeypatch.setattr("coordinator.router.proxy_completion", fake_proxy)
-
-    # Mock httpx.AsyncClient so _resolve_slot_id gets a fake /slots response
-    # Slot with n_past=42 is slot 3 — that should be matched
-    fake_slots_response = [
+    health._nodes["rtx"].slots = [
         {"id": 0, "n_past": 0, "is_processing": False},
         {"id": 1, "n_past": 0, "is_processing": False},
         {"id": 2, "n_past": 10, "is_processing": False},
         {"id": 3, "n_past": 42, "is_processing": False},
     ]
 
-    class FakeResponse:
-        status_code = 200
-        def json(self): return fake_slots_response
-        def raise_for_status(self): pass
-
-    class FakeClient:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
-        async def get(self, *a, **kw): return FakeResponse()
-
-    monkeypatch.setattr("coordinator.router.httpx.AsyncClient", lambda **kw: FakeClient())
-
-    resp = client.post(
-        "/v1/chat/completions",
-        json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
-    )
-    assert resp.status_code == 200
-
+    table.register("sess_slot_resolve", "rtx", slot_id=None, n_past=0)
     entry = table.lookup("sess_slot_resolve")
-    assert entry is not None, "session should be registered"
-    assert entry.slot_id == 3, f"expected slot_id=3 (matched by n_past=42), got {entry.slot_id}"
+
+    scheduler._resolve_slot_from_health(entry, total=42, trace_id="test")
+
+    assert entry.slot_id == 3, f"expected slot_id=3 (matched n_past=42), got {entry.slot_id}"
 
 
-def test_slot_id_unresolved_when_no_match(client, monkeypatch):
-    """If /slots has no matching n_past, slot_id stays None — next turn retries."""
+def test_slot_id_unresolved_when_no_match(client):
+    """When no health slot matches n_past, slot_id stays None."""
     table: SessionTable = client.app.state._session_table
+    health: HealthMonitor = client.app.state._health_monitor
+    scheduler: WorkerScheduler = client.app.state._scheduler
 
-    def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
-        return RoutingDecision(
-            node_name="rtx",
-            node_config=NodeConfig(
-                name="rtx", host="127.0.0.1", rpc_port=9601,
-                llama_url="http://localhost:8080", gpu_type="rtx5060ti",
-            ),
-            slot_id=None,
-            action="route",
-            session_id="sess_no_match",
-            session_found=False,
-            n_past=0,
-        )
-
-    monkeypatch.setattr("coordinator.router.route_request", fake_route)
-
-    async def fake_proxy(*args, **kwargs):
-        return {"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 99}}
-
-    monkeypatch.setattr("coordinator.router.proxy_completion", fake_proxy)
-
-    # No slot has n_past=99 — resolution returns None
-    fake_slots = [
+    health._nodes["rtx"].slots = [
         {"id": 0, "n_past": 0, "is_processing": False},
         {"id": 1, "n_past": 10, "is_processing": False},
     ]
 
-    class FakeResp:
-        status_code = 200
-        def json(self): return fake_slots
-        def raise_for_status(self): pass
-
-    class FakeClient:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
-        async def get(self, *a, **kw): return FakeResp()
-
-    monkeypatch.setattr("coordinator.router.httpx.AsyncClient", lambda **kw: FakeClient())
-
-    resp = client.post(
-        "/v1/chat/completions",
-        json={"messages": [{"role": "user", "content": "hello"}], "stream": False},
-    )
-    assert resp.status_code == 200
-
+    table.register("sess_no_match", "rtx", slot_id=None, n_past=0)
     entry = table.lookup("sess_no_match")
-    assert entry is not None
+
+    scheduler._resolve_slot_from_health(entry, total=99, trace_id="test")
+
     assert entry.slot_id is None, f"expected None when no match, got {entry.slot_id}"
 
 
@@ -263,42 +193,59 @@ def test_prefix_save_custom_name(client):
 # ── Store restore routing action ─────────────────────────────────────────────
 
 
-def test_store_restore_routing_action(client, monkeypatch):
-    """When route_request returns store_restore action, restore_session is called."""
+@pytest.mark.asyncio
+async def test_store_restore_routing_action(client, monkeypatch):
+    """When session has has_store_state, _execute_store_restore calls restore_session."""
     state_mgr: StateManager = client.app.state._state_manager
+    health: HealthMonitor = client.app.state._health_monitor
+    scheduler: WorkerScheduler = client.app.state._scheduler
+    tracker = scheduler._tracker
+    table: SessionTable = client.app.state._session_table
+
+    # Set up health + tracker so pick_best_decode_worker finds p100
+    health._nodes["p100"].healthy = True
+    tracker.init_worker("p100")
+    tracker.init_worker("rtx")
+
+    # Register session with store state and known n_past
+    table.register("sess_restored", "p100", slot_id=None, n_past=512)
+    entry = table.lookup("sess_restored")
+    entry.has_store_state = True
+
+    # Spy on restore_session
     restore_called = False
 
-    async def fake_restore(session_id, host, port):
+    async def fake_restore(session_id, host, port, slot_id=0):
         nonlocal restore_called
         restore_called = True
         return {"restored": True, "slot_id": 0, "n_past": 512}
 
     state_mgr.restore_session = fake_restore
 
-    def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
-        return RoutingDecision(
-            node_name="p100",
-            node_config=NodeConfig(name="p100", host="127.0.0.1", rpc_port=9602, llama_url="http://192.168.122.21:8086", gpu_type="p100"),
-            slot_id=0,
-            action="store_restore",
-            session_id="sess_restored",
-            session_found=True,
-            n_past=512,
-        )
-
-    monkeypatch.setattr("coordinator.router.route_request", fake_route)
-
+    # Mock proxy_completion
     async def fake_proxy(*args, **kwargs):
         return {"choices": [{"message": {"content": "restored"}}]}
 
-    monkeypatch.setattr("coordinator.router.proxy_completion", fake_proxy)
+    monkeypatch.setattr("coordinator.scheduler.proxy_completion", fake_proxy)
 
-    resp = client.post(
-        "/v1/chat/completions",
-        json={"messages": [{"role": "user", "content": "continuation"}], "stream": False},
+    # Empty slots so _track_after_completion resolution is a no-op
+    health._nodes["p100"].slots = []
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    item = WorkItem(
+        request={"messages": [{"role": "user", "content": "continuation"}], "stream": False},
+        messages=[{"role": "user", "content": "continuation"}],
+        session_id="sess_restored",
+        trace_id="test",
+        prefix_hash=None,
+        estimated_tokens=10,
+        estimated_new_tokens=512,
+        future=future,
     )
-    assert resp.status_code == 200
+
+    await scheduler._execute_store_restore(item)
+
     assert restore_called, "restore_session was not called for store_restore action"
 
 
@@ -356,78 +303,91 @@ def test_migration_recorded_in_stats(client, monkeypatch):
 # ── n_past guard (critical: n_tokens > n_past) ───────────────────────────────
 
 
-def test_n_past_guard_resets_when_estimated_too_small(client, monkeypatch):
-    """When estimated tokens <= n_past, n_past is reset to 0."""
+@pytest.mark.asyncio
+async def test_n_past_guard_resets_when_estimated_too_small(client, monkeypatch):
+    """When estimated tokens <= n_past*0.85, n_past resets to 0 and slot is erased."""
     table: SessionTable = client.app.state._session_table
+    scheduler: WorkerScheduler = client.app.state._scheduler
+    config: CoordinatorConfig = client.app.state._config
+    health: HealthMonitor = client.app.state._health_monitor
+
     table.register("sess_npast", "rtx", slot_id=0, n_past=500)
+    entry = table.lookup("sess_npast")
 
-    def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
-        return RoutingDecision(
-            node_name="rtx",
-            node_config=NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080", gpu_type="rtx5060ti"),
-            slot_id=0,
-            action="route",
-            session_id="sess_npast",
-            session_found=True,
-            n_past=500,
-        )
-
-    monkeypatch.setattr("coordinator.router.route_request", fake_route)
-
+    # Mock proxy_completion
     async def fake_proxy(*args, **kwargs):
         return {"choices": [{"message": {"content": "short"}}]}
 
-    monkeypatch.setattr("coordinator.router.proxy_completion", fake_proxy)
+    monkeypatch.setattr("coordinator.scheduler.proxy_completion", fake_proxy)
 
-    # Short message: ~5 chars / 4 = ~1 token < 500 n_past
-    resp = client.post(
-        "/v1/chat/completions",
-        json={"messages": [{"role": "user", "content": "hi"}], "stream": False},
+    # Mock RpcClient so SlotErase doesn't error — must be awaitable
+    mock_rpc_class = MagicMock()
+    mock_rpc_instance = mock_rpc_class.return_value
+    mock_rpc_instance.request = AsyncMock(return_value=_mock_rpc_response(0, {"erased": True}))
+    mock_rpc_instance.close = AsyncMock()
+    monkeypatch.setattr("coordinator.scheduler.RpcClient", mock_rpc_class)
+
+    health._nodes["rtx"].slots = []
+    worker = config.workers[0]  # rtx
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    # "hi" → ~2 chars / 4.0 chars_per_token ≈ 1 token < 425 (500*0.85)
+    item = WorkItem(
+        request={"messages": [{"role": "user", "content": "hi"}], "stream": False},
+        messages=[{"role": "user", "content": "hi"}],
+        session_id="sess_npast",
+        trace_id="test",
+        prefix_hash=None,
+        estimated_tokens=1,
+        estimated_new_tokens=10,
+        future=future,
     )
-    assert resp.status_code == 200
 
-    # n_past should be 0 after guard triggers
-    entry = table.lookup("sess_npast")
-    assert entry is not None, "Session should still exist after n_past guard"
+    await scheduler._execute_affinity(item, worker, entry)
+
     assert entry.n_past == 0, f"Expected n_past=0 after guard, got {entry.n_past}"
+    assert entry.slot_id is None, f"Expected slot_id=None after erase, got {entry.slot_id}"
 
 
-def test_n_past_guard_does_not_reset_when_estimated_larger(client, monkeypatch):
-    """When estimated tokens > n_past, n_past is preserved."""
+@pytest.mark.asyncio
+async def test_n_past_guard_does_not_reset_when_estimated_larger(client, monkeypatch):
+    """When estimated tokens > n_past, n_past and slot_id are preserved."""
     table: SessionTable = client.app.state._session_table
+    scheduler: WorkerScheduler = client.app.state._scheduler
+    config: CoordinatorConfig = client.app.state._config
+    health: HealthMonitor = client.app.state._health_monitor
+
     table.register("sess_npast_safe", "rtx", slot_id=0, n_past=500)
-
-    def fake_route(**kwargs):
-        from coordinator.config import NodeConfig
-        return RoutingDecision(
-            node_name="rtx",
-            node_config=NodeConfig(name="rtx", host="127.0.0.1", rpc_port=9601, llama_url="http://localhost:8080", gpu_type="rtx5060ti"),
-            slot_id=0,
-            action="route",
-            session_id="sess_npast_safe",
-            session_found=True,
-            n_past=500,
-        )
-
-    monkeypatch.setattr("coordinator.router.route_request", fake_route)
+    entry = table.lookup("sess_npast_safe")
 
     async def fake_proxy(*args, **kwargs):
         return {"choices": [{"message": {"content": "response"}}]}
 
-    monkeypatch.setattr("coordinator.router.proxy_completion", fake_proxy)
+    monkeypatch.setattr("coordinator.scheduler.proxy_completion", fake_proxy)
 
-    # Long message: ~2500 chars / 4 = ~625 tokens > 500 n_past
+    health._nodes["rtx"].slots = []
+    worker = config.workers[0]  # rtx
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
     long_content = "word " * 600
-    resp = client.post(
-        "/v1/chat/completions",
-        json={"messages": [{"role": "user", "content": long_content}], "stream": False},
+    # ~3000 chars / 4.0 ≈ 750 tokens > 425 (500*0.85)
+    item = WorkItem(
+        request={"messages": [{"role": "user", "content": long_content}], "stream": False},
+        messages=[{"role": "user", "content": long_content}],
+        session_id="sess_npast_safe",
+        trace_id="test",
+        prefix_hash=None,
+        estimated_tokens=750,
+        estimated_new_tokens=100,
+        future=future,
     )
-    assert resp.status_code == 200
 
-    entry = table.lookup("sess_npast_safe")
-    assert entry is not None
+    await scheduler._execute_affinity(item, worker, entry)
+
     assert entry.n_past == 500, f"Expected n_past=500 preserved, got {entry.n_past}"
+    assert entry.slot_id == 0, f"Expected slot_id=0 preserved, got {entry.slot_id}"
 
 
 # ── Eviction with save flow ──────────────────────────────────────────────────

@@ -5,9 +5,9 @@ The instructions for this project live in **`CLAUDE.md`** (main) and
 follow its `## Task Lifecycle` and the linked `docs/workflow/NN-*.md` for each step.
 
 Quick map:
-- **Planning / status → Plane** (project "Hydra Vortex"; milestones = modules; driven
-  via the Plane MCP server). Setup: `docs/PLANE_SETUP.md`.
+- **Planning / status → GitHub Projects** (`gh project` / GitHub MCP). Board layout:
+  `docs/GITHUB_PROJECT_SETUP.md`.
 - **Code / PRs / CI issues → GitHub** (`gh`; review findings use the `review-finding`
-  label). There is no native Plane↔GitHub sync — you are the bridge; cross-link by hand.
+  label).
 - **Build / run / test commands → `DevelopmentRunBook.md`.**
-  - Full-solution `dotnet test` requires `--settings Hydra.runsettings` to serialize assemblies (avoid PG contention); alternatively run per-project.**
+  - Full-solution `dotnet test` requires `--settings src/Hydra.runsettings` to serialize assemblies (avoid PG contention); alternatively run per-project.**

@@ -164,7 +164,7 @@ curl -s http://192.168.122.21:8086/v1/chat/completions \
 ---
 
 ## Task M0.1: Shared RPC Library (C# — Hydra.Shared)
-**Project:** `src/Hydra.Shared/Hydra.Shared.csproj`
+**Project:** `src/core/Hydra.Shared/Hydra.Shared.csproj`
 **Framework:** .NET 10, NativeAOT-compatible
 
 ### M0.1.1: Protocol (`Protocol.cs`)
@@ -261,7 +261,7 @@ public static class HydraLogging {
 ---
 
 ## Task M0.2: Hydra Store (C# — Hydra.Store)
-**Project:** `src/Hydra.Store/Hydra.Store.csproj`
+**Project:** `src/core/Hydra.Store/Hydra.Store.csproj`
 
 ### M0.2.1: Storage Engine (`StorageEngine.cs`)
 ```csharp
@@ -331,7 +331,7 @@ public sealed class StoreServer(StoreConfig cfg, StorageEngine engine)
 ---
 
 ## Task M0.3: Hydra Agent (C# — Hydra.Agent)
-**Project:** `src/Hydra.Agent/Hydra.Agent.csproj`
+**Project:** `src/core/Hydra.Agent/Hydra.Agent.csproj`
 
 ### M0.3.1: Llama Client (`LlamaClient.cs`)
 ```csharp

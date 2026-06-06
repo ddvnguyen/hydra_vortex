@@ -4,8 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from python_shared.log_config import get_logger, new_trace_id
-from python_shared.rpc_client import RpcClient, OpCode, RpcError, StatusCode
+from coordinator.lib.log_config import get_logger, new_trace_id
+from coordinator.lib.rpc_client import RpcClient, OpCode, RpcError, StatusCode
 from coordinator.config import WorkerNodeConfig
 
 log = get_logger()
@@ -27,6 +27,12 @@ class NodeInfo:
     llama_url: str = ""
     consecutive_failures: int = 0
     last_check: float = 0.0
+    stuck_slots: int = 0
+    slots: list[dict] = None
+
+    def __post_init__(self):
+        if self.slots is None:
+            self.slots = []
 
 
 class HealthMonitor:
@@ -50,6 +56,22 @@ class HealthMonitor:
         self._store_healthy = store_host is None
         self._store_failures = 0
         self._store_last_check = 0.0
+
+    @property
+    def stuck_slots(self) -> dict[str, int]:
+        result = {}
+        for name, info in self._nodes.items():
+            if info.stuck_slots > 0:
+                result[name] = info.stuck_slots
+        return result
+
+    async def _check_stuck_slots(self, node_name: str, health_data: dict):
+        stuck = health_data.get("stuck_slots", 0)
+        info = self._nodes.get(node_name)
+        if info:
+            info.stuck_slots = stuck
+            if stuck > 0:
+                log.warning("stuck_slots_detected", node=node_name, count=stuck)
 
     async def start(self):
         await self._poll_all()
@@ -121,8 +143,11 @@ class HealthMonitor:
                 info.slots_idle = health_data.get("slots_idle", 0)
                 info.gpu_type = health_data.get("gpu_type", "")
                 info.llama_url = health_data.get("llama_url", config.llama_url)
+                info.slots = health_data.get("slots", [])
                 info.consecutive_failures = 0
                 info.last_check = time.time()
+
+                await self._check_stuck_slots(node_name, health_data)
 
                 log.info("health_ok", node=node_name)
             except Exception as e:
@@ -138,7 +163,25 @@ class HealthMonitor:
 
     def is_healthy(self, node_name: str) -> bool:
         info = self._nodes.get(node_name)
-        return info.healthy if info else False
+        if not info:
+            return False
+        if not info.healthy:
+            return False
+        if info.stuck_slots > 0:
+            return False
+        return True
+
+    def get_slots(self, node_name: str) -> list[dict]:
+        info = self._nodes.get(node_name)
+        if not info:
+            return []
+        return info.slots
+
+    def get_idle_slot(self, node_name: str) -> int | None:
+        for s in self.get_slots(node_name):
+            if not s.get("is_processing"):
+                return s.get("id")
+        return None
 
     def is_store_healthy(self) -> bool:
         return self._store_healthy
@@ -157,11 +200,12 @@ class HealthMonitor:
         summary = {}
         for name, info in self._nodes.items():
             summary[name] = {
-                "healthy": info.healthy,
+                "healthy": self.is_healthy(name),
                 "slots_total": info.slots_total,
                 "slots_idle": info.slots_idle,
                 "gpu_type": info.gpu_type,
                 "consecutive_failures": info.consecutive_failures,
+                "stuck_slots": info.stuck_slots,
             }
         return summary
 

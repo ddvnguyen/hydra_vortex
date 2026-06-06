@@ -1,7 +1,7 @@
 import json
 import httpx
 
-from python_shared.log_config import get_logger
+from coordinator.lib.log_config import get_logger
 
 log = get_logger()
 

@@ -32,12 +32,10 @@ hydra-coordinator = "coordinator.main:run"
 
 [tool.setuptools.package-dir]
 "" = "src"
-"coordinator" = "src/coordinator"
-"python_shared" = "src/python_shared"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["src/coordinator/tests", "tests"]
+testpaths = ["tests/coordinator", "tests"]
 markers = [
     "system: marks system tests that require real services (llama-servers, Store, Agents)",
     "slow: marks tests that take >5 min (40k context, deselect with -m 'not slow')",

@@ -170,6 +170,7 @@ public sealed class AgentServer : RpcServer
             AgentMetrics.LlamaHealthy.WithLabels(_cfg.NodeName).Set(isHealthy ? 1 : 0);
             AgentMetrics.SlotsIdle.WithLabels(_cfg.NodeName).Set(slots.Count(s => !s.IsProcessing));
 
+            var stuckSlotsCount = slots.Count(s => s.IsProcessing && s.NRemain == 0);
             var healthPayload = JsonSerializer.SerializeToUtf8Bytes(new
             {
                 healthy = isHealthy,
@@ -177,7 +178,17 @@ public sealed class AgentServer : RpcServer
                 version = HydraLogging.ServiceVersion,
                 slots_total = slots.Count,
                 slots_idle = slots.Count(s => !s.IsProcessing),
+                stuck_slots = stuckSlotsCount,
                 llama_url = _cfg.LlamaUrl,
+                slots = slots.Select(s => new
+                {
+                    id = s.Id,
+                    n_past = s.NPast,
+                    is_processing = s.IsProcessing,
+                    n_remain = s.NRemain,
+                    n_decoded = s.NDecoded,
+                    id_task = s.IdTask,
+                }).ToList(),
             });
 
             var meta = """{"component":"health"}"""u8.ToArray();
@@ -215,6 +226,22 @@ public sealed class AgentServer : RpcServer
             AgentMetrics.SaveOpsTotal.Inc();
             if (result.Size > 0)
                 AgentMetrics.SaveBytesTotal.WithLabels(nodeLabel, sessionTypeLabel).Inc(result.Size);
+
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}},"chunked":true}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+            var span = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(span);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+        }
+        catch (IOException ex)
+        {
+            _log.Debug(ex, "SaveStateChunked: client disconnected after save for {SessionId}", sessionId);
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Debug("SaveStateChunked: cancelled after save for {SessionId}", sessionId);
         }
         catch (Exception ex)
         {

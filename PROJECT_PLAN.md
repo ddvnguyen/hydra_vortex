@@ -85,7 +85,7 @@ All source code lives under `src/`.
 ├── docs/diagrams.md             # Mermaid diagrams for all major flows
 ├── specs/rpc-protocol.md        # binary wire format + opcode reference
 ├── pyproject.toml
-├── Hydra.sln
+├── src/Hydra.sln
 │
 ├── src/
 │   ├── Hydra.Shared/            C# — protocol, RPC base, shared types
@@ -134,9 +134,9 @@ All source code lives under `src/`.
 │   │
 │   ├── coordinator/tests/       pytest — router, routing, session_table, state_manager, …
 │   │
-│   ├── python_shared/           Python — shared lib
-│   │   ├── rpc_client.py        Python RPC client (async, full protocol impl)
-│   │   └── log_config.py        structlog JSON setup, trace_id generator
+    │   ├── lib/                     Python — shared lib (inside coordinator)
+    │   │   ├── rpc_client.py        Python RPC client (async, full protocol impl)
+    │   │   └── log_config.py        structlog JSON setup, trace_id generator
 │   │
 │   ├── llama-cpp/               git submodule — hydra-state-streaming branch
 │   │
