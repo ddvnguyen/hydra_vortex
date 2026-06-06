@@ -94,7 +94,7 @@ public sealed class StoreServer : RpcServer
 			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
 			await WriteMetaAsync(writer, meta, ct);
 		}
-		catch (InvalidDataException ex)
+		catch (Exception ex)
 		{
 			await WriteErrorAsync(writer, ex.Message, ct);
 		}
@@ -252,9 +252,16 @@ public sealed class StoreServer : RpcServer
 			{
 				var path = _chunkStore.GetChunkPath(mc.Hash);
 				if (path is null) continue;
-				var len = new FileInfo(path).Length;
-				resident.Add((mc, path, len));
-				bodyBytes += len;
+				try
+				{
+					var len = new FileInfo(path).Length;
+					resident.Add((mc, path, len));
+					bodyBytes += len;
+				}
+				catch (FileNotFoundException)
+				{
+					// GC removed this chunk between existence check and read — skip
+				}
 			}
 			ulong framedLen = (ulong)bodyBytes + (ulong)(resident.Count * 8);
 
@@ -357,6 +364,12 @@ public sealed class StoreServer : RpcServer
 
 		try
 		{
+			if (payloadLen > _cfg.MaxPayloadBytes)
+			{
+				await WriteErrorAsync(writer, $"payload exceeds max allowed size ({_cfg.MaxPayloadBytes} bytes)", ct, StatusCode.BadRequest);
+				return;
+			}
+
 			var pushedBytes = await ReadPayloadAsync(reader, payloadLen, ct);
 			var offset = 0;
 			var stored = 0;
@@ -417,7 +430,7 @@ public sealed class StoreServer : RpcServer
 			}
 
 			var json = await ReadPayloadAsync(reader, payloadLen, ct);
-			var doc = JsonDocument.Parse(json);
+			using var doc = JsonDocument.Parse(json);
 			var root = doc.RootElement;
 
 			int nPast = root.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0;
@@ -470,31 +483,36 @@ public sealed class StoreServer : RpcServer
 	{
 		using var _ = StoreMetrics.OpDuration.WithLabels("get_manifest").NewTimer();
 
-		var manifest = await Metadata.GetManifestAsync(key, ct);
-		if (manifest is null)
+		try
 		{
-			StoreMetrics.OpsTotal.WithLabels("get_manifest_not_found").Inc();
-			await WriteErrorAsync(writer, "not_found", ct, StatusCode.NotFound);
-			return;
+			var manifest = await Metadata.GetManifestAsync(key, ct);
+			if (manifest is null)
+			{
+				StoreMetrics.OpsTotal.WithLabels("get_manifest_not_found").Inc();
+				await WriteErrorAsync(writer, "not_found", ct, StatusCode.NotFound);
+				return;
+			}
+
+			var payload = JsonSerializer.SerializeToUtf8Bytes(new {
+				n_past = manifest.NPast,
+				total_size = manifest.TotalSize,
+				chunks = manifest.Chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size })
+			});
+
+			var meta = $$"""{"chunk_count":{{manifest.Chunks.Count}}}""";
+			var metaBytes = Encoding.UTF8.GetBytes(meta);
+
+			await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, (ulong)payload.Length, ct);
+			await WriteMetaAsync(writer, meta, ct);
+			await writer.WriteAsync(payload, ct);
+			await writer.FlushAsync(ct);
+
+			StoreMetrics.OpsTotal.WithLabels("get_manifest").Inc();
 		}
-
-		// Lowercase property names — matches PUT_MANIFEST's input and the Agent's
-		// restore parser (RestoreFromStoreChunkedAsync reads "index"/"hash"/"size").
-		var payload = JsonSerializer.SerializeToUtf8Bytes(new {
-			n_past = manifest.NPast,
-			total_size = manifest.TotalSize,
-			chunks = manifest.Chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size })
-		});
-
-		var meta = $$"""{"chunk_count":{{manifest.Chunks.Count}}}""";
-		var metaBytes = Encoding.UTF8.GetBytes(meta);
-
-		await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, (ulong)payload.Length, ct);
-		await WriteMetaAsync(writer, meta, ct);
-		await writer.WriteAsync(payload, ct);
-		await writer.FlushAsync(ct);
-
-		StoreMetrics.OpsTotal.WithLabels("get_manifest").Inc();
+		catch (Exception ex)
+		{
+			await WriteErrorAsync(writer, $"get_manifest failed: {ex.Message}", ct);
+		}
 	}
 
 	private async Task HandlePutMetaAsync(string key, long payloadLen, PipeReader reader, PipeWriter writer, CancellationToken ct)
@@ -544,7 +562,7 @@ public sealed class StoreServer : RpcServer
 
 	private static async Task WriteErrorAsync(PipeWriter writer, string message, CancellationToken ct, StatusCode status = StatusCode.Error)
 	{
-		var meta = $$"""{"error":"{{message}}"}""";
+		var meta = JsonSerializer.Serialize(new { error = message });
 		var metaBytes = Encoding.UTF8.GetBytes(meta);
 		await WriteResponseHeaderAsync(writer, (byte)status, (uint)metaBytes.Length, 0, ct);
 		await WriteMetaAsync(writer, meta, ct);

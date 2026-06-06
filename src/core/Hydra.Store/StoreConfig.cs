@@ -17,6 +17,19 @@ public sealed record StoreConfig
     [JsonIgnore]
     public DirectoryInfo StoreDirectory => new(StoreDir);
 
+    public void Validate()
+    {
+        if (Port < 1 || Port > 65535)
+            throw new InvalidOperationException($"Invalid port: {Port}");
+        if (DebugHttpPort < 1 || DebugHttpPort > 65535)
+            throw new InvalidOperationException($"Invalid debug HTTP port: {DebugHttpPort}");
+        if (DebugHttpPort == Port)
+            throw new InvalidOperationException("Debug HTTP port must differ from RPC port");
+
+        if (string.IsNullOrWhiteSpace(PgConn))
+            throw new InvalidOperationException("PG connection string is required");
+    }
+
     private static string EnvString(string key, string fallback) =>
         Environment.GetEnvironmentVariable(key) ?? fallback;
 
