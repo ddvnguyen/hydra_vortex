@@ -8,7 +8,6 @@ from fastapi.responses import JSONResponse
 from coordinator.lib.log_config import get_logger, new_trace_id
 from coordinator.session_table import SessionTable
 from coordinator.routing import (
-    estimate_request_tokens,
     derive_session_id,
     compute_prefix_hash,
 )
@@ -17,83 +16,12 @@ from coordinator.state_manager import StateManager
 from coordinator.scheduler import WorkerScheduler
 from coordinator.config import CoordinatorConfig
 from coordinator.metrics import (
-    metrics_endpoint, requests_total, active_sessions,
-    prefix_cache_hits, prefix_cache_misses, prefix_warmups_total,
-    upstream_coalesced_total, upstream_timeouts_total,
-    verify_warm_slot_duration, prefill_duration, decode_duration,
-    restore_kv_duration, save_kv_duration, n_past_guard_duration,
-    warm_session_starts, cold_session_starts, migration_session_starts,
+    metrics_endpoint,
     set_worker_busy_metrics,
 )
 from coordinator.version import VERSION, REVISION
 
 log = get_logger()
-
-
-# Single-flight registry: coalesce identical concurrent upstream completions so a retried or
-# duplicated mega-prompt doesn't stack a second full prefill (#134). Keyed by node URL + body.
-_inflight_upstream: dict[str, "asyncio.Future[dict]"] = {}
-
-
-def _upstream_key(node_url: str, body: dict) -> str:
-    payload = json.dumps(body, sort_keys=True, default=str)
-    return hashlib.sha256(f"{node_url}|{payload}".encode()).hexdigest()
-
-
-async def _proxy_completion_coalesced(node_url: str, body: dict, trace_id: str) -> dict:
-    """proxy_completion with single-flight: identical concurrent calls share one upstream
-    request instead of each launching a full (expensive) prefill."""
-    key = _upstream_key(node_url, body)
-    existing = _inflight_upstream.get(key)
-    if existing is not None and not existing.done():
-        upstream_coalesced_total.inc()
-        log.info("upstream_coalesced", trace_id=trace_id)
-        return await existing
-    fut: "asyncio.Future[dict]" = asyncio.ensure_future(
-        proxy_completion(node_url, body, trace_id)
-    )
-    _inflight_upstream[key] = fut
-    try:
-        return await fut
-    finally:
-        _inflight_upstream.pop(key, None)
-
-
-async def _resolve_slot_id(llama_url: str, expected_n_past: int, trace_id: str) -> int | None:
-    """Query llama-server /slots and find the slot with matching n_past."""
-    if expected_n_past <= 0:
-        return None
-    
-    node = llama_url.split("://")[1].split(":")[0] if "://" in llama_url else "unknown"
-    
-    start_time = time.monotonic()
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(
-                f"{llama_url.rstrip('/')}/slots",
-                headers={"X-Trace-Id": trace_id},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.TimeoutException:
-        elapsed = time.monotonic() - start_time
-        verify_warm_slot_duration.labels(node=node, result="timeout").observe(elapsed)
-        log.warning("resolve_slot_id_timeout", url=llama_url, elapsed_ms=int(elapsed * 1000))
-        return None
-    except Exception as exc:
-        elapsed = time.monotonic() - start_time
-        verify_warm_slot_duration.labels(node=node, result="error").observe(elapsed)
-        log.warning("resolve_slot_id_failed", url=llama_url, error=str(exc), elapsed_ms=int(elapsed * 1000))
-        return None
-
-    elapsed = time.monotonic() - start_time
-    verify_warm_slot_duration.labels(node=node, result="success").observe(elapsed)
-    
-    slots = data if isinstance(data, list) else data.get("slots", [])
-    for slot in slots:
-        if slot.get("n_past", 0) == expected_n_past:
-            return slot.get("id")
-    return None
 
 
 class ChatMessage(BaseModel):
@@ -159,7 +87,6 @@ def create_router(
             session_id=sess_id,
             max_tokens=req.max_tokens,
             prefix_hash=prefix_hash,
-        )
         )
 
     @router.get("/metrics")

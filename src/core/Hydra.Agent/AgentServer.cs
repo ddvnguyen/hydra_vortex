@@ -70,7 +70,7 @@ public sealed class AgentServer : RpcServer
         }
     }
 
-   private async Task HandleSaveStateAsync(string sessionId, PipeWriter writer, CancellationToken ct)
+    private async Task HandleSaveStateAsync(string sessionId, PipeWriter writer, CancellationToken ct)
     {
         var nodeLabel = _cfg.NodeName;
         var sessionTypeLabel = "non_chunked";
@@ -88,6 +88,14 @@ public sealed class AgentServer : RpcServer
             AgentMetrics.SaveOpsTotal.Inc();
             if (result.Size > 0)
                 AgentMetrics.SaveBytesTotal.WithLabels(nodeLabel, sessionTypeLabel).Inc(result.Size);
+
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"save_ms":{{result.ElapsedMs}}}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+            var span = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(span);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
         }
         catch (Exception ex)
         {
@@ -120,7 +128,6 @@ public sealed class AgentServer : RpcServer
             metaBytes.CopyTo(span);
             writer.Advance(metaBytes.Length);
             await writer.FlushAsync(ct);
-            AgentMetrics.RestoreOpsTotal.Inc();
         }
         catch (Exception ex)
         {
@@ -208,7 +215,7 @@ public sealed class AgentServer : RpcServer
         }
     }
 
-  private async Task HandleSaveStateChunkedAsync(string sessionId, PipeWriter writer, CancellationToken ct)
+    private async Task HandleSaveStateChunkedAsync(string sessionId, PipeWriter writer, CancellationToken ct)
     {
         var nodeLabel = _cfg.NodeName;
         var sessionTypeLabel = "chunked";
@@ -250,7 +257,7 @@ public sealed class AgentServer : RpcServer
         }
     }
 
- private async Task HandleRestoreStateChunkedAsync(string sessionId, PipeWriter writer, CancellationToken ct)
+    private async Task HandleRestoreStateChunkedAsync(string sessionId, PipeWriter writer, CancellationToken ct)
     {
         var nodeLabel = _cfg.NodeName;
         var sessionTypeLabel = "chunked";
@@ -266,6 +273,14 @@ public sealed class AgentServer : RpcServer
             AgentMetrics.RestoreOpsTotal.Inc();
             if (result.Size > 0)
                 AgentMetrics.RestoreBytesTotal.WithLabels(nodeLabel, sessionTypeLabel).Inc(result.Size);
+
+            var meta = $$"""{"session_id":"{{result.SessionId}}","slot_id":{{result.SlotId}},"n_past":{{result.NPast}},"size":{{result.Size}},"restore_ms":{{result.ElapsedMs}},"chunked":true,"restored":{{result.Restored.ToString().ToLowerInvariant()}}}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0, ct);
+            var span = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(span);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
         }
         catch (Exception ex)
         {
