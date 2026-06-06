@@ -119,19 +119,20 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
             log.warning("session_table_restore_failed", error=str(e))
 
     _restore_sessions()
+    tracker = WorkerTracker(_error_threshold=config.worker_error_threshold)
     health_monitor = HealthMonitor(
         nodes=config.workers,
         poll_interval_s=config.health_poll_interval_s,
         max_failures=config.health_max_failures,
         store_host=config.store_host,
         store_port=config.store_port,
+        tracker=tracker,
     )
     state_manager = StateManager(
         session_table=session_table,
         store_host=config.store_host,
         store_port=config.store_port,
     )
-    tracker = WorkerTracker(_error_threshold=config.worker_error_threshold)
     scheduler = WorkerScheduler(
         config=config,
         session_table=session_table,

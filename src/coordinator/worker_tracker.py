@@ -70,6 +70,9 @@ class WorkerTracker:
             return 0.0
         return time.time() - since
 
+    def is_expired(self, name: str, max_seconds: float = 600.0) -> bool:
+        return self.elapsed_seconds(name) > max_seconds
+
     @property
     def all_workers(self) -> list[str]:
         return list(self._states.keys())

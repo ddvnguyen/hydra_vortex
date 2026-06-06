@@ -196,6 +196,35 @@ def test_status_unknown():
     assert t.status("nonexistent") == "unknown"
 
 
+def test_is_expired_false_when_free():
+    t = WorkerTracker()
+    t.init_worker("rtx")
+    assert not t.is_expired("rtx")
+
+
+def test_is_expired_false_below_threshold():
+    t = WorkerTracker()
+    t.init_worker("rtx")
+    t.acquire("rtx", "decode")
+    # elapsed is near 0, well below 600s default
+    assert not t.is_expired("rtx")
+
+
+def test_is_expired_true_with_low_threshold():
+    import time
+    t = WorkerTracker()
+    t.init_worker("rtx")
+    t.acquire("rtx", "decode")
+    time.sleep(0.01)
+    assert t.is_expired("rtx", max_seconds=0.005)
+
+
+def test_is_expired_custom_threshold():
+    t = WorkerTracker()
+    t.init_worker("rtx")
+    assert not t.is_expired("rtx", max_seconds=3600)
+
+
 def test_acquire_after_on_success_on_error_threshold():
     t = WorkerTracker(_error_threshold=3)
     t.init_worker("rtx")

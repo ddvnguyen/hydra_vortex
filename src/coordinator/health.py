@@ -1,14 +1,17 @@
 import asyncio
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from coordinator.lib.log_config import get_logger, new_trace_id
 from coordinator.lib.rpc_client import RpcClient, OpCode, RpcError, StatusCode
 from coordinator.config import WorkerNodeConfig
+from coordinator.worker_tracker import WorkerTracker
 
 log = get_logger()
+
+MAX_STALL_CYCLES = 3
 
 
 def _extract_health_data(resp) -> dict:
@@ -43,6 +46,7 @@ class HealthMonitor:
         max_failures: int = 3,
         store_host: Optional[str] = None,
         store_port: Optional[int] = None,
+        tracker: Optional[WorkerTracker] = None,
     ):
         self._nodes = {n.name: NodeInfo() for n in nodes}
         self._node_configs = {n.name: n for n in nodes}
@@ -56,6 +60,10 @@ class HealthMonitor:
         self._store_healthy = store_host is None
         self._store_failures = 0
         self._store_last_check = 0.0
+        # Stuck-slot watchdog: tracks suspect slots that may be stuck
+        self._tracker = tracker
+        self._suspect: dict[str, dict] = {}
+        self._max_decode_seconds: float = 600.0
 
     @property
     def stuck_slots(self) -> dict[str, int]:
@@ -68,10 +76,62 @@ class HealthMonitor:
     async def _check_stuck_slots(self, node_name: str, health_data: dict):
         stuck = health_data.get("stuck_slots", 0)
         info = self._nodes.get(node_name)
-        if info:
-            info.stuck_slots = stuck
-            if stuck > 0:
-                log.warning("stuck_slots_detected", node=node_name, count=stuck)
+        if not info:
+            return
+        info.stuck_slots = stuck
+        if stuck == 0:
+            self._suspect.pop(node_name, None)
+            return
+
+        log.warning("stuck_slots_detected", node=node_name, count=stuck)
+
+        if self._tracker is None:
+            return
+
+        config = self._node_configs.get(node_name)
+        if not config:
+            return
+
+        slots = health_data.get("slots", [])
+        stuck_slots = [s for s in slots if s.get("is_processing") and s.get("n_remain", 1) == 0]
+        if not stuck_slots:
+            return
+
+        slot = stuck_slots[0]
+        current_n_past = slot.get("n_past", 0)
+        suspect = self._suspect.get(node_name)
+
+        if suspect is None:
+            self._suspect[node_name] = {
+                "baseline_n_past": current_n_past,
+                "stall_count": 0,
+                "stage": "suspect",
+            }
+            log.warning("stuck_slot_suspect",
+                         node=node_name, n_past=current_n_past,
+                         busy_s=self._tracker.elapsed_seconds(node_name))
+            return
+
+        if current_n_past > suspect["baseline_n_past"]:
+            self._suspect[node_name] = {
+                "baseline_n_past": current_n_past,
+                "stall_count": 0,
+                "stage": "suspect",
+            }
+            return
+
+        suspect["stall_count"] += 1
+        log.warning("stuck_slot_no_progress",
+                     node=node_name, stall_count=suspect["stall_count"],
+                     max_stalls=MAX_STALL_CYCLES,
+                     n_past=current_n_past,
+                     busy_s=round(self._tracker.elapsed_seconds(node_name), 1))
+
+        if suspect["stall_count"] >= MAX_STALL_CYCLES:
+            log.warning("stuck_slot_recovering",
+                         node=node_name,
+                         busy_s=round(self._tracker.elapsed_seconds(node_name), 1))
+            await self._recover_stuck_slot(node_name, config, slots)
 
     async def start(self):
         await self._poll_all()
@@ -182,6 +242,50 @@ class HealthMonitor:
             if not s.get("is_processing"):
                 return s.get("id")
         return None
+
+    async def _recover_stuck_slot(self, node_name: str, config: WorkerNodeConfig, slots: list[dict]):
+        """Force-recover stuck slots by erasing each on the agent and releasing the tracker."""
+        stuck_ids = [s["id"] for s in slots if s.get("is_processing") and s.get("n_remain", 1) == 0]
+        if not stuck_ids:
+            self._suspect.pop(node_name, None)
+            return
+
+        if not self._tracker:
+            self._suspect.pop(node_name, None)
+            return
+
+        if not self._tracker.is_expired(node_name, max_seconds=self._max_decode_seconds):
+            log.info("stuck_slot_not_yet_expired",
+                      node=node_name, busy_s=round(self._tracker.elapsed_seconds(node_name), 1))
+            return
+
+        erased_any = False
+        trace_id = new_trace_id()
+        client = RpcClient(config.host, config.rpc_port)
+        try:
+            for sid in stuck_ids:
+                try:
+                    await client.request(OpCode.SlotErase, str(sid), trace_id=trace_id)
+                    log.info("stuck_slot_erased", node=node_name, slot_id=sid)
+                    erased_any = True
+                except Exception as e:
+                    log.error("stuck_slot_erase_failed",
+                               node=node_name, slot_id=sid, error=str(e))
+        finally:
+            await client.close()
+
+        for sid in stuck_ids:
+            log.warning("stuck_slot_recovery_attempted",
+                         node=node_name, slot_id=sid,
+                         busy_s=round(self._tracker.elapsed_seconds(node_name), 1))
+
+        self._tracker.release(node_name)
+        log.info("stuck_slot_released", node=node_name, slots=stuck_ids)
+
+        self._suspect.pop(node_name, None)
+        info = self._nodes.get(node_name)
+        if info and erased_any:
+            info.stuck_slots = max(0, info.stuck_slots - len(stuck_ids))
 
     def is_store_healthy(self) -> bool:
         return self._store_healthy
