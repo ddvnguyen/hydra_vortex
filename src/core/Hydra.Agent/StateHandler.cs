@@ -49,20 +49,20 @@ public sealed class StateHandler
         var sw = ValueStopwatch.StartNew();
 
         var meta = await _llama.GetStateMetaAsync(slotId, ct);
-        var (stateStream, contentLength) = await _llama.GetStateAsync(slotId, ct);
+        using var stateResult = await _llama.GetStateAsync(slotId, ct);
 
         _log.Information("Saving session {SessionId} slot {SlotId} state (meta_size={MetaSize}, body_len={BodyLen}) to store",
-            sessionId, slotId, meta.StateSize, contentLength);
+            sessionId, slotId, meta.StateSize, stateResult.ContentLength);
 
         await _store.RequestStreamBodyAsync(
-            OpCode.Put, $"kv/{sessionId}", stateStream, contentLength,
+            OpCode.Put, $"kv/{sessionId}", stateResult.Content, stateResult.ContentLength,
             traceId, ct);
 
         var elapsed = sw.ElapsedMilliseconds;
         _log.Information("Saved session {SessionId} slot {SlotId} to store in {Elapsed}ms",
             sessionId, slotId, elapsed);
 
-        return new SaveResult(sessionId, slotId, meta.NPast, contentLength, elapsed);
+        return new SaveResult(sessionId, slotId, meta.NPast, stateResult.ContentLength, elapsed);
     }
 
      public async Task<RestoreSessionResult> RestoreFromStoreAsync(
@@ -125,17 +125,17 @@ public sealed class StateHandler
         var sw = ValueStopwatch.StartNew();
 
         var meta = await _llama.GetStateMetaAsync(slotId, ct);
-        var (stateStream, contentLength) = await _llama.GetStateAsync(slotId, ct);
+        using var stateResult = await _llama.GetStateAsync(slotId, ct);
 
         _log.Information("Saving session {SessionId} slot {SlotId} state chunked (meta_size={MetaSize}, body_len={BodyLen})",
-            sessionId, slotId, meta.StateSize, contentLength);
+            sessionId, slotId, meta.StateSize, stateResult.ContentLength);
 
         var storeKey = $"kv/{sessionId}";
 
         // ── Pass 1: chunk the state locally — hash + cache every 1 MB block, build the
         //   full ordered chunk list. Bodies land in LocalChunkCache so we can push only
         //   the missing ones without re-reading the GPU state. ──────────────────────────
-        var (chunks, totalSize) = await ChunkStateLocallyAsync(stateStream, sessionId, ct);
+        var (chunks, totalSize) = await ChunkStateLocallyAsync(stateResult.Content, sessionId, ct);
         var orderedHashes = chunks.Select(c => c.Hash).ToList();
 
         // ── Step 2: ask the Store which of these chunks it does NOT already have. ───────
@@ -148,7 +148,7 @@ public sealed class StateHandler
         await PutManifestAsync(storeKey, meta.NPast, totalSize, chunks, traceId, ct);
 
         await _chunkCache.SaveHashesAsync(sessionId, orderedHashes, ct);
-        _chunkCache.EvictLRU();
+        await _chunkCache.EvictLRUAsync();
 
         var elapsed = sw.ElapsedMilliseconds;
         var deduped = chunks.Count - missing.Count;
@@ -390,8 +390,8 @@ public sealed class StateHandler
                 break;
 
             var header = storePayload.AsSpan(storeOffset, 8);
-            int chunkIndex = BitConverter.ToInt32(header.Slice(0, 4).ToArray());
-            int chunkSize = BitConverter.ToInt32(header.Slice(4, 4).ToArray());
+            int chunkIndex = BinaryPrimitives.ReadInt32LittleEndian(header[..4]);
+            int chunkSize = BinaryPrimitives.ReadInt32LittleEndian(header[4..]);
             storeOffset += 8;
 
             if (chunkIndex < 0 || chunkSize <= 0 || storeOffset + chunkSize > storePayload.Length)

@@ -94,7 +94,7 @@ public sealed class LocalChunkCacheTests : IDisposable
         await smallCache.SaveHashesAsync("sess_b", ["b"], CancellationToken.None);
         await smallCache.SaveHashesAsync("sess_c", ["c"], CancellationToken.None);
 
-        var evicted = smallCache.EvictLRU();
+        var evicted = await smallCache.EvictLRUAsync();
 
         Assert.True(evicted >= 1);
         Assert.False(smallCache.HasCachedHashes("sess_a"));
