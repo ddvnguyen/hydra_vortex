@@ -298,6 +298,7 @@ jobs:
         run: |
           mkdir -p ~/.config/containers/systemd/
           cp $GITHUB_WORKSPACE/infra/quadlets/hydra-*.container ~/.config/containers/systemd/
+          cp $GITHUB_WORKSPACE/infra/quadlets/hydra-core.pod ~/.config/containers/systemd/
           cp $GITHUB_WORKSPACE/infra/quadlets/llama-rtx.container ~/.config/containers/systemd/
           cp $GITHUB_WORKSPACE/infra/quadlets/hydra-coordinator.env ~/.config/containers/systemd/
           cp $GITHUB_WORKSPACE/infra/quadlets/pg-data.volume ~/.config/containers/systemd/
@@ -307,8 +308,10 @@ jobs:
         run: |
           set -eo pipefail
           systemctl --user daemon-reload
-          systemctl --user stop hydra-postgres hydra-store hydra-agent-rtx hydra-agent-p100 hydra-coordinator 2>/dev/null || true
-          # Start in dependency order
+          # Stop pod (cascades to all containers via BindsTo=)
+          systemctl --user stop hydra-core-pod.service 2>/dev/null || true
+          sleep 1
+          # Start in dependency order (pod auto-starts with first container)
           systemctl --user start hydra-postgres.service
           systemctl --user start hydra-store.service
           systemctl --user start hydra-agent-rtx.service hydra-agent-p100.service
