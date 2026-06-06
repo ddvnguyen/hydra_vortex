@@ -10,7 +10,7 @@ positions:
   filename: /var/lib/promtail/positions.yaml
 
 clients:
-  - url: http://loki:3100/loki/api/v1/push
+  - url: http://localhost:3100/loki/api/v1/push
 
 scrape_configs:
   - job_name: docker-containers
@@ -42,7 +42,7 @@ scrape_configs:
       - cri: {}
 
       - match:
-          selector: '{container="llama-cpp"}'
+          selector: '{container=~"llama-cpp|llama-rtx"}'
           stages:
             - replace:
                 expression: '\x1b\[[0-9;]*[a-zA-Z]'
@@ -56,18 +56,23 @@ scrape_configs:
                 template: "llama-server"
             - labels:
                 component:
+            - template:
+                source: "node"
+                template: "rtx"
+            - labels:
+                node:
 
       - match:
-          selector: '{container=~"hydra_.*"}'
+          selector: '{container=~"hydra[-_].*"}'
           stages:
             - regex:
                 source: "container"
-                expression: "hydra_(?P<component>[^-_]+).*"
+                expression: "hydra[-_](?P<component>[^-_]+).*"
             - labels:
                 component:
 
       - match:
-          selector: '{container=~"hydra_agent-rtx_1|llama-cpp"}'
+          selector: '{container=~"hydra[-_]agent-rtx[-_]?1?"}'
           stages:
             - template:
                 source: "node"
@@ -76,7 +81,7 @@ scrape_configs:
                 node:
 
       - match:
-          selector: '{container="hydra_agent-p100_1"}'
+          selector: '{container=~"hydra[-_]agent-p100[-_]?1?"}'
           stages:
             - template:
                 source: "node"
