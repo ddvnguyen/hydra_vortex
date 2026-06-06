@@ -29,10 +29,7 @@ public sealed record StoreConfig
 
         if (string.IsNullOrWhiteSpace(PgConn))
             throw new InvalidOperationException("PG connection string is required");
-
-        var dir = new DirectoryInfo(StoreDir);
-        if (!dir.Exists)
-            throw new InvalidOperationException($"Store directory does not exist: {StoreDir}");
+        // StoreDir not checked — auto-created by StorageEngine/ChunkStore constructors.
     }
 
     private static string EnvString(string key, string fallback) =>

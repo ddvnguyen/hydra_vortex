@@ -26,11 +26,11 @@ public sealed record AgentConfig
 
         var cacheDir = new DirectoryInfo(ChunkCacheDir);
         if (!cacheDir.Exists)
-            throw new InvalidOperationException($"Chunk cache directory does not exist: {ChunkCacheDir}");
+            cacheDir.Create();
 
         var saveDir = new DirectoryInfo(SlotSavePath);
         if (!saveDir.Exists)
-            throw new InvalidOperationException($"Slot save path directory does not exist: {SlotSavePath}");
+            saveDir.Create();
     }
 
     private static string EnvString(string key, string fallback) =>
