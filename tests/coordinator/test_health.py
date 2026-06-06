@@ -182,7 +182,6 @@ async def test_store_unhealthy_after_three_failures():
     assert monitor.is_store_healthy() is False
 
 
-@staticmethod
 def _make_health_payload(node_name: str, stuck_slots: int = 0, slots=None):
     if slots is None:
         slots = [{"id": 0, "n_past": 100, "is_processing": False, "n_remain": 0}]
@@ -197,7 +196,6 @@ def _make_health_payload(node_name: str, stuck_slots: int = 0, slots=None):
     })
 
 
-@staticmethod
 def _make_health_resp(payload_json: str):
     resp = MagicMock()
     resp.status = 0
@@ -243,6 +241,7 @@ async def test_stuck_slot_recovery_after_max_stalls():
     tracker.acquire("rtx", "decode")
 
     monitor = HealthMonitor(NODES, poll_interval_s=1, max_failures=3, tracker=tracker)
+    monitor._max_decode_seconds = 0.001  # allow recovery in test
 
     health_resp = _make_health_resp(
         _make_health_payload("rtx", stuck_slots=1,
