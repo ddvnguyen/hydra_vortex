@@ -12,6 +12,7 @@ class SessionEntry:
     slot_id: Optional[int]
     n_past: int = 0
     has_store_state: bool = False
+    slot_freed: bool = False
     prefix_hash: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
@@ -54,7 +55,7 @@ class SessionTable:
     def mark_evicted(self, session_id: str):
         entry = self._sessions.get(session_id)
         if entry:
-            entry.slot_id = None
+            entry.slot_freed = True
             entry.has_store_state = True
 
     def get_sessions_on_node(self, node_name: str) -> list[SessionEntry]:
@@ -62,7 +63,7 @@ class SessionTable:
 
     def get_lru_session(self, node_name: str) -> Optional[SessionEntry]:
         sessions = [s for s in self.get_sessions_on_node(node_name)
-                    if s.slot_id is not None]
+                    if s.slot_id is not None and not s.slot_freed]
         if not sessions:
             return None
         return min(sessions, key=lambda s: s.last_used)

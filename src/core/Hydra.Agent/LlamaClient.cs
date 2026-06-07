@@ -119,9 +119,12 @@ public sealed class LlamaClient : IDisposable
             $"{_baseUrl}/slots/{slotId}/state/meta", ct);
         response.EnsureSuccessStatusCode();
 
-        var result = await response.Content.ReadFromJsonAsync<SlotMeta>(
-            (JsonSerializerOptions?)null, ct);
-        return result ?? new SlotMeta();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (string.IsNullOrEmpty(body) || body.TrimStart().StartsWith('['))
+            return new SlotMeta { StateSize = 0 };
+
+        var result = JsonSerializer.Deserialize<SlotMeta>(body);
+        return result ?? new SlotMeta { StateSize = 0 };
     }
 
     public async Task<bool> HealthAsync(CancellationToken ct)

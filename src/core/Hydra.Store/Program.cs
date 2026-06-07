@@ -1,4 +1,16 @@
 using Hydra.Store;
+using Hydra.Store.Extensions;
+using Hydra.Store.Models;
+using Hydra.Shared;
+using Serilog;
+using Prometheus;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+Console.Error.WriteLine($"[BOOT] Starting Hydra.Store at {DateTime.UtcNow:O}");
+Console.Error.Flush();
 
 var cfg = new StoreConfig();
 cfg.Validate();
@@ -81,9 +93,47 @@ else
 }
 
 await using var server = new StoreServer(cfg, engine, chunkStore, metadata);
-
+Console.Error.WriteLine($"[BOOT] StoreServer created, starting RPC on {cfg.Port}");
+Console.Error.Flush();
 var serverTask = server.RunAsync(ct);
 var debugTask = server.StartDebugEndpointAsync(ct);
+
+// ── Coordinator DI host ────────────────────────────────────────────────
+Task? coordinatorTask = null;
+var coordEnabled = Environment.GetEnvironmentVariable("HYDRA_COORD_ENABLED") != "false";
+var workersJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS") ?? "";
+Console.Error.WriteLine($"[BOOT] coordEnabled={coordEnabled} workersJsonLen={workersJson.Length} workersFirst80={workersJson[..Math.Min(80, workersJson.Length)]}");
+Console.Error.Flush();
+if (coordEnabled)
+{
+    var coordCfg = new CoordinatorConfig();
+    coordCfg.Workers.AddRange(CoordinatorConfig.LoadWorkers());
+    if (coordCfg.Workers.Count > 0)
+    {
+        coordCfg.Validate();
+        Log.Information("coordinator_init Workers={Count} Mix={Mix}", coordCfg.Workers.Count, coordCfg.MixPrecisionEnabled);
+
+        coordinatorTask = Task.Run(async () =>
+        {
+            var builder = WebApplication.CreateSlimBuilder(args);
+            builder.WebHost.UseUrls($"http://0.0.0.0:{coordCfg.Port}");
+
+            // DI: register all coordinator services
+            builder.Services.AddCoordinator(coordCfg);
+
+            // Also register store components for shared debug endpoints
+            builder.Services.AddSingleton(server);
+            builder.Services.AddSingleton(cfg);
+
+            var app = builder.Build();
+            app.MapControllers();
+            app.MapGet("/version", () => new { service = "hydra-coordinator", version = HydraLogging.ServiceVersion });
+            app.UseMetricServer();
+
+            await app.RunAsync();
+        }, ct);
+    }
+}
 
 // GC orphan chunks every 30 minutes via referential GC.
 var writeBehind = new WriteBehindService(cfg, metadata, chunkStore);
@@ -114,7 +164,9 @@ var gcTask = Task.Run(async () =>
 
 try
 {
-    await Task.WhenAll(serverTask, debugTask, writeBehindTask, gcTask);
+    var allTasks = new List<Task> { serverTask, debugTask, writeBehindTask, gcTask };
+    if (coordinatorTask != null) allTasks.Add(coordinatorTask);
+    await Task.WhenAll(allTasks);
 }
 catch (OperationCanceledException)
 {

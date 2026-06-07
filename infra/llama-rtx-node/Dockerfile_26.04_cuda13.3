@@ -31,7 +31,8 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 # Configure system paths to discover CUDA binaries and shared objects (.so)
-ENV PATH=/usr/local/cuda-13.3/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-13.3/lib64:${LD_LIBRARY_PATH}
+# /llama/bin contains libllama-server-impl.so mounted from host build directory
+ENV PATH=/llama/bin:/usr/local/cuda-13.3/bin:${PATH}
+ENV LD_LIBRARY_PATH=/llama/bin:/usr/local/cuda-13.3/lib64:${LD_LIBRARY_PATH}
 
 WORKDIR /workspace

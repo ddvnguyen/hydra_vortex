@@ -8,6 +8,7 @@ After=hydra-core-pod.service hydra-store.service
 ContainerName=hydra-coordinator
 Image=localhost/hydra-coordinator:latest
 Pod=hydra-core.pod
+Volume=/home/ddv/.local/share/opencode/worktree/8115ac4c1f142397ad1a1c64b687457fc241b866/jolly-rocket/src/coordinator/:/app/src/coordinator/:ro,Z
 Environment=HYDRA_COORD_HOST=0.0.0.0
 Environment=HYDRA_COORD_PORT=9000
 Environment=HYDRA_COORD_STORE_HOST=localhost

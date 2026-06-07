@@ -20,7 +20,7 @@
           "title": "Per-Request Phase Durations",
           "datasource": {
             "type": "loki",
-            "uid": "Loki"
+            "uid": "loki"
           },
           "gridPos": {
             "h": 16,
@@ -39,7 +39,7 @@
         {
           "id": "extractFields",
           "options": {
-            "source": "line",
+            "source": "Line",
             "format": "logfmt"
           }
         },
@@ -64,6 +64,8 @@
               "ts": true,
               "msg": true,
               "level": true,
+              "timestamp": true,
+              "event": true,
               "logger": true,
               "caller": true
             },

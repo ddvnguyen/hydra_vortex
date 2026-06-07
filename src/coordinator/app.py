@@ -120,6 +120,8 @@ def create_app(config: CoordinatorConfig | None = None) -> FastAPI:
 
     _restore_sessions()
     tracker = WorkerTracker(_error_threshold=config.worker_error_threshold)
+    for w in config.workers:
+        tracker.init_worker(w.name)
     health_monitor = HealthMonitor(
         nodes=config.workers,
         poll_interval_s=config.health_poll_interval_s,

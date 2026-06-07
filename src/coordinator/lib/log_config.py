@@ -3,6 +3,11 @@ import uuid
 import logging
 
 
+def _drop_internal_keys(logger, name, event_dict):
+    event_dict.pop("_log_level", None)
+    return event_dict
+
+
 def setup_logging(level: str = "INFO"):
     logging.basicConfig(
         format="%(message)s",
@@ -15,7 +20,8 @@ def setup_logging(level: str = "INFO"):
             structlog.stdlib.filter_by_level,
             structlog.stdlib.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
+            _drop_internal_keys,
+            structlog.processors.KeyValueRenderer(sort_keys=False, repr_native_str=False),
         ],
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),

@@ -36,7 +36,6 @@ ExecStart=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server \
   --prio 3 \
   --prio-batch 1 \
   --cache-reuse 64 \
-  --swa-full \
   --yarn-orig-ctx 32768 \
   --rope-scaling yarn \
   --rope-scale 6 \

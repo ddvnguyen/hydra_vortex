@@ -30,9 +30,17 @@ class StateManager:
         if not trace_id:
             trace_id = new_trace_id()
         entry = self._session_table.lookup(session_id)
-        if not entry or entry.slot_id is None:
-            log.warning("save_session_skipped_no_slot",
+        if not entry:
+            log.warning("save_session_skipped_no_entry",
                         session_id=session_id, trace_id=trace_id)
+            return {}
+        if entry.slot_id is None:
+            log.warning("save_session_skipped_no_slot_id",
+                        session_id=session_id, trace_id=trace_id)
+            return {}
+        if entry.slot_freed:
+            log.warning("save_session_skipped_slot_freed",
+                        session_id=session_id, slot_id=entry.slot_id, trace_id=trace_id)
             return {}
         slot_id = entry.slot_id
         client = self._agent_client(node_host, node_port)
