@@ -17,11 +17,14 @@ public interface ISessionLedger
     int EvictStale(double timeoutSeconds);
     void Remove(string sessionId);
     Dictionary<string, object> AllSessions();
+    Task RestoreFromStoreAsync(string storeHost, int storePort, CancellationToken ct);
 }
 
 public interface IWorkerTracker
 {
     void InitWorker(string name);
+    void InitWorker(string name, int slots);
+
     bool Acquire(string name, string role = "decode");
     void Release(string name);
     void OnError(string name);
@@ -36,4 +39,10 @@ public interface IWorkerTracker
     double GetElapsedSeconds(string name);
     bool IsExpired(string name, double maxSeconds = 600);
     List<string> AllWorkers { get; }
+
+    bool TryAcquireSlot(string name, out int slotId, string role = "decode");
+    void ReleaseSlot(string name, int slotId);
+    int FreeSlotCount(string name);
+    bool HasFreeSlot(string name);
+    int TotalSlots(string name);
 }

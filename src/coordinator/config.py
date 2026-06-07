@@ -18,6 +18,16 @@ class WorkerNodeConfig(BaseModel):
     decode_speed_tps: float = 30.0
     # -1 = unlimited (RTX). Set to 8000 for P100 to prevent large prefills.
     max_prefill_tokens: int = -1
+    # Router model name when llama_url points at a router server (--models-dir mode).
+    # Used for POST /models/load and /models/unload before/after each phase.
+    router_model_name: str | None = None
+
+    # Per-operation model names for mix-precision P/D split.
+    # prefill_model_name: model loaded when this worker does prefill (e.g. nano IQ2)
+    # decode_model_name:  model loaded when this worker does decode (e.g. balanced Q5K)
+    # Falls back to router_model_name if not set.
+    prefill_model_name: str | None = None
+    decode_model_name: str | None = None
 
     # Per-operation model names for mix-precision P/D split.
     # prefill_model_name: model loaded when this worker does prefill (e.g. nano IQ2)
@@ -63,6 +73,13 @@ class CoordinatorConfig(BaseSettings):
     # "concurrency": P/D disaggregation — prefill worker → store → decode worker
     run_mode: str = "concurrency"
 
+    # Mix-precision P/D split: use different GGUF model quants for prefill vs decode.
+    # Workers configured as prefill-only (worker_type=1) do prefill on a faster/smaller
+    # quant; decode-only (worker_type=2) do decode on a higher-quality quant. The
+    # scheduler forces the P/D disaggregation path for every request (skipping
+    # the atomic shortcut) to ensure prefill and decode use different workers.
+    mix_precision_enabled: bool = False
+
     # If a worker has been busy for less than this many seconds, the scheduler
     # considers it "just started" and routes new requests elsewhere.
     smart_schedule_wait_threshold_s: float = 3.0
@@ -73,6 +90,16 @@ class CoordinatorConfig(BaseSettings):
 
     # Consecutive errors before a worker is marked unhealthy by the tracker.
     worker_error_threshold: int = 3
+
+    # n_past guard: when a warm request has estimated_tokens < guard_threshold * n_past,
+    # the guard resets n_past to 0 and erases the slot (prevents KV cache invalidation).
+    # Lower value = more tolerant (requires bigger drop to trigger). Range: 0.0–1.0.
+    n_past_guard_threshold: float = 0.6
+
+    # Requests with estimated_tokens <= this threshold skip the prefill-optimized
+    # worker (RTX) and go directly to the best decode worker (P100) — avoiding the
+    # full P/D split pipeline (prefill → save → restore → decode overhead).
+    small_request_bypass_threshold: int = 2000
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

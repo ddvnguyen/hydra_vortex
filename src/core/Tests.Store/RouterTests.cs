@@ -1,207 +1,224 @@
 using Hydra.Store;
+using Hydra.Store.Models;
+using Hydra.Store.Repositories;
+using Hydra.Store.Services;
 
 namespace Tests.Store;
 
+/// <summary>
+/// Test health monitor that always reports healthy.
+/// </summary>
+internal sealed class TestHealthMonitor : IHealthMonitorService
+{
+	public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+	public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+	public bool IsHealthy(string nodeName) => true;
+	public bool IsStoreHealthy => true;
+	public int? GetIdleSlot(string nodeName) => null;
+	public Dictionary<string, object> GetHealthSummary() => new();
+}
+
 public sealed class RouterTests
 {
-    [Fact]
-    public void Derive_Session_Id_Is_Consistent()
-    {
-        var msgs = new List<Dictionary<string, object>>
-        {
-            new() { ["role"] = "user", ["content"] = "hello" }
-        };
-        var id1 = Router.DeriveSessionId(msgs);
-        var id2 = Router.DeriveSessionId(msgs);
-        Assert.Equal(id1, id2);
-        Assert.StartsWith("sess_", id1);
-        Assert.Equal(24 + 5, id1.Length); // "sess_" + 24 hex
-    }
+	private static readonly IHealthMonitorService Health = new TestHealthMonitor();
 
-    [Fact]
-    public void Derive_Session_Id_Differs_For_Different_Content()
-    {
-        var msgs1 = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "hello" } };
-        var msgs2 = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "world" } };
-        Assert.NotEqual(Router.DeriveSessionId(msgs1), Router.DeriveSessionId(msgs2));
-    }
+	[Fact]
+	public void Derive_Session_Id_Is_Consistent()
+	{
+		var msgs = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "user", ["content"] = "hello" }
+		};
+		var id1 = Router.DeriveSessionId(msgs);
+		var id2 = Router.DeriveSessionId(msgs);
+		Assert.Equal(id1, id2);
+		Assert.StartsWith("sess_", id1);
+		Assert.Equal(24 + 5, id1.Length); // "sess_" + 24 hex
+	}
 
-    [Fact]
-    public void Estimate_Tokens_Uses_Char_Ratio()
-    {
-        var msgs = new List<Dictionary<string, object>>
-        {
-            new() { ["role"] = "user", ["content"] = "hello world" } // 11 chars
-        };
-        var est = Router.EstimateRequestTokens(msgs, 4.0);
-        Assert.Equal(11 / 4, est); // 11/4 = 2
-    }
+	[Fact]
+	public void Derive_Session_Id_Differs_For_Different_Content()
+	{
+		var msgs1 = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "hello" } };
+		var msgs2 = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "world" } };
+		Assert.NotEqual(Router.DeriveSessionId(msgs1), Router.DeriveSessionId(msgs2));
+	}
 
-    [Fact]
-    public void Compute_Prefix_Hash_With_System_Message()
-    {
-        var msgs = new List<Dictionary<string, object>>
-        {
-            new() { ["role"] = "system", ["content"] = "You are helpful." },
-            new() { ["role"] = "user", ["content"] = "hello" }
-        };
-        var hash = Router.ComputePrefixHash(msgs);
-        Assert.NotNull(hash);
-        Assert.Equal(16, hash!.Length);
-    }
+	[Fact]
+	public void Estimate_Tokens_Uses_Char_Ratio()
+	{
+		var msgs = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "user", ["content"] = "hello world" } // 11 chars
+		};
+		var est = Router.EstimateRequestTokens(msgs, 4.0);
+		Assert.Equal(11 / 4, est); // 11/4 = 2
+	}
 
-    [Fact]
-    public void Compute_Prefix_Hash_No_System_Returns_Null()
-    {
-        var msgs = new List<Dictionary<string, object>>
-        {
-            new() { ["role"] = "user", ["content"] = "hello" }
-        };
-        Assert.Null(Router.ComputePrefixHash(msgs));
-    }
+	[Fact]
+	public void Compute_Prefix_Hash_With_System_Message()
+	{
+		var msgs = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "system", ["content"] = "You are helpful." },
+			new() { ["role"] = "user", ["content"] = "hello" }
+		};
+		var hash = Router.ComputePrefixHash(msgs);
+		Assert.NotNull(hash);
+		Assert.Equal(16, hash!.Length);
+	}
 
-    [Fact]
-    public void Pick_Best_Prefill_Worker_Respects_Priority()
-    {
-        var workers = new List<WorkerConfig>
-        {
-            new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1 },
-            new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
-        };
-        var tracker = new WorkerTracker();
-        foreach (var w in workers) tracker.InitWorker(w.Name);
+	[Fact]
+	public void Compute_Prefix_Hash_No_System_Returns_Null()
+	{
+		var msgs = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "user", ["content"] = "hello" }
+		};
+		Assert.Null(Router.ComputePrefixHash(msgs));
+	}
 
-        var picked = Router.PickBestPrefillWorker(workers, tracker);
-        Assert.NotNull(picked);
-        Assert.Equal("rtx", picked!.Name);
-    }
+	[Fact]
+	public void Pick_Best_Prefill_Worker_Respects_Priority()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1 },
+			new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
 
-    [Fact]
-    public void Pick_Best_Prefill_Worker_Skips_DecodeOnly()
-    {
-        var workers = new List<WorkerConfig>
-        {
-            new() { Name = "p100", WorkerType = 2, PrefillPriority = 1 },
-        };
-        var tracker = new WorkerTracker();
-        foreach (var w in workers) tracker.InitWorker(w.Name);
+		var picked = Router.PickBestPrefillWorker(workers, tracker, Health);
+		Assert.NotNull(picked);
+		Assert.Equal("rtx", picked!.Name);
+	}
 
-        Assert.Null(Router.PickBestPrefillWorker(workers, tracker));
-    }
+	[Fact]
+	public void Pick_Best_Prefill_Worker_Skips_DecodeOnly()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "p100", WorkerType = 2, PrefillPriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
 
-    [Fact]
-    public void Pick_Best_Decode_Worker_Respects_Priority()
-    {
-        var workers = new List<WorkerConfig>
-        {
-            new() { Name = "rtx", WorkerType = 3, DecodePriority = 2 },
-            new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
-        };
-        var tracker = new WorkerTracker();
-        foreach (var w in workers) tracker.InitWorker(w.Name);
+		Assert.Null(Router.PickBestPrefillWorker(workers, tracker, Health));
+	}
 
-        var picked = Router.PickBestDecodeWorker(workers, tracker);
-        Assert.NotNull(picked);
-        Assert.Equal("p100", picked!.Name);
-    }
+	[Fact]
+	public void Pick_Best_Decode_Worker_Respects_Priority()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, DecodePriority = 2 },
+			new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
 
-    [Fact]
-    public void Pick_Best_Decode_Worker_Excludes()
-    {
-        var workers = new List<WorkerConfig>
-        {
-            new() { Name = "rtx", WorkerType = 3, DecodePriority = 1 },
-            new() { Name = "p100", WorkerType = 2, DecodePriority = 2 },
-        };
-        var tracker = new WorkerTracker();
-        foreach (var w in workers) tracker.InitWorker(w.Name);
+		var picked = Router.PickBestDecodeWorker(workers, tracker, Health);
+		Assert.NotNull(picked);
+		Assert.Equal("p100", picked!.Name);
+	}
 
-        var picked = Router.PickBestDecodeWorker(workers, tracker, exclude: "rtx");
-        Assert.NotNull(picked);
-        Assert.Equal("p100", picked!.Name);
-    }
+	[Fact]
+	public void Pick_Best_Decode_Worker_Excludes()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, DecodePriority = 1 },
+			new() { Name = "p100", WorkerType = 2, DecodePriority = 2 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
 
-    [Fact]
-    public void Pick_Best_Prefill_Worker_Respects_Max_Tokens()
-    {
-        var workers = new List<WorkerConfig>
-        {
-            new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1, MaxPrefillTokens = 10000 },
-            new() { Name = "p100", WorkerType = 2, PrefillPriority = 2 },
-        };
-        var tracker = new WorkerTracker();
-        foreach (var w in workers) tracker.InitWorker(w.Name);
+		var picked = Router.PickBestDecodeWorker(workers, tracker, Health, exclude: "rtx");
+		Assert.NotNull(picked);
+		Assert.Equal("p100", picked!.Name);
+	}
 
-        var picked = Router.PickBestPrefillWorker(workers, tracker, maxTokens: 20000);
-        Assert.NotNull(picked);
-        Assert.Equal("p100", picked!.Name); // RTX capped at 10000
-    }
+	[Fact]
+	public void Pick_Best_Prefill_Worker_Respects_Max_Tokens()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1, MaxPrefillTokens = 10000 },
+			new() { Name = "p100", WorkerType = 2, PrefillPriority = 2 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
 
-    [Fact]
-    public void Pick_Best_Decode_Worker_Skips_Busy()
-    {
-        var workers = new List<WorkerConfig>
-        {
-            new() { Name = "rtx", WorkerType = 3, DecodePriority = 1 },
-            new() { Name = "p100", WorkerType = 2, DecodePriority = 2 },
-        };
-        var tracker = new WorkerTracker();
-        foreach (var w in workers) tracker.InitWorker(w.Name);
-        tracker.Acquire("rtx", "decode");
+		var picked = Router.PickBestPrefillWorker(workers, tracker, Health, maxTokens: 20000);
+		Assert.Null(picked); // RTX capped at 10000, P100 can't prefill
+	}
 
-        var picked = Router.PickBestDecodeWorker(workers, tracker);
-        Assert.NotNull(picked);
-        Assert.Equal("p100", picked!.Name);
-    }
+	[Fact]
+	public void Pick_Best_Decode_Worker_Skips_Busy()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, DecodePriority = 1 },
+			new() { Name = "p100", WorkerType = 2, DecodePriority = 2 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
+		tracker.Acquire("rtx", "decode");
 
-    [Fact]
-    public void Pick_All_Busy_Returns_Null()
-    {
-        var workers = new List<WorkerConfig>
-        {
-            new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1 },
-        };
-        var tracker = new WorkerTracker();
-        foreach (var w in workers) tracker.InitWorker(w.Name);
-        tracker.Acquire("rtx", "prefill");
+		var picked = Router.PickBestDecodeWorker(workers, tracker, Health);
+		Assert.NotNull(picked);
+		Assert.Equal("p100", picked!.Name);
+	}
 
-        Assert.Null(Router.PickBestPrefillWorker(workers, tracker));
-    }
+	[Fact]
+	public void Pick_All_Busy_Returns_Null()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
+		tracker.Acquire("rtx", "prefill");
 
-    [Fact]
-    public void Prefill_Model_Falls_Back_To_Router()
-    {
-        var w = new WorkerConfig { RouterModelName = "nano" };
-        Assert.Equal("nano", Router.PrefillModel(w));
-    }
+		Assert.Null(Router.PickBestPrefillWorker(workers, tracker, Health));
+	}
 
-    [Fact]
-    public void Prefill_Model_Prefers_Prefill_Field()
-    {
-        var w = new WorkerConfig { PrefillModelName = "mini", RouterModelName = "nano" };
-        Assert.Equal("mini", Router.PrefillModel(w));
-    }
+	[Fact]
+	public void Prefill_Model_Falls_Back_To_Router()
+	{
+		var w = new WorkerConfig { RouterModelName = "nano" };
+		Assert.Equal("nano", Router.PrefillModel(w));
+	}
 
-    [Fact]
-    public void Decode_Model_Falls_Back_To_Router()
-    {
-        var w = new WorkerConfig { RouterModelName = "balanced" };
-        Assert.Equal("balanced", Router.DecodeModel(w));
-    }
+	[Fact]
+	public void Prefill_Model_Prefers_Prefill_Field()
+	{
+		var w = new WorkerConfig { PrefillModelName = "mini", RouterModelName = "nano" };
+		Assert.Equal("mini", Router.PrefillModel(w));
+	}
 
-    [Fact]
-    public void Mixed_Worker_Selection()
-    {
-        var workers = new List<WorkerConfig>
-        {
-            new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1, DecodePriority = 2 },
-            new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
-        };
-        var tracker = new WorkerTracker();
-        foreach (var w in workers) tracker.InitWorker(w.Name);
+	[Fact]
+	public void Decode_Model_Falls_Back_To_Router()
+	{
+		var w = new WorkerConfig { RouterModelName = "balanced" };
+		Assert.Equal("balanced", Router.DecodeModel(w));
+	}
 
-        var picked = Router.PickBestMixedWorker(workers, tracker);
-        Assert.NotNull(picked);
-        Assert.Equal("rtx", picked!.Name); // P100 can't prefill
-    }
+	[Fact]
+	public void Mixed_Worker_Selection()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1, DecodePriority = 2 },
+			new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
+
+		var picked = Router.PickBestMixedWorker(workers, tracker, Health);
+		Assert.NotNull(picked);
+		Assert.Equal("rtx", picked!.Name); // P100 can't prefill
+	}
 }

@@ -40,10 +40,13 @@ public sealed record CoordinatorConfig
     public int LlamaRequestTimeoutS { get; init; } = EnvInt("HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S", 1800);
     public int SessionIdleTimeoutS { get; init; } = EnvInt("HYDRA_COORD_SESSION_IDLE_TIMEOUT_S", 3600);
     public int AtomicTokenThreshold { get; init; } = EnvInt("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", 2048);
+    public double NPastGuardThreshold { get; init; } = double.Parse(Env("HYDRA_COORD_N_PAST_GUARD_THRESHOLD", "0.6"));
+    public int SmallRequestBypassThreshold { get; init; } = EnvInt("HYDRA_COORD_SMALL_REQUEST_BYPASS_THRESHOLD", 2000);
     public int WorkerErrorThreshold { get; init; } = EnvInt("HYDRA_COORD_WORKER_ERROR_THRESHOLD", 3);
     public string RunMode { get; init; } = Env("HYDRA_COORD_RUN_MODE", "concurrency");
     public bool MixPrecisionEnabled { get; init; } = EnvBool("HYDRA_COORD_MIX_PRECISION_ENABLED", false);
     public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
+    public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
     public string PrefixCheckpointName { get; init; } = Env("HYDRA_COORD_PREFIX_CHECKPOINT_NAME", "system_prompt");
     public List<WorkerConfig> Workers { get; set; } = [];
 
@@ -52,7 +55,11 @@ public sealed record CoordinatorConfig
         var json = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
         if (!string.IsNullOrWhiteSpace(json))
             return JsonSerializer.Deserialize<List<WorkerConfig>>(json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+                }) ?? [];
         var file = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
         if (!string.IsNullOrWhiteSpace(file) && File.Exists(file))
             return JsonSerializer.Deserialize<List<WorkerConfig>>(File.ReadAllText(file),
@@ -120,4 +127,5 @@ public sealed class SlotInfo
     public bool IsProcessing { get; set; }
     public int NPast { get; set; }
     public DateTime LastActive { get; set; } = DateTime.UtcNow;
+    public int StuckPollCount { get; set; }
 }

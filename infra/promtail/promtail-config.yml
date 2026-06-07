@@ -63,11 +63,11 @@ scrape_configs:
                 node:
 
       - match:
-          selector: '{container=~"hydra[-_].*"}'
+          selector: '{container=~"hydra[-_]store[-_]?1?"}'
           stages:
-            - regex:
-                source: "container"
-                expression: "hydra[-_](?P<component>[^-_]+).*"
+            - template:
+                source: "component"
+                template: "store"
             - labels:
                 component:
 

@@ -11,8 +11,11 @@ public interface ICompletionProxyService
 public interface IWorkerScheduler
 {
     string? LastDispatchedNode { get; }
-    Task<object> SubmitAsync(Dictionary<string, object> request, List<Dictionary<string, object>> messages, string sessionId, int maxTokens, string? prefixHash, CancellationToken ct);
+    Task<object> SubmitAsync(Dictionary<string, object> request, List<Dictionary<string, object>> messages, string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct);
+    Task<object> MigrateSessionAsync(string sessionId, string targetNodeName, CancellationToken ct);
+    Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct);
     Task RunAsync(CancellationToken ct);
+    int WarmLeaseCount { get; }
 }
 
 public interface IHealthMonitorService

@@ -3,60 +3,208 @@ using System.Text;
 using System.Text.Json;
 using Hydra.Store.Models;
 using Hydra.Store.Repositories;
+using Microsoft.ML.Tokenizers;
 
 namespace Hydra.Store.Services;
 
 public static class Router
 {
-    public const int PrefillOnly = 1, DecodeOnly = 2, Mixed = 3;
+	public const int PrefillOnly = 1;
+	public const int DecodeOnly = 2;
+	public const int Mixed = 3;
 
-    public static string DeriveSessionId(List<Dictionary<string, object>> messages)
-    {
-        var sb = new StringBuilder();
-        foreach (var m in messages) sb.Append($"{m.GetValueOrDefault("role","")}:{m.GetValueOrDefault("content","")}\n");
-        return $"sess_{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..24]}";
-    }
+	private static readonly TiktokenTokenizer Tokenizer =
+		TiktokenTokenizer.CreateForModel("gpt-4o");
 
-    public static int EstimateRequestTokens(List<Dictionary<string, object>> messages, double charsPerToken = 4.0)
-    {
-        long total = 0;
-        foreach (var m in messages) total += m.GetValueOrDefault("content")?.ToString()?.Length ?? 0;
-        return (int)Math.Max(1, total / charsPerToken);
-    }
+	public readonly record struct MessageSummary(
+		string SessionId,
+		int EstimatedTokens,
+		string? PrefixHash
+	);
 
-    public static string? ComputePrefixHash(List<Dictionary<string, object>> messages)
-    {
-        foreach (var m in messages)
-            if (m.GetValueOrDefault("role")?.ToString() == "system" && m.GetValueOrDefault("content")?.ToString() is { } c)
-                return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(c)))[..16];
-        return null;
-    }
+	public static MessageSummary SummarizeMessages(
+		List<Dictionary<string, object>> messages)
+	{
+		StringBuilder sb = new();
+		int tokenCount = 0;
+		string? prefixHash = null;
 
-    public static WorkerConfig? PickBestPrefillWorker(List<WorkerConfig> workers, IWorkerTracker tracker, int? maxTokens = null, string? exclude = null)
-        => workers.Where(w => w.CanPrefill && tracker.IsFree(w.Name) && w.Name != exclude)
-            .Where(w => maxTokens is null or < 0 || w.MaxPrefillTokens < 1 || maxTokens <= w.MaxPrefillTokens)
-            .OrderBy(w => w.PrefillPriority).FirstOrDefault();
+		foreach (var m in messages)
+		{
+			var role = m.GetValueOrDefault("role")?.ToString() ?? "";
+			var content = m.GetValueOrDefault("content")?.ToString() ?? "";
 
-    public static WorkerConfig? PickBestDecodeWorker(List<WorkerConfig> workers, IWorkerTracker tracker, string? exclude = null)
-        => workers.Where(w => w.CanDecode && tracker.IsFree(w.Name) && w.Name != exclude)
-            .OrderBy(w => w.DecodePriority).FirstOrDefault();
+			sb.Append(role);
+			sb.Append(':');
+			sb.Append(content);
+			sb.Append('\n');
 
-    public static string? PrefillModel(WorkerConfig w) => w.PrefillModelName ?? w.RouterModelName;
-    public static string? DecodeModel(WorkerConfig w) => w.DecodeModelName ?? w.RouterModelName;
+			tokenCount += Tokenizer.CountTokens(content);
 
-    public static async Task<int?> PickIdleSlot(string llamaUrl, CancellationToken ct)
-    {
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var slots = JsonSerializer.Deserialize<List<JsonElement>>(await http.GetStringAsync($"{llamaUrl}/slots", ct));
-            foreach (var s in slots ?? [])
-                if (!s.TryGetProperty("is_processing", out var p) || !p.GetBoolean())
-                    return s.GetProperty("id").GetInt32();
-        }
-        catch { }
-        return null;
-    }
+			if (prefixHash == null && role == "system" && content.Length > 0)
+				prefixHash = Convert.ToHexStringLower(
+					SHA256.HashData(Encoding.UTF8.GetBytes(content)))[..16];
+		}
 
-    public static string NewTraceId() => Guid.NewGuid().ToString("N")[..16];
+		var sessionId = $"sess_{Convert.ToHexStringLower(
+			SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..24]}";
+
+		return new MessageSummary(sessionId, Math.Max(1, tokenCount), prefixHash);
+	}
+
+	public static string DeriveSessionId(
+		List<Dictionary<string, object>> messages)
+	{
+		return SummarizeMessages(messages).SessionId;
+	}
+
+	public static int EstimateRequestTokens(
+		List<Dictionary<string, object>> messages,
+		double charsPerToken = 4.0)
+	{
+		return SummarizeMessages(messages).EstimatedTokens;
+	}
+
+	public static string? ComputePrefixHash(
+		List<Dictionary<string, object>> messages)
+	{
+		return SummarizeMessages(messages).PrefixHash;
+	}
+
+	public static WorkerConfig? PickBestPrefillWorker(
+		List<WorkerConfig> workers, IWorkerTracker tracker,
+		IHealthMonitorService health,
+		int? maxTokens = null, string? exclude = null)
+	{
+		return workers
+			.Where(w => w.CanPrefill && tracker.IsFree(w.Name)
+				&& health.IsHealthy(w.Name)
+				&& w.Name != exclude)
+			.Where(w => maxTokens is null or < 0
+				|| w.MaxPrefillTokens < 1
+				|| maxTokens <= w.MaxPrefillTokens)
+			.OrderBy(w => w.PrefillPriority)
+			.FirstOrDefault();
+	}
+
+	public static WorkerConfig? PickBestDecodeWorker(
+		List<WorkerConfig> workers, IWorkerTracker tracker,
+		IHealthMonitorService health,
+		string? exclude = null)
+	{
+		return workers
+			.Where(w => w.CanDecode && tracker.IsFree(w.Name)
+				&& health.IsHealthy(w.Name)
+				&& w.Name != exclude)
+			.OrderBy(w => w.DecodePriority)
+			.FirstOrDefault();
+	}
+
+	public static string? PrefillModel(WorkerConfig w)
+	{
+		return w.PrefillModelName ?? w.RouterModelName;
+	}
+
+	public static string? DecodeModel(WorkerConfig w)
+	{
+		return w.DecodeModelName ?? w.RouterModelName;
+	}
+
+	public static async Task<int?> PickIdleSlot(
+		string llamaUrl, CancellationToken ct)
+	{
+		try
+		{
+			using var http = new HttpClient
+			{
+				Timeout = TimeSpan.FromSeconds(5)
+			};
+			var slots = JsonSerializer.Deserialize<List<JsonElement>>(
+				await http.GetStringAsync($"{llamaUrl}/slots", ct));
+			foreach (var s in slots ?? [])
+				if (!s.TryGetProperty("is_processing", out var p)
+					|| !p.GetBoolean())
+					return s.GetProperty("id").GetInt32();
+		}
+		catch { }
+		return null;
+	}
+
+	public static WorkerConfig? PickBestMixedWorker(
+		List<WorkerConfig> workers, IWorkerTracker tracker,
+		IHealthMonitorService health,
+		string? exclude = null)
+	{
+		return workers
+			.Where(w => w.WorkerType == Mixed && tracker.IsFree(w.Name)
+				&& health.IsHealthy(w.Name)
+				&& w.Name != exclude)
+			.OrderBy(w => w.DecodePriority)
+			.FirstOrDefault();
+	}
+
+	public static async Task<bool> VerifyWarmSlotAsync(
+		WorkerConfig worker, SessionEntry entry, string traceId)
+	{
+		if (entry.SlotId == null)
+			return false;
+
+		try
+		{
+			using var http = new HttpClient
+			{
+				Timeout = TimeSpan.FromSeconds(5)
+			};
+			var url = $"{worker.LlamaUrl.TrimEnd('/')}/slots";
+			var resp = await http.GetAsync(url);
+			if (!resp.IsSuccessStatusCode)
+				return false;
+
+			var data = await resp.Content.ReadAsStringAsync();
+			var slots = JsonSerializer.Deserialize<List<JsonElement>>(data);
+			if (slots == null)
+				return false;
+
+			foreach (var slot in slots)
+			{
+				if (!slot.TryGetProperty("id", out var id)
+					|| id.GetInt32() != entry.SlotId)
+					continue;
+
+				// Check 1: not stuck (is_processing && n_remain == 0)
+				if (slot.TryGetProperty("is_processing", out var ip) && ip.GetBoolean())
+				{
+					var nRemain = slot.TryGetProperty("n_remain", out var nr)
+						? nr.GetInt32() : 1;
+					if (nRemain == 0)
+						return false; // stuck
+				}
+
+				// Check 2: n_past >= entry.NPast
+				var slotNPast = slot.TryGetProperty("n_past", out var sn)
+					? sn.GetInt32() : 0;
+				if (slotNPast < (entry.NPast > 0 ? entry.NPast : 0))
+					return false;
+
+				// Check 3: prefix_hash matches if entry has one
+				if (entry.PrefixHash != null)
+				{
+					if (slot.TryGetProperty("prefix_hash", out var sph)
+						&& sph.GetString() is { Length: > 0 } slotPrefix
+						&& slotPrefix != entry.PrefixHash)
+						return false;
+				}
+
+				return true;
+			}
+		}
+		catch { }
+
+		return false;
+	}
+
+	public static string NewTraceId()
+	{
+		return Guid.NewGuid().ToString("N")[..16];
+	}
 }

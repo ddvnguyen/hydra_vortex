@@ -90,6 +90,12 @@ class WorkerScheduler:
         self._running = False
         self._prefix_set: set[str] = set()
 
+        if self._config.mix_precision_enabled:
+            log.info("mix_precision_init", mode="P/D split with separate prefill/decode quants")
+            mix_precision_enabled_gauge.set(1)
+        else:
+            mix_precision_enabled_gauge.set(0)
+
     @staticmethod
     def _elapsed_ms(item: WorkItem) -> int:
         return int((time.time() - item._start_time) * 1000)
@@ -167,6 +173,12 @@ class WorkerScheduler:
     def _is_atomic(self, item: WorkItem) -> bool:
         if self._config.run_mode == "fast":
             return True
+        # Small requests skip the prefill-optimized worker → go direct to decode.
+        # Overrides mix_precision because small prompts don't benefit from P/D split.
+        if item.estimated_tokens <= self._config.small_request_bypass_threshold:
+            return True
+        if self._config.mix_precision_enabled:
+            return False
         return item.estimated_new_tokens <= self._config.atomic_token_threshold
 
     async def _router_model_load(self, router_url: str, model_name: str, trace_id: str):
@@ -185,6 +197,7 @@ class WorkerScheduler:
             resp.raise_for_status()
         log.info("router_model_unload",
                  trace_id=trace_id, model=model_name, router_url=router_url)
+
     def _routable(self, wname: str) -> bool:
         info = self._health.get_node_info(wname)
         if not info or not info.healthy:
@@ -215,17 +228,30 @@ class WorkerScheduler:
                         error=str(e), trace_id=trace_id)
 
     def _can_handle(self, item: WorkItem) -> Optional[WorkerNodeConfig]:
+        """Pick a worker that can process this item.
+        
+        Small requests (<= small_request_bypass_threshold) prefer decode workers
+        (P100) to avoid the prefill → save → restore pipeline overhead on RTX.
+        """
+        bypass = item.estimated_tokens <= self._config.small_request_bypass_threshold
+        candidates = []
         for wname in self._tracker.free_workers():
             w = self._worker_by_name(wname)
-            if not w:
+            if not w or not self._routable(wname):
                 continue
-            if not (w.worker_type & WORKER_PREFILL):
-                continue
-            if not self._routable(wname):
-                continue
-            if w.max_prefill_tokens != -1 and item.estimated_new_tokens > w.max_prefill_tokens:
-                continue
-            return w
+            if bypass:
+                if w.worker_type & WORKER_DECODE:
+                    candidates.append(w)
+            elif w.worker_type & WORKER_PREFILL:
+                if w.max_prefill_tokens == -1 or item.estimated_new_tokens <= w.max_prefill_tokens:
+                    candidates.append(w)
+
+        if candidates:
+            # Prefer decode-only workers for bypass, prefill-priority otherwise
+            candidates.sort(
+                key=lambda w: w.decode_priority if bypass else w.prefill_priority
+            )
+            return candidates[0]
         return None
 
     # ── main loop ────────────────────────────────────────────────────────
@@ -392,7 +418,7 @@ class WorkerScheduler:
         if entry.n_past > 0:
             gp_start = time.monotonic()
             estimated = estimate_request_tokens(item.messages, self._config.chars_per_token)
-            if estimated < entry.n_past * 0.85:
+            if estimated < entry.n_past * self._config.n_past_guard_threshold:
                 self._session_table.update_n_past(sess_id, 0)
                 log.warning("n_past_guard_triggered",
                              trace_id=item.trace_id, session_id=sess_id, node=worker.name,
@@ -737,8 +763,9 @@ class WorkerScheduler:
         prefill_model = self._prefill_model(prefill_worker)
         if mix and prefill_model:
             await self._router_model_load(prefill_url, prefill_model, item.trace_id)
+
         cold_session_starts.inc()
-        log.info("cold_concurrency_prefill",
+        log.info("mix_precision_prefill" if mix else "cold_concurrency_prefill",
                  trace_id=item.trace_id, session_id=sess_id, node=prefill_worker.name,
                  router_model=prefill_model,
                  estimated_tokens=item.estimated_tokens,
@@ -853,6 +880,7 @@ class WorkerScheduler:
         decode_model = self._decode_model(decode_worker)
         if mix and decode_model:
             await self._router_model_load(decode_url, decode_model, item.trace_id)
+
         restore_start = time.monotonic()
         try:
             await self._state.restore_session(sess_id, decode_worker.host, decode_worker.rpc_port, slot_id=0, trace_id=item.trace_id)

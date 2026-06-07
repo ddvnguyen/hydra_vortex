@@ -76,5 +76,3 @@ services:
       --timeout 1800
       --spec-type draft-mtp --spec-draft-n-max 3
       --rpc-port 9503
-#      --mmproj /models/Qwen3.6-35B-A3B-mmproj-F16.gguf
-#      --swa-full --direct-io
