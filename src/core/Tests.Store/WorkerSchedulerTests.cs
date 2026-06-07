@@ -1,15 +1,18 @@
 using System.Text.Json;
 using Hydra.Store;
+using Hydra.Store.Models;
+using Hydra.Store.Repositories;
+using Hydra.Store.Services;
 
 namespace Tests.Store;
 
 public sealed class WorkItemTests
 {
     [Fact]
-    public void Created_In_Pending_State()
+    public void Created_In_None_State()
     {
         var item = MakeItem("sess_test");
-        Assert.Equal(WorkItemState.Pending, item.State);
+        Assert.Equal(WorkItemState.None, item.State);
     }
 
     [Fact]
@@ -75,8 +78,9 @@ public sealed class WorkerSchedulerTests
         var ledger = new SessionLedger();
         var tracker = new WorkerTracker();
         foreach (var w in cfg.Workers) tracker.InitWorker(w.Name);
-        var proxy = new CompletionProxy();
-        var scheduler = new WorkerScheduler(cfg, ledger, tracker, proxy, null, Serilog.Log.Logger);
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, Serilog.Log.Logger);
 
         var item = new WorkItem(
             new Dictionary<string, object> { ["stream"] = false },
@@ -159,9 +163,8 @@ public sealed class WorkItemIntegrationTests
     {
         var expectedStates = new[]
         {
-            WorkItemState.Pending,
+            WorkItemState.None,
             WorkItemState.RouteDecision,
-            WorkItemState.WaitingPrefill,
             WorkItemState.ModelLoadPrefill,
             WorkItemState.PrefixRestore,
             WorkItemState.Prefill,
@@ -169,7 +172,6 @@ public sealed class WorkItemIntegrationTests
             WorkItemState.SaveDone,
             WorkItemState.MarkEvicted,
             WorkItemState.PickDecode,
-            WorkItemState.WaitingDecode,
             WorkItemState.ModelLoadDecode,
             WorkItemState.RestoreKv,
             WorkItemState.Decode,
@@ -188,7 +190,7 @@ public sealed class WorkItemIntegrationTests
         );
         item.RouteType = "cold_concurrency";
 
-        Assert.Equal(WorkItemState.Pending, item.State);
+        Assert.Equal(WorkItemState.None, item.State);
         // Verify all expected states exist in the enum
         foreach (var state in expectedStates)
             Assert.True(Enum.IsDefined(state), $"State {state} should be defined");

@@ -4,9 +4,22 @@ namespace Hydra.Store.Models;
 
 public enum WorkItemState
 {
-    Pending = 0, RouteDecision, WaitingPrefill, ModelLoadPrefill, PrefixRestore,
-    Prefill, SaveKv, SaveDone, MarkEvicted, PickDecode, WaitingDecode,
-    ModelLoadDecode, RestoreKv, Decode, BgSave, Done, Failed, Cancelled
+	None = 0,
+	RouteDecision = 2,
+	ModelLoadPrefill = 4,
+	PrefixRestore = 6,
+	Prefill = 8,
+	SaveKv = 10,
+	SaveDone = 12,
+	MarkEvicted = 14,
+	PickDecode = 16,
+	ModelLoadDecode = 18,
+	RestoreKv = 20,
+	Decode = 22,
+	BgSave = 24,
+	Done = 26,
+	Failed = 28,
+	Cancelled = 30
 }
 
 public sealed class WorkItem
@@ -20,7 +33,7 @@ public sealed class WorkItem
     public int EstimatedNewTokens { get; }
     public TaskCompletionSource<object?> Completion { get; }
 
-    public WorkItemState State { get; set; } = WorkItemState.Pending;
+	public WorkItemState State { get; set; } = WorkItemState.None;
     private volatile bool _cancelled;
     public bool IsCancelled => _cancelled || Completion.Task.IsCanceled;
 
@@ -30,6 +43,8 @@ public sealed class WorkItem
     public WorkerConfig? DecodeWorker { get; set; }
     public int? PrefillSlot { get; set; }
     public int? DecodeSlot { get; set; }
+    public SlotLease? PrefillLease { get; set; }
+    public SlotLease? DecodeLease { get; set; }
     public string RouteType { get; set; } = "";
     public SessionEntry? Entry { get; set; }
     public int NPastAfter { get; set; }

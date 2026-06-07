@@ -1,6 +1,6 @@
 {
   "title": "Hydra \u2014 Request Timeline",
-  "version": 1,
+  "version": 6,
   "timezone": "browser",
   "editable": true,
   "panels": [
@@ -30,314 +30,314 @@
           },
           "targets": [
             {
-              "expr": "{component=\"coordinator\"} |= \"request_timeline\"",
-          "maxLines": 20,
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "extractFields",
-          "options": {
-            "source": "Line",
-            "format": "logfmt"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": false,
-              "trace_id": false,
-              "session_id": false,
-              "route_type": false,
-              "node": false,
-              "queue_wait_ms": false,
-              "n_past_guard_ms": false,
-              "prefill_ms": false,
-              "save_kv_ms": false,
-              "restore_kv_ms": false,
-              "decode_ms": false,
-              "total_ms": false,
-              "Line": true,
-              "labels": true,
-              "ts": true,
-              "msg": true,
-              "level": true,
-              "timestamp": true,
-              "event": true,
-              "logger": true,
-              "caller": true
-            },
-            "indexByName": {
-              "Time": 0,
-              "trace_id": 1,
-              "session_id": 2,
-              "route_type": 3,
-              "node": 4,
-              "queue_wait_ms": 5,
-              "n_past_guard_ms": 6,
-              "prefill_ms": 7,
-              "save_kv_ms": 8,
-              "restore_kv_ms": 9,
-              "decode_ms": 10,
-              "total_ms": 11
-            },
-            "renameByName": {
-              "total_ms": "total (ms)",
-              "queue_wait_ms": "queue (ms)",
-              "n_past_guard_ms": "guard (ms)",
-              "prefill_ms": "prefill (ms)",
-              "save_kv_ms": "save (ms)",
-              "restore_kv_ms": "restore (ms)",
-              "decode_ms": "decode (ms)"
+              "expr": "{component=\"store\"} |= \"request_timeline\"",
+              "maxLines": 20,
+              "refId": "A"
             }
-          }
-        },
-        {
-          "id": "sortBy",
-          "options": {
-            "fields": {},
-            "sort": [
+          ],
+          "transformations": [
+            {
+              "id": "extractFields",
+              "options": {
+                "source": "Line",
+                "format": "logfmt"
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": false,
+                  "trace_id": false,
+                  "session_id": false,
+                  "route_type": false,
+                  "node": false,
+                  "queue_wait_ms": false,
+                  "n_past_guard_ms": false,
+                  "prefill_ms": false,
+                  "save_kv_ms": false,
+                  "restore_kv_ms": false,
+                  "decode_ms": false,
+                  "total_ms": false,
+                  "Line": true,
+                  "labels": true,
+                  "ts": true,
+                  "msg": true,
+                  "level": true,
+                  "timestamp": true,
+                  "event": true,
+                  "logger": true,
+                  "caller": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "trace_id": 1,
+                  "session_id": 2,
+                  "route_type": 3,
+                  "node": 4,
+                  "queue_wait_ms": 5,
+                  "n_past_guard_ms": 6,
+                  "prefill_ms": 7,
+                  "save_kv_ms": 8,
+                  "restore_kv_ms": 9,
+                  "decode_ms": 10,
+                  "total_ms": 11
+                },
+                "renameByName": {
+                  "total_ms": "total (ms)",
+                  "queue_wait_ms": "queue (ms)",
+                  "n_past_guard_ms": "guard (ms)",
+                  "prefill_ms": "prefill (ms)",
+                  "save_kv_ms": "save (ms)",
+                  "restore_kv_ms": "restore (ms)",
+                  "decode_ms": "decode (ms)"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "Time"
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "minWidth": 80
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": [
               {
-                "field": "Time"
+                "matcher": {
+                  "id": "byName",
+                  "options": "queue (ms)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.displayMode",
+                    "value": "gradient-gauge"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "dtdurations"
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "max",
+                    "value": 30000
+                  },
+                  {
+                    "id": "custom.minWidth",
+                    "value": 100
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "guard (ms)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.displayMode",
+                    "value": "gradient-gauge"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "dtdurations"
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "max",
+                    "value": 5000
+                  },
+                  {
+                    "id": "custom.minWidth",
+                    "value": 80
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "prefill (ms)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.displayMode",
+                    "value": "gradient-gauge"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "dtdurations"
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "max",
+                    "value": 120000
+                  },
+                  {
+                    "id": "custom.minWidth",
+                    "value": 100
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "save (ms)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.displayMode",
+                    "value": "gradient-gauge"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "dtdurations"
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "max",
+                    "value": 30000
+                  },
+                  {
+                    "id": "custom.minWidth",
+                    "value": 80
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "restore (ms)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.displayMode",
+                    "value": "gradient-gauge"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "dtdurations"
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "max",
+                    "value": 60000
+                  },
+                  {
+                    "id": "custom.minWidth",
+                    "value": 100
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "decode (ms)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.displayMode",
+                    "value": "gradient-gauge"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "dtdurations"
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "max",
+                    "value": 300000
+                  },
+                  {
+                    "id": "custom.minWidth",
+                    "value": 100
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "total (ms)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.displayMode",
+                    "value": "gradient-gauge"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "dtdurations"
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "max",
+                    "value": 300000
+                  },
+                  {
+                    "id": "custom.minWidth",
+                    "value": 100
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "footer": {
+              "show": false
+            },
+            "frameIndex": 0,
+            "showHeader": true,
+            "sortBy": [
+              {
+                "desc": true,
+                "displayName": "Time"
               }
             ]
           }
         }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "displayMode": "auto",
-            "minWidth": 80
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "queue (ms)"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "gradient-gauge"
-              },
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 30000
-              },
-              {
-                "id": "custom.minWidth",
-                "value": 100
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "guard (ms)"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "gradient-gauge"
-              },
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 5000
-              },
-              {
-                "id": "custom.minWidth",
-                "value": 80
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "prefill (ms)"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "gradient-gauge"
-              },
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 120000
-              },
-              {
-                "id": "custom.minWidth",
-                "value": 100
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "save (ms)"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "gradient-gauge"
-              },
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 30000
-              },
-              {
-                "id": "custom.minWidth",
-                "value": 80
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "restore (ms)"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "gradient-gauge"
-              },
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 60000
-              },
-              {
-                "id": "custom.minWidth",
-                "value": 100
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "decode (ms)"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "gradient-gauge"
-              },
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 300000
-              },
-              {
-                "id": "custom.minWidth",
-                "value": 100
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "total (ms)"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "gradient-gauge"
-              },
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 300000
-              },
-              {
-                "id": "custom.minWidth",
-                "value": 100
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "footer": {
-          "show": false
-        },
-        "frameIndex": 0,
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "Time"
-          }
-        ]
-      }
+      ]
     }
-    ]
-  }
   ],
   "schemaVersion": 39,
   "tags": [

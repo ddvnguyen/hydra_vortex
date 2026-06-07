@@ -67,21 +67,67 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
             if (meta is null) { OnFail(w.Name); return; }
             var healthy = meta.TryGetValue("healthy", out var h) && h.GetBoolean();
             var slots = new List<SlotInfo>();
+            var stuckIds = new List<int>();
             if (meta.TryGetValue("slots", out var sl) && sl.ValueKind == JsonValueKind.Array)
                 foreach (var s in sl.EnumerateArray())
-                    slots.Add(new SlotInfo { Id = s.TryGetProperty("id", out var si) ? si.GetInt32() : 0, IsProcessing = s.TryGetProperty("is_processing", out var sp) && sp.GetBoolean(), NPast = s.TryGetProperty("n_past", out var sn) ? sn.GetInt32() : 0 });
+                {
+                    var id = s.TryGetProperty("id", out var si) ? si.GetInt32() : 0;
+                    var isProcessing = s.TryGetProperty("is_processing", out var sp) && sp.GetBoolean();
+                    var nPast = s.TryGetProperty("n_past", out var sn) ? sn.GetInt32() : 0;
+                    var nRemain = s.TryGetProperty("n_remain", out var snr) ? snr.GetInt32() : 0;
+                    var slotInfo = new SlotInfo { Id = id, IsProcessing = isProcessing, NPast = nPast, LastActive = DateTime.UtcNow };
+                    // Stuck: is_processing=true && n_remain==0 (finished generating but slot not freed)
+                    if (isProcessing && nRemain == 0)
+                    {
+                        slotInfo.StuckPollCount = GetStuckPollCount(w.Name, id) + 1;
+                        if (slotInfo.StuckPollCount >= _cfg.HealthMaxFailures)
+                            stuckIds.Add(id);
+                    }
+                    slots.Add(slotInfo);
+                }
             lock (_lock)
             {
                 var info = _nodes[w.Name];
                 info.Healthy = healthy; info.SlotsIdle = meta.TryGetValue("slots_idle", out var si2) ? si2.GetInt32() : 0;
                 info.SlotsTotal = meta.TryGetValue("slots_total", out var st) ? st.GetInt32() : w.Slots;
                 info.Slots = slots; info.ConsecutiveFailures = 0; info.LastCheck = DateTime.UtcNow;
-                info.StuckSlots = slots.Count(s => s.IsProcessing && (DateTime.UtcNow - s.LastActive).TotalSeconds > 60);
+                info.StuckSlots = stuckIds.Count;
             }
             _tracker.OnSuccess(w.Name);
+
+            // Erase stuck slots — best-effort, coordinator reclaims slot for other sessions
+            foreach (var sid in stuckIds)
+            {
+                try
+                {
+                    await client.RequestAsync(Hydra.Shared.OpCode.SlotErase,
+                        sid.ToString(), ReadOnlyMemory<byte>.Empty,
+                        $"stuck_{w.Name}_{sid}", ct);
+                    _log.Warning("stuck_slot_erased Node={Node} Slot={Slot}", w.Name, sid);
+                    lock (_lock)
+                    {
+                        var info = _nodes[w.Name];
+                        var slot = info.Slots.FirstOrDefault(x => x.Id == sid);
+                        if (slot != null) slot.StuckPollCount = 0;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(ex, "stuck_slot_erase_failed Node={Node} Slot={Slot}",
+                        w.Name, sid);
+                }
+            }
         }
         catch { OnFail(w.Name); }
         finally { await client.DisposeAsync(); }
+    }
+
+    private int GetStuckPollCount(string node, int slotId)
+    {
+        lock (_lock)
+            return _nodes.TryGetValue(node, out var info)
+                ? info.Slots.FirstOrDefault(x => x.Id == slotId)?.StuckPollCount ?? 0
+                : 0;
     }
 
     private void OnFail(string name)
@@ -90,5 +136,5 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         _tracker.OnError(name);
     }
 
-    private static NodeInfo Clone(NodeInfo n) => new() { NodeName = n.NodeName, Healthy = n.Healthy, SlotsTotal = n.SlotsTotal, SlotsIdle = n.SlotsIdle, StuckSlots = n.StuckSlots, Slots = n.Slots.Select(s => new SlotInfo { Id = s.Id, IsProcessing = s.IsProcessing, NPast = s.NPast }).ToList() };
+    private static NodeInfo Clone(NodeInfo n) => new() { NodeName = n.NodeName, Healthy = n.Healthy, SlotsTotal = n.SlotsTotal, SlotsIdle = n.SlotsIdle, StuckSlots = n.StuckSlots, Slots = n.Slots.Select(s => new SlotInfo { Id = s.Id, IsProcessing = s.IsProcessing, NPast = s.NPast, StuckPollCount = s.StuckPollCount, LastActive = s.LastActive }).ToList() };
 }

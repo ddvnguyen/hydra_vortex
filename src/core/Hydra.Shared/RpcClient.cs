@@ -5,10 +5,10 @@ using System.Runtime.CompilerServices;
 
 namespace Hydra.Shared;
 
-public sealed class RpcClient : IAsyncDisposable
+public class RpcClient : IAsyncDisposable
 {
-    private readonly string _host;
-    private readonly int _port;
+    internal readonly string _host;
+    internal readonly int _port;
     private readonly SemaphoreSlim _sync = new(1, 1);
     private readonly object _connectLock = new();
     private TcpClient? _client;
@@ -43,7 +43,7 @@ public sealed class RpcClient : IAsyncDisposable
         }
     }
 
-    public async Task<RpcResponse> RequestAsync(
+    public virtual async Task<RpcResponse> RequestAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
         string traceId, CancellationToken ct)
     {
