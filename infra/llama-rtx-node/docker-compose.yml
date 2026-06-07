@@ -35,25 +35,44 @@ services:
     entrypoint: ["/bin/bash", "/init/verify_and_start.sh"]
     environment:
       LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
+    # Direct model mode (single quant) — commented out in favor of router mode below
+    #command: >
+    #  llama-server
+    #  -m /models/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf
+    #  --chat-template-file /models/qwen3.6_merged_template.jinja
+    #  --slot-save-path /slots/
+    #  --host 0.0.0.0 --port 8080
+    #  --ctx-size 360000
+    #  --temp 0.86 --repeat-penalty 1.06 --top-k 20 --top-p 0.95
+    #  --flash-attn on --cache-type-v q8_0 --cache-type-k q8_0 --kv-unified
+    #  --log-prefix --log-colors on --metrics --slots --perf --props --log-verbosity 4
+    #  --cont-batching --parallel 2 --cache-prompt --cache-reuse 64
+    #  --prio 3 --prio-batch 1
+    #  --n-cpu-moe 32 --n-gpu-layers all
+    #  --context-shift
+    #  --slot-prompt-similarity 0.6
+    #  --reasoning on --jinja
+    #  --rope-scaling yarn
+    #  --rope-scale 12
+    #  --yarn-orig-ctx 32768
+    #  --timeout 1800
+    #  --spec-type draft-mtp --spec-draft-n-max 3
+    #  --rpc-port 9503
+    ##      --mmproj /models/Qwen3.6-35B-A3B-mmproj-F16.gguf
+    ##      --swa-full --direct-io
+
+    # ── Mix-Precision P/D Split (Router Mode) ──
+    # Router spawns child processes with per-model args from preset.ini.
+    # Coordinator loads/unloads models via /models/load?model=<name>.
+    # Per-model args (ctx-size, rope-scaling, reasoning, spec, etc.) are in
+    # models-preset.ini — only truly global args belong here.
     command: >
       llama-server
-      -m /models/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf
-      --chat-template-file /models/qwen3.6_merged_template.jinja
-      --slot-save-path /slots/
+      --models-dir /models
+      --models-preset /models/preset.ini
+      --models-max 1
       --host 0.0.0.0 --port 8080
-      --ctx-size 360000
-      --temp 0.86 --repeat-penalty 1.06 --top-k 20 --top-p 0.95
-      --flash-attn on --cache-type-v q8_0 --cache-type-k q8_0 --kv-unified
       --log-prefix --log-colors on --metrics --slots --perf --props --log-verbosity 4
-      --cont-batching --parallel 2 --cache-prompt --cache-reuse 64
-      --prio 3 --prio-batch 1
-      --n-cpu-moe 32 --n-gpu-layers all
-      --context-shift
-      --slot-prompt-similarity 0.6
-      --reasoning on --jinja
-      --rope-scaling yarn
-      --rope-scale 12
-      --yarn-orig-ctx 32768
       --timeout 1800
       --spec-type draft-mtp --spec-draft-n-max 3
       --rpc-port 9503

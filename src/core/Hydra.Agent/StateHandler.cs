@@ -315,6 +315,43 @@ public sealed class StateHandler
             return new RestoreSessionResult(sessionId, slotId, false, 0, 0, sw.ElapsedMilliseconds);
         }
 
+        // If all chunks deduped, verify local cache actually has the chunk body files.
+        // Local chunk data can be evicted while the hash list (from SaveHashesAsync) persists.
+        if (totalSize > 0 && missingCount == 0 && cachedHashes.Count > 0)
+        {
+            bool localDataOk = true;
+            foreach (var hash in cachedHashes)
+            {
+                if (!_chunkCache.HasChunkData(sessionId, hash))
+                {
+                    localDataOk = false;
+                    break;
+                }
+            }
+            if (!localDataOk)
+            {
+                _log.Warning("Local chunk data evicted for session {SessionId} — re-fetching from store",
+                    sessionId);
+                getResp = await _store.RequestAsync(
+                    OpCode.GetChunked, storeKey, Encoding.UTF8.GetBytes("[]"),
+                    traceId, ct);
+                if (getResp.Status != (byte)StatusCode.Ok)
+                {
+                    _log.Error("Re-fetch failed for session {SessionId}", sessionId);
+                    throw new InvalidDataException($"Re-fetch failed (status=0x{getResp.Status:X2})");
+                }
+                if (getResp.Meta is not null)
+                {
+                    using var doc = JsonDocument.Parse(getResp.Meta);
+                    if (doc.RootElement.TryGetProperty("total_size", out var s))
+                        totalSize = s.GetInt64();
+                    if (doc.RootElement.TryGetProperty("missing_count", out var m))
+                        missingCount = m.GetInt32();
+                }
+                // Fall through: now missingCount > 0 and getResp.Payload has chunk data
+            }
+        }
+
         if (totalSize == 0 || missingCount == 0)
         {
             // Full cache hit — all chunks deduped, nothing to fetch from store.

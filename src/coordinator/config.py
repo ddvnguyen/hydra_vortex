@@ -19,6 +19,13 @@ class WorkerNodeConfig(BaseModel):
     # -1 = unlimited (RTX). Set to 8000 for P100 to prevent large prefills.
     max_prefill_tokens: int = -1
 
+    # Per-operation model names for mix-precision P/D split.
+    # prefill_model_name: model loaded when this worker does prefill (e.g. nano IQ2)
+    # decode_model_name:  model loaded when this worker does decode (e.g. balanced Q5K)
+    # Falls back to router_model_name if not set.
+    prefill_model_name: str | None = None
+    decode_model_name: str | None = None
+
 
 class CoordinatorConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="HYDRA_COORD_")

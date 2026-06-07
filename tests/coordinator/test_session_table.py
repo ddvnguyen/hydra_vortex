@@ -37,7 +37,8 @@ def test_mark_evicted():
     table.mark_evicted("sess_abc")
 
     entry = table.lookup("sess_abc")
-    assert entry.slot_id is None
+    assert entry.slot_freed is True
+    assert entry.slot_id == 0
     assert entry.has_store_state is True
 
 

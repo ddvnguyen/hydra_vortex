@@ -347,7 +347,7 @@ async def test_n_past_guard_resets_when_estimated_too_small(client, monkeypatch)
     await scheduler._execute_affinity(item, worker, entry)
 
     assert entry.n_past == 0, f"Expected n_past=0 after guard, got {entry.n_past}"
-    assert entry.slot_id is None, f"Expected slot_id=None after erase, got {entry.slot_id}"
+    assert entry.slot_freed is True, f"Expected slot_freed=True after erase, got slot_freed={entry.slot_freed}"
 
 
 @pytest.mark.asyncio
