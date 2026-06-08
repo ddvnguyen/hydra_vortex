@@ -1,9 +1,9 @@
 {
   "title": "Hydra — Request Timeline Phase Durations",
   "uid": "hydra-timeline-bars",
-  "version": 1,
+  "version": 3,
   "timezone": "browser",
-  "editable": false,
+  "editable": true,
   "tags": [
     "hydra",
     "timeline",
@@ -13,17 +13,116 @@
   "panels": [
     {
       "id": 1,
-      "type": "barchart",
-      "title": "Phase Durations per Request (Stacked Bars)",
+      "type": "table",
+      "title": "Debug: Raw Data After Transforms",
       "datasource": {
         "type": "loki",
         "uid": "loki"
       },
       "gridPos": {
-        "h": 20,
+        "h": 8,
         "w": 24,
         "x": 0,
         "y": 0
+      },
+      "targets": [
+        {
+          "expr": "{component=\"store\"} |= \"request_timeline\"",
+          "maxLines": 20,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "Line",
+            "format": "logfmt"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "fields": {
+              "queue_wait_ms": "number",
+              "n_past_guard_ms": "number",
+              "prefill_ms": "number",
+              "save_kv_ms": "number",
+              "restore_kv_ms": "number",
+              "decode_ms": "number"
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Line": true,
+              "labels": true,
+              "ts": true,
+              "msg": true,
+              "level": true,
+              "event": true,
+              "logger": true,
+              "caller": true,
+              "timestamp": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "trace_id": 1,
+              "session_id": 2,
+              "route_type": 3,
+              "node": 4,
+              "queue_wait_ms": 5,
+              "n_past_guard_ms": 6,
+              "prefill_ms": 7,
+              "save_kv_ms": 8,
+              "restore_kv_ms": 9,
+              "decode_ms": 10,
+              "total_ms": 11
+            },
+            "renameByName": {
+              "queue_wait_ms": "Queue (ms)",
+              "n_past_guard_ms": "Guard (ms)",
+              "prefill_ms": "Prefill (ms)",
+              "save_kv_ms": "Save KV (ms)",
+              "restore_kv_ms": "Restore KV (ms)",
+              "decode_ms": "Decode (ms)",
+              "total_ms": "Total (ms)"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "minWidth": 80
+          }
+        }
+      },
+      "options": {
+        "footer": {
+          "show": false
+        },
+        "frameIndex": 0,
+        "showHeader": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "barchart",
+      "title": "Phase Durations per Request (Stacked)",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 8
       },
       "targets": [
         {
@@ -62,24 +161,24 @@
               "ts": true,
               "msg": true,
               "level": true,
-              "timestamp": true,
+              "Time": true,
               "event": true,
               "logger": true,
               "caller": true,
+              "timestamp": true,
               "session_id": true,
               "route_type": true,
               "node": true,
               "total_ms": true
             },
             "indexByName": {
-              "Time": 0,
-              "trace_id": 1,
-              "queue_wait_ms": 2,
-              "n_past_guard_ms": 3,
-              "prefill_ms": 4,
-              "save_kv_ms": 5,
-              "restore_kv_ms": 6,
-              "decode_ms": 7
+              "trace_id": 0,
+              "queue_wait_ms": 1,
+              "n_past_guard_ms": 2,
+              "prefill_ms": 3,
+              "save_kv_ms": 4,
+              "restore_kv_ms": 5,
+              "decode_ms": 6
             },
             "renameByName": {
               "queue_wait_ms": "Queue",
@@ -87,20 +186,8 @@
               "prefill_ms": "Prefill",
               "save_kv_ms": "Save KV",
               "restore_kv_ms": "Restore KV",
-              "decode_ms": "Decode",
-              "trace_id": "Request"
+              "decode_ms": "Decode"
             }
-          }
-        },
-        {
-          "id": "sortBy",
-          "options": {
-            "fields": {},
-            "sort": [
-              {
-                "field": "Time"
-              }
-            ]
           }
         }
       ],
@@ -133,22 +220,6 @@
           }
         },
         "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Time"
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": true
-                }
-              }
-            ]
-          },
           {
             "matcher": {
               "id": "byName",
@@ -248,12 +319,11 @@
         "showValue": "never",
         "xTickLabelRotation": 30,
         "xTickLabelMaxLength": 16,
-        "sort": "Descending",
-        "colorByField": "trace_id"
+        "sort": "Descending"
       }
     },
     {
-      "id": 2,
+      "id": 3,
       "type": "barchart",
       "title": "Total Duration per Request",
       "datasource": {
@@ -264,7 +334,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 24
       },
       "targets": [
         {
@@ -298,10 +368,11 @@
               "ts": true,
               "msg": true,
               "level": true,
-              "timestamp": true,
+              "Time": true,
               "event": true,
               "logger": true,
               "caller": true,
+              "timestamp": true,
               "session_id": true,
               "route_type": true,
               "node": true,
@@ -313,25 +384,12 @@
               "decode_ms": true
             },
             "indexByName": {
-              "Time": 0,
-              "trace_id": 1,
-              "total_ms": 2
+              "trace_id": 0,
+              "total_ms": 1
             },
             "renameByName": {
-              "total_ms": "Total (ms)",
-              "trace_id": "Request"
+              "total_ms": "Total"
             }
-          }
-        },
-        {
-          "id": "sortBy",
-          "options": {
-            "fields": {},
-            "sort": [
-              {
-                "field": "Time"
-              }
-            ]
           }
         }
       ],
@@ -340,9 +398,6 @@
           "unit": "dtdurations",
           "min": 0,
           "custom": {
-            "stacking": {
-              "mode": "none"
-            },
             "axisCenteredZero": false,
             "axisPlacement": "auto",
             "barAlignment": -1,
@@ -367,23 +422,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Time"
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": true
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Total (ms)"
+              "options": "Total"
             },
             "properties": [
               {
@@ -404,8 +443,7 @@
         "showValue": "auto",
         "xTickLabelRotation": 30,
         "xTickLabelMaxLength": 16,
-        "sort": "Descending",
-        "colorByField": "trace_id"
+        "sort": "Descending"
       }
     }
   ]
