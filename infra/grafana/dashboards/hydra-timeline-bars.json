@@ -1,0 +1,423 @@
+{
+  "title": "Hydra — Request Timeline Phase Durations",
+  "uid": "hydra-timeline-bars",
+  "version": 1,
+  "timezone": "browser",
+  "editable": false,
+  "tags": [
+    "hydra",
+    "timeline",
+    "performance"
+  ],
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "type": "barchart",
+      "title": "Phase Durations per Request (Stacked Bars)",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 20,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "{component=\"store\"} |= \"request_timeline\"",
+          "maxLines": 50,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "Line",
+            "format": "logfmt"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Line": true,
+              "labels": true,
+              "ts": true,
+              "msg": true,
+              "level": true,
+              "timestamp": true,
+              "event": true,
+              "logger": true,
+              "caller": true,
+              "session_id": true,
+              "route_type": true,
+              "node": true,
+              "total_ms": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "trace_id": 1,
+              "queue_wait_ms": 2,
+              "n_past_guard_ms": 3,
+              "prefill_ms": 4,
+              "save_kv_ms": 5,
+              "restore_kv_ms": 6,
+              "decode_ms": 7
+            },
+            "renameByName": {
+              "queue_wait_ms": "Queue",
+              "n_past_guard_ms": "Guard",
+              "prefill_ms": "Prefill",
+              "save_kv_ms": "Save KV",
+              "restore_kv_ms": "Restore KV",
+              "decode_ms": "Decode",
+              "trace_id": "Request"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Time"
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dtdurations",
+          "min": 0,
+          "custom": {
+            "stacking": {
+              "mode": "normal"
+            },
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "barAlignment": -1,
+            "barMaxWidth": 50,
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 0,
+            "pointSize": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Request"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Queue"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#7EB26D",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prefill"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#E24D42",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Save KV"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#F2C96D",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Restore KV"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#BF1B72",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Decode"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Guard"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#BA43A9",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "orientation": "vertical",
+        "groupWidth": 70,
+        "barWidth": 0.8,
+        "showValue": "never",
+        "xTickLabelRotation": 30,
+        "xTickLabelMaxLength": 16,
+        "sort": "Descending",
+        "colorByField": "trace_id"
+      }
+    },
+    {
+      "id": 2,
+      "type": "barchart",
+      "title": "Total Duration per Request",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "expr": "{component=\"store\"} |= \"request_timeline\"",
+          "maxLines": 50,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "Line",
+            "format": "logfmt"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Line": true,
+              "labels": true,
+              "ts": true,
+              "msg": true,
+              "level": true,
+              "timestamp": true,
+              "event": true,
+              "logger": true,
+              "caller": true,
+              "session_id": true,
+              "route_type": true,
+              "node": true,
+              "queue_wait_ms": true,
+              "n_past_guard_ms": true,
+              "prefill_ms": true,
+              "save_kv_ms": true,
+              "restore_kv_ms": true,
+              "decode_ms": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "trace_id": 1,
+              "total_ms": 2
+            },
+            "renameByName": {
+              "total_ms": "Total (ms)",
+              "trace_id": "Request"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Time"
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dtdurations",
+          "min": 0,
+          "custom": {
+            "stacking": {
+              "mode": "none"
+            },
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "barAlignment": -1,
+            "barMaxWidth": 50,
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 0,
+            "pointSize": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Request"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#447EBB",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "orientation": "vertical",
+        "groupWidth": 70,
+        "barWidth": 0.6,
+        "showValue": "auto",
+        "xTickLabelRotation": 30,
+        "xTickLabelMaxLength": 16,
+        "sort": "Descending",
+        "colorByField": "trace_id"
+      }
+    }
+  ]
+}
