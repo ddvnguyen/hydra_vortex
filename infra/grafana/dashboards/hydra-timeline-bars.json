@@ -180,6 +180,19 @@
       ],
       "transformations": [
         {
+          "id": "convertFieldType",
+          "options": {
+            "fields": {
+              "queue_wait_ms": "number",
+              "n_past_guard_ms": "number",
+              "prefill_ms": "number",
+              "save_kv_ms": "number",
+              "restore_kv_ms": "number",
+              "decode_ms": "number"
+            }
+          }
+        },
+        {
           "id": "organize",
           "options": {
             "excludeByName": {
@@ -381,6 +394,14 @@
         }
       ],
       "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "fields": {
+              "total_ms": "number"
+            }
+          }
+        },
         {
           "id": "organize",
           "options": {
