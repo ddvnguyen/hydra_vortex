@@ -9,8 +9,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-Console.Error.WriteLine($"[BOOT] Starting Hydra.Store at {DateTime.UtcNow:O}");
-Console.Error.Flush();
+Log.Logger = HydraLogging.CreateLogger("store");
+Log.Information("Starting Hydra.Store at {BootTime}", DateTime.UtcNow);
 
 var cfg = new StoreConfig();
 cfg.Validate();

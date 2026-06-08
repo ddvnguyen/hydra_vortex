@@ -608,8 +608,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 
 		item.Phases["total_ms"] = item.ElapsedMs;
-		_log.Information("timeline Sid={Sid} Route={Route} End={End} Phases={Phases}",
-			item.SessionId, item.RouteType, end, JsonSerializer.Serialize(item.Phases));
+		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
+		Console.Error.WriteLine(
+			$"event=request_timeline trace_id={item.TraceId} session_id={item.SessionId} " +
+			$"queue_wait_ms={item.Phases.GetValueOrDefault("queue_wait_ms")} node={node} " +
+			$"route_type={item.RouteType} " +
+			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
+			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
+			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
+			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
+			$"total_ms={item.Phases.GetValueOrDefault("total_ms")}"
+		);
 		if (item.Completion.Task.IsCompleted) return;
 		if (end == WorkItemState.Done)
 			item.Completion.TrySetResult(item.Response);
