@@ -41,6 +41,19 @@
           }
         },
         {
+          "id": "convertFieldType",
+          "options": {
+            "fields": {
+              "queue_wait_ms": "number",
+              "n_past_guard_ms": "number",
+              "prefill_ms": "number",
+              "save_kv_ms": "number",
+              "restore_kv_ms": "number",
+              "decode_ms": "number"
+            }
+          }
+        },
+        {
           "id": "organize",
           "options": {
             "excludeByName": {
@@ -120,22 +133,6 @@
           }
         },
         "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Request"
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": true
-                }
-              }
-            ]
-          },
           {
             "matcher": {
               "id": "byName",
@@ -285,6 +282,14 @@
           }
         },
         {
+          "id": "convertFieldType",
+          "options": {
+            "fields": {
+              "total_ms": "number"
+            }
+          }
+        },
+        {
           "id": "organize",
           "options": {
             "excludeByName": {
@@ -359,22 +364,6 @@
           }
         },
         "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Request"
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": true
-                }
-              }
-            ]
-          },
           {
             "matcher": {
               "id": "byName",
