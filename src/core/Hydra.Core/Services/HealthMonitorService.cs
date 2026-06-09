@@ -11,7 +11,7 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
     private readonly CoordinatorConfig _cfg;
     private readonly List<WorkerConfig> _workers;
     private readonly IWorkerTracker _tracker;
-    private readonly Hydra.Shared.RpcClient? _storeClient;
+    private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger _log;
     private readonly Dictionary<string, NodeInfo> _nodes = new();
     private readonly object _lock = new();
@@ -19,14 +19,17 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
     public bool IsStoreHealthy { get; private set; } = true;
 
     public HealthMonitorService(CoordinatorConfig cfg, IEnumerable<WorkerConfig> workers,
-        IWorkerTracker tracker, Hydra.Shared.RpcClient? storeClient, ILogger log)
+        IWorkerTracker tracker, IHttpClientFactory httpFactory, ILogger log)
     {
-        _cfg = cfg; _workers = workers.ToList(); _tracker = tracker; _storeClient = storeClient; _log = log;
-        foreach (var w in _workers) _nodes[w.Name] = new NodeInfo { NodeName = w.Name };
+        _cfg = cfg; _workers = workers.ToList(); _tracker = tracker; _httpFactory = httpFactory; _log = log;
+        foreach (var w in _workers) _nodes[w.Name] = new NodeInfo { NodeName = w.Name, Healthy = true };
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        _log.Information("health_monitor_start Workers={Count}", _workers.Count);
+        await PollAllAsync(ct);
+        _log.Information("health_monitor_first_poll_done");
         while (!ct.IsCancellationRequested)
         {
             try { await Task.Delay(TimeSpan.FromSeconds(_cfg.HealthPollIntervalS), ct); }
@@ -49,92 +52,62 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
     private async Task PollAllAsync(CancellationToken ct)
     {
         foreach (var w in _workers)
-            try { await PollAgentAsync(w, ct); }
+            try { await PollWorkerAsync(w, ct); }
             catch (Exception ex) { _log.Warning(ex, "health_poll_failed Node={N}", w.Name); OnFail(w.Name); }
-        if (_storeClient != null)
-            try { var r = await _storeClient.RequestAsync(Hydra.Shared.OpCode.Stat, "", ReadOnlyMemory<byte>.Empty, "health", ct); IsStoreHealthy = r.Status == 0; }
-            catch { IsStoreHealthy = false; }
+        IsStoreHealthy = true;
     }
 
-    private async Task PollAgentAsync(WorkerConfig w, CancellationToken ct)
+    private async Task PollWorkerAsync(WorkerConfig w, CancellationToken ct)
     {
-        var client = new Hydra.Shared.RpcClient(w.Host, w.RpcPort);
-        try
+        using var http = _httpFactory.CreateClient($"health-{w.Name}");
+        http.Timeout = TimeSpan.FromSeconds(5);
+        var llama = new LlamaClient(http, w.LlamaUrl);
+        var slots = await llama.GetSlotsAsync(ct);
+        if (slots == null || slots.Count == 0) { _log.Warning("health_poll_empty_slots Node={N}", w.Name); OnFail(w.Name); return; }
+
+        var info = new NodeInfo
         {
-            var resp = await client.RequestAsync(Hydra.Shared.OpCode.NodeHealth, "", ReadOnlyMemory<byte>.Empty, "health", ct);
-            if (resp.Status != 0 || resp.Meta == null) { OnFail(w.Name); return; }
-            var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta);
-            if (meta is null) { OnFail(w.Name); return; }
-            var healthy = meta.TryGetValue("healthy", out var h) && h.GetBoolean();
-            var slots = new List<Models.SlotInfo>();
-            var stuckIds = new List<int>();
-            if (meta.TryGetValue("slots", out var sl) && sl.ValueKind == JsonValueKind.Array)
-                foreach (var s in sl.EnumerateArray())
-                {
-                    var id = s.TryGetProperty("id", out var si) ? si.GetInt32() : 0;
-                    var isProcessing = s.TryGetProperty("is_processing", out var sp) && sp.GetBoolean();
-                    var nPast = s.TryGetProperty("n_past", out var sn) ? sn.GetInt32() : 0;
-                    var nRemain = s.TryGetProperty("n_remain", out var snr) ? snr.GetInt32() : 0;
-                    var slotInfo = new SlotInfo { Id = id, IsProcessing = isProcessing, NPast = nPast, LastActive = DateTime.UtcNow };
-                    // Stuck: is_processing=true && n_remain==0 (finished generating but slot not freed)
-                    if (isProcessing && nRemain == 0)
-                    {
-                        slotInfo.StuckPollCount = GetStuckPollCount(w.Name, id) + 1;
-                        if (slotInfo.StuckPollCount >= _cfg.HealthMaxFailures)
-                            stuckIds.Add(id);
-                    }
-                    slots.Add(slotInfo);
-                }
-            lock (_lock)
+            NodeName = w.Name,
+            Healthy = true,
+            SlotsTotal = slots.Count,
+            Slots = slots.Select(s => new Models.SlotInfo
             {
-                var info = _nodes[w.Name];
-                info.Healthy = healthy; info.SlotsIdle = meta.TryGetValue("slots_idle", out var si2) ? si2.GetInt32() : 0;
-                info.SlotsTotal = meta.TryGetValue("slots_total", out var st) ? st.GetInt32() : w.Slots;
-                info.Slots = slots; info.ConsecutiveFailures = 0; info.LastCheck = DateTime.UtcNow;
-                info.StuckSlots = stuckIds.Count;
-            }
-            _tracker.OnSuccess(w.Name);
+                Id = s.Id,
+                NPast = s.NPast,
+                IsProcessing = s.IsProcessing
+            }).ToList(),
+            ConsecutiveFailures = 0
+        };
+        info.SlotsIdle = info.Slots.Count(s => !s.IsProcessing);
 
-            // Erase stuck slots — best-effort, coordinator reclaims slot for other sessions
-            foreach (var sid in stuckIds)
-            {
-                try
-                {
-                    await client.RequestAsync(Hydra.Shared.OpCode.SlotErase,
-                        sid.ToString(), ReadOnlyMemory<byte>.Empty,
-                        $"stuck_{w.Name}_{sid}", ct);
-                    _log.Warning("stuck_slot_erased Node={Node} Slot={Slot}", w.Name, sid);
-                    lock (_lock)
-                    {
-                        var info = _nodes[w.Name];
-                        var slot = info.Slots.FirstOrDefault(x => x.Id == sid);
-                        if (slot != null) slot.StuckPollCount = 0;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.Error(ex, "stuck_slot_erase_failed Node={Node} Slot={Slot}",
-                        w.Name, sid);
-                }
-            }
-        }
-        catch { OnFail(w.Name); }
-        finally { await client.DisposeAsync(); }
-    }
-
-    private int GetStuckPollCount(string node, int slotId)
-    {
-        lock (_lock)
-            return _nodes.TryGetValue(node, out var info)
-                ? info.Slots.FirstOrDefault(x => x.Id == slotId)?.StuckPollCount ?? 0
-                : 0;
+        lock (_lock) { _nodes[w.Name] = info; }
+        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I}", w.Name, slots.Count, info.SlotsIdle);
     }
 
     private void OnFail(string name)
     {
-        lock (_lock) { var n = _nodes[name]; n.ConsecutiveFailures++; if (n.ConsecutiveFailures >= _cfg.HealthMaxFailures) n.Healthy = false; }
-        _tracker.OnError(name);
+        lock (_lock)
+        {
+            if (_nodes.TryGetValue(name, out var info))
+            {
+                info.ConsecutiveFailures++;
+                if (info.ConsecutiveFailures >= 3)
+                    info.Healthy = false;
+            }
+        }
     }
 
-    private static NodeInfo Clone(NodeInfo n) => new() { NodeName = n.NodeName, Healthy = n.Healthy, SlotsTotal = n.SlotsTotal, SlotsIdle = n.SlotsIdle, StuckSlots = n.StuckSlots, Slots = n.Slots.Select(s => new SlotInfo { Id = s.Id, IsProcessing = s.IsProcessing, NPast = s.NPast, StuckPollCount = s.StuckPollCount, LastActive = s.LastActive }).ToList() };
+    private static NodeInfo Clone(NodeInfo src) => new()
+    {
+        NodeName = src.NodeName,
+        Healthy = src.Healthy,
+        SlotsTotal = src.SlotsTotal,
+        SlotsIdle = src.SlotsIdle,
+        StuckSlots = src.StuckSlots,
+        ConsecutiveFailures = src.ConsecutiveFailures,
+        Slots = src.Slots.Select(s => new Models.SlotInfo
+        {
+            Id = s.Id, NPast = s.NPast, IsProcessing = s.IsProcessing
+        }).ToList()
+    };
 }
