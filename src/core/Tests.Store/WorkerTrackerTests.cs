@@ -1,4 +1,4 @@
-using Hydra.Store.Repositories;
+using Hydra.Core.Repositories;
 
 namespace Tests.Store;
 

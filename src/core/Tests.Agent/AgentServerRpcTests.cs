@@ -2,13 +2,13 @@ using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using Hydra.Agent;
-using Hydra.Store;
+using Hydra.Core;
+using Hydra.Core;
 using Hydra.Shared;
-using StoreConfig = Hydra.Store.StoreConfig;
-using StoreServer = Hydra.Store.StoreServer;
-using StorageEngine = Hydra.Store.StorageEngine;
-using StoreMetadata = Hydra.Store.StoreMetadata;
+using StoreConfig = Hydra.Core.StoreConfig;
+using StoreServer = Hydra.Core.StoreServer;
+using StorageEngine = Hydra.Core.StorageEngine;
+using StoreMetadata = Hydra.Core.StoreMetadata;
 
 namespace Tests.Agent;
 

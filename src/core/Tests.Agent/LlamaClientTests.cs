@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using Hydra.Agent;
+using Hydra.Core;
 
 namespace Tests.Agent;
 

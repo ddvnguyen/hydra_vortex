@@ -1,11 +1,11 @@
 using System.Net;
 using System.Text;
-using Hydra.Agent;
+using Hydra.Core;
 using Hydra.Shared;
-using StoreConfig = Hydra.Store.StoreConfig;
-using StoreServer = Hydra.Store.StoreServer;
-using StorageEngine = Hydra.Store.StorageEngine;
-using ChunkStore = Hydra.Store.ChunkStore;
+using StoreConfig = Hydra.Core.StoreConfig;
+using StoreServer = Hydra.Core.StoreServer;
+using StorageEngine = Hydra.Core.StorageEngine;
+using ChunkStore = Hydra.Core.ChunkStore;
 
 namespace Tests.Integration;
 

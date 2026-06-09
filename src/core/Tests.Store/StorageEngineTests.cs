@@ -1,5 +1,5 @@
 using System.IO.Pipelines;
-using Hydra.Store;
+using Hydra.Core;
 
 namespace Tests.Store;
 

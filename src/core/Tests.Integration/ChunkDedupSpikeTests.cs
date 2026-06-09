@@ -1,12 +1,12 @@
 using System.Text;
 using System.Text.Json;
 using Hydra.Shared;
-using StoreConfig = Hydra.Store.StoreConfig;
-using StoreServer = Hydra.Store.StoreServer;
-using StorageEngine = Hydra.Store.StorageEngine;
-using ChunkStore = Hydra.Store.ChunkStore;
-using ChunkEngine = Hydra.Store.ChunkEngine;
-using StoreMetadata = Hydra.Store.StoreMetadata;
+using StoreConfig = Hydra.Core.StoreConfig;
+using StoreServer = Hydra.Core.StoreServer;
+using StorageEngine = Hydra.Core.StorageEngine;
+using ChunkStore = Hydra.Core.ChunkStore;
+using ChunkEngine = Hydra.Core.ChunkEngine;
+using StoreMetadata = Hydra.Core.StoreMetadata;
 
 namespace Tests.Integration;
 
@@ -30,7 +30,7 @@ public sealed class ChunkDedupSpikeTests : IAsyncLifetime
     private StoreServer? _storeServer;
     private StoreMetadata? _metadata;
     private Task? _storeServerTask;
-    private Hydra.Store.ChunkStore? _chunkStore;
+    private Hydra.Core.ChunkStore? _chunkStore;
     private int _storePort;
 
     public ChunkDedupSpikeTests()
@@ -58,7 +58,7 @@ public sealed class ChunkDedupSpikeTests : IAsyncLifetime
         await cleanCmd.ExecuteNonQueryAsync();
 
         var engine = new StorageEngine(_storeDir);
-        _chunkStore = new Hydra.Store.ChunkStore(_storeDir);
+        _chunkStore = new Hydra.Core.ChunkStore(_storeDir);
         _storeServer = new StoreServer(cfg, engine, _chunkStore, _metadata);
         _storeServerTask = Task.Run(() => _storeServer.RunAsync(CancellationToken.None));
         await Task.Delay(500);

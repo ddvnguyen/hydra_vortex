@@ -1,9 +1,10 @@
 using System.Text;
 using System.Text.Json;
 using Hydra.Shared;
-using Hydra.Store.Models;
-using Hydra.Store.Repositories;
-using Hydra.Store.Services;
+using Hydra.Core.Models;
+using Hydra.Core.Repositories;
+using Hydra.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Tests.Store.Integration;
 
@@ -50,6 +51,9 @@ internal sealed class TestCompletionProxy : ICompletionProxyService
 		yield return Encoding.UTF8.GetBytes(
 			$"data: {{\"id_slot\":{_slotId},\"usage\":{{\"total_tokens\":{_totalTokens}}}}}\n\n");
 	}
+
+	public Task<bool> LoadModelAsync(string nodeUrl, string modelName, string traceId, CancellationToken ct)
+		=> Task.FromResult(true);
 }
 
 internal sealed class TestRpcClient : RpcClient
@@ -122,8 +126,9 @@ internal sealed class StreamingFixture : IAsyncDisposable
 		foreach (var w in Cfg.Workers)
 			Tracker.InitWorker(w.Name, w.Slots);
 
+		var sp = new ServiceCollection().BuildServiceProvider();
 		Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, null,
-			Serilog.Log.Logger);
+			sp, Serilog.Log.Logger);
 		Scheduler.AgentClientFactory = (_, _) => Rpc;
 
 		_runTask = Scheduler.RunAsync(_runCts.Token);

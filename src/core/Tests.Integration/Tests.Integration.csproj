@@ -19,9 +19,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Hydra.Agent\Hydra.Agent.csproj" />
+    <ProjectReference Include="..\Hydra.Core\Hydra.Core.csproj" />
     <ProjectReference Include="..\Hydra.Shared\Hydra.Shared.csproj" />
-    <ProjectReference Include="..\Hydra.Store\Hydra.Store.csproj" />
+    <ProjectReference Include="..\Hydra.Core\Hydra.Core.csproj" />
   </ItemGroup>
 
 </Project>

@@ -7,7 +7,7 @@
 #
 # Requirements:
 #   - podman (Quadlet reads from ~/.config/containers/systemd/)
-#   - Pre-built images: hydra-store, hydra-agent, hydra-coordinator, llama-rtx
+#   - Pre-built images: localhost/hydra-core:latest, llama-cpp:sm120-cuda13.2
 #   - SSH access to hydra-p100 (192.168.122.21) via ~/.ssh/vm_agent_01
 
 set -euo pipefail
@@ -44,23 +44,13 @@ cp "$REPO_ROOT/infra/quadlets"/pg-data.volume "$QUADLET_DIR" 2>/dev/null || true
 systemctl --user daemon-reload
 
 # ── 2. Hydra core stack ───────────────────────────────────────────────────────
-step "Hydra core (Store + Agents + Coordinator)"
+step "Hydra Core (Store + Coordinator + Agent — single binary)"
 
-HYDRA_SERVICES="hydra-postgres hydra-store hydra-agent-rtx hydra-agent-p100 hydra-coordinator"
-
-# Start in dependency order
 echo "  Starting hydra-postgres..."
 systemctl --user start hydra-postgres.service 2>/dev/null && ok "hydra-postgres" || warn "hydra-postgres"
 
-echo "  Starting hydra-store..."
-systemctl --user start hydra-store.service 2>/dev/null && ok "hydra-store" || warn "hydra-store"
-
-echo "  Starting agents..."
-systemctl --user start hydra-agent-rtx.service 2>/dev/null && ok "hydra-agent-rtx" || warn "hydra-agent-rtx"
-systemctl --user start hydra-agent-p100.service 2>/dev/null && ok "hydra-agent-p100" || warn "hydra-agent-p100"
-
-echo "  Starting hydra-coordinator..."
-systemctl --user start hydra-coordinator.service 2>/dev/null && ok "hydra-coordinator" || warn "hydra-coordinator"
+echo "  Starting hydra-core..."
+systemctl --user start hydra-core.service 2>/dev/null && ok "hydra-core" || warn "hydra-core"
 
 # ── 3. llama-server RTX ───────────────────────────────────────────────────────
 step "llama-server RTX (:8080)"
@@ -98,7 +88,7 @@ if [[ "$SKIP_P100" == false ]]; then
         systemctl --user daemon-reload
         systemctl --user enable --now llama-p100
       "
-      ok "Started (model loading ~90s, check with: curl http://192.168.122.21:8086/health)"
+      ok "Started (model loading ~90s)"
     fi
   fi
 fi
@@ -116,10 +106,9 @@ check_http() {
   fi
 }
 
-check_http "Store debug      :9501"    "http://localhost:9501/debug"
-check_http "Agent RTX debug  :9611"    "http://localhost:9611/debug"
-check_http "Agent P100 debug :9622"    "http://localhost:9622/debug"
-check_http "llama-server RTX :8080"    "http://localhost:8080/health"
+check_http "Hydra.Core (coord)  :9000"    "http://localhost:9000/health"
+check_http "Hydra.Core (debug) :9501"    "http://localhost:9501/metrics"
+check_http "llama-server RTX  :8080"     "http://localhost:8080/health"
 
 if [[ "$SKIP_P100" == false ]]; then
   printf "  %-35s" "llama-server P100 :8086"
@@ -130,20 +119,9 @@ if [[ "$SKIP_P100" == false ]]; then
   fi
 fi
 
-printf "  %-35s" "Coordinator :9000"
-COORD=$(curl -sf http://localhost:9000/health --connect-timeout 5 \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])" 2>/dev/null || echo "unreachable")
-case "$COORD" in
-  healthy)  ok "healthy" ;;
-  degraded) warn "degraded — one or more nodes unhealthy (P100 may still be loading)" ;;
-  *)        fail "$COORD" ;;
-esac
-
 echo ""
 echo -e "${GREEN}${BOLD}Hydra services ready.${NC}"
-echo "  Coordinator : http://localhost:9000/health"
-echo ""
-echo "  Run tests   : pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v"
-echo "  Full tests  : pytest tests/system/ -m system -v --timeout=300 \\"
-echo "                  --ignore=tests/system/test_large_prompt_system.py \\"
-echo "                  --ignore=tests/system/test_stress_system.py"
+echo "  API   : http://localhost:9000/health"
+echo "  Test  : curl -X POST http://localhost:9000/v1/chat/completions \\"
+echo "            -H 'Content-Type: application/json' \\"
+echo "            -d '{\"model\":\"balanced\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'"

@@ -1,4 +1,4 @@
-using Hydra.Store;
+using Hydra.Core;
 using System.Text;
 
 namespace Tests.Store;
