@@ -1,0 +1,27 @@
+13.40.681.668 I slot create_check: id  0 | task -1 | created context checkpoint 1 of 32 (pos_min = 0, pos_max = 953, n_tokens = 954, size = 62.813 MiB)
+13.40.681.674 I srv  process_sing: hydra: STATE_PUT slot=0 restored=76263284 B n_past=954 n_prompt_tok=954
+13.40.684.067 I srv  update_slots: all slots are idle
+13.40.685.922 I srv  log_server_r: done request: PUT /slots/0/state 192.168.122.1 200
+13.40.709.349 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+13.40.709.437 I slot launch_slot_: id  0 | task -1 | sampler chain: logits -> penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+13.40.709.443 I slot launch_slot_: id  0 | task -1 | sampler params: 
+13.40.709.446 I slot launch_slot_: id  0 | task 963 | processing task, is_child = 0
+13.40.709.449 I slot update_slots: id  0 | task 963 | new prompt, n_ctx_slot = 180224, n_keep = 0, task.n_tokens = 954
+13.40.709.452 I slot update_slots: id  0 | task 963 | Checking checkpoint with [0, 953] against 953...
+13.40.732.367 W slot update_slots: id  0 | task 963 | restored context checkpoint (pos_min = 0, pos_max = 953, n_tokens = 954, n_past = 953, size = 62.813 MiB)
+13.40.732.372 I slot update_slots: id  0 | task 963 | cached n_tokens = 953, memory_seq_rm [953, end)
+13.40.732.595 I slot init_sampler: id  0 | task 963 | init sampler, took 0.15 ms, tokens: text = 954, total = 954
+13.43.261.195 I srv  log_server_r: done request: GET /slots 192.168.122.1 200
+13.44.678.393 I slot print_timing: id  0 | task 963 | n_decoded =    100, tg =  25.61 t/s
+13.47.698.943 I slot print_timing: id  0 | task 963 | n_decoded =    168, tg =  24.26 t/s
+13.50.733.103 I slot print_timing: id  0 | task 963 | n_decoded =    248, tg =  24.90 t/s
+13.51.859.476 I slot print_timing: id  0 | task 963 | prompt eval time =      63.98 ms /     1 tokens (   63.98 ms per token,    15.63 tokens per second)
+13.51.859.481 I slot print_timing: id  0 | task 963 |        eval time =   11086.03 ms /   278 tokens (   39.88 ms per token,    25.08 tokens per second)
+13.51.859.482 I slot print_timing: id  0 | task 963 |       total time =   11150.02 ms /   279 tokens
+13.51.859.482 I slot print_timing: id  0 | task 963 |    graphs reused =       1088
+13.51.859.560 I slot      release: id  0 | task 963 | stop processing: n_tokens = 1231, truncated = 0
+13.51.859.576 I srv  update_slots: all slots are idle
+13.51.859.691 I srv  log_server_r: done request: POST /v1/chat/completions 192.168.122.1 200
+13.51.872.010 I srv  update_slots: all slots are idle
+13.51.881.719 I srv  update_slots: all slots are idle
+13.51.881.752 I srv  log_server_r: done request: GET /slots 192.168.122.1 200
