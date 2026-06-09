@@ -178,6 +178,32 @@ prefill_ms=3555 save_kv_ms=3710 restore_kv_ms=3913 decode_ms=11218 total_ms=1121
 
 **P/D Split Confirmed** — all 4 criteria met on independent llama-server metrics.
 
+### Content Quality Verdict (Dual-Verdict Format)
+
+Every test run produces TWO independent verdicts. Content quality is equally important
+as P/D split correctness.
+
+#### Current Status (2026-06-09)
+
+| Check | Result | Detail |
+|-------|--------|--------|
+| **P/D Split** | ✓ PASS | RTX prefill +954, P100 decode +278, KV cache hit |
+| **Content** | ✗ FAIL | 0 chars content — model `--reasoning on` issue |
+
+**Root cause:** The \`--reasoning on\` server flag forces Qwen-style thinking mode.
+With large haystack context, the model generates Chinese Spring Boot code instead of
+answering the prompt. This affects BOTH direct llama-server calls and Hydra P/D split
+calls identically. Simple prompts ("What is 2+2?") work correctly with sufficient
+max_tokens. Remediation: increase max_tokens or disable reasoning mode.
+
+**Dual verdict format:**
+
+| Symbol | Meaning |
+|--------|---------|
+| ✓✓ COMPLETE PASS | Both P/D split and content quality pass |
+| ⚠ PARTIAL | One passed, one failed |
+| ✗✗ COMPLETE FAIL | Both failed |
+
 ## Test Output Format
 
 Each test produces a Markdown report at `tests/results/{test-name}-report.md`
