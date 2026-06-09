@@ -645,48 +645,41 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
 	{
-		var client = GetAgent(item.PrefillWorker!);
-		var key = $"{item.SessionId}:{item.PrefillSlot ?? 0}";
-		_log.Information("save_kv_start Sid={Sid} Key={Key} Slot={Slot} NPast={N} Node={Node} RawSlot={Raw}",
-			item.SessionId, key, item.PrefillSlot, item.NPastAfter, item.PrefillWorker!.Name, _cfg.RawSlot);
+		var w = item.PrefillWorker!;
+		var slotId = item.PrefillSlot ?? 0;
+		var key = $"kv/{item.SessionId}";
+		_log.Information("save_kv_start Sid={Sid} Key={Key} Slot={Slot} NPast={N} Node={Node}",
+			item.SessionId, key, slotId, item.NPastAfter, w.Name);
 		try
 		{
-			var opcode = _cfg.RawSlot ? Hydra.Shared.OpCode.SaveState : Hydra.Shared.OpCode.SaveStateChunked;
-			var resp = await client.RequestAsync(opcode,
-				key, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
-			if (_storeClient != null)
+			var llama = GetLlamaClient(w);
+			using var stateResult = await llama.GetStateAsync(slotId, ct);
+			var buf = new byte[stateResult.ContentLength];
+			var offset = 0;
+			while (offset < buf.Length)
 			{
-				var metaJson = JsonSerializer.Serialize(new
-				{
-					session_id = item.SessionId,
-					slot_id = item.PrefillSlot,
-					n_past = item.NPastAfter
-				});
-				await _storeClient.RequestAsync(Hydra.Shared.OpCode.PutMeta,
-					$"save:{item.SessionId}", Encoding.UTF8.GetBytes(metaJson),
-					item.TraceId, ct);
+				var n = await stateResult.Content.ReadAsync(buf.AsMemory(offset, buf.Length - offset), ct);
+				if (n == 0) break;
+				offset += n;
 			}
+			stateResult.Dispose();
 
-			// Ensure session ledger has HasStoreState = true
-			var entry = _ledger.Register(item.SessionId, item.PrefillWorker!.Name, item.PrefillSlot, item.NPastAfter, item.PrefixHash);
+			// Write to in-process Store (/mnt/llm-ram)
+			var storeDir = new DirectoryInfo(Environment.GetEnvironmentVariable("HYDRA_STORE_DIR") ?? "/mnt/llm-ram/store");
+			storeDir.Create();
+			var path = Path.Combine(storeDir.FullName, $"{item.SessionId}.kv");
+			await File.WriteAllBytesAsync(path, buf, ct);
+
+			var entry = _ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
 			lock (entry) { entry.HasStoreState = true; }
 			item.Entry = entry;
-
-			_log.Information("state_saved Sid={Sid}", item.SessionId);
+			_log.Information("state_saved Sid={Sid} SizeMB={Size}", item.SessionId, buf.Length / 1024 / 1024);
 		}
 		catch (Exception ex)
 		{
 			_log.Warning(ex, "save_failed_fallback Sid={Sid} — falling back to same-node decode", item.SessionId);
-			// Mark store state absent so PickDecodeAsync skips cross-node restore.
 			if (item.Entry != null) { lock (item.Entry) { item.Entry.HasStoreState = false; } }
-			// Release decode lease on the remote worker if already acquired
-			if (item.DecodeLease != null)
-			{
-				await item.DecodeLease.DisposeAsync();
-				item.DecodeLease = null;
-				_decodeSlotSignal.Release();
-			}
-			// Re-take a slot on the prefill node (KV is still warm there)
+			if (item.DecodeLease != null) { await item.DecodeLease.DisposeAsync(); item.DecodeLease = null; _decodeSlotSignal.Release(); }
 			if (item.PrefillWorker?.CanDecode == true
 				&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot, "decode-fallback"))
 			{
@@ -694,7 +687,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.DecodeSlot = fbSlot;
 				item.DecodeLease = new SlotLease(item.PrefillWorker.Name, fbSlot, item.SessionId,
 					LeaseLifetime.Long, _tracker);
-				item.NPastAfter = item.NPastAfter > 0 ? item.NPastAfter : 0;
 				_log.Information("save_fallback_decode Sid={Sid} Node={Node} Slot={Slot}",
 					item.SessionId, item.PrefillWorker.Name, fbSlot);
 				item.Phases["save_kv_ms"] = item.ElapsedMs;
@@ -778,32 +770,30 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private async Task<WorkItemState> RestoreKvAsync(WorkItem item, CancellationToken ct)
 	{
 		var w = item.DecodeWorker!;
-		var client = GetAgent(w);
 		var entry = _ledger.Lookup(item.SessionId);
-		// Clamp slot to worker's capacity — P100 only has 1 slot (0)
-		var rawSlot = item.PrefillSlot ?? entry?.SlotId ?? 0;
-		var slotId = Math.Min(rawSlot, w.Slots - 1); // clamp to valid range
+		var slotId = Math.Min(item.PrefillSlot ?? entry?.SlotId ?? 0, w.Slots - 1);
 		var restoreKey = $"{item.SessionId}:{slotId}";
-		_log.Information("restore_kv_start Sid={Sid} Key={Key} Raw={Raw} ClampedSlot={Clamped} Node={Node} Slots={Slots} LedgerNPast={LedgerN}",
-			item.SessionId, restoreKey, _cfg.RawSlot, slotId, w.Name, w.Slots, entry?.NPast ?? -1);
+		_log.Information("restore_kv_start Sid={Sid} Key={Key} Node={Node} Slot={Slot}",
+			item.SessionId, restoreKey, w.Name, slotId);
 		try
 		{
-			var opcode = _cfg.RawSlot ? Hydra.Shared.OpCode.RestoreState : Hydra.Shared.OpCode.RestoreStateChunked;
-			var resp = await client.RequestAsync(opcode,
-				restoreKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
-			if (resp.Meta != null)
-			{
-				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta);
-				item.NPastAfter = meta?.TryGetValue("n_past", out var n) == true
-					? n.GetInt32() : 0;
-			}
-			_log.Information("state_restored Sid={Sid} NPast={N} RestoreKey={Key}",
-				item.SessionId, item.NPastAfter, restoreKey);
+			// Read KV state from in-process Store
+			var storeDir = new DirectoryInfo(Environment.GetEnvironmentVariable("HYDRA_STORE_DIR") ?? "/mnt/llm-ram/store");
+			var path = Path.Combine(storeDir.FullName, $"{item.SessionId}.kv");
+			if (!File.Exists(path))
+				throw new FileNotFoundException($"No saved KV state for {item.SessionId}", path);
+			var buf = await File.ReadAllBytesAsync(path, ct);
+
+			// Push to target llama-server via HTTP
+			var llama = GetLlamaClient(w);
+			using var ms = new MemoryStream(buf);
+			var result = await llama.PutStateAsync(slotId, ms, buf.Length, ct);
+			item.NPastAfter = result?.NPast ?? item.NPastAfter;
+			_log.Information("state_restored Sid={Sid} NPast={N} Node={Node}",
+				item.SessionId, item.NPastAfter, w.Name);
 		}
 		catch (Exception ex)
 		{
-			// If restore fails and we're on a different node than prefill,
-			// fall back to same-node decode (KV is still warm on prefill node).
 			if (item.PrefillWorker?.CanDecode == true
 				&& item.DecodeWorker?.Name != item.PrefillWorker?.Name
 				&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot, "decode-fallback"))
@@ -820,11 +810,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.DecodeSlot = fbSlot;
 				item.DecodeLease = new SlotLease(item.PrefillWorker.Name, fbSlot, item.SessionId,
 					LeaseLifetime.Long, _tracker);
-				item.NPastAfter = item.NPastAfter > 0 ? item.NPastAfter : 0;
 				item.Phases["restore_kv_ms"] = item.ElapsedMs;
 				return WorkItemState.Decode;
 			}
-			// New session with no saved KV — not an error, skip restore
 			_log.Warning(ex, "restore_skipped Sid={Sid} — continuing without KV restore", item.SessionId);
 			item.NPastAfter = 0;
 		}
@@ -1121,6 +1109,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	// ── Gap 7: migrate session (called from controller) ──
+
+	private readonly Dictionary<string, LlamaClient> _llamaClients = new();
+
+	private LlamaClient GetLlamaClient(WorkerConfig w)
+	{
+		if (_llamaClients.TryGetValue(w.Name, out var c)) return c;
+		var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+		c = new LlamaClient(http, w.LlamaUrl);
+		_llamaClients[w.Name] = c;
+		return c;
+	}
 
 	private Hydra.Shared.RpcClient GetAgent(WorkerConfig w)
 	{
