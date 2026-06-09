@@ -2,6 +2,6 @@
 	path = src/llama-cpp
 	url = https://github.com/ggml-org/llama.cpp
 	branch = hydra-state-streaming
-[submodule "research/paddler"]
-	path = research/paddler
-	url = https://github.com/intentee/paddler.git
+[submodule "research/aios"]
+	path = research/aios
+	url = https://github.com/harshitgavita-07/Aios.git
