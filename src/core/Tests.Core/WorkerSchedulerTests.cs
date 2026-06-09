@@ -5,7 +5,7 @@ using Hydra.Core.Repositories;
 using Hydra.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 public sealed class WorkItemTests
 {

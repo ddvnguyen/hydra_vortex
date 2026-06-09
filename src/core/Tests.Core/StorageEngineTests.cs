@@ -1,7 +1,7 @@
 using System.IO.Pipelines;
 using Hydra.Core;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 public sealed class StorageEngineTests : IDisposable
 {

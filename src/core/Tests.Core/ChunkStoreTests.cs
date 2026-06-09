@@ -1,6 +1,6 @@
 using Hydra.Core;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 public sealed class ChunkStoreTests : IDisposable
 {

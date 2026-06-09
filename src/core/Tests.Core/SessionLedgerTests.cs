@@ -1,7 +1,7 @@
 using Hydra.Core;
 using Hydra.Core.Repositories;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 public sealed class SessionLedgerTests
 {
