@@ -3,7 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using Hydra.Agent;
+using Hydra.Core;
 using Hydra.Shared;
 
 namespace Tests.Agent;

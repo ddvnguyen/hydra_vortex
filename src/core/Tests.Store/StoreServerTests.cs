@@ -1,9 +1,9 @@
 using System.Text;
 using Hydra.Shared;
-using StoreServer = Hydra.Store.StoreServer;
-using StoreConfig = Hydra.Store.StoreConfig;
-using StorageEngine = Hydra.Store.StorageEngine;
-using ChunkStore = Hydra.Store.ChunkStore;
+using StoreServer = Hydra.Core.StoreServer;
+using StoreConfig = Hydra.Core.StoreConfig;
+using StorageEngine = Hydra.Core.StorageEngine;
+using ChunkStore = Hydra.Core.ChunkStore;
 
 namespace Tests.Store;
 

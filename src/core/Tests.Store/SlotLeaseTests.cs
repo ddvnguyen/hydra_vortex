@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
-using Hydra.Store.Models;
-using Hydra.Store.Repositories;
+using Hydra.Core.Models;
+using Hydra.Core.Repositories;
 
 namespace Tests.Store;
 

@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text;
-using Hydra.Agent;
-using Hydra.Store;
+using Hydra.Core;
+using Hydra.Core;
 using Hydra.Shared;
 
 namespace Tests.Agent;

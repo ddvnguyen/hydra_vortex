@@ -1,4 +1,4 @@
-using Hydra.Agent;
+using Hydra.Core;
 
 namespace Tests.Agent;
 

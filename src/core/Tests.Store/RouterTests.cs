@@ -1,7 +1,7 @@
-using Hydra.Store;
-using Hydra.Store.Models;
-using Hydra.Store.Repositories;
-using Hydra.Store.Services;
+using Hydra.Core;
+using Hydra.Core.Models;
+using Hydra.Core.Repositories;
+using Hydra.Core.Services;
 
 namespace Tests.Store;
 

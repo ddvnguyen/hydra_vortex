@@ -1,5 +1,5 @@
-using Hydra.Store;
-using Hydra.Store.Models;
+using Hydra.Core;
+using Hydra.Core.Models;
 
 namespace Tests.Store;
 

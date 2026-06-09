@@ -1,8 +1,9 @@
 using System.Text.Json;
-using Hydra.Store;
-using Hydra.Store.Models;
-using Hydra.Store.Repositories;
-using Hydra.Store.Services;
+using Hydra.Core;
+using Hydra.Core.Models;
+using Hydra.Core.Repositories;
+using Hydra.Core.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Tests.Store;
 
@@ -80,7 +81,8 @@ public sealed class WorkerSchedulerTests
         foreach (var w in cfg.Workers) tracker.InitWorker(w.Name);
         var proxy = new CompletionProxyService();
         var health = new TestHealthMonitor();
-        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, Serilog.Log.Logger);
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
 
         var item = new WorkItem(
             new Dictionary<string, object> { ["stream"] = false },
