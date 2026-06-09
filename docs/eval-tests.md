@@ -146,47 +146,102 @@ distributed systems, ML, databases, etc.) at ~3 chars/token. Passkeys are random
 
 ## Verified Test Run (2026-06-09)
 
-### 2K Token NIAH — P/D Split Confirmed
+### 2K Token NIAH — P/D Split **PASS** via llama-server Metrics
 
+Full report: `tests/results/niah-2k-verified-2026-06-09.md`
+
+**llama-server Metrics (Ground Truth):**
+
+| Metric | RTX Δ | P100 Δ | Meaning |
+|--------|-------|--------|---------|
+| `prompt_tokens_total` | **+958** | **+1** | RTX prefilled 958 tokens; P100 processed 1 (cache hit) |
+| `tokens_predicted_total` | **+1** | **+200** | RTX generated 1 token (prefill completion only); P100 decoded 200 |
+
+**llama-server Logs — RTX:**
+- `slot launch_slot_: id 1 | task 81 | n_tokens = 958`
+- `prompt eval time = 3530.34 ms / 958 tokens (271.36 tok/s)`
+- `eval time = 0.00 ms / 1 tokens` — only the single prefill token
+
+**llama-server Logs — P100 (definitive KV migration proof):**
+- `PUT /slots/0/state 192.168.122.1 200` — KV state upload received
+- `hydra: STATE_PUT slot=0 restored=76306884 B n_past=958 n_prompt_tok=958` — **76 MB state restored with 958 prompt tokens!**
+- `restored context checkpoint (n_tokens = 958, size = 62.813 MiB)` — checkpoint reconstructed
+- `cached n_tokens = 957, memory_seq_rm [957, end)` — 957 tokens served from cache
+- `prompt eval time = 63.06 ms / 1 tokens` — only 1 new token processed (vs 3.5s full prefill)
+- `eval time = 7217.02 ms / 200 tokens (27.71 tok/s)` — decode at 28 tok/s
+- `graphs reused = 395` — CUDA graphs reused from restore
+
+**Hydra Core Timeline:**
 ```
-Trace: niah-2k-1781023182
-Session: sess_9ab1e3871c58764503a97979
-```
-
-**P/D Split Phase Timeline (from Hydra Core logs):**
-
-| Phase | Time (ms) | Node | Detail |
-|---|---|---|---|
-| Route | 0 | — | `cold_concurrency`, RTX picked |
-| Prefill | 3,392 | RTX | 920 tokens at ~271 tok/s |
-| Save KV | 3,543 | RTX → tmpfs | 151ms for ~800 MB state |
-| Restore KV | 3,750 | P100 ← tmpfs | 207ms restore |
-| Decode | 5,947 | P100 | 28 tok/s decode |
-
-**KV Cache Integrity:**
-
-| Metric | Value | Meaning |
-|---|---|---|
-| `cached_tokens` | 918/919 | 99.9% cache hit — KV properly restored |
-| `prompt_ms` | 70ms | No re-prefill (full prefill was 3.4s) |
-| `prompt_n` | 1 | Only 1 new token processed |
-| `cache_n` | 918 | 918 tokens from restored cache |
-| `prompt_per_second` | 13.1K tok/s | Cache-hit speed, not GPU prefill |
-
-**Log Events:**
-```
-event=cold_route Route=cold_concurrency Pw=rtx Free=true Healthy=true Est=908
-event=prefill_done Node=rtx Slot=0 NPastFromLLama=920
-event=save_kv_start Node=rtx Slot=0 NPast=920
-event=restore_kv_start Node=p100 Slot=0
-event=request_timeline prefill_ms=3392 save_kv_ms=3543 restore_kv_ms=3750 decode_ms=5947
+prefill_ms=3555 save_kv_ms=3710 restore_kv_ms=3913 decode_ms=11218 total_ms=11218
 ```
 
-**Model Behavior Note:** The Qwopus 35B model outputs reasoning content in Chinese,
-which can consume the token budget before reaching the content field. For NIAH
-passkey verification, increase `max_tokens` to 200+ so reasoning + content both fit.
+**P/D Split Confirmed** — all 4 criteria met on independent llama-server metrics.
 
-## Interpreting Results
+## Test Output Format
+
+Each test produces a Markdown report at `tests/results/{test-name}-report.md`
+with these sections:
+
+### 1. Header — What was tested
+```markdown
+## Eval Test: NIAH-2000 (2026-06-09T16:39:00Z)
+
+| Field | Value |
+|-------|-------|
+| Prompt size | 2000 tokens (~6000 chars) |
+| Needle depth | 50% |
+| Passkey | `NIAH-1A2B` |
+| Expected | RTX prefill → KV save → P100 KV restore → P100 decode |
+```
+
+### 2. llama-server Metrics (Ground Truth)
+
+The `llamacpp:prompt_tokens_total` and `llamacpp:tokens_predicted_total`
+counters on BOTH nodes, compared pre/post test. Deltas prove which GPU did
+which work:
+- RTX `prompt_tokens_total` ↑↑ = prefill happened on RTX
+- RTX `tokens_predicted_total` ↑1 = only 1-token prefill completion, NOT decode
+- P100 `prompt_tokens_total` ↑0 = KV cache hit, NO re-prefill
+- P100 `tokens_predicted_total` ↑↑ = decode happened on P100
+
+### 3. llama-server Slot State
+
+Snapshot of `/slots` on both nodes before and after.
+
+### 4. llama-server Logs — Both Nodes
+
+Relevant log lines from both llama-servers captured during the test window:
+- `srv update_slots:` / `slot N launch_slot_` — slot lifecycle
+- `POST /v1/chat/completions` / `GET /slots/N/state` — HTTP requests
+- `perf:` — timing data
+
+### 5. Hydra Core Timeline
+
+The `request_timeline` event showing phase durations.
+
+### 6. Response Quality
+
+Checks: HTTP code, finish_reason, cached_tokens, prompt_ms, reasoning content, passkey recall.
+
+### 7. Overall: PASS / FAIL
+
+Based on the 4 llama-server metric delta criteria above.
+
+## P/D Split Pass/Fail Criteria
+
+A test PASSES only when ALL four conditions are met on llama-server metrics:
+
+| # | Condition | Source | Threshold |
+|---|-----------|--------|-----------|
+| 1 | RTX processed prompt tokens | `llamacpp:prompt_tokens_total` delta | > 100 |
+| 2 | RTX did NOT decode | `llamacpp:tokens_predicted_total` delta | ≤ 5 |
+| 3 | P100 did NOT re-prefill | `llamacpp:prompt_tokens_total` delta | ≤ 5 |
+| 4 | P100 DID decode | `llamacpp:tokens_predicted_total` delta | ≥ 3 |
+
+## Example Output
+
+See the verified test run section below for a real report from 2026-06-09.
 
 | Signal | Good | Bad |
 |--------|------|-----|

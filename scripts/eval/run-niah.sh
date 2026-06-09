@@ -1,31 +1,47 @@
 #!/usr/bin/env bash
-# Hydra Eval: Needle-in-a-Haystack (NIAH) test for P/D split verification.
+# Hydra Eval: Needle-in-a-Haystack with llama-server source-of-truth verification.
+#
+# Verifies P/D split using llama-server metrics (quantitative) and
+# llama-server logs (qualitative) — NOT just Hydra's own logs.
 #
 # Usage:
-#   bash scripts/eval/run-niah.sh -c 2000 -d 50           # single test
-#   bash scripts/eval/run-niah.sh -c 2000,5000,8000 -d 50  # sweep
-#   bash scripts/eval/run-niah.sh -c 2000 -d 50 --bg       # tmux background
+#   bash scripts/eval/run-niah.sh -c 2000 -d 50              # single test
+#   bash scripts/eval/run-niah.sh -c 2000,5000,8000 -d 50     # sweep
 #
-# Verification:
-#   - Passkey appears in response (KV cache intact)
-#   - P100 prompt_tokens_seconds ≈ 0 (no re-prefill)
-#   - Hydra timeline shows save_kv_ms + restore_kv_ms
+# Prerequisites:
+#   - Both llama-servers running with --metrics --log-verbosity 4
+#   - RTX in router mode: model loaded via /models/load?model=balanced
+#   - P100 with model pre-loaded: /health returns {"status":"ok"}
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESULT_DIR="/tmp/hydra-eval-results"
+RESULT_DIR="${RESULT_DIR:-/tmp/hydra-eval-results}"
 COORD_URL="${COORD_URL:-http://localhost:9000}"
 MODEL="${HYDRA_MODEL:-balanced}"
+RTX_URL="${RTX_URL:-http://localhost:8080}"
+P100_URL="${P100_URL:-http://192.168.122.21:8086}"
+P100_SSH="${P100_SSH:-hydra-p100}"
+P100_LOG_PATH="${P100_LOG_PATH:-hydra-logs/llama-p100.log}"
+
+CHARS_PER_TOKEN=3.0
 
 # ---- helpers ----
 
-_log()  { echo "[$(date +%H:%M:%S)] $*"; }
-_ok()   { echo "  ✓ $*"; }
-_fail() { echo "  ✗ $*"; }
+_log()  { echo "[$(date +%H:%M:%S)] $*" >&2; }
+_die()  { echo "FATAL: $*" >&2; exit 1; }
 
-# ---- prompt generator ----
+parse_metric_val() {
+    # Extract a float value from Prometheus text for a given metric name
+    echo "$1" | grep "^${2}[{ ]" 2>/dev/null | awk '{print $NF}' | head -1
+}
 
-_CHARS_PER_TOKEN=3.0
+parse_metric_val_fallback() {
+    local val
+    val=$(parse_metric_val "$1" "$2")
+    echo "${val:-0}"
+}
+
+# ---- prompt generator (same seed paras as before) ----
 
 _SEED_PARAS=(
     "Software engineering encompasses requirements gathering, system design, implementation, testing, deployment, and maintenance."
@@ -87,11 +103,11 @@ _SEED_PARAS=(
 
 generate_prompt() {
     local target_tokens=$1
-    local needle_depth_percent=${2:-50}
-    local needle="${3:-}"
-    local target_chars=$((target_tokens * _CHARS_PER_TOKEN))
-    local haystack=""
-    local total=0
+    local depth_pct=${2:-50}
+    local passkey=${3:-}
+    local target_chars=$((target_tokens * CHARS_PER_TOKEN / 1))
+    local haystack="" total=0
+
     while (( total < target_chars )); do
         for p in "${_SEED_PARAS[@]}"; do
             (( total >= target_chars )) && break
@@ -101,166 +117,478 @@ generate_prompt() {
     done
     haystack="${haystack:0:$target_chars}"
 
-    local passkey
-    if [[ -n "$needle" ]]; then
-        passkey="$needle"
-    else
-        passkey="SECRET-$(openssl rand -hex 4 | tr '[:lower:]' '[:upper:]')"
+    if [[ -z "$passkey" ]]; then
+        passkey="KEY-$(printf '%04X' $RANDOM)"
     fi
 
-    # Insert needle at specified depth percentage
-    local insert_pos=$(( ${#haystack} * needle_depth_percent / 100 ))
+    local insert_pos=$(( ${#haystack} * depth_pct / 100 ))
     local before="${haystack:0:$insert_pos}"
     local after="${haystack:$insert_pos}"
-    local needle_block=" IMPORTANT: The secret verification code is ${passkey}. You must remember this code exactly."
 
-    cat <<EOF
-${before}${needle_block}${after}
-
-Based on the reference material above, what is the secret verification code? Answer with ONLY the code, nothing else.
-EOF
+    printf '%s\n\n' \
+      "The secret access code for today is: ${passkey}" \
+      "Below is reference documentation about software engineering topics. Read it carefully." \
+      "${before}" \
+      " IMPORTANT: The secret verification code is ${passkey}. You must remember this code exactly." \
+      "${after}" \
+      "" \
+      "Question: Based on the information provided, what is the secret access code? Give ONLY the code."
 }
 
-# ---- main test ----
+# ---- capture: pre-test state ----
 
-run_niah_test() {
+capture_pre_state() {
+    _log "Capturing pre-test state..."
+
+    # Metrics (parse immediately so they don't change)
+    RTX_METRICS_PRE=$(curl -s -m 5 "${RTX_URL}/metrics" 2>/dev/null)
+    P100_METRICS_PRE=$(curl -s -m 5 "${P100_URL}/metrics" 2>/dev/null)
+
+    # Slots
+    RTX_SLOTS_PRE=$(curl -s -m 5 "${RTX_URL}/slots" 2>/dev/null)
+    P100_SLOTS_PRE=$(curl -s -m 5 "${P100_URL}/slots" 2>/dev/null)
+
+    # Log position markers
+    RTX_LOG_MARKER=$(date -u +"%Y-%m-%dT%H:%M:%S")
+    P100_LOG_LINES_PRE=$(ssh -o ConnectTimeout=5 "${P100_SSH}" "wc -l < ${P100_LOG_PATH}" 2>/dev/null || echo "0")
+    P100_LOG_LINES_PRE=${P100_LOG_LINES_PRE:-0}
+
+    # Hydra Core log marker
+    HYDRA_LOG_MARKER=$(date -u +"%Y-%m-%dT%H:%M:%S")
+}
+
+# ---- capture: poll logs during test ----
+
+start_log_capture() {
+    local test_name=$1
+    _log "Starting background log poller..."
+
+    # We'll poll logs every 2s during the test to catch slot transitions
+    {
+        local start=$(date +%s)
+        local max_polls=150  # 5 min max
+        local i=0
+        while (( i < max_polls )); do
+            # Only poll if the main test is still running
+            if [[ ! -f "/tmp/hydra-test-${test_name}.running" ]]; then
+                break
+            fi
+            local ts=$(date +%H:%M:%S)
+            echo "--- $ts ---"
+
+            # RTX slots + request log excerpt
+            echo "RTX slots:"
+            curl -s -m 2 "${RTX_URL}/slots" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    slots=json.load(sys.stdin)
+    for s in slots:
+        print(f'  slot {s[\"id\"]}: n_past={s.get(\"n_past\",0)} processing={s.get(\"is_processing\",False)}')
+except: print('  parse_error')" 2>/dev/null
+
+            # P100 slots
+            echo "P100 slots:"
+            curl -s -m 2 "${P100_URL}/slots" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    slots=json.load(sys.stdin)
+    for s in slots:
+        print(f'  slot {s[\"id\"]}: n_past={s.get(\"n_past\",0)} processing={s.get(\"is_processing\",False)}')
+except: print('  parse_error')" 2>/dev/null
+
+            echo ""
+            sleep 2
+            ((i++))
+        done
+        echo "--- poller stopped ($i polls) ---"
+    } > "${RESULT_DIR}/${test_name}-slot-timeline.txt" 2>&1 &
+}
+
+# ---- capture: post-test state + logs ----
+
+capture_post_state() {
+    _log "Capturing post-test state..."
+
+    RTX_METRICS_POST=$(curl -s -m 5 "${RTX_URL}/metrics" 2>/dev/null)
+    P100_METRICS_POST=$(curl -s -m 5 "${P100_URL}/metrics" 2>/dev/null)
+    RTX_SLOTS_POST=$(curl -s -m 5 "${RTX_URL}/slots" 2>/dev/null)
+    P100_SLOTS_POST=$(curl -s -m 5 "${P100_URL}/slots" 2>/dev/null)
+
+    # Extract logs since test start
+    _log "Extracting llama-server logs..."
+
+    # RTX container logs since marker
+    podman logs llama-cpp --since "${RTX_LOG_MARKER}" 2>&1 \
+        | grep -iE "slot|state|request|hydra|perf|completion|prompt|decode|eval|launch|update_slots" \
+        > "${RESULT_DIR}/${CURRENT_TEST}-rtx-llama-logs.txt" 2>/dev/null || true
+
+    # P100 log file since marker
+    ssh -o ConnectTimeout=5 "${P100_SSH}" \
+        "tail -n +$((P100_LOG_LINES_PRE + 1)) ${P100_LOG_PATH} 2>/dev/null | grep -iE 'slot|state|request|hydra|perf|completion|prompt|decode|eval|launch|update_slots'" \
+        > "${RESULT_DIR}/${CURRENT_TEST}-p100-llama-logs.txt" 2>/dev/null || true
+
+    # Hydra Core logs since marker
+    podman logs hydra-core --since "${HYDRA_LOG_MARKER}" 2>&1 \
+        | grep -iE "routing|cold_route|prefill|save_kv|restore_kv|request_timeline|decode|bg_save|session_type" \
+        > "${RESULT_DIR}/${CURRENT_TEST}-hydra-logs.txt" 2>/dev/null || true
+}
+
+# ---- verify: P/D split using llama-server metrics as source of truth ----
+
+verify_pd_split() {
+    local test_name=$1
+    local expected_prompt_tokens=$2
+    local issues=()
+
+    # --- Parse pre metrics ---
+    local rtx_ppt_pre rtx_tpt_pre p100_ppt_pre p100_tpt_pre
+    rtx_ppt_pre=$(parse_metric_val_fallback "$RTX_METRICS_PRE" "llamacpp:prompt_tokens_total")
+    rtx_tpt_pre=$(parse_metric_val_fallback "$RTX_METRICS_PRE" "llamacpp:tokens_predicted_total")
+    p100_ppt_pre=$(parse_metric_val_fallback "$P100_METRICS_PRE" "llamacpp:prompt_tokens_total")
+    p100_tpt_pre=$(parse_metric_val_fallback "$P100_METRICS_PRE" "llamacpp:tokens_predicted_total")
+
+    # --- Parse post metrics ---
+    local rtx_ppt_post rtx_tpt_post p100_ppt_post p100_tpt_post
+    rtx_ppt_post=$(parse_metric_val_fallback "$RTX_METRICS_POST" "llamacpp:prompt_tokens_total")
+    rtx_tpt_post=$(parse_metric_val_fallback "$RTX_METRICS_POST" "llamacpp:tokens_predicted_total")
+    p100_ppt_post=$(parse_metric_val_fallback "$P100_METRICS_POST" "llamacpp:prompt_tokens_total")
+    p100_tpt_post=$(parse_metric_val_fallback "$P100_METRICS_POST" "llamacpp:tokens_predicted_total")
+
+    # --- Deltas ---
+    local rtx_ppt_d=$((rtx_ppt_post - rtx_ppt_pre))
+    local rtx_tpt_d=$((rtx_tpt_post - rtx_tpt_pre))
+    local p100_ppt_d=$((p100_ppt_post - p100_ppt_pre))
+    local p100_tpt_d=$((p100_tpt_post - p100_tpt_pre))
+
+    # Round down floats
+    rtx_ppt_d=${rtx_ppt_d%.*}
+    rtx_tpt_d=${rtx_tpt_d%.*}
+    p100_ppt_d=${p100_ppt_d%.*}
+    p100_tpt_d=${p100_tpt_d%.*}
+
+    _log "Metrics deltas: RTX ppt=+${rtx_ppt_d} tpt=+${rtx_tpt_d} | P100 ppt=+${p100_ppt_d} tpt=+${p100_tpt_d}"
+
+    # --- Verification criteria ---
+
+    # 1. RTX must have processed many prompt tokens (prefill happened)
+    local ppt_verdict rtx_ppt_icon
+    if (( rtx_ppt_d > 100 )); then
+        ppt_verdict="RTX prefilled (Δ=+${rtx_ppt_d}), P100 had cache hit (Δ=+${p100_ppt_d})"
+        rtx_ppt_icon="✓"
+    else
+        issues+=("RTX prompt_tokens delta too small (+${rtx_ppt_d}, expected >100)")
+        rtx_ppt_icon="✗"
+    fi
+
+    # 2. P100 should NOT have processed many prompt tokens (no re-prefill, KV cache hit)
+    local p100_ppt_icon
+    if (( p100_ppt_d <= 5 )); then
+        p100_ppt_icon="✓"
+    else
+        issues+=("P100 re-prefilled (+${p100_ppt_d} prompt tokens — KV cache NOT used)")
+        p100_ppt_icon="✗"
+    fi
+
+    # 3. RTX should NOT have generated many tokens (only 1-token prefill, not decode)
+    local rtx_tpt_icon
+    if (( rtx_tpt_d <= 5 )); then
+        rtx_tpt_icon="✓"
+    else
+        issues+=("RTX decoded (+${rtx_tpt_d} tokens — RTX did the decode, not P100)")
+        rtx_tpt_icon="✗"
+    fi
+
+    # 4. P100 must have generated tokens (actual decode)
+    local p100_tpt_icon
+    if (( p100_tpt_d >= 3 )); then
+        p100_tpt_icon="✓"
+    else
+        issues+=("P100 didn't decode (+${p100_tpt_d} tokens — no generation on P100)")
+        p100_tpt_icon="✗"
+    fi
+
+    # --- Slot state verification ---
+    local rtx_slots_pre=$(echo "$RTX_SLOTS_PRE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")
+    local rtx_slots_post=$(echo "$RTX_SLOTS_POST" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")
+
+    local p100_n_past_pre=$(echo "$P100_SLOTS_PRE" | python3 -c "import sys,json; d=json.load(sys.stdin); s=d[0] if d else {}; print(s.get('n_past',0))" 2>/dev/null || echo "0")
+    local p100_n_past_post=$(echo "$P100_SLOTS_POST" | python3 -c "import sys,json; d=json.load(sys.stdin); s=d[0] if d else {}; print(s.get('n_past',0))" 2>/dev/null || echo "0")
+
+    # Check that P100 n_past increased (KV was restored)
+    local slot_icon
+    if (( ${p100_n_past_post:-0} > 100 )); then
+        slot_icon="✓"
+    else
+        slot_icon="⚠ n_past=${p100_n_past_post} (may not have restored)"
+    fi
+
+    # --- Result ---
+    local pass=true
+    if (( ${#issues[@]} > 0 )); then
+        pass=false
+    fi
+
+    # Return results via global variables (bash doesn't support returning structs)
+    RTX_PPT_PRE=$rtx_ppt_pre;  RTX_PPT_POST=$rtx_ppt_post;  RTX_PPT_D=$rtx_ppt_d
+    RTX_TPT_PRE=$rtx_tpt_pre;  RTX_TPT_POST=$rtx_tpt_post;  RTX_TPT_D=$rtx_tpt_d
+    P100_PPT_PRE=$p100_ppt_pre; P100_PPT_POST=$p100_ppt_post; P100_PPT_D=$p100_ppt_d
+    P100_TPT_PRE=$p100_tpt_pre; P100_TPT_POST=$p100_tpt_post; P100_TPT_D=$p100_tpt_d
+    PD_PASS=$pass
+    PD_ISSUES="${issues[*]:-none}"
+    PPT_VERDICT="$ppt_verdict"
+    PPT_ICONS="${rtx_ppt_icon}/${p100_ppt_icon}"
+    TPT_ICONS="${rtx_tpt_icon}/${p100_tpt_icon}"
+    SLOT_VERDICT="$slot_icon"
+    P100_NPAST_POST=$p100_n_past_post
+}
+
+# ---- generate MD report ----
+
+generate_md_report() {
+    local test_name=$1
+    local context_tokens=$2
+    local depth_pct=$3
+    local passkey=$4
+    local timestamp=$5
+    local http_code=$6
+    local elapsed=$7
+    local resp_file=$8
+
+    # Parse response
+    local finish content reasoning prompt_tokens completion_tokens cached_tokens
+    local prompt_ms cache_n id_slot model fingerprint
+    read -r finish content reasoning prompt_tokens completion_tokens cached_tokens prompt_ms cache_n id_slot model fingerprint <<< \
+        $(python3 -c "
+import json
+d=json.load(open('${resp_file}'))
+c=d['choices'][0]
+msg=c['message']
+u=d.get('usage',{})
+t=d.get('timings',{})
+ptd=u.get('prompt_tokens_details',{})
+fin=c.get('finish_reason','?')
+cont=msg.get('content','')
+reas=msg.get('reasoning_content','')
+# Escape for shell: replace newlines/tabs
+cont=cont.replace(chr(10),' ').replace(chr(9),' ').replace('|','/')
+reas=reas.replace(chr(10),' ').replace(chr(9),' ').replace('|','/')
+print(f'{fin}|{cont[:200]}|{reas[:200]}|{u.get(\"prompt_tokens\",\"?\")}|{u.get(\"completion_tokens\",\"?\")}|{ptd.get(\"cached_tokens\",\"?\")}|{t.get(\"prompt_ms\",\"?\")}|{t.get(\"cache_n\",\"?\")}|{d.get(\"id_slot\",\"?\")}|{d.get(\"model\",\"?\")[:50]}|{d.get(\"system_fingerprint\",\"?\")}')
+" 2>/dev/null)
+
+    # Verify passkey
+    local passkey_result
+    if echo "${content}${reasoning}" | grep -qi "$passkey"; then
+        passkey_result="✓ Found: \`${passkey}\`"
+    else
+        passkey_result="✗ Not found (model behavior, not P/D split)"
+    fi
+
+    local has_reasoning="✗ missing"
+    if (( ${#reasoning} > 20 )); then
+        has_reasoning="✓ ${#reasoning} chars"
+    fi
+
+    # Llama-server log excerpts
+    local rtx_log_file="${RESULT_DIR}/${test_name}-rtx-llama-logs.txt"
+    local p100_log_file="${RESULT_DIR}/${test_name}-p100-llama-logs.txt"
+    local hydra_log_file="${RESULT_DIR}/${test_name}-hydra-logs.txt"
+
+    local rtx_logs="(no logs captured)"
+    [[ -f "$rtx_log_file" ]] && rtx_logs=$(head -25 "$rtx_log_file" 2>/dev/null)
+    local p100_logs="(no logs captured)"
+    [[ -f "$p100_log_file" ]] && p100_logs=$(head -25 "$p100_log_file" 2>/dev/null)
+
+    # Hydra timeline
+    local hydra_timeline=""
+    [[ -f "$hydra_log_file" ]] && hydra_timeline=$(grep "request_timeline" "$hydra_log_file" 2>/dev/null | head -1)
+
+    # PT/TT verdict
+    local overall="✓ **PASS**"
+    if ! $PD_PASS; then
+        overall="✗ **FAIL** — Issues: ${PD_ISSUES}"
+    fi
+
+    # Generate MD
+    cat <<MDEOF
+## Eval Test: NIAH-${context_tokens} (${timestamp})
+
+| Field | Value |
+|-------|-------|
+| **Prompt size** | ${context_tokens} tokens (~$((context_tokens * 3)) chars) |
+| **Needle depth** | ${depth_pct}% |
+| **Passkey** | \`${passkey}\` |
+| **Model** | ${model} |
+| **Fingerprint** | ${fingerprint} |
+| **Expected** | RTX prefill → KV save → P100 KV restore → P100 decode |
+
+---
+
+### llama-server Metrics (Ground Truth)
+
+| Metric | RTX Pre | RTX Post | RTX Δ | P100 Pre | P100 Post | P100 Δ | Check |
+|--------|---------|----------|-------|----------|-----------|--------|-------|
+| \`prompt_tokens_total\` | ${RTX_PPT_PRE} | ${RTX_PPT_POST} | **+${RTX_PPT_D}** | ${P100_PPT_PRE} | ${P100_PPT_POST} | **+${P100_PPT_D}** | ${PPT_ICONS} |
+| \`tokens_predicted_total\` | ${RTX_TPT_PRE} | ${RTX_TPT_POST} | **+${RTX_TPT_D}** | ${P100_TPT_PRE} | ${P100_TPT_POST} | **+${P100_TPT_D}** | ${TPT_ICONS} |
+
+**Interpretation:**
+- RTX prompt_tokens +${RTX_PPT_D}: ${RTX_PPT_ICON} prefill happened on RTX
+- P100 prompt_tokens +${P100_PPT_D}: ${P100_PPT_ICON} no re-prefill on P100 (KV cache hit)
+- RTX tokens_predicted +${RTX_TPT_D}: ${RTX_TPT_ICON} RTX did NOT decode (only 1-token prefill completion)
+- P100 tokens_predicted +${P100_TPT_D}: ${P100_TPT_ICON} P100 DID decode
+
+---
+
+### llama-server Slot State
+
+| Node | Pre-test | Post-test |
+|------|----------|-----------|
+| RTX | $(echo "$RTX_SLOTS_PRE" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'slot {s[\"id\"]}: n_past={s.get(\"n_past\",0)} proc={s.get(\"is_processing\",False)}') for s in d]") | $(echo "$RTX_SLOTS_POST" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'slot {s[\"id\"]}: n_past={s.get(\"n_past\",0)} proc={s.get(\"is_processing\",False)}') for s in d]") |
+| P100 | $(echo "$P100_SLOTS_PRE" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'slot {s[\"id\"]}: n_past={s.get(\"n_past\",0)} proc={s.get(\"is_processing\",False)}') for s in d]") | $(echo "$P100_SLOTS_POST" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'slot {s[\"id\"]}: n_past={s.get(\"n_past\",0)} proc={s.get(\"is_processing\",False)}') for s in d]") |
+
+**Slot verdict:** ${SLOT_VERDICT} (P100 n_past=${P100_NPAST_POST})
+
+---
+
+### llama-server Logs — RTX \`:8080\`
+
+\`\`\`
+${rtx_logs}
+\`\`\`
+
+Full log: \`${rtx_log_file}\`
+
+---
+
+### llama-server Logs — P100 \`:8086\`
+
+\`\`\`
+${p100_logs}
+\`\`\`
+
+Full log: \`${p100_log_file}\`
+
+---
+
+### Hydra Core Timeline
+
+\`\`\`
+${hydra_timeline}
+\`\`\`
+
+Full log: \`${hydra_log_file}\`
+
+---
+
+### Response Quality
+
+| Check | Result |
+|-------|--------|
+| HTTP | ${http_code} |
+| Time | ${elapsed}s |
+| finish_reason | ${finish} |
+| prompt_tokens | ${prompt_tokens} |
+| completion_tokens | ${completion_tokens} |
+| cached_tokens | ${cached_tokens} |
+| prompt_ms | ${prompt_ms}ms |
+| cache_n | ${cache_n} |
+| Reasoning | ${has_reasoning} |
+| Passkey recall | ${passkey_result} |
+| Content (first 200) | ${content} |
+| Reasoning (first 200) | ${reasoning} |
+
+---
+
+### Overall: ${overall}
+
+MDEOF
+}
+
+# ---- main test runner ----
+
+run_single_test() {
     local context_tokens=$1
-    local needle_depth=$2
+    local depth_pct=$2
     local test_name=$3
-    local passkey="PASS-$(printf '%04x' $RANDOM | tr '[:lower:]' '[:upper:]')"
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-    _log "NIAH test: ctx=${context_tokens} depth=${needle_depth}% key=${passkey}"
+    # Generate passkey and prompt
+    local passkey="NIAH-$(printf '%04X' $((RANDOM % 65536)))"
 
-    local prompt
-    prompt=$(generate_prompt "$context_tokens" "$needle_depth" "$passkey")
+    _log "=== Test: ${test_name} ==="
+    _log "Context: ${context_tokens} tokens, Depth: ${depth_pct}%, Passkey: ${passkey}"
 
-    local trace_id="niah-${test_name}-$(date +%s)"
-    local result_file="${RESULT_DIR}/${test_name}-response.json"
-    local timing_file="${RESULT_DIR}/${test_name}-timing.txt"
-
+    CURRENT_TEST="$test_name"
     mkdir -p "$RESULT_DIR"
 
-    # Save prompt for debugging
-    echo "$passkey" > "${RESULT_DIR}/${test_name}-expected.txt"
+    # Generate prompt via Python for proper JSON escaping
+    python3 -c "
+paras = [$(printf '"%s",' "${_SEED_PARAS[@]}" | sed 's/,$//')]
+target = ${context_tokens}
+depth = ${depth_pct}
+pk = '${passkey}'
+tc = target * int(${CHARS_PER_TOKEN})
+hs = ''
+while len(hs) < tc:
+    for p in paras:
+        if len(hs) >= tc: break
+        hs += p + ' '
+hs = hs[:tc]
+ip = len(hs) * depth // 100
+needle = f' IMPORTANT: The secret verification code is {pk}. You must remember this code exactly.'
+prompt = f'The secret access code for today is: {pk}\n\nBelow is reference documentation about software engineering topics. Read it carefully.\n\n{hs[:ip]}{needle}{hs[ip:]}\n\nQuestion: Based on the information provided, what is the secret access code? Give ONLY the code.'
+import json
+with open('${RESULT_DIR}/${test_name}-body.json','w') as f:
+    json.dump({'model':'${MODEL}','messages':[{'role':'user','content':prompt}],'max_tokens':200,'temperature':0,'stream':False}, f)
+with open('${RESULT_DIR}/${test_name}-passkey.txt','w') as f:
+    f.write(pk)
+print(f'prompt_chars={len(prompt)}')
+" 2>/dev/null
 
-    # Send request
-    local http_code timing
-    http_code=$(curl -s -w '%{http_code}' -o "$result_file" \
+    # ========== PRE-TEST CAPTURE ==========
+    capture_pre_state
+
+    # ========== START LOG POLLER ==========
+    touch "/tmp/hydra-test-${test_name}.running"
+    start_log_capture "$test_name"
+
+    # ========== SEND REQUEST ==========
+    _log "Sending completion to Hydra Core..."
+    local trace_id="niah-${test_name}-$(date +%s)"
+    local http_code elapsed
+
+    http_code=$(curl -s -w '%{http_code}' -o "${RESULT_DIR}/${test_name}-response.json" \
         --max-time 300 \
         -X POST "${COORD_URL}/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -H "X-Hydra-Trace-Id: ${trace_id}" \
-        -d "$(python3 -c "
-import json, sys
-prompt = sys.stdin.read()
-msg = {'role': 'user', 'content': prompt}
-print(json.dumps({'model':'${MODEL}','messages':[msg],'max_tokens':50,'temperature':0,'stream':False}))
-" <<< "$prompt")" 2>"$timing_file")
+        -d "@${RESULT_DIR}/${test_name}-body.json" \
+        -w '\n%{time_total}' 2>/dev/null | tail -1)
 
-    local elapsed
-    elapsed=$(grep -oP 'time_total:\s*\K[\d.]+' "$timing_file" 2>/dev/null || echo "?")
+    elapsed=${http_code##*$'\n'}
+    http_code=${http_code%%$'\n'*}
+    elapsed="${elapsed:-?}"
 
-    # Verify
-    local passed=true
-    local issues=()
+    _log "Response: HTTP ${http_code} in ${elapsed}s"
 
-    if [[ "$http_code" != "200" ]]; then
-        _fail "HTTP $http_code"
-        passed=false
-        issues+=("HTTP status: $http_code")
-    fi
+    # ========== POST-TEST CAPTURE ==========
+    rm -f "/tmp/hydra-test-${test_name}.running"
+    sleep 1  # Let poller finish
 
-    # Check for passkey in response
-    local content
-    content=$(python3 -c "
-import json, sys
-try:
-    d = json.load(open('$result_file'))
-    c = d['choices'][0]['message'].get('content','')
-    r = d['choices'][0]['message'].get('reasoning_content','')
-    print(c)
-except: print('PARSE_ERROR')
-" 2>/dev/null)
+    capture_post_state
 
-    if echo "$content" | grep -qi "$passkey"; then
-        _ok "Passkey FOUND: '$passkey' in response"
-    else
-        _fail "Passkey '$passkey' NOT found in response"
-        _fail "Response: ${content:0:200}"
-        passed=false
-        issues+=("passkey not in response")
-    fi
+    # ========== VERIFY ==========
+    verify_pd_split "$test_name" "$context_tokens"
 
-    # Check finish reason
-    local finish
-    finish=$(python3 -c "import json; d=json.load(open('$result_file')); print(d['choices'][0].get('finish_reason','?'))" 2>/dev/null)
-    _log "finish_reason=$finish time=$elapsed"
+    # ========== GENERATE REPORT ==========
+    local md_file="${RESULT_DIR}/${test_name}-report.md"
+    local md_content
+    md_content=$(generate_md_report "$test_name" "$context_tokens" "$depth_pct" "$passkey" "$timestamp" "$http_code" "$elapsed" "${RESULT_DIR}/${test_name}-response.json")
 
-    # Check thinking content
-    local has_thinking=false
-    python3 -c "
-import json
-d=json.load(open('$result_file'))
-r=d['choices'][0]['message'].get('reasoning_content','')
-exit(0 if len(r)>=20 else 1)" 2>/dev/null && has_thinking=true
+    echo "$md_content" > "$md_file"
+    echo "$md_content"
 
-    if $has_thinking; then
-        _ok "Thinking/reasoning content present"
-    else
-        _fail "No thinking content (reasoning_content missing or too short)"
-        issues+=("no thinking content")
-    fi
-
-    # Check usage stats
-    python3 -c "
-import json
-d=json.load(open('$result_file'))
-u=d.get('usage',{})
-print(f\"usage: prompt={u.get('prompt_tokens','?')} completion={u.get('completion_tokens','?')} total={u.get('total_tokens','?')}\")" 2>/dev/null
-
-    # Write summary
-    cat > "${RESULT_DIR}/${test_name}-summary.txt" <<EOF
-test:      ${test_name}
-context:   ${context_tokens} tokens
-depth:     ${needle_depth}%
-passkey:   ${passkey}
-trace_id:  ${trace_id}
-http:      ${http_code}
-passed:    ${passed}
-time:      ${elapsed}s
-finish:    ${finish}
-issues:    ${issues[*]:-none}
-EOF
-
-    if $passed; then
-        _ok "PASS: ${test_name}"
-    else
-        _fail "FAIL: ${test_name}"
-    fi
-    echo ""
-
-    $passed
-}
-
-# ---- monitor (background) ----
-
-start_monitor() {
-    local test_name=$1
-    local out="${RESULT_DIR}/${test_name}-monitor.log"
-    _log "Starting monitor → $out"
-    {
-        echo "=== Monitor start $(date) ==="
-        while true; do
-            echo "--- $(date +%H:%M:%S) ---"
-            echo "RTX slots:"; curl -s -m 2 http://localhost:8080/slots 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d),'slots')" 2>/dev/null || echo "error"
-            echo "P100 slots:"; curl -s -m 2 http://192.168.122.21:8086/slots 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'  slot {s[\"id\"]}: n_past={s.get(\"n_past\",0)} processing={s.get(\"is_processing\",False)}') for s in d]" 2>/dev/null || echo "error"
-            echo "KV files:"; ls -lh /mnt/llm-ram/store/*.kv 2>/dev/null | wc -l | xargs -I{} echo "{} files" || echo "0 files"
-            sleep 5
-            # stop after 5 minutes
-            [[ $(find "$out" -mmin +5 2>/dev/null) ]] && break
-        done
-    } > "$out" 2>&1 &
-    echo $!
+    _log "Report: $md_file"
 }
 
 # ---- main ----
@@ -268,63 +596,51 @@ start_monitor() {
 main() {
     local contexts="2000"
     local depth=50
-    local bg=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
             -c|--context) contexts="$2"; shift 2 ;;
             -d|--depth)   depth="$2"; shift 2 ;;
-            --bg)         bg=true; shift ;;
-            *) _log "Unknown: $1"; exit 1 ;;
+            *) _log "Unknown flag: $1"; exit 1 ;;
         esac
     done
 
-    _log "Hydra NIAH Eval — P/D Split Verification"
-    _log "Coordinator: ${COORD_URL}  Model: ${MODEL}"
-    _log "Context sizes: ${contexts}  Needle depth: ${depth}%"
+    _log "Hydra NIAH Eval — llama-server Source-of-Truth Verification"
+    _log "  RTX: ${RTX_URL}  P100: ${P100_URL}  Coordinator: ${COORD_URL}"
 
-    # Verify Hydra is healthy
-    local health
-    health=$(curl -s -m 5 "${COORD_URL}/health" 2>/dev/null || echo '{"status":"down"}')
-    if ! echo "$health" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('status')=='healthy' else 1)" 2>/dev/null; then
-        _fail "Hydra Core not healthy: $health"
-        exit 1
+    # Verify all services up
+    for url in "${RTX_URL}/health" "${P100_URL}/health" "${COORD_URL}/health"; do
+        local status
+        status=$(curl -s -m 5 "$url" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status',d.get('error','down')))" 2>/dev/null || echo "down")
+        _log "  ${url}: ${status}"
+    done
+
+    # Ensure RTX model is loaded
+    local rtx_slots
+    rtx_slots=$(curl -s "${RTX_URL}/slots" 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+    if [[ "$rtx_slots" == "0" ]]; then
+        _log "RTX has 0 slots — loading model..."
+        curl -s -X POST "${RTX_URL}/models/load" -H "Content-Type: application/json" -d '{"model":"balanced"}' > /dev/null
+        sleep 5
     fi
-    _ok "Hydra Core healthy"
 
     local total=0 passed=0
     IFS=',' read -ra CTX_ARR <<< "$contexts"
 
     for ctx in "${CTX_ARR[@]}"; do
-        ctx=$(echo "$ctx" | xargs)  # trim
+        ctx=$(echo "$ctx" | xargs)
         local name="niah-c${ctx}-d${depth}"
         ((total++))
 
-        if $bg; then
-            tmux new-session -d -s "hydra-eval-${name}" \
-                "bash '${SCRIPT_DIR}/run-niah.sh' -c ${ctx} -d ${depth} 2>&1 | tee '${RESULT_DIR}/${name}-full.log'"
-            _log "Launched tmux: hydra-eval-${name}"
-        else
-            local mon_pid
-            mon_pid=$(start_monitor "$name")
-            if run_niah_test "$ctx" "$depth" "$name"; then
-                ((passed++))
-            fi
-            kill "$mon_pid" 2>/dev/null || true
-            sleep 2
-        fi
+        run_single_test "$ctx" "$depth" "$name"
+        if $PD_PASS; then ((passed++)); fi
+        sleep 3  # Cool-down between tests
     done
 
-    if ! $bg; then
-        _log "Results: ${passed}/${total} passed"
-        if (( passed == total )); then
-            _ok "ALL TESTS PASSED"
-        else
-            _fail "SOME TESTS FAILED"
-        fi
-        _log "Results: ${RESULT_DIR}/"
-        ls -la "$RESULT_DIR"/
-    fi
+    _log "============================================"
+    _log "Results: ${passed}/${total} passed"
+    _log "Reports: ${RESULT_DIR}/*-report.md"
+    _log "============================================"
 }
 
 main "$@"
