@@ -12,10 +12,13 @@ public static class CoordinatorServiceExtensions
 {
     public static IServiceCollection AddCoordinator(this IServiceCollection services, CoordinatorConfig config)
     {
-        // Config
-        services.AddSingleton(config);
+		// Config
+		services.AddSingleton(config);
 
-        // Gap 2-A: Restore sessions from Store on startup
+		// HTTP client factory for llama-server health/chat calls
+		services.AddHttpClient();
+
+		// Gap 2-A: Restore sessions from Store on startup
         services.AddSingleton(sp =>
         {
             var cfg = sp.GetRequiredService<CoordinatorConfig>();
@@ -61,14 +64,14 @@ public static class CoordinatorServiceExtensions
             return new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, storeClient, sp, log);
         });
 
-        services.AddSingleton<IHealthMonitorService, HealthMonitorService>(sp =>
-        {
-            var cfg = sp.GetRequiredService<CoordinatorConfig>();
-            var tracker = sp.GetRequiredService<IWorkerTracker>();
-            var storeClient = new Hydra.Shared.RpcClient(cfg.StoreHost, cfg.StorePort);
-            var log = Serilog.Log.ForContext("component", "health");
-            return new HealthMonitorService(cfg, cfg.Workers, tracker, storeClient, log);
-        });
+		services.AddSingleton<IHealthMonitorService, HealthMonitorService>(sp =>
+		{
+			var cfg = sp.GetRequiredService<CoordinatorConfig>();
+			var tracker = sp.GetRequiredService<IWorkerTracker>();
+			var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
+			var log = Serilog.Log.ForContext("component", "health");
+			return new HealthMonitorService(cfg, cfg.Workers, tracker, httpFactory, log);
+		});
         services.AddHostedService(sp => (HealthMonitorService)sp.GetRequiredService<IHealthMonitorService>());
 
         // Session eviction background loop (Gap 5)
