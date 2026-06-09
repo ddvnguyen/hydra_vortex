@@ -3,7 +3,7 @@ using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Services;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 /// <summary>
 /// Test health monitor that always reports healthy.

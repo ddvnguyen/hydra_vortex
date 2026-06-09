@@ -1,7 +1,7 @@
 using Hydra.Core;
 using System.Text;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 public sealed class StoreHttpDebugTests : IAsyncLifetime
 {

@@ -1,6 +1,6 @@
 using Hydra.Core;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 /// <summary>
 /// Tests for StoreMetadata (PostgreSQL-backed metadata layer).

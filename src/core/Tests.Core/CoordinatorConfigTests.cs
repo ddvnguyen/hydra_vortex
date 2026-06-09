@@ -1,7 +1,7 @@
 using Hydra.Core;
 using Hydra.Core.Models;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 public sealed class CoordinatorConfigTests
 {

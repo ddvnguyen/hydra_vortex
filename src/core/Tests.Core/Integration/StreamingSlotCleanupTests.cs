@@ -6,7 +6,7 @@ using Hydra.Core.Repositories;
 using Hydra.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Tests.Store.Integration;
+namespace Tests.Core.Integration;
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test doubles
@@ -238,6 +238,9 @@ public sealed class AffinityPathTests
 		Assert.NotNull(e);
 		// Force session on RTX for cross-node test
 		lock (e!) { e.NodeName = "rtx"; e.SlotId = 0; e.SlotFreed = false; }
+
+		// Signal stream completion to release decode slot (held on Long lease)
+		f.Scheduler.NotifyStreamComplete("sess_a4");
 
 		// Busy P100
 		Assert.True(f.Tracker.TryAcquireSlot("p100", out _));

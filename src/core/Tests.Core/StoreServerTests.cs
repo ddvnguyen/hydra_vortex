@@ -5,7 +5,7 @@ using StoreConfig = Hydra.Core.StoreConfig;
 using StorageEngine = Hydra.Core.StorageEngine;
 using ChunkStore = Hydra.Core.ChunkStore;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 public sealed class StoreServerTests : IAsyncLifetime
 {

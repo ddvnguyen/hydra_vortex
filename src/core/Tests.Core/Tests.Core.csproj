@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>Tests.Integration</RootNamespace>
+    <RootNamespace>Tests.Core</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
@@ -21,7 +21,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Hydra.Core\Hydra.Core.csproj" />
     <ProjectReference Include="..\Hydra.Shared\Hydra.Shared.csproj" />
-    <ProjectReference Include="..\Hydra.Core\Hydra.Core.csproj" />
   </ItemGroup>
 
 </Project>

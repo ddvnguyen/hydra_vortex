@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 
-namespace Tests.Store;
+namespace Tests.Core;
 
 public sealed class SlotPoolTests
 {
