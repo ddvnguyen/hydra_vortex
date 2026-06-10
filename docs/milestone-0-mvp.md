@@ -260,8 +260,8 @@ public static class HydraLogging {
 
 ---
 
-## Task M0.2: Hydra Store (C# — Hydra.Store)
-**Project:** `src/core/Hydra.Store/Hydra.Store.csproj`
+## Task M0.2: Hydra.Core — Store Components
+**Project:** `src/core/Hydra.Core/Hydra.Core.csproj`
 
 ### M0.2.1: Storage Engine (`StorageEngine.cs`)
 ```csharp
@@ -274,7 +274,7 @@ public sealed class StorageEngine(DirectoryInfo storeDir) {
 }
 ```
 - Path sanitization: reject keys containing `..` or starting with `/`
-- **Tests:** `Tests.Store/StorageEngineTests.cs`
+- **Tests:** `Tests.Core/StorageEngineTests.cs`
   - Put + get round-trip (1 KB, 10 MB)
   - Path traversal rejected
   - Stat returns correct size
@@ -308,7 +308,7 @@ public sealed class StoreServer(StoreConfig cfg, StorageEngine engine)
 ```
 - GET uses `Socket.SendFileAsync(filePath)` — zero-copy sendfile syscall
 - PUT streams directly to file without buffering full 800 MB
-- **Tests:** `Tests.Store/StoreServerTests.cs` (integration)
+- **Tests:** `Tests.Core/StoreServerTests.cs` (integration)
   - PUT 100 MB → GET → data matches, RSS doesn't spike
   - sendfile confirmed via `strace -e sendfile`
   - All five ops tested
@@ -330,8 +330,8 @@ public sealed class StoreServer(StoreConfig cfg, StorageEngine engine)
 
 ---
 
-## Task M0.3: Hydra Agent (C# — Hydra.Agent)
-**Project:** `src/core/Hydra.Agent/Hydra.Agent.csproj`
+## Task M0.3: Hydra.Core — Agent Components (merged via PR #203)
+**Project:** `src/core/Hydra.Core/Hydra.Core.csproj`
 
 ### M0.3.1: Llama Client (`LlamaClient.cs`)
 ```csharp
@@ -350,7 +350,7 @@ public sealed class LlamaClient(HttpClient http, ILogger logger) {
 ```
 - `HttpClient` with timeout via `CancellationToken`
 - Streaming GET uses `HttpCompletionOption.ResponseHeadersRead`
-- **Tests:** `Tests.Agent/LlamaClientTests.cs` (mock HttpMessageHandler)
+- **Tests:** `Tests.Core/LlamaClientTests.cs` (mock HttpMessageHandler)
   - GetState: mock 800 MB response, verify stream returned (not buffered)
   - PutState: verify binary body sent, response parsed
   - GetStateMeta: verify JSON parsed to SlotMeta
@@ -383,39 +383,32 @@ public sealed class StateHandler(
 }
 ```
 - No disk I/O — stream piped directly llama ↔ store
-- **Tests:** `Tests.Agent/StateHandlerTests.cs`
+- **Tests:** `Tests.Core/StateHandlerTests.cs`
   - Save: mock llama stream + mock store → verify pipe called in order
   - Restore: mock store stream + mock llama → verify pipe called
   - Store NOT_FOUND → propagates as exception
   - Llama restore fails → exception with context
 
-### M0.3.3: Agent RPC Server (`AgentServer.cs`)
-```csharp
-public sealed class AgentServer(AgentConfig cfg, StateHandler handler,
-    LlamaClient llama, RpcClient store)
-    : RpcServer(cfg.Host, cfg.Port) {
+### M0.3.3: Coordinator Routing (now in Hydra.Core)
+> The Coordinator was merged into Hydra.Core via PR #203 — no separate Python
+> process. Routing, session management, and llama-server health checks are all
+> handled inside the single C# binary.
+>
+> The Agent RPC layer (M0.3.3 `AgentServer.cs`) is eliminated. Hydra.Core
+> contacts llama-servers directly via HTTP/RPC.
 
-    protected override async Task HandleAsync(OpCode op, ...) {
-        switch (op) {
-            case OpCode.SaveState:    await HandleSaveStateAsync(...);    break;
-            case OpCode.RestoreState: await HandleRestoreStateAsync(...); break;
-            case OpCode.SlotStatus:   await HandleSlotStatusAsync(...);   break;
-            case OpCode.NodeHealth:   await HandleNodeHealthAsync(...);   break;
-        }
-    }
-}
-```
-- **Lines:** ~60
-
-### M0.3.4: Config + Debug Endpoint
+### M0.3.4: Config + Endpoints
 ```json
 {
-  "Agent": {
-    "Host": "0.0.0.0", "Port": 9601,
-    "NodeName": "rtx",
-    "LlamaUrl": "http://localhost:8080",
-    "StoreHost": "127.0.0.1", "StorePort": 9500,
-    "DebugHttpPort": 9611
+  "Core": {
+    "Host": "0.0.0.0",
+    "HttpPort": 9000,
+    "StoreRpcPort": 9500,
+    "MetricsPort": 9501,
+    "LlamaNodes": {
+      "rtx": { "Url": "http://localhost:8080", "RpcPort": 9503 },
+      "p100": { "Url": "http://192.168.122.21:8086", "RpcPort": 9502 }
+    }
   }
 }
 ```
@@ -424,12 +417,12 @@ public sealed class AgentServer(AgentConfig cfg, StateHandler handler,
 
 ## Task M0.4: Integration + System Test
 
-### M0.4.1: Store ↔ Agent Integration (`Tests.Integration/StoreAgentTests.cs`)
-- Start real Store server on random port
-- Start Agent with mock LlamaClient
+### M0.4.1: Core Integration Tests (`Tests.Core/IntegrationTests.cs`)
+- Start real Store RPC server on random port
+- Start Core with mock LlamaClient
 - SAVE_STATE: mock llama returns 10 MB stream → Store has file
 - RESTORE_STATE: Store has file → mock llama receives stream
-- Verify trace_id appears in both service logs
+- Verify trace_id appears in service logs
 
 ### M0.4.2: System Test with Real llama-servers (`tests/system/test_system.py`)
 **Python script** — runs against real patched llama-servers + C# services.
@@ -439,11 +432,11 @@ async def test_full_migration():
     # 1. Send prompt to RTX (via llama-server directly)
     response = await send_completion(RTX_URL, PROMPT, max_tokens=50)
 
-    # 2. Tell RTX Agent to save
-    await rpc_call(RTX_AGENT, OpCode.SAVE_STATE, "test_session")
+    # 2. Tell Core to save RTX state to Store
+    await rpc_call(CORE, OpCode.SAVE_STATE, "test_session")
 
-    # 3. Tell P100 Agent to restore
-    await rpc_call(P100_AGENT, OpCode.RESTORE_STATE, "test_session")
+    # 3. Tell Core to restore state on P100 from Store
+    await rpc_call(CORE, OpCode.RESTORE_STATE, "test_session")
 
     # 4. Send continuation to P100 (MUST have more tokens than cached)
     result = await send_completion(P100_URL, PROMPT + response + NEW_QUESTION)
@@ -463,13 +456,13 @@ async def test_full_migration():
 | M0.1.2  | C#   | Shared    | 80    | RpcServerTests.cs           | After M0.1.1|
 | M0.1.3  | C#   | Shared    | 80    | RpcClientTests.cs           | After M0.1.1|
 | M0.1.4  | C#   | Shared    | 30    | manual                      | Anytime   |
-| M0.2.1  | C#   | Store     | 60    | StorageEngineTests.cs       | Parallel with M0.3|
-| M0.2.2  | C#   | Store     | 100   | StoreServerTests.cs         | After M0.2.1|
-| M0.2.3  | C#   | Store     | 20    | manual                      | After M0.2.2|
-| M0.3.1  | C#   | Agent     | 80    | LlamaClientTests.cs         | Parallel with M0.2|
-| M0.3.2  | C#   | Agent     | 80    | StateHandlerTests.cs        | After M0.3.1|
-| M0.3.3  | C#   | Agent     | 60    | —                           | After M0.3.2|
-| M0.4.1  | C#   | Integration| 60   | StoreAgentTests.cs          | After M0.2+M0.3|
+| M0.2.1  | C#   | Core      | 60    | StorageEngineTests.cs       | Parallel  |
+| M0.2.2  | C#   | Core      | 100   | StoreServerTests.cs         | After M0.2.1|
+| M0.2.3  | C#   | Core      | 20    | manual                      | After M0.2.2|
+| M0.3.1  | C#   | Core      | 80    | LlamaClientTests.cs         | Parallel with M0.2|
+| M0.3.2  | C#   | Core      | 80    | StateHandlerTests.cs        | After M0.3.1|
+| M0.3.3  | C#   | Core      | —     | —                           | Merged via PR #203|
+| M0.4.1  | C#   | Core      | 60    | IntegrationTests.cs         | After M0.2+M0.3|
 | M0.4.2  | Python| System   | 60    | test_system.py              | After all above|
 
 **Dependency order:**

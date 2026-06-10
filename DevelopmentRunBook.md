@@ -3,41 +3,33 @@
 ## Service Map
 
 ```
-Client (HTTP) → Coordinator :9000     [Python/FastAPI]
-                │ RPC                      │ RPC
-                ▼                          ▼
-              Agent RTX :9601           Agent P100 :9602    [C# .NET 10]
-                │ HTTP local               │ HTTP local
-                ▼                          ▼
-           llama :8080                 llama :8086          [C++ fork]
-                │ RPC                       │ RPC
-                └────────────┬──────────────┘
-                             ▼
-                       Store :9500                           [C# .NET 10]
-                       /mnt/llm-ram/store/ (tmpfs)
+Client (HTTP) → Hydra.Core :9000              [C#/.NET 10 — HTTP API + Store + Router]
+                 │ HTTP completions                │ HTTP completions
+                 │ RPC StateGet/Put (:9503)        │ RPC StateGet/Put (:9502)
+                 ▼                                 ▼
+            llama :8080                       llama :8086          [C++ fork]
+            hydra RPC :9503                   hydra RPC :9502
+
+            /mnt/llm-ram/store/ (tmpfs, managed by Hydra.Core)
 ```
 
 | Port    | Service       | Lang     | Debug Config              |
 |---------|---------------|----------|---------------------------|
-| 9000    | Coordinator   | Python   | `Coordinator (:9000)`     |
-| 9500    | Store         | C#       | `Store (:9500)`           |
-| 9501    | Store debug   | HTTP     | —                         |
-| 9601    | Agent RTX     | C#       | `Agent RTX (:9601)`       |
-| 9611    | Agent debug   | HTTP     | —                         |
-| 9602    | Agent P100    | C#       | `Agent P100 (:9602)`      |
-| 9622    | Agent debug   | HTTP     | —                         |
-| 8080    | llama RTX     | C++      | external (HTTP)           |
-| **9501**| **llama RTX** | **C++**  | **external (RPC)**        |
-| 8086    | llama P100    | C++      | external in VM (HTTP)     |
-| **9502**| **llama P100**| **C++**  | **external in VM (RPC)**  |
+| 9000    | Hydra.Core    | C#       | HTTP API (OpenAI-compat)  |
+| 9500    | Hydra.Core    | C#       | Store RPC (internal)      |
+| 9501    | Hydra.Core    | C#       | Metrics endpoint          |
+| 8080    | llama RTX     | C++      | HTTP completions          |
+| 9503    | llama RTX     | C++      | hydra RPC (StateGet/Put)  |
+| 8086    | llama P100    | C++      | HTTP completions (VM)     |
+| 9502    | llama P100    | C++      | hydra RPC (StateGet/Put)  |
 
 ---
 
 ## Prerequisites
 
 - .NET 10 SDK
-- Python >= 3.13 with `pip install -e .[all]` (from project root)
-- VS Code extensions: C# Dev Kit, Python, Pylance, EditorConfig
+- Python >= 3.13 with `pip install -e .[all]` (from project root, for system tests)
+- VS Code extensions: C# Dev Kit, EditorConfig
 - tmpfs mount: `sudo bash infra/setup-ramdisk.sh`
 - Podman log driver set to `k8s-file` (create/edit `~/.config/containers/containers.conf`):
   ```ini
@@ -59,7 +51,7 @@ bash scripts/start-env.sh
 ```
 
 Idempotent — checks what is already running and only starts what is missing. Handles:
-- Hydra core services (Store + Agents + Coordinator, host networking) via `infra/docker-compose.hydra.yml`
+- Hydra.Core (single C# binary) via `infra/docker-compose.hydra.yml`
 - Infra/observability (Loki + Promtail + Prometheus + Grafana) via `infra/docker-compose.infra.yml`
 - llama-server RTX via the `infra/llama-rtx-node/` container (mounts `build_sm120/` directly)
 - llama-server P100 via SSH + user systemd on the VM (no sudo needed)
@@ -77,7 +69,7 @@ bash scripts/start-env.sh --skip-p100   # RTX only
 # Infra/observability (Loki, Promtail, Prometheus, Grafana)
 cd infra && podman-compose -f docker-compose.infra.yml up -d
 
-# Hydra core services (Store, Agents, Coordinator — host networking)
+# Hydra.Core (single C# binary with host networking)
 podman-compose -f docker-compose.hydra.yml up -d
 
 # llama-server RTX (containerised, mounts build_sm120/ directly)
@@ -90,9 +82,9 @@ ssh hydra-p100 "systemctl --user start llama-p100"
 curl -s http://localhost:9000/health
 ```
 
-> **Note:** The Agent connects to llama via **HTTP** (slots/state endpoints), not via
-> the RPC port. The llama RPC port (`--rpc-port`) is used for direct state access
-> (e.g., coordinator.lib RPC client).
+> **Note:** Hydra.Core contacts llama-server directly via HTTP (completions, slots/state
+> endpoints) and via hydra RPC (StateGet/Put/Meta on ports 9503/9502). No intermediate
+> Agent layer.
 
 ---
 
@@ -104,47 +96,37 @@ curl -s http://localhost:9000/health
 ### Individual services
 | Config                | Starts           |
 |-----------------------|------------------|
-| `Store (:9500)`       | Store RPC + debug HTTP |
-| `Agent RTX (:9601)`   | Agent connected to local Store + llama |
-| `Agent P100 (:9602)`  | Agent configured for P100 node |
-| `Coordinator (:9000)` | FastAPI with hot-reload |
+| `Hydra.Core (:9000)`  | Hydra.Core HTTP API + Store RPC |
 
 ### Compound launch (all at once)
-Select **All Services (Store + Agent RTX + Coordinator)** from the Run dropdown — starts all three with one click.
+Select **All Services (Hydra.Core)** from the Run dropdown — starts the single binary.
 
 ### Tests
 | Config                    | Runs                     |
 |---------------------------|--------------------------|
-| `Tests (all .NET)`        | Full suite (160+ tests)  |
+| `Tests (all .NET)`        | Full suite               |
 | `Tests (Shared only)`     | RPC protocol + client/server |
-| `Tests (Store only)`      | Storage engine + Store RPC + ChunkEngine + ChunkStore |
-| `Tests (Agent only)`      | LlamaClient + StateHandler + LocalChunkCache |
-| `Tests (Integration)`     | Store ↔ Agent integration + chunked ops |
+| `Tests (Core only)`       | Storage engine + Store RPC + ChunkEngine + ChunkStore |
 
 ---
 
 ## Running Tests
 
 ```bash
-# All .NET tests (160+) — projects run sequentially to avoid PG contention
+# All .NET tests — projects run sequentially to avoid PG contention
 dotnet test src/Hydra.sln --settings src/Hydra.runsettings --verbosity normal
 
 # Individual projects
 dotnet test src/core/Tests.Shared           # 29 tests
-dotnet test src/core/Tests.Store            # 44 tests (23 M0 + 21 M2)
-dotnet test src/core/Tests.Agent            # 23 tests (13 M0 + 10 M2)
-dotnet test src/core/Tests.Integration      # 18 tests (6 M0 + 12 M2)
+dotnet test src/core/Tests.Core             # Core tests (Store + Chunk + Routing)
 
 # M2-specific tests
-dotnet test src/core/Tests.Store --filter "FullyQualifiedName~Chunk" -v m
-dotnet test src/core/Tests.Agent --filter "FullyQualifiedName~ChunkCache" -v m
-dotnet test src/core/Tests.Integration --filter "FullyQualifiedName~Chunked" -v m
+dotnet test src/core/Tests.Core --filter "FullyQualifiedName~Chunk" -v m
+dotnet test src/core/Tests.Core --filter "FullyQualifiedName~ChunkCache" -v m
 
-# Python tests
-pytest tests/coordinator -v        # 46 tests
-pytest tests/coordinator/test_prefix_checkpoint.py -v  # 4 M2 tests
+# System tests
 pytest tests/system/test_system.py -v -m system                  # M0 System test (RPC save/restore)
-pytest tests/system/test_full_workflow_system.py -v -m system    # M1+M2 full workflow via Coordinator HTTP
+pytest tests/system/test_full_workflow_system.py -v -m system    # M1+M2 full workflow via Hydra.Core HTTP
 ```
 
 ---
@@ -155,18 +137,17 @@ See [`.env.example`](.env.example) for all configurable values.
 
 | Variable | Default | Service |
 |----------|---------|---------|
-| `HYDRA_COORD_HOST` | `0.0.0.0` | Coordinator |
-| `HYDRA_COORD_PORT` | `9000` | Coordinator |
-| `HYDRA_COORD_STORE_HOST` | `127.0.0.1` | Coordinator |
-| `HYDRA_COORD_STORE_PORT` | `9500` | Coordinator |
-| `HYDRA_COORD_LOG_LEVEL` | `INFO` | Coordinator |
-| `HYDRA_COORD_NODES__0__*` | RTX config | Coordinator node list |
-| `HYDRA_COORD_PREFIX_CHECKPOINT_NAME` | `system_prompt` | Coordinator prefix checkpoint name |
-| `HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED` | `true` | Coordinator prefix checkpoint on/off |
-| `HYDRA_AGENT_CHUNK_CACHE_DIR` | `/tmp/hydra-chunk-cache` | Agent local chunk hash cache |
+| `HYDRA_CORE_HOST` | `0.0.0.0` | Hydra.Core |
+| `HYDRA_CORE_PORT` | `9000` | Hydra.Core |
+| `HYDRA_STORE_PORT` | `9500` | Hydra.Core |
+| `HYDRA_STORE_DIR` | `/mnt/llm-ram/store` | Hydra.Core |
+| `HYDRA_METRICS_PORT` | `9501` | Hydra.Core |
+| `HYDRA_CORE_LOG_LEVEL` | `INFO` | Hydra.Core |
+| `HYDRA_CORE_WORKERS` | (JSON) | Hydra.Core worker config |
+| `HYDRA_CHUNK_CACHE_DIR` | `/tmp/hydra-chunk-cache` | Hydra.Core local chunk hash cache |
 
-Store and Agent config is compiled-in. Use VS Code launch `env` blocks or modify
-`StoreConfig.cs` / `AgentConfig.cs` defaults for different instances.
+Config is compiled-in with defaults. Use environment variables or
+`appsettings.json` to override.
 
 ---
 
@@ -311,10 +292,8 @@ Promtail to scrape.
 
 | Endpoint | What |
 |---|---|
-| `:9000/metrics` | Coordinator |
-| `:9501/metrics` | Store |
-| `:9611/metrics` | Agent RTX |
-| `:9622/metrics` | Agent P100 |
+| `:9000/metrics` | Hydra.Core HTTP API |
+| `:9501/metrics` | Hydra.Core Store RPC |
 | `:8080/metrics` | llama-server RTX |
 | `:9100/metrics` | Node exporter (host) |
 | `:9835/metrics` | GPU exporter |
@@ -325,16 +304,17 @@ See `CLAUDE.md` `## Monitoring & Observability` for dashboards, alerts, and pane
 
 ## Architecture Notes
 
-- **State streaming**: Agent pipes llama state directly to Store via RPC — no disk round-trip
+- **Single binary**: Hydra.Core handles HTTP API, Store RPC, routing, and llama-server communication
+- **State streaming**: Hydra.Core pipes llama state directly via RPC — no disk round-trip
 - **sendfile**: Store GET uses `Socket.SendFileAsync` for zero-copy file transfers
 - **RPC wire format**: 16-byte request header (magic `0x4859`), 12-byte response header, binary payload
 - **Reconnection**: RPC client retries with 100ms / 500ms / 2s backoff (3 attempts)
 - **Semaphore**: RPC client serializes all calls through `SemaphoreSlim(1,1)` — one request at a time per client
 - **Trace IDs**: Every RPC call carries a `trace_id` propagated through Serilog JSON logs
 - **M2 chunked dedup**: KV state split into 1 MB chunks, SHA-256 hashed, content-addressed store. Repeated saves only store delta.
-- **ChunkHashTeeStream**: Agent computes SHA-256 on-the-fly while streaming state from llama → Store, no second pass.
-- **LocalChunkCache**: Agent persists `session_id → [chunk_hashes]` as JSON on disk. LRU eviction prevents unbounded growth.
-- **Agent shortcut**: If all chunk hashes known in local cache, llama PUT is skipped entirely (restore is no-op).
+- **ChunkHashTeeStream**: Hydra.Core computes SHA-256 on-the-fly while streaming state from llama → Store, no second pass.
+- **LocalChunkCache**: Hydra.Core persists `session_id → [chunk_hashes]` as JSON on disk. LRU eviction prevents unbounded growth.
+- **llama shortcut**: If all chunk hashes known in local cache, llama PUT is skipped entirely (restore is no-op).
 
 ---
 
@@ -343,17 +323,12 @@ See `CLAUDE.md` `## Monitoring & Observability` for dashboards, alerts, and pane
 ```
 src/
 ├── Hydra.Shared/          # M0.1 — RPC protocol, client, server base, logging
-├── Hydra.Store/           # M0.2/M2 — File-backed KV store + ChunkEngine + ChunkStore
-├── Hydra.Agent/           # M0.3/M2 — Sidecar + LocalChunkCache + chunked save/restore
-├── coordinator/           # M1/M2  — FastAPI router, session table, prefix checkpoint
-│   └── lib/               # RPC client + logging shared lib
-├── core/                  # C# .NET — Hydra.Shared, Store, Agent
-│   ├── Tests.Shared/      # 29 tests — RPC round-trips, reconnect, streaming
-│   ├── Tests.Store/       # 44 tests — Storage engine + ChunkEngine + ChunkStore
-│   ├── Tests.Agent/       # 23 tests — LlamaClient + StateHandler + LocalChunkCache
-│   └── Tests.Integration/ # 18 tests — Store ↔ Agent + chunked ops + prefix checkpoint
+├── Hydra.Core/            # M0.2/M1/M2 — HTTP API + Store + ChunkEngine + ChunkStore + Router
+├── core/                  # C# .NET — Hydra.Shared, Core
+│   ├── Tests.Shared/      # RPC round-trips, reconnect, streaming
+│   └── Tests.Core/        # Storage engine + ChunkEngine + ChunkStore + Router
 ├── llama-cpp/             # C++ fork (submodule)
-└── tests/                 # Python system + unit tests
+└── tests/                 # Python system tests
 ```
 
 ---
@@ -362,17 +337,15 @@ src/
 
 ```bash
 # Watch + rebuild on file changes (requires dotnet-watch)
-dotnet watch --project src/core/Hydra.Store
+dotnet watch --project src/core/Hydra.Core
 
 # Add a new test project
 dotnet new xunit -n Tests.Xyz -o src/Tests.Xyz
 dotnet sln add src/Tests.Xyz
 
 # Check all services are healthy
-curl -s :9501/debug | jq .
-curl -s :9611/debug | jq .
-curl -s :9622/debug | jq .
 curl -s :9000/health
+curl -s :9501/metrics | head
 ```
 
 ---
@@ -382,14 +355,14 @@ curl -s :9000/health
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | Store PUT fails after 30s | Missing tmpfs | `sudo bash infra/setup-ramdisk.sh` |
-| Agent can't connect to Store | Store not started | Start Store first, then Agent |
+| Hydra.Core can't connect to Store | Store not initialized | Start Hydra.Core, verify :9500 health |
 | `cache_n=0` after restore | `n_tokens <= n_past` | Ensure prompt has more tokens than cached state |
 | RPC `InvalidDataException` | Wrong magic byte | Check client/server protocol version match |
 | Pipe deadlock in tests | Pipe threshold (32 KB) | Use concurrent reader/writer pattern |
 | Chunked save slow | First save = all chunks new (800 MB → ~800 chunks) | Normal. Second save of same session should be fast (delta only) |
-| Agent chunk cache not persisting | `ChunkCacheDir` not writable | Check `HYDRA_AGENT_CHUNK_CACHE_DIR` (default: `/tmp/hydra-chunk-cache`) |
+| Chunk cache not persisting | `ChunkCacheDir` not writable | Check `HYDRA_CHUNK_CACHE_DIR` (default: `/tmp/hydra-chunk-cache`) |
 | `PUT_CHUNKED` returns error | Manifest already exists with different session_id | Session IDs must be unique. Delete manifest first or use different ID |
-| `dotnet test src/Hydra.sln` hangs | Parallel project execution → PG port/connection contention | Use `--settings src/Hydra.runsettings` (serializes assemblies) or run per-project (`src/core/Tests.Store`, `src/core/Tests.Agent`, etc.) |
+| `dotnet test src/Hydra.sln` hangs | Parallel project execution → PG port/connection contention | Use `--settings src/Hydra.runsettings` (serializes assemblies) or run per-project |
 | GC removed in-use chunks | GC ran while session active | GC only removes chunks NOT referenced by any manifest. Active sessions have manifests. Run GC only during idle periods. |
 | Logs not appearing in Grafana | Promtail container not running | `cd infra && podman-compose -f docker-compose.infra.yml restart promtail` — see **Monitoring** |
 | Promtail scrape errors in promtail logs | Docker SD config pointing at wrong socket | Check socket path in `infra/promtail/promtail-config.yml` and volume mount |
@@ -425,51 +398,43 @@ ssh hydra-p100 "systemctl --user start llama-p100"
 
 Model reload takes ~30-40s on P100 (35B Qwopus MoE).
 
-### Coordinator Rebuild & Deploy
+**Retired section:** The Python coordinator was removed in PR #203. Coordinator logic
+is now embedded in Hydra.Core. No separate Python coordinator container exists.
 
-The coordinator is a Python container. `podman-compose up -d --build` often uses
-cached layers that don't pick up source changes. Force a clean rebuild:
+### C# Service Rebuild
 
-```bash
-cd /path/to/hydra_vortex
-podman build --no-cache --target coordinator -t hydra-coordinator-fix -f infra/Dockerfile .
-podman tag hydra-coordinator-fix localhost/hydra-core_coordinator:latest
-podman-compose -f infra/docker-compose.hydra.yml up -d coordinator
-```
-
-Verify the fix took effect:
-```bash
-podman exec hydra-core_coordinator_1 grep <function_name> /app/src/coordinator/<file>.py
-```
-
-### C# Services Rebuild
+Hydra.Core is the single C# binary. Rebuild with:
 
 ```bash
 cd infra
-podman-compose -f docker-compose.hydra.yml build --no-cache store agent-rtx agent-p100
+podman-compose -f docker-compose.hydra.yml build --no-cache hydra-core
 podman-compose -f docker-compose.hydra.yml up -d
 ```
 
 ### Worker Configuration
 
-Workers are defined via `HYDRA_COORD_WORKERS` in `infra/docker-compose.hydra.yml`:
+Workers are defined in `WorkerConfig` (C#) and configured via
+`HYDRA_CORE_WORKERS` in environment or config file:
 
 ```json
 [
-  {"name":"rtx","host":"localhost","rpc_port":9601,"llama_url":"http://localhost:8080",
-   "worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},
-  {"name":"p100","host":"localhost","rpc_port":9602,"llama_url":"http://192.168.122.21:8086",
-   "worker_type":2,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}
+  {"name":"rtx","llama_url":"http://localhost:8080","llama_rpc_port":9503,
+   "worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200,
+   "can_prefill":true,"can_decode":true},
+  {"name":"p100","llama_url":"http://192.168.122.21:8086","llama_rpc_port":9502,
+   "worker_type":2,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28,
+   "can_prefill":false,"can_decode":true}
 ]
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `worker_type` | Bitwise: 1=PREFILL, 2=DECODE, 3=MIXED |
+| `worker_type` | 1=PREFILL, 2=DECODE, 3=MIXED |
 | `prefill_priority` | Lower = better prefill worker (RTX=1, P100=2) |
 | `decode_priority` | Lower = better decode worker (P100=1, RTX=2) |
 | `decode_speed_tps` | Estimated decode speed (used in concurrency decision) |
-| `max_prefill_tokens` | Optional: cap prefill size for this worker (-1 = unlimited) |
+| `max_prefill_tokens` | Optional: cap prefill size for this worker |
+| `llama_rpc_port` | Port for hydra RPC (StateGet/Put/Meta) on llama-server
 
 P100 is set to `worker_type=2` (DECODE only) — it will never be selected for
 prefill. The scheduler will wait for RTX to become free instead of falling back
@@ -477,12 +442,12 @@ to P100's slow prefill (28 tok/s vs RTX's 285 tok/s).
 
 ### Prefix Checkpoints (System Prompt Cache)
 
-The coordinator caches the system prompt KV to Store and restores it for subsequent
+Hydra.Core caches the system prompt KV to Store and restores it for subsequent
 requests. Enabled by default (`prefix_checkpoint_enabled=true`).
 
 **How it works:**
 1. Request arrives with `{"role":"system","content":"..."}` in messages
-2. Coordinator computes `prefix_hash = sha256(system_content)[:16]`
+2. Hydra.Core computes `prefix_hash = sha256(system_content)[:16]`
 3. Tries to restore `prefix/{hash}` from Store → if found, KV loaded in ~44ms
 4. If not found, full prefill runs and prefix is saved to Store afterward
 5. Next request with same system prompt restores instantly
@@ -490,10 +455,10 @@ requests. Enabled by default (`prefix_checkpoint_enabled=true`).
 **Verify:**
 ```bash
 # Check prefix saves
-podman logs hydra-core_coordinator_1 | grep prefix_checkpoint_saved
+podman logs hydra-core | grep prefix_checkpoint_saved
 
 # Check prefix restores
-podman logs hydra-core_coordinator_1 | grep prefix_checkpoint_restored
+podman logs hydra-core | grep prefix_checkpoint_restored
 
 # Check Store for prefix data
 curl -s http://localhost:9501/metrics | grep put_manifest
@@ -530,11 +495,11 @@ curl -s -X POST http://localhost:9000/v1/chat/completions \
 ### Monitoring Live Requests
 
 ```bash
-# Watch coordinator status
+# Watch Hydra.Core status
 curl -s http://localhost:9000/status | python3 -m json.tool
 
-# Watch coordinator logs (non-health)
-podman logs -f hydra-core_coordinator_1 | grep -v "health_ok\|GET /health\|GET /metrics"
+# Watch Hydra.Core logs (non-health)
+podman logs -f hydra-core | grep -v "health_ok\|GET /health\|GET /metrics"
 
 # Watch for specific events
 podman logs -f hydra-core 2>&1 | grep -E "concurrency|store_restore|prefix|state_saved"

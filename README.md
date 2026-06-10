@@ -5,20 +5,18 @@ High-throughput multi-GPU LLM inference system with KV cache state management.
 ## Architecture
 
 ```
-Client → Coordinator (:9000, HTTP) → Agent (:9601/:9602, RPC) → llama-server (local HTTP)
-                                   → Store (:9500, RPC, tmpfs-backed)
+Client → Hydra.Core (:9000 HTTP, :9500 Store RPC) → llama-server (HTTP local + RPC)
 ```
 
-All inter-service communication uses Hydra binary RPC protocol.
-HTTP only at edges: client-facing API and agent-to-local-llama-server.
+Hydra.Core uses binary RPC for KV state ops (StateGet/StatePut) and HTTP for
+OpenAI-compatible API. llama-servers contacted directly via HTTP (no intermediate Agent).
 
 ## Components
 
 | Service     | Role                                    | Transport    |
 |-------------|-----------------------------------------|--------------|
-| Store       | KV state storage, content-addressed     | Binary RPC   |
-| Agent       | Sidecar per GPU node, wraps llama-server| Binary RPC   |
-| Coordinator | Request routing, session management     | HTTP in, RPC out |
+| Hydra.Core  | KV storage + request routing + session mgmt | HTTP + Binary RPC |
+| llama-server| GPU inference                           | HTTP (C++ fork) |
 
 ## Milestones
 
@@ -35,17 +33,13 @@ HTTP only at edges: client-facing API and agent-to-local-llama-server.
 - 📊 P100 prefill: 110 tok/s, decode: 28 tok/s
 - 📊 KV state at 60-80K: ~800 MB
 
-## Quick Start (after M1)
+## Quick Start
 ```bash
-pip install -e ".[dev]"
-hydra-store                    # start store on :9500
-hydra-agent --node-name rtx    # start RTX agent on :9601
-hydra-agent --node-name p100   # start P100 agent on :9602
-hydra-coordinator              # start coordinator on :9000
+hydra-core                     # single binary, starts on :9000 + :9500
 curl localhost:9000/v1/chat/completions -d '{"messages":[...]}'
 ```
 
 ## Docs
-- `docs/PROJECT_PLAN.md` — architecture, tech stack, project structure
-- `docs/milestone-{0,1,2,3}.md` — detailed task breakdowns
+- `PROJECT_PLAN.md` — architecture, tech stack, project structure
+- `docs/milestone-{0,1,2}.md` — detailed task breakdowns
 - `specs/` — protocol, service contracts, data models, OpenAPI

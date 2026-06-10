@@ -31,8 +31,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly HashSet<string> _prefixSet = [];
 
 	/// <summary>
-	/// Injectable factory for creating agent RPC clients.
-	/// Set in tests to return tracking test doubles.
+	/// Injectable factory for creating RPC clients (agent + llama binary RPC).
+	/// Set in tests to return tracking test doubles instead of real sockets.
 	/// </summary>
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
@@ -1196,7 +1196,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		if (_llamaRpcClients.TryGetValue(w.Name, out var c)) return c;
 		var rpcHost = new Uri(w.LlamaUrl).Host;
-		var client = new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
+		// Honor the injectable factory so tests never open real sockets.
+		var client = AgentClientFactory != null
+			? AgentClientFactory(rpcHost, w.LlamaRpcPort)
+			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
 		_llamaRpcClients[w.Name] = client;
 		return client;
 	}

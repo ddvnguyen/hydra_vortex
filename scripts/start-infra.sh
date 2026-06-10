@@ -40,7 +40,7 @@ fi
 # ── 2. Infra / observability stack ───────────────────────────────────────────
 step "Infra stack (Loki + Promtail + Prometheus + Grafana)"
 
-SERVICES="infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin"
+SERVICES="infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin infra-openwebui"
 ALL_ACTIVE=true
 for s in $SERVICES; do
   if ! systemctl --user is-active --quiet "$s.service" 2>/dev/null; then
@@ -76,6 +76,7 @@ check_http "Grafana          :3000"    "http://localhost:3000"
 check_http "Prometheus       :9091"    "http://localhost:9091"
 check_http "Loki             :3100"    "http://localhost:3100/ready"
 check_http "pgAdmin          :8888"    "http://localhost:8888/misc/ping"
+check_http "OpenWebUI        :3001"    "http://localhost:3001"
 
 systemctl --user is-active --quiet infra-promtail.service && ok "promtail active" || warn "promtail inactive"
 
@@ -85,3 +86,4 @@ echo "  Grafana     : http://localhost:3000"
 echo "  Prometheus  : http://localhost:9091"
 echo "  Loki        : http://localhost:3100"
 echo "  pgAdmin     : http://localhost:8888"
+echo "  OpenWebUI   : http://localhost:3001"
