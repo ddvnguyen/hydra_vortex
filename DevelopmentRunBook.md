@@ -189,41 +189,51 @@ cd $WORK
 
 #### RTX (Blackwell sm_120, CUDA 13.2)
 
+Built at `/opt/software/cuda/13.2` with GCC 14 via `CMAKE_CUDA_HOST_COMPILER`.
+
 ```bash
-export PATH=/opt/software/cuda/13.2/bin:/opt/software/gcc/14/bin:$PATH
-export CC=gcc-14 CXX=g++-14
+CUDA_PATH=/opt/software/cuda/13.2
 cmake -B build_sm120 \
   -DCMAKE_CUDA_ARCHITECTURES="120" \
+  -DCPACK_PACKAGE_NAME="ik-llama-sm120-cuda13.2" \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DGGML_RPC=ON \
   -DGGML_NATIVE=ON \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=OFF \
+  -DCMAKE_INSTALL_PREFIX=/usr/local \
+  -DCMAKE_INSTALL_RPATH="$CUDA_PATH/lib64" \
+  -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
   -DLLAMA_BUILD_EXAMPLES=OFF \
-  -DLLAMA_BUILD_TESTS=OFF \
-  -DCMAKE_CUDA_COMPILER=/opt/software/cuda/13.2/bin/nvcc
+  -DLLAMA_BUILD_TESTS=OFF
 cmake --build build_sm120 --target llama-server -j$(nproc)
 ```
 
 #### P100 (Pascal sm_60, CUDA 12.9)
 
+Pascal requires **GCC ≤ 14** as the CUDA host compiler (CUDA 12.9 caps at GCC 14;
+GCC 15+ fails with `error: unrecognized command-line option '-###'`).
+
 ```bash
-export PATH=/opt/software/cuda/12.9/bin:/opt/software/gcc/14/bin:$PATH
-export CC=gcc-14 CXX=g++-14
+CUDA_PATH=/opt/software/cuda/12.9
 cmake -B build_sm60 \
   -DCMAKE_CUDA_ARCHITECTURES="60" \
+  -DCMAKE_CUDA_HOST_COMPILER="/usr/bin/g++-14" \
+  -DGGML_RPC=ON \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
-  -DGGML_RPC=ON \
+  -DGGML_CUDA_FORCE_MMQ=OFF \
+  -DGGML_CUDA_FA_ALL_QUANTS=OFF \
   -DGGML_NATIVE=ON \
+  -DCPACK_INCLUDE_COMMANDS=ON \
+  -DCMAKE_INSTALL_RPATH="$CUDA_PATH/lib64" \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=OFF \
-  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-  -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_BUILD_TESTS=OFF \
-  -DCMAKE_CUDA_COMPILER=/opt/software/cuda/12.9/bin/nvcc
+  -DBUILD_SHARED_LIBS=OFF \
+  -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 cmake --build build_sm60 --target llama-server -j$(nproc)
 ```
 
@@ -527,10 +537,10 @@ curl -s http://localhost:9000/status | python3 -m json.tool
 podman logs -f hydra-core_coordinator_1 | grep -v "health_ok\|GET /health\|GET /metrics"
 
 # Watch for specific events
-podman logs -f hydra-core_coordinator_1 | grep -E "concurrency|store_restore|prefix|state_saved"
+podman logs -f hydra-core 2>&1 | grep -E "concurrency|store_restore|prefix|state_saved"
 
-# Check Store state
-curl -s http://localhost:9501/debug | python3 -m json.tool
+# Check Store health
+curl -s http://localhost:9000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['store'])"
 
 # Check GPU
 nvidia-smi --query-gpu=index,utilization.gpu,memory.used,temperature.gpu --format=csv,noheader
@@ -562,8 +572,92 @@ but was never freed. The health monitor detects this but doesn't auto-recover (#
 **Manual recovery:**
 ```bash
 # Option 1: Restart the stuck llama-server
-ssh hydra-p100 "sudo kill -9 \$(pgrep llama-server); systemctl --user start llama-p100"
+ssh hydra-p100 'systemctl --user restart llama-p100'
 
-# Option 2: Restart the coordinator (clears tracker state)
-podman-compose -f infra/docker-compose.hydra.yml restart coordinator
+# Option 2: Restart the Core (clears tracker state)
+podman restart hydra-core
 ```
+
+---
+
+## Eval Tests
+
+See `docs/eval-tests.md` for full methodology, pass/fail criteria, and monitoring.
+
+### Quick Eval (NIAH passkey retrieval)
+
+```bash
+# 2K context, 50% needle depth
+bash scripts/eval/run-niah.sh -c 2000 -d 50
+
+# Sweep: 2K + 5K + 8K
+bash scripts/eval/run-niah.sh -c 2000,5000,8000 -d 50
+
+# All eval tiers (small: NIAH only, full: NIAH + perplexity)
+bash scripts/eval/run-all.sh --small
+```
+
+### Checking progress during eval
+
+```bash
+# Phase durations (save_kv_ms, restore_kv_ms)
+podman logs -f hydra-core 2>&1 | grep "request_timeline\|save_kv\|restore_kv"
+
+# Llama-server activity (both nodes)
+podman logs -f llama-cpp 2>&1 | grep "STATE_GET\|STATE_PUT\|n_past\|slot"
+ssh hydra-p100 'journalctl --user -u llama-p100 -n 30 --no-pager | grep "STATE\|restored"'
+
+# Token deltas (which GPU did the work)
+watch -n 2 '
+echo -n "RTX:  "; curl -s http://localhost:8080/metrics 2>/dev/null | grep "^llamacpp:prompt_tokens_total\|^llamacpp:tokens_predicted_total" | tr "\n" " " && echo ""
+echo -n "P100: "; curl -s http://192.168.122.21:8086/metrics 2>/dev/null | grep "^llamacpp:prompt_tokens_total\|^llamacpp:tokens_predicted_total" | tr "\n" " " && echo ""
+'
+
+# Core health and slot state
+curl -s http://localhost:9000/health | python3 -m json.tool
+curl -s http://localhost:8080/slots | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'id={s[\"id\"]} past={s.get(\"n_past\",0)} proc={s.get(\"is_processing\",False)}') for s in d]"
+```
+
+### Verifying content quality directly (bypass Core)
+
+When P/D split infrastructure is unstable, test content quality directly on RTX:
+
+```bash
+# Send prompt directly to RTX llama-server
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"balanced","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":5}' | python3 -m json.tool
+
+# Check both content AND reasoning_content for passkey in NIAH tests
+# Model with --reasoning on puts thinking in reasoning_content,
+# content may be empty if max_tokens is too low
+```
+
+### P100 recovery (CUDA hang)
+
+Symptoms: `/v1/chat/completions` hangs, RPC StatePut times out, `systemctl` show `Failed with result 'timeout'`.
+
+```bash
+# 1. Stop P100 (may take 30s)
+ssh hydra-p100 'systemctl --user stop llama-p100'
+
+# 2. Wait for GPU cleanup
+sleep 10; ssh hydra-p100 nvidia-smi | grep "MiB"
+
+# 3. Restart + wait for model (~90s)
+ssh hydra-p100 'systemctl --user start llama-p100'
+watch -n 3 'curl -s http://192.168.122.21:8086/health'
+
+# 4. Verify completions work
+curl -s -m15 http://192.168.122.21:8086/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"balanced","messages":[{"role":"user","content":"Hi"}],"max_tokens":3}'
+
+# 5. Restart Core to clear stuck classifier
+podman restart hydra-core
+```
+
+### Result storage
+
+Test results are written to `tests/results/` (markdown reports + raw JSON + captured logs)
+and `/tmp/hydra-eval-results/` (latest HTTP responses + extracted logs).

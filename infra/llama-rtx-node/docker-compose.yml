@@ -2,7 +2,7 @@ services:
   llama-cpp:
     build:
       context: .
-      dockerfile: Dockerfile_26.04_cuda13.3
+      dockerfile: Dockerfile_26.04_cuda13.2
     image: llama-cpp:sm120-cuda13.2
     container_name: llama-cpp
     labels:
@@ -34,7 +34,9 @@ services:
 
     entrypoint: ["/bin/bash", "/init/verify_and_start.sh"]
     environment:
-      LD_LIBRARY_PATH: /llama/bin
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
       LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
     # Direct model mode (single quant) — commented out in favor of router mode below
     #command: >
@@ -49,7 +51,7 @@ services:
     #  --log-prefix --log-colors on --metrics --slots --perf --props --log-verbosity 4
     #  --cont-batching --parallel 2 --cache-prompt --cache-reuse 64
     #  --prio 3 --prio-batch 1
-    #  --n-cpu-moe 32 --n-gpu-layers all
+    #  --n-cpu-moe 26 --n-gpu-layers all
     #  --context-shift
     #  --slot-prompt-similarity 0.6
     #  --reasoning on --jinja
@@ -69,24 +71,24 @@ services:
     # models-preset.ini — only truly global args belong here.
     command: >
       llama-server
-      --models-dir /models
       --models-preset /models/preset.ini
       --models-max 1
       --host 0.0.0.0 --port 8080
       --chat-template-file /models/qwen3.6_merged_template.jinja
       --log-prefix --log-colors on --metrics --slots --perf --props --log-verbosity 4
       --timeout 1800
-      --spec-type draft-mtp --spec-draft-n-max 3
       --rpc-port 9503
       --ctx-size 360000
       --temp 0.86 --repeat-penalty 1.06 --top-k 20 --top-p 0.95
       --flash-attn on --cache-type-v q8_0 --cache-type-k q8_0 --kv-unified
       --cont-batching --parallel 2 --cache-prompt --cache-reuse 64
       --prio 3 --prio-batch 1
-      --n-cpu-moe 32 --n-gpu-layers all
+      --n-cpu-moe 18 --n-gpu-layers all
+      --override-tensor token_embd.weight=CPU
       --context-shift
       --slot-prompt-similarity 0.4
       --reasoning on --jinja
       --rope-scaling yarn
       --rope-scale 12
       --yarn-orig-ctx 32768
+# --spec-type draft-mtp --spec-draft-n-max 3
