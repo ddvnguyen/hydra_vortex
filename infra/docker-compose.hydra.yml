@@ -20,7 +20,7 @@ services:
       - HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup
       - HYDRA_STORE_RESTORE_TOP_N=10
       - HYDRA_COORD_PORT=9000
-      - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"localhost","rpc_port":9601,"llama_url":"http://localhost:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"localhost","rpc_port":9602,"llama_url":"http://192.168.122.21:8086","worker_type":2,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
+      - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"localhost","rpc_port":9601,"llama_rpc_port":9503,"llama_url":"http://localhost:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"localhost","rpc_port":9602,"llama_rpc_port":9502,"llama_url":"http://192.168.122.21:8086","worker_type":2,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
     depends_on:
       - postgres
     healthcheck:
@@ -107,6 +107,18 @@ services:
       retries: 5
     labels:
       component: store
+    restart: unless-stopped
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "3001:8080"
+    environment:
+      - OPENAI_API_BASE_URL=http://host.containers.internal:9000/v1
+    depends_on:
+      - store
+    labels:
+      component: frontend
     restart: unless-stopped
 
 volumes:
