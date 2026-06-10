@@ -53,7 +53,7 @@ services:
       --log-prefix --log-colors on --metrics --slots --perf --props --log-verbosity 4
       --cont-batching --parallel 2 --cache-prompt --cache-reuse 64
       --prio 3 --prio-batch 1
-      --n-cpu-moe 26 --n-gpu-layers all
+      --n-cpu-moe 28 --n-gpu-layers all
       --override-tensor token_embd.weight=CPU
       --context-shift
       --slot-prompt-similarity 0.4

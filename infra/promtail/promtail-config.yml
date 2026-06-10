@@ -63,6 +63,15 @@ scrape_configs:
                 node:
 
       - match:
+          selector: '{container=~"hydra-core"}'
+          stages:
+            - template:
+                source: "component"
+                template: "hydra"
+            - labels:
+                component:
+
+      - match:
           selector: '{container=~"hydra[-_]store[-_]?1?"}'
           stages:
             - template:
