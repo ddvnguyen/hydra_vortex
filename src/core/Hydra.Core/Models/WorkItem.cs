@@ -64,14 +64,18 @@ public sealed class WorkItem
 	  	Dictionary<string, object> request,
 	  	List<Dictionary<string, object>> messages,
 		string sessionId,
-		  string traceId,
-			string? prefixHash,
-			int estimatedTokens,
-			 int estimatedNewTokens)
+		string traceId,
+		string? prefixHash,
+		int estimatedTokens,
+		int estimatedNewTokens)
 	{
-		Request = request; Messages = messages; SessionId = sessionId;
-		TraceId = traceId; PrefixHash = prefixHash;
-		EstimatedTokens = estimatedTokens; EstimatedNewTokens = estimatedNewTokens;
+		Request = request;
+		Messages = messages;
+		SessionId = sessionId;
+		TraceId = traceId;
+		PrefixHash = prefixHash;
+		EstimatedTokens = estimatedTokens;
+		EstimatedNewTokens = estimatedNewTokens;
 		Completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
 		StreamCompletion = new TaskCompletionSource<IAsyncEnumerable<byte[]>>(TaskCreationOptions.RunContinuationsAsynchronously);
 		var streamDone = Channel.CreateBounded<bool>(1);

@@ -68,8 +68,7 @@ public class CompletionsController : ControllerBase
 			return UnprocessableEntity(new { error = "messages is required" });
 		}
 
-		var messages = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(
-			msgsEl.GetRawText(), _jsonOpts) ?? [];
+		var messages = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(msgsEl.GetRawText(), _jsonOpts) ?? [];
 
 		int maxTokens = body.TryGetValue("max_tokens", out var mt)
 			&& mt is JsonElement mte ? mte.GetInt32() : 1024;
