@@ -36,7 +36,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
-	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new(); // sessions whose streaming has finished
+	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new(); // traceIds whose streaming has finished
 	private readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
 	private readonly SemaphoreSlim _decodeSlotSignal = new(0, int.MaxValue);
 
@@ -85,31 +85,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		await _mainQueue.Writer.WriteAsync(item, ct);
 
 		using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
-		// Streaming: return the chunk enumerable as soon as decode phase produces it
-		if (item.IsStreaming)
+		try
 		{
-			try
+			// Streaming: return the chunk enumerable as soon as decode phase produces it
+			if (item.IsStreaming)
 			{
 				return await item.StreamCompletion.Task.WaitAsync(TimeSpan.FromSeconds(600), linked.Token);
 			}
-			catch (OperationCanceledException)
+			else
 			{
-				item.Cancel();
-				throw;
-			}
-		}
-		else
-		{
-			// Non-streaming: wait for full response
-			try
-			{
+				// Non-streaming: wait for full response
 				return (await item.Completion.Task.WaitAsync(TimeSpan.FromSeconds(1800), linked.Token))!;
 			}
-			catch (OperationCanceledException)
-			{
-				item.Cancel();
-				throw;
-			}
+		}
+		catch (OperationCanceledException)
+		{
+			item.Cancel();
+			throw;
 		}
 	}
 
@@ -155,7 +147,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		var tasks = new[]
 		{
-			RunClassifierAsync( 1, ct),
+			RunClassifierAsync(_cfg.Workers.Count, ct),
 			RunPrefillConsumerAsync(prefillslots, ct),
 			RunDecodeConsumerAsync(decodeSlots, ct),
 		};
@@ -384,8 +376,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		WorkItemState.PrefixRestore => await PrefixRestoreAsync(item, ct),
 		WorkItemState.Prefill => await PrefillAsync(item, ct),
 		WorkItemState.SaveKv => await SaveKvAsync(item, ct),
-		WorkItemState.SaveDone => MarkEvictedState(item),
-		WorkItemState.MarkEvicted => MarkEvictedState(item),
+		WorkItemState.SaveDone => await MarkEvictedStateAsync(item),
+		WorkItemState.MarkEvicted => await MarkEvictedStateAsync(item),
 		WorkItemState.PickDecode => await PickDecodeAsync(item),
 		WorkItemState.RestoreKv => await RestoreKvAsync(item, ct),
 		WorkItemState.Decode => await DecodeAsync(item, ct),
@@ -724,14 +716,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			: WorkItemState.Done;
 	}
 
-	private WorkItemState MarkEvictedState(WorkItem item)
-	{
-		_ = MarkEvictedStateAsync(item);
-		return item.State == WorkItemState.SaveDone
-			? WorkItemState.PickDecode
-			: WorkItemState.Done;
-	}
-
 	private async Task<WorkItemState> PickDecodeAsync(WorkItem item)
 	{
 		var dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
@@ -786,6 +770,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var slotId = Math.Min(
 			item.DecodeSlot ?? item.PrefillSlot ?? entry?.SlotId ?? 0,
 			w.Slots - 1);
+		item.DecodeSlot = slotId; // Sync clamped slot so DecodeAsync pins the same one
 		var storeKey = $"{item.SessionId}.kv";
 		_log.Information("restore_kv_start Sid={Sid} Key={Key} Node={Node} Slot={Slot}",
 			item.SessionId, storeKey, w.Name, slotId);
@@ -865,11 +850,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, ct);
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
+			// Defer BgSave until stream completes — slot is still processing now.
+			// Set before StreamCompletion to avoid race: a fast stream could finish
+			// and call NotifyStreamComplete before this line runs, orphaning the save.
+			_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
 			item.StreamCompletion.TrySetResult(item.DecodeChunks);
 			item.Response = new { streamed = true };
 			item.Phases["decode_ms"] = item.ElapsedMs;
-			// Defer BgSave until stream completes — slot is still processing now
-			_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
 			return WorkItemState.Done;
 		}
 		else
@@ -945,12 +932,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	public void NotifyStreamComplete(string sessionId)
 	{
-		_streamCompleted.TryAdd(sessionId, 0);
+		// Key _streamCompleted by TraceId (per-turn) to avoid stale entries
+		// from failed requests leaking into subsequent turns for the same session.
+		if (_pendingBgSaves.TryGetValue(sessionId, out var bgInfo) && bgInfo.TraceId is { Length: > 0 } traceId)
+			_streamCompleted.TryAdd(traceId, 0);
 
 		// Fire deferred BgSave — the slot is now idle, StateGet will succeed
-		if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo))
+		if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
 		{
-			var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo.WorkerName);
+			var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo2.WorkerName);
 			if (w != null)
 			{
 				_ = Task.Run(async () =>
@@ -959,11 +949,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					{
 						var llamaRpc = GetLlamaRpcClient(w);
 						var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-							bgInfo.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo.TraceId, CancellationToken.None);
+							bgInfo2.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo2.TraceId, CancellationToken.None);
 						if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
 						{
 							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-								$"{sessionId}.kv", stateResp.Payload, bgInfo.TraceId, CancellationToken.None);
+								$"{sessionId}.kv", stateResp.Payload, bgInfo2.TraceId, CancellationToken.None);
 							_log.Information("bg_saved Sid={Sid}", sessionId);
 						}
 						else
@@ -1021,7 +1011,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				// If streaming already completed (short response), release immediately.
 				// Otherwise store as warm — NotifyStreamComplete will release it.
-				if (_streamCompleted.TryRemove(item.SessionId, out _))
+				if (_streamCompleted.TryRemove(item.TraceId, out _))
 				{
 					await item.DecodeLease.DisposeAsync();
 					_decodeSlotSignal.Release();

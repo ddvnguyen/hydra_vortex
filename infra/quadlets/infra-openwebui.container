@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenWebUI frontend
+BindsTo=infra-host-pod.service
+After=infra-host-pod.service
+
+[Container]
+ContainerName=infra-openwebui
+Image=ghcr.io/open-webui/open-webui:main
+Pod=infra-host.pod
+Volume=openwebui-data.volume:/app/backend/data
+Environment=PORT=3001
+Environment=OPENAI_API_BASE_URL=http://host.containers.internal:9000/v1
+HealthCmd=curl -sf http://localhost:3001/health
+HealthInterval=15s
+HealthRetries=3
+HealthStartPeriod=30s
+HealthTimeout=5s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
