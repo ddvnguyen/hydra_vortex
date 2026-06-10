@@ -18,6 +18,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly ICompletionProxyService _proxy;
 	private readonly IHealthMonitorService _health;
 	private readonly Hydra.Shared.RpcClient? _storeClient;
+	private Hydra.Shared.RpcClient StoreClient =>
+		_storeClient ?? throw new InvalidOperationException("Store RPC client not wired — check coordinator config");
 	private readonly IServiceProvider _serviceProvider;
 	private readonly ILogger _log;
 	private readonly Channel<WorkItem> _mainQueue;
@@ -25,6 +27,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly Channel<WorkItem> _decodeQueue;
 	private readonly CancellationTokenSource _cts = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _agentClients = new();
+	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _llamaRpcClients = new();
 	private readonly HashSet<string> _prefixSet = [];
 
 	/// <summary>
@@ -34,6 +37,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new(); // sessions whose streaming has finished
+	private readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
 	private readonly SemaphoreSlim _decodeSlotSignal = new(0, int.MaxValue);
 
 	private static BoundedChannelOptions ChannelOpts(int capacity) => new(capacity)
@@ -119,17 +123,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var targetWorker = _cfg.Workers.FirstOrDefault(w => w.Name == targetNodeName && w.CanDecode)
 			?? throw new InvalidOperationException($"Target worker '{targetNodeName}' not found or cannot decode");
 
-		// Restore KV state on target
-		var migEntry = _ledger.Lookup(sessionId);
-		var migSlot = migEntry?.SlotId ?? 0;
-		var client = GetAgent(targetWorker);
-		var resp = await client.RequestAsync(Hydra.Shared.OpCode.RestoreStateChunked,
-			$"{sessionId}:{migSlot}", ReadOnlyMemory<byte>.Empty, traceId, ct);
+		var storeKey = $"{sessionId}.kv";
+		var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
+			storeKey, ReadOnlyMemory<byte>.Empty, traceId, ct);
+
+		if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+			throw new InvalidOperationException($"Store Get failed for migration: {storeResp.Meta}");
+
+		var slotId = 0;
+		var llamaRpc = GetLlamaRpcClient(targetWorker);
+		var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+			slotId.ToString(), storeResp.Payload, traceId, ct);
 
 		var nPastAfter = 0;
-		if (resp.Meta != null)
+		if (putResp.Meta != null)
 		{
-			var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta);
+			var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 			nPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : 0;
 		}
 
@@ -589,15 +598,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		try
 		{
-			var prefixKey = $"{item.PrefillWorker.Name}:{item.PrefixHash}";
-			var client = GetAgent(item.PrefillWorker);
-			var resp = await client.RequestAsync(Hydra.Shared.OpCode.RestoreStateChunked, $"prefix/{item.PrefixHash}:0", ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
-			_prefixSet.Add(prefixKey);
+			var prefixKey = $"prefix/{item.PrefixHash}.kv";
+			var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
+				prefixKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
 
-			// Gap 4: track n_past from prefix checkpoint restore
-			if (resp.Meta != null)
+			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 			{
-				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta);
+				_log.Warning("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				return WorkItemState.Prefill;
+			}
+
+			var slotId = 0;
+			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
+			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
+
+			_prefixSet.Add($"{item.PrefillWorker.Name}:{item.PrefixHash}");
+
+			if (putResp.Meta != null)
+			{
+				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 				var nPast = meta?.TryGetValue("n_past", out var n) == true
 					? n.GetInt32() : 0;
 				if (nPast > 0)
@@ -619,7 +639,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var body = new Dictionary<string, object>(item.Request)
 		{
 			["stream"] = false,
-			["max_tokens"] = 1
+			["n_predict"] = 0
 		};
 		item.PrefillSlot = await Router.PickIdleSlot(w.LlamaUrl, ct) ?? 0;
 		var resp = await _proxy.ProxyCompletionAsync(w.LlamaUrl, body, item.TraceId, ct);
@@ -647,33 +667,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		var w = item.PrefillWorker!;
 		var slotId = item.PrefillSlot ?? 0;
-		var key = $"kv/{item.SessionId}";
+		var storeKey = $"{item.SessionId}.kv";
 		_log.Information("save_kv_start Sid={Sid} Key={Key} Slot={Slot} NPast={N} Node={Node}",
-			item.SessionId, key, slotId, item.NPastAfter, w.Name);
+			item.SessionId, storeKey, slotId, item.NPastAfter, w.Name);
 		try
 		{
-			var llama = GetLlamaClient(w);
-			using var stateResult = await llama.GetStateAsync(slotId, ct);
-			var buf = new byte[stateResult.ContentLength];
-			var offset = 0;
-			while (offset < buf.Length)
-			{
-				var n = await stateResult.Content.ReadAsync(buf.AsMemory(offset, buf.Length - offset), ct);
-				if (n == 0) break;
-				offset += n;
-			}
-			stateResult.Dispose();
+			var llamaRpc = GetLlamaRpcClient(w);
+			var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+				slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
 
-			// Write to in-process Store (/mnt/llm-ram)
-			var storeDir = new DirectoryInfo(Environment.GetEnvironmentVariable("HYDRA_STORE_DIR") ?? "/mnt/llm-ram/store");
-			storeDir.Create();
-			var path = Path.Combine(storeDir.FullName, $"{item.SessionId}.kv");
-			await File.WriteAllBytesAsync(path, buf, ct);
+			if (stateResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+				throw new InvalidOperationException($"StateGet RPC failed: status={stateResp.Status} meta={stateResp.Meta}");
+
+			await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+				storeKey, stateResp.Payload, item.TraceId, ct);
 
 			var entry = _ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
 			lock (entry) { entry.HasStoreState = true; }
 			item.Entry = entry;
-			_log.Information("state_saved Sid={Sid} SizeMB={Size}", item.SessionId, buf.Length / 1024 / 1024);
+			_log.Information("state_saved Sid={Sid} SizeMB={Size}", item.SessionId, stateResp.Payload.Length / 1024 / 1024);
 		}
 		catch (Exception ex)
 		{
@@ -771,24 +783,32 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		var w = item.DecodeWorker!;
 		var entry = _ledger.Lookup(item.SessionId);
-		var slotId = Math.Min(item.PrefillSlot ?? entry?.SlotId ?? 0, w.Slots - 1);
-		var restoreKey = $"{item.SessionId}:{slotId}";
+		var slotId = Math.Min(
+			item.DecodeSlot ?? item.PrefillSlot ?? entry?.SlotId ?? 0,
+			w.Slots - 1);
+		var storeKey = $"{item.SessionId}.kv";
 		_log.Information("restore_kv_start Sid={Sid} Key={Key} Node={Node} Slot={Slot}",
-			item.SessionId, restoreKey, w.Name, slotId);
+			item.SessionId, storeKey, w.Name, slotId);
 		try
 		{
-			// Read KV state from in-process Store
-			var storeDir = new DirectoryInfo(Environment.GetEnvironmentVariable("HYDRA_STORE_DIR") ?? "/mnt/llm-ram/store");
-			var path = Path.Combine(storeDir.FullName, $"{item.SessionId}.kv");
-			if (!File.Exists(path))
-				throw new FileNotFoundException($"No saved KV state for {item.SessionId}", path);
-			var buf = await File.ReadAllBytesAsync(path, ct);
+			var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
+				storeKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
 
-			// Push to target llama-server via HTTP
-			var llama = GetLlamaClient(w);
-			using var ms = new MemoryStream(buf);
-			var result = await llama.PutStateAsync(slotId, ms, buf.Length, ct);
-			item.NPastAfter = result?.NPast ?? item.NPastAfter;
+			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+				throw new InvalidOperationException($"Store Get RPC failed: status={storeResp.Status} meta={storeResp.Meta}");
+
+			var llamaRpc = GetLlamaRpcClient(w);
+			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
+
+			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+				throw new InvalidOperationException($"StatePut RPC failed: status={putResp.Status} meta={putResp.Meta}");
+
+			if (putResp.Meta != null)
+			{
+				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
+				item.NPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : item.NPastAfter;
+			}
 			_log.Information("state_restored Sid={Sid} NPast={N} Node={Node}",
 				item.SessionId, item.NPastAfter, w.Name);
 		}
@@ -816,11 +836,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			_log.Warning(ex, "restore_skipped Sid={Sid} — continuing without KV restore", item.SessionId);
 			item.NPastAfter = 0;
 		}
-		// Preserve existing slot + n_past if restore found nothing new
 		if (item.NPastAfter > 0)
 			_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
-		var existingSlot = entry?.SlotId ?? item.PrefillSlot ?? 0;
-		_ledger.Register(item.SessionId, w.Name, existingSlot, item.NPastAfter > 0 ? item.NPastAfter : entry?.NPast ?? 0, item.PrefixHash);
+		_ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter > 0 ? item.NPastAfter : entry?.NPast ?? 0, item.PrefixHash);
 		item.Phases["restore_kv_ms"] = item.ElapsedMs;
 		return WorkItemState.Decode;
 	}
@@ -833,19 +851,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var lastMsg = msgCount > 0 && item.Messages[^1].TryGetValue("content", out var c) && c != null
 			? (c.ToString() ?? "")[..Math.Min(80, (c.ToString() ?? "").Length)]
 			: "?";
-		// Dump max_tokens and model from the actual request being sent
 		var mt = item.Request.TryGetValue("max_tokens", out var mtv) ? mtv?.ToString() : "?";
-		// Dump FULL request body being sent to llama-server for decode
-		Console.Error.WriteLine($"event=decode_body Sid={item.SessionId} " + 
+
+		// Pin decode to the leased slot so llama-server doesn't pick a different one via LRU
+		if (item.DecodeSlot.HasValue)
+			item.Request["id_slot"] = item.DecodeSlot.Value;
+
+		Console.Error.WriteLine($"event=decode_body Sid={item.SessionId} " +
 			System.Text.Json.JsonSerializer.Serialize(item.Request));
-		_log.Information("decode_start Sid={Sid} Node={Node} Msgs={Msgs} LastMsg={Last} Streaming={Stream} NPast={N} MaxTokens={Mt}",
-			item.SessionId, w.Name, msgCount, lastMsg, item.IsStreaming, item.NPastAfter, mt);
+		_log.Information("decode_start Sid={Sid} Node={Node} Msgs={Msgs} LastMsg={Last} Streaming={Stream} NPast={N} MaxTokens={Mt} Slot={Slot}",
+			item.SessionId, w.Name, msgCount, lastMsg, item.IsStreaming, item.NPastAfter, mt, item.DecodeSlot);
 		if (item.IsStreaming)
 		{
 			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, ct);
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			item.StreamCompletion.TrySetResult(item.DecodeChunks);
 			item.Response = new { streamed = true };
+			item.Phases["decode_ms"] = item.ElapsedMs;
+			// Defer BgSave until stream completes — slot is still processing now
+			_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
+			return WorkItemState.Done;
 		}
 		else
 		{
@@ -868,11 +893,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			try
 			{
-				var client = GetAgent(item.DecodeWorker!);
-				var key = $"{item.SessionId}:{item.LastIdSlot ?? 0}";
-				var opcode = _cfg.RawSlot ? Hydra.Shared.OpCode.SaveState : Hydra.Shared.OpCode.SaveStateChunked;
-				await client.RequestAsync(opcode, key, ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
-				_log.Information("bg_saved Sid={Sid}", item.SessionId);
+				var w = item.DecodeWorker!;
+				var slotId = item.LastIdSlot ?? 0;
+				var storeKey = $"{item.SessionId}.kv";
+				var llamaRpc = GetLlamaRpcClient(w);
+				var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+					slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
+
+				if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
+				{
+					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+						storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
+					_log.Information("bg_saved Sid={Sid}", item.SessionId);
+				}
 			}
 			catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
 		});
@@ -888,13 +921,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		try
 		{
-			// Erase slot via agent RPC
-			var client = GetAgentByName(nodeName);
-			if (client != null)
+			var w = _cfg.Workers.FirstOrDefault(x => x.Name == nodeName);
+			if (w != null)
 			{
-				await client.RequestAsync(Hydra.Shared.OpCode.SlotErase,
-					lease.SlotId.ToString(), ReadOnlyMemory<byte>.Empty,
-					$"evict_{sessionId}", ct);
+				var llama = GetLlamaClient(w);
+				await llama.EraseSlotAsync(lease.SlotId, ct);
 			}
 		}
 		catch (Exception ex)
@@ -915,6 +946,36 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	public void NotifyStreamComplete(string sessionId)
 	{
 		_streamCompleted.TryAdd(sessionId, 0);
+
+		// Fire deferred BgSave — the slot is now idle, StateGet will succeed
+		if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo))
+		{
+			var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo.WorkerName);
+			if (w != null)
+			{
+				_ = Task.Run(async () =>
+				{
+					try
+					{
+						var llamaRpc = GetLlamaRpcClient(w);
+						var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+							bgInfo.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo.TraceId, CancellationToken.None);
+						if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
+						{
+							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+								$"{sessionId}.kv", stateResp.Payload, bgInfo.TraceId, CancellationToken.None);
+							_log.Information("bg_saved Sid={Sid}", sessionId);
+						}
+						else
+						{
+							_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
+						}
+					}
+					catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
+				});
+			}
+		}
+
 		if (_warmLeases.TryRemove(sessionId, out var lease))
 		{
 			_log.Information("stream_done_release Sid={Sid} Worker={W} Slot={Slot}",
@@ -1128,6 +1189,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			? AgentClientFactory(w.Host, w.RpcPort)
 			: new Hydra.Shared.RpcClient(w.Host, w.RpcPort);
 		_agentClients[w.Name] = client;
+		return client;
+	}
+
+	private Hydra.Shared.RpcClient GetLlamaRpcClient(WorkerConfig w)
+	{
+		if (_llamaRpcClients.TryGetValue(w.Name, out var c)) return c;
+		var rpcHost = new Uri(w.LlamaUrl).Host;
+		var client = new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
+		_llamaRpcClients[w.Name] = client;
 		return client;
 	}
 }

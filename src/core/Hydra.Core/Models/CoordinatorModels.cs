@@ -10,6 +10,7 @@ public sealed record WorkerConfig
 	public string Name { get; init; } = "";
 	public string Host { get; init; } = "";
 	public int RpcPort { get; init; }
+	public int LlamaRpcPort { get; init; }
 	public string LlamaUrl { get; init; } = "";
 	public int WorkerType { get; init; } = 3;
 	public int Slots { get; init; } = 1;
