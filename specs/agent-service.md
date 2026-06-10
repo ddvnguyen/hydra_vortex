@@ -1,6 +1,11 @@
 # Agent Service Specification
 
-## Identity
+> **RETIRED / MERGED** — As of PR #203 (2026-06), the Agent service was merged into
+> Hydra.Core. State operations (StateGet/StatePut) are now done directly by Hydra.Core
+> via RPC to llama-server hydra RPC ports (RTX :9503, P100 :9502). No intermediate Agent
+> containers exist. This spec is retained for historical reference of the Agent protocol.
+
+## Identity (retired)
 - Name: hydra-agent-{node_name} (e.g., hydra-agent-rtx, hydra-agent-p100)
 - Transport: Hydra binary RPC on TCP :9601 (RTX) / :9602 (P100)
 - Role: Sidecar on each GPU node. Bridges Hydra RPC ↔ local llama-server HTTP.
@@ -72,9 +77,11 @@
   which is simpler and already works. The Agent RPC surface is state-only
   (save/restore/erase/health). Opcode removed from `Protocol.cs` / `rpc_client.py`.
 
-## Configuration
+## Configuration (retired)
 
 ```python
+# This config class is no longer used. Worker configuration is now in
+# Hydra.Core's WorkerConfig (C#). Retained for historical reference:
 class AgentConfig(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 9601
@@ -89,8 +96,9 @@ class AgentConfig(BaseSettings):
         env_prefix = "HYDRA_AGENT_"
 ```
 
-## Health / Debug
-HTTP GET :9611/debug returns:
+## Health / Debug (retired)
+HTTP GET :9611/debug **removed** — Agent service no longer exists. Hydra.Core exposes
+`GET :9501/metrics` and `GET :9000/health` instead.
 ```json
 {
   "status": "ok",

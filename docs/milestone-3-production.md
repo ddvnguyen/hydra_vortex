@@ -17,11 +17,16 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 ## What "Done" Means
 ```
 ✅ Reboot → KV sessions restored from NVMe within 30s
-✅ Grafana dashboard shows: request rate, active sessions, store performance, agent save/restore latency, logs with trace_id filter
+✅ Grafana dashboard shows: request rate, active sessions, store performance, save/restore latency, logs with trace_id filter
 ✅ Langfuse shows full request traces with token counts and routing decisions
 ✅ Model weights served from Store to new nodes (no manual scp)
-✅ systemd manages full lifecycle: ramdisk → store → agents → coordinator
+✅ systemd manages full lifecycle: ramdisk → llama-servers → hydra-core
 ```
+
+> **Note (2026-06):** The Agent and Coordinator are now merged into Hydra.Core (PR #203).
+> There is a single C# binary instead of the old multi-service architecture. References
+> to "agent save/restore" below are now Hydra.Core internal operations; `agent-*` systemd
+> units and `coordinator` unit no longer exist.
 
 ## Prerequisites
 - M2 complete
@@ -69,12 +74,10 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 
 ## Task M3.2: Observability — Grafana
 
-### M3.2.1: Prometheus Metrics (`src/coordinator/metrics.py`, `src/core/Hydra.Store/StoreMetrics.cs`, `src/core/Hydra.Agent/AgentMetrics.cs`)
-- **Store** (.NET, prometheus-net): `hydra_store_ops_total`, `hydra_store_bytes_stored`, `hydra_store_bytes_sent`, `hydra_store_op_duration_seconds` — exposed on `:9501/metrics`
-- **Agent** (.NET, prometheus-net): `hydra_agent_save_ops_total`, `hydra_agent_restore_ops_total`, `hydra_agent_save_duration_seconds`, `hydra_agent_restore_duration_seconds`, `hydra_agent_slots_idle`, `hydra_agent_llama_healthy` — exposed on `:9611/metrics`
-- **Coordinator** (Python, prometheus_client): `hydra_requests_total`, `hydra_cache_hits_total`, `hydra_migrations_total`, `hydra_active_sessions` — exposed on `:9000/metrics`
-- Each service adds a `GET /metrics` endpoint alongside its debug HTTP server
-- `Prometheus` in docker-compose scrapes all three targets
+### M3.2.1: Prometheus Metrics (`src/core/Hydra.Core/StoreMetrics.cs`, `src/core/Hydra.Core/HydraMetrics.cs`)
+- **Hydra.Core** (.NET, prometheus-net): `hydra_store_ops_total`, `hydra_store_bytes_stored`, `hydra_store_bytes_sent`, `hydra_store_op_duration_seconds` — exposed on `:9501/metrics`
+- **Hydra.Core HTTP API** (.NET, prometheus-net): `hydra_requests_total`, `hydra_cache_hits_total`, `hydra_migrations_total`, `hydra_active_sessions` — exposed on `:9000/metrics`
+- Prometheus in docker-compose scrapes all targets
 - **Done when:** `docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up` — Prometheus scrapes all targets (check `:9090/targets`)
 
 ### M3.2.2: Grafana Dashboard (`infra/grafana/dashboards/hydra-dashboard.json`)
@@ -126,13 +129,15 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 - **Done when:** new agent node starts without manual model copy
 
 ### M3.4.2: systemd Service Units (`infra/`)
-- `hydra-ramdisk.service` — mount tmpfs, copy model from NVMe
-- `hydra-store.service` — start store after ramdisk
-- `hydra-agent-rtx.service` — start agent + llama-server after store
-- `hydra-agent-p100.service` — start agent + llama-server in VM
-- `hydra-coordinator.service` — start coordinator after agents
-- Boot order: ramdisk → store → agents → coordinator
+- `hydra-ramdisk.service` — mount tmpfs
+- `hydra-core.service` — start Hydra.Core after ramdisk + llama-servers
+- `llama-rtx.service` — start llama-server RTX
+- `llama-p100.service` — start llama-server P100 in VM
+- Boot order: ramdisk → llama-servers → hydra-core
 - **Done when:** `sudo reboot` → system comes up automatically
+
+> **Note:** The old `hydra-agent-rtx.service`, `hydra-agent-p100.service`, and
+> `hydra-coordinator.service` units are removed (merged into Hydra.Core via PR #203).
 
 ---
 
@@ -143,11 +148,11 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 | M3.1.1  | store       | 80    | M2         | High      |
 | M3.1.2  | store       | 80    | M3.1.1     | High      |
 | M3.1.3  | store       | 40    | M3.1.2     | High      |
-| M3.2.1  | shared      | 60    | M1         | Medium    |
+| M3.2.1  | Hydra.Core  | 60    | M1         | Medium    |
 | M3.2.2  | infra       | —     | M3.2.1     | Medium    |
 | M3.2.3  | infra       | —     | M1         | Medium    |
-| M3.3.1  | coordinator | 60    | M1         | Low       |
-| M3.4.1  | store+agent | 90    | M1         | Low       |
+| M3.3.1  | Hydra.Core  | 60    | M1         | Low       |
+| M3.4.1  | Hydra.Core   | 90    | M1         | Low       |
 | M3.4.2  | infra       | —     | all above  | Medium    |
 
 **Parallel work:** M3.1 (persistence), M3.2 (grafana), M3.3 (langfuse) are independent.

@@ -11,41 +11,42 @@ across heterogeneous GPU nodes, enabling session migration without re-prefill.
 					│ 
 					▼
   ┌──────────────────────────────┐
-  │  Coordinator :9000           │  Python / FastAPI
-  │  Routes requests             │  Best LLM tooling ecosystem
-  │  Manages sessions            │  (Langfuse, pydantic, structlog)
+  │  Hydra.Core :9000            │  C# / .NET 10
+  │  Single binary: HTTP API     │  System.IO.Pipelines
+  │  + Store RPC (:9500)         │  Socket.SendFileAsync
+  │  + embedded Coordinator      │
   └──────┬─────────────┬─────────┘
-         │ RPC         │ RPC
-         ▼             ▼
+         │ HTTP         │ HTTP
+         ▼              ▼
   ┌──────────┐    ┌──────────┐
-  │ Agent    │    │ Agent    │  C# / .NET 10
-  │ RTX      │    │ P100     │  System.IO.Pipelines
-  │ :9601    │    │ :9602    │  Socket.SendFileAsync
-  │  │ HTTP  │    │  │ HTTP  │  (local only)
+  │ llama    │    │ llama    │  C++ fork
+  │ RTX      │    │ P100     │  hydra-state-streaming
+  │ :8080    │    │ :8086    │
+  │  │ RPC   │    │  │ RPC   │
   │  ▼       │    │  ▼       │
-  │ llama    │    │ llama    │  Unmodified llama.cpp
-  │ :8080    │    │ :8086    │  + hydra-state-streaming branch
   └────┬─────┘    └────┬─────┘
-       │ RPC           │ RPC
-       ▼               ▼
+       │ StateGet/Put  │
+       └───────┬───────┘
+               ▼
   ┌──────────────────────────────┐
-  │  Store :9500                 │  C# / .NET 10
-  │  KV state chunks             │  tmpfs-backed
-  │  Content-addressed (M2)      │  sendfile() zero-copy
+  │  Store RPC :9500 + tmpfs     │
+  │  KV state chunks             │
+  │  Content-addressed (M2)      │
+  │  /mnt/llm-ram/store/         │
   └──────────────────────────────┘
 ```
 
 ## Language Decisions (final)
 | Component   | Language       | Reason                                            |
 |-------------|----------------|---------------------------------------------------|
-| Store       | C# / .NET 10   | System.IO.Pipelines, Socket.SendFileAsync, team   |
-| Agent       | C# / .NET 10   | Same RPC lib, Socket streaming, team expertise    |
-| Coordinator | Python/FastAPI | Best LLM ecosystem (Langfuse, pydantic, structlog)|
+| Hydra.Core  | C# / .NET 10   | System.IO.Pipelines, Socket.SendFileAsync, team   |
 | llama-server| C++ (fork)     | +3 streaming state endpoints, no other changes    |
 
-## Rule: One Protocol
-All inter-service traffic uses Hydra binary RPC.
-HTTP only at two edges: Client→Coordinator and Agent→local llama-server.
+## Architecture Notes
+Hydra.Core is a single C# binary with an embedded coordinator. It contacts
+llama-servers directly via HTTP (no intermediate Agent layer). KV state ops use
+binary RPC (StateGet/StatePut) directly to llama-server's hydra RPC port (RTX :9503,
+P100 :9502). Store RPC (Put/Get) is internal to Hydra.Core, backed by tmpfs.
 
 ## Worker Node Model
 Each GPU node is configured as a `WorkerNodeConfig`:
@@ -64,18 +65,19 @@ Each GPU node is configured as a `WorkerNodeConfig`:
 See `docs/architecture.md` for the 4-tier routing algorithm and session lifecycle detail.
 
 ## Tech Stack Detail
-| Concern          | C# Services      | Python Coordinator |
-|------------------|------------------|--------------------|
-| Async runtime    | async/await + IOCP| asyncio            |
-| Binary protocol  | System.IO.Pipelines + BinaryPrimitives | struct module |
-| HTTP client      | HttpClient       | httpx              |
-| Logging          | Serilog (JSON)   | structlog (JSON)   |
-| Config           | appsettings.json | pydantic-settings  |
-| Testing          | xUnit + Moq      | pytest-asyncio     |
-| Metrics (M3)     | prometheus-net   | prometheus-client  |
-| Tracing (M3)     | OpenTelemetry    | Langfuse SDK       |
-| Zero-copy I/O    | Socket.SendFileAsync| asyncio.sendfile |
-| Deployment       | NativeAOT binary | uvicorn            |
+| Concern          | Hydra.Core (C#)    |
+|------------------|---------------------|
+| Async runtime    | async/await + IOCP  |
+| Binary protocol  | System.IO.Pipelines + BinaryPrimitives |
+| HTTP server      | ASP.NET Core Kestrel|
+| HTTP client      | HttpClient          |
+| Logging          | Serilog (JSON)      |
+| Config           | appsettings.json    |
+| Testing          | xUnit + Moq         |
+| Metrics          | prometheus-net      |
+| Tracing          | OpenTelemetry       |
+| Zero-copy I/O    | Socket.SendFileAsync|
+| Deployment       | NativeAOT binary    |
 
 ## Project Structure
 All source code lives under `src/`.
@@ -96,47 +98,21 @@ All source code lives under `src/`.
 │   │   ├── AsyncEnumerableStream.cs  IAsyncEnumerable<byte[]> → Stream adapter
 │   │   └── HydraLogging.cs      Serilog setup, trace scope helpers
 │   │
-│   ├── Hydra.Store/             C# — KV state store (tmpfs-backed)
+│   ├── Hydra.Core/              C# — single binary: store + coordinator + session mgmt
 │   │   ├── StorageEngine.cs     raw file I/O on tmpfs (PUT/GET/DEL/STAT/LIST)
 │   │   ├── ChunkEngine.cs       1 MB chunk + SHA-256 hash pipeline
 │   │   ├── ChunkStore.cs        content-addressed chunk storage + manifest management
 │   │   ├── StoreServer.cs       RPC handlers (PUT_CHUNKED, GET_CHUNKED, GET_MANIFEST …)
 │   │   ├── StoreMetrics.cs      Prometheus counters/histograms
 │   │   ├── StoreConfig.cs       appsettings binding
-│   │   └── Program.cs
-│   │
-│   ├── Hydra.Agent/             C# — GPU node sidecar
+│   │   ├── Coordinator.cs       request routing, session lifecycle, P/D split
 │   │   ├── LlamaClient.cs       HTTP client for llama-server state endpoints
-│   │   ├── StateHandler.cs      save/restore orchestration (raw + chunked)
-│   │   │                          incl. ChunkHashTeeStream, ValueStopwatch
-│   │   ├── LocalChunkCache.cs   agent-side cache of chunk data (partial-restore support)
-│   │   ├── AgentServer.cs       RPC handlers (SAVE/RESTORE_STATE_CHUNKED, NODE_HEALTH …)
-│   │   ├── AgentMetrics.cs      Prometheus counters/histograms
-│   │   ├── AgentConfig.cs       appsettings binding
+│   │   ├── CoreMetrics.cs       Prometheus counters/histograms (coordinator + store)
+│   │   ├── CoreConfig.cs        appsettings binding
 │   │   └── Program.cs
 │   │
 │   ├── Tests.Shared/            xUnit — Protocol, RpcClient, RpcServer
-│   ├── Tests.Store/             xUnit — ChunkEngine, ChunkStore, StorageEngine, StoreServer
-│   ├── Tests.Agent/             xUnit — StateHandler, LlamaClient, LocalChunkCache, AgentServer
-│   ├── Tests.Integration/       xUnit integration — Agent↔Store, chunked dedup spike
-│   │
-│   ├── coordinator/             Python — Coordinator service (FastAPI)
-│   │   ├── app.py               FastAPI app factory
-│   │   ├── router.py            /v1/chat/completions, /sessions, /prefix, /migrate
-│   │   ├── routing.py           4-tier routing algorithm + load metric
-│   │   ├── session_table.py     SessionEntry, SessionTable (in-memory)
-│   │   ├── state_manager.py     save/restore/migrate/evict/prefix-checkpoint
-│   │   ├── health.py            HealthMonitor (polls NODE_HEALTH every 20 s)
-│   │   ├── proxy.py             HTTP proxy to llama-server (streaming + non-streaming)
-│   │   ├── config.py            CoordinatorConfig + WorkerNodeConfig (pydantic-settings)
-│   │   ├── metrics.py           Prometheus metrics (requests, sessions, migrations)
-│   │   └── version.py           reads VERSION file
-│   │
-│   ├── coordinator/tests/       pytest — router, routing, session_table, state_manager, …
-│   │
-    │   ├── lib/                     Python — shared lib (inside coordinator)
-    │   │   ├── rpc_client.py        Python RPC client (async, full protocol impl)
-    │   │   └── log_config.py        structlog JSON setup, trace_id generator
+│   ├── Tests.Core/              xUnit — ChunkEngine, ChunkStore, Coordinator, LlamaClient
 │   │
 │   ├── llama-cpp/               git submodule — hydra-state-streaming branch
 │   │

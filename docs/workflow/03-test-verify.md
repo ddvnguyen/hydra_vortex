@@ -4,10 +4,8 @@
 "Running Tests".
 
 1. **Always (unit):**
-   - .NET: `dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Store/ && dotnet test src/core/Tests.Agent/`
-   - Python: `pytest tests/coordinator`
-2. **If behaviour/runtime changed (integration + E2E):**
-   - Integration: `dotnet test src/core/Tests.Integration`
+   - .NET: `dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`
+2. **If behaviour/runtime changed (E2E):**
    - System / E2E: `pytest tests/system` (mocked first; full-stack needs the live
       stack up — `cd infra && docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up -d`, see `DevelopmentRunBook.md`).
 3. **All green is required before opening a PR.** If you cannot run a tier (e.g. the

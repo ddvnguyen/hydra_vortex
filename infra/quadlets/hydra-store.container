@@ -15,6 +15,8 @@ Environment=HYDRA_STORE_DEBUG_PORT=9501
 Environment=HYDRA_STORE_PG_CONN=Host=localhost;Database=hydra_store;Username=hydra;Password=hydra
 Environment=HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup
 Environment=HYDRA_STORE_RESTORE_TOP_N=10
+Environment=HYDRA_COORD_PORT=9000
+EnvironmentFile=%h/.config/containers/systemd/hydra-coordinator.env
 Tmpfs=/mnt/llm-ram:size=30G
 Label=component=store
 HealthCmd=["/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]

@@ -127,6 +127,33 @@ services:
       component: observability
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16
+    network_mode: host
+    environment:
+      - POSTGRES_DB=hydra_store
+      - POSTGRES_USER=hydra
+      - POSTGRES_PASSWORD=hydra
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydra -d hydra_store"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    labels:
+      component: store
+    restart: unless-stopped
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    network_mode: host
+    environment:
+      - OPENAI_API_BASE_URL=http://localhost:9000/v1
+    labels:
+      component: frontend
+    restart: unless-stopped
+
   pgadmin:
     image: dpage/pgadmin4:latest
     network_mode: host
@@ -154,3 +181,4 @@ volumes:
   grafana-data:
   promtail-positions:
   pgadmin-data:
+  pg-data:

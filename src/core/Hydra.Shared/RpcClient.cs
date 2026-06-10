@@ -5,22 +5,29 @@ using System.Runtime.CompilerServices;
 
 namespace Hydra.Shared;
 
-public sealed class RpcClient : IAsyncDisposable
+public class RpcClient : IAsyncDisposable
 {
-    private readonly string _host;
-    private readonly int _port;
+    internal readonly string _host;
+    internal readonly int _port;
     private readonly SemaphoreSlim _sync = new(1, 1);
     private readonly object _connectLock = new();
+    private readonly TimeSpan _requestTimeout;
     private TcpClient? _client;
     private NetworkStream? _stream;
     private bool _disposed;
 
     private static readonly int[] RetryDelays = [100, 500, 2000];
 
-    public RpcClient(string host, int port)
+    /// <summary>Default per-request timeout. Bounds the whole request (semaphore wait,
+    /// connect, send, receive) so a wedged peer cannot poison the shared connection
+    /// forever — callers passing CancellationToken.None are still protected.</summary>
+    public static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(120);
+
+    public RpcClient(string host, int port, TimeSpan? requestTimeout = null)
     {
         _host = host;
         _port = port;
+        _requestTimeout = requestTimeout ?? DefaultRequestTimeout;
     }
 
     public async Task ConnectAsync(CancellationToken ct)
@@ -43,14 +50,27 @@ public sealed class RpcClient : IAsyncDisposable
         }
     }
 
-    public async Task<RpcResponse> RequestAsync(
+    public virtual async Task<RpcResponse> RequestAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
         string traceId, CancellationToken ct)
     {
-        await _sync.WaitAsync(ct);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_requestTimeout);
+
+        await WaitForTurnAsync(op, timeoutCts.Token, ct);
         try
         {
-            return await SendAndReceiveAsync(op, key, payload, traceId, ct);
+            return await SendAndReceiveAsync(op, key, payload, traceId, timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled mid-request: the wire may hold a half-written request or a
+            // half-read response — the persistent connection is desynced. Drop it
+            // so the next request starts on a fresh socket instead of misframing.
+            DropConnection();
+            if (!ct.IsCancellationRequested)
+                throw NewTimeout(op);
+            throw;
         }
         finally
         {
@@ -62,10 +82,20 @@ public sealed class RpcClient : IAsyncDisposable
         OpCode op, string key, Stream body, long bodyLen,
         string traceId, CancellationToken ct)
     {
-        await _sync.WaitAsync(ct);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_requestTimeout);
+
+        await WaitForTurnAsync(op, timeoutCts.Token, ct);
         try
         {
-            return await SendAndReceiveStreamBodyAsync(op, key, body, bodyLen, traceId, ct);
+            return await SendAndReceiveStreamBodyAsync(op, key, body, bodyLen, traceId, timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            DropConnection(); // mid-request cancel — connection desynced
+            if (!ct.IsCancellationRequested)
+                throw NewTimeout(op);
+            throw;
         }
         finally
         {
@@ -73,23 +103,46 @@ public sealed class RpcClient : IAsyncDisposable
         }
     }
 
+    private async Task WaitForTurnAsync(OpCode op, CancellationToken linkedToken, CancellationToken callerCt)
+    {
+        try
+        {
+            await _sync.WaitAsync(linkedToken);
+        }
+        catch (OperationCanceledException) when (!callerCt.IsCancellationRequested)
+        {
+            // Timed out waiting for the in-flight request on this connection —
+            // no I/O of ours started, so the connection itself is left alone.
+            throw NewTimeout(op);
+        }
+    }
+
+    private TimeoutException NewTimeout(OpCode op) =>
+        new($"RPC {op} to {_host}:{_port} timed out after {_requestTimeout.TotalSeconds:F0}s");
+
     public async IAsyncEnumerable<byte[]> RequestStreamAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
         string traceId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        await _sync.WaitAsync(ct);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_requestTimeout);
+        var token = timeoutCts.Token;
+
+        await WaitForTurnAsync(op, token, ct);
+        var completed = false;
         try
         {
-            await EnsureConnectedAsync(ct);
-            await SendRequestAsync(op, key, payload, traceId, ct);
+            await EnsureConnectedAsync(token);
+            await SendRequestAsync(op, key, payload, traceId, token);
 
             var headerBuf = new byte[Protocol.RESPONSE_HEADER_SIZE];
-            await ReadExactAsync(_stream!, headerBuf, ct);
+            await ReadExactAsync(_stream!, headerBuf, token);
 
             var header = Protocol.ReadResponse(headerBuf);
             if (header.Status != (byte)StatusCode.Ok)
             {
-                var meta = await ReadMetaAsync(_stream!, header.MetaLen, ct);
+                var meta = await ReadMetaAsync(_stream!, header.MetaLen, token);
+                completed = true; // error frame fully consumed — connection still in sync
                 throw new InvalidDataException(
                     $"RPC error (status=0x{header.Status:X2}): {meta}");
             }
@@ -97,7 +150,7 @@ public sealed class RpcClient : IAsyncDisposable
             if (header.MetaLen > 0)
             {
                 var metaBuf = new byte[header.MetaLen];
-                await ReadExactAsync(_stream!, metaBuf, ct);
+                await ReadExactAsync(_stream!, metaBuf, token);
             }
 
             var remaining = (long)header.PayloadLen;
@@ -106,16 +159,26 @@ public sealed class RpcClient : IAsyncDisposable
             while (remaining > 0)
             {
                 var toRead = (int)Math.Min(buf.Length, remaining);
-                var read = await _stream!.ReadAsync(buf.AsMemory(0, toRead), ct);
+                var read = await _stream!.ReadAsync(buf.AsMemory(0, toRead), token);
                 if (read == 0)
                     throw new EndOfStreamException("Connection closed while reading stream response");
                 remaining -= read;
                 yield return buf[..read];
             }
+
+            completed = true;
         }
         finally
         {
+            // Incomplete exit (timeout, error, or caller abandoning the enumeration
+            // mid-stream) leaves unread payload bytes on the wire — the persistent
+            // connection is desynced and must be dropped.
+            if (!completed)
+                DropConnection();
             _sync.Release();
+
+            if (!completed && token.IsCancellationRequested && !ct.IsCancellationRequested)
+                throw NewTimeout(op);
         }
     }
 
@@ -296,6 +359,15 @@ public sealed class RpcClient : IAsyncDisposable
 
     private async Task ReconnectAsync(CancellationToken ct)
     {
+        DropConnection();
+        await ConnectAsync(ct);
+    }
+
+    /// <summary>Dispose the current connection without reconnecting. Used when the
+    /// stream may be desynced (partial request/response on the wire); the next
+    /// request re-establishes a clean connection via EnsureConnectedAsync.</summary>
+    private void DropConnection()
+    {
         lock (_connectLock)
         {
             var oldClient = _client;
@@ -303,7 +375,6 @@ public sealed class RpcClient : IAsyncDisposable
             _stream = null;
             oldClient?.Dispose();
         }
-        await ConnectAsync(ct);
     }
 
     private static async Task ReadExactAsync(NetworkStream stream, byte[] buffer, CancellationToken ct)

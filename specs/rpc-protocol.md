@@ -86,36 +86,27 @@ meta_len      payload_len  payload — raw bytes (streamed)
                     Response: meta={} payload={"n_past":<N>,"chunks":[{"index":<N>,"hash":"<hex>","size":<N>},...]}
 ```
 
-### Agent Operations
+### Agent Operations (retired — Agent merged into Hydra.Core as of PR #203)
+These opcodes were used for Coordinator↔Agent RPC. Since the Agent was merged into
+Hydra.Core as a single C# binary, these opcodes are no longer used on the wire.
+KV state save/restore is now orchestrated internally within Hydra.Core via direct
+llama-server RPC (0x30–0x32) + Store RPC (0x01–0x15).
+
 ```
-0x20  SAVE_STATE          Save slot KV state → push to Store (raw, no dedup)
-                          Request:  key="{session_id}:{slot_id}", payload_len=0
-                          Response: meta={"session_id":"...","slot_id":<N>,"n_past":<N>,"size":<N>,"save_ms":<N>}
-0x21  RESTORE_STATE       Pull from Store → restore to slot (raw, no dedup)
-                          Request:  key="{session_id}:{slot_id}", payload_len=0
-                          Response: meta={"session_id":"...","slot_id":<N>,"n_past":<N>,"restored":<bool>,"restore_ms":<N>}
-0x22  SLOT_STATUS         Get slot metadata (n_past, is_processing)
-                          Request:  key="<slot_id>" (or "" for all slots)
-                          Response: payload=JSON slot array
-0x23  SLOT_ERASE          Erase a slot (free VRAM)
-                          Request:  key="<slot_id>"
-                          Response: meta={"slot_id":<N>,"erased":true}
-0x24  NODE_HEALTH         Get llama-server health + slot summary
-                          Response: meta={} payload={"healthy":<bool>,"slots_total":<N>,"slots_idle":<N>,...}
-0x25  (retired)           Was COMPLETION. Completions go Coordinator→llama-server over
-                          HTTP (proxy.py), never through the Agent. Opcode removed from enums.
-0x26  SAVE_STATE_CHUNKED  Save slot KV state → push to Store with content-addressed dedup
-                          Request:  key="{session_id}:{slot_id}", payload_len=0
-                          Response: meta={...,"chunked":true,"save_ms":<N>}
-                          (active default — coordinator always calls this, not 0x20)
-0x27  RESTORE_STATE_CHUNKED Pull from Store → restore to slot using chunked dedup
-                          Request:  key="{session_id}:{slot_id}", payload_len=0
-                          Response: meta={...,"chunked":true,"restore_ms":<N>}
-                          (active default — coordinator always calls this, not 0x21)
+0x20  (retired)  Was SAVE_STATE
+0x21  (retired)  Was RESTORE_STATE
+0x22  (retired)  Was SLOT_STATUS
+0x23  (retired)  Was SLOT_ERASE — slot erase now handled via llama HTTP DELETE /slots/{id}
+0x24  (retired)  Was NODE_HEALTH — health now checked via llama HTTP GET /health
+0x25  (retired)  Was COMPLETION. Completions go Hydra.Core→llama-server over HTTP,
+                 never through the Agent. Opcode removed from enums.
+0x26  (retired)  Was SAVE_STATE_CHUNKED
+0x27  (retired)  Was RESTORE_STATE_CHUNKED
 ```
 
-### llama-server Direct Operations  (via --rpc-port, implemented in M0)
-Agent calls llama-server directly for KV state transfer.
+### llama-server Direct Operations (via --rpc-port, active)
+Hydra.Core calls llama-server directly for KV state transfer via the llama RPC port
+(RTX :9503, P100 :9502).
 key = slot_id as ASCII decimal string (e.g. "0").
 llama-server knows nothing about Store or sessions — it only manages its own slots.
 

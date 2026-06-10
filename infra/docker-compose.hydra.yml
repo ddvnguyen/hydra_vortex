@@ -1,13 +1,13 @@
 name: hydra-core
 
 services:
-  store:
+  core:
     build:
       context: ..
       dockerfile: infra/Dockerfile
-      target: store
+      target: core
       tags:
-        - localhost/hydra-store:latest
+        - localhost/hydra-core:latest
     network_mode: host
     tmpfs:
       - /mnt/llm-ram:size=30G
@@ -19,8 +19,11 @@ services:
       - HYDRA_STORE_PG_CONN=Host=localhost;Database=hydra_store;Username=hydra;Password=hydra
       - HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup
       - HYDRA_STORE_RESTORE_TOP_N=10
-    depends_on:
-      - postgres
+      - HYDRA_COORD_PORT=9000
+      - HYDRA_COORD_MIX_PRECISION_ENABLED=true
+      - HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD=128
+      - HYDRA_COORD_SMALL_REQUEST_BYPASS_THRESHOLD=0
+      - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"localhost","rpc_port":9601,"llama_rpc_port":9503,"llama_url":"http://localhost:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"localhost","rpc_port":9602,"llama_rpc_port":9502,"llama_url":"http://192.168.122.21:8086","worker_type":2,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
     healthcheck:
       test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
       interval: 10s
@@ -30,112 +33,3 @@ services:
     labels:
       component: store
     restart: unless-stopped
-
-  agent-rtx:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile
-      target: agent
-      tags:
-        - localhost/hydra-agent:latest
-    network_mode: host
-    environment:
-      - HYDRA_AGENT_HOST=0.0.0.0
-      - HYDRA_AGENT_PORT=9601
-      - HYDRA_AGENT_NODE_NAME=rtx
-      - HYDRA_AGENT_LLAMA_URL=http://localhost:8080
-      - HYDRA_AGENT_STORE_HOST=localhost
-      - HYDRA_AGENT_STORE_PORT=9500
-      - HYDRA_AGENT_DEBUG_HTTP_PORT=9611
-    depends_on:
-      - store
-    healthcheck:
-      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9611"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    labels:
-      component: agent
-      node: rtx
-    restart: unless-stopped
-
-  agent-p100:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile
-      target: agent
-      tags:
-        - localhost/hydra-agent:latest
-    network_mode: host
-    environment:
-      - HYDRA_AGENT_HOST=0.0.0.0
-      - HYDRA_AGENT_PORT=9602
-      - HYDRA_AGENT_NODE_NAME=p100
-      - HYDRA_AGENT_LLAMA_URL=http://192.168.122.21:8086
-      - HYDRA_AGENT_STORE_HOST=localhost
-      - HYDRA_AGENT_STORE_PORT=9500
-      - HYDRA_AGENT_DEBUG_HTTP_PORT=9622
-    depends_on:
-      - store
-    healthcheck:
-      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9622"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    labels:
-      component: agent
-      node: p100
-    restart: unless-stopped
-
-  coordinator:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile
-      target: coordinator
-      tags:
-        - localhost/hydra-coordinator:latest
-    network_mode: host
-    environment:
-      - HYDRA_COORD_HOST=0.0.0.0
-      - HYDRA_COORD_PORT=9000
-      - HYDRA_COORD_STORE_HOST=localhost
-      - HYDRA_COORD_STORE_PORT=9500
-      - HYDRA_COORD_LOG_LEVEL=DEBUG
-      - HYDRA_COORD_RUN_MODE=concurrency
-      # Upstream read budget — must outlast worst-case prefill, aligned with llama --timeout 1800 (#134).
-      - HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S=1800
-      - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"localhost","rpc_port":9601,"llama_url":"http://localhost:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"localhost","rpc_port":9602,"llama_url":"http://192.168.122.21:8086","worker_type":2,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
-    depends_on:
-      - store
-    healthcheck:
-      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9000"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    labels:
-      component: coordinator
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:16
-    network_mode: host
-    environment:
-      - POSTGRES_DB=hydra_store
-      - POSTGRES_USER=hydra
-      - POSTGRES_PASSWORD=hydra
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hydra -d hydra_store"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    labels:
-      component: store
-    restart: unless-stopped
-
-volumes:
-  pg-data:

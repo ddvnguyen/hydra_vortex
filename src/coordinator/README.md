@@ -1,4 +1,12 @@
-# Hydra Coordinator
+# Hydra Coordinator (DEPRECATED — merged into Hydra.Core)
+
+> **⚠️ DEPRECATED as of PR #203.** The Python coordinator has been removed and its
+> functionality was merged into **Hydra.Core** — the single C#/.NET 10 binary
+> (HTTP API on :9000, Store RPC on :9500). Agent containers (hydra-agent-rtx,
+> hydra-agent-p100) no longer exist. llama-servers are contacted directly via
+> HTTP/RPC from Hydra.Core. This document is retained for historical reference only.
+
+---
 
 Multi-GPU LLM inference request router. Dispatches chat-completion requests across heterogeneous
 GPU nodes (RTX 5060 Ti sm_120 + Tesla P100 sm_60), orchestrating **P/D disaggregation** with
