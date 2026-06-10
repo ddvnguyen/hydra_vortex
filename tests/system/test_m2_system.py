@@ -305,7 +305,7 @@ def test_migration_recorded_in_stats(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_n_past_guard_resets_when_estimated_too_small(client, monkeypatch):
-    """When estimated tokens <= n_past*0.85, n_past resets to 0 and slot is erased."""
+    """When estimated tokens <= n_past * guard_threshold (default 0.6), n_past resets to 0 and slot is erased."""
     table: SessionTable = client.app.state._session_table
     scheduler: WorkerScheduler = client.app.state._scheduler
     config: CoordinatorConfig = client.app.state._config
@@ -332,7 +332,7 @@ async def test_n_past_guard_resets_when_estimated_too_small(client, monkeypatch)
 
     loop = asyncio.get_running_loop()
     future = loop.create_future()
-    # "hi" → ~2 chars / 4.0 chars_per_token ≈ 1 token < 425 (500*0.85)
+    # "hi" → ~2 chars / 4.0 chars_per_token ≈ 1 token < 300 (500*0.6)
     item = WorkItem(
         request={"messages": [{"role": "user", "content": "hi"}], "stream": False},
         messages=[{"role": "user", "content": "hi"}],
@@ -372,7 +372,7 @@ async def test_n_past_guard_does_not_reset_when_estimated_larger(client, monkeyp
     loop = asyncio.get_running_loop()
     future = loop.create_future()
     long_content = "word " * 600
-    # ~3000 chars / 4.0 ≈ 750 tokens > 425 (500*0.85)
+    # ~3000 chars / 4.0 ≈ 750 tokens > 300 (500*0.6)
     item = WorkItem(
         request={"messages": [{"role": "user", "content": long_content}], "stream": False},
         messages=[{"role": "user", "content": long_content}],

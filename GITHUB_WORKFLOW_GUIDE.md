@@ -71,17 +71,17 @@ This:
 
 ### Step 2: Implement the fix
 
-Edit the files listed in the issue (e.g., `src/core/Hydra.Agent/StateHandler.cs:190–191`).
+Edit the files listed in the issue (e.g., `src/core/Hydra.Core/StateHandler.cs:190–191`).
 
 Follow the fix recommendation in the issue body.
 
 Run the test suite to verify:
 ```bash
 # Tier 1 (no hardware needed)
-pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v
+pytest tests/system -v
 
 # Or specific unit tests
-dotnet test src/core/Tests.Agent/ -c Release -v normal
+dotnet test src/core/Tests.Core/ -c Release -v normal
 ```
 
 ### Step 3: Mark the finding as resolved
@@ -91,7 +91,7 @@ Edit the review file for your milestone. Find the finding block and change `**St
 **Before:**
 ```markdown
 ### [M2-P0-001] Partial-cache restore sends incomplete data
-**File:** `src/core/Hydra.Agent/StateHandler.cs:190–191`
+**File:** `src/core/Hydra.Core/StateHandler.cs:190–191`
 **Status:** open
 **Issue:** #16
 **Assigned:** —
@@ -100,7 +100,7 @@ Edit the review file for your milestone. Find the finding block and change `**St
 **After:**
 ```markdown
 ### [M2-P0-001] Partial-cache restore sends incomplete data
-**File:** `src/core/Hydra.Agent/StateHandler.cs:190–191`
+**File:** `src/core/Hydra.Core/StateHandler.cs:190–191`
 **Status:** resolved
 **Issue:** #16
 **Assigned:** —
@@ -111,7 +111,7 @@ Also update `reviews/INDEX.md` — decrement the count for your severity level.
 
 ### Step 4: Commit your work
 ```bash
-git add src/core/Hydra.Agent/StateHandler.cs reviews/m2-review.md reviews/INDEX.md
+git add src/core/Hydra.Core/StateHandler.cs reviews/m2-review.md reviews/INDEX.md
 git commit -m "fix: [M2-P0-001] reconstruct full KV state from cached chunks
 
 Previously only missing chunks were sent to llama, corrupting the
@@ -187,7 +187,7 @@ The issue auto-closes when the job passes on the same branch.
 
 ### Prometheus Alerts (`monitoring` label)
 Created by `monitor.yml` (every 30 min) when a critical alert fires:
-- Alert: StoreDown, AgentDown, CoordinatorDown, LlamaServerDown, etc.
+- Alert: StoreDown, CoreDown, LlamaServerDown, etc.
 
 **Action:** Investigate the alert via Grafana (link in issue body). The issue auto-closes when the alert stops firing.
 
@@ -240,8 +240,8 @@ gh issue view 8
 # 2. Start a branch from the issue
 gh issue develop 8 --name fix/M1-P1-001
 
-# 3. Edit the coordinator (from the issue body: src/coordinator/router.py:94–96)
-vim src/coordinator/router.py
+# 3. Edit the core routing (from the issue body: src/core/Hydra.Core/Router.cs:94–96)
+vim src/core/Hydra.Core/Router.cs
 # Change:
 #   session_table.register(sess_id, decision.node_name, decision.slot_id or 0)
 # To:
@@ -250,7 +250,7 @@ vim src/coordinator/router.py
 #   session_table.register(sess_id, decision.node_name, decision.slot_id)
 
 # 4. Run tests
-pytest tests/system/test_m1_system.py -v   # test_m1 mocks Agent RPC, so no hardware needed
+pytest tests/system -v   # system tests, no hardware needed
 
 # 5. Update review file
 vim reviews/m1-review.md
@@ -261,7 +261,7 @@ vim reviews/INDEX.md
 # Decrement M1 P1 count from 4 to 3
 
 # 7. Commit
-git add src/coordinator/router.py reviews/m1-review.md reviews/INDEX.md
+git add src/core/Hydra.Core/Router.cs reviews/m1-review.md reviews/INDEX.md
 git commit -m "fix: [M1-P1-001] validate slot_id before session register
 
 All new sessions were registered with default slot_id=0, causing

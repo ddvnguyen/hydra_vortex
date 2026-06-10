@@ -81,19 +81,12 @@ jobs:
             --logger "trx;LogFileName=shared.trx" \
             --results-directory TestResults/
 
-      - name: Unit tests — Store
+      - name: Unit tests — Core
         run: |
-          dotnet test src/core/Tests.Store/ -c Release --no-build --nologo -v normal \
+          dotnet test src/core/Tests.Core/ -c Release --no-build --nologo -v normal \
             --settings src/Hydra.runsettings \
             --filter "FullyQualifiedName!~StoreMetadataTests&FullyQualifiedName!~WriteBehindServiceTests" \
-            --logger "trx;LogFileName=store.trx" \
-            --results-directory TestResults/
-
-      - name: Unit tests — Agent
-        run: |
-          dotnet test src/core/Tests.Agent/ -c Release --no-build --nologo -v normal \
-            --settings src/Hydra.runsettings \
-            --logger "trx;LogFileName=agent.trx" \
+            --logger "trx;LogFileName=core.trx" \
             --results-directory TestResults/
 
 
@@ -153,72 +146,6 @@ jobs:
           **Actor:** ${{ github.actor }}
 
           Build or unit tests failed. See run for details and test artifacts." \
-              --label "ci-failure,auto-created"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  integration:
-    name: Integration Tests
-    runs-on: self-hosted
-    needs: build-test
-    timeout-minutes: 15
-    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-integration')
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Shutdown lingering build servers
-        run: dotnet build-server shutdown
-
-      - name: Build
-        run: dotnet build src/Hydra.sln -c Release --nologo -v minimal
-
-      - name: Integration tests
-        run: |
-          dotnet test src/core/Tests.Integration/ -c Release --no-build --nologo -v normal \
-            --settings src/Hydra.runsettings \
-            --logger "trx;LogFileName=integration.trx" \
-            --results-directory TestResults/
-        env:
-          HYDRA_STORE_URL: http://localhost:9500
-          HYDRA_AGENT_RTX_URL: http://localhost:9601
-          HYDRA_AGENT_P100_URL: http://localhost:9602
-
-      - name: Publish integration test results
-        uses: dorny/test-reporter@v1
-        if: always()
-        with:
-          name: Integration Test Results
-          path: TestResults/integration.trx
-          reporter: dotnet-trx
-          fail-on-error: false
-          fail-on-empty: false
-
-      - name: Upload integration test artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: integration-test-results-${{ github.run_number }}
-          path: TestResults/integration.trx
-          retention-days: 30
-
-      - name: Create issue on integration failure
-        if: failure()
-        run: |
-          TITLE="CI: integration failure on ${{ github.ref_name }}"
-          EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
-            echo "Open issue #$EXISTING already exists — skipping"
-          else
-            gh issue create \
-              --title "$TITLE" \
-              --body "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          **Commit:** \`${{ github.sha }}\`
-          **Branch:** \`${{ github.ref_name }}\`
-          **Actor:** ${{ github.actor }}
-
-          Integration tests failed. Services may be degraded — check Store/Agent/Coordinator health." \
               --label "ci-failure,auto-created"
           fi
         env:

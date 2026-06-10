@@ -1,7 +1,8 @@
 # Store Service Specification
 
 ## Identity
-- Name: hydra-store
+- Name: hydra-core (Store subsystem; previously standalone service hydra-store, now
+  embedded in the Hydra.Core C# binary as of PR #203)
 - Transport: Hydra binary RPC on TCP :9500
 - Backend: tmpfs directory (default: /mnt/llm-ram/store/)
 - Role: Central data store for KV cache states

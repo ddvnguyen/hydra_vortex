@@ -1,0 +1,4 @@
+=== Health ===
+{"status":"healthy","nodes":{"rtx":{"healthy":true,"slots_total":2,"slots_idle":2,"stuck_slots":0},"p100":{"healthy":true,"slots_total":1,"slots_idle":1,"stuck_slots":0}},"store":{"healthy":true}}=== RTX slots ===
+[]=== P100 slots ===
+[{"id":0,"n_ctx":180224,"speculative":false,"is_processing":false,"n_past":0}]=== RTX metrics (tokens) ===

@@ -18,14 +18,9 @@ curl -s http://localhost:9000/status
 curl -s http://localhost:9000/metrics | grep "hydra_"
 ```
 
-### Agent debug
+### Hydra.Core metrics
 ```bash
-curl -s http://localhost:9611/debug   # RTX
-curl -s http://localhost:9622/debug   # P100
-```
-
-### Store metrics
-```bash
+curl -s http://localhost:9000/metrics | grep "hydra_"
 curl -s http://localhost:9501/metrics | grep "hydra_store"
 ```
 
@@ -48,10 +43,9 @@ curl -s http://localhost:9835/metrics | grep -E "DCGM_FI_DEV_GPU_UTIL|DCGM_FI_DE
 
 ### Recent logs
 ```bash
-podman compose logs --since=10m coordinator | grep -v "health_ok\|HTTP Request\|connect_tcp\|send_request\|receive_response\|response_closed\|close\."
-podman compose logs --since=10m store | grep -v "/metrics"
-podman compose logs --since=10m agent-rtx
-podman compose logs --since=10m agent-p100
+podman compose logs --since=10m hydra-core | grep -v "health_ok\|HTTP Request\|connect_tcp\|send_request\|receive_response\|response_closed\|close\."
+podman compose logs --since=10m llama-rtx
+podman compose logs --since=10m llama-p100
 ```
 
 ### Git state
@@ -62,8 +56,7 @@ git describe --tags --always --dirty
 
 ### Runtime versions
 ```bash
-podman exec hydra_coordinator_1 python3 --version
-podman exec hydra_agent-rtx_1 sh -c "dotnet --info 2>&1 | head -5"
+podman exec hydra_core_1 sh -c "dotnet --info 2>&1 | head -5"
 ```
 
 ---
@@ -96,9 +89,9 @@ Each report must contain these sections:
 
 ### 3. Current Operating State
 - Prometheus targets — all jobs listed with health status
-- Coordinator status — requests, sessions, routing stats, node health
-- Store metrics — ops, bytes, durations
-- Agent metrics — save/restore ops, slots
+- Core status — requests, sessions, routing stats, node health
+- Core Store metrics — ops, bytes, durations
+- Core agent metrics — save/restore ops, slots
 - llama-server — tokens processed, slot state
 - GPU — utilization, power, temperature (DCGM)
 - Host — node-exporter availability
@@ -156,7 +149,7 @@ Single table of the most important numbers (requests, ops, bytes, tokens, uptime
 | Symptom | Likely Cause | Check / Fix |
 |---------|-------------|-------------|
 | All requests on RTX | Session affinity from repeat content | Check `derive_session_id()` collisions |
-| P100 metrics empty | HTTP debug endpoint crash | `podman compose restart agent-p100` |
+| P100 metrics empty | Core metrics endpoint not responding | `podman compose restart hydra-core` |
 | Prometheus target down | Container IP changed after restart | `podman compose restart prometheus` or `podman compose up -d --force-recreate` |
 | slots_idle=0 always | Slot stuck `isProcessing` | Check llama `/slots` endpoint |
 | Session count grows unbounded | No eviction loop | `session_table.evict_stale()` never called |
@@ -170,10 +163,8 @@ Single table of the most important numbers (requests, ops, bytes, tokens, uptime
 
 | Service | What to check | URL |
 |---------|--------------|-----|
-| Coordinator | Health, status, metrics | `:9000/health`, `:9000/status`, `:9000/metrics` |
-| Store | Metrics | `:9501/metrics` |
-| Agent RTX | Debug, metrics | `:9611/debug`, `:9611/metrics` |
-| Agent P100 | Debug, metrics | `:9622/debug`, `:9622/metrics` |
+| Core | Health, status, metrics | `:9000/health`, `:9000/status`, `:9000/metrics` |
+| Core Store RPC | Metrics | `:9501/metrics` |
 | llama RTX | Slots, health, metrics | `:8080/slots`, `:8080/health`, `:8080/metrics` |
 | llama P100 | Slots, health | `192.168.122.21:8086/slots`, `192.168.122.21:8086/health` |
 | Prometheus | Targets, labels, query | `:9091/api/v1/targets`, `:9091/api/v1/label/__name__/values` |

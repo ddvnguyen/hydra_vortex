@@ -17,14 +17,10 @@ class OpCode(IntEnum):
     SYNC_PLAN = 0x12
     PUSH_CHUNKS = 0x13
     PUT_META = 0x14
-    SAVE_STATE = 0x20
-    RESTORE_STATE = 0x21
-    SLOT_STATUS = 0x22
-    SLOT_ERASE = 0x23
-    NODE_HEALTH = 0x24
-    # 0x25 retired (was COMPLETION; completions are HTTP-direct, not Agent RPC)
-    SAVE_STATE_CHUNKED = 0x26
-    RESTORE_STATE_CHUNKED = 0x27
+    # 0x20–0x27 retired (was Agent RPC; Agent merged into Hydra.Core C# — PR #203)
+    # 0x20 SAVE_STATE, 0x21 RESTORE_STATE, 0x22 SLOT_STATUS,
+    # 0x23 SLOT_ERASE, 0x24 NODE_HEALTH, 0x25 COMPLETION,
+    # 0x26 SAVE_STATE_CHUNKED, 0x27 RESTORE_STATE_CHUNKED
     GET_MANIFEST = 0x33
 
 class StatusCode(IntEnum):
@@ -57,7 +53,7 @@ class NodeInfo(BaseModel):
     slots: list[SlotInfo]
     slots_total: int
     slots_idle: int
-    url: str  # agent RPC address
+    url: str  # llama-server RPC address (Agent removed — PR #203)
 
 class SessionEntry(BaseModel):
     session_id: str

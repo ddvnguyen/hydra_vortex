@@ -5,16 +5,13 @@ Each system test run produces a JSON result file in this directory:
 
 ## How to Run System Tests
 
-**Prerequisites** — all 6 services running:
+**Prerequisites** — all 3 containers running:
 
 | Service          | Location                          |
 |------------------|-----------------------------------|
 | llama-server RTX | `localhost:8080`                  |
 | llama-server P100| `192.168.122.21:8086`             |
-| Hydra Store      | `localhost:9500`                  |
-| Hydra Agent RTX  | `localhost:9601`                  |
-| Hydra Agent P100 | `192.168.122.21:9602`             |
-| Coordinator      | `localhost:9000`                  |
+| Hydra.Core       | `localhost:9000` (HTTP) + `:9500` (Store RPC) |
 
 ```bash
 # Full system test suite
@@ -36,7 +33,7 @@ python -m pytest tests/system/test_large_prompt_system.py -v -m system
 | duration_s         | Wall-clock seconds                         |
 | status             | passed / failed / error                    |
 | error              | Error summary (only on failure)            |
-| coordinator        | Status, routing stats, session count       |
+| coordinator        | Hydra.Core status, routing stats, session count       |
 | llama_rtx          | Prompt/token metrics + slots from RTX      |
 | llama_p100         | Prompt/token metrics + slots from P100     |
 
@@ -52,7 +49,7 @@ python -m pytest tests/system/test_large_prompt_system.py -v -m system
 ## Improving Tests & Fixing Bugs
 
 1. Run the failing test, check result file for service context
-2. Fix source code (coordinator, agent, or store)
+2. Fix source code (Hydra.Core or Store)
 3. Re-run the specific test
 4. Compare new result against old failure -- error should change/resolve
 5. Run full suite to confirm no regressions

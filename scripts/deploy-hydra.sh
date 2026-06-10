@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and deploy the Hydra core stack (postgres, store, agents, coordinator).
+# Build and deploy Hydra.Core (single binary: Store + Coordinator + Agent).
 # Optionally bump version before deploying.
 #
 # Usage:
@@ -53,17 +53,11 @@ if [ $# -gt 0 ]; then
   git commit -m "v$NEW"
   git tag -a "v$NEW" -m "Hydra v$NEW"
   echo ""
-  cd "$REPO_ROOT"
 fi
 
-step "Building images"
-echo "  store..."
-podman build --target store -f "$REPO_ROOT/infra/Dockerfile" -t localhost/hydra-store:latest "$REPO_ROOT" 2>&1 | tail -1
-echo "  agent..."
-podman build --target agent -f "$REPO_ROOT/infra/Dockerfile" -t localhost/hydra-agent:latest "$REPO_ROOT" 2>&1 | tail -1
-echo "  coordinator..."
-podman build --target coordinator -f "$REPO_ROOT/infra/Dockerfile" -t localhost/hydra-coordinator:latest "$REPO_ROOT" 2>&1 | tail -1
-ok "Images built"
+step "Building image"
+podman build --target core -f "$REPO_ROOT/infra/Dockerfile" -t localhost/hydra-core:latest "$REPO_ROOT"
+ok "Image built"
 
 step "Installing Quadlet files"
 mkdir -p "$QUADLET_DIR"
@@ -72,26 +66,23 @@ cp "$REPO_ROOT/infra/quadlets"/hydra-core.pod "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/pg-data.volume "$QUADLET_DIR"
 
-step "Deploying hydra core"
+step "Deploying Hydra.Core"
 systemctl --user daemon-reload
-# Stop pod (cascades to all containers via BindsTo=)
 systemctl --user stop hydra-core-pod.service 2>/dev/null || true
 sleep 1
-# Pod auto-starts when first container starts
+
 systemctl --user start hydra-postgres.service
 echo "  Waiting for postgres to be healthy..."
-systemctl --user start hydra-store.service
-systemctl --user start hydra-agent-rtx.service hydra-agent-p100.service
-systemctl --user start hydra-coordinator.service
-ok "Hydra core deployed"
+systemctl --user start hydra-core.service
+ok "Hydra.Core deployed"
 
 step "Verifying services"
 sleep 15
-printf "  %-35s" "Store :9501"
-if curl -sf http://localhost:9501/debug --connect-timeout 5 &>/dev/null; then ok "ok"; else echo "  ${YELLOW}⚠${NC} not responding"; fi
-printf "  %-35s" "Coordinator :9000"
+printf "  %-35s" "Hydra.Core debug :9501"
+if curl -sf http://localhost:9501/metrics --connect-timeout 5 &>/dev/null; then ok "ok"; else echo "  ${YELLOW}⚠${NC} not responding"; fi
+printf "  %-35s" "Hydra.Core API :9000"
 COORD=$(curl -sf http://localhost:9000/health --connect-timeout 5 \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])" 2>/dev/null || echo "unreachable")
 if [ "$COORD" = "healthy" ] || [ "$COORD" = "degraded" ]; then ok "$COORD"; else echo "  ${YELLOW}⚠${NC} $COORD"; fi
 
-echo -e "\n${GREEN}${BOLD}Hydra core deployed.${NC}"
+echo -e "\n${GREEN}${BOLD}Hydra.Core deployed.${NC}"

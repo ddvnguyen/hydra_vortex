@@ -1,0 +1,46 @@
+[34m8.02.493.674[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.06.295.464[0m [32mI [0msrv  update_slots: all slots are idle
+[60671] [34m7.06.295.488[0m [32mI [0msrv  log_server_r: done request: GET /slots 127.0.0.1 200
+[34m8.02.493.944[0m [32mI [0msrv  log_server_r: done request: GET /slots 10.89.1.5 200
+[34m8.03.222.939[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.07.024.726[0m [32mI [0msrv  update_slots: all slots are idle
+[34m8.03.232.537[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.07.034.332[0m [32mI [0msrv  update_slots: all slots are idle
+[60671] [34m7.07.034.357[0m [32mI [0msrv  log_server_r: done request: GET /slots 127.0.0.1 200
+[34m8.03.232.811[0m [32mI [0msrv  log_server_r: done request: GET /slots 10.89.1.5 200
+[34m8.03.562.820[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.07.364.639[0m [32mI [0msrv  update_slots: all slots are idle
+[60671] [34m7.07.364.662[0m [32mI [0msrv  log_server_r: done request: GET /slots 127.0.0.1 200
+[34m8.03.563.119[0m [32mI [0msrv  log_server_r: done request: GET /slots 10.89.1.5 200
+[34m8.03.563.817[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.07.387.559[0m [32mI [0mslot get_availabl: id  1 | task -1 | selected slot by LCP similarity, sim_best = 1.000 (> 0.400 thold), f_keep = 1.000
+[60671] [34m7.07.387.599[0m [32mI [0mslot launch_slot_: id  1 | task -1 | sampler chain: logits -> penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+[60671] [34m7.07.387.603[0m [32mI [0mslot launch_slot_: id  1 | task -1 | sampler params: 
+[60671] [34m7.07.387.605[0m [32mI [0mslot launch_slot_: id  1 | task 81 | processing task, is_child = 0
+[60671] [34m7.07.387.609[0m [32mI [0mslot update_slots: id  1 | task 81 | new prompt, n_ctx_slot = 262144, n_keep = 0, task.n_tokens = 958
+[60671] [34m7.07.387.611[0m [35mW slot update_slots: id  1 | task 81 | forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory, see https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
+[60671] [0m[34m7.07.387.613[0m [32mI [0mslot update_slots: id  1 | task 81 | cached n_tokens = 0, memory_seq_rm [0, end)
+[60671] [34m7.07.387.928[0m [32mI [0mslot init_sampler: id  1 | task 81 | init sampler, took 0.11 ms, tokens: text = 958, total = 958
+[60671] [34m7.10.917.955[0m [32mI [0mslot print_timing: id  1 | task 81 | prompt eval time =    3530.34 ms /   958 tokens (    3.69 ms per token,   271.36 tokens per second)
+[60671] [34m7.10.917.958[0m [32mI [0mslot print_timing: id  1 | task 81 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[60671] [34m7.10.917.959[0m [32mI [0mslot print_timing: id  1 | task 81 |       total time =    3530.34 ms /   959 tokens
+[60671] [34m7.10.917.959[0m [32mI [0mslot print_timing: id  1 | task 81 |    graphs reused =          1
+[60671] [34m7.10.918.003[0m [32mI [0mslot      release: id  1 | task 81 | stop processing: n_tokens = 958, truncated = 0
+[60671] [34m7.10.918.012[0m [32mI [0msrv  update_slots: all slots are idle
+[60671] [34m7.10.918.140[0m [32mI [0msrv  log_server_r: done request: POST /v1/chat/completions 127.0.0.1 200
+[34m8.07.116.781[0m [32mI [0msrv  log_server_r: done request: POST /v1/chat/completions 10.89.1.5 200
+[34m8.07.117.551[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.10.919.464[0m [32mI [0msrv  process_sing: hydra: STATE_GET slot=1 n_past=1 state=72.8 MiB — async
+[60671] [34m7.10.919.497[0m [32mI [0msrv  update_slots: all slots are idle
+[60671] [34m7.10.919.500[0m [32mI [0msrv    operator(): hydra: STATE_GET background thread starting (fd=-1 state=72.8 MiB)
+[60671] [34m7.10.950.395[0m [32mI [0msrv    operator(): hydra: STATE_GET background done slot=1 rpc_status=0 path=M1-buffer bytes=76310724
+[60671] [34m7.11.020.080[0m [32mI [0msrv  log_server_r: done request: GET /slots/1/state 127.0.0.1 200
+[34m8.07.218.743[0m [32mI [0msrv  log_server_r: done request: GET /slots/1/state 10.89.1.5 200
+[34m8.11.972.143[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.15.774.011[0m [32mI [0msrv  update_slots: all slots are idle
+[34m8.14.786.068[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.18.587.959[0m [32mI [0msrv  update_slots: all slots are idle
+[34m8.14.794.745[0m [32mI [0msrv  proxy_reques: proxying request to model balanced on port 60671
+[60671] [34m7.18.596.498[0m [32mI [0msrv  update_slots: all slots are idle
+[60671] [34m7.18.596.520[0m [32mI [0msrv  log_server_r: done request: GET /slots 127.0.0.1 200
+[34m8.14.794.973[0m [32mI [0msrv  log_server_r: done request: GET /slots 10.89.1.5 200
