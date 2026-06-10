@@ -7,12 +7,15 @@ Three test tiers: NIAH (retrieval), Perplexity (distribution), Math (reasoning).
 
 ```
 Client (curl) → Hydra Core :9000
-  → Router → RTX prefill (1 token, stream=false)
-  → SaveKv → GET /slots/{id}/state → /mnt/llm-ram/store/{session}.kv
+  → Router → RTX prefill (n_predict=0, stream=false)
+  → SaveKv → RPC StateGet(llama :9503) → RPC Put(Store :9500)
   → PickDecode → P100
-  → RestoreKv → PUT /slots/{id}/state?erase_existing=true
+  → RestoreKv → RPC Get(Store :9500) → RPC StatePut(llama :9502)
   → Decode → streaming/non-streaming response
 ```
+
+All KV state operations use binary Hydra RPC (ports 9500/9502/9503), not HTTP.
+The Store persists KV blobs at `HYDRA_STORE_DIR` (/mnt/llm-ram/store in the container).
 
 ## Tier 1: Needle-in-a-Haystack (NIAH)
 
@@ -106,10 +109,10 @@ Shows per-request phase durations (prefill_ms, save_kv_ms, restore_kv_ms, decode
 
 ```bash
 # Hydra Core scheduler events (P/D split phases)
-journalctl --user -u hydra-core -f --no-pager | grep -E "routing|save_kv|restore_kv|request_timeline|cold_concurrency|prefill"
+podman logs -f hydra-core 2>&1 | grep -E "routing|save_kv|restore_kv|request_timeline|prefill|decode|state_trans"
 
 # RTX llama-server
-docker logs -f llama-cpp 2>&1 | grep -E "hydra|slot|state"
+podman logs -f llama-cpp 2>&1 | grep -E "hydra|slot|state|STATE|n_past"
 
 # P100 llama-server
 ssh hydra-p100 'journalctl --user -u llama-p100 -f --no-pager | grep -E "hydra|slot|state"'
@@ -132,10 +135,118 @@ curl -s http://192.168.122.21:8086/metrics | grep -E "tokens|requests"
 
 ```bash
 watch -n 2 '
-echo "=== RTX slots ===" && curl -s http://localhost:8080/slots | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d),\"slots\")" 2>/dev/null
-echo "=== P100 slots ===" && curl -s http://192.168.122.21:8086/slots | python3 -c "import sys,json; d=json.load(sys.stdin); s=d[0] if d else {}; print(f\"{len(d)} slots n_past={s.get(\"n_past\",0)}\")" 2>/dev/null
-echo "=== KV files ===" && ls -lh /mnt/llm-ram/store/*.kv 2>/dev/null || echo "none"
+echo "=== Core ===" && curl -s http://localhost:9000/health 2>/dev/null | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+n=d[\"nodes\"]
+print(f\"rtx healthy={n[\"rtx\"][\"healthy\"]} idle={n[\"rtx\"][\"slots_idle\"]}\")
+print(f\"p100 healthy={n[\"p100\"][\"healthy\"]} idle={n[\"p100\"][\"slots_idle\"]}\")
+" 2>/dev/null
+echo "=== RTX slots ===" && curl -s http://localhost:8080/slots 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\"{len(d)} slots, n_past={[s.get(\"n_past\",0) for s in d]}\")" 2>/dev/null
+echo "=== P100 slots ===" && curl -s http://192.168.122.21:8086/slots 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\"{len(d)} slots, n_past={[s.get(\"n_past\",0) for s in d]}\")" 2>/dev/null
+echo "=== Token deltas ===" && echo -n "RTX: " && curl -s http://localhost:8080/metrics 2>/dev/null | grep "^llamacpp:prompt_tokens_total\|^llamacpp:tokens_predicted_total" | tr "\n" " " && echo "" && echo -n "P100: " && curl -s http://192.168.122.21:8086/metrics 2>/dev/null | grep "^llamacpp:prompt_tokens_total\|^llamacpp:tokens_predicted_total" | tr "\n" " " && echo ""
+echo "=== Last test report ===" && ls -lt /tmp/hydra-eval-results/*report* 2>/dev/null | head -1
 '
+```
+
+## P100 Recovery
+
+If P100 `/v1/chat/completions` hangs (returns empty after timeout) or RPC StatePut
+times out, the P100 GPU is likely in a CUDA kernel hang. The systemd service was
+SIGTERM-killed mid-inference, leaving the GPU in an unrecoverable state.
+
+### Symptoms
+- `curl http://192.168.122.21:8086/health` → `{"status":"ok"}` (health fine)
+- `curl http://192.168.122.21:8086/slots` → slots exist with valid n_past
+- `curl http://192.168.122.21:8086/v1/chat/completions` → **hangs** (no response)
+- `ssh hydra-p100 'journalctl --user -u llama-p100'` → `Failed with result 'timeout'`
+- P100 GPU-Util = 0%, but model VRAM still allocated (~12GB)
+- Core logs: `restore_kv_start` followed by no `state_restored` for 60+ seconds
+
+### Recovery procedure
+```bash
+# 1. Stop P100 (may take 30s due to stuck CUDA kernel)
+ssh hydra-p100 'systemctl --user stop llama-p100'
+
+# 2. Wait for GPU cleanup (GPU memory must drop to near 0)
+sleep 10
+ssh hydra-p100 nvidia-smi | grep "MiB"
+
+# 3. Start P100 + wait for model (~90s)
+ssh hydra-p100 'systemctl --user start llama-p100'
+# Monitor: curl -s http://192.168.122.21:8086/health
+
+# 4. Verify completions work
+curl -s -m15 http://192.168.122.21:8086/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"balanced","messages":[{"role":"user","content":"2+2"}],"max_tokens":2}'
+# Should return JSON with choices[0].message.content
+
+# 5. Restart Core to clear stuck classifier
+podman restart hydra-core
+```
+
+## Direct llama-server Testing (bypassing Core)
+
+When the P/D split infrastructure is unstable or you want to isolate content quality
+from routing issues, test directly against llama-server:
+
+### Single-node RTX test
+```bash
+RKEY="NIAH-$(printf '%04X' $RANDOM)"
+echo "Passkey: $RKEY"
+
+# Build prompt
+python3 -c "
+paras = ['Software engineering...','Database indexing...','Container orchestration...']
+target = 2000; depth = 50; pk = '$RKEY'
+hs = ' '.join(paras * (target * 3 // sum(len(p) for p in paras)))
+ip = len(hs) * depth // 100
+prompt = f'Code: {pk}\n\n{hs[:ip]} IMPORTANT: code is {pk}. {hs[ip:]}\n\nWhat is the code?'
+import json; open('/tmp/niah-body.json','w').write(json.dumps({'model':'balanced','messages':[{'role':'user','content':prompt}],'max_tokens':100,'temperature':0}))
+"
+
+# Send to RTX directly
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" -d @/tmp/niah-body.json | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+msg=d['choices'][0]['message']; u=d['usage']
+cont=msg.get('content',''); reas=msg.get('reasoning_content','')
+print(f'prompt={u[\"prompt_tokens\"]} comp={u[\"completion_tokens\"]} cached={u.get(\"prompt_tokens_details\",{}).get(\"cached_tokens\",0)}')
+print(f'content ({len(cont)}c): [{cont}]')
+print(f'reasoning ({len(reas)}c): [{reas[:500]}]')
+print(f'PASSKEY: {\"✓ FOUND\" if \"$RKEY\" in (cont+reas) else \"✗ NOT FOUND\"}')
+"
+```
+
+### Checking model output quality
+The Qwen35MoE model with `--reasoning on` produces `reasoning_content` (thinking)
+separately from `content` (final answer). With insufficient `max_tokens`, the model
+exhausts all tokens in reasoning and produces empty content. For NIAH tests:
+
+| Context | Recommended max_tokens | Why |
+|---------|----------------------|-----|
+| 1K tokens | 80 | Reasoning + answer fits |
+| 2K tokens | 100-120 | Reasoning takes ~70 tokens, leaves room for content |
+| 5K tokens | 200 | Longer context → longer reasoning chain |
+| 8K+ tokens | 300+ | Substantial reasoning needed |
+
+Always check BOTH `content` AND `reasoning_content` for the passkey.
+An empty `content` with the passkey in `reasoning_content` is a PASS —
+the model recalled correctly; it just needs more tokens to finalize the answer.
+
+### Verifying P/D split independently
+```bash
+# Snapshot metrics before test
+curl -s http://localhost:8080/metrics | grep "^llamacpp:prompt_tokens_total " > /tmp/pre-rtx-ppt.txt
+curl -s http://192.168.122.21:8086/metrics | grep "^llamacpp:tokens_predicted_total " > /tmp/pre-p100-tpt.txt
+
+# Run test via Core
+curl -s http://localhost:9000/v1/chat/completions -d @/tmp/niah-body.json
+
+# Check deltas — RTX ppt should be >100, P100 tpt should be >=3
+echo "RTX prefill: +$(($(curl -s http://localhost:8080/metrics|grep '^llamacpp:prompt_tokens_total '|awk '{print int($NF)}') - $(cat /tmp/pre-rtx-ppt.txt|awk '{print int($NF)}')))"
+echo "P100 decode: +$(($(curl -s http://192.168.122.21:8086/metrics|grep '^llamacpp:tokens_predicted_total '|awk '{print int($NF)}') - $(cat /tmp/pre-p100-tpt.txt|awk '{print int($NF)}')))"
 ```
 
 ## Test Data
