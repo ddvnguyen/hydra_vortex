@@ -198,7 +198,7 @@ except: print('  parse_error')" 2>/dev/null
 
             echo ""
             sleep 2
-            ((i++))
+            i=$((i+1))
         done
         echo "--- poller stopped ($i polls) ---"
     } > "${RESULT_DIR}/${test_name}-slot-timeline.txt" 2>&1 &
@@ -276,6 +276,7 @@ verify_pd_split() {
         ppt_verdict="RTX prefilled (Δ=+${rtx_ppt_d}), P100 had cache hit (Δ=+${p100_ppt_d})"
         rtx_ppt_icon="✓"
     else
+        ppt_verdict="RTX prompt_tokens delta too small (Δ=+${rtx_ppt_d})"
         issues+=("RTX prompt_tokens delta too small (+${rtx_ppt_d}, expected >100)")
         rtx_ppt_icon="✗"
     fi
@@ -338,6 +339,8 @@ verify_pd_split() {
     PPT_VERDICT="$ppt_verdict"
     PPT_ICONS="${rtx_ppt_icon}/${p100_ppt_icon}"
     TPT_ICONS="${rtx_tpt_icon}/${p100_tpt_icon}"
+    RTX_PPT_ICON="$rtx_ppt_icon";  P100_PPT_ICON="$p100_ppt_icon"
+    RTX_TPT_ICON="$rtx_tpt_icon";  P100_TPT_ICON="$p100_tpt_icon"
     SLOT_VERDICT="$slot_icon"
     P100_NPAST_POST=$p100_n_past_post
 }
@@ -630,10 +633,10 @@ main() {
     for ctx in "${CTX_ARR[@]}"; do
         ctx=$(echo "$ctx" | xargs)
         local name="niah-c${ctx}-d${depth}"
-        ((total++))
+        total=$((total+1))
 
         run_single_test "$ctx" "$depth" "$name"
-        if $PD_PASS; then ((passed++)); fi
+        if $PD_PASS; then passed=$((passed+1)); fi
         sleep 3  # Cool-down between tests
     done
 

@@ -6,9 +6,8 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin
 ExecStart=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server \
-  -m /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf \
+  -m /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf \
   --chat-template-file /mnt/readonly_data/qwen3.6_merged_template.jinja \
-  --slot-save-path /mnt/kv_slots/ \
   --host 0.0.0.0 \
   --port 8086 \
   --rpc-port 9502 \
@@ -23,7 +22,6 @@ ExecStart=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server \
   --cache-type-v q8_0 \
   --cache-type-k q8_0 \
   --kv-unified \
-  --log-timestamps \
   --log-prefix \
   --metrics \
   --slots \
@@ -38,13 +36,12 @@ ExecStart=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server \
   --cache-reuse 64 \
   --yarn-orig-ctx 32768 \
   --rope-scaling yarn \
-  --rope-scale 6 \
+  --rope-scale 12 \
   --reasoning on \
   --timeout 1800 \
-  --spec-type draft-mtp \
-  --spec-draft-n-max 3 \
   --jinja \
-  --chat-template-kwargs '{"preserve_thinking": true}'
+  --chat-template-kwargs '{"preserve_thinking": true}' \
+  --override-tensor token_embd\.weight=CPU
 StandardOutput=append:/var/log/hydra/llama-p100.log
 StandardError=append:/var/log/hydra/llama-p100.log
 Restart=on-failure
