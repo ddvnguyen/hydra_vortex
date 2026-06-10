@@ -43,14 +43,14 @@ INVALID (merge):                       VALID (chain / DAG):
 Client → Coordinator :9000 ──RPC──► Agent RTX/P100 ──HTTP──► llama-server
                        └──RPC──► Store :9500  (tmpfs /mnt/llm-ram/store + PostgreSQL metadata)
 ```
-- **Chunks:** content-addressed, **fixed 1 MB** (`src/core/Hydra.Store/ChunkEngine.cs`), SHA-256 named.
+- **Chunks:** content-addressed, **fixed 1 MB** (`src/core/Hydra.Core/ChunkEngine.cs`), SHA-256 named.
 - **Metadata (PostgreSQL, `StoreMetadata.cs`):** `sessions`, `chunks`, `session_chunks` (ordered
   manifest). `ChunkRef(Index, Hash, Size)` already supports **variable-size chunks**.
 - **Delta-save (Phase 1):** `SyncMissing 0x12` → `PushChunks 0x13` → `PutManifest 0x15`;
   `GetManifest 0x33`. Opcodes in `src/core/Hydra.Shared/Protocol.cs` (next free = `0x16`).
 - **Prefix checkpoint (half-done):** coordinator saves/restores `prefix/<hash>:<slot>` but tracks
   "already saved" in an **in-memory `_saved_prefixes` set** — lost on restart, not cross-conversation
-  by default. `compute_prefix_hash` lives in `src/coordinator/routing.py`.
+  by default. `compute_prefix_hash` lives in `src/core/Hydra.Core/`.
 - **Gaps:** no parent pointers / DAG, no git/commit awareness, GC only counts `session_chunks`.
 
 ---
@@ -153,7 +153,7 @@ asserts parity):
 Follow-on (checkpoints): `SaveCheckpoint` / `RestoreCheckpoint` / `ListCheckpoints` reuse the node
 machinery with `kind=checkpoint` and `parent_id`.
 
-Save/restore reuse the existing chunked plumbing (`Agent.StateHandler`, `LocalChunkCache`, delta
+Save/restore reuse the existing chunked plumbing (`Hydra.Core.StateHandler`, `LocalChunkCache`, delta
 push). Only the manifest write target changes (`kv_node_chunks` instead of `session_chunks`).
 
 ---
@@ -200,7 +200,7 @@ as CI is green.
 ---
 
 ## Verification
-- **Store (A/B):** `dotnet test src/core/Tests.Store src/core/Tests.Integration`; node round-trip
+- **Store (A/B):** `dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`; node round-trip
   byte-identical (hash of reassembled buffer == original); GC retains node-only chunks; nearest-
   ancestor lookup over a 3-commit lineage.
 - **FastCDC (C):** round-trip byte-identical; on "insert N bytes near the front", CDC re-save dedup
@@ -209,5 +209,5 @@ as CI is green.
   prompt → second is a hit and survives a simulated restart; request at `commit B` (child of `A`)
   with only `A` cached → resolves to `A`, prefills only the residual; missing repo headers → behaves
   as prefix-only.
-- **E2E:** `dotnet test src/core/Tests.Integration`, `pytest tests/system`; repeat 80K-context request
+- **E2E:** `dotnet test src/core/Tests.Core/`, `pytest tests/system`; repeat 80K-context request
   shows high `cached_tokens` / TTFT collapse vs cold (`DevelopmentRunBook.md`).

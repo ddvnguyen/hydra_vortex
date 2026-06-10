@@ -127,7 +127,9 @@ internal sealed class StreamingFixture : IAsyncDisposable
 			Tracker.InitWorker(w.Name, w.Slots);
 
 		var sp = new ServiceCollection().BuildServiceProvider();
-		Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, null,
+		// Rpc doubles as Store, Agent and llama binary-RPC client — every RPC
+		// the scheduler makes is recorded in Rpc.Calls, none touch a socket.
+		Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, Rpc,
 			sp, Serilog.Log.Logger);
 		Scheduler.AgentClientFactory = (_, _) => Rpc;
 
@@ -219,7 +221,8 @@ public sealed class AffinityPathTests
 		Assert.NotNull(e2);
 		if (e2!.SlotFreed)
 		{
-			Assert.Equal(0, e2.NPast); // Guard reset n_past
+			// Guard reset n_past, but subsequent decode updates it to decodeTokens (6000)
+			Assert.Equal(6000, e2.NPast);
 		}
 
 		// Turn 3 — migration (slot freed → store-restore)
@@ -281,11 +284,13 @@ public sealed class MigrationPathTests
 		e!.SlotFreed = true;
 		e.HasStoreState = true;
 
-		// Turn 2 — migration via store-restore
+		// Turn 2 — migration via store-restore (Store Get → llama StatePut)
 		f.Rpc.ClearCalls();
 		await f.SubmitAsync("sess_m1", 100, 50);
-		Assert.True(f.Rpc.HasCall(OpCode.RestoreStateChunked, "sess_m1"),
-			"Migration should call RestoreStateChunked");
+		Assert.True(f.Rpc.HasCall(OpCode.Get, "sess_m1"),
+			"Migration should fetch KV from the Store");
+		Assert.True(f.Rpc.HasCall(OpCode.StatePut),
+			"Migration should push KV into the decode node");
 	}
 
 	[Fact]
@@ -305,8 +310,10 @@ public sealed class MigrationPathTests
 
 		f.Rpc.ClearCalls();
 		await f.SubmitAsync("sess_m2", 3000, 100);
-		Assert.True(f.Rpc.HasCall(OpCode.RestoreStateChunked, "sess_m2"),
-			"Migration turn should call RestoreStateChunked");
+		Assert.True(f.Rpc.HasCall(OpCode.Get, "sess_m2"),
+			"Migration turn should fetch KV from the Store");
+		Assert.True(f.Rpc.HasCall(OpCode.StatePut),
+			"Migration turn should push KV into the decode node");
 	}
 
 	[Fact]
@@ -322,8 +329,10 @@ public sealed class MigrationPathTests
 
 		f.Rpc.ClearCalls();
 		await f.SubmitAsync("sess_m3", 100, 50);
-		Assert.True(f.Rpc.HasCall(OpCode.RestoreStateChunked, "sess_m3"),
-			"Migration after freed slot should call RestoreStateChunked");
+		Assert.True(f.Rpc.HasCall(OpCode.Get, "sess_m3"),
+			"Migration after freed slot should fetch KV from the Store");
+		Assert.True(f.Rpc.HasCall(OpCode.StatePut),
+			"Migration after freed slot should push KV into the decode node");
 
 		// Verifies migration path produces a valid result
 		var ee = f.Ledger.Lookup("sess_m3");
@@ -449,9 +458,11 @@ public sealed class ColdConcurrencyPathTests
 		// RTX has 2 slots, P100 has 1 (decode-only)
 		await f.SubmitAsync("sess_d4", 2000, 100);
 
-		// Verify SaveStateChunked was called (save after prefill)
-		Assert.True(f.Rpc.HasCall(OpCode.SaveStateChunked, "sess_d4"),
-			"Pre-fill → save → restore → decode should include SaveStateChunked");
+		// Verify save-after-prefill: llama StateGet → Store Put
+		Assert.True(f.Rpc.HasCall(OpCode.StateGet),
+			"Pre-fill → save should stream KV out of the prefill node");
+		Assert.True(f.Rpc.HasCall(OpCode.Put, "sess_d4"),
+			"Pre-fill → save should store KV under the session key");
 	}
 }
 

@@ -2,7 +2,7 @@
 
 ## What Is This
 Multi-GPU LLM inference system. Routes requests across RTX 5060 Ti and Tesla P100.
-All Hydra services (including Agent P100) run as containers on the host; only
+All Hydra services run as containers on the host; Hydra.Core is the single C# binary; only
 llama-server P100 lives in a KVM VM (192.168.122.21:8086). Migrates ~800 MB KV
 cache state between GPUs without re-prefill.
 
@@ -17,26 +17,21 @@ cache state between GPUs without re-prefill.
 
 ## Architecture
 ```
-Client (HTTP) → Coordinator :9000 [Python/FastAPI]
-                    │ RPC           │ RPC
-                    ▼               ▼
-              Agent RTX :9601   Agent P100 :9602  [C#/.NET 10]
-                │ HTTP local        │ HTTP local
-                ▼                   ▼
-           llama :8080        llama :8086          [C++ fork]
-                │ RPC               │ RPC
-                └────────┬──────────┘
-                         ▼
-                   Store :9500                     [C#/.NET 10]
-                   /mnt/llm-ram/store/ (tmpfs)
+Client (HTTP) → Hydra.Core :9000 [C#/.NET 10]
+                    │ HTTP            │ HTTP
+                    ▼                 ▼
+              llama RTX :8080    llama P100 :8086  [C++ fork]
+                    │ RPC              │ RPC
+                    └────────┬─────────┘
+                             ▼
+                       Store RPC :9500 + tmpfs
+                       /mnt/llm-ram/store/
 ```
 
 ## Language Decisions (FINAL — do not change)
 | Service     | Language  | Reason                                      |
 |-------------|-----------|---------------------------------------------|
-| Store       | C# .NET 10 | System.IO.Pipelines, Socket.SendFileAsync   |
-| Agent       | C# .NET 10 | Same RPC lib as Store, team expertise       |
-| Coordinator | Python    | Langfuse, pydantic, best LLM tooling        |
+| Hydra.Core  | C# .NET 10 | System.IO.Pipelines, Socket.SendFileAsync   |
 | llama-server| C++ (fork)| +3 streaming state endpoints only           |
 
 ## Critical Facts (POC verified)
@@ -56,7 +51,7 @@ Three new endpoints added to tools/server/server.cpp:
 - PUT /slots/{id}/state      → stream binary KV state in
 - GET /slots/{id}/state/meta → metadata (n_past, state_size)
 
-These eliminate disk round-trips. Agent pipes stream directly llama↔Store.
+These eliminate disk round-trips. Hydra.Core pipes stream directly llama↔Store.
 Without these patches, nothing else in the system makes sense.
 Build RTX: GGML_CUDA_FORCE_CUBLAS=ON, sm_120. Build P100: sm_60.
 
@@ -93,8 +88,8 @@ automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
    In Progress. → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
    follow the milestone doc. → `docs/workflow/02-implement.md`
-3. **Test / verify** — unit (`dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Store/ && dotnet test src/core/Tests.Agent/`, `pytest tests/coordinator`) + E2E
-   (`dotnet test src/core/Tests.Integration`, `pytest tests/system`) green before PR.
+3. **Test / verify** — unit (`dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`) + E2E
+   (`pytest tests/system`) green before PR.
    → `docs/workflow/03-test-verify.md`
 4. **Commit & PR** — conventional commits + `Co-Authored-By`; `gh pr create …
    Closes #N` (this link auto-moves the Project item). → `docs/workflow/04-commit-pr.md`
@@ -155,13 +150,13 @@ Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
 
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host machine, i7-12700K, 64 GB
-- Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM at 192.168.122.21 (llama-server only; Agent P100 runs on host)
+- Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM at 192.168.122.21 (llama-server only)
 - tmpfs 30 GB at /mnt/llm-ram (compose-managed inside Store container)
 - Model: Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf (qwen35moe arch, MTP spec-decode, vision mmproj)
 
 ## Monitoring & Observability
 Prometheus + Loki + Grafana + Promtail run as Quadlet systemd user services
-(files in `infra/quadlets/`); Hydra services (Store, Agents, Coordinator) also
+(files in `infra/quadlets/`); Hydra services (Hydra.Core) also
 run as Quadlet services. Grafana at :3000, Prometheus at :9091, Loki at :3100.
 
 ### Start everything
@@ -178,10 +173,8 @@ bash scripts/start-hydra.sh --skip-p100  # skip P100 llama-server
 ### Key dashboards/metrics endpoints
 - Grafana: http://localhost:3000 (anonymous admin)
 - Prometheus: http://localhost:9091
-- Store metrics: http://localhost:9501/metrics
-- Agent RTX metrics: http://localhost:9611/metrics
-- Agent P100 metrics: http://localhost:9622/metrics
-- Coordinator metrics: http://localhost:9000/metrics
+- Core metrics: http://localhost:9501/metrics
+- Core API metrics: http://localhost:9000/metrics
 - llama RTX metrics: http://localhost:8080/metrics
 - Node exporter: http://localhost:9100/metrics
 - GPU exporter: http://localhost:9835/metrics
@@ -207,10 +200,10 @@ Prometheus alerting rules in `infra/prometheus/alerts.yml` — covers service do
 
 ### Dashboard panels
 1. Service Metrics: request rate, sessions, store ops, bytes, cache hit rate, migrations
-2. Agent Performance: save/restore p50/p95 duration
+2. KV Save/Restore Performance: save/restore p50/p95 duration
 3. Host & GPU: utilization, memory, temperature, power, CPU, RAM
 4. llama-server: tokens/s, requests processing, KV cache usage
-5. Service Health: up/down table, llama health per node, agent slot status
+5. Service Health: up/down table, llama health per node, worker slot status
 6. Logs: all service logs with trace_id filter
 
 ## Coding Agent Rules
@@ -250,8 +243,8 @@ Always launch parallel sub-agents via the `task` tool when work can be decompose
 This is **not optional** for multi-file or multi-domain tasks.
 
 **When to use:**
-- Research / exploration — e.g., search codebase for patterns across services (Store C#,
-  Agent C#, Coordinator Python) simultaneously
+- Research / exploration — e.g., search codebase for patterns across services (Hydra.Core C#,
+  llama-server C++) simultaneously
 - Multi-file changes — e.g., one agent implements the Store change, another the Agent change,
   a third updates tests
 - Decomposition — break a large feature into 2-3 parallel scouting agents, then implement

@@ -20,7 +20,7 @@ RPC connections are patched in-process. Run on any machine, any time.
 ### Tier 1.5 — Standalone Store + PG (only Store + PostgreSQL needed, no GPUs)
 
 Requires Store and PostgreSQL, but no GPU services.  Start with:
-`docker compose up -d postgres store`
+`docker compose up -d postgres hydra-core`
 
 | File | What it tests |
 |------|---------------|
@@ -28,7 +28,7 @@ Requires Store and PostgreSQL, but no GPU services.  Start with:
 
 ### Tier 2 — Full stack (real services required)
 
-All 6 services must be up and healthy before running. GPU hardware required.
+All 3 containers must be up and healthy before running. GPU hardware required.
 
 | File | What it tests |
 |------|---------------|
@@ -42,10 +42,10 @@ All 6 services must be up and healthy before running. GPU hardware required.
 
 ## Run — Tier 1.5 (Store + PostgreSQL, no GPU)
 
-Requires only Store + PG from the compose file:
+Requires only Hydra.Core + PG from the compose file:
 
 ```bash
-docker compose up -d postgres store
+docker compose up -d postgres hydra-core
 pytest tests/system/test_store_persistence_e2e.py -v
 ```
 
@@ -93,12 +93,9 @@ pytest tests/system/test_m1_system.py tests/system/test_m2_system.py -v \
 Start in this order and wait for each to be healthy before proceeding:
 
 ```
-1. llama-server RTX     :8080   (host machine)
-2. llama-server P100    :8086   (KVM VM 192.168.122.21)
-3. Hydra Store          :9500   (host machine)
-4. Hydra Agent RTX      :9601   (host machine)
-5. Hydra Agent P100     :9602   (KVM VM 192.168.122.21)
-6. Coordinator          :9000   (host machine)
+1. llama-server RTX     :8080    (host machine)
+2. llama-server P100    :8086    (KVM VM 192.168.122.21)
+3. Hydra.Core           :9000    (host machine — HTTP API + Store RPC :9500)
 ```
 
 Quick health check before running:
@@ -115,18 +112,16 @@ All have defaults matching the standard local setup. Override only when addresse
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `COORD_URL` | `http://localhost:9000` | Coordinator HTTP endpoint |
+| `COORD_URL` | `http://localhost:9000` | Hydra.Core HTTP endpoint |
 | `RTX_LLAMA_URL` | `http://localhost:8080` | RTX llama-server |
 | `P100_LLAMA_URL` | `http://192.168.122.21:8086` | P100 llama-server (VM) |
 | `LLAMA_RTX_URL` | `http://localhost:8080` | RTX llama (used by large/stress tests) |
 | `LLAMA_P100_URL` | `http://192.168.122.21:8086` | P100 llama (used by large/stress tests) |
-| `RTX_AGENT_HOST` | `127.0.0.1` | RTX agent RPC host |
-| `RTX_AGENT_PORT` | `9601` | RTX agent RPC port |
-| `P100_AGENT_HOST` | `127.0.0.1` | P100 agent RPC host (same host as coordinator) |
-| `P100_AGENT_PORT` | `9602` | P100 agent RPC port |
-| `STORE_HOST` | `127.0.0.1` | Store RPC host |
+| `LLAMA_RTX_RPC_PORT` | `9503` | RTX llama-server RPC port |
+| `LLAMA_P100_RPC_PORT` | `9502` | P100 llama-server RPC port |
+| `STORE_HOST` | `127.0.0.1` | Store RPC host (embedded in Hydra.Core) |
 | `STORE_PORT` | `9500` | Store RPC port |
-| `STORE_DEBUG_URL` | `http://127.0.0.1:9501` | Store HTTP debug endpoint |
+| `STORE_DEBUG_URL` | `http://127.0.0.1:9501` | Hydra.Core metrics endpoint |
 | `PG_DSN` | `postgresql://hydra:hydra@localhost:5432/hydra_store` | PostgreSQL DSN for persistence verification |
 
 ### Run commands
@@ -173,6 +168,6 @@ These are not test bugs — they reflect real hardware invariants:
 
 ## Adding new system tests
 
-- **Mocked tests** (no services): do not use `@pytest.mark.system`. Patch RpcClient via `unittest.mock.patch` at `coordinator.health.RpcClient` and `coordinator.state_manager.RpcClient`.
+- **Mocked tests** (no services): do not use `@pytest.mark.system`. Patch RPC/storage clients via `unittest.mock.patch` at the relevant Hydra.Core service layer (replaces old `coordinator.health.RpcClient` / `coordinator.state_manager.RpcClient` Python paths, which were removed with the Python coordinator).
 - **Full-stack tests** (real services): add `@pytest.mark.system` and `@pytest.mark.asyncio`. Use `uuid4().hex[:12]` session IDs to avoid collisions between runs. Always clean up sessions in a `try/except` block at the end.
 - Do not add `@pytest.mark.system` to mocked tests — it controls which tests run in CI and which require hardware.
