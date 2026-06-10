@@ -1,10 +1,10 @@
 [Unit]
-Description=Hydra PostgreSQL (deprecated — use infra-postgres.container)
+Description=Hydra PostgreSQL (Infra)
 BindsTo=infra-host-pod.service
 After=infra-host-pod.service
 
 [Container]
-ContainerName=hydra-postgres
+ContainerName=infra-postgres
 Image=postgres:16
 Pod=infra-host.pod
 Environment=POSTGRES_DB=hydra_store

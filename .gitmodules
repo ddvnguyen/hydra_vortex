@@ -2,6 +2,3 @@
 	path = src/llama-cpp
 	url = https://github.com/ddvnguyen/llama.cpp
 	branch = hydra-state-streaming
-[submodule "research/aios"]
-	path = research/aios
-	url = https://github.com/harshitgavita-07/Aios.git

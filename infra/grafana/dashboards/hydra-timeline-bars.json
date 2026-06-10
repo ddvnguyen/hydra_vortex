@@ -27,7 +27,7 @@
       },
       "targets": [
         {
-          "expr": "{component=\"store\"} |= \"request_timeline\" | logfmt",
+          "expr": "{component=\"hydra\"} |= \"request_timeline\" | logfmt",
           "maxLines": 50,
           "refId": "A"
         }
@@ -173,7 +173,7 @@
       },
       "targets": [
         {
-          "expr": "{component=\"store\"} |= \"request_timeline\" | logfmt",
+          "expr": "{component=\"hydra\"} |= \"request_timeline\" | logfmt",
           "maxLines": 50,
           "refId": "A"
         }
@@ -388,7 +388,7 @@
       },
       "targets": [
         {
-          "expr": "{component=\"store\"} |= \"request_timeline\" | logfmt",
+          "expr": "{component=\"hydra\"} |= \"request_timeline\" | logfmt",
           "maxLines": 50,
           "refId": "A"
         }
