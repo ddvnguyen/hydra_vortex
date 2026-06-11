@@ -106,8 +106,12 @@ try {
         const leftPct = isComp ? (p.start / r.total * 100) : (p.start / domainMax * 100);
         const wPct = isComp ? (p.dur / r.total * 100) : (p.dur / domainMax * 100);
         const w = Math.max(wPct, 0.4);
-        const showLbl = wPct > 7;
-        const txt = wPct > 14 ? (esc(p.label) + ' ' + p.dur + 'ms') : esc(p.label);
+        // Wide: "Prefill 318ms". Too narrow for the name: show only the runtime
+        // ("318ms"). Tiniest slivers: nothing (the hover title still has it).
+        let txt = '';
+        if (wPct > 14) txt = esc(p.label) + ' ' + p.dur + 'ms';
+        else if (wPct > 4) txt = p.dur + 'ms';
+        const showLbl = txt !== '';
         html += '<div title="' + esc(p.label) + ' ' + p.dur + 'ms" style="position:absolute;left:' + leftPct + '%;width:' + w + '%;top:12px;height:22px;background:' + p.color + ';border-radius:3px;display:flex;align-items:center;padding:0 5px;overflow:hidden;box-shadow:' + (p.rtx ? 'inset 0 2px 0 rgba(255,255,255,0.4)' : 'inset 0 0 0 1px rgba(0,0,0,0.15)') + ';">';
         if (showLbl) html += '<span style="font-size:10px;font-weight:600;color:' + (p.k === 'save_kv' ? '#3d2c00' : 'rgba(255,255,255,0.92)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + txt + '</span>';
         html += '</div>';
