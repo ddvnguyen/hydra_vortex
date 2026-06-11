@@ -50,6 +50,27 @@ public sealed class WorkItemTests
     }
 
     [Fact]
+    public void ExtractUsageInt_Reads_Prompt_And_Completion_Tokens()
+    {
+        var usage = JsonSerializer.Deserialize<Dictionary<string, object>>(
+            "{\"usage\":{\"prompt_tokens\":17,\"completion_tokens\":40,\"total_tokens\":57}}")!;
+
+        Assert.Equal(17, WorkerSchedulerService.ExtractUsageInt(usage, "prompt_tokens"));
+        Assert.Equal(40, WorkerSchedulerService.ExtractUsageInt(usage, "completion_tokens"));
+        Assert.Equal(57, WorkerSchedulerService.ExtractUsageInt(usage, "total_tokens"));
+    }
+
+    [Fact]
+    public void ExtractUsageInt_Returns_Zero_When_Usage_Absent_Or_Malformed()
+    {
+        var noUsage = JsonSerializer.Deserialize<Dictionary<string, object>>("{\"choices\":[]}")!;
+        var emptyUsage = JsonSerializer.Deserialize<Dictionary<string, object>>("{\"usage\":{}}")!;
+
+        Assert.Equal(0, WorkerSchedulerService.ExtractUsageInt(noUsage, "prompt_tokens"));
+        Assert.Equal(0, WorkerSchedulerService.ExtractUsageInt(emptyUsage, "completion_tokens"));
+    }
+
+    [Fact]
     public void RecordPhase_Stores_Durations_Not_Cumulative()
     {
         var item = MakeItem("sess_test");

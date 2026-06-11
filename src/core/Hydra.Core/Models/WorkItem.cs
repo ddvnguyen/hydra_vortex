@@ -54,6 +54,12 @@ public sealed class WorkItem
 	public string RouteType { get; set; } = "";
 	public SessionEntry? Entry { get; set; }
 	public int NPastAfter { get; set; }
+	/// <summary>Prompt tokens (input) reported by llama-server usage; surfaced on the timeline.</summary>
+	public int TokensIn { get; set; }
+	/// <summary>Completion tokens (output) reported by llama-server usage; surfaced on the timeline.</summary>
+	public int TokensOut { get; set; }
+	/// <summary>Size of the KV state blob (KV + native checkpoint) saved/restored for this request, bytes.</summary>
+	public long KvBytes { get; set; }
 	public Dictionary<string, long> Phases { get; } = new();
 	private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 	public long ElapsedMs => (Stopwatch.GetTimestamp() - _startTimestamp) * 1000 / Stopwatch.Frequency;
