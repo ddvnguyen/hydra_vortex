@@ -38,6 +38,9 @@ internal static class CoordinatorMetrics
     public static readonly Histogram ModelLoadDuration = Metrics.CreateHistogram(
         "hydra_model_load_seconds", "Model load time", new[] { "model" });
 
+    public static readonly Histogram QueueWaitDuration = Metrics.CreateHistogram(
+        "hydra_queue_wait_seconds", "Time from request enqueue to first dispatch");
+
     public static readonly Histogram PrefillDuration = Metrics.CreateHistogram(
         "hydra_prefill_seconds", "Prefill time", new[] { "node", "session_type" });
 

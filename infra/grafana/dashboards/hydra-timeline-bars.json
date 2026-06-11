@@ -1,38 +1,40 @@
 {
-  "title": "Hydra — Request Timeline Phase Durations",
+  "title": "Hydra — Request Timeline",
   "uid": "hydra-timeline-bars",
-  "version": 5,
+  "version": 6,
   "timezone": "browser",
   "editable": true,
-  "tags": [
-    "hydra",
-    "timeline",
-    "performance"
-  ],
+  "tags": ["hydra", "timeline", "performance"],
   "schemaVersion": 39,
   "panels": [
     {
       "id": 1,
       "type": "table",
-      "title": "Raw Request Data",
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      },
+      "title": "Recent 20 Requests — phase durations + nodes",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
       "targets": [
         {
-          "expr": "{component=\"store\"} |= \"request_timeline\" | logfmt",
-          "maxLines": 50,
+          "expr": "{component=\"hydra\"} |= \"request_timeline\"",
+          "maxLines": 20,
           "refId": "A"
         }
       ],
       "transformations": [
+        { "id": "extractFields", "options": { "source": "Line", "format": "kvp" } },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              { "targetField": "queue_wait_ms", "destinationType": "number" },
+              { "targetField": "prefill_ms", "destinationType": "number" },
+              { "targetField": "save_kv_ms", "destinationType": "number" },
+              { "targetField": "restore_kv_ms", "destinationType": "number" },
+              { "targetField": "decode_ms", "destinationType": "number" },
+              { "targetField": "total_ms", "destinationType": "number" }
+            ]
+          }
+        },
         {
           "id": "organize",
           "options": {
@@ -42,189 +44,207 @@
               "ts": true,
               "msg": true,
               "level": true,
+              "timestamp": true,
               "event": true,
               "logger": true,
               "caller": true,
-              "timestamp": true,
-              "labelTypes": true,
-              "id": true
+              "id": true,
+              "node": true,
+              "tsNs": true
             },
             "indexByName": {
               "Time": 0,
               "trace_id": 1,
               "session_id": 2,
               "route_type": 3,
-              "node": 4,
-              "queue_wait_ms": 5,
-              "n_past_guard_ms": 6,
+              "prefill_node": 4,
+              "decode_node": 5,
+              "queue_wait_ms": 6,
               "prefill_ms": 7,
               "save_kv_ms": 8,
               "restore_kv_ms": 9,
               "decode_ms": 10,
               "total_ms": 11
+            },
+            "renameByName": {
+              "prefill_node": "prefill node",
+              "decode_node": "decode node",
+              "queue_wait_ms": "queue",
+              "prefill_ms": "prefill",
+              "save_kv_ms": "save kv",
+              "restore_kv_ms": "restore kv",
+              "decode_ms": "decode",
+              "total_ms": "total"
             }
           }
+        },
+        {
+          "id": "sortBy",
+          "options": { "fields": {}, "sort": [{ "field": "Time", "desc": true }] }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "align": "auto",
-            "displayMode": "auto",
-            "minWidth": 80
+          "custom": { "align": "auto", "displayMode": "auto", "minWidth": 70 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
           }
         },
         "overrides": [
           {
-            "matcher": {
-              "id": "byName",
-              "options": "queue_wait_ms"
-            },
+            "matcher": { "id": "byName", "options": "queue" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              }
+              { "id": "custom.displayMode", "value": "gradient-gauge" },
+              { "id": "unit", "value": "dtdurationms" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 30000 },
+              { "id": "custom.minWidth", "value": 90 }
             ]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "prefill_ms"
-            },
+            "matcher": { "id": "byName", "options": "prefill" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              }
+              { "id": "custom.displayMode", "value": "gradient-gauge" },
+              { "id": "unit", "value": "dtdurationms" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 120000 },
+              { "id": "custom.minWidth", "value": 90 }
             ]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "save_kv_ms"
-            },
+            "matcher": { "id": "byName", "options": "save kv" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              }
+              { "id": "custom.displayMode", "value": "gradient-gauge" },
+              { "id": "unit", "value": "dtdurationms" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 30000 },
+              { "id": "custom.minWidth", "value": 90 }
             ]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "restore_kv_ms"
-            },
+            "matcher": { "id": "byName", "options": "restore kv" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              }
+              { "id": "custom.displayMode", "value": "gradient-gauge" },
+              { "id": "unit", "value": "dtdurationms" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 60000 },
+              { "id": "custom.minWidth", "value": 90 }
             ]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "decode_ms"
-            },
+            "matcher": { "id": "byName", "options": "decode" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              }
+              { "id": "custom.displayMode", "value": "gradient-gauge" },
+              { "id": "unit", "value": "dtdurationms" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 300000 },
+              { "id": "custom.minWidth", "value": 90 }
             ]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "total_ms"
-            },
+            "matcher": { "id": "byName", "options": "total" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "dtdurations"
-              }
+              { "id": "custom.displayMode", "value": "gradient-gauge" },
+              { "id": "unit", "value": "dtdurationms" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 300000 },
+              { "id": "custom.minWidth", "value": 90 }
             ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [{ "id": "custom.minWidth", "value": 150 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "trace_id" },
+            "properties": [
+              { "id": "custom.minWidth", "value": 140 },
+              { "id": "custom.displayMode", "value": "color-text" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "prefill node" },
+            "properties": [{ "id": "custom.minWidth", "value": 90 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "decode node" },
+            "properties": [{ "id": "custom.minWidth", "value": 90 }]
           }
         ]
       },
       "options": {
-        "footer": {
-          "show": false
-        },
+        "footer": { "show": false },
         "frameIndex": 0,
-        "showHeader": true
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Time" }]
       }
     },
     {
       "id": 2,
-      "type": "timeseries",
-      "title": "Phase Durations per Request (Stacked Bars)",
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 14,
-        "w": 24,
-        "x": 0,
-        "y": 6
-      },
+      "type": "barchart",
+      "title": "Phase Durations per Request (stacked — one bar per request, newest first)",
+      "description": "Each horizontal bar is one request (trace_id). Segments are per-phase durations; segments sum to ≈ total_ms. Prefill/save run on the prefill node, restore/decode on the decode node — see the table above.",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 10 },
       "targets": [
         {
-          "expr": "{component=\"store\"} |= \"request_timeline\" | logfmt",
-          "maxLines": 50,
+          "expr": "{component=\"hydra\"} |= \"request_timeline\"",
+          "maxLines": 20,
           "refId": "A"
         }
       ],
       "transformations": [
+        { "id": "extractFields", "options": { "source": "Line", "format": "kvp" } },
         {
           "id": "convertFieldType",
           "options": {
-            "fields": {
-              "queue_wait_ms": "number",
-              "n_past_guard_ms": "number",
-              "prefill_ms": "number",
-              "save_kv_ms": "number",
-              "restore_kv_ms": "number",
-              "decode_ms": "number"
-            }
+            "conversions": [
+              { "targetField": "queue_wait_ms", "destinationType": "number" },
+              { "targetField": "prefill_ms", "destinationType": "number" },
+              { "targetField": "save_kv_ms", "destinationType": "number" },
+              { "targetField": "restore_kv_ms", "destinationType": "number" },
+              { "targetField": "decode_ms", "destinationType": "number" }
+            ]
           }
+        },
+        {
+          "id": "sortBy",
+          "options": { "fields": {}, "sort": [{ "field": "Time", "desc": true }] }
         },
         {
           "id": "organize",
           "options": {
             "excludeByName": {
+              "Time": true,
               "Line": true,
               "labels": true,
               "ts": true,
               "msg": true,
               "level": true,
+              "timestamp": true,
               "event": true,
               "logger": true,
               "caller": true,
-              "timestamp": true,
-              "labelTypes": true,
               "id": true,
-              "trace_id": true,
+              "node": true,
+              "tsNs": true,
               "session_id": true,
               "route_type": true,
-              "node": true,
+              "prefill_node": true,
+              "decode_node": true,
               "total_ms": true
             },
             "indexByName": {
-              "Time": 0,
+              "trace_id": 0,
               "queue_wait_ms": 1,
-              "n_past_guard_ms": 2,
-              "prefill_ms": 3,
-              "save_kv_ms": 4,
-              "restore_kv_ms": 5,
-              "decode_ms": 6
+              "prefill_ms": 2,
+              "save_kv_ms": 3,
+              "restore_kv_ms": 4,
+              "decode_ms": 5
             },
             "renameByName": {
               "queue_wait_ms": "Queue",
-              "n_past_guard_ms": "Guard",
               "prefill_ms": "Prefill",
               "save_kv_ms": "Save KV",
               "restore_kv_ms": "Restore KV",
@@ -235,272 +255,59 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "dtdurations",
+          "unit": "dtdurationms",
           "min": 0,
           "custom": {
-            "drawStyle": "bars",
-            "barAlignment": -1,
-            "barMaxWidth": 30,
-            "fillOpacity": 100,
-            "gradientMode": "none",
-            "lineInterpolation": "linear",
-            "lineStyle": {
-              "fill": "solid"
-            },
+            "fillOpacity": 90,
             "lineWidth": 0,
-            "pointSize": 0,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "mode": "normal"
-            },
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "axisCenteredZero": false,
+            "gradientMode": "none",
             "axisPlacement": "auto",
-            "scaleDistribution": {
-              "type": "linear"
-            }
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false }
           }
         },
         "overrides": [
           {
-            "matcher": {
-              "id": "byName",
-              "options": "Queue"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#7EB26D",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "Queue" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#7EB26D", "mode": "fixed" } }]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "Prefill"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#E24D42",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "Prefill" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#E24D42", "mode": "fixed" } }]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "Save KV"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#F2C96D",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "Save KV" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#F2C96D", "mode": "fixed" } }]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "Restore KV"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#BF1B72",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "Restore KV" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#BF1B72", "mode": "fixed" } }]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "Decode"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#1F78C1",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Guard"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#BA43A9",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "matcher": { "id": "byName", "options": "Decode" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#1F78C1", "mode": "fixed" } }]
           }
         ]
       },
       "options": {
+        "xField": "trace_id",
+        "orientation": "horizontal",
+        "stacking": "normal",
+        "showValue": "never",
+        "barWidth": 0.8,
+        "groupWidth": 0.7,
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0,
         "legend": {
           "calcs": [],
-          "displayMode": "table",
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 3,
-      "type": "timeseries",
-      "title": "Total Duration per Request",
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 20
-      },
-      "targets": [
-        {
-          "expr": "{component=\"store\"} |= \"request_timeline\" | logfmt",
-          "maxLines": 50,
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "convertFieldType",
-          "options": {
-            "fields": {
-              "total_ms": "number"
-            }
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Line": true,
-              "labels": true,
-              "ts": true,
-              "msg": true,
-              "level": true,
-              "event": true,
-              "logger": true,
-              "caller": true,
-              "timestamp": true,
-              "labelTypes": true,
-              "id": true,
-              "trace_id": true,
-              "session_id": true,
-              "route_type": true,
-              "node": true,
-              "queue_wait_ms": true,
-              "n_past_guard_ms": true,
-              "prefill_ms": true,
-              "save_kv_ms": true,
-              "restore_kv_ms": true,
-              "decode_ms": true
-            },
-            "indexByName": {
-              "Time": 0,
-              "total_ms": 1
-            },
-            "renameByName": {
-              "total_ms": "Total"
-            }
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "dtdurations",
-          "min": 0,
-          "custom": {
-            "drawStyle": "bars",
-            "barAlignment": -1,
-            "barMaxWidth": 30,
-            "fillOpacity": 100,
-            "gradientMode": "none",
-            "lineInterpolation": "linear",
-            "lineStyle": {
-              "fill": "solid"
-            },
-            "lineWidth": 0,
-            "pointSize": 0,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "mode": "none"
-            },
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "axisCenteredZero": false,
-            "axisPlacement": "auto",
-            "scaleDistribution": {
-              "type": "linear"
-            }
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Total"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#447EBB",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "tooltip": { "mode": "multi", "sort": "none" }
       }
     }
-  ]
+  ],
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {}
 }

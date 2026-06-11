@@ -57,6 +57,23 @@ public sealed class WorkItem
 	public Dictionary<string, long> Phases { get; } = new();
 	private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 	public long ElapsedMs => (Stopwatch.GetTimestamp() - _startTimestamp) * 1000 / Stopwatch.Frequency;
+	private long _lastCheckpointMs;
+	/// <summary>Cumulative ms at decode dispatch — lets streaming finalize compute true decode duration.</summary>
+	public long DecodeStartMs { get; set; }
+
+	/// <summary>
+	/// Record the duration of a phase as the time since the previous checkpoint
+	/// (request start for the first phase). Phases[] holds per-phase durations,
+	/// not cumulative elapsed time — stacked timeline bars sum to total_ms.
+	/// </summary>
+	public long RecordPhase(string name)
+	{
+		var now = ElapsedMs;
+		var duration = now - _lastCheckpointMs;
+		Phases[name] = duration;
+		_lastCheckpointMs = now;
+		return duration;
+	}
 	public IAsyncEnumerable<byte[]>? DecodeChunks { get; set; }
 	public int? LastIdSlot { get; set; }
 
