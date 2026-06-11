@@ -864,6 +864,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// decode_ms is finalized in NotifyStreamComplete — the stream is still
 			// running when this state returns Done.
 			item.DecodeStartMs = item.ElapsedMs;
+			// Ask llama-server to emit a final usage chunk so token counts are
+			// available on streamed requests (OpenAI omits usage from streams by default).
+			item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
 			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, ct);
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			// Defer BgSave until stream completes — slot is still processing now.
@@ -1184,8 +1187,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		await foreach (var chunk in source)
 		{
 			yield return chunk;
+			// Skip [DONE] marker so lastUtf8 holds the actual usage/data chunk
 			if (chunk.Length > 0)
-				lastUtf8 = Encoding.UTF8.GetString(chunk);
+			{
+				var s = Encoding.UTF8.GetString(chunk).Trim();
+				if (s != "data: [DONE]")
+					lastUtf8 = s;
+			}
 		}
 
 		if (lastUtf8 != null)
@@ -1197,15 +1205,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					var json = trimmed[6..];
 					var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
-					if (data != null && data.TryGetValue("usage", out var u))
+					if (data != null)
 					{
-						var usageDict = new Dictionary<string, object>
+						// Preferred: usage object (OpenAI-compat, present in non-streaming passthrough)
+						if (data.TryGetValue("usage", out var u))
 						{
-							["usage"] = u
-						};
-						item.TokensIn = ExtractUsageInt(usageDict, "prompt_tokens");
-						item.TokensOut = ExtractUsageInt(usageDict, "completion_tokens");
-						TrackAfterStream(item.SessionId, usageDict);
+							var usageDict = new Dictionary<string, object>
+							{
+								["usage"] = u
+							};
+							item.TokensIn = ExtractUsageInt(usageDict, "prompt_tokens");
+							item.TokensOut = ExtractUsageInt(usageDict, "completion_tokens");
+							TrackAfterStream(item.SessionId, usageDict);
+						}
+						// Fallback: timings object (llama-server streaming chunks)
+						if (data.TryGetValue("timings", out var t) && t.ValueKind == JsonValueKind.Object)
+						{
+							if (item.TokensIn == 0 && t.TryGetProperty("prompt_n", out var pn) && pn.ValueKind == JsonValueKind.Number)
+								item.TokensIn = pn.GetInt32();
+							if (item.TokensOut == 0 && t.TryGetProperty("predicted_n", out var dn) && dn.ValueKind == JsonValueKind.Number)
+								item.TokensOut = dn.GetInt32();
+						}
 					}
 				}
 			}

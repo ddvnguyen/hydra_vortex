@@ -34,7 +34,7 @@ panel = {
     "type": "marcusolsson-dynamictext-panel",
     "title": "Request Timeline — Composition / Aligned + detail",
     "datasource": {"type": "loki", "uid": "loki"},
-    "gridPos": {"h": 24, "w": 24, "x": 0, "y": 0},
+    "gridPos": {"h": 19, "w": 24, "x": 0, "y": 0},
     "targets": [loki_target],
     "transformations": transformations,
     "options": {
@@ -52,7 +52,7 @@ panel = {
 }
 
 dashboard = {
-    "title": "Hydra — Request Detail",
+    "title": "",
     "uid": "hydra-request-detail",
     "version": 1,
     "timezone": "browser",
@@ -63,13 +63,6 @@ dashboard = {
     "refresh": "30s",
     "time": {"from": "now-1h", "to": "now"},
     "timepicker": {},
-    "links": [{
-        "title": "Timeline (table + bars)",
-        "type": "link",
-        "url": "/d/hydra-timeline-bars",
-        "icon": "external link",
-        "targetBlank": False,
-    }],
 }
 
 out = DASH_DIR / "hydra-request-detail.json"
