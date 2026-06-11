@@ -63,7 +63,6 @@ step "Installing Quadlet files"
 mkdir -p "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/hydra-*.container "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/hydra-core.pod "$QUADLET_DIR"
-cp "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/pg-data.volume "$QUADLET_DIR"
 
 step "Deploying Hydra.Core"
@@ -71,8 +70,7 @@ systemctl --user daemon-reload
 systemctl --user stop hydra-core-pod.service 2>/dev/null || true
 sleep 1
 
-systemctl --user start hydra-postgres.service
-echo "  Waiting for postgres to be healthy..."
+systemctl --user start infra-postgres.service
 systemctl --user start hydra-core.service
 ok "Hydra.Core deployed"
 
