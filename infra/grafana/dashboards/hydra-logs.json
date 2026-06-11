@@ -54,7 +54,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{component=~\"store|agent|coordinator\"} |= \"$trace_id\"",
+          "expr": "{component=\"hydra\"} |= \"$trace_id\"",
           "legendFormat": "",
           "queryType": "range",
           "refId": "A"

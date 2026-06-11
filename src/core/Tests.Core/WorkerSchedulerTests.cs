@@ -49,6 +49,24 @@ public sealed class WorkItemTests
         Assert.True((int)WorkItemState.Cancelled > (int)WorkItemState.Decode);
     }
 
+    [Fact]
+    public void RecordPhase_Stores_Durations_Not_Cumulative()
+    {
+        var item = MakeItem("sess_test");
+        Thread.Sleep(20);
+        var a = item.RecordPhase("a_ms");
+        Thread.Sleep(20);
+        var b = item.RecordPhase("b_ms");
+
+        Assert.Equal(a, item.Phases["a_ms"]);
+        Assert.Equal(b, item.Phases["b_ms"]);
+        Assert.True(a >= 10, $"a={a}");
+        Assert.True(b >= 10, $"b={b}");
+        // Durations, not cumulative checkpoints: the sum of phases never
+        // exceeds the total elapsed time (the old cumulative scheme would).
+        Assert.True(a + b <= item.ElapsedMs, $"a={a} b={b} elapsed={item.ElapsedMs}");
+    }
+
     private static WorkItem MakeItem(string sessionId) => new(
         new Dictionary<string, object> { ["stream"] = false },
         new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "hello" } },
@@ -136,6 +154,61 @@ public sealed class WorkerSchedulerTests
         item.State = WorkItemState.Done;
         item.Completion.TrySetResult(item.Response);
 
+        Assert.True(item.Completion.Task.IsCompletedSuccessfully);
+    }
+
+    private static WorkerSchedulerService MakeScheduler()
+    {
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name);
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        return new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+    }
+
+    [Fact]
+    public async Task Streaming_Timeline_Deferred_Until_NotifyStreamComplete()
+    {
+        var scheduler = MakeScheduler();
+        var item = new WorkItem(
+            new Dictionary<string, object> { ["stream"] = true },
+            new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "test" } },
+            "sess_stream", "trace_stream", null, 10, 50
+        );
+        item.DecodeStartMs = item.ElapsedMs;
+
+        await scheduler.FinalizeAsync(item, WorkItemState.Done);
+
+        // Stream still in flight — timeline (decode_ms/total_ms) must not be final yet
+        Assert.True(scheduler._pendingTimelines.ContainsKey("sess_stream"));
+        Assert.False(item.Phases.ContainsKey("total_ms"));
+
+        scheduler.NotifyStreamComplete("sess_stream");
+
+        Assert.False(scheduler._pendingTimelines.ContainsKey("sess_stream"));
+        Assert.True(item.Phases.ContainsKey("decode_ms"));
+        Assert.True(item.Phases.ContainsKey("total_ms"));
+        Assert.True(item.Phases["decode_ms"] <= item.Phases["total_ms"]);
+    }
+
+    [Fact]
+    public async Task NonStreaming_Timeline_Emitted_At_Finalize()
+    {
+        var scheduler = MakeScheduler();
+        var item = new WorkItem(
+            new Dictionary<string, object> { ["stream"] = false },
+            new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "test" } },
+            "sess_sync", "trace_sync", null, 10, 50
+        );
+        item.Response = new { choices = "ok" };
+
+        await scheduler.FinalizeAsync(item, WorkItemState.Done);
+
+        Assert.False(scheduler._pendingTimelines.ContainsKey("sess_sync"));
+        Assert.True(item.Phases.ContainsKey("total_ms"));
         Assert.True(item.Completion.Task.IsCompletedSuccessfully);
     }
 

@@ -1,8 +1,8 @@
 [Unit]
 Description=Hydra Core (Store + Coordinator + Agent)
 BindsTo=hydra-core-pod.service
-Requires=hydra-postgres.service
-After=hydra-core-pod.service hydra-postgres.service
+Requires=infra-postgres.service
+After=hydra-core-pod.service infra-postgres.service
 
 [Container]
 ContainerName=hydra-core
@@ -18,7 +18,7 @@ Environment=HYDRA_STORE_RESTORE_TOP_N=10
 Environment=HYDRA_COORD_PORT=9000
 EnvironmentFile=%h/.config/containers/systemd/hydra-coordinator.env
 Tmpfs=/mnt/llm-ram:size=30G
-Label=component=hydra-core
+Label=component=hydra
 HealthCmd=["/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9000"]
 HealthInterval=10s
 HealthRetries=3

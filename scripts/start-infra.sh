@@ -40,7 +40,7 @@ fi
 # ── 2. Infra / observability stack ───────────────────────────────────────────
 step "Infra stack (Loki + Promtail + Prometheus + Grafana)"
 
-SERVICES="infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin infra-openwebui"
+SERVICES="infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin infra-openwebui infra-postgres"
 ALL_ACTIVE=true
 for s in $SERVICES; do
   if ! systemctl --user is-active --quiet "$s.service" 2>/dev/null; then

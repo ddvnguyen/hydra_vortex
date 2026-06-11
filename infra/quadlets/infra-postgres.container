@@ -1,12 +1,12 @@
 [Unit]
-Description=Hydra PostgreSQL
-BindsTo=hydra-core-pod.service
-After=hydra-core-pod.service
+Description=Hydra PostgreSQL (Infra)
+BindsTo=infra-host-pod.service
+After=infra-host-pod.service
 
 [Container]
-ContainerName=hydra-postgres
+ContainerName=infra-postgres
 Image=postgres:16
-Pod=hydra-core.pod
+Pod=infra-host.pod
 Environment=POSTGRES_DB=hydra_store
 Environment=POSTGRES_USER=hydra
 Environment=POSTGRES_PASSWORD=hydra

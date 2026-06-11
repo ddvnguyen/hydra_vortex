@@ -584,13 +584,13 @@
       },
       "targets": [
         {
-          "expr": "count_over_time({component=\"coordinator\"} |= \"prefix_saved\" [$__interval])",
+          "expr": "count_over_time({component=\"hydra\"} |= \"prefix_saved\" [$__interval])",
           "legendFormat": "saves",
           "queryType": "range",
           "refId": "A"
         },
         {
-          "expr": "count_over_time({component=\"coordinator\"} |= \"prefix_restored\" [$__interval])",
+          "expr": "count_over_time({component=\"hydra\"} |= \"prefix_restored\" [$__interval])",
           "legendFormat": "restores",
           "queryType": "range",
           "refId": "B"
@@ -620,7 +620,7 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time({component=\"coordinator\"} |= \"prefix_restored\" [$__range])) / sum(count_over_time({component=\"coordinator\"} |= \"prefix_saved\" [$__range]))",
+          "expr": "sum(count_over_time({component=\"hydra\"} |= \"prefix_restored\" [$__range])) / sum(count_over_time({component=\"hydra\"} |= \"prefix_saved\" [$__range]))",
           "legendFormat": "restores/save",
           "queryType": "range",
           "refId": "A"
@@ -658,13 +658,13 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time({component=\"coordinator\"} |= \"prefix_restored\" [$__range]))",
+          "expr": "sum(count_over_time({component=\"hydra\"} |= \"prefix_restored\" [$__range]))",
           "legendFormat": "restores",
           "queryType": "range",
           "refId": "A"
         },
         {
-          "expr": "sum(count_over_time({component=\"coordinator\"} |= \"prefix_saved\" [$__range]))",
+          "expr": "sum(count_over_time({component=\"hydra\"} |= \"prefix_saved\" [$__range]))",
           "legendFormat": "saves",
           "queryType": "range",
           "refId": "B"
@@ -708,7 +708,7 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time({component=\"coordinator\"} |= \"scheduler_process_failed\" [$__range]))",
+          "expr": "sum(count_over_time({component=\"hydra\"} |= \"scheduler_process_failed\" [$__range]))",
           "legendFormat": "failures",
           "queryType": "range",
           "refId": "A"
@@ -753,7 +753,7 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time({component=\"coordinator\"} |= \"n_past_guard\" [$__range]))",
+          "expr": "sum(count_over_time({component=\"hydra\"} |= \"n_past_guard\" [$__range]))",
           "legendFormat": "guards",
           "queryType": "range",
           "refId": "A"
@@ -798,7 +798,7 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time({component=\"coordinator\"} |= \"ReadTimeout\" [$__range]))",
+          "expr": "sum(count_over_time({component=\"hydra\"} |= \"ReadTimeout\" [$__range]))",
           "legendFormat": "timeouts",
           "queryType": "range",
           "refId": "A"
@@ -855,7 +855,7 @@
       },
       "targets": [
         {
-          "expr": "{component=\"coordinator\"} |= \"$trace_id\"",
+          "expr": "{component=\"hydra\"} |= \"$trace_id\"",
           "legendFormat": "",
           "queryType": "range",
           "refId": "A"
