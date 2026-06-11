@@ -1,8 +1,8 @@
 [Unit]
 Description=Hydra Core (Store + Coordinator + Agent)
 BindsTo=hydra-core-pod.service
-Requires=hydra-postgres.service
-After=hydra-core-pod.service hydra-postgres.service
+Requires=infra-postgres.service
+After=hydra-core-pod.service infra-postgres.service
 
 [Container]
 ContainerName=hydra-core

@@ -25,14 +25,14 @@
         {
           "id": "convertFieldType",
           "options": {
-            "fields": {
-              "queue_wait_ms": "number",
-              "prefill_ms": "number",
-              "save_kv_ms": "number",
-              "restore_kv_ms": "number",
-              "decode_ms": "number",
-              "total_ms": "number"
-            }
+            "conversions": [
+              { "targetField": "queue_wait_ms", "destinationType": "number" },
+              { "targetField": "prefill_ms", "destinationType": "number" },
+              { "targetField": "save_kv_ms", "destinationType": "number" },
+              { "targetField": "restore_kv_ms", "destinationType": "number" },
+              { "targetField": "decode_ms", "destinationType": "number" },
+              { "targetField": "total_ms", "destinationType": "number" }
+            ]
           }
         },
         {
@@ -199,13 +199,13 @@
         {
           "id": "convertFieldType",
           "options": {
-            "fields": {
-              "queue_wait_ms": "number",
-              "prefill_ms": "number",
-              "save_kv_ms": "number",
-              "restore_kv_ms": "number",
-              "decode_ms": "number"
-            }
+            "conversions": [
+              { "targetField": "queue_wait_ms", "destinationType": "number" },
+              { "targetField": "prefill_ms", "destinationType": "number" },
+              { "targetField": "save_kv_ms", "destinationType": "number" },
+              { "targetField": "restore_kv_ms", "destinationType": "number" },
+              { "targetField": "decode_ms", "destinationType": "number" }
+            ]
           }
         },
         {
@@ -289,6 +289,7 @@
         ]
       },
       "options": {
+        "xField": "trace_id",
         "orientation": "horizontal",
         "stacking": "normal",
         "showValue": "never",
