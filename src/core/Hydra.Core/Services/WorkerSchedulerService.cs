@@ -1052,6 +1052,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
+					// Dispose any existing warm lease for this session first to
+					// prevent slot leaks (e.g., when a second concurrent turn
+					// overwrites the P100 lease with an RTX lease).
+					if (_warmLeases.TryRemove(item.SessionId, out var oldLease))
+						await oldLease.DisposeAsync();
 					_warmLeases[item.SessionId] = item.DecodeLease;
 				}
 			}

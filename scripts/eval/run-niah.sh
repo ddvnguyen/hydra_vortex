@@ -360,8 +360,9 @@ generate_md_report() {
     # Parse response
     local finish content reasoning prompt_tokens completion_tokens cached_tokens
     local prompt_ms cache_n id_slot model fingerprint
-    read -r finish content reasoning prompt_tokens completion_tokens cached_tokens prompt_ms cache_n id_slot model fingerprint <<< \
-        $(python3 -c "
+    local reasoning_len content_len reasoning_preview content_preview
+    IFS='|' read -r finish content reasoning prompt_tokens completion_tokens cached_tokens prompt_ms cache_n id_slot model fingerprint reasoning_len content_len reasoning_preview content_preview <<< \
+        "$(python3 -c "
 import json
 d=json.load(open('${resp_file}'))
 c=d['choices'][0]
@@ -370,25 +371,52 @@ u=d.get('usage',{})
 t=d.get('timings',{})
 ptd=u.get('prompt_tokens_details',{})
 fin=c.get('finish_reason','?')
-cont=msg.get('content','')
-reas=msg.get('reasoning_content','')
+cont=msg.get('content','') or ''
+reas=msg.get('reasoning_content','') or ''
 # Escape for shell: replace newlines/tabs
-cont=cont.replace(chr(10),' ').replace(chr(9),' ').replace('|','/')
-reas=reas.replace(chr(10),' ').replace(chr(9),' ').replace('|','/')
-print(f'{fin}|{cont[:200]}|{reas[:200]}|{u.get(\"prompt_tokens\",\"?\")}|{u.get(\"completion_tokens\",\"?\")}|{ptd.get(\"cached_tokens\",\"?\")}|{t.get(\"prompt_ms\",\"?\")}|{t.get(\"cache_n\",\"?\")}|{d.get(\"id_slot\",\"?\")}|{d.get(\"model\",\"?\")[:50]}|{d.get(\"system_fingerprint\",\"?\")}')
-" 2>/dev/null)
+cont_esc=cont.replace(chr(10),' ').replace(chr(9),' ').replace('|','/')
+reas_esc=reas.replace(chr(10),' ').replace(chr(9),' ').replace('|','/')
+print(f'{fin}|{cont_esc[:200]}|{reas_esc[:200]}|{u.get(\"prompt_tokens\",\"?\")}|{u.get(\"completion_tokens\",\"?\")}|{ptd.get(\"cached_tokens\",\"?\")}|{t.get(\"prompt_ms\",\"?\")}|{t.get(\"cache_n\",\"?\")}|{d.get(\"id_slot\",\"?\")}|{d.get(\"model\",\"?\")[:50]}|{d.get(\"system_fingerprint\",\"?\")}|{len(reas)}|{len(cont)}|{reas_esc[:100]}|{cont_esc[:100]}')
+" 2>/dev/null)"
 
-    # Verify passkey
+    # Verify passkey in both content and reasoning
     local passkey_result
-    if echo "${content}${reasoning}" | grep -qi "$passkey"; then
-        passkey_result="✓ Found: \`${passkey}\`"
+    local passkey_in_content="✗"
+    local passkey_in_reasoning="✗"
+    if echo "${content}" | grep -qi "$passkey"; then
+        passkey_in_content="✓"
+    fi
+    if echo "${reasoning}" | grep -qi "$passkey"; then
+        passkey_in_reasoning="✓"
+    fi
+    if [[ "$passkey_in_content" == "✓" || "$passkey_in_reasoning" == "✓" ]]; then
+        passkey_result="✓ Found: \`${passkey}\` (content=${passkey_in_content}, reasoning=${passkey_in_reasoning})"
     else
-        passkey_result="✗ Not found (model behavior, not P/D split)"
+        passkey_result="✗ Not found in content or reasoning"
     fi
 
-    local has_reasoning="✗ missing"
-    if (( ${#reasoning} > 20 )); then
-        has_reasoning="✓ ${#reasoning} chars"
+    # Validate reasoning_content (thinking models must produce reasoning)
+    local reasoning_verdict="✗ EMPTY"
+    reasoning_len=${reasoning_len:-0}
+    if (( reasoning_len > 50 )); then
+        reasoning_verdict="✓ ${reasoning_len} chars (thinking model produced reasoning)"
+    elif (( reasoning_len > 0 )); then
+        reasoning_verdict="⚠ ${reasoning_len} chars (too short for thinking model)"
+    fi
+
+    # Validate content (must have actual response, not just reasoning)
+    local content_verdict="✗ EMPTY"
+    content_len=${content_len:-0}
+    if (( content_len > 10 )); then
+        content_verdict="✓ ${content_len} chars"
+    elif (( content_len > 0 )); then
+        content_verdict="⚠ ${content_len} chars (very short)"
+    fi
+
+    # Check if finish_reason is 'stop' (natural completion) vs 'length' (truncated)
+    local finish_verdict="✗ truncated (max_tokens too low)"
+    if [[ "$finish" == "stop" ]]; then
+        finish_verdict="✓ natural completion"
     fi
 
     # Llama-server log excerpts
@@ -405,10 +433,27 @@ print(f'{fin}|{cont[:200]}|{reas[:200]}|{u.get(\"prompt_tokens\",\"?\")}|{u.get(
     local hydra_timeline=""
     [[ -f "$hydra_log_file" ]] && hydra_timeline=$(grep "request_timeline" "$hydra_log_file" 2>/dev/null | head -1)
 
-    # PT/TT verdict
+    # PT/TT verdict — include content/reasoning validation
     local overall="✓ **PASS**"
+    local issues_list=()
     if ! $PD_PASS; then
-        overall="✗ **FAIL** — Issues: ${PD_ISSUES}"
+        issues_list+=("P/D split failed: ${PD_ISSUES}")
+    fi
+    if [[ "$reasoning_verdict" == *"EMPTY"* ]]; then
+        issues_list+=("reasoning_content is empty (thinking model should produce reasoning)")
+    fi
+    if [[ "$content_verdict" == *"EMPTY"* ]]; then
+        issues_list+=("content is empty (model should produce final answer)")
+    fi
+    if [[ "$finish" != "stop" ]]; then
+        issues_list+=("finish_reason=${finish} (expected 'stop', got truncated)")
+    fi
+    if (( ${#issues_list[@]} > 0 )); then
+        local issues_str=""
+        for issue in "${issues_list[@]}"; do
+            issues_str+="- ${issue}\n"
+        done
+        overall="✗ **FAIL**\n\n${issues_str}"
     fi
 
     # Generate MD
@@ -488,20 +533,21 @@ Full log: \`${hydra_log_file}\`
 |-------|--------|
 | HTTP | ${http_code} |
 | Time | ${elapsed}s |
-| finish_reason | ${finish} |
+| finish_reason | ${finish} (${finish_verdict}) |
 | prompt_tokens | ${prompt_tokens} |
 | completion_tokens | ${completion_tokens} |
 | cached_tokens | ${cached_tokens} |
 | prompt_ms | ${prompt_ms}ms |
 | cache_n | ${cache_n} |
-| Reasoning | ${has_reasoning} |
+| **reasoning_content** | ${reasoning_verdict} |
+| **content** | ${content_verdict} |
 | Passkey recall | ${passkey_result} |
-| Content (first 200) | ${content} |
-| Reasoning (first 200) | ${reasoning} |
+| Content preview | ${content_preview} |
+| Reasoning preview | ${reasoning_preview} |
 
 ---
 
-### Overall: ${overall}
+### Overall: $(echo -e "$overall")
 
 MDEOF
 }
@@ -542,7 +588,7 @@ needle = f' IMPORTANT: The secret verification code is {pk}. You must remember t
 prompt = f'The secret access code for today is: {pk}\n\nBelow is reference documentation about software engineering topics. Read it carefully.\n\n{hs[:ip]}{needle}{hs[ip:]}\n\nQuestion: Based on the information provided, what is the secret access code? Give ONLY the code.'
 import json
 with open('${RESULT_DIR}/${test_name}-body.json','w') as f:
-    json.dump({'model':'${MODEL}','messages':[{'role':'user','content':prompt}],'max_tokens':200,'temperature':0,'stream':False}, f)
+    json.dump({'model':'${MODEL}','messages':[{'role':'user','content':prompt}],'max_tokens':1000,'temperature':0,'stream':False}, f)
 with open('${RESULT_DIR}/${test_name}-passkey.txt','w') as f:
     f.write(pk)
 print(f'prompt_chars={len(prompt)}')

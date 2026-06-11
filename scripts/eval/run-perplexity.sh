@@ -99,7 +99,7 @@ text = open('/dev/stdin').read().strip()
 print(json.dumps({
     'model': 'balanced',
     'messages': [{'role': 'user', 'content': f'Continue the following text exactly as written, word for word, without any additional commentary:\n\n{text}'}],
-    'max_tokens': 256,
+    'max_tokens': 1000,
     'temperature': 0,
     'stream': False
 }))
