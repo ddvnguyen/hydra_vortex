@@ -38,6 +38,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new(); // traceIds whose streaming has finished
 	private readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
+	// Streaming requests whose request_timeline emit is deferred until the stream
+	// finishes — decode_ms/total_ms must cover the full stream, not just dispatch.
+	internal readonly ConcurrentDictionary<string, WorkItem> _pendingTimelines = new();
 	private readonly SemaphoreSlim _decodeSlotSignal = new(0, int.MaxValue);
 
 	private static BoundedChannelOptions ChannelOpts(int capacity) => new(capacity)
@@ -197,6 +200,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		try
 		{
+			item.RecordPhase("queue_wait_ms");
+			CoordinatorMetrics.QueueWaitDuration.Observe(item.Phases["queue_wait_ms"] / 1000.0);
 			var next = await DispatchAsync(item, ct);
 			if (next is WorkItemState.Done or WorkItemState.Failed or WorkItemState.Cancelled)
 			{
@@ -651,7 +656,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
 		}
 
-		item.Phases["prefill_ms"] = item.ElapsedMs;
+		CoordinatorMetrics.PrefillDuration.WithLabels(w.Name, RouteLabel(item))
+			.Observe(item.RecordPhase("prefill_ms") / 1000.0);
 		return WorkItemState.SaveKv;
 	}
 
@@ -693,13 +699,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					LeaseLifetime.Long, _tracker);
 				_log.Information("save_fallback_decode Sid={Sid} Node={Node} Slot={Slot}",
 					item.SessionId, item.PrefillWorker.Name, fbSlot);
-				item.Phases["save_kv_ms"] = item.ElapsedMs;
+				CoordinatorMetrics.SaveKvDuration.WithLabels(w.Name, RouteLabel(item))
+					.Observe(item.RecordPhase("save_kv_ms") / 1000.0);
 				return WorkItemState.Decode;
 			}
 			_log.Error("save_fallback_no_slot Sid={Sid} — prefill node has no free decode slot", item.SessionId);
 			return WorkItemState.Failed;
 		}
-		item.Phases["save_kv_ms"] = item.ElapsedMs;
+		CoordinatorMetrics.SaveKvDuration.WithLabels(w.Name, RouteLabel(item))
+			.Observe(item.RecordPhase("save_kv_ms") / 1000.0);
 		return WorkItemState.SaveDone;
 	}
 
@@ -815,7 +823,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.DecodeSlot = fbSlot;
 				item.DecodeLease = new SlotLease(item.PrefillWorker.Name, fbSlot, item.SessionId,
 					LeaseLifetime.Long, _tracker);
-				item.Phases["restore_kv_ms"] = item.ElapsedMs;
+				CoordinatorMetrics.RestoreKvDuration.WithLabels(w.Name, RouteLabel(item))
+					.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
 				return WorkItemState.Decode;
 			}
 			_log.Warning(ex, "restore_skipped Sid={Sid} — continuing without KV restore", item.SessionId);
@@ -824,7 +833,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (item.NPastAfter > 0)
 			_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
 		_ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter > 0 ? item.NPastAfter : entry?.NPast ?? 0, item.PrefixHash);
-		item.Phases["restore_kv_ms"] = item.ElapsedMs;
+		CoordinatorMetrics.RestoreKvDuration.WithLabels(w.Name, RouteLabel(item))
+			.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
 		return WorkItemState.Decode;
 	}
 
@@ -848,6 +858,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.SessionId, w.Name, msgCount, lastMsg, item.IsStreaming, item.NPastAfter, mt, item.DecodeSlot);
 		if (item.IsStreaming)
 		{
+			// decode_ms is finalized in NotifyStreamComplete — the stream is still
+			// running when this state returns Done.
+			item.DecodeStartMs = item.ElapsedMs;
 			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, ct);
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			// Defer BgSave until stream completes — slot is still processing now.
@@ -856,7 +869,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
 			item.StreamCompletion.TrySetResult(item.DecodeChunks);
 			item.Response = new { streamed = true };
-			item.Phases["decode_ms"] = item.ElapsedMs;
 			return WorkItemState.Done;
 		}
 		else
@@ -870,7 +882,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Track n_past from completion response
 			TrackAfterCompletion(item.SessionId, resp);
 		}
-		item.Phases["decode_ms"] = item.ElapsedMs;
+		CoordinatorMetrics.DecodeDuration.WithLabels(w.Name, RouteLabel(item))
+			.Observe(item.RecordPhase("decode_ms") / 1000.0);
 		return WorkItemState.BgSave;
 	}
 
@@ -937,6 +950,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (_pendingBgSaves.TryGetValue(sessionId, out var bgInfo) && bgInfo.TraceId is { Length: > 0 } traceId)
 			_streamCompleted.TryAdd(traceId, 0);
 
+		// Emit the deferred timeline now that the stream is done — decode_ms/total_ms
+		// cover the full stream duration.
+		if (_pendingTimelines.TryRemove(sessionId, out var timelineItem))
+		{
+			FinalizeStreamPhases(timelineItem);
+			CoordinatorMetrics.DecodeDuration
+				.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown", RouteLabel(timelineItem))
+				.Observe(timelineItem.Phases.GetValueOrDefault("decode_ms") / 1000.0);
+			EmitTimeline(timelineItem);
+		}
+
 		// Fire deferred BgSave — the slot is now idle, StateGet will succeed
 		if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
 		{
@@ -991,7 +1015,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return w != null ? GetAgent(w) : null;
 	}
 
-	private async Task FinalizeAsync(WorkItem item, WorkItemState end)
+	internal async Task FinalizeAsync(WorkItem item, WorkItemState end)
 	{
 		item.State = end;
 
@@ -1004,6 +1028,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		// Decode lease: holds slot until streaming completes (Long lifetime).
 		// The controller signals NotifyStreamComplete when all SSE chunks are written.
+		var streamFinishedEarly = false;
 		if (item.DecodeLease != null)
 		{
 			if (item.DecodeLease.Lifetime == LeaseLifetime.Long
@@ -1013,6 +1038,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// Otherwise store as warm — NotifyStreamComplete will release it.
 				if (_streamCompleted.TryRemove(item.TraceId, out _))
 				{
+					streamFinishedEarly = true;
 					await item.DecodeLease.DisposeAsync();
 					_decodeSlotSignal.Release();
 				}
@@ -1030,18 +1056,32 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.DecodeLease = null;
 		}
 
-		item.Phases["total_ms"] = item.ElapsedMs;
-		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
-		Console.Error.WriteLine(
-			$"event=request_timeline trace_id={item.TraceId} session_id={item.SessionId} " +
-			$"queue_wait_ms={item.Phases.GetValueOrDefault("queue_wait_ms")} node={node} " +
-			$"route_type={item.RouteType} " +
-			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
-			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
-			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
-			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
-			$"total_ms={item.Phases.GetValueOrDefault("total_ms")}"
-		);
+		if (item.IsStreaming && end == WorkItemState.Done)
+		{
+			if (streamFinishedEarly)
+			{
+				FinalizeStreamPhases(item);
+				EmitTimeline(item);
+			}
+			else
+			{
+				// Stream still in flight — NotifyStreamComplete emits the timeline.
+				_pendingTimelines[item.SessionId] = item;
+				// Close the race where the stream completed between the lease check
+				// above and the stash: whoever removes the pending entry emits.
+				if (_streamCompleted.ContainsKey(item.TraceId)
+					&& _pendingTimelines.TryRemove(item.SessionId, out _))
+				{
+					FinalizeStreamPhases(item);
+					EmitTimeline(item);
+				}
+			}
+		}
+		else
+		{
+			item.Phases["total_ms"] = item.ElapsedMs;
+			EmitTimeline(item);
+		}
 		if (item.Completion.Task.IsCompleted) return;
 		if (end == WorkItemState.Done)
 			item.Completion.TrySetResult(item.Response);
@@ -1050,6 +1090,41 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		else
 			item.Completion.TrySetException(
 				item.Error ?? new InvalidOperationException("Failed"));
+	}
+
+	// ── Timeline helpers ──
+
+	private static string RouteLabel(WorkItem item) =>
+		string.IsNullOrEmpty(item.RouteType) ? "unknown" : item.RouteType;
+
+	/// <summary>Set decode_ms/total_ms for a streaming item once the stream has finished.</summary>
+	private static void FinalizeStreamPhases(WorkItem item)
+	{
+		item.Phases["decode_ms"] = item.ElapsedMs - item.DecodeStartMs;
+		item.Phases["total_ms"] = item.ElapsedMs;
+	}
+
+	/// <summary>
+	/// Emit the per-request phase timeline as a raw logfmt stderr line. Grafana's
+	/// timeline dashboard parses this line via extractFields — keep keys stable.
+	/// Phase values are per-phase durations (WorkItem.RecordPhase), so they sum
+	/// to ≈ total_ms and can be rendered as stacked bars.
+	/// </summary>
+	private void EmitTimeline(WorkItem item)
+	{
+		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
+		Console.Error.WriteLine(
+			$"event=request_timeline trace_id={item.TraceId} session_id={item.SessionId} " +
+			$"queue_wait_ms={item.Phases.GetValueOrDefault("queue_wait_ms")} node={node} " +
+			$"route_type={RouteLabel(item)} " +
+			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +
+			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
+			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
+			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
+			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
+			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
+			$"total_ms={item.Phases.GetValueOrDefault("total_ms")}"
+		);
 	}
 
 	// ── Gap 4 helpers: n_past tracking ──
