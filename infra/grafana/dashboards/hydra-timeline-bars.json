@@ -309,5 +309,14 @@
   ],
   "refresh": "30s",
   "time": { "from": "now-1h", "to": "now" },
-  "timepicker": {}
+  "timepicker": {},
+  "links": [
+    {
+      "title": "Request Detail (Composition / Aligned)",
+      "type": "link",
+      "url": "/d/hydra-request-detail",
+      "icon": "external link",
+      "targetBlank": false
+    }
+  ]
 }
