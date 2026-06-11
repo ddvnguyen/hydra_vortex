@@ -1,0 +1,22 @@
+[Unit]
+Description=Grafana Image Renderer
+BindsTo=infra-host-pod.service
+After=infra-host-pod.service
+
+[Container]
+ContainerName=infra-renderer
+Image=docker.io/grafana/grafana-image-renderer:latest
+Pod=infra-host.pod
+Environment=HTTP_PORT=8081
+Environment=RENDERING_MODE=default
+HealthCmd=wget -q -O /dev/null http://localhost:8081/ || exit 1
+HealthInterval=15s
+HealthRetries=3
+HealthStartPeriod=25s
+HealthTimeout=5s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

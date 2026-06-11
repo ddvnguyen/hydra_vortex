@@ -680,6 +680,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
 				storeKey, stateResp.Payload, item.TraceId, ct);
 
+			item.KvBytes = stateResp.Payload.Length;
 			var entry = _ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
 			lock (entry) { entry.HasStoreState = true; }
 			item.Entry = entry;
@@ -790,6 +791,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 				throw new InvalidOperationException($"Store Get RPC failed: status={storeResp.Status} meta={storeResp.Meta}");
 
+			if (item.KvBytes == 0)
+				item.KvBytes = storeResp.Payload.Length;
 			var llamaRpc = GetLlamaRpcClient(w);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
@@ -861,6 +864,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// decode_ms is finalized in NotifyStreamComplete — the stream is still
 			// running when this state returns Done.
 			item.DecodeStartMs = item.ElapsedMs;
+			// Ask llama-server to emit a final usage chunk so token counts are
+			// available on streamed requests (OpenAI omits usage from streams by default).
+			item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
 			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, ct);
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			// Defer BgSave until stream completes — slot is still processing now.
@@ -878,6 +884,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
 				item.LastIdSlot = se.GetInt32();
 			item.Response = resp;
+			item.TokensIn = ExtractUsageInt(resp, "prompt_tokens");
+			item.TokensOut = ExtractUsageInt(resp, "completion_tokens");
 
 			// Track n_past from completion response
 			TrackAfterCompletion(item.SessionId, resp);
@@ -1123,19 +1131,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
 			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
 			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
-			$"total_ms={item.Phases.GetValueOrDefault("total_ms")}"
+			$"total_ms={item.Phases.GetValueOrDefault("total_ms")} " +
+			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes}"
 		);
 	}
 
 	// ── Gap 4 helpers: n_past tracking ──
 
 	private static int ExtractTotalTokens(Dictionary<string, object> result)
+		=> ExtractUsageInt(result, "total_tokens");
+
+	/// <summary>Read an integer field (e.g. prompt_tokens, completion_tokens) from the
+	/// OpenAI-style usage object, returning 0 when absent.</summary>
+	internal static int ExtractUsageInt(Dictionary<string, object> result, string field)
 	{
 		if (!result.TryGetValue("usage", out var u) || u is not JsonElement ue)
 			return 0;
-		if (!ue.TryGetProperty("total_tokens", out var tt))
+		if (ue.ValueKind != JsonValueKind.Object || !ue.TryGetProperty(field, out var v)
+			|| v.ValueKind != JsonValueKind.Number)
 			return 0;
-		return tt.GetInt32();
+		return v.GetInt32();
 	}
 
 	private void TrackAfterCompletion(string sessionId, Dictionary<string, object> result)
@@ -1172,8 +1187,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		await foreach (var chunk in source)
 		{
 			yield return chunk;
+			// Skip [DONE] marker so lastUtf8 holds the actual usage/data chunk
 			if (chunk.Length > 0)
-				lastUtf8 = Encoding.UTF8.GetString(chunk);
+			{
+				var s = Encoding.UTF8.GetString(chunk).Trim();
+				if (s != "data: [DONE]")
+					lastUtf8 = s;
+			}
 		}
 
 		if (lastUtf8 != null)
@@ -1185,13 +1205,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					var json = trimmed[6..];
 					var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
-					if (data != null && data.TryGetValue("usage", out var u))
+					if (data != null)
 					{
-						var usageDict = new Dictionary<string, object>
+						// Preferred: usage object (OpenAI-compat, present in non-streaming passthrough)
+						if (data.TryGetValue("usage", out var u))
 						{
-							["usage"] = u
-						};
-						TrackAfterStream(item.SessionId, usageDict);
+							var usageDict = new Dictionary<string, object>
+							{
+								["usage"] = u
+							};
+							item.TokensIn = ExtractUsageInt(usageDict, "prompt_tokens");
+							item.TokensOut = ExtractUsageInt(usageDict, "completion_tokens");
+							TrackAfterStream(item.SessionId, usageDict);
+						}
+						// Fallback: timings object (llama-server streaming chunks)
+						if (data.TryGetValue("timings", out var t) && t.ValueKind == JsonValueKind.Object)
+						{
+							if (item.TokensIn == 0 && t.TryGetProperty("prompt_n", out var pn) && pn.ValueKind == JsonValueKind.Number)
+								item.TokensIn = pn.GetInt32();
+							if (item.TokensOut == 0 && t.TryGetProperty("predicted_n", out var dn) && dn.ValueKind == JsonValueKind.Number)
+								item.TokensOut = dn.GetInt32();
+						}
 					}
 				}
 			}
