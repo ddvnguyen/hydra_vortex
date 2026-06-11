@@ -21,7 +21,7 @@
         }
       ],
       "transformations": [
-        { "id": "extractFields", "options": { "source": "Line", "format": "logfmt" } },
+        { "id": "extractFields", "options": { "source": "Line", "format": "kvp" } },
         {
           "id": "convertFieldType",
           "options": {
@@ -195,7 +195,7 @@
         }
       ],
       "transformations": [
-        { "id": "extractFields", "options": { "source": "Line", "format": "logfmt" } },
+        { "id": "extractFields", "options": { "source": "Line", "format": "kvp" } },
         {
           "id": "convertFieldType",
           "options": {
