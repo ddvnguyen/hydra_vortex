@@ -1,5 +1,11 @@
 # Revised plan — Coordinator `WorkerScheduler` with **verified** warm-slot reuse (#147 rev2)
 
+> **⚠️ HISTORICAL (Python coordinator era).** This design was implemented — but in **C#**,
+> not Python: the Python coordinator was deprecated/removed in PR #203 and this scheduler
+> lives in **Hydra.Core** (`src/core/Hydra.Core/Services/WorkerSchedulerService.cs`,
+> `Router.cs`, `Repositories/RepositoriesImpl.cs`). The `*.py` file references below map to
+> those C# files. #147 is closed. Retained for design rationale only.
+
 > Supersedes the draft in #147. Keeps the good direction (authoritative `WorkerTracker`,
 > `asyncio` queue with skip-scan, per-worker `max_prefill_tokens`, stuck-slot detection) and fixes
 > the three blockers found in review: scheduler liveness (B1), dispatch race (B2), and the dropped

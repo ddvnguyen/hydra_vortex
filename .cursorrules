@@ -2,14 +2,19 @@
 
 ## Project
 - Name: Hydra — Multi-GPU LLM inference with KV state management
-- Languages: C# (.NET 10) for Store + Agent | Python 3.14+ for Coordinator
+- Languages: C# (.NET 10) for **Hydra.Core — the single service** (coordinator + store +
+  session mgmt, merged via PR #203) | Python only for system/E2E tests (`tests/`)
+- The Python coordinator is **DEPRECATED/removed**. `src/coordinator/` is historical
+  reference only — never extend it; all new service code goes in `src/core/Hydra.Core`.
 
 ## Architecture — One Protocol Rule
-ALL inter-service traffic: Hydra binary RPC (TCP).
-HTTP ONLY at edges: Client→Coordinator and Agent→local llama-server (localhost).
-Never use HTTP between Coordinator↔Agent or Agent↔Store.
+Hydra.Core is one binary: HTTP API :9000, Store RPC :9500, metrics :9501.
+It talks to llama-servers directly: HTTP for completions, Hydra binary RPC (TCP) for
+KV state ops (StateGet/StatePut on llama RPC ports :9503/:9502). There are no separate
+Agent or Coordinator services/containers.
+HTTP ONLY at edges: Client→Hydra.Core and Hydra.Core→llama-server completions.
 
-## C# Rules (Store + Agent)
+## C# Rules (Hydra.Core)
 - System.IO.Pipelines for ALL RPC protocol parsing — never manual byte arrays
 - Socket.SendFileAsync for zero-copy file transfer from tmpfs
 - BinaryPrimitives for all LE integer read/write
@@ -20,21 +25,19 @@ Never use HTTP between Coordinator↔Agent or Agent↔Store.
 - appsettings.json + IConfiguration for config (no hardcoded values)
 - Never buffer full 800 MB in memory — stream via PipeReader/PipeWriter
 
-## Python Rules (Coordinator only)
+## Python Rules (system/E2E tests only — no Python service code)
 - asyncio only — no threading, no multiprocessing
 - httpx (async) for all HTTP calls
-- structlog for JSON logging
-- pydantic v2 for all schemas
-- pydantic-settings for config
+- pytest + `@pytest.mark.system` for tests requiring live services
 - Never buffer full state in memory — stream chunk-by-chunk
 
 ## Critical SSM Constraint
 NEVER send a request where n_tokens ≤ n_past to a restored slot.
-SSM truncation is broken on qwen35moe. Coordinator MUST guard this.
+SSM truncation is broken on qwen35moe. Hydra.Core MUST guard this (n_past guard).
 
 ## Logging
 Every log line MUST include: ts, level, component, trace_id, event.
-trace_id flows through every hop: Coordinator → Agent RPC → Store RPC.
+trace_id flows through every hop: Client → Hydra.Core → llama RPC / Store RPC.
 
 ## Before Writing Code
 1. Read relevant docs/ and specs/ for the task
