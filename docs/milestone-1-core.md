@@ -1,5 +1,10 @@
 # Milestone 1 — Core System
 
+> **✅ DONE / HISTORICAL.** M1 shipped, and the Python coordinator described here was later
+> **deprecated and merged into Hydra.Core** (PR #203) — one C# service now does it all
+> (HTTP API :9000, Store RPC :9500, routing, sessions). There are no separate
+> Coordinator/Agent services. Retained for historical reference.
+
 ## Goal
 Coordinator routes OpenAI-compatible requests to GPU nodes via RPC.
 Sessions stick to nodes. State migration works automatically.

@@ -25,9 +25,13 @@ there is **no draft↔target vocab-parity requirement** (the blocker that sank #
 Realistic expectation: large TTFT cuts on long prompts (the dominant agentic/RAG case),
 bounded by a quality gate.
 
+> **Note (post PR #203):** the Python coordinator is deprecated/removed. "Coordinator"
+> below means the **coordinator role inside Hydra.Core** — the single C# binary that owns
+> routing, sessions, Store, and all policy. All file references point at `src/core/Hydra.Core`.
+
 ## Architecture — the compression gatekeeper
 ```
-Client → Coordinator
+Client → Hydra.Core (coordinator)
   ├─ token-budget trigger: prompt over budget?  (trivial threshold; the "what to keep"
   │                                               policy is agentic — see M5/#120)
   ├─ if over budget → gatekeeper llama-server (small model on P100) scores per-token
@@ -42,8 +46,8 @@ Cross-cutting rules for every compression step:
 - **System prefix kept verbatim** → the existing prefix-checkpoint cache still hits;
   compress only the document/history *middle*.
 - **No new container.** The gatekeeper is a small-model `llama-server` instance (a systemd
-  unit on the P100 — bare metal, not Docker). Pruning/summary **policy lives in the
-  Coordinator**. The only llama.cpp fork change is the `prompt_logprobs` flag (5.1).
+  unit on the P100 — bare metal, not Docker). Pruning/summary **policy lives in
+  Hydra.Core**. The only llama.cpp fork change is the `prompt_logprobs` flag (5.1).
 - **Gatekeeper model:** a small model (Qwen3.5-0.8B / 2B), used purely as compressor.
 
 ## Tasks
@@ -51,25 +55,26 @@ Cross-cutting rules for every compression step:
 ### M-Perf.5.1 — Fork: prompt-token logprobs on `/completion`  (#125)
 The **only** fork change, kept minimal + upstream-mergeable. Add a `prompt_logprobs` flag
 to `/completion` that returns per-prompt-token logprob/surprisal from one forward pass
-(mirrors vLLM `prompt_logprobs`). No compression logic in the server — it exposes data; the
-Coordinator owns policy. **Files:** `src/llama-cpp/tools/server/server.cpp` (~50–80 lines).
+(mirrors vLLM `prompt_logprobs`). No compression logic in the server — it exposes data;
+Hydra.Core owns policy. **Files:** `src/llama-cpp/tools/server/server.cpp` (~50–80 lines).
 
 ### M-Perf.5.2 — Surprisal sentence pruning (model-based)  (#119)
-Coordinator uses 5.1's prompt logprobs from the gatekeeper to prune the lowest-information
+Hydra.Core uses 5.1's prompt logprobs from the gatekeeper to prune the lowest-information
 **sentences/segments** down to the token budget; keep system + first user msg + last-K turns
-verbatim. No new RPC opcode, no Agent hop (HTTP-direct to the gatekeeper, like `proxy.py`).
-**Files:** new `src/coordinator/compression.py` (pruning); wire into `router.py`/`proxy.py`.
+verbatim. No new RPC opcode (Hydra.Core calls the gatekeeper HTTP-direct, like completions).
+**Files:** new `src/core/Hydra.Core/Services/CompressionService.cs` (pruning); wire into
+`WorkerSchedulerService.cs` / `CompletionProxyService.cs`.
 
 ### M-Perf.5.3 — Semantic summary compression  (#121)
 For document-heavy prompts where pruning is insufficient, replace the compressible middle
 with a short gatekeeper-generated summary (deterministic; sentinel marker). Quality-gated by
-5.4. **Files:** extend `src/coordinator/compression.py`.
+5.4. **Files:** extend `src/core/Hydra.Core/Services/CompressionService.cs`.
 
 ### M-Perf.5.4 — Compression quality + TTFT harness  (#126)
 Replaces the dropped DeviceProfiler's measurement/gating role. Measure TTFT before/after,
 token savings, perplexity delta, answer-match, and the gatekeeper's own forward-pass cost at
 1K/8K/32K/80K; Prometheus + Grafana; a go/no-go decision doc with recommended defaults.
-**Files:** new `src/coordinator/compression_bench.py`; extend metrics.
+**Files:** new `tests/system/compression_bench.py` (harness); extend `CoordinatorMetrics` in Hydra.Core.
 
 ### M-Perf.6 — Streaming chunked-prefill KV / P/D  (#84) — *deprioritized*
 A **complementary** prefill lever (hide KV transfer behind RTX prefill compute), independent
@@ -77,8 +82,8 @@ of compression. ⚠️ Fork-heavy (needs per-layer state endpoints). Revisit aft
 compression TTFT numbers (5.4) land.
 
 ### M-Perf.7 — Pipeline scaffolding  (#85) — *deprioritized*
-Refactor Coordinator from load-balancer → asyncio `Stage` dataflow; foundation for any future
-Tier-2 work. Later.
+Refactor Hydra.Core's `WorkerSchedulerService` from load-balancer → staged dataflow
+(System.Threading.Channels); foundation for any future Tier-2 work. Later.
 
 ## Owned elsewhere
 - **Agent-driven context management (#120 → M5).** The *zero-model* heuristic "what history to

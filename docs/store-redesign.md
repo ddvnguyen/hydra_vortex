@@ -104,8 +104,8 @@ GC (Phase 2), backed-up lag (Phase 3), recovery time (Phase 4), checkpoint count
 - `src/core/Hydra.Core/StoreMetadata.cs` *(new, Phase 2)* — SQLite schema + DAL
 - `src/core/Hydra.Core/WriteBehindService.cs`, `StartupRecovery.cs` *(new, Phase 3/4)*
 - `src/core/Hydra.Core/StateHandler.cs`, `LocalChunkCache.cs` — delta save/restore client
-- `src/core/Hydra.Shared/Protocol.cs` — opcodes (PUT_MANIFEST 0x15, PUT_MODEL/GET_MODEL)
-- `src/coordinator/lib/rpc_client.py` — enum sync
+- `src/core/Hydra.Shared/Protocol.cs` — opcodes (PUT_MANIFEST 0x15, PUT_MODEL/GET_MODEL);
+  single source of truth (the Python coordinator's `rpc_client.py` was removed in PR #203)
 - `src/core/Tests.Core` — round-trip + delta + corruption-guard tests
 
 ## Verification (per phase)

@@ -39,16 +39,19 @@ INVALID (merge):                       VALID (chain / DAG):
 ---
 
 ## Current architecture (baseline)
+> Post PR #203: the Python coordinator and Agent services are **deprecated/removed** —
+> **Hydra.Core is the single C# service** owning HTTP API, routing, sessions, and the Store.
 ```text
-Client → Coordinator :9000 ──RPC──► Agent RTX/P100 ──HTTP──► llama-server
-                       └──RPC──► Store :9500  (tmpfs /mnt/llm-ram/store + PostgreSQL metadata)
+Client → Hydra.Core :9000 ──HTTP/RPC──► llama-server RTX :8080 / P100 :8086
+              │                          (RPC :9503 / :9502 for KV state ops)
+              └── Store RPC :9500 (embedded; tmpfs /mnt/llm-ram/store + PostgreSQL metadata)
 ```
 - **Chunks:** content-addressed, **fixed 1 MB** (`src/core/Hydra.Core/ChunkEngine.cs`), SHA-256 named.
 - **Metadata (PostgreSQL, `StoreMetadata.cs`):** `sessions`, `chunks`, `session_chunks` (ordered
   manifest). `ChunkRef(Index, Hash, Size)` already supports **variable-size chunks**.
 - **Delta-save (Phase 1):** `SyncMissing 0x12` → `PushChunks 0x13` → `PutManifest 0x15`;
   `GetManifest 0x33`. Opcodes in `src/core/Hydra.Shared/Protocol.cs` (next free = `0x16`).
-- **Prefix checkpoint (half-done):** coordinator saves/restores `prefix/<hash>:<slot>` but tracks
+- **Prefix checkpoint (half-done):** Hydra.Core saves/restores `prefix/<hash>:<slot>` but tracks
   "already saved" in an **in-memory `_saved_prefixes` set** — lost on restart, not cross-conversation
   by default. `compute_prefix_hash` lives in `src/core/Hydra.Core/`.
 - **Gaps:** no parent pointers / DAG, no git/commit awareness, GC only counts `session_chunks`.
@@ -108,7 +111,7 @@ h3 = SHA256(h2 ‖ task_tokens)
 
 ---
 
-## Request resolution algorithm (coordinator)
+## Request resolution algorithm (Hydra.Core coordinator logic)
 ```text
 1. Compute model_hash and the prefix hash chain [h0..hN].
 2. FindNode(model_hash, hN, commit_sha)            # deepest exact match
@@ -140,8 +143,8 @@ full 80K prefill into a residual prefill whenever any ancestor is cached.
 ---
 
 ## RPC / protocol changes
-New opcodes in `src/core/Hydra.Shared/Protocol.cs` (keep `src/coordinator/lib/rpc_client.py` in sync — CI
-asserts parity):
+New opcodes in `src/core/Hydra.Shared/Protocol.cs` (single source of truth — the Python
+coordinator and its `rpc_client.py` were removed in PR #203):
 
 | Opcode | Name | Request | Response |
 |---|---|---|---|
@@ -184,16 +187,16 @@ Milestone **"Phase 5 — Semantic KV (#107)"**; #107 is the epic.
 | #107-H | Hydra.PrefillBuilder + Hydra.GitService | Follow-on | E, G |
 | #107-I | Hot/warm/cold tiering | Follow-on | A |
 
-**Sequencing gates:** Phase 0 CI must be green (#98) before any PR merges; coordinator tasks (D, E)
-rebase after PR #148 (M-Perf WorkerScheduler) merges. Store-only tasks (A, B, C) may start as soon
-as CI is green.
+**Sequencing gates:** Phase 0 CI must be green (#98) before any PR merges; routing tasks (D, E —
+Hydra.Core scheduler/session code) rebase after PR #148 (M-Perf WorkerScheduler) merges. Store-only
+tasks (A, B, C) may start as soon as CI is green.
 
 ---
 
 ## Blockers (state at time of writing, 2026-06)
 1. **CI red on `main`** (last 8 runs, tracked by auto-issue #98) — hard merge gate; Phase 0 goal.
 2. **#107 was undecomposed** — addressed by the epic tree above.
-3. **PR #148 file collision** — coordinator work rebases after it merges.
+3. **PR #148 file collision** — Hydra.Core routing work rebases after it merges.
 4. **GC correctness** — handled in Task A (UNION reference set).
 5. **"merge" vs Rule #2** — resolved as lineage chaining.
 
@@ -205,7 +208,7 @@ as CI is green.
   ancestor lookup over a 3-commit lineage.
 - **FastCDC (C):** round-trip byte-identical; on "insert N bytes near the front", CDC re-save dedup
   ratio ≫ fixed-1 MB.
-- **Coordinator (D/E):** `pytest tests/coordinator`; two conversations with identical system
+- **Routing (D/E):** `dotnet test src/core/Tests.Core/` + `pytest tests/system`; two conversations with identical system
   prompt → second is a hit and survives a simulated restart; request at `commit B` (child of `A`)
   with only `A` cached → resolves to `A`, prefills only the residual; missing repo headers → behaves
   as prefix-only.
