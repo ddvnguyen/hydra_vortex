@@ -63,7 +63,27 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         http.Timeout = TimeSpan.FromSeconds(5);
         var llama = new LlamaClient(http, w.LlamaUrl);
         var slots = await llama.GetSlotsAsync(ct);
-        if (slots == null || slots.Count == 0) { _log.Warning("health_poll_empty_slots Node={N}", w.Name); OnFail(w.Name); return; }
+        if (slots == null || slots.Count == 0)
+        {
+            var healthy = await llama.HealthAsync(ct);
+            if (healthy)
+            {
+                _log.Information("health_poll_router_ready Node={N} (no slots, server OK — router/loading)", w.Name);
+                lock (_lock)
+                {
+                    _nodes[w.Name] = new NodeInfo
+                    {
+                        NodeName = w.Name,
+                        Healthy = true,
+                        SlotsTotal = 0,
+                        SlotsIdle = 0,
+                        ConsecutiveFailures = 0,
+                    };
+                }
+                return;
+            }
+            _log.Warning("health_poll_empty_slots Node={N}", w.Name); OnFail(w.Name); return;
+        }
 
         var info = new NodeInfo
         {
