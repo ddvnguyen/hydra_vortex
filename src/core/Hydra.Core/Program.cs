@@ -112,6 +112,7 @@ if (coordEnabled)
     {
         coordCfg.Validate();
         Log.Information("coordinator_init Workers={Count} Mix={Mix}", coordCfg.Workers.Count, coordCfg.MixPrecisionEnabled);
+        CoordinatorMetrics.MixPrecisionEnabled.Set(coordCfg.MixPrecisionEnabled ? 1 : 0);
 
         coordinatorTask = Task.Run(async () =>
         {

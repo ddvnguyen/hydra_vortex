@@ -49,11 +49,23 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         return r;
     }
 
-    private async Task PollAllAsync(CancellationToken ct)
+	private async Task PollAllAsync(CancellationToken ct)
     {
         foreach (var w in _workers)
             try { await PollWorkerAsync(w, ct); }
             catch (Exception ex) { _log.Warning(ex, "health_poll_failed Node={N}", w.Name); OnFail(w.Name); }
+
+        foreach (var w in _workers)
+        {
+            var count = 0;
+            try { count = _tracker.TotalSlots(w.Name) - _tracker.FreeSlotCount(w.Name); }
+            catch { }
+            CoordinatorMetrics.ActiveSessions.WithLabels(w.Name).Set(count);
+
+            var busy = _tracker.GetElapsedSeconds(w.Name);
+            CoordinatorMetrics.WorkerBusySeconds.WithLabels(w.Name).Set(busy);
+        }
+
         IsStoreHealthy = true;
     }
 

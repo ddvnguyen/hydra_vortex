@@ -62,9 +62,12 @@ internal static class CoordinatorMetrics
     public static readonly Counter MigrationSessionStarts = Metrics.CreateCounter(
         "hydra_migration_session_starts", "Migration path count");
 
-    public static readonly Counter PrefixCacheHits = Metrics.CreateCounter(
-        "hydra_prefix_cache_hits", "Prefix KV hits");
+    public static readonly Counter CacheHits = Metrics.CreateCounter(
+        "hydra_cache_hits_total", "Cache hits (prefix or KV)");
 
-    public static readonly Counter PrefixCacheMisses = Metrics.CreateCounter(
-        "hydra_prefix_cache_misses", "Prefix KV misses");
+    public static readonly Counter CacheMisses = Metrics.CreateCounter(
+        "hydra_cache_misses_total", "Cache misses (prefix or KV)");
+
+    public static readonly Histogram RequestLatency = Metrics.CreateHistogram(
+        "hydra_request_latency_seconds", "End-to-end request latency", new[] { "node", "route_type" });
 }

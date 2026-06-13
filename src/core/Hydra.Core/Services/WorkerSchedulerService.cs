@@ -115,8 +115,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (entry == null || !entry.HasStoreState)
 			throw new InvalidOperationException("Session not migratable");
 
+		var fromNode = entry.NodeName ?? "unknown";
 		var targetWorker = _cfg.Workers.FirstOrDefault(w => w.Name == targetNodeName && w.CanDecode)
 			?? throw new InvalidOperationException($"Target worker '{targetNodeName}' not found or cannot decode");
+
+		CoordinatorMetrics.MigrationsTotal.WithLabels(fromNode, targetNodeName).Inc();
 
 		var storeKey = $"{sessionId}.kv";
 		var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
@@ -422,6 +425,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (target != null && _tracker.TryAcquireSlot(target.Name, out var slot, "decode"))
 			{
 				item.RouteType = "affinity";
+				CoordinatorMetrics.RequestsTotal.WithLabels(target.Name, "affinity").Inc();
+				CoordinatorMetrics.WarmSessionStarts.Inc();
 				item.DecodeWorker = target;
 				item.DecodeSlot = slot;
 				item.PrefillSlot = entry.SlotId;
@@ -471,6 +476,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (alt != null && _tracker.TryAcquireSlot(alt.Name, out var altSlot, "decode"))
 			{
 				item.RouteType = "cross_node";
+				CoordinatorMetrics.RequestsTotal.WithLabels(alt.Name, "cross_node").Inc();
+				CoordinatorMetrics.CrossNodeAffinityTotal.Inc();
 				item.DecodeWorker = alt;
 				item.DecodeSlot = altSlot;
 				item.DecodeLease = new SlotLease(alt.Name, altSlot, item.SessionId,
@@ -488,6 +495,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (entry != null && entry.HasStoreState)
 		{
 			item.RouteType = "migration";
+			CoordinatorMetrics.RequestsTotal.WithLabels(entry.NodeName ?? "unknown", "migration").Inc();
+			CoordinatorMetrics.MigrationSessionStarts.Inc();
 			item.State = WorkItemState.PickDecode;
 			return await PickDecodeAsync(item);
 		}
@@ -512,6 +521,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (dw != null && _tracker.TryAcquireSlot(dw.Name, out var slot, "decode"))
 			{
 				item.RouteType = "cold_atomic";
+				CoordinatorMetrics.RequestsTotal.WithLabels(dw.Name, "cold_atomic").Inc();
+				CoordinatorMetrics.ColdSessionStarts.Inc();
 				item.DecodeWorker = dw;
 				item.DecodeSlot = slot;
 				item.DecodeLease = new SlotLease(dw.Name, slot, item.SessionId, LeaseLifetime.Long, _tracker);
@@ -551,6 +562,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		if (pfWorker != null && _tracker.TryAcquireSlot(pfWorker.Name, out var pfSlot, "prefill"))
 		{
+			item.RouteType = item.RouteType ?? "cold_concurrency";
+			CoordinatorMetrics.RequestsTotal.WithLabels(pfWorker.Name, item.RouteType).Inc();
+			CoordinatorMetrics.ColdSessionStarts.Inc();
 			item.PrefillWorker = pfWorker;
 			item.PrefillSlot = pfSlot;
 			item.PrefillLease = new SlotLease(pfWorker.Name, pfSlot, item.SessionId,
@@ -601,9 +615,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 			{
+				CoordinatorMetrics.CacheMisses.Inc();
 				_log.Warning("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
 				return WorkItemState.Prefill;
 			}
+
+			CoordinatorMetrics.CacheHits.Inc();
 
 			var slotId = 0;
 			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
@@ -1121,8 +1138,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private void EmitTimeline(WorkItem item)
 	{
 		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
+		CoordinatorMetrics.RequestLatency.WithLabels(node, RouteLabel(item))
+			.Observe(item.Phases.GetValueOrDefault("total_ms") / 1000.0);
 		Console.Error.WriteLine(
-			$"event=request_timeline trace_id={item.TraceId} session_id={item.SessionId} " +
+			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
+			$"trace_id={item.TraceId} session_id={item.SessionId} " +
 			$"queue_wait_ms={item.Phases.GetValueOrDefault("queue_wait_ms")} node={node} " +
 			$"route_type={RouteLabel(item)} " +
 			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +

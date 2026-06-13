@@ -26,17 +26,34 @@ public sealed class CompletionProxyService : ICompletionProxyService
 
 	public async Task<Dictionary<string, object>> ProxyCompletionAsync(string nodeUrl, Dictionary<string, object> body, string traceId, CancellationToken ct)
 	{
-		var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
-		var resp = await _http.PostAsync($"{nodeUrl}/v1/chat/completions", content, ct);
-		resp.EnsureSuccessStatusCode();
-		return JsonSerializer.Deserialize<Dictionary<string, object>>(await resp.Content.ReadAsStringAsync(ct))!;
+		try
+		{
+			var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+			var resp = await _http.PostAsync($"{nodeUrl}/v1/chat/completions", content, ct);
+			resp.EnsureSuccessStatusCode();
+			return JsonSerializer.Deserialize<Dictionary<string, object>>(await resp.Content.ReadAsStringAsync(ct))!;
+		}
+		catch (OperationCanceledException)
+		{
+			CoordinatorMetrics.UpstreamTimeouts.Inc();
+			throw;
+		}
 	}
 
 	public async IAsyncEnumerable<byte[]> ProxyCompletionStreamAsync(string nodeUrl, Dictionary<string, object> body, string traceId, [EnumeratorCancellation] CancellationToken ct)
 	{
 		using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
 		var req = new HttpRequestMessage(HttpMethod.Post, $"{nodeUrl}/v1/chat/completions") { Content = content };
-		var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+		HttpResponseMessage resp;
+		try
+		{
+			resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+		}
+		catch (OperationCanceledException)
+		{
+			CoordinatorMetrics.UpstreamTimeouts.Inc();
+			throw;
+		}
 		resp.EnsureSuccessStatusCode();
 		using var stream = await resp.Content.ReadAsStreamAsync(ct);
 		using var reader = new StreamReader(stream);
