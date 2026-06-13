@@ -52,3 +52,11 @@ src/core/Tests.Integration/TestResults/test_results*
 
 # Node.js
 **/node_modules/**
+
+# Cloudflare Wrangler local cache (leaks account id / email)
+**/.wrangler/
+
+# Local env files (keep only .env.example)
+.env
+.env.*
+!.env.example
