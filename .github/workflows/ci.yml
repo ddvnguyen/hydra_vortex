@@ -57,6 +57,10 @@ jobs:
     name: Build & Test
     runs-on: self-hosted
     timeout-minutes: 30
+    # Never run on a fork's pull request — fork PRs can execute arbitrary code
+    # on the self-hosted runner. Only safe origins: push (collaborator-only),
+    # workflow_dispatch (collaborator-only), and PRs from within this repo.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       - name: Cancel duplicate queued runs
