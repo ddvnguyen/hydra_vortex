@@ -1,9 +1,11 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
@@ -48,9 +50,9 @@ func NewServer(cfg *config.Config, manager *process.Manager, checker *health.Che
 // requireAuth wraps a handler with token authentication
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Fail-closed: if no token configured, deny access
 		if s.authToken == "" {
-			// No token configured - allow access (development mode)
-			next(w, r)
+			http.Error(w, "authentication not configured", http.StatusUnauthorized)
 			return
 		}
 
@@ -68,7 +70,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != s.authToken {
+		
+		// Timing-safe comparison to prevent timing attacks
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) != 1 {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
@@ -192,11 +196,12 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name     string `json:"name"`
-		Source   string `json:"source"`
-		Checksum string `json:"checksum"`
-		Binary   string `json:"binary"`
-		Dest     string `json:"dest"`
+		Name           string `json:"name"`
+		Source         string `json:"source"`
+		ImageDigest    string `json:"image_digest"`    // OCI image manifest digest
+		BinaryChecksum string `json:"binary_checksum"` // SHA256 of the extracted binary
+		Binary         string `json:"binary"`
+		Dest           string `json:"dest"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -214,18 +219,22 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		// Create a new spec from request
 		spec = config.BinaryConfig{
-			Source:   req.Source,
-			Checksum: req.Checksum,
-			Binary:   req.Binary,
-			Dest:     req.Dest,
+			Source:         req.Source,
+			ImageDigest:    req.ImageDigest,
+			BinaryChecksum: req.BinaryChecksum,
+			Binary:         req.Binary,
+			Dest:           req.Dest,
 		}
 	} else {
 		// Override with request values if provided
 		if req.Source != "" {
 			spec.Source = req.Source
 		}
-		if req.Checksum != "" {
-			spec.Checksum = req.Checksum
+		if req.ImageDigest != "" {
+			spec.ImageDigest = req.ImageDigest
+		}
+		if req.BinaryChecksum != "" {
+			spec.BinaryChecksum = req.BinaryChecksum
 		}
 		if req.Binary != "" {
 			spec.Binary = req.Binary
@@ -253,7 +262,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("updating binary", "name", req.Name, "source", spec.Source)
 
-	if err := s.registry.PullBinary(spec.Source, dest, spec.Checksum, binaryName); err != nil {
+	if err := s.registry.PullBinary(spec.Source, dest, spec.ImageDigest, spec.BinaryChecksum, binaryName); err != nil {
 		s.logger.Error("failed to update binary", "name", req.Name, "error", err)
 		http.Error(w, "failed to update binary: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -270,6 +279,14 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 // isPathAllowed checks if the destination path is within allowed directories
 func (s *Server) isPathAllowed(path string) bool {
+	// Clean the path to resolve any .. or . components
+	cleanPath := filepath.Clean(path)
+	
+	// Reject paths that still contain .. after cleaning (shouldn't happen, but be safe)
+	if strings.Contains(cleanPath, "..") {
+		return false
+	}
+
 	// Allowlist of allowed directories for binary updates
 	allowedDirs := []string{
 		"/opt/hydra/bin",
@@ -278,7 +295,8 @@ func (s *Server) isPathAllowed(path string) bool {
 	}
 
 	for _, dir := range allowedDirs {
-		if strings.HasPrefix(path, dir+"/") || path == dir {
+		cleanDir := filepath.Clean(dir)
+		if strings.HasPrefix(cleanPath, cleanDir+"/") || cleanPath == cleanDir {
 			return true
 		}
 	}

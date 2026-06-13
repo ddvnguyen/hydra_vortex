@@ -33,13 +33,15 @@ func NewManager(logger *slog.Logger, cacheDir string) *Manager {
 // PullBinary pulls a binary from an OCI registry
 // source format: registry/image:tag or registry/image@sha256:digest
 // destination: local path where binary should be placed
-// expectedChecksum: optional sha256 checksum to verify (format: "sha256:abc123...")
+// imageDigest: optional OCI image manifest digest to verify (format: "sha256:abc123...")
+// binaryChecksum: optional SHA256 checksum of the extracted binary file (format: "sha256:abc123...")
 // binaryName: name of the binary to extract from the image (e.g., "llama-server", "busybox")
-func (m *Manager) PullBinary(source, destination, expectedChecksum, binaryName string) error {
+func (m *Manager) PullBinary(source, destination, imageDigest, binaryChecksum, binaryName string) error {
 	m.logger.Info("pulling binary from registry",
 		"source", source,
 		"destination", destination,
-		"checksum", expectedChecksum,
+		"image_digest", imageDigest,
+		"binary_checksum", binaryChecksum,
 		"binary_name", binaryName)
 
 	// Parse the image reference
@@ -63,8 +65,8 @@ func (m *Manager) PullBinary(source, destination, expectedChecksum, binaryName s
 	m.logger.Info("image pulled", "digest", digest.String())
 
 	// Verify image digest if provided
-	if expectedChecksum != "" {
-		if err := m.verifyChecksum(digest, expectedChecksum); err != nil {
+	if imageDigest != "" {
+		if err := m.verifyImageDigest(digest, imageDigest); err != nil {
 			return err
 		}
 	}
@@ -79,16 +81,16 @@ func (m *Manager) PullBinary(source, destination, expectedChecksum, binaryName s
 		return fmt.Errorf("chmod binary: %w", err)
 	}
 
-	// Verify the actual binary checksum if expected
-	if expectedChecksum != "" {
+	// Verify the actual binary checksum if provided
+	if binaryChecksum != "" {
 		actualChecksum, err := ComputeChecksum(destination)
 		if err != nil {
 			return fmt.Errorf("compute binary checksum: %w", err)
 		}
-		if actualChecksum != expectedChecksum {
+		if actualChecksum != binaryChecksum {
 			// Clean up the invalid binary
 			os.Remove(destination)
-			return fmt.Errorf("binary checksum mismatch: got %s, expected %s", actualChecksum, expectedChecksum)
+			return fmt.Errorf("binary checksum mismatch: got %s, expected %s", actualChecksum, binaryChecksum)
 		}
 		m.logger.Info("binary checksum verified", "checksum", actualChecksum)
 	}
@@ -101,26 +103,26 @@ func (m *Manager) PullBinary(source, destination, expectedChecksum, binaryName s
 	return nil
 }
 
-// verifyChecksum verifies the image digest matches the expected checksum
-func (m *Manager) verifyChecksum(actual v1.Hash, expected string) error {
+// verifyImageDigest verifies the image manifest digest matches the expected digest
+func (m *Manager) verifyImageDigest(actual v1.Hash, expected string) error {
 	// Expected format: "sha256:abc123..."
 	parts := strings.SplitN(expected, ":", 2)
 	if len(parts) != 2 {
-		return fmt.Errorf("invalid checksum format: %s (expected sha256:hex)", expected)
+		return fmt.Errorf("invalid digest format: %s (expected sha256:hex)", expected)
 	}
 
 	algorithm := parts[0]
 	expectedHash := parts[1]
 
 	if algorithm != "sha256" {
-		return fmt.Errorf("unsupported checksum algorithm: %s (only sha256 supported)", algorithm)
+		return fmt.Errorf("unsupported digest algorithm: %s (only sha256 supported)", algorithm)
 	}
 
 	if actual.Hex != expectedHash {
-		return fmt.Errorf("checksum mismatch: got %s, expected %s", actual.Hex, expectedHash)
+		return fmt.Errorf("image digest mismatch: got %s, expected %s", actual.Hex, expectedHash)
 	}
 
-	m.logger.Info("checksum verified", "digest", actual.String())
+	m.logger.Info("image digest verified", "digest", actual.String())
 	return nil
 }
 
@@ -247,8 +249,8 @@ func ComputeChecksum(path string) (string, error) {
 
 // PullAndVerify pulls a binary and verifies it matches the expected checksum
 // Returns the actual checksum of the pulled binary
-func (m *Manager) PullAndVerify(source, destination, expectedChecksum, binaryName string) (string, error) {
-	if err := m.PullBinary(source, destination, expectedChecksum, binaryName); err != nil {
+func (m *Manager) PullAndVerify(source, destination, imageDigest, binaryChecksum, binaryName string) (string, error) {
+	if err := m.PullBinary(source, destination, imageDigest, binaryChecksum, binaryName); err != nil {
 		return "", err
 	}
 

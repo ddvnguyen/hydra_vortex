@@ -4,7 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
+User=hydra
+Group=hydra
 WorkingDirectory=/opt/hydra
+EnvironmentFile=/etc/hydra-head/env
 ExecStart=/opt/hydra/bin/hydra-head \
   -global /opt/hydra/config/global.yaml \
   -node /opt/hydra/config/node-p100.yaml \
@@ -20,6 +23,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+ReadWritePaths=/opt/hydra/bin
 
 [Install]
 WantedBy=default.target

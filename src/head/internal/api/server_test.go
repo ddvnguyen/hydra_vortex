@@ -16,7 +16,7 @@ import (
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/registry"
 )
 
-func setupTestServer(t *testing.T) (*Server, func()) {
+func setupTestServer(t *testing.T, authToken string) (*Server, func()) {
 	tmpDir := t.TempDir()
 
 	mockBinary := filepath.Join(tmpDir, "mock-server")
@@ -46,7 +46,7 @@ sleep 10
 	checker := health.NewChecker("http://localhost:18080", logger, 10*time.Second, 30*time.Second, 3)
 	regMgr := registry.NewManager(logger, tmpDir)
 
-	server := NewServer(cfg, manager, checker, regMgr, logger, "")
+	server := NewServer(cfg, manager, checker, regMgr, logger, authToken)
 
 	cleanup := func() {
 		manager.Shutdown()
@@ -57,7 +57,7 @@ sleep 10
 }
 
 func TestStatusEndpoint(t *testing.T) {
-	server, cleanup := setupTestServer(t)
+	server, cleanup := setupTestServer(t, "test-token")
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
@@ -83,7 +83,7 @@ func TestStatusEndpoint(t *testing.T) {
 }
 
 func TestConfigEndpoint(t *testing.T) {
-	server, cleanup := setupTestServer(t)
+	server, cleanup := setupTestServer(t, "test-token")
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/config", nil)
@@ -106,7 +106,7 @@ func TestConfigEndpoint(t *testing.T) {
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	server, cleanup := setupTestServer(t)
+	server, cleanup := setupTestServer(t, "test-token")
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -131,11 +131,28 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestRestartEndpoint(t *testing.T) {
-	server, cleanup := setupTestServer(t)
+func TestRestartEndpointRequiresAuth(t *testing.T) {
+	server, cleanup := setupTestServer(t, "test-token")
 	defer cleanup()
 
+	// Test without auth token
 	req := httptest.NewRequest(http.MethodPost, "/restart", nil)
+	w := httptest.NewRecorder()
+
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+}
+
+func TestRestartEndpointWithAuth(t *testing.T) {
+	server, cleanup := setupTestServer(t, "test-token")
+	defer cleanup()
+
+	// Test with valid auth token
+	req := httptest.NewRequest(http.MethodPost, "/restart", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	server.ServeHTTP(w, req)
@@ -151,5 +168,61 @@ func TestRestartEndpoint(t *testing.T) {
 
 	if response["status"] != "restarted" {
 		t.Errorf("expected status=restarted, got %s", response["status"])
+	}
+}
+
+func TestRestartEndpointWithInvalidAuth(t *testing.T) {
+	server, cleanup := setupTestServer(t, "test-token")
+	defer cleanup()
+
+	// Test with invalid auth token
+	req := httptest.NewRequest(http.MethodPost, "/restart", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	w := httptest.NewRecorder()
+
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+}
+
+func TestAuthFailClosed(t *testing.T) {
+	// Test that server with empty token denies access
+	server, cleanup := setupTestServer(t, "")
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/restart", nil)
+	w := httptest.NewRecorder()
+
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401 (fail-closed), got %d", w.Code)
+	}
+}
+
+func TestPathValidation(t *testing.T) {
+	server, cleanup := setupTestServer(t, "test-token")
+	defer cleanup()
+
+	tests := []struct {
+		path     string
+		expected bool
+	}{
+		{"/opt/hydra/bin/llama-server", true},
+		{"/opt/hydra/bin/../etc/passwd", false},
+		{"/usr/local/bin/test", true},
+		{"/home/hydra/bin/test", true},
+		{"/etc/passwd", false},
+		{"/tmp/test", false},
+		{"/opt/hydra/bin/../../etc/passwd", false},
+	}
+
+	for _, tt := range tests {
+		result := server.isPathAllowed(tt.path)
+		if result != tt.expected {
+			t.Errorf("isPathAllowed(%q) = %v, expected %v", tt.path, result, tt.expected)
+		}
 	}
 }

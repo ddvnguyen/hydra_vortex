@@ -61,10 +61,11 @@ type EndpointConfig struct {
 type BinariesConfig map[string]BinaryConfig
 
 type BinaryConfig struct {
-	Source   string `yaml:"source"`
-	Checksum string `yaml:"checksum"`
-	Binary   string `yaml:"binary"` // Name of binary to extract from image
-	Dest     string `yaml:"dest"`   // Destination path
+	Source         string `yaml:"source"`
+	ImageDigest    string `yaml:"image_digest"`    // OCI image manifest digest (sha256:...)
+	BinaryChecksum string `yaml:"binary_checksum"` // SHA256 of the extracted binary file
+	Binary         string `yaml:"binary"`          // Name of binary to extract from image
+	Dest           string `yaml:"dest"`            // Destination path
 }
 
 func Load(globalPath, nodePath string) (*Config, error) {

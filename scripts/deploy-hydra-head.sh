@@ -16,6 +16,29 @@ die()  { fail "$*"; exit 1; }
 
 TARGET="${1:-all}"
 
+# ── Auth Token Management ─────────────────────────────────────────────────────
+TOKEN_FILE="$REPO_ROOT/.hydra-head-token"
+
+generate_token() {
+  if [ -f "$TOKEN_FILE" ]; then
+    ok "Using existing auth token from $TOKEN_FILE"
+    return
+  fi
+  
+  step "Generating new auth token"
+  # Generate a random 32-byte hex token
+  openssl rand -hex 32 > "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
+  ok "Generated new auth token: $TOKEN_FILE"
+}
+
+get_token() {
+  if [ ! -f "$TOKEN_FILE" ]; then
+    die "Auth token not found. Run with 'generate' first."
+  fi
+  cat "$TOKEN_FILE"
+}
+
 # ── Build ─────────────────────────────────────────────────────────────────────
 step "Building hydra-head"
 
@@ -26,6 +49,10 @@ fi
 
 go build -C "$REPO_ROOT/src/head" -o "$REPO_ROOT/bin/hydra-head" .
 ok "Built bin/hydra-head"
+
+# Generate auth token
+generate_token
+AUTH_TOKEN=$(get_token)
 
 # ── Deploy Functions ──────────────────────────────────────────────────────────
 deploy_rtx() {
@@ -45,12 +72,12 @@ deploy_rtx() {
     podman rm hydra-head-rtx
   fi
   
-  # Run container
+  # Run container with auth token
   podman run -d \
     --name hydra-head-rtx \
     --network host \
     --device nvidia.com/gpu=all \
-    -v /mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm120:/llama:ro \
+    -e HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN" \
     -v /mnt/SSD:/models:ro \
     hydra-head:rtx
   
@@ -73,7 +100,7 @@ deploy_p100() {
   fi
   
   # Create directories
-  ssh hydra-p100 "mkdir -p /opt/hydra/bin /opt/hydra/config"
+  ssh hydra-p100 "sudo mkdir -p /opt/hydra/bin /opt/hydra/config /etc/hydra-head"
   
   # Copy binary
   rsync -avz bin/hydra-head hydra-p100:/opt/hydra/bin/hydra-head
@@ -84,20 +111,24 @@ deploy_p100() {
   rsync -avz infra/hydra-head/config/node-p100.yaml hydra-p100:/opt/hydra/config/node-p100.yaml
   ok "Copied config files"
   
+  # Create environment file with auth token
+  ssh hydra-p100 "echo 'HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN' | sudo tee /etc/hydra-head/env > /dev/null"
+  ssh hydra-p100 "sudo chmod 600 /etc/hydra-head/env"
+  ok "Created auth token environment file"
+  
   # Copy systemd service
   scp infra/hydra-head/hydra-head.service hydra-p100:/tmp/hydra-head.service
   ssh hydra-p100 "
-    mkdir -p ~/.config/systemd/user
-    cp /tmp/hydra-head.service ~/.config/systemd/user/hydra-head.service
-    systemctl --user daemon-reload
+    sudo cp /tmp/hydra-head.service /etc/systemd/system/hydra-head.service
+    sudo systemctl daemon-reload
   "
   ok "Installed systemd service"
   
   # Stop existing service
-  ssh hydra-p100 "systemctl --user stop hydra-head 2>/dev/null || true"
+  ssh hydra-p100 "sudo systemctl stop hydra-head 2>/dev/null || true"
   
   # Start service
-  ssh hydra-p100 "systemctl --user enable --now hydra-head"
+  ssh hydra-p100 "sudo systemctl enable --now hydra-head"
   ok "Started hydra-head service"
   
   # Wait for health
@@ -132,4 +163,5 @@ echo ""
 echo "  RTX API:  http://localhost:9700/status"
 echo "  P100 API: http://192.168.122.21:9700/status"
 echo ""
-echo "  Test: curl http://localhost:9700/status | jq"
+echo "  Auth token: $TOKEN_FILE"
+echo "  Test: curl -H 'Authorization: Bearer \$(cat $TOKEN_FILE)' http://localhost:9700/status | jq"

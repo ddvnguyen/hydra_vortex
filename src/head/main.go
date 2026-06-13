@@ -84,7 +84,7 @@ func main() {
 				binaryName = name
 			}
 
-			if err := regMgr.PullBinary(spec.Source, dest, spec.Checksum, binaryName); err != nil {
+			if err := regMgr.PullBinary(spec.Source, dest, spec.ImageDigest, spec.BinaryChecksum, binaryName); err != nil {
 				logger.Error("failed to pull binary", "name", name, "error", err)
 				os.Exit(1)
 			}
