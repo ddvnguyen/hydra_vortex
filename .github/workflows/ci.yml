@@ -76,7 +76,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Restore & build (.NET)
-        run: dotnet build src/Hydra.sln -c Release --nologo -v minimal
+        run: |
+          for i in 1 2 3; do
+            dotnet build src/Hydra.sln -c Release --nologo -v minimal && exit 0
+            echo "dotnet build attempt $i/3 failed. Clearing NuGet cache and retrying..."
+            dotnet nuget locals all --clear --force-english-output 2>/dev/null || true
+            sleep 5
+          done
+          echo "All 3 build attempts failed."
+          exit 1
 
       - name: Unit tests — Shared
         run: |
