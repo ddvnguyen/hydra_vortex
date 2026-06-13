@@ -84,6 +84,19 @@ func main() {
 				binaryName = name
 			}
 
+			// Skip pull if the binary is already on disk (e.g., baked into
+			// the image at build time). This is the preferred path for
+			// small sidecar exporters — it avoids a network round-trip on
+			// every container start.
+			if _, err := os.Stat(dest); err == nil {
+				logger.Info("binary already present on disk, skipping pull",
+					"name", name, "dest", dest)
+				continue
+			} else if !os.IsNotExist(err) {
+				logger.Error("stat binary path", "name", name, "dest", dest, "error", err)
+				os.Exit(1)
+			}
+
 			if err := regMgr.PullBinary(spec.Source, dest, spec.ImageDigest, spec.BinaryChecksum, binaryName); err != nil {
 				logger.Error("failed to pull binary", "name", name, "error", err)
 				os.Exit(1)

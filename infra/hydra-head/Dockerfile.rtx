@@ -1,6 +1,8 @@
 # Hydra Head - RTX Container
 # Runs llama-server with Hydra Head process management (OCI registry)
 # CUDA 13.2 runtime inlined — no external base image dependency
+# Also bundles the 3 monitoring sidecars (node_exporter, nvidia_gpu_exporter,
+# promtail) so hydra-head manages ALL services on this node.
 
 FROM ubuntu:26.04
 
@@ -10,6 +12,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    unzip \
+    wget \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
@@ -48,17 +52,36 @@ COPY bin/hydra-head /usr/local/bin/hydra-head
 # Copy config files
 COPY infra/hydra-head/config/global.yaml /opt/hydra/config/global.yaml
 COPY infra/hydra-head/config/node-rtx.yaml /opt/hydra/config/node-rtx.yaml
+COPY infra/promtail/promtail-rtx.yml /opt/hydra/config/promtail-rtx.yml
 
-# Create directories including llama-server destination path (from OCI pull)
-RUN mkdir -p /opt/hydra/bin /opt/hydra/tmp /var/log/hydra /llama/bin && \
+# Download the 3 monitoring sidecar binaries (baked into the image so
+# hydra-head can spawn them as child processes inside this container).
+RUN mkdir -p /opt/hydra/bin && cd /tmp && \
+    curl -sLO https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz && \
+    tar xf node_exporter-1.8.2.linux-amd64.tar.gz && \
+    mv node_exporter-1.8.2.linux-amd64/node_exporter /opt/hydra/bin/node_exporter && \
+    rm -rf node_exporter-1.8.2* && \
+    curl -sLO https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.2.1/nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz && \
+    tar xf nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz && \
+    mv nvidia_gpu_exporter /opt/hydra/bin/nvidia_gpu_exporter && \
+    rm -rf nvidia_gpu_exporter_1.2.1* LICENSE README.md && \
+    curl -sLO https://github.com/grafana/loki/releases/download/v3.4.3/promtail-linux-amd64.zip && \
+    unzip -o promtail-linux-amd64.zip && \
+    chmod +x promtail-linux-amd64 && \
+    mv promtail-linux-amd64 /opt/hydra/bin/promtail && \
+    rm -f promtail-linux-amd64.zip && \
+    chmod +x /opt/hydra/bin/node_exporter /opt/hydra/bin/nvidia_gpu_exporter /opt/hydra/bin/promtail
+
+# Create directories for binaries, llama-server, logs, and promtail positions
+RUN mkdir -p /opt/hydra/bin /opt/hydra/tmp /opt/hydra/promtail-positions /var/log/hydra /llama/bin && \
     chown -R hydra:hydra /opt/hydra /var/log/hydra /llama
 
 # Switch to hydra user
 USER hydra
 WORKDIR /opt/hydra
 
-# Expose Hydra Head API + llama-server ports
-EXPOSE 9700 8080 9503
+# Expose Hydra Head API + llama-server + sidecar exporter ports
+EXPOSE 9700 8080 9503 9100 9835 9080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

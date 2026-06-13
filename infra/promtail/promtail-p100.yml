@@ -1,23 +1,30 @@
+# Promtail config for P100 VM — deployed by hydra-head process manager.
+# Captures hydra-head journal logs and llama-server logs via journal scraping.
+# Config location on P100: /home/vm1/.config/promtail/config.yml
 server:
-  http_listen_port: 9080
+  http_listen_port: 9081
   grpc_listen_port: 0
 
 positions:
-  filename: /var/lib/promtail/positions.yaml
+  filename: /home/vm1/.local/share/promtail/positions.yaml
 
 clients:
   - url: http://192.168.122.1:3100/loki/api/v1/push
 
 scrape_configs:
-  - job_name: llama-p100
-    static_configs:
-      - targets: [localhost]
-        labels:
-          component: llama-server
-          node: p100
-          __path__: /var/log/hydra/llama-p100.log
+  - job_name: hydra-head-p100
+    journal:
+      matches: _SYSTEMD_USER_UNIT=hydra-head.service
+    relabel_configs:
+      - source_labels: [__journal__systemd_user_unit]
+        target_label: unit
+      - target_label: node
+        replacement: p100
     pipeline_stages:
       - regex:
-          expression: '^(?:\d+\.\d+\.\d+\.\d+\s+)?(?P<level>[IWED])\s'
+          expression: "^(?P<llama_line>\\d+\\.\\d+\\.\\d+\\.\\d+\\s+[A-Z]\\s+)"
+      - template:
+          source: component
+          template: "{{ if .llama_line }}llama-server{{ else }}hydra-head{{ end }}"
       - labels:
-          level:
+          component:

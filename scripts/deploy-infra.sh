@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Deploy the observability / infra stack (node-exporter, nvidia-exporter,
-# loki, promtail, prometheus, grafana, pgadmin).
+# Deploy the observability / infra stack (loki, prometheus, grafana, pgadmin).
+# The 3 host sidecars (node-exporter, nvidia-exporter, promtail) are
+# now managed by hydra-head inside the hydra-head-rtx container —
+# see infra/hydra-head/config/node-rtx.yaml.
 #
 # Usage:
 #   bash scripts/deploy-infra.sh
@@ -10,31 +12,30 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QUADLET_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
 
-GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
+GREEN='\033[0;32m'; RED='\033[31m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 ok()   { echo -e "  ${GREEN}✓${NC} $*"; }
 step() { echo -e "\n${BOLD}==> $*${NC}"; }
 
-SERVICES="infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin"
+SERVICES="infra-loki infra-prometheus infra-grafana infra-pgadmin"
 
 step "Installing Quadlet files"
 mkdir -p "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/infra-*.container "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/infra-host.pod "$QUADLET_DIR"
 cp "$REPO_ROOT/infra/quadlets"/*.volume "$QUADLET_DIR"
-cp "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env "$QUADLET_DIR" 2>/dev/null || true
 
 step "Deploying infra services"
 systemctl --user daemon-reload
 systemctl --user stop infra-host-pod.service 2>/dev/null || true
 sleep 1
 # Note: infra-grafana restarts last to pick up dashboard file changes
-systemctl --user start infra-node-exporter.service
-systemctl --user start infra-nvidia-exporter.service
-systemctl --user start infra-loki.service
-systemctl --user start infra-promtail.service
-systemctl --user start infra-prometheus.service
-systemctl --user restart infra-grafana.service 2>/dev/null || systemctl --user start infra-grafana.service
-systemctl --user start infra-pgadmin.service
+for s in $SERVICES; do
+  systemctl --user start "$s.service"
+done
+# Also start the auxiliary (non-Core) services not in $SERVICES
+for s in infra-postgres infra-renderer infra-openwebui; do
+  systemctl --user start "$s.service" 2>/dev/null || true
+done
 
 step "Verifying infra services"
 sleep 10

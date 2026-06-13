@@ -11,8 +11,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "==> Installing/refreshing Quadlet files..."
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd/"
-cp "$REPO_ROOT/infra/quadlets"/*.container "$REPO_ROOT/infra/quadlets"/*.pod "$REPO_ROOT/infra/quadlets"/*.volume "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env \
-  "${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd/" 2>/dev/null || true
+cp "$REPO_ROOT/infra/quadlets"/infra-*.container \
+   "$REPO_ROOT/infra/quadlets"/*.pod \
+   "$REPO_ROOT/infra/quadlets"/*.volume \
+   "${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd/" 2>/dev/null || true
 systemctl --user daemon-reload
 
 echo ""

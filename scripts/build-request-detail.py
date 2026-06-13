@@ -14,7 +14,7 @@ JS = (DASH_DIR / "_request-detail.afterRender.js").read_text()
 loki_target = {
     "datasource": {"type": "loki", "uid": "loki"},
     "expr": '{component="hydra"} |= "request_timeline"',
-    "maxLines": 20,
+    "maxLines": 100,
     "refId": "A",
 }
 
@@ -26,7 +26,8 @@ transformations = [
             "decode_ms", "total_ms", "tokens_in", "tokens_out", "kv_bytes",
         ]
     ]}},
-    {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "Time", "desc": True}]}},
+    # NOTE: sorting is done in JS (after the timestamp fallback to
+    # Loki's Time field) so the newest request is always at the top.
 ]
 
 panel = {
@@ -34,7 +35,7 @@ panel = {
     "type": "marcusolsson-dynamictext-panel",
     "title": "Request Timeline — Composition / Aligned + detail",
     "datasource": {"type": "loki", "uid": "loki"},
-    "gridPos": {"h": 19, "w": 24, "x": 0, "y": 0},
+    "gridPos": {"h": 17, "w": 24, "x": 0, "y": 0},
     "targets": [loki_target],
     "transformations": transformations,
     "options": {
@@ -52,9 +53,9 @@ panel = {
 }
 
 dashboard = {
-    "title": "",
+    "title": "Hydra \u2014 Request Detail",
     "uid": "hydra-request-detail",
-    "version": 1,
+    "version": 4,
     "timezone": "browser",
     "editable": True,
     "tags": ["hydra", "timeline", "performance"],

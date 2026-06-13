@@ -33,14 +33,16 @@ if ! ls "$QUADLET_DIR"/infra-*.container &>/dev/null 2>&1; then
   cp "$REPO_ROOT/infra/quadlets"/infra-*.container "$QUADLET_DIR"
   cp "$REPO_ROOT/infra/quadlets"/infra-host.pod "$QUADLET_DIR"
   cp "$REPO_ROOT/infra/quadlets"/*.volume "$QUADLET_DIR"
-  cp "$REPO_ROOT/infra/quadlets"/hydra-coordinator.env "$QUADLET_DIR" 2>/dev/null || true
   systemctl --user daemon-reload
 fi
 
 # ── 2. Infra / observability stack ───────────────────────────────────────────
 step "Infra stack (Loki + Promtail + Prometheus + Grafana)"
 
-SERVICES="infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin infra-openwebui infra-postgres"
+# RTX sidecars (node_exporter, nvidia_exporter, promtail) are now managed
+# by hydra-head inside the hydra-head-rtx container (see
+# infra/hydra-head/config/node-rtx.yaml). They are no longer started here.
+SERVICES="infra-loki infra-prometheus infra-grafana infra-pgadmin infra-openwebui infra-postgres"
 ALL_ACTIVE=true
 for s in $SERVICES; do
   if ! systemctl --user is-active --quiet "$s.service" 2>/dev/null; then
@@ -77,8 +79,9 @@ check_http "Prometheus       :9091"    "http://localhost:9091"
 check_http "Loki             :3100"    "http://localhost:3100/ready"
 check_http "pgAdmin          :8888"    "http://localhost:8888/misc/ping"
 check_http "OpenWebUI        :3001"    "http://localhost:3001"
-
-systemctl --user is-active --quiet infra-promtail.service && ok "promtail active" || warn "promtail inactive"
+# RTX sidecars (9100/9835/9080) are now in the hydra-head-rtx container
+# — checked via /status, not via the host Quadlet stack.
+check_http "hydra-head-rtx   :9700"    "http://localhost:9700/health" 2>/dev/null
 
 echo ""
 echo -e "${GREEN}${BOLD}Infra stack ready.${NC}"

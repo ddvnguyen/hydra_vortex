@@ -57,32 +57,93 @@ AUTH_TOKEN=$(get_token)
 # ── Deploy Functions ──────────────────────────────────────────────────────────
 deploy_rtx() {
   step "Deploying to RTX (container)"
-  
+
   if ! command -v podman &>/dev/null; then
     die "podman not found"
   fi
-  
+
   # Build container image
   podman build -f infra/hydra-head/Dockerfile.rtx -t hydra-head:rtx .
   ok "Built container image hydra-head:rtx"
-  
+
   # Stop existing container if running
   if podman container exists hydra-head-rtx 2>/dev/null; then
     podman stop hydra-head-rtx
     podman rm hydra-head-rtx
   fi
-  
-  # Run container with auth token
+
+  # Pre-stop the 3 host sidecar Quadlets — hydra-head now manages these
+  # as child processes inside this container, so the host ports (9100,
+  # 9835, 9080) must be free for the in-container children to bind.
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  for svc in infra-node-exporter infra-nvidia-exporter infra-promtail; do
+    if systemctl --user is-active --quiet "$svc.service" 2>/dev/null; then
+      systemctl --user stop "$svc.service" 2>/dev/null || true
+      ok "Stopped host $svc (replaced by hydra-head child)"
+    fi
+  done
+  unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
+
+  # Persistent volume for promtail positions (so log cursors survive
+  # container restarts, replacing the old promtail-positions.volume).
+  if ! podman volume exists hydra-head-promtail-positions 2>/dev/null; then
+    podman volume create hydra-head-promtail-positions
+  fi
+
+  # Mount the host's podman auth file so the in-container hydra-head can
+  # pull llama-server from ghcr.io (which now requires auth).
+  AUTH_FILE_SRC="/run/user/1000/containers/auth.json"
+  AUTH_FILE_MOUNTS=()
+  if [ -f "$AUTH_FILE_SRC" ]; then
+    AUTH_FILE_MOUNTS=(-v "$AUTH_FILE_SRC:/run/host-ctrs-auth.json:ro")
+    ok "Mounting host podman auth for ghcr.io pulls"
+  else
+    warn "No host auth.json at $AUTH_FILE_SRC — llama-server pull may fail"
+  fi
+
+  # Set up a socat-relayed docker socket for promtail. The host's
+  # podman.sock is 0660 owned by ddv, but the in-container hydra user
+  # (uid 1001) can't read it. socat creates a new socket with 0666
+  # permission that anyone in the container can read.
+  PROMTAIL_SOCK_DIR="/tmp/hydra-head-promtail-sock"
+  mkdir -p "$PROMTAIL_SOCK_DIR"
+  rm -f "$PROMTAIL_SOCK_DIR/docker.sock"
+  nohup socat "UNIX-LISTEN:$PROMTAIL_SOCK_DIR/docker.sock,reuseaddr,fork" \
+                  "UNIX-CONNECT:/run/user/1000/podman/podman.sock" &>/tmp/hydra-promtail-socat.log &
+  SOCAT_PID=$!
+  sleep 1
+  if [ -S "$PROMTAIL_SOCK_DIR/docker.sock" ]; then
+    chmod 666 "$PROMTAIL_SOCK_DIR/docker.sock"
+    ok "Promtail docker.sock proxy ready (socat pid=$SOCAT_PID)"
+  else
+    warn "Promtail docker.sock proxy failed to start; promtail will get EACCES"
+  fi
+
+  # Run container with auth token. Volume mounts:
+  #   - host auth.json (ro):      ghcr.io creds for in-container pulls
+  #   - host /proc /sys / (ro):   node_exporter reads host metrics
+  #   - proxied podman socket:    promtail discovers all host containers
+  #   - /mnt/containers (ro):     promtail reads each container's CRI log
+  #   - promtail positions vol:   persistent cursor for log shipping
   podman run -d \
     --name hydra-head-rtx \
     --network host \
     --device nvidia.com/gpu=all \
     -e HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN" \
+    -e REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json \
     -v /mnt/SSD:/models:ro \
+    -v /proc:/host/proc:ro \
+    -v /sys:/host/sys:ro \
+    -v /:/rootfs:ro \
+    -v "$PROMTAIL_SOCK_DIR:/var/run/socks:rw" \
+    -v /mnt/containers/:/mnt/containers/:ro \
+    -v hydra-head-promtail-positions:/opt/hydra/promtail-positions:rw \
+    "${AUTH_FILE_MOUNTS[@]}" \
     hydra-head:rtx
-  
+
   ok "Started hydra-head-rtx container"
-  
+
   # Wait for health
   sleep 3
   if curl -sf http://localhost:9700/health &>/dev/null; then
@@ -90,6 +151,19 @@ deploy_rtx() {
   else
     warn "Hydra Head RTX not responding yet (may still be starting)"
   fi
+
+  # Verify the 3 sidecar exporters are responding on their host ports.
+  # Allow them a few seconds to spawn (they're started after the
+  # OCI pull completes which can take ~30s for the llama image).
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 3
+    if curl -sf http://localhost:9100/metrics >/dev/null 2>&1 \
+       && curl -sf http://localhost:9835/metrics >/dev/null 2>&1 \
+       && curl -sf http://localhost:9080/ready  >/dev/null 2>&1; then
+      ok "Sidecars up: node_exporter :9100, nvidia_gpu_exporter :9835, promtail :9080"
+      break
+    fi
+  done
 }
 
 deploy_p100() {

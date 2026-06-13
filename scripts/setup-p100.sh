@@ -82,6 +82,15 @@ scp "$REPO_ROOT/infra/systemd/nvidia-exporter-p100.service" "$VM:~/.config/syste
 ssh "$VM" "systemctl --user daemon-reload && systemctl --user enable --now nvidia-exporter"
 
 echo ""
+echo "==> Cleanup: disable redundant systemd sidecar services"
+echo "    (hydra-head manages these as subprocesses)"
+ssh "$VM" "
+  sudo systemctl disable --now promtail-p100 2>/dev/null || true
+  systemctl --user disable --now node-exporter nvidia-exporter 2>/dev/null || true
+  echo '  Redundant services disabled'
+"
+
+echo ""
 echo "==> Setup complete. To deploy hydra-head to P100:"
 echo "    bash scripts/deploy-hydra-head.sh p100"
 echo ""

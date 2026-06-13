@@ -6,7 +6,8 @@ __pycache__/
 *.pyo
 .vs/
 .vscode/
-bin/
+bin/*
+!bin/hydra-head
 obj/
 build/
 .venv/

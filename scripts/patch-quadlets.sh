@@ -30,28 +30,8 @@ patch_file() {
     sed -i "/^HealthTimeout=.*/a Notify=healthy" "$file"
   fi
 
-  # --- 4. Replace .build image refs with localhost/ tags ---
+  # --- 4. Service-specific patches ---
   case "$name" in
-    hydra-store)
-      sed -i 's|^Image=hydra-store\.build|Image=localhost/hydra-store:latest|' "$file"
-      ;;
-    hydra-coordinator)
-      sed -i 's|^Image=hydra-coordinator\.build|Image=localhost/hydra-coordinator:latest|' "$file"
-      ;;
-  esac
-
-  # --- 5. Service-specific patches ---
-  case "$name" in
-    infra-nvidia-exporter)
-      # Add CDI GPU access + SYS_ADMIN
-      if ! grep -q "^AddDevice=nvidia.com/gpu=all" "$file"; then
-        sed -i "/^\[Container\]/a AddDevice=nvidia.com/gpu=all\nAddCapability=SYS_ADMIN" "$file"
-      fi
-      # Fix port: compose had 9835:9400
-      if ! grep -q "^PublishPort=9835:9400" "$file"; then
-        echo "PublishPort=9835:9400" >> "$(grep -l "^PublishPort" "$file" || echo "$file")"
-      fi
-      ;;
     llama-rtx)
       # CDI GPU, security, IPC, resource limits
       if ! grep -q "^AddDevice=nvidia.com/gpu=all" "$file"; then
