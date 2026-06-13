@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -190,7 +191,14 @@ func (c *Config) BuildLlamaArgs() []string {
 	args = append(args, "--port", fmt.Sprintf("%d", c.Llama.Port))
 	args = append(args, "--rpc-port", fmt.Sprintf("%d", c.Llama.RPCPort))
 
-	for key, value := range c.Llama.Params {
+	keys := make([]string, 0, len(c.Llama.Params))
+	for key := range c.Llama.Params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		value := c.Llama.Params[key]
 		switch v := value.(type) {
 		case bool:
 			if v {
@@ -202,6 +210,8 @@ func (c *Config) BuildLlamaArgs() []string {
 			args = append(args, fmt.Sprintf("--%s", key), fmt.Sprintf("%d", v))
 		case float64:
 			args = append(args, fmt.Sprintf("--%s", key), fmt.Sprintf("%v", v))
+		default:
+			fmt.Fprintf(os.Stderr, "warning: skipping param %q with unsupported type %T\n", key, value)
 		}
 	}
 

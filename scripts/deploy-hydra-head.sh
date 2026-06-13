@@ -21,7 +21,7 @@ step "Building hydra-head"
 
 export PATH=$HOME/go-sdk/go/bin:$PATH
 if ! command -v go &>/dev/null; then
-  die "Go not found. Install with: mkdir -p ~/go-sdk && cd /tmp && wget https://go.dev/dl/go1.23.4.linux-amd64.tar.gz && tar -C ~/go-sdk -xzf go1.23.4.linux-amd64.tar.gz"
+  die "Go not found. Install with: mkdir -p ~/go-sdk && cd /tmp && wget https://go.dev/dl/go1.25.0.linux-amd64.tar.gz && tar -C ~/go-sdk -xzf go1.25.0.linux-amd64.tar.gz"
 fi
 
 go build -C "$REPO_ROOT/src/head" -o "$REPO_ROOT/bin/hydra-head" .

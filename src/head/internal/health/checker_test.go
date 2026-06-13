@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -74,15 +75,15 @@ func TestCheckerUnhealthy(t *testing.T) {
 	checker := NewChecker(server.URL, logger, 50*time.Millisecond, 100*time.Millisecond, 3)
 	defer checker.Stop()
 
-	restartCalled := false
+	var restartCalled atomic.Bool
 	checker.SetOnUnhealthy(func() {
-		restartCalled = true
+		restartCalled.Store(true)
 	})
 
 	checker.Start()
 	time.Sleep(300 * time.Millisecond)
 
-	if !restartCalled {
+	if !restartCalled.Load() {
 		t.Error("expected onUnhealthy to be called")
 	}
 }

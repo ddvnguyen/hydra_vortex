@@ -55,6 +55,7 @@ type managedProcess struct {
 	manualStop   bool
 	startFunc    func() error
 	mu           sync.RWMutex
+	done         chan struct{}
 }
 
 func NewManager(cfg *config.Config, logger *slog.Logger) *Manager {
@@ -88,6 +89,7 @@ func (m *Manager) StartLlama() error {
 		state:        StateStarting,
 		restartCount: restartCount,
 		logWriter:    logWriter,
+		done:         make(chan struct{}),
 	}
 	m.processes["llama"] = proc
 
@@ -107,6 +109,7 @@ func (m *Manager) StartLlama() error {
 	if err := cmd.Start(); err != nil {
 		proc.state = StateStopped
 		proc.lastError = err.Error()
+		close(proc.done)
 		return fmt.Errorf("start llama-server: %w", err)
 	}
 
@@ -122,6 +125,8 @@ func (m *Manager) StartLlama() error {
 }
 
 func (m *Manager) monitorProcess(proc *managedProcess) {
+	defer close(proc.done)
+
 	err := proc.cmd.Wait()
 
 	proc.mu.Lock()
@@ -215,24 +220,15 @@ func (m *Manager) StopLlama() error {
 		return fmt.Errorf("send SIGTERM: %w", err)
 	}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- proc.cmd.Wait()
-	}()
-
 	select {
 	case <-time.After(10 * time.Second):
 		m.logger.Warn("llama-server did not exit gracefully, killing", "pid", proc.pid)
 		if err := proc.cmd.Process.Kill(); err != nil {
 			return fmt.Errorf("kill process: %w", err)
 		}
-		<-done
-	case err := <-done:
-		if err != nil {
-			m.logger.Info("llama-server exited", "error", err)
-		} else {
-			m.logger.Info("llama-server exited cleanly")
-		}
+		<-proc.done
+	case <-proc.done:
+		// process exited cleanly
 	}
 
 	proc.mu.Lock()
@@ -273,6 +269,7 @@ func (m *Manager) StartService(name string) error {
 		state:        StateStarting,
 		restartCount: restartCount,
 		logWriter:    os.Stdout,
+		done:         make(chan struct{}),
 	}
 	m.processes[name] = proc
 	m.mu.Unlock()
@@ -295,6 +292,7 @@ func (m *Manager) StartService(name string) error {
 		proc.state = StateStopped
 		proc.lastError = err.Error()
 		proc.mu.Unlock()
+		close(proc.done)
 		return fmt.Errorf("start %s: %w", name, err)
 	}
 
@@ -328,24 +326,15 @@ func (m *Manager) StopService(name string) error {
 		return fmt.Errorf("send SIGTERM to %s: %w", name, err)
 	}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- proc.cmd.Wait()
-	}()
-
 	select {
 	case <-time.After(10 * time.Second):
 		m.logger.Warn("service did not exit gracefully, killing", "name", name, "pid", proc.pid)
 		if err := proc.cmd.Process.Kill(); err != nil {
 			return fmt.Errorf("kill %s: %w", name, err)
 		}
-		<-done
-	case err := <-done:
-		if err != nil {
-			m.logger.Info("service exited", "name", name, "error", err)
-		} else {
-			m.logger.Info("service exited cleanly", "name", name)
-		}
+		<-proc.done
+	case <-proc.done:
+		// process exited cleanly
 	}
 
 	proc.mu.Lock()
