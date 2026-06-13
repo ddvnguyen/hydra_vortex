@@ -1,0 +1,61 @@
+# Hydra Head - Global Configuration
+# Shared parameters across all nodes
+
+node:
+  mode: vm  # default mode, can be overridden per node
+
+llama:
+  binary: /usr/local/bin/llama-server
+  host: 0.0.0.0
+  params:
+    # KV cache settings (must match across nodes for P/D split)
+    flash-attn: on
+    cache-type-v: q8_0
+    cache-type-k: q8_0
+    kv-unified: true
+    
+    # Batching and caching
+    cont-batching: true
+    cache-prompt: true
+    cache-reuse: 64
+    
+    # Priority
+    prio: 3
+    prio-batch: 1
+    
+    # RoPE scaling
+    rope-scaling: yarn
+    rope-scale: 12
+    yarn-orig-ctx: 32768
+    
+    # Inference settings
+    reasoning: on
+    jinja: true
+    timeout: 1800
+    
+    # Logging
+    log-prefix: true
+    metrics: true
+    slots: true
+    perf: true
+    log-verbosity: 4
+    
+    # Context management
+    context-shift: true
+
+infra:
+  prometheus:
+    host: localhost
+    port: 9091
+  loki:
+    url: http://localhost:3100
+  grafana:
+    url: http://localhost:3000
+
+services:
+  promtail:
+    enabled: false
+  node_exporter:
+    enabled: false
+  nvidia_exporter:
+    enabled: false

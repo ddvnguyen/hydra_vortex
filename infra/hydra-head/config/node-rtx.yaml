@@ -1,0 +1,56 @@
+# Hydra Head - RTX Node Configuration
+# RTX 5060 Ti on host machine
+
+node:
+  name: rtx
+  mode: container
+
+binaries:
+  llama-server:
+    source: ghcr.io/ddvnguyen/llama-server-sm120:69e9835ab
+    binary: llama-server
+    dest: /llama/bin/llama-server
+
+llama:
+  binary: /llama/bin/llama-server
+  working_dir: /llama
+  port: 8080
+  rpc_port: 9503
+  params:
+    # Router mode (models-preset)
+    models-preset: /models/preset.ini
+    models-max: 1
+    chat-template-file: /models/qwen3.6_merged_template.jinja
+
+    # Context and parallelism
+    ctx-size: 360000
+    parallel: 2
+
+    # GPU layers
+    n-gpu-layers: all
+    n-cpu-moe: 18
+
+    # Sampling
+    temp: 0.86
+    repeat-penalty: 1.06
+    top-k: 20
+    top-p: 0.95
+
+    # Tensor overrides
+    override-tensor: "token_embd.weight=CPU"
+
+    # Slot management
+    slot-prompt-similarity: 0.4
+  env:
+    NVIDIA_VISIBLE_DEVICES: all
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
+    LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
+
+services:
+  promtail:
+    enabled: false  # Host-level promtail handles this
+  node_exporter:
+    enabled: false  # Host-level node_exporter handles this
+  nvidia_exporter:
+    enabled: false  # Host-level nvidia-exporter handles this

@@ -35,9 +35,6 @@ patch_file() {
     hydra-store)
       sed -i 's|^Image=hydra-store\.build|Image=localhost/hydra-store:latest|' "$file"
       ;;
-    hydra-agent-rtx|hydra-agent-p100)
-      sed -i 's|^Image=hydra-agent\.build|Image=localhost/hydra-agent:latest|' "$file"
-      ;;
     hydra-coordinator)
       sed -i 's|^Image=hydra-coordinator\.build|Image=localhost/hydra-coordinator:latest|' "$file"
       ;;
