@@ -1,0 +1,41 @@
+title = "Hydra Vortex — Gitleaks Configuration"
+
+[extend]
+# Extend the official gitleaks default ruleset
+useDefault = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Allowlist — known-safe patterns that are NOT real secrets
+# ─────────────────────────────────────────────────────────────────────────────
+[allowlist]
+description = "Project-wide false-positive exclusions"
+
+# .env.example and *.env.example are intentionally tracked placeholder files
+paths = [
+    ".env.example",
+    "(.*).env.example",
+    "(.*).env.sample",
+]
+
+regexes = [
+    # Dev-only Postgres default. Value is literally the project name ("hydra"),
+    # localhost-bound, and documented in README. Not a real credential.
+    "Password=hydra",
+    "POSTGRES_PASSWORD=hydra",
+    "PGADMIN_DEFAULT_PASSWORD=hydra",
+
+    # Internal KVM VM address — not a secret, already public in docs
+    "192\\.168\\.122\\.21",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Extra rules on top of the default ruleset
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Doppler service token (used in scripts/setup-env.sh to pull real secrets at runtime)
+[[rules]]
+id = "doppler-service-token"
+description = "Doppler service token"
+regex = '''dp\.st\.[a-zA-Z0-9._-]{40,}'''
+tags = ["doppler", "secret"]
+

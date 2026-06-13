@@ -1,0 +1,16 @@
+repos:
+  # Secret scanning — catches API keys, tokens, private keys before they land in history
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.27.2
+    hooks:
+      - id: gitleaks
+        name: gitleaks (secret scan)
+        args: ["--config", ".gitleaks.toml", "--redact", "--verbose"]
+
+  # Python linting — keep ruff in sync with CI
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.13
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
