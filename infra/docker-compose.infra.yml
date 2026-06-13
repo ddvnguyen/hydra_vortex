@@ -1,50 +1,50 @@
 name: hydra-infra
 
 services:
-  node-exporter:
-    image: prom/node-exporter:latest
-    network_mode: host
-    pid: host
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - --path.procfs=/host/proc
-      - --path.sysfs=/host/sys
-      - --path.rootfs=/rootfs
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9100/metrics"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    labels:
-      component: observability
-    restart: unless-stopped
+#   node-exporter:
+#     image: prom/node-exporter:latest
+#     network_mode: host
+#     pid: host
+#     volumes:
+#       - /proc:/host/proc:ro
+#       - /sys:/host/sys:ro
+#       - /:/rootfs:ro
+#     command:
+#       - --path.procfs=/host/proc
+#       - --path.sysfs=/host/sys
+#       - --path.rootfs=/rootfs
+#     healthcheck:
+#       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9100/metrics"]
+#       interval: 15s
+#       timeout: 5s
+#       retries: 3
+#       start_period: 10s
+#     labels:
+#       component: observability
+#     restart: unless-stopped
 
-  nvidia-exporter:
-    image: nvidia/dcgm-exporter:latest
-    ports:
-      - "9835:9400"
-    cap_add:
-      - SYS_ADMIN
-    healthcheck:
-      test: ["CMD", "/usr/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9400"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    labels:
-      component: observability
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu, utility]
+#   nvidia-exporter:
+#     image: nvidia/dcgm-exporter:latest
+#     ports:
+#       - "9835:9400"
+#     cap_add:
+#       - SYS_ADMIN
+#     healthcheck:
+#       test: ["CMD", "/usr/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9400"]
+#       interval: 15s
+#       timeout: 5s
+#       retries: 3
+#       start_period: 10s
+#     labels:
+#       component: observability
+#     restart: unless-stopped
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               count: all
+#               capabilities: [gpu, utility]
 
   loki:
     image: grafana/loki:3.4
@@ -65,19 +65,19 @@ services:
       component: observability
     restart: unless-stopped
 
-  promtail:
-    image: grafana/promtail:3.4
-    volumes:
-      - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
-      - /run/user/1000/podman/podman.sock:/var/run/docker.sock:ro
-      - /mnt/containers/:/mnt/containers/:ro
-      - promtail-positions:/var/lib/promtail
-    command: -config.file=/etc/promtail/promtail-config.yml
-    depends_on:
-      - loki
-    labels:
-      component: observability
-    restart: unless-stopped
+#   promtail:
+#     image: grafana/promtail:3.4
+#     volumes:
+#       - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+#       - /run/user/1000/podman/podman.sock:/var/run/docker.sock:ro
+#       - /mnt/containers/:/mnt/containers/:ro
+#       - promtail-positions:/var/lib/promtail
+#     command: -config.file=/etc/promtail/promtail-config.yml
+#     depends_on:
+#       - loki
+#     labels:
+#       component: observability
+#     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
@@ -109,14 +109,21 @@ services:
       - ./grafana/dashboards/hydra-dashboard.json:/var/lib/grafana/dashboards/hydra-dashboard.json:ro
       - ./grafana/dashboards/hydra-logs.json:/var/lib/grafana/dashboards/hydra-logs.json:ro
       - ./grafana/dashboards/hydra-coordinator.json:/var/lib/grafana/dashboards/hydra-coordinator.json:ro
+      - ./grafana/dashboards/hydra-timeline-bars.json:/var/lib/grafana/dashboards/hydra-timeline-bars.json:ro
+      - ./grafana/dashboards/hydra-request-detail.json:/var/lib/grafana/dashboards/hydra-request-detail.json:ro
       - grafana-data:/var/lib/grafana
     environment:
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/hydra-dashboard.json
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_INSTALL_PLUGINS=marcusolsson-dynamictext-panel
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=marcusolsson-dynamictext-panel
+      - GF_RENDERING_SERVER_URL=http://localhost:8081/render
+      - GF_RENDERING_CALLBACK_URL=http://localhost:3000/
     depends_on:
       - prometheus
       - loki
+      - renderer
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/api/health"]
       interval: 15s
@@ -145,11 +152,29 @@ services:
       component: store
     restart: unless-stopped
 
+  renderer:
+    image: grafana/grafana-image-renderer:latest
+    network_mode: host
+    environment:
+      - HTTP_PORT=8081
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8081"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    labels:
+      component: observability
+    restart: unless-stopped
+
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
     network_mode: host
     environment:
+      - PORT=3001
       - OPENAI_API_BASE_URL=http://localhost:9000/v1
+    volumes:
+      - openwebui-data:/app/backend/data
     labels:
       component: frontend
     restart: unless-stopped
@@ -182,3 +207,4 @@ volumes:
   promtail-positions:
   pgadmin-data:
   pg-data:
+  openwebui-data:

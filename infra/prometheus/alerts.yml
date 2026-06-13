@@ -2,32 +2,17 @@ groups:
   - name: hydra
     interval: 30s
     rules:
-      - alert: StoreDown
-        expr: up{component="store"} == 0
+      - alert: HydraCoreDown
+        expr: up{component="hydra-core"} == 0
         for: 30s
         labels:
           severity: critical
         annotations:
-          summary: "Store is down"
-          description: "Hydra Store has been unreachable for 30s"
+          summary: "Hydra.Core is down"
+          description: "Hydra.Core has been unreachable for 30s"
 
-      - alert: AgentDown
-        expr: up{component="agent"} == 0
-        for: 30s
-        labels:
-          severity: critical
-        annotations:
-          summary: "Agent {{ $labels.node }} is down"
-          description: "Hydra Agent on {{ $labels.node }} has been unreachable for 30s"
-
-      - alert: CoordinatorDown
-        expr: up{component="coordinator"} == 0
-        for: 30s
-        labels:
-          severity: critical
-        annotations:
-          summary: "Coordinator is down"
-          description: "Hydra Coordinator has been unreachable for 30s"
+      # hydra-head health is monitored indirectly via Hydra.Core's
+      # hydra_agent_llama_healthy and llama-server health checks.
 
       - alert: HighRequestLatency
         expr: histogram_quantile(0.95, rate(hydra_request_latency_seconds_bucket[5m])) > 30
@@ -65,15 +50,6 @@ groups:
           summary: "Store operation errors"
           description: "Store is seeing {{ $value }} errors/s (op={{ $labels.op }})"
 
-      - alert: HighDeduplicationRatio
-        expr: hydra_store_dedup_ratio < 0.1 and hydra_store_chunks_new > 20
-        for: 10m
-        labels:
-          severity: info
-        annotations:
-          summary: "Low cache deduplication"
-          description: "Dedup ratio is {{ $value }} — chunks are mostly unique"
-
       - alert: LlamaServerDown
         expr: up{component="llama-server"} == 0
         for: 30s
@@ -90,7 +66,7 @@ groups:
           severity: warning
         annotations:
           summary: "GPU {{ $labels.node }} memory pressure"
-          description: "GPU {{ $labels.node }} ({{ $labels.node }}) has < 10% free memory ({{ $value | humanizePercentage }} free)"
+          description: "GPU {{ $labels.node }} has < 10% free memory ({{ $value | humanizePercentage }} free)"
 
       - alert: HighGPUTemperature
         expr: DCGM_FI_DEV_GPU_TEMP{job="hydra-gpu"} > 85 or nvidia_smi_temperature_gpu{job="hydra-gpu-p100"} > 85
@@ -99,7 +75,7 @@ groups:
           severity: warning
         annotations:
           summary: "GPU {{ $labels.node }} temperature high"
-          description: "GPU {{ $labels.node }} ({{ $labels.node }}) is at {{ $value }}°C (threshold 85°C)"
+          description: "GPU {{ $labels.node }} is at {{ $value }}°C (threshold 85°C)"
 
       - alert: TrackerLeak
         expr: hydra_worker_busy_seconds > 600

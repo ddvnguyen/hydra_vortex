@@ -6,17 +6,17 @@ rule_files:
   - alerts.yml
 
 scrape_configs:
-  - job_name: hydra-store
+  - job_name: hydra-core-debug
     static_configs:
       - targets: ["localhost:9501"]
         labels:
-          component: store
+          component: hydra-core
 
-  - job_name: hydra-coordinator
+  - job_name: hydra-core-api
     static_configs:
       - targets: ["localhost:9000"]
         labels:
-          component: coordinator
+          component: hydra-core
 
   - job_name: hydra-llama-rtx
     metrics_path: /metrics
@@ -33,6 +33,9 @@ scrape_configs:
         labels:
           component: llama-server
           node: p100
+
+  # hydra-head exposes /status + /health as JSON, not Prometheus metrics.
+  # Monitor llama-server health via Hydra.Core's hydra_agent_llama_healthy metric instead.
 
   - job_name: hydra-node
     static_configs:
