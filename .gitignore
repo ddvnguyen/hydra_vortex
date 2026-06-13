@@ -44,19 +44,70 @@ Thumbs.db
 # Hydra-specific
 deploy.log
 
-# Secrets / keys
+# ─────────────────────────────────────────────────────────────
+# Secrets & credentials — NEVER commit these
+# ─────────────────────────────────────────────────────────────
+# Private keys & certificates
 *.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.keystore
+*.jks
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*_rsa
+*_dsa
+*.ppk
+
+# Generic secret / credential files
+*.secret
+*.secrets
+secrets.*
+*credentials*
+*.credentials
+.netrc
+.pgpass
+auth.json
+service-account*.json
+gha-creds-*.json
+
+# Env files (templates like .env.example are allowed below)
+.env
+.env.*
+*.env
+.envrc
+
+# Cloud / tooling local state that can leak account ids or tokens
+**/.wrangler/
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraformrc
+terraform.tfvars
+.aws/
+.azure/
+.gcloud/
+gcloud-*.json
+.doppler/
+.vault-token
+kubeconfig
+*.kubeconfig
+
+# Re-allow safe, intentional templates (must stay placeholder-only)
+!.env.example
+!*.env.example
+!.env.sample
+!*.tfvars.example
+
 # Test results
 tests/result/*.json
 src/core/Tests.Integration/TestResults/test_results*
 
 # Node.js
 **/node_modules/**
-
-# Cloudflare Wrangler local cache (leaks account id / email)
-**/.wrangler/
-
-# Local env files (keep only .env.example)
-.env
-.env.*
-!.env.example
