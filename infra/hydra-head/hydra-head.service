@@ -1,0 +1,29 @@
+[Unit]
+Description=Hydra Head - Node Agent for llama-server
+After=network.target
+
+[Service]
+Type=simple
+User=hydra
+Group=hydra
+WorkingDirectory=/opt/hydra
+EnvironmentFile=/etc/hydra-head/env
+ExecStart=/opt/hydra/bin/hydra-head \
+  -global /opt/hydra/config/global.yaml \
+  -node /opt/hydra/config/node-p100.yaml \
+  -api-port 9700
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hydra-head
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/hydra/bin
+
+[Install]
+WantedBy=default.target

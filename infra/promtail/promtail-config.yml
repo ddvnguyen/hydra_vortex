@@ -42,18 +42,16 @@ scrape_configs:
       - cri: {}
 
       - match:
-          selector: '{container=~"llama-cpp|llama-rtx"}'
+          selector: '{container=~"hydra-head-rtx"}'
           stages:
             - replace:
                 expression: '\x1b\[[0-9;]*[a-zA-Z]'
                 replace: ''
             - regex:
-                expression: '^(?:\d+\.\d+\.\d+\.\d+\s+)?(?P<level>[IWED])\s'
-            - labels:
-                level:
+                expression: '^(?P<llama_ts>\d+\.\d+\.\d+\.\d+)\s+(?P<llama_level>[A-Z])\s+'
             - template:
                 source: "component"
-                template: "llama-server"
+                template: "{{ if .llama_ts }}llama-server{{ else }}hydra-head{{ end }}"
             - labels:
                 component:
             - template:
@@ -79,21 +77,3 @@ scrape_configs:
                 template: "store"
             - labels:
                 component:
-
-      - match:
-          selector: '{container=~"hydra[-_]agent-rtx[-_]?1?"}'
-          stages:
-            - template:
-                source: "node"
-                template: "rtx"
-            - labels:
-                node:
-
-      - match:
-          selector: '{container=~"hydra[-_]agent-p100[-_]?1?"}'
-          stages:
-            - template:
-                source: "node"
-                template: "p100"
-            - labels:
-                node:

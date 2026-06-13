@@ -1,0 +1,58 @@
+# Hydra Head - P100 Node Configuration
+# Tesla P100 in KVM VM at 192.168.122.21
+
+node:
+  name: p100
+  mode: vm
+
+binaries:
+  llama-server:
+    source: ghcr.io/ddvnguyen/llama-server-sm60:69e9835ab
+    binary: llama-server
+    dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+
+llama:
+  binary: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+  working_dir: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin
+  port: 8086
+  rpc_port: 9502
+  params:
+    # Model
+    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
+    chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
+    
+    # Context and parallelism
+    ctx-size: 180000
+    parallel: 1
+    
+    # GPU layers
+    n-gpu-layers: all
+    n-cpu-moe: 26
+    
+    # Sampling
+    temp: 0.86
+    repeat-penalty: 1.06
+    top-k: 20
+    top-p: 0.95
+    
+    # Tensor overrides
+    override-tensor: "token_embd.weight=CPU"
+    
+    # Chat template
+    chat-template-kwargs: '{"preserve_thinking": true}'
+
+services:
+  promtail:
+    enabled: true
+    binary: /usr/local/bin/promtail
+    config: /home/vm1/.config/promtail/config.yml
+  node_exporter:
+    enabled: true
+    binary: /home/vm1/.local/bin/node_exporter
+    port: 9100
+  nvidia_exporter:
+    enabled: true
+    binary: /home/vm1/.local/bin/nvidia_gpu_exporter
+    port: 9835
+    args:
+      - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"

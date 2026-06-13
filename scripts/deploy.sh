@@ -10,9 +10,9 @@
 #   bash scripts/deploy.sh 1.2.3     # set specific version + deploy all
 #
 #   # Individual parts (no version bump, no implicit build):
-#   bash scripts/deploy.sh infra     # deploy infra only
-#   bash scripts/deploy.sh hydra     # build + deploy hydra core only
-#   bash scripts/deploy.sh llama     # build + deploy llama nodes
+#   bash scripts/deploy.sh infra        # deploy infra only
+#   bash scripts/deploy.sh hydra        # build + deploy hydra core only
+#   bash scripts/deploy.sh hydra-head   # build + deploy hydra-head to nodes
 
 set -euo pipefail
 
@@ -27,9 +27,9 @@ case "$SUB" in
   hydra)
     exec bash "$REPO_ROOT/scripts/deploy-hydra.sh"
     ;;
-  llama)
+  hydra-head|head)
     shift
-    exec bash "$REPO_ROOT/scripts/deploy-llama.sh" "$@"
+    exec bash "$REPO_ROOT/scripts/deploy-hydra-head.sh" all
     ;;
 esac
 
@@ -49,7 +49,7 @@ case "${SUB:-patch}" in
     if [[ "$SUB" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       NEW="$SUB"
     else
-      echo "Usage: $0 [patch|minor|major|<semver>|infra|hydra|llama]" >&2
+      echo "Usage: $0 [patch|minor|major|<semver>|infra|hydra|hydra-head]" >&2
       exit 1
     fi
     ;;
@@ -73,7 +73,7 @@ cd "$REPO_ROOT"
 
 # Deploy individual parts
 bash "$REPO_ROOT/scripts/deploy-hydra.sh"
-bash "$REPO_ROOT/scripts/deploy-llama.sh" "$@"
+bash "$REPO_ROOT/scripts/deploy-hydra-head.sh" all
 
 REV=$(git rev-parse --short HEAD)
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $NEW ($REV) deployed" >> deploy.log

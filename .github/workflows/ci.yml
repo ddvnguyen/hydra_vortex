@@ -212,45 +212,41 @@ jobs:
         id: build
         run: |
           set -eo pipefail
-          # Hydra core services
-          podman build --target store -f $GITHUB_WORKSPACE/infra/Dockerfile \
-            -t localhost/hydra-store:latest $GITHUB_WORKSPACE \
-            2>&1 | tee /tmp/hydra-build-store.log | tail -3
-          podman build --target agent -f $GITHUB_WORKSPACE/infra/Dockerfile \
-            -t localhost/hydra-agent:latest $GITHUB_WORKSPACE \
-            2>&1 | tee /tmp/hydra-build-agent.log | tail -3
-          podman build --target coordinator -f $GITHUB_WORKSPACE/infra/Dockerfile \
-            -t localhost/hydra-coordinator:latest $GITHUB_WORKSPACE \
-            2>&1 | tee /tmp/hydra-build-coord.log | tail -3
-          # llama RTX
-          podman build -f $GITHUB_WORKSPACE/infra/llama-rtx-node/Dockerfile \
-            -t localhost/llama-rtx:latest $GITHUB_WORKSPACE/infra/llama-rtx-node \
-            2>&1 | tee /tmp/hydra-build-llama.log | tail -3
+          # Hydra core
+          podman build --target core -f $GITHUB_WORKSPACE/infra/Dockerfile \
+            -t localhost/hydra-core:latest $GITHUB_WORKSPACE \
+            2>&1 | tee /tmp/hydra-build-core.log | tail -3
+          # Build the CUDA base image used by hydra-head RTX
+          podman build -f $GITHUB_WORKSPACE/infra/llama-rtx-node/Dockerfile_26.04_cuda13.2 \
+            -t hydra-cuda-base:latest $GITHUB_WORKSPACE/infra/llama-rtx-node \
+            2>&1 | tee /tmp/hydra-build-cuda-base.log | tail -3
+          # Build hydra-head (Go binary)
+          go build -C $GITHUB_WORKSPACE/src/head -o $GITHUB_WORKSPACE/bin/hydra-head . \
+            2>&1 | tee /tmp/hydra-build-head.log | tail -3
+          # Build hydra-head RTX container
+          podman build -f $GITHUB_WORKSPACE/infra/hydra-head/Dockerfile.rtx \
+            -t localhost/hydra-head:rtx $GITHUB_WORKSPACE \
+            2>&1 | tee /tmp/hydra-build-head-rtx.log | tail -3
           echo "Build complete"
 
-      - name: Install Quadlet files
-        run: |
-          mkdir -p ~/.config/containers/systemd/
-          cp $GITHUB_WORKSPACE/infra/quadlets/hydra-*.container ~/.config/containers/systemd/
-          cp $GITHUB_WORKSPACE/infra/quadlets/hydra-core.pod ~/.config/containers/systemd/
-          cp $GITHUB_WORKSPACE/infra/quadlets/llama-rtx.container ~/.config/containers/systemd/
-          cp $GITHUB_WORKSPACE/infra/quadlets/hydra-coordinator.env ~/.config/containers/systemd/
-          cp $GITHUB_WORKSPACE/infra/quadlets/pg-data.volume ~/.config/containers/systemd/
-
-      - name: Deploy (Quadlet systemd)
-        id: deploy
+      - name: Deploy Hydra Core
+        id: deploy-core
         run: |
           set -eo pipefail
-          systemctl --user daemon-reload
-          # Stop pod (cascades to all containers via BindsTo=)
-          systemctl --user stop hydra-core-pod.service 2>/dev/null || true
-          sleep 1
-          # Start in dependency order (pod auto-starts with first container)
-          systemctl --user start hydra-postgres.service
-          systemctl --user start hydra-store.service
-          systemctl --user start hydra-agent-rtx.service hydra-agent-p100.service
-          systemctl --user start hydra-coordinator.service
-          echo "Deploy complete"
+          # Stop any running core
+          podman stop hydra-core 2>/dev/null || true
+          podman rm hydra-core 2>/dev/null || true
+          # Start via docker-compose
+          cd $GITHUB_WORKSPACE/infra
+          podman compose -f docker-compose.hydra.yml up -d
+          echo "Hydra core started"
+
+      - name: Deploy Hydra Head RTX
+        id: deploy-head-rtx
+        run: |
+          set -eo pipefail
+          bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx
+          echo "Hydra head RTX started"
 
       - name: Verify services healthy
         run: |
@@ -399,7 +395,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy-llama:
-    name: Deploy llama-server
+    name: Deploy hydra-head (manages llama + 3 services)
     runs-on: self-hosted
     timeout-minutes: 10
     if: |
@@ -422,32 +418,24 @@ jobs:
               IdentitiesOnly yes
           EOF
 
-      - name: Restart llama-server RTX
+      - name: Deploy hydra-head to RTX (container)
         run: |
-          cd infra/llama-rtx-node
-          podman-compose pull --quiet 2>/dev/null || true
-          podman-compose up -d
+          bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx
           sleep 8
-          curl -sf http://localhost:8080/health && echo "llama-rtx OK" || echo "WARNING: llama-rtx health check failed (non-fatal)"
+          curl -sf http://localhost:9700/status >/dev/null && echo "hydra-head-rtx OK" || echo "WARNING: hydra-head-rtx not responding"
 
-      - name: Log shipping is now containerized (promtail in docker-compose.infra.yml)
-        run: echo "Promtail is containerized — host log shipper/promtail no longer needed"
-
-      - name: Deploy llama-server to P100
+      - name: Deploy hydra-head to P100 (VM systemd)
         run: |
-          rsync -az --checksum \
-            $GITHUB_WORKSPACE/src/llama-cpp/build_sm60/bin/llama-server \
-            hydra-p100:/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
-          ssh hydra-p100 "systemctl --user restart llama-p100"
+          bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh p100
           sleep 8
-          curl -sf http://192.168.122.21:8086/health && echo "llama-p100 OK" || echo "WARNING: llama-p100 health check failed (non-fatal)"
+          curl -sf http://192.168.122.21:9700/status >/dev/null && echo "hydra-head-p100 OK" || echo "WARNING: hydra-head-p100 not responding"
 
       - name: Write deploy summary
         if: always()
         run: |
           TAG="${{ github.ref_name }}"
           cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-          ## llama-server Deploy
+          ## hydra-head Deploy
 
           | Field | Value |
           |-------|-------|
@@ -455,6 +443,6 @@ jobs:
           | By    | ${{ github.actor }} |
           | Time  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
-          **RTX**: podman restart llama-cpp
-          **P100**: rsync + systemctl restart llama-p100
+          **RTX**: hydra-head container on :9700
+          **P100**: hydra-head systemd service on :9700
           SUMMARY
