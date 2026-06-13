@@ -1,3 +1,5 @@
+# [DEPRECATED] — replaced by scripts/deploy-hydra-head.sh. Remove after Phase 0 stabilization.
+
 #!/usr/bin/env bash
 # Build and deploy llama-server nodes (RTX + P100).
 #

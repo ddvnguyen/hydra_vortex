@@ -1,3 +1,5 @@
+# [DEPRECATED] — RTX llama-server now managed by hydra-head Dockerfile.rtx. Remove after Phase 0 stabilization.
+
 services:
   llama-cpp:
     build:

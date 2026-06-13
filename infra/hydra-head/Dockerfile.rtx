@@ -1,0 +1,69 @@
+# Hydra Head - RTX Container
+# Runs llama-server with Hydra Head process management (OCI registry)
+# CUDA 13.2 runtime inlined — no external base image dependency
+
+FROM ubuntu:26.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install bootstrap dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add NVIDIA's CUDA repository keyring (Ubuntu 24.04 stable path)
+RUN curl -fSsL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -o cuda-keyring.deb \
+    && dpkg -i cuda-keyring.deb \
+    && rm cuda-keyring.deb
+
+# Install pinned CUDA 13.2 runtime components
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cuda-cudart-13-2 \
+    libcublas-13-2 \
+    libnccl2 \
+    libgomp1 \
+    libibverbs1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# NVIDIA Container Toolkit environment
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# CUDA runtime paths
+ENV PATH=/usr/local/cuda-13.2/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:${LD_LIBRARY_PATH}
+
+# Create hydra user
+RUN useradd -m -s /bin/bash hydra
+
+# Copy init verification script
+COPY infra/hydra-head/init/verify_and_start.sh /init/verify_and_start.sh
+RUN chmod +x /init/verify_and_start.sh
+
+# Copy hydra-head binary
+COPY bin/hydra-head /usr/local/bin/hydra-head
+
+# Copy config files
+COPY infra/hydra-head/config/global.yaml /opt/hydra/config/global.yaml
+COPY infra/hydra-head/config/node-rtx.yaml /opt/hydra/config/node-rtx.yaml
+
+# Create directories including llama-server destination path (from OCI pull)
+RUN mkdir -p /opt/hydra/bin /opt/hydra/tmp /var/log/hydra /llama/bin && \
+    chown -R hydra:hydra /opt/hydra /var/log/hydra /llama
+
+# Switch to hydra user
+USER hydra
+WORKDIR /opt/hydra
+
+# Expose Hydra Head API + llama-server ports
+EXPOSE 9700 8080 9503
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:9700/health || exit 1
+
+# Run through verification script, then hydra-head
+ENTRYPOINT ["/init/verify_and_start.sh"]
+CMD ["-global", "/opt/hydra/config/global.yaml", "-node", "/opt/hydra/config/node-rtx.yaml", "-api-port", "9700"]

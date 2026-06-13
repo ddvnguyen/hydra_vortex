@@ -1,3 +1,6 @@
+# [DEPRECATED] — merged into hydra-core. Remove after Phase 0 stabilization.
+
+# [DEPRECATED] — merged into hydra-core. Remove after Phase 0 stabilization.
 [Unit]
 Description=Hydra Agent RTX
 BindsTo=hydra-core-pod.service

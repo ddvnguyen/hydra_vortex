@@ -12,20 +12,6 @@ scrape_configs:
         labels:
           component: store
 
-  - job_name: hydra-agent
-    static_configs:
-      - targets: ["localhost:9611"]
-        labels:
-          component: agent
-          node: rtx
-
-  - job_name: hydra-agent-p100
-    static_configs:
-      - targets: ["localhost:9622"]
-        labels:
-          component: agent
-          node: p100
-
   - job_name: hydra-coordinator
     static_configs:
       - targets: ["localhost:9000"]

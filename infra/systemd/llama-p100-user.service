@@ -1,3 +1,5 @@
+# [DEPRECATED] — P100 llama-server now managed by hydra-head. Remove after Phase 0 stabilization.
+
 [Unit]
 Description=Hydra llama-server P100
 After=network.target

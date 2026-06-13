@@ -10,13 +10,24 @@
 | Service | Lang | Port(s) | Runs on |
 |---|---|---|---|
 | Hydra.Core | C# / .NET 10 | `:9000` (HTTP API), `:9500` (Store RPC), `:9501` (debug/metrics) | host container |
-| llama-server RTX | C++ fork | `:8080` (HTTP), `:9503` (hydra RPC) | host container |
-| llama-server P100 | C++ fork | `:8086` (HTTP), `:9502` (hydra RPC) | **KVM VM** `192.168.122.21` |
+| Hydra Head RTX | Go | `:9700` (API) | host container |
+| Hydra Head P100 | Go | `:9700` (API) | KVM VM `192.168.122.21` |
+| llama-server RTX | C++ fork | `:8080` (HTTP), `:9503` (hydra RPC) | managed by Hydra Head RTX |
+| llama-server P100 | C++ fork | `:8086` (HTTP), `:9502` (hydra RPC) | managed by Hydra Head P100 |
+| node_exporter (RTX) | Go | `:9100` | host pod (infra-host) |
+| node_exporter (P100) | Go | `:9100` | managed by Hydra Head P100 |
+| nvidia_exporter (RTX) | Go | `:9835` | host pod (infra-host) |
+| nvidia_exporter (P100) | Go | `:9835` | managed by Hydra Head P100 |
+| promtail (RTX) | Go | `:9080` | host pod (infra-host) |
+| promtail (P100) | Go | `:9081` | managed by Hydra Head P100 |
 
-Hydra.Core runs via `infra/docker-compose.hydra.yml` (hydra core, host networking) and
-`infra/docker-compose.infra.yml` (observability stack). The P100 llama-server at
-`192.168.122.21:8086` is reached over the NAT bridge into the VM.
-The KVM VM hosts only the P100 llama-server.
+Hydra.Core runs via `infra/docker-compose.hydra.yml` (host networking). The observability
+stack (Prometheus, Loki, Grafana) runs via `infra/docker-compose.infra.yml` + quadlets.
+
+Hydra Head is a Go node agent that manages 4 sub-services per GPU node:
+llama-server, node_exporter, nvidia_exporter, promtail. It pulls llama-server from OCI
+registry (ghcr.io) at startup. On RTX, Hydra Head runs as a container; on P100 as a
+systemd user service. See `CLAUDE.md#hydra-head-go-node-agent` for deployment details.
 
 **Protocol rule:** All inter-service traffic between Hydra.Core and llama-servers uses
 direct HTTP (completions) and binary RPC (state ops). Client → Core is HTTP (OpenAI-compat).
@@ -25,7 +36,11 @@ direct HTTP (completions) and binary RPC (state ops). Client → Core is HTTP (O
 
 ## 2. Worker Node Configuration
 
-Each GPU node is represented as a `WorkerNodeConfig` (now a C# class in Hydra.Core).
+Each GPU node is configured at two levels:
+- **Hydra.Core** `WorkerNodeConfig` — coordinator view of worker capabilities
+- **Hydra Head** `node-{name}.yaml` — per-node process management
+
+### Hydra.Core Worker Config
 
 ```python
 class WorkerNodeConfig(BaseModel):
