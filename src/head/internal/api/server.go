@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/health"
@@ -12,31 +13,68 @@ import (
 )
 
 type Server struct {
-	cfg      *config.Config
-	manager  *process.Manager
-	checker  *health.Checker
-	registry *registry.Manager
-	logger   *slog.Logger
-	mux      *http.ServeMux
+	cfg       *config.Config
+	manager   *process.Manager
+	checker   *health.Checker
+	registry  *registry.Manager
+	logger    *slog.Logger
+	mux       *http.ServeMux
+	authToken string // shared secret for API authentication
 }
 
-func NewServer(cfg *config.Config, manager *process.Manager, checker *health.Checker, regMgr *registry.Manager, logger *slog.Logger) *Server {
+func NewServer(cfg *config.Config, manager *process.Manager, checker *health.Checker, regMgr *registry.Manager, logger *slog.Logger, authToken string) *Server {
 	s := &Server{
-		cfg:      cfg,
-		manager:  manager,
-		checker:  checker,
-		registry: regMgr,
-		logger:   logger,
-		mux:      http.NewServeMux(),
+		cfg:       cfg,
+		manager:   manager,
+		checker:   checker,
+		registry:  regMgr,
+		logger:    logger,
+		mux:       http.NewServeMux(),
+		authToken: authToken,
 	}
 
+	// Read-only endpoints (no auth required)
 	s.mux.HandleFunc("/status", s.handleStatus)
-	s.mux.HandleFunc("/config", s.handleConfig)
-	s.mux.HandleFunc("/restart", s.handleRestart)
 	s.mux.HandleFunc("/health", s.handleHealth)
-	s.mux.HandleFunc("/update", s.handleUpdate)
+	s.mux.HandleFunc("/config", s.handleConfig)
+
+	// Write endpoints (auth required)
+	s.mux.HandleFunc("/restart", s.requireAuth(s.handleRestart))
+	s.mux.HandleFunc("/update", s.requireAuth(s.handleUpdate))
 
 	return s
+}
+
+// requireAuth wraps a handler with token authentication
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" {
+			// No token configured - allow access (development mode)
+			next(w, r)
+			return
+		}
+
+		// Check Authorization header
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			http.Error(w, "authorization required", http.StatusUnauthorized)
+			return
+		}
+
+		// Expect "Bearer <token>"
+		if !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "invalid authorization format", http.StatusUnauthorized)
+			return
+		}
+
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if token != s.authToken {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +240,12 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		dest = "/opt/hydra/bin/" + req.Name
 	}
 
+	// Validate destination path - must be under allowed directories
+	if !s.isPathAllowed(dest) {
+		http.Error(w, "destination path not allowed", http.StatusBadRequest)
+		return
+	}
+
 	binaryName := spec.Binary
 	if binaryName == "" {
 		binaryName = req.Name
@@ -222,4 +266,21 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		"dest":    dest,
 		"message": "Binary updated successfully. Restart llama-server to use the new version.",
 	})
+}
+
+// isPathAllowed checks if the destination path is within allowed directories
+func (s *Server) isPathAllowed(path string) bool {
+	// Allowlist of allowed directories for binary updates
+	allowedDirs := []string{
+		"/opt/hydra/bin",
+		"/usr/local/bin",
+		"/home/hydra/bin",
+	}
+
+	for _, dir := range allowedDirs {
+		if strings.HasPrefix(path, dir+"/") || path == dir {
+			return true
+		}
+	}
+	return false
 }

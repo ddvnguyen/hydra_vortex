@@ -40,6 +40,10 @@ type Manager struct {
 	mu        sync.RWMutex // guards only the processes map
 	ctx       context.Context
 	cancel    context.CancelFunc
+
+	// Per-name starting guards to prevent concurrent start races
+	startingMu sync.Mutex
+	starting   map[string]bool
 }
 
 type managedProcess struct {
@@ -66,6 +70,7 @@ func NewManager(cfg *config.Config, logger *slog.Logger) *Manager {
 		processes: make(map[string]*managedProcess),
 		ctx:       ctx,
 		cancel:    cancel,
+		starting:  make(map[string]bool),
 	}
 }
 
@@ -99,6 +104,22 @@ func (m *Manager) listRunning() []string {
 }
 
 func (m *Manager) StartLlama() error {
+	// Acquire per-name starting guard to prevent concurrent starts
+	m.startingMu.Lock()
+	if m.starting["llama"] {
+		m.startingMu.Unlock()
+		return fmt.Errorf("llama-server already starting")
+	}
+	m.starting["llama"] = true
+	m.startingMu.Unlock()
+
+	// Ensure we release the guard when done
+	defer func() {
+		m.startingMu.Lock()
+		m.starting["llama"] = false
+		m.startingMu.Unlock()
+	}()
+
 	// Check existing proc under proc.mu (not m.mu) to avoid race with monitorProcess.
 	if existing := m.getProcess("llama"); existing != nil {
 		existing.mu.RLock()
@@ -267,6 +288,22 @@ func (m *Manager) StartService(name string) error {
 	if !svc.Enabled {
 		return nil
 	}
+
+	// Acquire per-name starting guard to prevent concurrent starts
+	m.startingMu.Lock()
+	if m.starting[name] {
+		m.startingMu.Unlock()
+		return fmt.Errorf("%s already starting", name)
+	}
+	m.starting[name] = true
+	m.startingMu.Unlock()
+
+	// Ensure we release the guard when done
+	defer func() {
+		m.startingMu.Lock()
+		m.starting[name] = false
+		m.startingMu.Unlock()
+	}()
 
 	// Check existing proc under proc.mu.
 	if existing := m.getProcess(name); existing != nil {

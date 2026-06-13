@@ -21,12 +21,18 @@ func main() {
 	globalConfig := flag.String("global", "", "Path to global config file")
 	nodeConfig := flag.String("node", "", "Path to node config file")
 	apiPort := flag.Int("api-port", 9700, "API server port")
+	authToken := flag.String("auth-token", "", "Authentication token for API (or set HYDRA_HEAD_AUTH_TOKEN)")
 	flag.Parse()
 
 	if *globalConfig == "" || *nodeConfig == "" {
 		fmt.Fprintf(os.Stderr, "Error: both -global and -node config files are required\n")
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	// Fall back to environment variable if flag not provided
+	if *authToken == "" {
+		*authToken = os.Getenv("HYDRA_HEAD_AUTH_TOKEN")
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -128,7 +134,7 @@ func main() {
 		}
 	}
 
-	apiServer := api.NewServer(cfg, manager, checker, regMgr, logger)
+	apiServer := api.NewServer(cfg, manager, checker, regMgr, logger, *authToken)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *apiPort),

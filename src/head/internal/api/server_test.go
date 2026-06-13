@@ -46,7 +46,7 @@ sleep 10
 	checker := health.NewChecker("http://localhost:18080", logger, 10*time.Second, 30*time.Second, 3)
 	regMgr := registry.NewManager(logger, tmpDir)
 
-	server := NewServer(cfg, manager, checker, regMgr, logger)
+	server := NewServer(cfg, manager, checker, regMgr, logger, "")
 
 	cleanup := func() {
 		manager.Shutdown()

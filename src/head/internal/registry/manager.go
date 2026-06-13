@@ -62,7 +62,7 @@ func (m *Manager) PullBinary(source, destination, expectedChecksum, binaryName s
 
 	m.logger.Info("image pulled", "digest", digest.String())
 
-	// Verify checksum if provided
+	// Verify image digest if provided
 	if expectedChecksum != "" {
 		if err := m.verifyChecksum(digest, expectedChecksum); err != nil {
 			return err
@@ -77,6 +77,20 @@ func (m *Manager) PullBinary(source, destination, expectedChecksum, binaryName s
 	// Make the binary executable
 	if err := os.Chmod(destination, 0755); err != nil {
 		return fmt.Errorf("chmod binary: %w", err)
+	}
+
+	// Verify the actual binary checksum if expected
+	if expectedChecksum != "" {
+		actualChecksum, err := ComputeChecksum(destination)
+		if err != nil {
+			return fmt.Errorf("compute binary checksum: %w", err)
+		}
+		if actualChecksum != expectedChecksum {
+			// Clean up the invalid binary
+			os.Remove(destination)
+			return fmt.Errorf("binary checksum mismatch: got %s, expected %s", actualChecksum, expectedChecksum)
+		}
+		m.logger.Info("binary checksum verified", "checksum", actualChecksum)
 	}
 
 	m.logger.Info("binary pulled successfully",
@@ -178,18 +192,34 @@ func (m *Manager) extractFromTar(r io.Reader, destination, binaryName string) (b
 		if name == binaryName || name == "bin/"+binaryName {
 			m.logger.Debug("found binary in tar", "path", header.Name, "size", header.Size)
 
-			// Found the binary
-			out, err := os.Create(destination)
+			// Use atomic swap: write to temp file, fsync, then rename
+			destDir := filepath.Dir(destination)
+			tempFile, err := os.CreateTemp(destDir, ".binary-*.tmp")
 			if err != nil {
-				return false, fmt.Errorf("create file: %w", err)
+				return false, fmt.Errorf("create temp file: %w", err)
 			}
+			tempPath := tempFile.Name()
 
-			written, err := io.Copy(out, tr)
+			written, err := io.Copy(tempFile, tr)
 			if err != nil {
-				out.Close()
+				tempFile.Close()
+				os.Remove(tempPath)
 				return false, fmt.Errorf("write file: %w", err)
 			}
-			out.Close()
+
+			// Sync to disk before rename
+			if err := tempFile.Sync(); err != nil {
+				tempFile.Close()
+				os.Remove(tempPath)
+				return false, fmt.Errorf("sync file: %w", err)
+			}
+			tempFile.Close()
+
+			// Atomic rename
+			if err := os.Rename(tempPath, destination); err != nil {
+				os.Remove(tempPath)
+				return false, fmt.Errorf("rename file: %w", err)
+			}
 
 			m.logger.Debug("extracted binary", "bytes", written)
 			return true, nil
