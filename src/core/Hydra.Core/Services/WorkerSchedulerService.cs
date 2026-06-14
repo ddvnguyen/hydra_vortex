@@ -702,6 +702,33 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			lock (entry) { entry.HasStoreState = true; }
 			item.Entry = entry;
 			_log.Information("state_saved Sid={Sid} SizeMB={Size}", item.SessionId, stateResp.Payload.Length / 1024 / 1024);
+
+			if (item.PrefixHash != null && _cfg.PrefixCheckpointEnabled)
+			{
+				var prefixKey = $"prefix/{item.PrefixHash}.kv";
+				var kvPayload = stateResp.Payload;
+				var traceId = item.TraceId;
+				_ = Task.Run(async () =>
+				{
+					try
+					{
+						var stat = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Stat,
+							prefixKey, ReadOnlyMemory<byte>.Empty, traceId, CancellationToken.None);
+						if (stat.Status != (byte)Hydra.Shared.StatusCode.Ok)
+						{
+							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+								prefixKey, kvPayload, traceId, CancellationToken.None);
+							CoordinatorMetrics.PrefixSaves.Inc();
+							_log.Information("prefix_saved Hash={Hash} SizeMB={Size}",
+								item.PrefixHash, kvPayload.Length / 1024 / 1024);
+						}
+					}
+					catch (Exception ex)
+					{
+						_log.Warning(ex, "prefix_save_failed Hash={Hash}", item.PrefixHash);
+					}
+				});
+			}
 		}
 		catch (Exception ex)
 		{
