@@ -291,8 +291,8 @@ public sealed class CoordinatorConfigTests
     public void LoadWorkers_ProductionConfigFile_LoadsBothWorkersWithCorrectModelFields()
     {
         // Pin the live production file (committed to infra/hydra-core/config/workers.json).
-        // Asserts the shape: RTX has router_model_name=balanced (router mode, /models/load
-        // supported); P100 has no model fields (single-model server, /models/load returns 404).
+        // Asserts the shape: RTX has prefill_model_name=mini, decode_model_name=balanced (router mode,
+        // mix-precision P/D split); P100 has no model fields (single-model server, /models/load returns 404).
         // If this test breaks, the compose deployment will break.
         var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
         var configPath = Path.Combine(repoRoot, "infra", "hydra-core", "config", "workers.json");
@@ -312,8 +312,8 @@ public sealed class CoordinatorConfigTests
             var rtx = workers.Single(w => w.Name == "rtx");
             Assert.Equal(3, rtx.WorkerType);
             Assert.Equal("balanced", rtx.RouterModelName);
-            Assert.Null(rtx.PrefillModelName);
-            Assert.Null(rtx.DecodeModelName);
+            Assert.Equal("mini", rtx.PrefillModelName);
+            Assert.Equal("balanced", rtx.DecodeModelName);
 
             var p100 = workers.Single(w => w.Name == "p100");
             Assert.Equal(2, p100.WorkerType);

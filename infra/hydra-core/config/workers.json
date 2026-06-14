@@ -10,8 +10,10 @@
     "prefill_priority": 1,
     "decode_priority": 2,
     "decode_speed_tps": 200,
-    "_comment": "RTX llama-server runs in router mode (--models-preset /models/preset.ini --models-max 1). On every cold dispatch the coordinator POSTs /models/load to ensure the right preset is hot; llama-server returns success even if the model is already loaded. router_model_name covers both prefill and decode phases on this mixed worker (worker_type=3).",
-    "router_model_name": "balanced"
+    "prefill_model_name": "mini",
+    "decode_model_name": "balanced",
+    "router_model_name": "balanced",
+    "_comment": "RTX llama-server runs in router mode (--models-preset /models/preset.ini --models-max 1). Mix-precision: prefill uses 'mini' (Q3_K, ncmoe=2, 1187 pp t/s), decode uses 'balanced' (Q5_K, ncmoe=18, 50 tg/s). On every cold dispatch the coordinator POSTs /models/load to ensure the right preset is hot; llama-server returns success even if the model is already loaded."
   },
   {
     "name": "p100",
