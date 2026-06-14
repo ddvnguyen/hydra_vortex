@@ -650,7 +650,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			CoordinatorMetrics.CacheHits.Inc();
 
-			var slotId = 0;
+			var slotId = item.PrefillSlot ?? 0;
 			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
@@ -696,7 +696,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			["stream"] = false,
 			["n_predict"] = 0
 		};
-		item.PrefillSlot = await Router.PickIdleSlot(w.LlamaUrl, ct) ?? 0;
+		// Pin to the same slot where the prefix checkpoint was restored
+		// (set by ColdRouteAsync, or by PrefixRestoreAsync). When the
+		// prefix KV was loaded via StatePut, the slot already has n_past
+		// cached tokens — using any other slot would waste them.
+		if (item.PrefillSlot == null)
+			item.PrefillSlot = await Router.PickIdleSlot(w.LlamaUrl, ct) ?? 0;
+		body["id_slot"] = item.PrefillSlot.Value;
 		var resp = await _proxy.ProxyCompletionAsync(w.LlamaUrl, body, item.TraceId, ct);
 		if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
 			item.PrefillSlot = se.GetInt32();
