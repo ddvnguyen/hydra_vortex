@@ -286,4 +286,45 @@ public sealed class CoordinatorConfigTests
             Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
         }
     }
+
+    [Fact]
+    public void LoadWorkers_ProductionConfigFile_LoadsBothWorkersWithCorrectModelFields()
+    {
+        // Pin the live production file (committed to infra/hydra-core/config/workers.json).
+        // Asserts the shape: RTX has router_model_name=balanced (router mode, /models/load
+        // supported); P100 has no model fields (single-model server, /models/load returns 404).
+        // If this test breaks, the compose deployment will break.
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
+        var configPath = Path.Combine(repoRoot, "infra", "hydra-core", "config", "workers.json");
+        if (!File.Exists(configPath))
+            return; // skip if running outside the repo (e.g. CI in a stripped tree)
+
+        var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+        var prevJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", configPath);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", null);
+
+            var workers = CoordinatorConfig.LoadWorkers();
+            Assert.Equal(2, workers.Count);
+
+            var rtx = workers.Single(w => w.Name == "rtx");
+            Assert.Equal(3, rtx.WorkerType);
+            Assert.Equal("balanced", rtx.RouterModelName);
+            Assert.Null(rtx.PrefillModelName);
+            Assert.Null(rtx.DecodeModelName);
+
+            var p100 = workers.Single(w => w.Name == "p100");
+            Assert.Equal(2, p100.WorkerType);
+            Assert.Null(p100.RouterModelName);
+            Assert.Null(p100.PrefillModelName);
+            Assert.Null(p100.DecodeModelName);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", prevFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
+        }
+    }
 }
