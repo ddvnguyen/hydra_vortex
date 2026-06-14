@@ -532,7 +532,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 
 		bool atomic = _cfg.RunMode == "fast"
-			|| (!_cfg.MixPrecisionEnabled && item.EstimatedNewTokens <= _cfg.AtomicTokenThreshold);
+			|| item.EstimatedNewTokens <= _cfg.AtomicTokenThreshold;
 		item.RouteType = atomic ? "cold_atomic" : "cold_concurrency";
 
 		var pfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
@@ -616,11 +616,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 			{
 				CoordinatorMetrics.CacheMisses.Inc();
+				item.PrefixCacheHit = false;
 				_log.Warning("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
 				return WorkItemState.Prefill;
 			}
 
 			CoordinatorMetrics.CacheHits.Inc();
+			item.PrefixCacheHit = true;
 
 			var slotId = 0;
 			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
@@ -1179,7 +1181,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
 			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
 			$"total_ms={item.Phases.GetValueOrDefault("total_ms")} " +
-			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes}"
+			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes} " +
+			$"prefix_hit={item.PrefixCacheHit}"
 		);
 	}
 

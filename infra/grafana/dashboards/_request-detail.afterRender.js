@@ -70,10 +70,11 @@ try {
       + String(d.getSeconds()).padStart(2, '0') + '.'
       + String(d.getMilliseconds()).padStart(3, '0');
   };
-  const typeOf = function (rt) {
+  const typeOf = function (rt, prefixHit) {
     rt = (rt || '').toLowerCase();
     if (rt.indexOf('migration') >= 0) return { t: 'RESUME', c: '#a371f7', d: 'Full cache resume' };
     if (rt.indexOf('affinity') >= 0 || rt.indexOf('warm') >= 0) return { t: 'WARM', c: '#2f81f7', d: 'Prefix cache hit' };
+    if (prefixHit === 'true') return { t: 'COLD+', c: '#db6d28', d: 'Prefix reused, cold decode' };
     return { t: 'COLD', c: '#db6d28', d: 'Fresh prompt' };
   };
 
@@ -97,6 +98,12 @@ try {
   // ── Build row model ─────────────────────────────────────────────────
   const rows = [];
   flat.forEach(function (d, i) {
+    const traceId = String(d.trace_id || '');
+    const sessionId = String(d.session_id || '');
+    // Drop rows with no usable identifier (incomplete Loki entries from CRI
+    // partial-line drops) — no trace_id AND no session_id means nothing to
+    // identify the request.
+    if (!traceId && !sessionId) return;
     const phases = [];
     let cum = 0;
     ORDER.forEach(function (k) {
@@ -114,9 +121,15 @@ try {
     let tsMs = d.timestamp_ms || d.Time || d.time || d.ts || d.timestamp;
     if (tsMs && Number(tsMs) > 1e15) tsMs = Math.floor(Number(tsMs) / 1e6);
     d._tsMs = Number(tsMs) || 0;
+    // Drop rows with no usable timestamp either — they'd render as 00:00:00
+    // and confuse the sorted list.
+    if (!d._tsMs) return;
     rows.push({
-      id: String(d.trace_id || ('req-' + i)).slice(0, 8),
+      id: traceId ? traceId.slice(0, 8) : sessionId.slice(0, 12),
+      traceId: traceId,
+      sessionId: sessionId,
       route: String(d.route_type || ''),
+      prefixHit: String(d.prefix_hit || ''),
       prefillNode: String(d.prefill_node || '-'),
       decodeNode: String(d.decode_node || '-'),
       timestamp: fmtTime(tsMs),
@@ -175,7 +188,7 @@ try {
     // no scrollbar on the outer Grafana panel or page.
     html += '<div style="flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#7d8590 transparent;box-sizing:border-box;">';
     rows.forEach(function (r, ri) {
-      const tc = typeOf(r.route);
+      const tc = typeOf(r.route, r.prefixHit);
       const sel = ri === S.sel;
       html += '<div data-row="' + ri + '" style="display:flex;align-items:center;height:' + rowH + 'px;box-sizing:border-box;cursor:pointer;border-bottom:1px solid #161b22;border-left:2px solid ' + (sel ? '#388bfd' : 'transparent') + ';background:' + (sel ? 'rgba(56,139,253,0.07)' : 'transparent') + ';">';
       html += '<div style="width:172px;flex:none;padding:0 10px;min-width:0;">';
@@ -204,7 +217,7 @@ try {
     if (S.detail) {
     const r = rows[S.sel];
     if (r) {
-      const tc = typeOf(r.route);
+      const tc = typeOf(r.route, r.prefixHit);
       const ttft = r.phases.filter(function (p) { return p.k !== 'decode'; }).reduce(function (a, p) { return a + p.dur; }, 0);
       const dec = r.phases.find(function (p) { return p.k === 'decode'; });
       const tps = (dec && r.tokensOut > 0) ? Math.round(r.tokensOut / (dec.dur / 1000)) : null;
@@ -213,13 +226,24 @@ try {
 
       html += '<div style="width:300px;flex:none;background:#0b0f14;overflow:hidden;box-sizing:border-box;">';
 
-      // Header — trace id + route type badge + close button
-      html += '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #21262d;">';
+      // Header — trace_id (preferred) + session_id + route type badge + close button
+      html += '<div style="display:flex;align-items:flex-start;gap:8px;padding:10px 14px;border-bottom:1px solid #21262d;">';
+      html += '<div style="flex:1;min-width:0;">';
+      html += '<div style="display:flex;align-items:center;gap:6px;">';
       html += '<span style="font-family:monospace;font-size:13px;font-weight:700;color:#ffffff;">' + esc(r.id) + '</span>';
       html += '<span style="font-size:9px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:4px;padding:2px 6px;font-family:monospace;">' + tc.t + '</span>';
       html += '<span style="font-size:10px;color:#ffffff;">' + tc.d + '</span>';
       html += '<button data-close-detail style="margin-left:auto;border:none;cursor:pointer;background:#21262d;color:#8b949e;border-radius:4px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;">\u00d7</button>';
       html += '</div>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;font-size:10px;color:#7d8590;font-family:monospace;">';
+      if (r.traceId) html += '<span title="trace id">trace: <span style="color:#c9d1d9;">' + esc(r.traceId) + '</span></span>';
+      if (r.sessionId) html += '<span title="session id">session: <span style="color:#c9d1d9;">' + esc(r.sessionId) + '</span></span>';
+      if (r.prefixHit === 'true' || r.prefixHit === 'false') {
+        const phColor = r.prefixHit === 'true' ? '#3fb950' : '#db6d28';
+        html += '<span style="color:' + phColor + ';">prefix_hit=' + esc(r.prefixHit) + '</span>';
+      }
+      html += '</div>';
+      html += '</div></div>';
 
       // Metric tiles
       const tiles = [
