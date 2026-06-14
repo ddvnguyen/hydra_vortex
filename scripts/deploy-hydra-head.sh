@@ -109,12 +109,11 @@ deploy_rtx() {
   PROMTAIL_SOCK_DIR="/tmp/hydra-head-promtail-sock"
   mkdir -p "$PROMTAIL_SOCK_DIR"
   rm -f "$PROMTAIL_SOCK_DIR/docker.sock"
-  nohup socat "UNIX-LISTEN:$PROMTAIL_SOCK_DIR/docker.sock,reuseaddr,fork" \
+  nohup socat -T 30 "UNIX-LISTEN:$PROMTAIL_SOCK_DIR/docker.sock,reuseaddr,fork,unlink-early,mode=666" \
                   "UNIX-CONNECT:/run/user/1000/podman/podman.sock" &>/tmp/hydra-promtail-socat.log &
   SOCAT_PID=$!
   sleep 1
   if [ -S "$PROMTAIL_SOCK_DIR/docker.sock" ]; then
-    chmod 666 "$PROMTAIL_SOCK_DIR/docker.sock"
     ok "Promtail docker.sock proxy ready (socat pid=$SOCAT_PID)"
   else
     warn "Promtail docker.sock proxy failed to start; promtail will get EACCES"
