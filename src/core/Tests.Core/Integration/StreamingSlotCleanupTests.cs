@@ -498,3 +498,56 @@ public sealed class NPastTrackingTests
 		Assert.True(e!.NPast > 0, $"Expected n_past > 0 after streaming decode, got {e.NPast}");
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Warm threshold eviction tests
+// ═══════════════════════════════════════════════════════════════════════
+
+[Collection("StreamingIntegrationTests")]
+public sealed class WarmThresholdTests
+{
+	[Fact]
+	public async Task WarmDelta_UnderThreshold_ReusesSlot()
+	{
+		// Small delta should reuse the warm slot
+		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150);
+		await f.SubmitAsync("sess_wt2", 1000, 100);
+
+		var e1 = f.Ledger.Lookup("sess_wt2");
+		Assert.NotNull(e1);
+		int npast1 = e1!.NPast;
+		Assert.True(f.Scheduler.WarmLeaseCount >= 1, "Should have warm lease after first turn");
+
+		// Second turn: small delta (500 tokens, well under WarmThreshold 5120)
+		await f.SubmitAsync("sess_wt2", 1200, 50);
+
+		var e2 = f.Ledger.Lookup("sess_wt2");
+		Assert.NotNull(e2);
+		Assert.False(e2!.SlotFreed, "Small delta should reuse warm slot, not evict");
+		Assert.True(e2.NPast >= npast1, $"NPast should grow: {npast1} -> {e2.NPast}");
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Output-ignored atomic routing tests
+// ═══════════════════════════════════════════════════════════════════════
+
+[Collection("StreamingIntegrationTests")]
+public sealed class OutputIgnoredTests
+{
+	[Fact]
+	public async Task SmallPrompt_LargeMaxTokens_StillAtomic()
+	{
+		// Atomic routing gates on prompt size (EstimatedTokens), not output.
+		// A small prompt with large max_tokens should still take atomic path.
+		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150,
+			runMode: "fast");
+		// Small prompt (500 tokens, under AtomicThreshold 2048) but large max_tokens (10000)
+		await f.SubmitAsync("sess_oi1", 500, maxTokens: 10000);
+
+		var e = f.Ledger.Lookup("sess_oi1");
+		Assert.NotNull(e);
+		// Should complete successfully via atomic path
+		Assert.True(e!.NPast > 0, "Atomic path should set NPast");
+	}
+}
