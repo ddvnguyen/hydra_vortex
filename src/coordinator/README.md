@@ -399,7 +399,8 @@ HYDRA_COORD_STORE_PORT=9500
 HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S=1800   # upstream read budget
 HYDRA_COORD_HEALTH_POLL_INTERVAL_S=20      # agent health poll
 HYDRA_COORD_HEALTH_MAX_FAILURES=3          # failures → unhealthy
-HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD=2048    # max tokens for atomic path
+HYDRA_COORD_ATOMIC_THRESHOLD=2048          # new-prompt tokens ≤ this → single-worker atomic route
+HYDRA_COORD_WARM_THRESHOLD=5120            # incremental new-prompt tokens ≤ this → reuse warm slot
 ```
 
 ---

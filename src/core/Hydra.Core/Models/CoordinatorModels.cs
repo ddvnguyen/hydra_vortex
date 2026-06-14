@@ -40,9 +40,15 @@ public sealed record CoordinatorConfig
 	public float CharsPerToken { get; init; } = float.Parse(Env("HYDRA_COORD_CHARS_PER_TOKEN", "4.0"));
 	public int LlamaRequestTimeoutS { get; init; } = EnvInt("HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S", 1800);
 	public int SessionIdleTimeoutS { get; init; } = EnvInt("HYDRA_COORD_SESSION_IDLE_TIMEOUT_S", 3600);
-	public int AtomicTokenThreshold { get; init; } = EnvInt("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", 2048);
+	// Cold/warm routing is gated on the *new prompt* token count (output is ignored):
+	//   newPrompt <= AtomicThreshold → single-worker atomic route (no P/D split)
+	//   newPrompt <= WarmThreshold   → reuse the warm affinity slot for follow-up turns
+	// AtomicThreshold replaces the former AtomicTokenThreshold + SmallRequestBypassThreshold.
+	// Back-compat: the legacy HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD env var is honoured as a fallback.
+	public int AtomicThreshold { get; init; } =
+		EnvInt("HYDRA_COORD_ATOMIC_THRESHOLD", EnvInt("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", 2048));
+	public int WarmThreshold { get; init; } = EnvInt("HYDRA_COORD_WARM_THRESHOLD", 5120);
 	public double NPastGuardThreshold { get; init; } = double.Parse(Env("HYDRA_COORD_N_PAST_GUARD_THRESHOLD", "0.6"));
-	public int SmallRequestBypassThreshold { get; init; } = EnvInt("HYDRA_COORD_SMALL_REQUEST_BYPASS_THRESHOLD", 0);
 	public int WorkerErrorThreshold { get; init; } = EnvInt("HYDRA_COORD_WORKER_ERROR_THRESHOLD", 3);
 	public string RunMode { get; init; } = Env("HYDRA_COORD_RUN_MODE", "concurrency");
 	public bool MixPrecisionEnabled { get; init; } = EnvBool("HYDRA_COORD_MIX_PRECISION_ENABLED", false);

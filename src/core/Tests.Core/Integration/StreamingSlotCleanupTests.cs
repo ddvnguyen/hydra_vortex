@@ -115,8 +115,7 @@ internal sealed class StreamingFixture : IAsyncDisposable
 			PrefixCheckpointEnabled = false,
 			WarmSlotVerificationEnabled = false,
 			MixPrecisionEnabled = false,
-			AtomicTokenThreshold = 2048,
-			SmallRequestBypassThreshold = 0,  // Disable bypass to preserve existing test behavior
+			AtomicThreshold = 2048,
 			Workers = new List<WorkerConfig>
 			{
 				new() { Name = "rtx",  Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = rtxSlots,  PrefillPriority = 1, DecodePriority = 2 },
