@@ -59,8 +59,42 @@ public sealed class CoordinatorConfigTests
         Assert.Equal(9000, cfg.Port);
         Assert.Equal("concurrency", cfg.RunMode);
         Assert.False(cfg.MixPrecisionEnabled);
-        Assert.Equal(2048, cfg.AtomicTokenThreshold);
+        Assert.Equal(2048, cfg.AtomicThreshold);
+        Assert.Equal(5120, cfg.WarmThreshold);
         Assert.Equal(1800, cfg.LlamaRequestTimeoutS);
+    }
+
+    [Fact]
+    public void AtomicThreshold_NewEnvVar_Wins()
+    {
+        Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_THRESHOLD", "777");
+        Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", "111");
+        try
+        {
+            Assert.Equal(777, new CoordinatorConfig().AtomicThreshold);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_THRESHOLD", null);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", null);
+        }
+    }
+
+    [Fact]
+    public void AtomicThreshold_LegacyEnvVar_FallsBack()
+    {
+        // Back-compat: the legacy HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD still applies
+        // when the new HYDRA_COORD_ATOMIC_THRESHOLD is unset.
+        Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_THRESHOLD", null);
+        Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", "333");
+        try
+        {
+            Assert.Equal(333, new CoordinatorConfig().AtomicThreshold);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", null);
+        }
     }
 
     [Fact]
