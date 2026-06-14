@@ -647,6 +647,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			CoordinatorMetrics.CacheHits.Inc();
+			item.PrefixCacheHit = true;
 
 			var slotId = 0;
 			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
