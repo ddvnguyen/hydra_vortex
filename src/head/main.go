@@ -61,6 +61,9 @@ func main() {
 		"llama_binary", cfg.Llama.Binary,
 		"llama_port", cfg.Llama.Port)
 
+	// Log the full merged config params for verification
+	cfg.LogLlamaConfig(logger)
+
 	// Pull binaries from OCI registry if configured
 	var regMgr *registry.Manager
 	if len(cfg.Binaries) > 0 {

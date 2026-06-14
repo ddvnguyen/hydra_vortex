@@ -20,24 +20,24 @@ llama:
     # Model
     model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
     chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
-    
+
     # Context and parallelism
-    ctx-size: 180000
+    ctx-size: 200000
     parallel: 1
-    
+
     # GPU layers
     n-gpu-layers: all
     n-cpu-moe: 26
-    
+
     # Sampling
     temp: 0.86
     repeat-penalty: 1.06
     top-k: 20
     top-p: 0.95
-    
+
     # Tensor overrides
     override-tensor: "token_embd.weight=CPU"
-    
+
     # Chat template
     chat-template-kwargs: '{"preserve_thinking": true}'
 

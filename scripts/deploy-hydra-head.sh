@@ -109,7 +109,7 @@ deploy_rtx() {
   PROMTAIL_SOCK_DIR="/tmp/hydra-head-promtail-sock"
   mkdir -p "$PROMTAIL_SOCK_DIR"
   rm -f "$PROMTAIL_SOCK_DIR/docker.sock"
-  nohup socat -T 30 "UNIX-LISTEN:$PROMTAIL_SOCK_DIR/docker.sock,reuseaddr,fork,unlink-early,mode=666" \
+  nohup socat -t 300 "UNIX-LISTEN:$PROMTAIL_SOCK_DIR/docker.sock,reuseaddr,fork,unlink-early,mode=666" \
                   "UNIX-CONNECT:/run/user/1000/podman/podman.sock" &>/tmp/hydra-promtail-socat.log &
   SOCAT_PID=$!
   sleep 1
@@ -129,6 +129,11 @@ deploy_rtx() {
     --name hydra-head-rtx \
     --network host \
     --device nvidia.com/gpu=all \
+    --health-cmd="curl -f http://localhost:9700/health || exit 1" \
+    --health-interval=30s \
+    --health-timeout=5s \
+    --health-start-period=15s \
+    --health-retries=3 \
     -e HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN" \
     -e REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json \
     -v /mnt/SSD:/models:ro \

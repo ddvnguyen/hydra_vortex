@@ -41,7 +41,7 @@ llama:
     chat-template-file: /models/qwen3.6_merged_template.jinja
 
     # Context and parallelism
-    ctx-size: 360000
+    ctx-size: 400000
     parallel: 2
 
     # GPU layers
@@ -52,9 +52,6 @@ llama:
     repeat-penalty: 1.06
     top-k: 20
     top-p: 0.95
-
-    # Tensor overrides
-    override-tensor: "token_embd.weight=CPU"
 
     # Slot management
     slot-prompt-similarity: 0.4

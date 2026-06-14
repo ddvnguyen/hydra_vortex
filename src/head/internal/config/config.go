@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -265,6 +266,28 @@ func (c *Config) ServiceConfig(name string) ServiceConfig {
 
 func (c *Config) AllServiceNames() []string {
 	return []string{"promtail", "node_exporter", "nvidia_exporter"}
+}
+
+func (c *Config) LogLlamaConfig(logger *slog.Logger) {
+	logger.Info("llama config",
+		"binary", c.Llama.Binary,
+		"working_dir", c.Llama.WorkingDir,
+		"host", c.Llama.Host,
+		"port", c.Llama.Port,
+		"rpc_port", c.Llama.RPCPort)
+
+	// Log each merged llama param in a structured field
+	keys := make([]string, 0, len(c.Llama.Params))
+	for k := range c.Llama.Params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	attrs := make([]slog.Attr, 0, len(keys))
+	for _, k := range keys {
+		attrs = append(attrs, slog.Any(k, c.Llama.Params[k]))
+	}
+	logger.LogAttrs(nil, slog.LevelInfo, "llama params (merged: global + node)", attrs...)
 }
 
 func (c *Config) Validate() error {
