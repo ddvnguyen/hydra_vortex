@@ -36,7 +36,7 @@ llama:
     # here or you risk overriding the preset's tuned offload counts and OOMing
     # the GPU (e.g. setting n-cpu-moe=18 instead of the preset's 26 forces
     # more layers onto a 16GB RTX and triggers cudaMalloc failures).
-    models-preset: /models/preset.ini
+    models-preset: /opt/hydra/config/preset.ini
     models-max: 1
     chat-template-file: /models/qwen3.6_merged_template.jinja
 
