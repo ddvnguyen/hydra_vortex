@@ -647,7 +647,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			CoordinatorMetrics.CacheHits.Inc();
-			item.PrefixCacheHit = true;
 
 			var slotId = 0;
 			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
@@ -1071,6 +1070,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						{
 							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
 								$"{sessionId}.kv", stateResp.Payload, bgInfo2.TraceId, CancellationToken.None);
+							_ledger.MarkStoreState(sessionId);
 							_log.Information("bg_saved Sid={Sid}", sessionId);
 						}
 						else
