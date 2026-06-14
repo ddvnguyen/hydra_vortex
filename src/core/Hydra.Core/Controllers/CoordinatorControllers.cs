@@ -98,9 +98,6 @@ public class CompletionsController : ControllerBase
 		var summary = Router.SummarizeMessages(messages);
 		sessionId ??= summary.SessionId;
 
-		// Trace: dump full request params
-		Console.Error.WriteLine($"event=request_full {System.Text.Json.JsonSerializer.Serialize(body)}");
-
 		try
 		{
 			var result = await _scheduler.SubmitAsync(body, messages, sessionId, summary.EstimatedTokens, maxTokens, summary.PrefixHash, ct);

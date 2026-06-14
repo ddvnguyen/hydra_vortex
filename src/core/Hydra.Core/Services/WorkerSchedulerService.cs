@@ -153,6 +153,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var prefillslots = Math.Max(1, _cfg.Workers.Count(w => w.CanPrefill));
 		var decodeSlots = Math.Max(1, _cfg.Workers.Count(w => w.CanDecode));
 
+		_ = ReportQueueDepthAsync(ct);
+
 		var tasks = new[]
 		{
 			RunClassifierAsync(_cfg.Workers.Count, ct),
@@ -160,6 +162,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			RunDecodeConsumerAsync(decodeSlots, ct),
 		};
 		await Task.WhenAll(tasks);
+	}
+
+	private async Task ReportQueueDepthAsync(CancellationToken ct)
+	{
+		while (!ct.IsCancellationRequested)
+		{
+			CoordinatorMetrics.MainQueueDepth.Set(_mainQueue.Reader.Count);
+			CoordinatorMetrics.PrefillQueueDepth.Set(_prefillQueue.Reader.Count);
+			CoordinatorMetrics.DecodeQueueDepth.Set(_decodeQueue.Reader.Count);
+			await Task.Delay(TimeSpan.FromSeconds(5), ct);
+		}
 	}
 
 	// ── State helpers for queue routing ──
