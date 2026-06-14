@@ -357,8 +357,9 @@ public sealed class ColdAtomicPathTests
 
 		var e = f.Ledger.Lookup("sess_c1");
 		Assert.NotNull(e);
-		Assert.True(e!.HasStoreState);
-		Assert.True(e.NPast > 0);
+		// Atomic path skips prefill pipeline (no synchronous SaveKv), so HasStoreState
+		// is set asynchronously by BgSave. NPast is set by RestoreKv/decode.
+		Assert.True(e.NPast > 0, $"NPast should be > 0 after atomic decode, got {e.NPast}");
 
 		await f.SubmitAsync("sess_c1", 500, 50);
 		Assert.True(f.Ledger.Lookup("sess_c1")!.NPast > 0, "n_past should persist");
@@ -409,8 +410,9 @@ public sealed class ColdConcurrencyPathTests
 	[Fact]
 	public async Task Concurrency_2Turns_SmallInit_SmallNext()
 	{
-		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150);
-		await f.SubmitAsync("sess_d1", 2000, 100);
+		// Use tokens > AtomicThreshold (2048) to force P/D split (cold_concurrency) path
+		await using var f = new StreamingFixture(prefillTokens: 4000, decodeTokens: 150);
+		await f.SubmitAsync("sess_d1", 3000, 100);
 
 		var e = f.Ledger.Lookup("sess_d1");
 		Assert.NotNull(e);
@@ -440,10 +442,11 @@ public sealed class ColdConcurrencyPathTests
 	[Fact]
 	public async Task Concurrency_PrefillAndDecode_DifferentWorkers()
 	{
-		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150,
+		await using var f = new StreamingFixture(prefillTokens: 4000, decodeTokens: 150,
 			rtxSlots: 2, p100Slots: 1);
+		// Use tokens > AtomicThreshold (2048) to force P/D split path
 		// RTX prefill → P100 decode (since RTX excluded as decode in PickDecodeAsync)
-		await f.SubmitAsync("sess_d3", 2000, 100);
+		await f.SubmitAsync("sess_d3", 3000, 100);
 
 		var e = f.Ledger.Lookup("sess_d3");
 		Assert.NotNull(e);
@@ -454,9 +457,10 @@ public sealed class ColdConcurrencyPathTests
 	[Fact]
 	public async Task Concurrency_PrefillRTX_DecodeP100()
 	{
-		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150);
+		await using var f = new StreamingFixture(prefillTokens: 4000, decodeTokens: 150);
+		// Use tokens > AtomicThreshold (2048) to force P/D split path
 		// RTX has 2 slots, P100 has 1 (decode-only)
-		await f.SubmitAsync("sess_d4", 2000, 100);
+		await f.SubmitAsync("sess_d4", 3000, 100);
 
 		// Verify save-after-prefill: llama StateGet → Store Put
 		Assert.True(f.Rpc.HasCall(OpCode.StateGet),
