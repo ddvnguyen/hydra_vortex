@@ -410,32 +410,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				_log.Warning("n_past_guard Evicted={Sid} Est={Est} NPast={Past} — warm slot would nuke cache",
 					item.SessionId, item.EstimatedTokens, entry.NPast);
-				// Release warm decode lease if holding one
-				if (_warmLeases.TryRemove(item.SessionId, out var warmLease))
-				{
-					await warmLease.DisposeAsync();
-					_decodeSlotSignal.Release();
-				}
-				_ledger.MarkEvicted(item.SessionId);
-				item.State = WorkItemState.RouteDecision;
-				return await ColdRouteAsync(item);
+				return await EvictWarmAndColdRouteAsync(item);
 			}
 
 			// Warm-affinity cap: reuse the warm slot only while the incremental new
 			// prompt (vs the cached n_past) stays under WarmThreshold. A large
 			// incremental prefill is worth a fresh route — evict and fall through.
-			if (NewPromptTokens(item, entry) > _cfg.WarmThreshold)
+			var newPrompt = NewPromptTokens(item, entry);
+			if (newPrompt > _cfg.WarmThreshold)
 			{
 				_log.Information("warm_threshold_exceeded Sid={Sid} NewPrompt={New} NPast={Past} WarmThreshold={WT} — rerouting",
-					item.SessionId, NewPromptTokens(item, entry), entry.NPast, _cfg.WarmThreshold);
-				if (_warmLeases.TryRemove(item.SessionId, out var warmLease))
-				{
-					await warmLease.DisposeAsync();
-					_decodeSlotSignal.Release();
-				}
-				_ledger.MarkEvicted(item.SessionId);
-				item.State = WorkItemState.RouteDecision;
-				return await ColdRouteAsync(item);
+					item.SessionId, newPrompt, entry.NPast, _cfg.WarmThreshold);
+				return await EvictWarmAndColdRouteAsync(item);
 			}
 
 			var target = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
@@ -530,6 +516,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			? Math.Max(0, item.EstimatedTokens - entry.NPast)
 			: item.EstimatedTokens;
 
+	private async Task<WorkItemState> EvictWarmAndColdRouteAsync(WorkItem item)
+	{
+		if (_warmLeases.TryRemove(item.SessionId, out var warmLease))
+		{
+			await warmLease.DisposeAsync();
+			_decodeSlotSignal.Release();
+		}
+		_ledger.MarkEvicted(item.SessionId);
+		item.State = WorkItemState.RouteDecision;
+		return await ColdRouteAsync(item);
+	}
+
 	private async Task<WorkItemState> ColdRouteAsync(WorkItem item)
 	{
 		// Cold route: no warm slot/cache to reuse — the chosen worker prefills the
@@ -539,14 +537,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		if (atomic)
 		{
-			// Prefer a worker that can both prefill and decode (a Mixed worker, e.g.
-			// RTX) so a small prompt isn't prefilled on a slow decode-only GPU; fall
-			// back to the best decode worker. Runs prefill+decode inline (no P/D split).
-			var aw = _cfg.Workers
-				.Where(w => w.CanPrefill && w.CanDecode && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name))
-				.OrderBy(w => w.PrefillPriority)
-				.FirstOrDefault()
-				?? Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health);
+			var aw = Router.PickBestAtomicWorker(_cfg.Workers, _tracker, _health);
 			_log.Information("cold_atomic_try Est={Est} Worker={W} Free={Free} Healthy={Healthy}",
 				item.EstimatedTokens, aw?.Name ?? "none",
 				aw != null ? _tracker.IsFree(aw.Name) : false,
@@ -563,10 +554,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				LastDispatchedNode = aw.Name;
 				return WorkItemState.ModelLoadDecode;
 			}
-			// No atomic-capable slot free — fall through to the P/D split path.
 		}
 
-		item.RouteType = atomic ? "cold_atomic" : "cold_concurrency";
+		item.RouteType = "cold_concurrency";
 
 		var pfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
 		// If no prefill worker has free slots, evict oldest warm lease to make room
@@ -577,6 +567,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId);
 			await oldest.Value.DisposeAsync();
 			_warmLeases.TryRemove(oldest.Key, out _);
+			_decodeSlotSignal.Release();
+			_ledger.MarkEvicted(oldest.Key);
 			pfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
 		}
 
@@ -1003,6 +995,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
 						storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
+					_ledger.MarkStoreState(item.SessionId);
 					_log.Information("bg_saved Sid={Sid}", item.SessionId);
 				}
 			}

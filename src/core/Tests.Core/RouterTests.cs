@@ -292,4 +292,62 @@ public sealed class RouterTests
 		Assert.NotNull(picked);
 		Assert.Equal("rtx", picked!.Name); // P100 can't prefill
 	}
+
+	[Fact]
+	public void PickBestAtomicWorker_Prefers_Mixed_Over_DecodeOnly()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1, DecodePriority = 2 },
+			new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
+
+		var picked = Router.PickBestAtomicWorker(workers, tracker, Health);
+		Assert.NotNull(picked);
+		Assert.Equal("rtx", picked!.Name);
+	}
+
+	[Fact]
+	public void PickBestAtomicWorker_Falls_Back_To_DecodeOnly()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
+
+		var picked = Router.PickBestAtomicWorker(workers, tracker, Health);
+		Assert.NotNull(picked);
+		Assert.Equal("p100", picked!.Name);
+	}
+
+	[Fact]
+	public void PickBestAtomicWorker_Returns_Null_When_All_Busy()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
+		tracker.Acquire("rtx", "decode");
+
+		Assert.Null(Router.PickBestAtomicWorker(workers, tracker, Health));
+	}
+
+	[Fact]
+	public void PickBestAtomicWorker_Skips_PrefillOnly()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "prefill_only", WorkerType = 1, PrefillPriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
+
+		Assert.Null(Router.PickBestAtomicWorker(workers, tracker, Health));
+	}
 }

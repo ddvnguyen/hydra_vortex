@@ -9,6 +9,7 @@ public interface ISessionLedger
     void UpdateLastUsed(string sessionId);
     void UpdateNPast(string sessionId, int nPast);
     void MarkEvicted(string sessionId);
+    void MarkStoreState(string sessionId);
     List<SessionEntry> GetSessionsOnNode(string nodeName);
     SessionEntry? GetLruSession(string nodeName);
     int ActiveCountOnNode(string nodeName);
