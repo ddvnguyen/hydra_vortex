@@ -132,6 +132,8 @@ try {
       prefixHit: String(d.prefix_hit || ''),
       prefillNode: String(d.prefill_node || '-'),
       decodeNode: String(d.decode_node || '-'),
+      prefillModel: String(d.prefill_model || ''),
+      decodeModel: String(d.decode_model || ''),
       timestamp: fmtTime(tsMs),
       tokensIn: num(d.tokens_in),
       tokensOut: num(d.tokens_out),
@@ -273,11 +275,15 @@ try {
       html += '<div style="font-size:10px;color:#ffffff;margin-top:6px;padding-top:6px;border-top:1px solid #161b22;">Dominated by <span style="color:#ffffff;font-weight:600;">' + esc(dom.label) + '</span> (' + Math.round(dom.dur / r.total * 100) + '% of latency)</div>';
       html += '</div>';
 
-      // Servers info
+      // Servers info (with model alias when present)
       html += '<div style="margin:10px 14px;padding:8px 10px;background:#161b22;border-radius:6px;">';
       html += '<div style="font-size:9px;color:#ffffff;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Servers</div>';
-      html += '<div style="display:flex;gap:8px;font-size:11px;"><span style="color:#ffffff;font-weight:600;">Prefill</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(r.prefillNode) + '</span></div>';
-      html += '<div style="display:flex;gap:8px;font-size:11px;margin-top:2px;"><span style="color:#ffffff;font-weight:600;">Decode</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(r.decodeNode) + '</span></div>';
+      html += '<div style="display:flex;gap:8px;font-size:11px;align-items:center;"><span style="color:#ffffff;font-weight:600;min-width:48px;">Prefill</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(r.prefillNode) + '</span>';
+      if (r.prefillModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:9px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(r.prefillModel) + '</span>';
+      html += '</div>';
+      html += '<div style="display:flex;gap:8px;font-size:11px;margin-top:2px;align-items:center;"><span style="color:#ffffff;font-weight:600;min-width:48px;">Decode</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(r.decodeNode) + '</span>';
+      if (r.decodeModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:9px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(r.decodeModel) + '</span>';
+      html += '</div>';
       html += '</div>';
 
       html += '</div>';

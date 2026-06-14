@@ -143,6 +143,8 @@ public sealed class NodeInfo
 	public DateTime LastCheck { get; set; }
 	public int StuckSlots { get; set; }
 	public List<SlotInfo> Slots { get; set; } = [];
+	/// <summary>Alias of the model currently loaded on this node (from llama /v1/models). Empty = unknown.</summary>
+	public string CurrentModel { get; set; } = "";
 }
 
 public sealed class SlotInfo

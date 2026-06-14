@@ -15,6 +15,7 @@ internal sealed class TestHealthMonitor : IHealthMonitorService
 	public bool IsHealthy(string nodeName) => true;
 	public bool IsStoreHealthy => true;
 	public int? GetIdleSlot(string nodeName) => null;
+	public NodeInfo? GetNodeInfo(string nodeName) => null;
 	public Dictionary<string, object> GetHealthSummary() => new();
 }
 

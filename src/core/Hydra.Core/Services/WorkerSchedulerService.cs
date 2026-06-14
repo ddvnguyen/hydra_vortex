@@ -1181,6 +1181,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
 		CoordinatorMetrics.RequestLatency.WithLabels(node, RouteLabel(item))
 			.Observe(item.Phases.GetValueOrDefault("total_ms") / 1000.0);
+		// Pull the model alias currently loaded on each worker (from the
+		// health-poll snapshot of /v1/models). Empty string when unknown
+		// (e.g. before first poll completes).
+		var prefillModel = item.PrefillWorker != null
+			? (_health.GetNodeInfo(item.PrefillWorker.Name)?.CurrentModel ?? "")
+			: "";
+		var decodeModel = item.DecodeWorker != null
+			? (_health.GetNodeInfo(item.DecodeWorker.Name)?.CurrentModel ?? "")
+			: "";
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -1188,6 +1197,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"route_type={RouteLabel(item)} " +
 			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
+			$"prefill_model={prefillModel} decode_model={decodeModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
 			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
 			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +

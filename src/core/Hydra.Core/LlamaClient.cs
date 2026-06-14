@@ -150,6 +150,39 @@ public sealed class LlamaClient : IDisposable
         return ParseSlots(json);
     }
 
+    /// <summary>
+    /// Returns the alias of the model currently in `loaded` status on the
+    /// llama-server, or empty string if no model is loaded (e.g. during
+    /// startup or in router mode with no model auto-loaded).
+    /// </summary>
+    public async Task<string> GetLoadedModelAsync(CancellationToken ct)
+    {
+        try
+        {
+            var response = await _http.GetAsync($"{_baseUrl}/v1/models", ct);
+            if (!response.IsSuccessStatusCode) return "";
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("data", out var data) ||
+                data.ValueKind != JsonValueKind.Array) return "";
+            foreach (var m in data.EnumerateArray())
+            {
+                if (m.TryGetProperty("status", out var st) &&
+                    st.TryGetProperty("value", out var v) &&
+                    v.GetString() == "loaded")
+                {
+                    return m.TryGetProperty("id", out var id) ? (id.GetString() ?? "") : "";
+                }
+            }
+            return "";
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "GetLoadedModel failed for {BaseUrl}", _baseUrl);
+            return "";
+        }
+    }
+
     public async Task EraseSlotAsync(int slotId, CancellationToken ct)
     {
         var response = await _http.PostAsync(
