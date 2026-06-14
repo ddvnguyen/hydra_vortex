@@ -151,9 +151,14 @@ public sealed class LlamaClient : IDisposable
     }
 
     /// <summary>
-    /// Returns the alias of the model currently in `loaded` status on the
-    /// llama-server, or empty string if no model is loaded (e.g. during
-    /// startup or in router mode with no model auto-loaded).
+    /// Returns the alias of the model currently serving traffic on the
+    /// llama-server, or empty string if none. Handles all observed shapes:
+    ///   - llama.cpp router: {"data":[{"id":..., "status":{"value":"loaded"}}]}
+    ///   - llama.cpp single (no status): {"data":[{"id":..., "meta":...}]} — treated as loaded
+    ///   - Ollama-compatible: {"models":[{"name":..., "model":...}]}
+    /// Some servers return BOTH `data` and `models` (e.g. P100). We scan
+    /// both and prefer the data[*].id when its status indicates loaded,
+    /// then fall back to models[*].name (stripping .gguf).
     /// </summary>
     public async Task<string> GetLoadedModelAsync(CancellationToken ct)
     {
@@ -163,17 +168,44 @@ public sealed class LlamaClient : IDisposable
             if (!response.IsSuccessStatusCode) return "";
             var json = await response.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("data", out var data) ||
-                data.ValueKind != JsonValueKind.Array) return "";
-            foreach (var m in data.EnumerateArray())
+            var root = doc.RootElement;
+
+            // llama.cpp: {"data": [{"id":..., "status":{value:loaded}} | <no status>]}
+            if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
             {
-                if (m.TryGetProperty("status", out var st) &&
-                    st.TryGetProperty("value", out var v) &&
-                    v.GetString() == "loaded")
+                foreach (var m in data.EnumerateArray())
                 {
-                    return m.TryGetProperty("id", out var id) ? (id.GetString() ?? "") : "";
+                    if (!m.TryGetProperty("id", out var idElem)) continue;
+                    var idStr = idElem.GetString();
+                    if (string.IsNullOrEmpty(idStr)) continue;
+
+                    var loaded = true; // default: single-model server
+                    if (m.TryGetProperty("status", out var st))
+                    {
+                        if (st.ValueKind == JsonValueKind.Object)
+                            loaded = st.TryGetProperty("value", out var v) && v.GetString() == "loaded";
+                        else if (st.ValueKind == JsonValueKind.String)
+                            loaded = st.GetString() == "loaded";
+                        else
+                            loaded = false;
+                    }
+
+                    if (loaded) return StripGguf(idStr);
                 }
             }
+
+            // Ollama-compatible: {"models": [{"name": "Foo.gguf", ...}]}
+            if (root.TryGetProperty("models", out var models) && models.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var m in models.EnumerateArray())
+                {
+                    if (m.TryGetProperty("name", out var n) && n.GetString() is { Length: > 0 } name)
+                        return StripGguf(name);
+                    if (m.TryGetProperty("model", out var mm) && mm.GetString() is { Length: > 0 } mname)
+                        return StripGguf(mname);
+                }
+            }
+
             return "";
         }
         catch (Exception ex)
@@ -182,6 +214,9 @@ public sealed class LlamaClient : IDisposable
             return "";
         }
     }
+
+    private static string StripGguf(string name) =>
+        name.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? name[..^5] : name;
 
     public async Task EraseSlotAsync(int slotId, CancellationToken ct)
     {
