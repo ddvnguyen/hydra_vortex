@@ -60,6 +60,8 @@ public sealed class WorkItem
 	public int TokensOut { get; set; }
 	/// <summary>Size of the KV state blob (KV + native checkpoint) saved/restored for this request, bytes.</summary>
 	public long KvBytes { get; set; }
+	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>
+	public bool PrefixCacheHit { get; set; }
 	public Dictionary<string, long> Phases { get; } = new();
 	private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 	public long ElapsedMs => (Stopwatch.GetTimestamp() - _startTimestamp) * 1000 / Stopwatch.Frequency;

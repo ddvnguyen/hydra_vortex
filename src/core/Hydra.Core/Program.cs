@@ -101,8 +101,8 @@ var debugTask = server.StartDebugEndpointAsync(ct);
 // ── Coordinator DI host ────────────────────────────────────────────────
 Task? coordinatorTask = null;
 var coordEnabled = Environment.GetEnvironmentVariable("HYDRA_COORD_ENABLED") != "false";
-var workersJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS") ?? "";
-Console.Error.WriteLine($"[BOOT] coordEnabled={coordEnabled} workersJsonLen={workersJson.Length} workersFirst80={workersJson[..Math.Min(80, workersJson.Length)]}");
+var configFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE") ?? "";
+Console.Error.WriteLine($"[BOOT] coordEnabled={coordEnabled} configFile={configFile}");
 Console.Error.Flush();
 if (coordEnabled)
 {

@@ -111,9 +111,11 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
             ConsecutiveFailures = 0
         };
         info.SlotsIdle = info.Slots.Count(s => !s.IsProcessing);
+        info.CurrentModel = await llama.GetLoadedModelAsync(ct);
 
         lock (_lock) { _nodes[w.Name] = info; }
-        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I}", w.Name, slots.Count, info.SlotsIdle);
+        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I} Model={M}",
+            w.Name, slots.Count, info.SlotsIdle, info.CurrentModel);
     }
 
     private void OnFail(string name)
@@ -137,6 +139,7 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         SlotsIdle = src.SlotsIdle,
         StuckSlots = src.StuckSlots,
         ConsecutiveFailures = src.ConsecutiveFailures,
+        CurrentModel = src.CurrentModel,
         Slots = src.Slots.Select(s => new Models.SlotInfo
         {
             Id = s.Id, NPast = s.NPast, IsProcessing = s.IsProcessing

@@ -641,6 +641,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 			{
 				CoordinatorMetrics.CacheMisses.Inc();
+				item.PrefixCacheHit = false;
 				_log.Warning("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
 				return WorkItemState.Prefill;
 			}
@@ -651,6 +652,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
+
+			// StatePut succeeded → the prefix KV is now installed in the slot.
+			// Set the hit flag only here (not on Store hit alone) so a failed
+			// StatePut doesn't mislead the dashboard into thinking the prefix
+			// was restored when it actually has to re-prefill.
+			item.PrefixCacheHit = true;
 
 			_prefixSet.Add($"{item.PrefillWorker.Name}:{item.PrefixHash}");
 
@@ -666,7 +673,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			_log.Information("prefix_restored Sid={Sid} Hash={Hash}",
 				item.SessionId, item.PrefixHash);
 		}
-		catch (Exception ex) { _log.Warning(ex, "prefix_restore_failed"); }
+		catch (Exception ex)
+		{
+			// StatePut threw — the prefix was found in Store but never
+			// installed in the slot. Treat as a miss for the dashboard
+			// signal so callers don't see a misleading `prefix_hit=true`.
+			item.PrefixCacheHit = false;
+			_log.Warning(ex, "prefix_restore_failed");
+		}
 
 		return WorkItemState.Prefill;
 	}
@@ -1056,6 +1070,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						{
 							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
 								$"{sessionId}.kv", stateResp.Payload, bgInfo2.TraceId, CancellationToken.None);
+							_ledger.MarkStoreState(sessionId);
 							_log.Information("bg_saved Sid={Sid}", sessionId);
 						}
 						else
@@ -1193,6 +1208,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
 		CoordinatorMetrics.RequestLatency.WithLabels(node, RouteLabel(item))
 			.Observe(item.Phases.GetValueOrDefault("total_ms") / 1000.0);
+		// Pull the model alias currently loaded on each worker (from the
+		// health-poll snapshot of /v1/models). Empty string when unknown
+		// (e.g. before first poll completes).
+		var prefillModel = item.PrefillWorker != null
+			? (_health.GetNodeInfo(item.PrefillWorker.Name)?.CurrentModel ?? "")
+			: "";
+		var decodeModel = item.DecodeWorker != null
+			? (_health.GetNodeInfo(item.DecodeWorker.Name)?.CurrentModel ?? "")
+			: "";
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -1200,12 +1224,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"route_type={RouteLabel(item)} " +
 			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
+			$"prefill_model={prefillModel} decode_model={decodeModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
 			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
 			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
 			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
 			$"total_ms={item.Phases.GetValueOrDefault("total_ms")} " +
-			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes}"
+			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes} " +
+			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")}"
 		);
 	}
 

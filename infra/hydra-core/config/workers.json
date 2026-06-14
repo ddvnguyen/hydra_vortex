@@ -1,0 +1,29 @@
+[
+  {
+    "name": "rtx",
+    "host": "localhost",
+    "rpc_port": 9601,
+    "llama_rpc_port": 9503,
+    "llama_url": "http://localhost:8080",
+    "worker_type": 3,
+    "slots": 2,
+    "prefill_priority": 1,
+    "decode_priority": 2,
+    "decode_speed_tps": 200,
+    "_comment": "RTX llama-server runs in router mode (--models-preset /models/preset.ini --models-max 1). On every cold dispatch the coordinator POSTs /models/load to ensure the right preset is hot; llama-server returns success even if the model is already loaded. router_model_name covers both prefill and decode phases on this mixed worker (worker_type=3).",
+    "router_model_name": "balanced"
+  },
+  {
+    "name": "p100",
+    "host": "localhost",
+    "rpc_port": 9602,
+    "llama_rpc_port": 9502,
+    "llama_url": "http://192.168.122.21:8086",
+    "worker_type": 2,
+    "slots": 1,
+    "prefill_priority": 2,
+    "decode_priority": 1,
+    "decode_speed_tps": 28,
+    "_comment": "P100 llama-server runs in single-model mode (--model /mnt/readonly_data/...gguf), not router mode — /models/load returns 404. Leave prefill_model_name / decode_model_name / router_model_name UNSET so CoordinatorConfig.LoadWorkers and Router.PrefillModel/DecodeModel return null and the model_load call is skipped (Router.PrefillModel is gated by `if (m != null)` in WorkerSchedulerService.ModelLoadAsync)."
+  }
+]

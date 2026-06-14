@@ -27,5 +27,6 @@ public interface IHealthMonitorService
     bool IsHealthy(string nodeName);
     bool IsStoreHealthy { get; }
     int? GetIdleSlot(string nodeName);
+    NodeInfo? GetNodeInfo(string nodeName);
     Dictionary<string, object> GetHealthSummary();
 }
