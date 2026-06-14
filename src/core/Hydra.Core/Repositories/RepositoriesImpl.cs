@@ -31,6 +31,9 @@ public sealed class SessionLedger : ISessionLedger
     public void MarkEvicted(string sid)
     { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.SlotFreed = true; e.HasStoreState = true; } }
 
+    public void MarkStoreState(string sid)
+    { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.HasStoreState = true; } }
+
     public List<SessionEntry> GetSessionsOnNode(string node)
         => _sessions.Values.Where(s => { lock (s) return s.NodeName == node; }).ToList();
 

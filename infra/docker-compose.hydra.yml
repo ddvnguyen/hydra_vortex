@@ -21,8 +21,8 @@ services:
       - HYDRA_STORE_RESTORE_TOP_N=10
       - HYDRA_COORD_PORT=9000
       - HYDRA_COORD_MIX_PRECISION_ENABLED=true
-      - HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD=128
-      - HYDRA_COORD_SMALL_REQUEST_BYPASS_THRESHOLD=0
+      - HYDRA_COORD_ATOMIC_THRESHOLD=2048
+      - HYDRA_COORD_WARM_THRESHOLD=5120
       - 'HYDRA_COORD_WORKERS=[{"name":"rtx","host":"localhost","rpc_port":9601,"llama_rpc_port":9503,"llama_url":"http://localhost:8080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2,"decode_speed_tps":200},{"name":"p100","host":"localhost","rpc_port":9602,"llama_rpc_port":9502,"llama_url":"http://192.168.122.21:8086","worker_type":2,"slots":1,"prefill_priority":2,"decode_priority":1,"decode_speed_tps":28}]'
     healthcheck:
       test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]

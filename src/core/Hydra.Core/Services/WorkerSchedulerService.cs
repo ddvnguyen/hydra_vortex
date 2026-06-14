@@ -410,15 +410,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				_log.Warning("n_past_guard Evicted={Sid} Est={Est} NPast={Past} — warm slot would nuke cache",
 					item.SessionId, item.EstimatedTokens, entry.NPast);
-				// Release warm decode lease if holding one
-				if (_warmLeases.TryRemove(item.SessionId, out var warmLease))
-				{
-					await warmLease.DisposeAsync();
-					_decodeSlotSignal.Release();
-				}
-				_ledger.MarkEvicted(item.SessionId);
-				item.State = WorkItemState.RouteDecision;
-				return await ColdRouteAsync(item);
+				return await EvictWarmAndColdRouteAsync(item);
+			}
+
+			// Warm-affinity cap: reuse the warm slot only while the incremental new
+			// prompt (vs the cached n_past) stays under WarmThreshold. A large
+			// incremental prefill is worth a fresh route — evict and fall through.
+			var newPrompt = NewPromptTokens(item, entry);
+			if (newPrompt > _cfg.WarmThreshold)
+			{
+				_log.Information("warm_threshold_exceeded Sid={Sid} NewPrompt={New} NPast={Past} WarmThreshold={WT} — rerouting",
+					item.SessionId, newPrompt, entry.NPast, _cfg.WarmThreshold);
+				return await EvictWarmAndColdRouteAsync(item);
 			}
 
 			var target = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
@@ -451,7 +454,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 
 				// N-past guard: estimated tokens too small, force KV restore
-				if (entry.NPast > 0 && entry.NPast > _cfg.AtomicTokenThreshold * 4
+				if (entry.NPast > 0 && entry.NPast > _cfg.AtomicThreshold * 4
 					&& item.EstimatedTokens < entry.NPast * _cfg.NPastGuardThreshold)
 				{
 					_log.Warning("n_past_guard Sid={Sid} NPast={N} Est={E}",
@@ -506,34 +509,54 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return await ColdRouteAsync(item);
 	}
 
+	// New-prompt token count used by warm-affinity gating: for a warm session this
+	// is the incremental prompt beyond the cached n_past. Output tokens are ignored.
+	private static int NewPromptTokens(WorkItem item, SessionEntry? entry)
+		=> entry != null && entry.NPast > 0
+			? Math.Max(0, item.EstimatedTokens - entry.NPast)
+			: item.EstimatedTokens;
+
+	private async Task<WorkItemState> EvictWarmAndColdRouteAsync(WorkItem item)
+	{
+		if (_warmLeases.TryRemove(item.SessionId, out var warmLease))
+		{
+			await warmLease.DisposeAsync();
+			_decodeSlotSignal.Release();
+		}
+		_ledger.MarkEvicted(item.SessionId);
+		item.State = WorkItemState.RouteDecision;
+		return await ColdRouteAsync(item);
+	}
+
 	private async Task<WorkItemState> ColdRouteAsync(WorkItem item)
 	{
-		// Small requests bypass the prefill-optimized worker → go direct to decode.
-		// Overrides MixPrecisionEnabled — small prompts don't benefit from P/D split.
-		if (item.EstimatedTokens <= _cfg.SmallRequestBypassThreshold)
-		{
-			var dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health);
-			_log.Information("cold_atomic_try Est={Est} DecodeWorker={Dw} DecodeFree={Free} DecodeHealthy={Healthy}",
-				item.EstimatedTokens, dw?.Name ?? "none",
-				dw != null ? _tracker.IsFree(dw.Name) : false,
-				dw != null ? _health.IsHealthy(dw.Name) : false);
+		// Cold route: no warm slot/cache to reuse — the chosen worker prefills the
+		// full prompt. Gate the single-worker atomic route on the prompt size only
+		// (output is ignored). Warm follow-ups are handled in RouteAsync / migration.
+		bool atomic = _cfg.RunMode == "fast" || item.EstimatedTokens <= _cfg.AtomicThreshold;
 
-			if (dw != null && _tracker.TryAcquireSlot(dw.Name, out var slot, "decode"))
+		if (atomic)
+		{
+			var aw = Router.PickBestAtomicWorker(_cfg.Workers, _tracker, _health);
+			_log.Information("cold_atomic_try Est={Est} Worker={W} Free={Free} Healthy={Healthy}",
+				item.EstimatedTokens, aw?.Name ?? "none",
+				aw != null ? _tracker.IsFree(aw.Name) : false,
+				aw != null ? _health.IsHealthy(aw.Name) : false);
+
+			if (aw != null && _tracker.TryAcquireSlot(aw.Name, out var slot, "decode"))
 			{
 				item.RouteType = "cold_atomic";
-				CoordinatorMetrics.RequestsTotal.WithLabels(dw.Name, "cold_atomic").Inc();
+				CoordinatorMetrics.RequestsTotal.WithLabels(aw.Name, "cold_atomic").Inc();
 				CoordinatorMetrics.ColdSessionStarts.Inc();
-				item.DecodeWorker = dw;
+				item.DecodeWorker = aw;
 				item.DecodeSlot = slot;
-				item.DecodeLease = new SlotLease(dw.Name, slot, item.SessionId, LeaseLifetime.Long, _tracker);
-				LastDispatchedNode = dw.Name;
+				item.DecodeLease = new SlotLease(aw.Name, slot, item.SessionId, LeaseLifetime.Long, _tracker);
+				LastDispatchedNode = aw.Name;
 				return WorkItemState.ModelLoadDecode;
 			}
 		}
 
-		bool atomic = _cfg.RunMode == "fast"
-			|| (!_cfg.MixPrecisionEnabled && item.EstimatedNewTokens <= _cfg.AtomicTokenThreshold);
-		item.RouteType = atomic ? "cold_atomic" : "cold_concurrency";
+		item.RouteType = "cold_concurrency";
 
 		var pfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
 		// If no prefill worker has free slots, evict oldest warm lease to make room
@@ -544,6 +567,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId);
 			await oldest.Value.DisposeAsync();
 			_warmLeases.TryRemove(oldest.Key, out _);
+			_decodeSlotSignal.Release();
+			_ledger.MarkEvicted(oldest.Key);
 			pfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
 		}
 
@@ -956,6 +981,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
 						storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
+					_ledger.MarkStoreState(item.SessionId);
 					_log.Information("bg_saved Sid={Sid}", item.SessionId);
 				}
 			}

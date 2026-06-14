@@ -58,6 +58,28 @@ public sealed class SessionLedgerTests
     }
 
     [Fact]
+    public void Mark_StoreState_Sets_HasStoreState_Only()
+    {
+        var l = new SessionLedger();
+        l.Register("sess_a", "rtx", 0, 100);
+        var e1 = l.Lookup("sess_a")!;
+        Assert.False(e1.HasStoreState);
+        Assert.False(e1.SlotFreed);
+
+        l.MarkStoreState("sess_a");
+        var e2 = l.Lookup("sess_a")!;
+        Assert.True(e2.HasStoreState);
+        Assert.False(e2.SlotFreed); // SlotFreed should NOT be set
+    }
+
+    [Fact]
+    public void Mark_StoreState_Nonexistent_NoOp()
+    {
+        var l = new SessionLedger();
+        l.MarkStoreState("nonexistent"); // should not throw
+    }
+
+    [Fact]
     public void Get_Sessions_On_Node()
     {
         var l = new SessionLedger();

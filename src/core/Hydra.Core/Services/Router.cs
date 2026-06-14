@@ -101,6 +101,17 @@ public static class Router
 			.FirstOrDefault();
 	}
 
+	public static WorkerConfig? PickBestAtomicWorker(
+		List<WorkerConfig> workers, IWorkerTracker tracker,
+		IHealthMonitorService health)
+	{
+		return workers
+			.Where(w => w.CanPrefill && w.CanDecode && tracker.IsFree(w.Name) && health.IsHealthy(w.Name))
+			.OrderBy(w => w.PrefillPriority)
+			.FirstOrDefault()
+			?? PickBestDecodeWorker(workers, tracker, health);
+	}
+
 	public static string? PrefillModel(WorkerConfig w)
 	{
 		return w.PrefillModelName ?? w.RouterModelName;

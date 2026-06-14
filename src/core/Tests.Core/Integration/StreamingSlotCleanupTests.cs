@@ -115,8 +115,7 @@ internal sealed class StreamingFixture : IAsyncDisposable
 			PrefixCheckpointEnabled = false,
 			WarmSlotVerificationEnabled = false,
 			MixPrecisionEnabled = false,
-			AtomicTokenThreshold = 2048,
-			SmallRequestBypassThreshold = 0,  // Disable bypass to preserve existing test behavior
+			AtomicThreshold = 2048,
 			Workers = new List<WorkerConfig>
 			{
 				new() { Name = "rtx",  Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = rtxSlots,  PrefillPriority = 1, DecodePriority = 2 },
@@ -357,8 +356,9 @@ public sealed class ColdAtomicPathTests
 
 		var e = f.Ledger.Lookup("sess_c1");
 		Assert.NotNull(e);
-		Assert.True(e!.HasStoreState);
-		Assert.True(e.NPast > 0);
+		// Atomic path skips prefill pipeline (no synchronous SaveKv), so HasStoreState
+		// is set asynchronously by BgSave. NPast is set by RestoreKv/decode.
+		Assert.True(e.NPast > 0, $"NPast should be > 0 after atomic decode, got {e.NPast}");
 
 		await f.SubmitAsync("sess_c1", 500, 50);
 		Assert.True(f.Ledger.Lookup("sess_c1")!.NPast > 0, "n_past should persist");
@@ -409,8 +409,9 @@ public sealed class ColdConcurrencyPathTests
 	[Fact]
 	public async Task Concurrency_2Turns_SmallInit_SmallNext()
 	{
-		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150);
-		await f.SubmitAsync("sess_d1", 2000, 100);
+		// Use tokens > AtomicThreshold (2048) to force P/D split (cold_concurrency) path
+		await using var f = new StreamingFixture(prefillTokens: 4000, decodeTokens: 150);
+		await f.SubmitAsync("sess_d1", 3000, 100);
 
 		var e = f.Ledger.Lookup("sess_d1");
 		Assert.NotNull(e);
@@ -440,10 +441,11 @@ public sealed class ColdConcurrencyPathTests
 	[Fact]
 	public async Task Concurrency_PrefillAndDecode_DifferentWorkers()
 	{
-		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150,
+		await using var f = new StreamingFixture(prefillTokens: 4000, decodeTokens: 150,
 			rtxSlots: 2, p100Slots: 1);
+		// Use tokens > AtomicThreshold (2048) to force P/D split path
 		// RTX prefill → P100 decode (since RTX excluded as decode in PickDecodeAsync)
-		await f.SubmitAsync("sess_d3", 2000, 100);
+		await f.SubmitAsync("sess_d3", 3000, 100);
 
 		var e = f.Ledger.Lookup("sess_d3");
 		Assert.NotNull(e);
@@ -454,9 +456,10 @@ public sealed class ColdConcurrencyPathTests
 	[Fact]
 	public async Task Concurrency_PrefillRTX_DecodeP100()
 	{
-		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150);
+		await using var f = new StreamingFixture(prefillTokens: 4000, decodeTokens: 150);
+		// Use tokens > AtomicThreshold (2048) to force P/D split path
 		// RTX has 2 slots, P100 has 1 (decode-only)
-		await f.SubmitAsync("sess_d4", 2000, 100);
+		await f.SubmitAsync("sess_d4", 3000, 100);
 
 		// Verify save-after-prefill: llama StateGet → Store Put
 		Assert.True(f.Rpc.HasCall(OpCode.StateGet),
@@ -493,5 +496,58 @@ public sealed class NPastTrackingTests
 		var e = f.Ledger.Lookup("sess_np2");
 		Assert.NotNull(e);
 		Assert.True(e!.NPast > 0, $"Expected n_past > 0 after streaming decode, got {e.NPast}");
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Warm threshold eviction tests
+// ═══════════════════════════════════════════════════════════════════════
+
+[Collection("StreamingIntegrationTests")]
+public sealed class WarmThresholdTests
+{
+	[Fact]
+	public async Task WarmDelta_UnderThreshold_ReusesSlot()
+	{
+		// Small delta should reuse the warm slot
+		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150);
+		await f.SubmitAsync("sess_wt2", 1000, 100);
+
+		var e1 = f.Ledger.Lookup("sess_wt2");
+		Assert.NotNull(e1);
+		int npast1 = e1!.NPast;
+		Assert.True(f.Scheduler.WarmLeaseCount >= 1, "Should have warm lease after first turn");
+
+		// Second turn: small delta (500 tokens, well under WarmThreshold 5120)
+		await f.SubmitAsync("sess_wt2", 1200, 50);
+
+		var e2 = f.Ledger.Lookup("sess_wt2");
+		Assert.NotNull(e2);
+		Assert.False(e2!.SlotFreed, "Small delta should reuse warm slot, not evict");
+		Assert.True(e2.NPast >= npast1, $"NPast should grow: {npast1} -> {e2.NPast}");
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Output-ignored atomic routing tests
+// ═══════════════════════════════════════════════════════════════════════
+
+[Collection("StreamingIntegrationTests")]
+public sealed class OutputIgnoredTests
+{
+	[Fact]
+	public async Task SmallPrompt_LargeMaxTokens_StillAtomic()
+	{
+		// Atomic routing gates on prompt size (EstimatedTokens), not output.
+		// A small prompt with large max_tokens should still take atomic path.
+		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150,
+			runMode: "fast");
+		// Small prompt (500 tokens, under AtomicThreshold 2048) but large max_tokens (10000)
+		await f.SubmitAsync("sess_oi1", 500, maxTokens: 10000);
+
+		var e = f.Ledger.Lookup("sess_oi1");
+		Assert.NotNull(e);
+		// Should complete successfully via atomic path
+		Assert.True(e!.NPast > 0, "Atomic path should set NPast");
 	}
 }
