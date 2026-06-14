@@ -622,12 +622,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			CoordinatorMetrics.CacheHits.Inc();
-			item.PrefixCacheHit = true;
 
 			var slotId = 0;
 			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
+
+			// StatePut succeeded → the prefix KV is now installed in the slot.
+			// Set the hit flag only here (not on Store hit alone) so a failed
+			// StatePut doesn't mislead the dashboard into thinking the prefix
+			// was restored when it actually has to re-prefill.
+			item.PrefixCacheHit = true;
 
 			_prefixSet.Add($"{item.PrefillWorker.Name}:{item.PrefixHash}");
 
@@ -643,7 +648,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			_log.Information("prefix_restored Sid={Sid} Hash={Hash}",
 				item.SessionId, item.PrefixHash);
 		}
-		catch (Exception ex) { _log.Warning(ex, "prefix_restore_failed"); }
+		catch (Exception ex)
+		{
+			// StatePut threw — the prefix was found in Store but never
+			// installed in the slot. Treat as a miss for the dashboard
+			// signal so callers don't see a misleading `prefix_hit=true`.
+			item.PrefixCacheHit = false;
+			_log.Warning(ex, "prefix_restore_failed");
+		}
 
 		return WorkItemState.Prefill;
 	}
@@ -1182,7 +1194,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
 			$"total_ms={item.Phases.GetValueOrDefault("total_ms")} " +
 			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes} " +
-			$"prefix_hit={item.PrefixCacheHit}"
+			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")}"
 		);
 	}
 
