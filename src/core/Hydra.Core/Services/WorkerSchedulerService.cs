@@ -38,6 +38,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new(); // traceIds whose streaming has finished
 	private readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
+	private readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
 	// Streaming requests whose request_timeline emit is deferred until the stream
 	// finishes — decode_ms/total_ms must cover the full stream, not just dispatch.
 	internal readonly ConcurrentDictionary<string, WorkItem> _pendingTimelines = new();
@@ -82,6 +83,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		var traceId = Router.NewTraceId();
 		var item = new WorkItem(request, messages, sessionId, traceId, prefixHash, estimatedTokens, maxTokens);
+		item.HttpCancellationToken = ct;
 
 		_log.Information("request_received Sid={Sid} Stream={Stream}", sessionId, item.IsStreaming);
 
@@ -950,7 +952,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Ask llama-server to emit a final usage chunk so token counts are
 			// available on streamed requests (OpenAI omits usage from streams by default).
 			item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
-			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, ct);
+			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
+			_pipelineCts[item.SessionId] = cts;
+			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, cts.Token);
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			// Defer BgSave until stream completes — slot is still processing now.
 			// Set before StreamCompletion to avoid race: a fast stream could finish
@@ -962,8 +966,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		else
 		{
+			using var syncCts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			var resp = await _proxy.ProxyCompletionAsync(
-				w.LlamaUrl, item.Request, item.TraceId, ct);
+				w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
 			if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
 				item.LastIdSlot = se.GetInt32();
 			item.Response = resp;
@@ -1052,6 +1057,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				.Observe(timelineItem.Phases.GetValueOrDefault("decode_ms") / 1000.0);
 			EmitTimeline(timelineItem);
 		}
+
+		// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct)
+		if (_pipelineCts.TryRemove(sessionId, out var pipelineCts))
+			pipelineCts.Dispose();
 
 		// Fire deferred BgSave — the slot is now idle, StateGet will succeed
 		if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))

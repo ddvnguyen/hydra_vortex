@@ -84,6 +84,8 @@ public sealed class WorkItem
 	}
 	public IAsyncEnumerable<byte[]>? DecodeChunks { get; set; }
 	public int? LastIdSlot { get; set; }
+	public CancellationToken HttpCancellationToken { get; set; }
+	public CancellationTokenSource? PipelineCts { get; set; }
 
 	public WorkItem(
 	  	Dictionary<string, object> request,
