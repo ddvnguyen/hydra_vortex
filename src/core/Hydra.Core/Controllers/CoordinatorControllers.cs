@@ -74,15 +74,29 @@ public class CompletionsController : ControllerBase
 			&& mt is JsonElement mte ? mte.GetInt32() : 1024;
 		// Ensure max_tokens is in the body so llama-server gets it (OpenWebUI omits it)
 		body["max_tokens"] = maxTokens;
-		string? sessionId = body.TryGetValue("session_id", out var sid)
-			&& sid is JsonElement side ? side.GetString() : null;
+		// Session ID resolution priority:
+		//   1. X-Session-Id HTTP header (Python Coordinator compat)
+		//   2. x-opencode-session HTTP header (opencode proxy injection)
+		//   3. x-conversation-id HTTP header (generic conversation tracking)
+		//   4. session_id from JSON body
+		//   5. Auto-derived from message content (SHA256 fallback)
+		string? sessionId = null;
+		if (Request.Headers.TryGetValue("X-Session-Id", out var xsHdr))
+			sessionId = xsHdr.FirstOrDefault();
+		if (sessionId == null && Request.Headers.TryGetValue("x-opencode-session", out var osHdr))
+			sessionId = osHdr.FirstOrDefault();
+		if (sessionId == null && Request.Headers.TryGetValue("x-conversation-id", out var ciHdr))
+			sessionId = ciHdr.FirstOrDefault();
+		if (sessionId == null && body.TryGetValue("session_id", out var sid)
+			&& sid is JsonElement side)
+			sessionId = side.GetString();
+
+		// Strip internal fields before forwarding to llama-server
+		body.Remove("session_id");
 
 		// Single pass: derive session ID, token estimate, and prefix hash
 		var summary = Router.SummarizeMessages(messages);
 		sessionId ??= summary.SessionId;
-
-		// Trace: dump full request params
-		Console.Error.WriteLine($"event=request_full {System.Text.Json.JsonSerializer.Serialize(body)}");
 
 		try
 		{

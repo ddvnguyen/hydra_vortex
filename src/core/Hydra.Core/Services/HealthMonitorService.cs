@@ -71,8 +71,8 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
 
     private async Task PollWorkerAsync(WorkerConfig w, CancellationToken ct)
     {
-        using var http = _httpFactory.CreateClient($"health-{w.Name}");
-        http.Timeout = TimeSpan.FromSeconds(5);
+		using var http = _httpFactory.CreateClient($"health-{w.Name}");
+		http.Timeout = TimeSpan.FromSeconds(_cfg.HealthPollTimeoutS);
         var llama = new LlamaClient(http, w.LlamaUrl);
         var slots = await llama.GetSlotsAsync(ct);
         if (slots == null || slots.Count == 0)

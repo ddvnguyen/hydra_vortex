@@ -36,6 +36,7 @@ public sealed record CoordinatorConfig
 	public string StoreHost { get; init; } = Env("HYDRA_COORD_STORE_HOST", "127.0.0.1");
 	public int StorePort { get; init; } = EnvInt("HYDRA_COORD_STORE_PORT", 9500);
 	public int HealthPollIntervalS { get; init; } = EnvInt("HYDRA_COORD_HEALTH_POLL_INTERVAL_S", 20);
+	public int HealthPollTimeoutS { get; init; } = EnvInt("HYDRA_COORD_HEALTH_POLL_TIMEOUT_S", 30);
 	public int HealthMaxFailures { get; init; } = EnvInt("HYDRA_COORD_HEALTH_MAX_FAILURES", 3);
 	public float CharsPerToken { get; init; } = float.Parse(Env("HYDRA_COORD_CHARS_PER_TOKEN", "4.0"));
 	public int LlamaRequestTimeoutS { get; init; } = EnvInt("HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S", 1800);

@@ -73,4 +73,11 @@ internal static class CoordinatorMetrics
 
     public static readonly Histogram RequestLatency = Metrics.CreateHistogram(
         "hydra_request_latency_seconds", "End-to-end request latency", new[] { "node", "route_type" });
+
+    public static readonly Gauge MainQueueDepth = Metrics.CreateGauge(
+        "hydra_main_queue_depth", "Pending requests in main classifier queue");
+    public static readonly Gauge PrefillQueueDepth = Metrics.CreateGauge(
+        "hydra_prefill_queue_depth", "Pending requests in prefill queue");
+    public static readonly Gauge DecodeQueueDepth = Metrics.CreateGauge(
+        "hydra_decode_queue_depth", "Pending requests in decode queue");
 }
