@@ -26,6 +26,7 @@ services:
       - HYDRA_COORD_ATOMIC_THRESHOLD=2048
       - HYDRA_COORD_WARM_THRESHOLD=5120
       - HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers.json
+      - HYDRA_LOG_LOKI_URL=http://localhost:3100
     healthcheck:
       test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
       interval: 10s
