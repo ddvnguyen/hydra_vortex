@@ -120,4 +120,170 @@ public sealed class CoordinatorConfigTests
         Assert.False(w.CanPrefill);
         Assert.True(w.CanDecode);
     }
+
+    // ── LoadWorkers() ────────────────────────────────────────────────
+    //
+    // These tests pin the precedence rules:
+    //   1. HYDRA_COORD_CONFIG_FILE — canonical (file path), parsed as
+    //      snake_case JSON. Throw with a clear message if the file is
+    //      missing or unparseable.
+    //   2. HYDRA_COORD_WORKERS — legacy inline JSON env, used only when
+    //      the file env is unset. Kept for unit-test convenience and
+    //      ad-hoc local runs.
+    //   3. Fallback hard-coded list — only when neither env is set
+    //      (test harnesses that don't care about real config).
+
+    [Fact]
+    public void LoadWorkers_FromFile_LoadsConfig()
+    {
+        var tmpFile = Path.GetTempFileName();
+        File.WriteAllText(tmpFile, """
+            [
+              {"name": "test_node", "host": "localhost", "rpc_port": 9999,
+               "llama_url": "http://localhost:8080", "worker_type": 3, "slots": 1,
+               "prefill_priority": 1, "decode_priority": 1, "decode_speed_tps": 30}
+            ]
+            """);
+
+        var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+        var prevJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", tmpFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", null);
+
+            var workers = CoordinatorConfig.LoadWorkers();
+            Assert.Single(workers);
+            Assert.Equal("test_node", workers[0].Name);
+            Assert.Equal(9999, workers[0].RpcPort);
+            Assert.Equal(3, workers[0].WorkerType);
+        }
+        finally
+        {
+            File.Delete(tmpFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", prevFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
+        }
+    }
+
+    [Fact]
+    public void LoadWorkers_FilePathSetButMissing_ThrowsClearError()
+    {
+        var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+        var prevJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", "/nonexistent/path/workers.json");
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", null);
+
+            var ex = Assert.Throws<InvalidOperationException>(() => CoordinatorConfig.LoadWorkers());
+            Assert.Contains("/nonexistent/path/workers.json", ex.Message);
+            Assert.Contains("does not exist", ex.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", prevFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
+        }
+    }
+
+    [Fact]
+    public void LoadWorkers_FileMalformedJson_ThrowsWithPathContext()
+    {
+        var tmpFile = Path.GetTempFileName();
+        File.WriteAllText(tmpFile, "{ this is not valid JSON ");
+
+        var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+        var prevJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", tmpFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", null);
+
+            var ex = Assert.Throws<InvalidOperationException>(() => CoordinatorConfig.LoadWorkers());
+            Assert.Contains(tmpFile, ex.Message);
+            Assert.Contains("Failed to parse", ex.Message);
+        }
+        finally
+        {
+            File.Delete(tmpFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", prevFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
+        }
+    }
+
+    [Fact]
+    public void LoadWorkers_FileTakesPrecedence_OverInlineEnv()
+    {
+        var tmpFile = Path.GetTempFileName();
+        File.WriteAllText(tmpFile, """
+            [{"name": "from_file", "host": "h", "rpc_port": 1, "llama_url": "http://x", "worker_type": 3}]
+            """);
+
+        var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+        var prevJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", tmpFile);
+            // Inline env has a different worker name; file should win.
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS",
+                """[{"name":"from_env","host":"h","rpc_port":2,"llama_url":"http://x","worker_type":3}]""");
+
+            var workers = CoordinatorConfig.LoadWorkers();
+            Assert.Single(workers);
+            Assert.Equal("from_file", workers[0].Name);
+            Assert.Equal(1, workers[0].RpcPort);
+        }
+        finally
+        {
+            File.Delete(tmpFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", prevFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
+        }
+    }
+
+    [Fact]
+    public void LoadWorkers_InlineJsonEnv_StillWorks_WhenNoFile()
+    {
+        var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+        var prevJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", null);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS",
+                """[{"name":"legacy","host":"h","rpc_port":42,"llama_url":"http://x","worker_type":3}]""");
+
+            var workers = CoordinatorConfig.LoadWorkers();
+            Assert.Single(workers);
+            Assert.Equal("legacy", workers[0].Name);
+            Assert.Equal(42, workers[0].RpcPort);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", prevFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
+        }
+    }
+
+    [Fact]
+    public void LoadWorkers_NoEnvAtAll_UsesDefaultFallback()
+    {
+        var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+        var prevJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", null);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", null);
+
+            var workers = CoordinatorConfig.LoadWorkers();
+            Assert.Equal(2, workers.Count);
+            Assert.Contains(workers, w => w.Name == "rtx");
+            Assert.Contains(workers, w => w.Name == "p100");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", prevFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
+        }
+    }
 }

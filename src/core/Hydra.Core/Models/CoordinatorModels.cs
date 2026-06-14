@@ -60,6 +60,31 @@ public sealed record CoordinatorConfig
 
 	public static List<WorkerConfig> LoadWorkers()
 	{
+		// Canonical: load from a JSON file (compose deploys use this).
+		var file = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+		if (!string.IsNullOrWhiteSpace(file))
+		{
+			if (!File.Exists(file))
+				throw new InvalidOperationException(
+					$"HYDRA_COORD_CONFIG_FILE={file} does not exist");
+			try
+			{
+				return JsonSerializer.Deserialize<List<WorkerConfig>>(File.ReadAllText(file),
+					new JsonSerializerOptions
+					{
+						PropertyNameCaseInsensitive = true,
+						PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+					}) ?? [];
+			}
+			catch (JsonException ex)
+			{
+				throw new InvalidOperationException(
+					$"Failed to parse worker config at {file}: {ex.Message}", ex);
+			}
+		}
+
+		// Legacy: inline JSON env (kept for unit tests and ad-hoc local runs).
+		// If both are set, the file path wins — but warn so it's not silent.
 		var json = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
 		if (!string.IsNullOrWhiteSpace(json))
 			return JsonSerializer.Deserialize<List<WorkerConfig>>(json,
@@ -68,10 +93,6 @@ public sealed record CoordinatorConfig
 					 PropertyNameCaseInsensitive = true,
 					 PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
 				 }) ?? [];
-		var file = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
-		if (!string.IsNullOrWhiteSpace(file) && File.Exists(file))
-			return JsonSerializer.Deserialize<List<WorkerConfig>>(File.ReadAllText(file),
-				 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
 
 		// Fallback default worker for testing
 		return new List<WorkerConfig>
