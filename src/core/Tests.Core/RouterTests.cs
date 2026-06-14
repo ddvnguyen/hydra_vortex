@@ -79,6 +79,76 @@ public sealed class RouterTests
 	}
 
 	[Fact]
+	public void Compute_Prefix_Hash_Same_System_Same_Hash()
+	{
+		var msgs1 = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "system", ["content"] = "You are a helpful assistant." },
+			new() { ["role"] = "user", ["content"] = "hello" }
+		};
+		var msgs2 = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "system", ["content"] = "You are a helpful assistant." },
+			new() { ["role"] = "user", ["content"] = "different question" }
+		};
+		var hash1 = Router.ComputePrefixHash(msgs1);
+		var hash2 = Router.ComputePrefixHash(msgs2);
+		Assert.NotNull(hash1);
+		Assert.Equal(hash1, hash2);
+	}
+
+	[Fact]
+	public void Compute_Prefix_Hash_Different_System_Different_Hash()
+	{
+		var msgs1 = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "system", ["content"] = "You are a helpful assistant." },
+			new() { ["role"] = "user", ["content"] = "hello" }
+		};
+		var msgs2 = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "system", ["content"] = "You are a coding expert." },
+			new() { ["role"] = "user", ["content"] = "hello" }
+		};
+		var hash1 = Router.ComputePrefixHash(msgs1);
+		var hash2 = Router.ComputePrefixHash(msgs2);
+		Assert.NotEqual(hash1, hash2);
+	}
+
+	[Fact]
+	public void Compute_Prefix_Hash_Only_First_System_Used()
+	{
+		var msgs = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "system", ["content"] = "First system prompt." },
+			new() { ["role"] = "system", ["content"] = "Second system prompt." },
+			new() { ["role"] = "user", ["content"] = "hello" }
+		};
+		var hash = Router.ComputePrefixHash(msgs);
+		var expected = Router.ComputePrefixHash(new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "system", ["content"] = "First system prompt." },
+			new() { ["role"] = "user", ["content"] = "hello" }
+		});
+		Assert.Equal(expected, hash);
+	}
+
+	[Fact]
+	public void Prefix_Key_Format_Is_Correct()
+	{
+		var msgs = new List<Dictionary<string, object>>
+		{
+			new() { ["role"] = "system", ["content"] = "You are helpful." },
+			new() { ["role"] = "user", ["content"] = "hello" }
+		};
+		var hash = Router.ComputePrefixHash(msgs);
+		var prefixKey = $"prefix/{hash}.kv";
+		Assert.StartsWith("prefix/", prefixKey);
+		Assert.EndsWith(".kv", prefixKey);
+		Assert.Equal($"prefix/{hash}.kv", prefixKey);
+	}
+
+	[Fact]
 	public void Pick_Best_Prefill_Worker_Respects_Priority()
 	{
 		var workers = new List<WorkerConfig>

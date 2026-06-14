@@ -68,6 +68,9 @@ internal static class CoordinatorMetrics
     public static readonly Counter CacheMisses = Metrics.CreateCounter(
         "hydra_cache_misses_total", "Cache misses (prefix or KV)");
 
+    public static readonly Counter PrefixSaves = Metrics.CreateCounter(
+        "hydra_prefix_saves_total", "Prefix checkpoints saved to Store");
+
     public static readonly Histogram RequestLatency = Metrics.CreateHistogram(
         "hydra_request_latency_seconds", "End-to-end request latency", new[] { "node", "route_type" });
 }
