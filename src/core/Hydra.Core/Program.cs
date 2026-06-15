@@ -28,7 +28,8 @@ var engine = new StorageEngine(cfg.StoreDirectory);
 var chunkStore = new ChunkStore(cfg.StoreDirectory);
 
 // Sync chunk size from env
-var chunkSize = int.Parse(Environment.GetEnvironmentVariable("HYDRA_STORE_CHUNK_SIZE") ?? $"{8 * 1024 * 1024}");
+var chunkSizeKb = int.Parse(Environment.GetEnvironmentVariable("HYDRA_STORE_CHUNK_SIZE") ?? "8192");
+var chunkSize = chunkSizeKb * 1024;
 ChunkEngine.CHUNK_SIZE = chunkSize;
 ChunkConstants.ChunkSize = chunkSize;
 

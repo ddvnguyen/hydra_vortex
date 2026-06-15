@@ -8,6 +8,7 @@ public interface ISessionLedger
     SessionEntry Register(string sessionId, string nodeName, int? slotId = null, int nPast = 0, string? prefixHash = null);
     void UpdateLastUsed(string sessionId);
     void UpdateNPast(string sessionId, int nPast);
+    void UpdateNPromptTokens(string sessionId, int nPromptTokens);
     void MarkEvicted(string sessionId);
     void MarkStoreState(string sessionId);
     List<SessionEntry> GetSessionsOnNode(string nodeName);

@@ -429,14 +429,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// Warm affinity — session already has a slot on a node
 		if (entry != null && entry.SlotId.HasValue && !entry.SlotFreed)
 		{
-			// n_tokens guard: if the new prompt has fewer tokens than the cached
-			// n_past, llama.cpp will silent wipe the entire restored KV cache
-			// (n_tokens MUST be > n_past). Evict the warm slot and force a cold route.
-			if (entry.NPast > 0 && item.EstimatedTokens > 0
-				&& item.EstimatedTokens < entry.NPast + 50)
+			// n_tokens guard: if the new prompt is shorter than the previous prompt
+			// (not counting thinking/completion tokens), the client sent a truncated
+			// history and the KV prefix won't match. Evict and force a cold route.
+			// Compare against NPromptTokens (prompt_tokens from last response) rather
+			// than NPast (total_tokens including thinking tokens) to avoid false
+			// positives caused by Qwen3.5 reasoning tokens being hidden from the client.
+			var guardBaseline = entry.NPromptTokens > 0 ? entry.NPromptTokens : entry.NPast;
+			if (guardBaseline > 0 && item.EstimatedTokens > 0
+				&& item.EstimatedTokens < guardBaseline + 50)
 			{
-				_log.Warning("n_past_guard Evicted={Sid} Est={Est} NPast={Past} — warm slot would nuke cache",
-					item.SessionId, item.EstimatedTokens, entry.NPast);
+				_log.Warning("n_past_guard Evicted={Sid} Est={Est} GuardBaseline={Past} NPrompt={NP} NPast={Total} — warm slot would nuke cache",
+					item.SessionId, item.EstimatedTokens, guardBaseline, entry.NPromptTokens, entry.NPast);
 				return await EvictWarmAndColdRouteAsync(item);
 			}
 
@@ -538,10 +542,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	// New-prompt token count used by warm-affinity gating: for a warm session this
 	// is the incremental prompt beyond the cached n_past. Output tokens are ignored.
+	// Incremental prompt tokens beyond cached state. Uses NPromptTokens (prompt-side
+	// only) when available to avoid inflating the baseline with hidden thinking tokens.
 	private static int NewPromptTokens(WorkItem item, SessionEntry? entry)
-		=> entry != null && entry.NPast > 0
-			? Math.Max(0, item.EstimatedTokens - entry.NPast)
-			: item.EstimatedTokens;
+	{
+		if (entry == null) return item.EstimatedTokens;
+		var baseline = entry.NPromptTokens > 0 ? entry.NPromptTokens : entry.NPast;
+		return baseline > 0 ? Math.Max(0, item.EstimatedTokens - baseline) : item.EstimatedTokens;
+	}
 
 	private async Task<WorkItemState> EvictWarmAndColdRouteAsync(WorkItem item)
 	{
@@ -1517,6 +1525,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (total > 0)
 		{
 			_ledger.UpdateNPast(sessionId, total);
+			var promptTokens = ExtractUsageInt(result, "prompt_tokens");
+			if (promptTokens > 0)
+				_ledger.UpdateNPromptTokens(sessionId, promptTokens);
 			var entry = _ledger.Lookup(sessionId);
 			if (entry != null && !entry.SlotId.HasValue)
 				ResolveSlotFromHealth(sessionId, total);
@@ -1532,6 +1543,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (total > 0)
 		{
 			_ledger.UpdateNPast(sessionId, total);
+			var promptTokens = ExtractUsageInt(lastUsage, "prompt_tokens");
+			if (promptTokens > 0)
+				_ledger.UpdateNPromptTokens(sessionId, promptTokens);
 			var entry = _ledger.Lookup(sessionId);
 			if (entry != null && !entry.SlotId.HasValue)
 				ResolveSlotFromHealth(sessionId, total);
