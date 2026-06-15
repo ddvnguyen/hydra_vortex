@@ -98,14 +98,13 @@ try {
   };
 
   // ── Build row model ─────────────────────────────────────────────────
-  const rows = [];
+    const rows = [];
+  const merged = {};  // trace_id → merged row
   flat.forEach(function (d, i) {
     const traceId = String(d.trace_id || '');
     const sessionId = String(d.session_id || '');
-    // Drop rows with no usable identifier (incomplete Loki entries from CRI
-    // partial-line drops) — no trace_id AND no session_id means nothing to
-    // identify the request.
     if (!traceId && !sessionId) return;
+
     const phases = [];
     let cum = 0;
     ORDER.forEach(function (k) {
@@ -116,18 +115,13 @@ try {
       phases.push({ k: k, label: meta.label, color: meta.color, dur: dur, start: cum });
       cum += dur;
     });
-    const total = num(d.total_ms) || cum || 1;
-    // Prefer the C#-emitted timestamp_ms; fall back to Loki's own Time
-    // (nanosecond epoch from the log entry) so older log lines — emitted
-    // before the timestamp_ms field was added — still display a time.
-    // Try multiple field names that Grafana/Loki may expose.
+    const total = num(d.total_ms) || cum || 0;
     let tsMs = d.timestamp_ms || d.Time || d.time || d.ts || d.timestamp;
     if (tsMs && Number(tsMs) > 1e15) tsMs = Math.floor(Number(tsMs) / 1e6);
-    d._tsMs = Number(tsMs) || 0;
-    // Drop rows with no usable timestamp either — they'd render as 00:00:00
-    // and confuse the sorted list.
-    if (!d._tsMs) return;
-    rows.push({
+    if (!Number(tsMs)) return;
+
+    const key = traceId || sessionId;
+    const row = {
       id: traceId ? traceId.slice(0, 8) : sessionId.slice(0, 12),
       traceId: traceId,
       sessionId: sessionId,
@@ -143,7 +137,38 @@ try {
       kvBytes: num(d.kv_bytes),
       phases: phases,
       total: total,
-    });
+      status: String(d.status || ''),
+      _tsMs: Number(tsMs),
+    };
+
+    // Merge multiple entries for same trace_id — later entry wins for fields
+    // that are non-zero, phases accumulate.
+    const cur = merged[key];
+    if (cur && row._tsMs > cur._tsMs) {
+      const isFinal = row.status === 'done' || total > 0;
+      if (isFinal) {
+        // Final entry: replace phases and totals with complete data
+        merged[key] = row;
+      } else {
+        // Partial update: merge fields but keep phases from final only
+        Object.keys(row).forEach(function (k) {
+          if (k === 'phases' || k === 'total' || k === '_tsMs') return;
+          if (row[k] !== undefined && row[k] !== '' && row[k] !== 0) cur[k] = row[k];
+        });
+        cur._tsMs = row._tsMs;
+        cur.timestamp = row.timestamp;
+      }
+    } else if (!cur) {
+      merged[key] = row;
+    }
+  });
+
+  Object.values(merged).forEach(function (r) {
+    // Compute total from phases if not set (in-flight requests)
+    if (!r.total) {
+      r.total = r.phases.reduce(function (s, p) { return s + p.dur; }, 0);
+    }
+    rows.push(r);
   });
 
   const S = (window.__hydraTL = window.__hydraTL || { view: 'composition', sel: 0, detail: true });
@@ -196,14 +221,11 @@ try {
       const tc = typeOf(r.route, r.prefixHit);
       const sel = ri === S.sel;
       html += '<div data-row="' + ri + '" style="display:flex;align-items:center;height:' + rowH + 'px;box-sizing:border-box;cursor:pointer;border-bottom:1px solid #161b22;border-left:2px solid ' + (sel ? '#388bfd' : 'transparent') + ';background:' + (sel ? 'rgba(56,139,253,0.07)' : 'transparent') + ';">';
-      const atomicNode = r.prefillNode === '-' ? r.decodeNode : null;
-      const flowLabel = tc.t === 'ATOMIC' ? (r.decodeNode || '?') : (tc.t === 'SPLIT' ? (r.prefillNode || '?') + '→' + (r.decodeNode || '?') : '');
-      html += '<div style="width:200px;flex:none;padding:0 10px;min-width:0;">';
-      html += '<div style="display:flex;align-items:center;gap:5px;"><span style="font-family:monospace;font-size:11px;font-weight:600;color:#ffffff;">' + esc(r.id) + '</span><span style="font-size:8px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + tc.t + '</span>';
-      if (atomicNode) html += '<span style="font-size:8px;font-weight:600;color:#ffffff;background:#21262d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + esc(atomicNode) + '</span>';
-      html += '</div>';
-      html += '<div style="font-size:10px;color:#ffffff;font-family:monospace;">' + r.timestamp + ' &middot; ' + ms(r.total) + 's';
-      if (flowLabel) html += ' &middot; <span style="color:#8b949e;">' + esc(flowLabel) + '</span>';
+      html += '<div style="width:180px;flex:none;padding:0 10px;min-width:0;">';
+      html += '<div style="display:flex;align-items:center;gap:5px;"><span style="font-family:monospace;font-size:11px;font-weight:600;color:#ffffff;">' + esc(r.id) + '</span><span style="font-size:8px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + tc.t + '</span>' + (r.prefixHit === 'true' ? '<span style="font-size:7px;font-weight:700;color:#3fb950;border:1px solid #3fb9504d;border-radius:2px;padding:1px 3px;font-family:monospace;">CACHE</span>' : '') + '</div>';
+      html += '<div style="font-size:10px;color:#ffffff;font-family:monospace;">' + r.timestamp;
+      if (r.status && r.status !== 'done') html += ' <span style="color:#d29922;">' + esc(r.status) + '</span>';
+      else html += ' &middot; ' + ms(r.total) + 's';
       html += '</div></div>';
 
       // Phase bars

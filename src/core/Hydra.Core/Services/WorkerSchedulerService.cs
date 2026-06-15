@@ -237,6 +237,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			item.State = next;
+			EmitPartialTimeline(item, next is WorkItemState.Decode or WorkItemState.ModelLoadDecode ? "decoding" : next is WorkItemState.Prefill or WorkItemState.ModelLoadPrefill ? "prefilling" : "routed");
 			_log.Information("state_transition Sid={Sid} None->{Next} ms={Ms}", item.SessionId, next, item.ElapsedMs);
 
 			if (IsPrefillPipeline(next))
@@ -963,6 +964,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			System.Text.Json.JsonSerializer.Serialize(item.Request));
 		_log.Information("decode_start Sid={Sid} Node={Node} Msgs={Msgs} LastMsg={Last} Streaming={Stream} NPast={N} MaxTokens={Mt} Slot={Slot}",
 			item.SessionId, w.Name, msgCount, lastMsg, item.IsStreaming, item.NPastAfter, mt, item.DecodeSlot);
+		EmitPartialTimeline(item, "decoding");
 		if (item.IsStreaming)
 		{
 			// decode_ms is finalized in NotifyStreamComplete — the stream is still
@@ -1231,14 +1233,38 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// Phase values are per-phase durations (WorkItem.RecordPhase), so they sum
 	/// to ≈ total_ms and can be rendered as stacked bars.
 	/// </summary>
+	private void EmitPartialTimeline(WorkItem item, string status)
+	{
+		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
+		var prefillModel = item.PrefillWorker != null
+			? (_health.GetNodeInfo(item.PrefillWorker.Name)?.CurrentModel ?? "")
+			: "";
+		var decodeModel = item.DecodeWorker != null
+			? (_health.GetNodeInfo(item.DecodeWorker.Name)?.CurrentModel ?? "")
+			: "";
+		Console.Error.WriteLine(
+			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
+			$"trace_id={item.TraceId} session_id={item.SessionId} " +
+			$"queue_wait_ms={item.Phases.GetValueOrDefault("queue_wait_ms")} node={node} " +
+			$"route_type={RouteLabel(item)} " +
+			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +
+			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
+			$"prefill_model={prefillModel} decode_model={decodeModel} " +
+			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
+			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
+			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
+			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
+			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes} " +
+			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
+			$"status={status}"
+		);
+	}
+
 	private void EmitTimeline(WorkItem item)
 	{
 		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
 		CoordinatorMetrics.RequestLatency.WithLabels(node, RouteLabel(item))
 			.Observe(item.Phases.GetValueOrDefault("total_ms") / 1000.0);
-		// Pull the model alias currently loaded on each worker (from the
-		// health-poll snapshot of /v1/models). Empty string when unknown
-		// (e.g. before first poll completes).
 		var prefillModel = item.PrefillWorker != null
 			? (_health.GetNodeInfo(item.PrefillWorker.Name)?.CurrentModel ?? "")
 			: "";
@@ -1259,7 +1285,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
 			$"total_ms={item.Phases.GetValueOrDefault("total_ms")} " +
 			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes} " +
-			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")}"
+			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
+			$"status=done"
 		);
 	}
 
