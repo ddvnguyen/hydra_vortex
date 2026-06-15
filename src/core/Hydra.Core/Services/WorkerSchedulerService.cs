@@ -1245,6 +1245,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
+					// Evict any prior warm lease for this session before stashing the new one.
+					// A cross-node fallback turn leaves the old node's lease here; without
+					// this guard the old slot is never returned to its pool.
+					if (_warmLeases.TryRemove(item.SessionId, out var staleLease))
+					{
+						await staleLease.DisposeAsync();
+						_decodeSlotSignal.Release();
+					}
 					_warmLeases[item.SessionId] = item.DecodeLease;
 				}
 			}
