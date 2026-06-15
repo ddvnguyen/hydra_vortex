@@ -476,6 +476,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					{
 						_log.Warning("verify_warm_slot_failed Sid={Sid} Slot={Slot}",
 							item.SessionId, entry.SlotId);
+						await SaveSlotStateBeforeEvictAsync(item.SessionId, item.DecodeWorker!.Name, item.DecodeSlot ?? 0, item.TraceId, default);
 						await item.DecodeLease.DisposeAsync();
 						item.DecodeLease = null;
 						_ledger.MarkEvicted(item.SessionId);
@@ -491,6 +492,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					_log.Warning("n_past_guard Sid={Sid} NPast={N} Est={E}",
 						item.SessionId, entry.NPast, item.EstimatedTokens);
 					_ledger.UpdateNPast(item.SessionId, 0);
+					await SaveSlotStateBeforeEvictAsync(item.SessionId, item.DecodeWorker!.Name, item.DecodeSlot ?? 0, item.TraceId, default);
 					_ledger.MarkEvicted(item.SessionId);
 					await item.DecodeLease.DisposeAsync();
 					item.DecodeLease = null;
@@ -555,6 +557,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		if (_warmLeases.TryRemove(item.SessionId, out var warmLease))
 		{
+			await SaveSlotStateBeforeEvictAsync(item.SessionId, warmLease.WorkerName, warmLease.SlotId, item.TraceId, default);
 			await warmLease.DisposeAsync();
 			_decodeSlotSignal.Release();
 		}
@@ -600,6 +603,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var oldest = _warmLeases.OrderBy(kv => kv.Value.CreatedAt).First();
 			_log.Information("evicting_warm_slot Sid={Sid} Worker={W} Slot={Slot}",
 				oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId);
+			await SaveSlotStateBeforeEvictAsync(oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId, item.TraceId, default);
 			await oldest.Value.DisposeAsync();
 			_warmLeases.TryRemove(oldest.Key, out _);
 			_decodeSlotSignal.Release();
@@ -762,53 +766,24 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		var w = item.PrefillWorker!;
 		var slotId = item.PrefillSlot ?? 0;
-		var storeKey = $"{item.SessionId}.kv";
-		_log.Information("save_kv_start Sid={Sid} Key={Key} Slot={Slot} NPast={N} Node={Node}",
-			item.SessionId, storeKey, slotId, item.NPastAfter, w.Name);
+		_log.Information("save_kv_start Sid={Sid} Slot={Slot} NPast={N} Node={Node}",
+			item.SessionId, slotId, item.NPastAfter, w.Name);
 		try
 		{
-			var llamaRpc = GetLlamaRpcClient(w);
-			var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-				slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
+			var payload = await SaveKvStateCoreAsync(w, slotId, item.SessionId, item.NPastAfter, item.TraceId, ct);
+			if (payload == null)
+				throw new InvalidOperationException($"StateGet RPC failed for save");
 
-			if (stateResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
-				throw new InvalidOperationException($"StateGet RPC failed: status={stateResp.Status} meta={stateResp.Meta}");
-
-			if (_cfg.EnableChunks)
-			{
-				// Chunked save: chunk → dedup → push only missing → write manifest
-				var chunks = ChunkEngine.ChunkAndHash(stateResp.Payload);
-				var orderedHashes = chunks.Select(c => c.Hash).ToList();
-				var missing = await SyncMissingAsync(storeKey, orderedHashes, item.TraceId, ct);
-				await PushMissingChunksAsync(storeKey, item.SessionId, missing, chunks, stateResp.Payload, item.TraceId, ct);
-				await PutManifestAsync(storeKey, item.NPastAfter, stateResp.Payload.Length, chunks, item.TraceId, ct);
-				var deduped = chunks.Count - missing.Count;
-				_log.Information("state_saved_chunked Sid={Sid} SizeMB={Size} Chunks={Total} New={New} Deduped={Dup}",
-					item.SessionId, stateResp.Payload.Length / 1024 / 1024, chunks.Count, missing.Count, deduped);
-				if (_chunkCache != null)
-				{
-					await _chunkCache.SaveHashesAsync(item.SessionId, orderedHashes, ct);
-					foreach (var c in chunks)
-						await _chunkCache.SaveChunkDataAsync(item.SessionId, c.Hash,
-							stateResp.Payload.AsSpan(c.Index * _cfg.ChunkSize, Math.Min(_cfg.ChunkSize, (int)(stateResp.Payload.Length - c.Index * _cfg.ChunkSize))).ToArray(), ct);
-				}
-			}
-			else
-			{
-				await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-					storeKey, stateResp.Payload, item.TraceId, ct);
-			}
-
-			item.KvBytes = stateResp.Payload.Length;
+			item.KvBytes = payload.Length;
 			var entry = _ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
 			lock (entry) { entry.HasStoreState = true; }
 			item.Entry = entry;
-			_log.Information("state_saved Sid={Sid} SizeMB={Size}", item.SessionId, stateResp.Payload.Length / 1024 / 1024);
+			_log.Information("state_saved Sid={Sid} SizeMB={Size}", item.SessionId, payload.Length / 1024 / 1024);
 
 			if (item.PrefixHash != null && _cfg.PrefixCheckpointEnabled)
 			{
 				var prefixKey = $"prefix/{item.PrefixHash}.kv";
-				var kvPayload = stateResp.Payload;
+				var kvPayload = payload;
 				var traceId = item.TraceId;
 				_ = Task.Run(async () =>
 				{
@@ -910,8 +885,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var oldest = _warmLeases.OrderBy(kv => kv.Value.CreatedAt).First();
 			_log.Information("evicting_warm_decode Sid={Sid} Worker={W} Slot={Slot}",
 				oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId);
+			await SaveSlotStateBeforeEvictAsync(oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId, item.TraceId, default);
 			await oldest.Value.DisposeAsync();
 			_warmLeases.TryRemove(oldest.Key, out _);
+			_ledger.MarkEvicted(oldest.Key);
 			return WorkItemState.None; // retry via dispatch loop
 		}
 
@@ -1115,6 +1092,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (!_warmLeases.TryRemove(sessionId, out var lease))
 			return;
 
+		// Save KV before erasing the slot — the GPU data is still live
+		await SaveSlotStateBeforeEvictAsync(sessionId, nodeName, lease.SlotId, "evict-api", ct);
+
 		try
 		{
 			var w = _cfg.Workers.FirstOrDefault(x => x.Name == nodeName);
@@ -1245,6 +1225,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
+					// Evict any prior warm lease for this session before stashing the new one.
+					// A cross-node fallback turn leaves the old node's lease here; without
+					// this guard the old slot is never returned to its pool.
+					if (_warmLeases.TryRemove(item.SessionId, out var staleLease))
+					{
+						await staleLease.DisposeAsync();
+						_decodeSlotSignal.Release();
+					}
 					_warmLeases[item.SessionId] = item.DecodeLease;
 				}
 			}
@@ -1366,6 +1354,71 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status=done"
 		);
+	}
+
+	// ── Core KV save helpers (shared by SaveKvAsync + eviction sites) ──
+
+	private async Task<byte[]?> SaveKvStateCoreAsync(
+		WorkerConfig worker, int slotId, string sessionId, int nPast, string traceId, CancellationToken ct)
+	{
+		var llamaRpc = GetLlamaRpcClient(worker);
+		var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+			slotId.ToString(), ReadOnlyMemory<byte>.Empty, traceId, ct);
+		if (stateResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+			return null;
+
+		var storeKey = $"{sessionId}.kv";
+		if (_cfg.EnableChunks)
+		{
+			var chunks = ChunkEngine.ChunkAndHash(stateResp.Payload);
+			var orderedHashes = chunks.Select(c => c.Hash).ToList();
+			var missing = await SyncMissingAsync(storeKey, orderedHashes, traceId, ct);
+			await PushMissingChunksAsync(storeKey, sessionId, missing, chunks, stateResp.Payload, traceId, ct);
+			await PutManifestAsync(storeKey, nPast, stateResp.Payload.Length, chunks, traceId, ct);
+			if (_chunkCache != null)
+			{
+				await _chunkCache.SaveHashesAsync(sessionId, orderedHashes, ct);
+				foreach (var c in chunks)
+					await _chunkCache.SaveChunkDataAsync(sessionId, c.Hash,
+						stateResp.Payload.AsSpan(c.Index * _cfg.ChunkSize, Math.Min(_cfg.ChunkSize, (int)(stateResp.Payload.Length - c.Index * _cfg.ChunkSize))).ToArray(), ct);
+			}
+		}
+		else
+		{
+			await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+				storeKey, stateResp.Payload, traceId, ct);
+		}
+
+		return stateResp.Payload;
+	}
+
+	/// <summary>Saves a warm lease's KV state to Store before eviction.
+	/// Gracefully logs on failure — never blocks the eviction.</summary>
+	private async Task SaveSlotStateBeforeEvictAsync(
+		string sessionId, string workerName, int slotId, string traceId, CancellationToken ct)
+	{
+		var w = _cfg.Workers.FirstOrDefault(x => x.Name == workerName);
+		if (w == null)
+		{
+			_log.Warning("evict_save_unknown_worker Sid={Sid} Worker={W}", sessionId, workerName);
+			return;
+		}
+		try
+		{
+			var nPast = _ledger.Lookup(sessionId)?.NPast ?? 0;
+			var payload = await SaveKvStateCoreAsync(w, slotId, sessionId, nPast, traceId, ct);
+			if (payload != null)
+			{
+				_ledger.MarkStoreState(sessionId);
+				_log.Information("evict_saved Sid={Sid} Slot={Slot} SizeMB={Size}",
+					sessionId, slotId, payload.Length / 1024 / 1024);
+			}
+		}
+		catch (Exception ex)
+		{
+			_log.Warning(ex, "evict_save_failed Sid={Sid} Slot={Slot} Worker={W}",
+				sessionId, slotId, workerName);
+		}
 	}
 
 	// ── Chunked store helpers ──
