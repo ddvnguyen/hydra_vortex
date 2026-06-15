@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Text;
@@ -5,6 +6,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
+using Hydra.Shared;
 using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 
@@ -22,6 +24,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		_storeClient ?? throw new InvalidOperationException("Store RPC client not wired — check coordinator config");
 	private readonly IServiceProvider _serviceProvider;
 	private readonly ILogger _log;
+	private readonly LocalChunkCache? _chunkCache;
 	private readonly Channel<WorkItem> _mainQueue;
 	private readonly Channel<WorkItem> _prefillQueue;
 	private readonly Channel<WorkItem> _decodeQueue;
@@ -61,10 +64,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		IHealthMonitorService health,
 		Hydra.Shared.RpcClient? storeClient,
 		IServiceProvider serviceProvider,
-		ILogger log)
+		ILogger log,
+		LocalChunkCache? chunkCache = null)
 	{
 		_cfg = config; _ledger = ledger; _tracker = tracker; _proxy = proxy;
 		_health = health; _storeClient = storeClient; _serviceProvider = serviceProvider; _log = log;
+		_chunkCache = chunkCache;
+
+		if (config.EnableChunks)
+		{
+			ChunkEngine.CHUNK_SIZE = config.ChunkSize;
+			ChunkConstants.ChunkSize = config.ChunkSize;
+		}
 		_mainQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(500));
 		_prefillQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(50));
 		_decodeQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(100));
@@ -755,8 +766,30 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (stateResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 				throw new InvalidOperationException($"StateGet RPC failed: status={stateResp.Status} meta={stateResp.Meta}");
 
-			await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-				storeKey, stateResp.Payload, item.TraceId, ct);
+			if (_cfg.EnableChunks)
+			{
+				// Chunked save: chunk → dedup → push only missing → write manifest
+				var chunks = ChunkEngine.ChunkAndHash(stateResp.Payload);
+				var orderedHashes = chunks.Select(c => c.Hash).ToList();
+				var missing = await SyncMissingAsync(storeKey, orderedHashes, item.TraceId, ct);
+				await PushMissingChunksAsync(storeKey, item.SessionId, missing, chunks, stateResp.Payload, item.TraceId, ct);
+				await PutManifestAsync(storeKey, item.NPastAfter, stateResp.Payload.Length, chunks, item.TraceId, ct);
+				var deduped = chunks.Count - missing.Count;
+				_log.Information("state_saved_chunked Sid={Sid} SizeMB={Size} Chunks={Total} New={New} Deduped={Dup}",
+					item.SessionId, stateResp.Payload.Length / 1024 / 1024, chunks.Count, missing.Count, deduped);
+				if (_chunkCache != null)
+				{
+					await _chunkCache.SaveHashesAsync(item.SessionId, orderedHashes, ct);
+					foreach (var c in chunks)
+						await _chunkCache.SaveChunkDataAsync(item.SessionId, c.Hash,
+							stateResp.Payload.AsSpan(c.Index * _cfg.ChunkSize, Math.Min(_cfg.ChunkSize, (int)(stateResp.Payload.Length - c.Index * _cfg.ChunkSize))).ToArray(), ct);
+				}
+			}
+			else
+			{
+				await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+					storeKey, stateResp.Payload, item.TraceId, ct);
+			}
 
 			item.KvBytes = stateResp.Payload.Length;
 			var entry = _ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
@@ -890,17 +923,54 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.SessionId, storeKey, w.Name, slotId);
 		try
 		{
-			var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
-				storeKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
+			byte[] restoreBlob;
+			if (_cfg.EnableChunks)
+			{
+				// Chunked restore: get manifest, assemble from local cache + store, StatePut
+				var manifestResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.GetManifest,
+					storeKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
+				if (manifestResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+					throw new InvalidOperationException($"GetManifest failed: status={manifestResp.Status} meta={manifestResp.Meta}");
 
-			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
-				throw new InvalidOperationException($"Store Get RPC failed: status={storeResp.Status} meta={storeResp.Meta}");
+				var manifestDoc = JsonDocument.Parse(manifestResp.Payload);
+				var manifestRoot = manifestDoc.RootElement;
+				var nPast = manifestRoot.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0;
+				var totalSize = manifestRoot.TryGetProperty("total_size", out var ts) ? ts.GetInt64() : 0L;
+				var manifestChunks = new List<ChunkRef>();
+				if (manifestRoot.TryGetProperty("chunks", out var chunksEl) && chunksEl.ValueKind == JsonValueKind.Array)
+				{
+					foreach (var c in chunksEl.EnumerateArray())
+					{
+						var idx = c.GetProperty("index").GetInt32();
+						var hash = c.GetProperty("hash").GetString() ?? "";
+						var size = c.GetProperty("size").GetInt32();
+						manifestChunks.Add(new ChunkRef(idx, hash, size));
+					}
+				}
+				if (item.NPastAfter > 0) nPast = item.NPastAfter;
+				else item.NPastAfter = nPast;
 
-			if (item.KvBytes == 0)
-				item.KvBytes = storeResp.Payload.Length;
+				restoreBlob = await AssembleFromChunksAsync(null, storeKey, manifestChunks, item.TraceId, ct);
+				item.KvBytes = restoreBlob.Length;
+				_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count}",
+					item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count);
+			}
+			else
+			{
+				var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
+					storeKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
+
+				if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+					throw new InvalidOperationException($"Store Get RPC failed: status={storeResp.Status} meta={storeResp.Meta}");
+
+				if (item.KvBytes == 0)
+					item.KvBytes = storeResp.Payload.Length;
+				restoreBlob = storeResp.Payload;
+			}
+
 			var llamaRpc = GetLlamaRpcClient(w);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
-				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
+				slotId.ToString(), restoreBlob, item.TraceId, ct);
 
 			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 				throw new InvalidOperationException($"StatePut RPC failed: status={putResp.Status} meta={putResp.Meta}");
@@ -1288,6 +1358,140 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status=done"
 		);
+	}
+
+	// ── Chunked store helpers ──
+
+	private async Task<List<string>> SyncMissingAsync(string storeKey, List<string> hashes, string traceId, CancellationToken ct)
+	{
+		var payload = JsonSerializer.SerializeToUtf8Bytes(hashes);
+		var resp = await StoreClient.RequestAsync(OpCode.SyncMissing, storeKey, payload, traceId, ct);
+		if (resp.Status != (byte)StatusCode.Ok)
+			throw new InvalidDataException($"SYNC_MISSING failed (status=0x{resp.Status:X2})");
+		var missing = new List<string>();
+		if (resp.Payload is { Length: > 0 })
+		{
+			using var doc = JsonDocument.Parse(resp.Payload);
+			if (doc.RootElement.TryGetProperty("missing_hashes", out var arr))
+				foreach (var h in arr.EnumerateArray())
+				{
+					var s = h.GetString();
+					if (!string.IsNullOrEmpty(s)) missing.Add(s);
+				}
+		}
+		return missing;
+	}
+
+	private async Task<int> PushMissingChunksAsync(string storeKey, string sessionId, List<string> missing, List<ChunkRef> allChunks, byte[] stateData, string traceId, CancellationToken ct)
+	{
+		if (missing.Count == 0) return 0;
+		const int BatchBytes = 32 * 1024 * 1024;
+		using var batch = new MemoryStream();
+		int pushed = 0;
+		async Task FlushAsync()
+		{
+			if (batch.Length == 0) return;
+			await StoreClient.RequestAsync(OpCode.PushChunks, storeKey, batch.ToArray(), traceId, ct);
+			batch.SetLength(0);
+		}
+		var header = new byte[4];
+		foreach (var hash in missing)
+		{
+			var chunkRef = allChunks.FirstOrDefault(c => c.Hash == hash);
+			if (chunkRef == null) continue;
+			var offset = chunkRef.Index * _cfg.ChunkSize;
+			var size = Math.Min(_cfg.ChunkSize, stateData.Length - offset);
+			if (size <= 0) continue;
+			var chunkData = stateData.AsSpan(offset, size).ToArray();
+			BinaryPrimitives.WriteInt32LittleEndian(header, chunkData.Length);
+			batch.Write(header);
+			batch.Write(chunkData);
+			pushed++;
+			if (batch.Length >= BatchBytes) await FlushAsync();
+		}
+		await FlushAsync();
+		return pushed;
+	}
+
+	private async Task PutManifestAsync(string storeKey, int nPast, long totalSize, List<ChunkRef> chunks, string traceId, CancellationToken ct)
+	{
+		var manifest = new
+		{
+			n_past = nPast,
+			total_size = totalSize,
+			chunks = chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size }),
+		};
+		var payload = JsonSerializer.SerializeToUtf8Bytes(manifest);
+		var resp = await StoreClient.RequestAsync(OpCode.PutManifest, storeKey, payload, traceId, ct);
+		if (resp.Status != (byte)StatusCode.Ok)
+			throw new InvalidDataException($"PUT_MANIFEST failed (status=0x{resp.Status:X2}): {resp.Meta}");
+	}
+
+	/// <summary>Create a blob from chunk-index-ordered data by reading the
+	/// missing chunks from the Store and filling known chunks from the
+	/// supplied stateData (the previous save's full blob).</summary>
+	private async Task<byte[]> AssembleFromChunksAsync(byte[]? prevState, string storeKey, List<ChunkRef> chunks, string traceId, CancellationToken ct)
+	{
+		var totalSize = chunks.Sum(c => (long)c.Size);
+		var blob = new byte[totalSize];
+
+		// Collect hashes the coordinator already has (from previous state data)
+		var knownHashes = new HashSet<string>();
+		if (prevState != null && prevState.Length > 0)
+		{
+			foreach (var c in chunks)
+			{
+				var offset = c.Index * _cfg.ChunkSize;
+				if (offset + c.Size <= prevState.Length)
+				{
+					var prevHash = ChunkEngine.ComputeHash(prevState.AsSpan(offset, c.Size));
+					if (prevHash == c.Hash)
+					{
+						knownHashes.Add(c.Hash);
+						Array.Copy(prevState, offset, blob, offset, c.Size);
+					}
+				}
+			}
+		}
+		// Also check local chunk cache
+		if (_chunkCache != null)
+		{
+			foreach (var c in chunks.Where(c => !knownHashes.Contains(c.Hash)))
+			{
+				var data = await _chunkCache.GetChunkDataAsync(storeKey, c.Hash, ct);
+				if (data != null)
+				{
+					knownHashes.Add(c.Hash);
+					var offset = c.Index * _cfg.ChunkSize;
+					Array.Copy(data, 0, blob, offset, data.Length);
+				}
+			}
+		}
+		// Fetch remaining missing chunks from Store
+		var missingHashes = chunks.Where(c => !knownHashes.Contains(c.Hash)).Select(c => c.Hash).ToList();
+		if (missingHashes.Count > 0)
+		{
+			var knownList = JsonSerializer.SerializeToUtf8Bytes(chunks.Select(c => c.Hash).ToList());
+			var storeResp = await StoreClient.RequestAsync(OpCode.GetChunked, storeKey, knownList, traceId, ct);
+			if (storeResp.Status != (byte)StatusCode.Ok)
+				throw new InvalidDataException($"GET_CHUNKED failed (status=0x{storeResp.Status:X2}): {storeResp.Meta}");
+			if (storeResp.Payload is { Length: > 0 })
+			{
+				var off = 0;
+				while (off + 8 <= storeResp.Payload.Length)
+				{
+					var idx = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off));
+					var size = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off + 4));
+					off += 8;
+					if (off + size > storeResp.Payload.Length) break;
+					var dstOff = idx * _cfg.ChunkSize;
+					if (dstOff + size <= blob.Length)
+						Array.Copy(storeResp.Payload, off, blob, dstOff, size);
+					off += size;
+				}
+			}
+		}
+		return blob;
 	}
 
 	// ── Gap 4 helpers: n_past tracking ──

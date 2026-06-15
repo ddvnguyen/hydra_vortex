@@ -56,6 +56,8 @@ public sealed record CoordinatorConfig
 	public bool RawSlot { get; init; } = EnvBool("HYDRA_COORD_RAW_SLOT", false);
 	public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
+	public bool EnableChunks { get; init; } = EnvBool("HYDRA_COORD_ENABLE_CHUNKS", false);
+	public int ChunkSize { get; init; } = EnvInt("HYDRA_STORE_CHUNK_SIZE", 8 * 1024 * 1024);
 	public string PrefixCheckpointName { get; init; } = Env("HYDRA_COORD_PREFIX_CHECKPOINT_NAME", "system_prompt");
 	public List<WorkerConfig> Workers { get; set; } = [];
 
