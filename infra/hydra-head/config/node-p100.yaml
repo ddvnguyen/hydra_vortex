@@ -22,7 +22,7 @@ llama:
     chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
 
     # Context and parallelism
-    ctx-size: 200000
+    ctx-size: 160000
     parallel: 1
 
     # GPU layers
