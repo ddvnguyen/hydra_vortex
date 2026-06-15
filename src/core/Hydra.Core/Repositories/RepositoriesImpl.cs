@@ -87,7 +87,7 @@ public sealed class SessionLedger : ISessionLedger
                 if (!string.IsNullOrEmpty(sid) && nPast > 0)
                 {
                     var entry = Register(sid, "", null, nPast);
-                    lock (entry) { entry.HasStoreState = true; }
+                    lock (entry) { entry.HasStoreState = true; entry.SlotFreed = true; }
                 }
             }
         }
