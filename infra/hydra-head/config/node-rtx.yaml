@@ -7,7 +7,7 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm120:69e9835ab
+    source: ghcr.io/ddvnguyen/llama-server-sm120:engine
     binary: llama-server
     dest: /llama/bin/llama-server
   # Sidecar exporters — downloaded into the image at build time, managed
@@ -31,13 +31,13 @@ llama:
   port: 8080
   rpc_port: 9503
   params:
-    # Router mode — preset files (/models/preset.ini) define the per-model
-    # params (n-cpu-moe, ctx-size, n-gpu-layers, …). Don't override those
-    # here or you risk overriding the preset's tuned offload counts and OOMing
-    # the GPU (e.g. setting n-cpu-moe=18 instead of the preset's 26 forces
-    # more layers onto a 16GB RTX and triggers cudaMalloc failures).
-    models-preset: /opt/hydra/config/preset.ini
-    models-max: 1
+    # Direct model load (required for engine RPC mode — router mode does not
+    # expose slots to the RPC process, causing EnginePrefill/Decode to fail
+    # with "invalid slot ID").
+    model: /models/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
+    alias: balanced
+    n-cpu-moe: 30
+    override-tensor: 'token_embd\.weight=CPU'
     chat-template-file: /models/qwen3.6_merged_template.jinja
 
     # Context and parallelism

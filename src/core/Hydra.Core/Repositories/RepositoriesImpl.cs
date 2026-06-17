@@ -144,6 +144,8 @@ public sealed class WorkerTracker : IWorkerTracker
     {
         if (_pools.TryGetValue(name, out var pool))
             pool.Return(slotId);
+        if (_states.TryGetValue(name, out var s))
+            lock (s) { s.BusySince = null; }
     }
 
     public int FreeSlotCount(string name)

@@ -412,11 +412,18 @@ public class RpcClient : IAsyncDisposable
         return await RequestAsync(OpCode.EngineConfigure, slotKey, payload, traceId, ct);
     }
 
-    public async Task<RpcResponse> EnginePrefillAsync(string slotKey, int[] promptTokens, string traceId, CancellationToken ct)
+    public async Task<RpcResponse> EnginePrefillAsync(string slotKey, string requestJson, string traceId, CancellationToken ct)
     {
-        var payload = new byte[promptTokens.Length * sizeof(int)];
-        Buffer.BlockCopy(promptTokens, 0, payload, 0, payload.Length);
+        var payload = Encoding.UTF8.GetBytes(requestJson);
         return await RequestAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct);
+    }
+
+    public async Task<RpcResponse> EngineDecodeAsync(string slotKey, int nPredict, string? requestJson, string traceId, CancellationToken ct)
+    {
+        // Build JSON payload: {"n_predict": N, "messages": [...] or null}
+        var json = $"{{\"n_predict\":{nPredict},\"messages\":{requestJson ?? "null"}}}";
+        var payload = Encoding.UTF8.GetBytes(json);
+        return await RequestAsync(OpCode.EngineDecode, slotKey, payload, traceId, ct);
     }
 
     public async IAsyncEnumerable<byte[]> EngineDecodeStreamAsync(

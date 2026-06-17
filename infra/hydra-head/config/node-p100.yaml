@@ -7,7 +7,7 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm60:69e9835ab
+    source: ghcr.io/ddvnguyen/llama-server-sm60:engine
     binary: llama-server
     dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
 
