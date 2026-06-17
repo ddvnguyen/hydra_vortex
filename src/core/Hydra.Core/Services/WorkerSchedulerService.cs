@@ -1107,6 +1107,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
 			item.StreamCompletion.TrySetResult(item.DecodeChunks);
 			item.Response = new { streamed = true };
+			// Register session in ledger so /status can find it (cold_atomic streaming
+			// skips RestoreKvAsync which would have registered; n_past will be updated
+			// by TrackStreamNPast as the stream emits usage chunks).
+			if (_ledger.Lookup(item.SessionId) == null)
+				_ledger.Register(item.SessionId, w.Name, item.DecodeSlot, item.NPastAfter, item.PrefixHash);
 			return WorkItemState.Done;
 		}
 		else if (_cfg.UseLlamaEngine)

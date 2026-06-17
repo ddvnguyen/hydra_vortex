@@ -40,6 +40,12 @@ llama:
     override-tensor: 'token_embd\.weight=CPU'
     chat-template-file: /models/qwen3.6_merged_template.jinja
 
+    # Chat template kwargs — enables Qwen3 thinking mode
+    chat-template-kwargs: '{"preserve_thinking": true}'
+
+    # Reasoning — required for Qwen3 thinking mode (outputs reasoning_content)
+    reasoning: on
+
     # Context and parallelism
     ctx-size: 320000
     parallel: 2
@@ -60,7 +66,6 @@ llama:
     NVIDIA_VISIBLE_DEVICES: all
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
-    LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
 
 # Sidecar services — hydra-head manages these as child processes. The
 # host Quadlets (infra-node-exporter / infra-nvidia-exporter / infra-promtail)

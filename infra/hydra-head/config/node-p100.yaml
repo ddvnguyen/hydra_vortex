@@ -41,6 +41,9 @@ llama:
     # Chat template
     chat-template-kwargs: '{"preserve_thinking": true}'
 
+    # Reasoning — required for Qwen3 thinking mode (outputs reasoning_content)
+    reasoning: on
+
 services:
   # hydra-head manages these as subprocesses. The systemd services
   # installed by setup-p100.sh are redundant — disable them after deploy:

@@ -33,6 +33,9 @@ llama:
     jinja: true
     timeout: 1800
 
+    # Chat template kwargs — enables Qwen3 thinking mode (preserves reasoning_content in stream)
+    chat-template-kwargs: '{"preserve_thinking": true}'
+
     # Logging
     log-prefix: true
     metrics: true
