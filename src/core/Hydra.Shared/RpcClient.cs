@@ -21,7 +21,7 @@ public class RpcClient : IAsyncDisposable
     /// <summary>Default per-request timeout. Bounds the whole request (semaphore wait,
     /// connect, send, receive) so a wedged peer cannot poison the shared connection
     /// forever — callers passing CancellationToken.None are still protected.</summary>
-    public static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(120);
+    public static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(180);
 
     public RpcClient(string host, int port, TimeSpan? requestTimeout = null)
     {
