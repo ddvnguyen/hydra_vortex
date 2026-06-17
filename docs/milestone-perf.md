@@ -21,12 +21,21 @@ Hydra.Core ── binary control RPC (0x4859) ──▶ llama-engine
             SET_EXPERT_MODE · SWAP_QUANT
    (no new CLI params; Hydra drives all per-request behavior over RPC)
 
+Hydra.Core ── HTTP/1.1 + SSE ──▶ llama-engine
+   endpoints: /health · /version · /slots · /slots/:id/state/meta · /v1/chat/completions
+   (easier testing and interaction; SSE for streaming decode responses)
+
 llama-engine ── ggml --rpc-engine ──▶ P100 rpc-server
    (load-time COMBINED expert split / dense TP)
 ```
 `tools/llama-engine/` is a new CMake target linking `server-context` + `llama-common` +
 `llama` (same pattern as `llama-cli`). All Hydra orchestration lives there; the llama.cpp
 core stays pristine. Additive core APIs live in `include/llama-hydra.h` + `src/llama-hydra.cpp`.
+
+**HTTP server:** llama-engine exposes HTTP endpoints (default port 8080) for easier testing
+and interaction. Uses cpp-httplib (already vendored) with Server-Sent Events (SSE) for
+streaming. HTTP/1.1 chosen over HTTP/3 to avoid massive dependencies (nghttp3, quiche,
+boringssl) — can add HTTP/2/3 later if needed.
 
 ## Tasks — Engine milestones (E0–E3)
 
@@ -43,6 +52,15 @@ Extend `0x4859` RPC with engine-control opcodes: `CONFIGURE`/`INFO`, `PREFILL`
 (n_predict=0, returns n_past), `DECODE` (streaming tokens via chunked response).
 Reuse `STATE_GET/PUT/META`. Update `specs/rpc-protocol.md`; add client methods to
 `Hydra.Shared`. Full prefill → STATE_GET → STATE_PUT → DECODE(stream) cycle over RPC.
+
+**HTTP server (implemented):** llama-engine exposes HTTP endpoints for easier testing:
+- `GET /health` — liveness check
+- `GET /version` — engine version info
+- `GET /slots` — list slot states
+- `GET /slots/:id/state/meta` — slot metadata
+- `POST /v1/chat/completions` — OpenAI-compatible API with SSE streaming
+
+Uses cpp-httplib (vendored) + SSE for streaming. See `specs/rpc-protocol.md` for details.
 
 ### E2 — Per-request expert placement (solo ↔ combined) (#161-E2)
 **Spike first:** test two approaches — (A) `ggml_backend_sched_set_tensor_backend()`
