@@ -403,6 +403,55 @@ public class RpcClient : IAsyncDisposable
         return buf;
     }
 
+    public async Task<RpcResponse> EngineInfoAsync(string slotKey, string traceId, CancellationToken ct)
+        => await RequestAsync(OpCode.EngineInfo, slotKey, ReadOnlyMemory<byte>.Empty, traceId, ct);
+
+    public async Task<RpcResponse> EngineConfigureAsync(string slotKey, string configJson, string traceId, CancellationToken ct)
+    {
+        var payload = Encoding.UTF8.GetBytes(configJson);
+        return await RequestAsync(OpCode.EngineConfigure, slotKey, payload, traceId, ct);
+    }
+
+    public async Task<RpcResponse> EnginePrefillAsync(string slotKey, int[] promptTokens, string traceId, CancellationToken ct)
+    {
+        var payload = new byte[promptTokens.Length * sizeof(int)];
+        Buffer.BlockCopy(promptTokens, 0, payload, 0, payload.Length);
+        return await RequestAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct);
+    }
+
+    public async IAsyncEnumerable<byte[]> EngineDecodeStreamAsync(
+        string slotKey, int[] promptTokens, int nPredict, string traceId,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var nPredictBytes = BitConverter.GetBytes(nPredict);
+        var tokensBytes = new byte[promptTokens.Length * sizeof(int)];
+        Buffer.BlockCopy(promptTokens, 0, tokensBytes, 0, tokensBytes.Length);
+        var payload = new byte[nPredictBytes.Length + tokensBytes.Length];
+        nPredictBytes.CopyTo(payload, 0);
+        tokensBytes.CopyTo(payload, nPredictBytes.Length);
+
+        await foreach (var chunk in RequestStreamAsync(OpCode.EngineDecode, slotKey, payload, traceId, ct))
+            yield return chunk;
+    }
+
+    public async Task<RpcResponse> EngineSetExpertModeAsync(string slotKey, string mode, string traceId, CancellationToken ct)
+    {
+        var payload = Encoding.UTF8.GetBytes(mode);
+        return await RequestAsync(OpCode.EngineSetExpertMode, slotKey, payload, traceId, ct);
+    }
+
+    public async Task<RpcResponse> EngineSwapQuantAsync(string slotKey, string quantKey, string tensorPattern, string traceId, CancellationToken ct)
+    {
+        var quantKeyBytes = Encoding.UTF8.GetBytes(quantKey);
+        var patternBytes = Encoding.UTF8.GetBytes(tensorPattern);
+        var quantKeyLenBytes = BitConverter.GetBytes((ushort)quantKeyBytes.Length);
+        var payload = new byte[quantKeyLenBytes.Length + quantKeyBytes.Length + patternBytes.Length];
+        quantKeyLenBytes.CopyTo(payload, 0);
+        quantKeyBytes.CopyTo(payload, quantKeyLenBytes.Length);
+        patternBytes.CopyTo(payload, quantKeyLenBytes.Length + quantKeyBytes.Length);
+        return await RequestAsync(OpCode.EngineSwapQuant, slotKey, payload, traceId, ct);
+    }
+
     public async ValueTask DisposeAsync()
     {
         lock (_connectLock)
