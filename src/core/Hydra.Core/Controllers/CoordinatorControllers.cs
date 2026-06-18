@@ -125,7 +125,9 @@ public class CompletionsController : ControllerBase
 		finally
 		{
 			// Always release the decode slot, even on client cancel/disconnect.
-			_scheduler.NotifyStreamComplete(sessionId);
+			// Issue #277: NotifyStreamComplete now awaits the bg_save synchronously
+			// so the slot isn't returned to the pool while a StateGet is in flight.
+			_ = _scheduler.NotifyStreamComplete(sessionId);
 		}
 	}
 }
