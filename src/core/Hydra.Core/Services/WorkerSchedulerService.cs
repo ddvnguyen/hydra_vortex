@@ -1097,42 +1097,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			_pipelineCts[item.SessionId] = cts;
 
-			IAsyncEnumerable<byte[]> streamTask;
-			if (_cfg.UseLlamaEngine)
-			{
-				// Engine mode streaming: use EngineDecode RPC with streaming
-				var slotId = item.DecodeSlot ?? item.LastIdSlot ?? 0;
-				var maxTokensVal = item.Request.TryGetValue("max_tokens", out var mtv2) && mtv2 != null
-					? Convert.ToInt32(mtv2) : 512;
-				var isWarmSession = item.Entry?.NPast > 0;
-				var hasMessages = item.Messages is { Count: > 0 }
-					&& !item.KvRestoredForDecode
-					&& !isWarmSession
-					&& item.LastIdSlot == null
-					&& item.PrefillWorker == null;
-
-				string? messagesJson = hasMessages ? JsonSerializer.Serialize(item.Messages) : null;
-				if (hasMessages)
-					_log.Information("decode_engine_atomic_stream Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
-						item.SessionId, w.Name, slotId, maxTokensVal);
-				else
-					_log.Information("decode_engine_cross_gpu_stream Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
-						item.SessionId, w.Name, slotId, maxTokensVal);
-
-				var llamaRpc = GetLlamaRpcClient(w);
-				var rpcStream = llamaRpc.EngineDecodeStreamAsync(
-					slotId.ToString(), maxTokensVal, messagesJson, item.TraceId, cts.Token);
-				// Convert RPC token chunks to SSE format
-				streamTask = ConvertRpcStreamToSse(rpcStream, item.SessionId, item.TraceId, cts.Token);
-			}
-			else
-			{
-				// Legacy HTTP streaming: use ProxyCompletionStreamAsync
-				// Ask llama-server to emit a final usage chunk so token counts are
-				// available on streamed requests (OpenAI omits usage from streams by default).
-				item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
-				streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, cts.Token);
-			}
+			// HTTP streaming for chat completions (works for both engine and legacy modes).
+			// The engine RPC (EngineDecodeStreamAsync) was previously used here in engine
+			// mode, but the RPC payload is just raw bytes — it collapsed the model's
+			// `reasoning_content` into `content` and dropped `finish_reason`/`id_slot`/
+			// `timings`, making the response unusable for reasoning models like
+			// Qwopus3.6-35B-A3B (--reasoning on). The HTTP proxy preserves the full
+			// OpenAI schema including `reasoning_content`. The engine RPC is still used
+			// for prefill (EnginePrefill) and KV state (StateGet/Put). See issue #273.
+			// Ask llama-server to emit a final usage chunk so token counts are
+			// available on streamed requests (OpenAI omits usage from streams by default).
+			item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
+			IAsyncEnumerable<byte[]> streamTask = _proxy.ProxyCompletionStreamAsync(
+				w.LlamaUrl, item.Request, item.TraceId, cts.Token);
 
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			// Defer BgSave until stream completes — slot is still processing now.
@@ -1148,76 +1125,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				_ledger.Register(item.SessionId, w.Name, item.DecodeSlot, item.NPastAfter, item.PrefixHash);
 			return WorkItemState.Done;
 		}
-		else if (_cfg.UseLlamaEngine)
-		{
-			// Engine mode (non-streaming): use EngineDecode RPC.
-			// Send messages (atomic prefill+decode) only when the KV is NOT
-			// already in the slot. KV is present when:
-			//   - Warm affinity: slot has KV from previous decode (LastIdSlot set)
-			//   - Cross-GPU/migration: KV restored via StatePut (KvRestoredForDecode set)
-			var slotId = item.DecodeSlot ?? item.LastIdSlot ?? 0;
-			var maxTokensVal = item.Request.TryGetValue("max_tokens", out var mtv2) && mtv2 != null
-				? Convert.ToInt32(mtv2) : 512;
-			var isWarmSession = item.Entry?.NPast > 0;
-			var hasMessages = item.Messages is { Count: > 0 }
-				&& !item.KvRestoredForDecode
-				&& !isWarmSession
-				&& item.LastIdSlot == null
-				&& item.PrefillWorker == null;
-
-			string? messagesJson = hasMessages ? JsonSerializer.Serialize(item.Messages) : null;
-			if (hasMessages)
-				_log.Information("decode_engine_atomic Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
-					item.SessionId, w.Name, slotId, maxTokensVal);
-			else
-				_log.Information("decode_engine_cross_gpu Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
-					item.SessionId, w.Name, slotId, maxTokensVal);
-
-			var llamaRpc = GetLlamaRpcClient(w);
-			var resp = await llamaRpc.EngineDecodeAsync(
-				slotId.ToString(), maxTokensVal, messagesJson, item.TraceId, ct);
-
-			if (resp.Status != (byte)StatusCode.Ok)
-				throw new InvalidOperationException($"EngineDecode failed: {resp.Meta}");
-
-			var meta = resp.Meta != null
-				? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
-				: null;
-			var tokensGenerated = meta?.TryGetValue("tokens_generated", out var tg) == true ? tg.GetInt32() : 0;
-			var nPast = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
-			item.NPastAfter = nPast > 0 ? nPast : item.NPastAfter;
-
-			var generatedText = resp.Payload != null ? Encoding.UTF8.GetString(resp.Payload) : "";
-			item.Response = new Dictionary<string, object>
-			{
-				["choices"] = new List<Dictionary<string, object>>
-				{
-					new()
-					{
-						["message"] = new Dictionary<string, object>
-						{
-							["role"] = "assistant",
-							["content"] = generatedText
-						}
-					}
-				},
-				["usage"] = new Dictionary<string, object>
-				{
-					["prompt_tokens"] = Math.Max(0, item.NPastAfter - tokensGenerated),
-					["completion_tokens"] = tokensGenerated,
-					["total_tokens"] = item.NPastAfter
-				}
-			};
-			item.TokensIn = item.NPastAfter;
-			item.TokensOut = tokensGenerated;
-			item.LastIdSlot = slotId;
-			TrackAfterCompletion(item.SessionId, (Dictionary<string, object>)item.Response);
-			// Register in ledger so Lookup succeeds (atomic path skips RestoreKvAsync)
-			if (_ledger.Lookup(item.SessionId) == null)
-				_ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
-		}
 		else
 		{
+			// HTTP proxy for chat completions (works for both engine and legacy modes).
+			// The engine RPC (EngineDecodeAsync) was previously used here in engine
+			// mode, but the RPC payload is just raw bytes — it collapsed the model's
+			// `reasoning_content` into `content` and dropped `finish_reason`/`id_slot`/
+			// `timings`, making the response unusable for reasoning models like
+			// Qwopus3.6-35B-A3B (--reasoning on). The HTTP proxy preserves the full
+			// OpenAI schema including `reasoning_content`. The engine RPC is still used
+			// for prefill (EnginePrefill) and KV state (StateGet/Put). See issue #273.
 			using var syncCts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			var resp = await _proxy.ProxyCompletionAsync(
 				w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
@@ -1226,6 +1143,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.Response = resp;
 			item.TokensIn = ExtractUsageInt(resp, "prompt_tokens");
 			item.TokensOut = ExtractUsageInt(resp, "completion_tokens");
+
+			// Register in ledger so /status can find the session. The cold_atomic HTTP
+			// path skips RestoreKvAsync (which would have registered in the P/D split
+			// path). The previous engine path registered inline; the HTTP path never
+			// did and sessions went missing from /status. Register first so the
+			// TrackAfterCompletion call below can update NPast on the live entry.
+			if (_ledger.Lookup(item.SessionId) == null)
+				_ledger.Register(item.SessionId, w.Name,
+					item.LastIdSlot ?? 0, item.NPastAfter, item.PrefixHash);
 
 			// Track n_past from completion response
 			TrackAfterCompletion(item.SessionId, resp);
@@ -1922,52 +1848,5 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
 		_llamaRpcClients[w.Name] = client;
 		return client;
-	}
-
-	// ── Engine mode streaming: convert RPC token chunks to SSE format ──
-
-	private async IAsyncEnumerable<byte[]> ConvertRpcStreamToSse(
-		IAsyncEnumerable<byte[]> rpcStream, string sessionId, string traceId,
-		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
-	{
-		// Send initial role chunk
-		var roleChunk = JsonSerializer.Serialize(new
-		{
-			choices = new[]
-			{
-				new
-				{
-					delta = new { role = "assistant", content = "" },
-					index = 0
-				}
-			}
-		});
-		yield return Encoding.UTF8.GetBytes($"data: {roleChunk}\n\n");
-
-		// RPC stream yields raw token bytes (already parsed by RpcClient.RequestStreamAsync)
-		await foreach (var tokenBytes in rpcStream.WithCancellation(ct))
-		{
-			if (tokenBytes.Length == 0)
-				continue;
-
-			var tokenStr = Encoding.UTF8.GetString(tokenBytes);
-
-			// Convert to SSE format
-			var sseChunk = JsonSerializer.Serialize(new
-			{
-				choices = new[]
-				{
-					new
-					{
-						delta = new { content = tokenStr },
-						index = 0
-					}
-				}
-			});
-			yield return Encoding.UTF8.GetBytes($"data: {sseChunk}\n\n");
-		}
-
-		// Send final [DONE] chunk
-		yield return Encoding.UTF8.GetBytes("data: [DONE]\n\n");
 	}
 }
