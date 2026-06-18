@@ -14,6 +14,13 @@ internal static class CoordinatorMetrics
     public static readonly Counter UpstreamTimeouts = Metrics.CreateCounter(
         "hydra_upstream_timeouts_total", "Prefill/complete timeouts");
 
+    // Engine RPC prefill fell back to the HTTP path. Issues #273 (chat)
+    // and #279 (prefill) — see PrefillAsync in WorkerSchedulerService.
+    // Non-zero rate means the deployed llama-server binary is out of date
+    // with the C# engine integration, or a regression in the engine RPC.
+    public static readonly Counter EnginePrefillFallbacks = Metrics.CreateCounter(
+        "hydra_engine_prefill_fallbacks_total", "Engine RPC prefill fell back to HTTP", "node", "reason");
+
     public static readonly Counter MigrationsTotal = Metrics.CreateCounter(
         "hydra_migrations_total", "Total migrations", "from_node", "to_node");
 

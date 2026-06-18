@@ -730,42 +730,80 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private async Task<WorkItemState> PrefillAsync(WorkItem item, CancellationToken ct)
 	{
 		var w = item.PrefillWorker!;
+		var engineFailed = false;
+		string? engineFailReason = null;
 
 		if (_cfg.UseLlamaEngine)
 		{
-			// Engine mode: use EnginePrefill RPC which tokenizes internally
-			item.KvRestoredForDecode = false;
-			var slotId = item.PrefillSlot ?? 0;
-			var body = new Dictionary<string, object>(item.Request)
+			// Engine mode: use EnginePrefill RPC which tokenizes internally.
+			// Defensive fallback (#279): if the engine RPC fails — e.g., the
+			// deployed llama-server binary is older than the C# integration
+			// and doesn't know opcode 0x42, or any future regression — fall
+			// through to the HTTP path below instead of returning 503. The
+			// HTTP path uses the same OAI body and slot, so the user-visible
+			// behavior is identical except for a slightly higher prefill
+			// latency (HTTP JSON overhead vs the binary engine RPC).
+			try
 			{
-				["stream"] = false,
-				["n_predict"] = 0,
-				["messages"] = item.Messages
-			};
-			if (item.PrefillSlot == null)
-				item.PrefillSlot = slotId;
-			var requestJson = JsonSerializer.Serialize(body);
-			var llamaRpc = GetLlamaRpcClient(w);
-			var resp = await llamaRpc.EnginePrefillAsync(slotId.ToString(), requestJson, item.TraceId, ct);
-			if (resp.Status != (byte)StatusCode.Ok)
-				throw new InvalidOperationException($"EnginePrefill failed: {resp.Meta}");
+				item.KvRestoredForDecode = false;
+				var slotId = item.PrefillSlot ?? 0;
+				var body = new Dictionary<string, object>(item.Request)
+				{
+					["stream"] = false,
+					["n_predict"] = 0,
+					["messages"] = item.Messages
+				};
+				if (item.PrefillSlot == null)
+					item.PrefillSlot = slotId;
+				var requestJson = JsonSerializer.Serialize(body);
+				var llamaRpc = GetLlamaRpcClient(w);
+				var resp = await llamaRpc.EnginePrefillAsync(slotId.ToString(), requestJson, item.TraceId, ct);
+				if (resp.Status != (byte)StatusCode.Ok)
+					throw new InvalidOperationException($"EnginePrefill failed: {resp.Meta}");
 
-			var meta = resp.Meta != null
-				? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
-				: null;
-			item.NPastAfter = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
-			item.KvBlob = resp.Payload; // KV state blob for SaveKv
+				var meta = resp.Meta != null
+					? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
+					: null;
+				item.NPastAfter = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
+				item.KvBlob = resp.Payload; // KV state blob for SaveKv
 
-			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est}",
-				item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens);
-			if (item.NPastAfter > 0)
+				_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est}",
+					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens);
+				if (item.NPastAfter > 0)
+				{
+					_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
+					if (item.PrefillSlot == null || item.PrefillSlot == 0)
+						ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
+				}
+			}
+			catch (Exception ex)
 			{
-				_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
-				if (item.PrefillSlot == null || item.PrefillSlot == 0)
-					ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
+				// Engine RPC failed — fall through to the HTTP path below.
+				// The HTTP path uses the same slot (item.PrefillSlot, already
+				// acquired in ColdRouteAsync) and the same OAI body
+				// (item.Request). The HTTP prefill on the same slot either
+				// reuses the prefix cache or re-prefills from scratch —
+				// either way the slot ends up with the right KV state for
+				// SaveKv → migration → decode.
+				engineFailed = true;
+				engineFailReason = ex.Message;
+				item.KvBlob = null; // engine didn't produce a blob
+				CoordinatorMetrics.EnginePrefillFallbacks
+					.WithLabels(w.Name, "engine_rpc_error")
+					.Inc();
+				_log.Warning(ex,
+					"engine_prefill_fell_back_to_http Sid={Sid} Worker={W} Slot={Slot} Reason={Reason}",
+					item.SessionId, w.Name, item.PrefillSlot, engineFailReason);
 			}
 		}
-		else
+
+		// HTTP path — taken when:
+		//   - Legacy non-engine mode (_cfg.UseLlamaEngine = false), OR
+		//   - Engine mode but the engine RPC failed above (engineFailed = true).
+		// In both cases the path is identical: send an OAI chat-completion
+		// with n_predict=0 to the llama-server, which will tokenize the
+		// prompt, reuse the slot's prefix cache, and prefill the rest.
+		if (!_cfg.UseLlamaEngine || engineFailed)
 		{
 			var body = new Dictionary<string, object>(item.Request)
 			{
@@ -781,8 +819,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.LastIdSlot = item.PrefillSlot;
 
 			item.NPastAfter = ExtractTotalTokens(resp);
-			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est}",
-				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens);
+			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est} ViaHttp={Http}",
+				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens, engineFailed);
 			if (item.NPastAfter > 0)
 			{
 				_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
