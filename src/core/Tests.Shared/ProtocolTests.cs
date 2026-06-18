@@ -186,6 +186,23 @@ public class ProtocolTests
         Assert.Equal(0x31, (byte)OpCode.StatePut);
         Assert.Equal(0x32, (byte)OpCode.StateMeta);
         Assert.Equal(0x33, (byte)OpCode.GetManifest);
+        Assert.Equal(0x40, (byte)OpCode.EngineConfigure);
+        Assert.Equal(0x41, (byte)OpCode.EngineInfo);
+        Assert.Equal(0x42, (byte)OpCode.EnginePrefill);
+        Assert.Equal(0x43, (byte)OpCode.EngineDecode);
+        Assert.Equal(0x44, (byte)OpCode.EngineSetExpertMode);
+        Assert.Equal(0x45, (byte)OpCode.EngineSwapQuant);
+    }
+
+    [Fact]
+    public void OpCode_EngineOpcodes_DoNotCollideWithStoreOrAgentRanges()
+    {
+        // Guard: the engine block (0x40-0x45) was deliberately placed after
+        // GetManifest (0x33) and before the 0x80+ reserved band. A future
+        // edit that reuses 0x33-0x3F for a different layer would silently
+        // alias the engine block on the wire.
+        Assert.True((byte)OpCode.EngineConfigure >= 0x40);
+        Assert.True((byte)OpCode.EngineSwapQuant <= 0x45);
     }
 
     [Fact]
