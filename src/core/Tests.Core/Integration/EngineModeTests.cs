@@ -136,22 +136,29 @@ public sealed class EngineModeTests
 
     // ─────────────────────────────────────────────────────────────────────
     // Cold atomic path
+    //
+    // Engine mode now uses HTTP proxy for chat completions (issue #273 hotfix),
+    // so the assertions on EngineDecode RPC have moved to Proxy.NonStreamingCalls.
+    // The engine RPC is still used for prefill (EnginePrefill) and KV state
+    // (StateGet/Put).
     // ─────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Atomic_Cold_EngineDecodeCalledWithMessages()
+    public async Task Atomic_Cold_HttpProxyCalled_NoEngineRpcDecode()
     {
         await using var f = new EngineFixture(runMode: "fast");
+        var proxy = (TestCompletionProxy)f.Proxy;
 
         await f.SubmitAsync("sess_ea1", 500, 100);
 
-        Assert.True(f.Rpc.HasCall(OpCode.EngineDecode),
-            "Engine atomic should call EngineDecode RPC");
+        // Issue #273: chat completions must use HTTP proxy to preserve OAI schema
+        // (content, reasoning_content, finish_reason, id_slot, timings).
+        Assert.Single(proxy.NonStreamingCalls);
+        Assert.Equal("http://localhost:8080", proxy.NonStreamingCalls[0].NodeUrl);
 
-        var payload = f.Rpc.PayloadAsUtf8(OpCode.EngineDecode);
-        Assert.Contains("\"messages\"", payload);
-        Assert.Contains("\"n_predict\"", payload);
-
+        // Engine RPC no longer drives chat completions.
+        Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
+            "Engine chat-completion path is disabled (issue #273 hotfix); HTTP proxy owns text responses");
         Assert.False(f.Rpc.HasCall(OpCode.EnginePrefill),
             "Engine atomic should NOT call EnginePrefill separately");
         Assert.False(f.Rpc.HasCall(OpCode.StatePut),
@@ -159,23 +166,27 @@ public sealed class EngineModeTests
 
         var e = f.Ledger.Lookup("sess_ea1");
         Assert.NotNull(e);
-        Assert.True(e!.NPast > 0, $"NPast should be > 0 after engine atomic, got {e.NPast}");
+        Assert.True(e!.NPast > 0, $"NPast should be > 0 after atomic, got {e.NPast}");
     }
 
     [Fact]
-    public async Task Atomic_WarmFollowup_NoMessages()
+    public async Task Atomic_WarmFollowup_HttpProxyCalled()
     {
         await using var f = new EngineFixture(runMode: "fast");
+        var proxy = (TestCompletionProxy)f.Proxy;
 
         await f.SubmitAsync("sess_ea2", 500, 100);
         int np1 = f.Ledger.Lookup("sess_ea2")!.NPast;
         Assert.True(np1 > 0);
 
-        f.Rpc.ClearCalls();
+        proxy.NonStreamingCalls.Clear();
         await f.SubmitAsync("sess_ea2", 300, 50);
 
-        var payload = f.Rpc.PayloadAsUtf8(OpCode.EngineDecode);
-        Assert.Contains("\"messages\":null", payload);
+        // Warm follow-up still goes through HTTP proxy (warm-affinity path),
+        // not EngineDecode RPC.
+        Assert.Single(proxy.NonStreamingCalls);
+        Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
+            "Warm follow-up must not use EngineDecode (issue #273)");
 
         int np2 = f.Ledger.Lookup("sess_ea2")!.NPast;
         Assert.True(np2 >= np1, $"NPast should grow: {np1} -> {np2}");
@@ -183,22 +194,28 @@ public sealed class EngineModeTests
 
     // ─────────────────────────────────────────────────────────────────────
     // Cold concurrency (P/D split) path
+    //
+    // In engine mode, prefill still uses EnginePrefill RPC, KV state moves
+    // through StateGet/Put, and the final decode on the P100 uses the HTTP
+    // proxy. EnginePrefill remains untouched by the hotfix.
     // ─────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Concurrency_EnginePrefillAndDecodeCalled()
+    public async Task Concurrency_EnginePrefillCalled_HttpProxyDoesDecode()
     {
         await using var f = new EngineFixture(rtxSlots: 2, p100Slots: 1);
+        var proxy = (TestCompletionProxy)f.Proxy;
 
         await f.SubmitAsync("sess_ec1", 3000, 100);
 
         Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
             "P/D split should call EnginePrefill");
-        Assert.True(f.Rpc.HasCall(OpCode.EngineDecode),
-            "P/D split should call EngineDecode");
+        Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
+            "Engine chat-completion path is disabled (issue #273 hotfix)");
 
-        var decodePayload = f.Rpc.PayloadAsUtf8(OpCode.EngineDecode);
-        Assert.Contains("\"messages\":null", decodePayload);
+        // Decode happens via HTTP proxy on the P100 node.
+        Assert.Single(proxy.NonStreamingCalls);
+        Assert.Equal("http://192.168.122.21:8086", proxy.NonStreamingCalls[0].NodeUrl);
 
         Assert.True(f.Rpc.HasCall(OpCode.StatePut),
             "P/D split should restore KV via StatePut");
@@ -237,18 +254,21 @@ public sealed class EngineModeTests
     // ─────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task SameNode_NoStatePut_EngineDecodeNoMessages()
+    public async Task SameNode_NoStatePut_HttpProxyCalled()
     {
         await using var f = new EngineFixture(rtxSlots: 2, p100Slots: 0);
+        var proxy = (TestCompletionProxy)f.Proxy;
 
         await f.SubmitAsync("sess_es1", 3000, 100);
 
         Assert.False(f.Rpc.HasCall(OpCode.StatePut),
             "Same-node skip should NOT call StatePut");
-        Assert.True(f.Rpc.HasCall(OpCode.EngineDecode));
+        Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
+            "Engine chat-completion path is disabled (issue #273 hotfix)");
 
-        var payload = f.Rpc.PayloadAsUtf8(OpCode.EngineDecode);
-        Assert.Contains("\"messages\":null", payload);
+        // Same-node decode still goes through HTTP proxy.
+        Assert.Single(proxy.NonStreamingCalls);
+        Assert.Equal("http://localhost:8080", proxy.NonStreamingCalls[0].NodeUrl);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -256,9 +276,10 @@ public sealed class EngineModeTests
     // ─────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Migration_EngineDecodeWithoutMessages()
+    public async Task Migration_StatePutCalled_HttpProxyDoesDecode()
     {
         await using var f = new EngineFixture(rtxSlots: 1, p100Slots: 1);
+        var proxy = (TestCompletionProxy)f.Proxy;
 
         await f.SubmitAsync("sess_em1", 3000, 100);
 
@@ -268,13 +289,15 @@ public sealed class EngineModeTests
         e.HasStoreState = true;
 
         f.Rpc.ClearCalls();
+        proxy.NonStreamingCalls.Clear();
         await f.SubmitAsync("sess_em1", 100, 50);
 
         Assert.True(f.Rpc.HasCall(OpCode.StatePut),
             "Migration should restore KV via StatePut");
+        Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
+            "Engine chat-completion path is disabled (issue #273 hotfix)");
 
-        var payload = f.Rpc.PayloadAsUtf8(OpCode.EngineDecode);
-        Assert.Contains("\"messages\":null", payload);
+        Assert.Single(proxy.NonStreamingCalls);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -282,36 +305,89 @@ public sealed class EngineModeTests
     // ─────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Concurrency_RpcSequence_EnginePrefillBeforeDecode()
+    public async Task Concurrency_RpcSequence_EnginePrefillBeforeStatePutBeforeProxy()
     {
         await using var f = new EngineFixture(rtxSlots: 2, p100Slots: 1);
+        var proxy = (TestCompletionProxy)f.Proxy;
 
         await f.SubmitAsync("sess_er1", 3000, 100);
 
         var calls = f.Rpc.Calls.Select(c => c.Op).ToList();
 
         var prefillIdx = calls.IndexOf(OpCode.EnginePrefill);
-        var decodeIdx = calls.IndexOf(OpCode.EngineDecode);
         var statePutIdx = calls.IndexOf(OpCode.StatePut);
 
         Assert.True(prefillIdx >= 0, "EnginePrefill must be called");
-        Assert.True(decodeIdx >= 0, "EngineDecode must be called");
         Assert.True(statePutIdx >= 0, "StatePut must be called");
-        Assert.True(prefillIdx < decodeIdx,
-            "EnginePrefill must precede EngineDecode");
-        Assert.True(statePutIdx < decodeIdx,
-            "StatePut must precede EngineDecode");
+        Assert.True(prefillIdx < statePutIdx,
+            "EnginePrefill must precede StatePut (P/D ordering)");
+        Assert.Single(proxy.NonStreamingCalls);
     }
 
     [Fact]
-    public async Task Atomic_RpcSequence_SingleDecodeOnly()
+    public async Task Atomic_RpcSequence_NoEngineDecodeOrPrefillOrStatePut()
     {
         await using var f = new EngineFixture(runMode: "fast");
+        var proxy = (TestCompletionProxy)f.Proxy;
 
         await f.SubmitAsync("sess_er2", 500, 100);
 
-        Assert.Contains(OpCode.EngineDecode, f.Rpc.Calls.Select(c => c.Op));
+        Assert.DoesNotContain(OpCode.EngineDecode, f.Rpc.Calls.Select(c => c.Op));
         Assert.DoesNotContain(OpCode.EnginePrefill, f.Rpc.Calls.Select(c => c.Op));
         Assert.DoesNotContain(OpCode.StatePut, f.Rpc.Calls.Select(c => c.Op));
+        Assert.Single(proxy.NonStreamingCalls);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Issue #273 regression: response preserves OAI schema (reasoning_content)
+    // ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Atomic_Response_PreservesReasoningContent()
+    {
+        // Regression test for #273. The Qwopus3.6-35B-A3B model is run with
+        // --reasoning on, so the chat template emits the model's chain-of-thought
+        // in `reasoning_content` and leaves `content` empty. The Core must not
+        // collapse the two fields. The proxy here simulates llama-server's
+        // well-formed OAI response (as if the model returned reasoning).
+        await using var f = new EngineFixture(runMode: "fast");
+        var proxy = (TestCompletionProxy)f.Proxy;
+        proxy.ResponseOverride = new Dictionary<string, object>
+        {
+            ["id"] = "chatcmpl-test",
+            ["model"] = "balanced",
+            ["object"] = "chat.completion",
+            ["id_slot"] = 0,
+            ["choices"] = JsonSerializer.SerializeToElement(new[]
+            {
+                new
+                {
+                    index = 0,
+                    finish_reason = "length",
+                    message = new
+                    {
+                        role = "assistant",
+                        content = "",
+                        reasoning_content = "1.  **Analyze the Request**"
+                    }
+                }
+            }),
+            ["usage"] = JsonSerializer.SerializeToElement(new
+            {
+                prompt_tokens = 17, completion_tokens = 4, total_tokens = 21
+            })
+        };
+
+        var result = await f.SubmitAsync("sess_reason_1", 500, 100);
+
+        // The Core must pass the response through with both fields intact.
+        Assert.NotNull(result);
+        var dict = (Dictionary<string, object>)result!;
+        Assert.True(dict.ContainsKey("choices"));
+        var choices = (System.Text.Json.JsonElement)dict["choices"];
+        var msg = choices[0].GetProperty("message");
+        Assert.Equal("", msg.GetProperty("content").GetString());
+        Assert.Equal("1.  **Analyze the Request**",
+            msg.GetProperty("reasoning_content").GetString());
     }
 }
