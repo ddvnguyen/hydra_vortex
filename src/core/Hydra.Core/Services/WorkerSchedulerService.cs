@@ -1292,72 +1292,100 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	public async Task NotifyStreamComplete(string sessionId)
 	{
-		// Key _streamCompleted by TraceId (per-turn) to avoid stale entries
-		// from failed requests leaking into subsequent turns for the same session.
-		if (_pendingBgSaves.TryGetValue(sessionId, out var bgInfo) && bgInfo.TraceId is { Length: > 0 } traceId)
-			_streamCompleted.TryAdd(traceId, 0);
-
-		// Emit the deferred timeline now that the stream is done — decode_ms/total_ms
-		// cover the full stream duration.
-		if (_pendingTimelines.TryRemove(sessionId, out var timelineItem))
+		// Issue #284: lease release is in a finally block so that an exception
+		// in any of the early steps (TryAdd / TryRemove / FinalizeStreamPhases /
+		// EmitTimeline) cannot leak the slot. The slot is always returned to
+		// the pool, even if the bg-save or timeline emission throws.
+		// The fire-and-forget pattern in the controller means an unobserved
+		// exception here used to be invisible.
+		var releaseStart = System.Diagnostics.Stopwatch.StartNew();
+		string? releaseNode = null;
+		try
 		{
-			FinalizeStreamPhases(timelineItem);
-			CoordinatorMetrics.DecodeDuration
-				.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown", RouteLabel(timelineItem))
-				.Observe(timelineItem.Phases.GetValueOrDefault("decode_ms") / 1000.0);
-			EmitTimeline(timelineItem);
-		}
+			// Key _streamCompleted by TraceId (per-turn) to avoid stale entries
+			// from failed requests leaking into subsequent turns for the same session.
+			if (_pendingBgSaves.TryGetValue(sessionId, out var bgInfo) && bgInfo.TraceId is { Length: > 0 } traceId)
+				_streamCompleted.TryAdd(traceId, 0);
 
-		// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct)
-		if (_pipelineCts.TryRemove(sessionId, out var pipelineCts))
-			pipelineCts.Dispose();
-
-		// Fire deferred BgSave — the slot is now idle, StateGet will succeed
-		if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
-		{
-			var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo2.WorkerName);
-			if (w != null)
+			// Emit the deferred timeline now that the stream is done — decode_ms/total_ms
+			// cover the full stream duration.
+			if (_pendingTimelines.TryRemove(sessionId, out var timelineItem))
 			{
-				// Issue #277: await the bg_save synchronously here too. The lease
-				// disposal below returns the slot to the pool; the next decode on
-				// this slot will then run on a clean llama-server state.
-				try
+				FinalizeStreamPhases(timelineItem);
+				CoordinatorMetrics.DecodeDuration
+					.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown", RouteLabel(timelineItem))
+					.Observe(timelineItem.Phases.GetValueOrDefault("decode_ms") / 1000.0);
+				EmitTimeline(timelineItem);
+			}
+
+			// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct)
+			if (_pipelineCts.TryRemove(sessionId, out var pipelineCts))
+				pipelineCts.Dispose();
+
+			// Fire deferred BgSave — the slot is now idle, StateGet will succeed
+			if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
+			{
+				var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo2.WorkerName);
+				if (w != null)
 				{
-					var llamaRpc = GetLlamaRpcClient(w);
-					var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-						bgInfo2.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo2.TraceId, CancellationToken.None);
-					if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
+					releaseNode = w.Name;
+					// Issue #277: await the bg_save synchronously here too. The lease
+					// disposal below returns the slot to the pool; the next decode on
+					// this slot will then run on a clean llama-server state.
+					try
 					{
-						await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-							$"{sessionId}.kv", stateResp.Payload, bgInfo2.TraceId, CancellationToken.None);
-						_ledger.MarkStoreState(sessionId);
-						_log.Information("bg_saved Sid={Sid}", sessionId);
+						var llamaRpc = GetLlamaRpcClient(w);
+						var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+							bgInfo2.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo2.TraceId, CancellationToken.None);
+						if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
+						{
+							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+								$"{sessionId}.kv", stateResp.Payload, bgInfo2.TraceId, CancellationToken.None);
+							_ledger.MarkStoreState(sessionId);
+							_log.Information("bg_saved Sid={Sid}", sessionId);
+						}
+						else
+						{
+							_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
+						}
 					}
-					else
-					{
-						_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
-					}
+					catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
 				}
-				catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
 			}
 		}
-
-		if (_warmLeases.TryRemove(sessionId, out var lease))
+		catch (Exception ex)
 		{
-			_log.Information("stream_done_release Sid={Sid} Worker={W} Slot={Slot}",
-				sessionId, lease.WorkerName, lease.SlotId);
-			// Disposal can throw (e.g. RpcClient.DisposeAsync in the lease's
-			// llama RPC). The controller fires NotifyStreamComplete
-			// fire-and-forget, so an unobserved exception would be lost.
-			// Wrap + log explicitly.
-			try { await lease.DisposeAsync(); }
-			catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
-			_decodeSlotSignal.Release();
+			// Issue #284: a non-fatal error in the early steps must not leak the slot.
+			// Log + count, then fall through to lease release in finally.
+			_log.Error(ex, "stream_complete_early_error Sid={Sid}", sessionId);
+			CoordinatorMetrics.SlotReleaseErrors.Inc();
 		}
-		else
+		finally
 		{
-			_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
-				sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
+			if (_warmLeases.TryRemove(sessionId, out var lease))
+			{
+				_log.Information("stream_done_release Sid={Sid} Worker={W} Slot={Slot}",
+					sessionId, lease.WorkerName, lease.SlotId);
+				if (releaseNode is null) releaseNode = lease.WorkerName;
+				// Disposal can throw (e.g. RpcClient.DisposeAsync in the lease's
+				// llama RPC). The controller fires NotifyStreamComplete
+				// fire-and-forget, so an unobserved exception would be lost.
+				// Wrap + log explicitly.
+				try { await lease.DisposeAsync(); }
+				catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
+				_decodeSlotSignal.Release();
+			}
+			else
+			{
+				_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
+					sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
+			}
+
+			// Issue #284: record the time the slot was held after the request ended.
+			releaseStart.Stop();
+			CoordinatorMetrics.SlotReleaseLag
+				.WithLabels(releaseNode ?? "unknown")
+				.Observe(releaseStart.Elapsed.TotalSeconds);
 		}
 	}
 

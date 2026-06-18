@@ -87,4 +87,18 @@ internal static class CoordinatorMetrics
         "hydra_prefill_queue_depth", "Pending requests in prefill queue");
     public static readonly Gauge DecodeQueueDepth = Metrics.CreateGauge(
         "hydra_decode_queue_depth", "Pending requests in decode queue");
+
+    // Issue #284: time from NotifyStreamComplete start to slot lease release.
+    // Should be < 1s for cold sessions; up to 60-120s for warm sessions where
+    // the bg-save (StateGet + Put to Store) is awaited before release.
+    // A p99 > 5 min indicates the bg-save is starving the slot pool.
+    public static readonly Histogram SlotReleaseLag = Metrics.CreateHistogram(
+        "hydra_slot_release_lag_seconds", "Time to release slot after request end",
+        new[] { "node" });
+
+    // Issue #284: count of times NotifyStreamComplete hit a non-fatal error
+    // (e.g. EmitTimeline threw). The lease-release is in a try/catch+finally
+    // so the slot is still released, but the operator should know.
+    public static readonly Counter SlotReleaseErrors = Metrics.CreateCounter(
+        "hydra_slot_release_errors_total", "NotifyStreamComplete threw before lease release (slot was still released by finally)");
 }
