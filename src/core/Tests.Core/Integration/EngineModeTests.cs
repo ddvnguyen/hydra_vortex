@@ -21,6 +21,12 @@ public sealed class EngineModeTests
         public bool MakeEnginePrefillFail { get; set; } = false;
         public bool MakeEngineDecodeFail { get; set; } = false;
 
+        // When set, the engine prefill throws OperationCanceledException as if
+        // the caller's CancellationToken was cancelled. Review note: the catch
+        // in PrefillAsync must filter this out so it doesn't masquerade as a
+        // binary-mismatch RPC error and pollute the fallback counter.
+        public bool MakeEnginePrefillThrowCancellation { get; set; } = false;
+
         public EngineTestRpcClient() : base("test", 0) { }
 
         public override Task<RpcResponse> RequestAsync(
@@ -31,6 +37,9 @@ public sealed class EngineModeTests
 
             var response = op switch
             {
+                OpCode.EnginePrefill when MakeEnginePrefillThrowCancellation => throw
+                    new OperationCanceledException("simulated caller cancellation during engine prefill"),
+
                 OpCode.EnginePrefill when MakeEnginePrefillFail => new RpcResponse(
                     (byte)StatusCode.Error, // non-OK → triggers #279 fallback
                     Meta: null,
@@ -562,5 +571,38 @@ public sealed class EngineModeTests
         // (No HTTP prefill — the engine handled the prefill.)
         Assert.Single(proxy.NonStreamingCalls);
         Assert.Equal("http://192.168.122.21:8086", proxy.NonStreamingCalls[0].NodeUrl);
+    }
+
+    [Fact]
+    public async Task ColdConcurrency_EnginePrefillCancelled_DoesNotFallBackToHttp()
+    {
+        // Review note (PR #280): the engine prefill try/catch must filter out
+        // OperationCanceledException, otherwise normal caller cancellations
+        // (client disconnect, server shutdown) would (a) increment
+        // hydra_engine_prefill_fallbacks_total — polluting the operator's
+        // "binary out of date" signal, (b) log a misleading
+        // engine_prefill_fell_back_to_http warning, and (c) re-enter the HTTP
+        // path with the already-cancelled token (which throws again).
+        //
+        // This test simulates the cancellation by making the test RPC client
+        // throw OperationCanceledException on EnginePrefill, then asserts the
+        // HTTP proxy was NOT called as a fallback. (The fallback would have
+        // caused the proxy to fire — so an empty proxy is sufficient evidence
+        // that the fallback was skipped, including the counter increment and
+        // the misleading warning log.)
+        await using var f = new EngineFixture(runMode: "concurrency");
+        f.Rpc.MakeEnginePrefillThrowCancellation = true; // simulate caller cancellation
+        var proxy = (TestCompletionProxy)f.Proxy;
+
+        // The OCE propagates from the work item's processing back through
+        // SubmitAsync. The test asserts on the side-effects (no fallback fire),
+        // not on the return value.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => f.SubmitAsync("sess_279_cancel", 5000, 100));
+
+        Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
+            "Test setup failure: engine RPC was never called for cold_concurrency");
+
+        Assert.Empty(proxy.NonStreamingCalls);
     }
 }

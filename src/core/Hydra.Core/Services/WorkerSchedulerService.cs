@@ -776,7 +776,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
 				}
 			}
-			catch (Exception ex)
+			catch (Exception ex) when (ex is not OperationCanceledException)
 			{
 				// Engine RPC failed — fall through to the HTTP path below.
 				// The HTTP path uses the same slot (item.PrefillSlot, already
@@ -785,6 +785,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// reuses the prefix cache or re-prefills from scratch —
 				// either way the slot ends up with the right KV state for
 				// SaveKv → migration → decode.
+				//
+				// Correctness note: the fallback's SaveKv path (called after
+				// the HTTP prefill succeeds) uses the StateGet RPC opcode
+				// (0x40), which the older binary DOES support — the 2-commit
+				// gap behind #279 only added the 0x42 (EnginePrefill) dispatch,
+				// not the 0x40 (StateGet) one. So in the specific #279 scenario,
+				// the save path is unaffected by the same binary mismatch. If
+				// a future gap ever covers StateGet, this fallback's correctness
+				// degrades and we need to revisit.
 				engineFailed = true;
 				engineFailReason = ex.Message;
 				item.KvBlob = null; // engine didn't produce a blob
