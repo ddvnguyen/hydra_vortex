@@ -450,6 +450,14 @@ public class RpcClient : IAsyncDisposable
         return await RequestAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct);
     }
 
+    /// <summary>
+    /// Engine DECODE (opcode 0x43), non-streaming variant.
+    /// Retained for the E2 expert-mode spike (#161-E2): when per-request
+    /// expert placement is enabled, the engine may re-decode from a saved
+    /// checkpoint via this RPC. Currently no production code path uses it
+    /// (engine-mode chat decode is HTTP — see docs/architecture.md §3 and
+    /// PR #282 review). Wire-format tests live in Tests.Shared.EngineOpcodeTests.
+    /// </summary>
     public async Task<RpcResponse> EngineDecodeAsync(string slotKey, int nPredict, string? requestJson, string traceId, CancellationToken ct)
     {
         // Build JSON payload: {"n_predict": N, "messages": [...] or null}
@@ -458,6 +466,10 @@ public class RpcClient : IAsyncDisposable
         return await RequestAsync(OpCode.EngineDecode, slotKey, payload, traceId, ct);
     }
 
+    /// <summary>
+    /// Engine DECODE (opcode 0x43), streaming variant.
+    /// See <see cref="EngineDecodeAsync"/> for the retention rationale.
+    /// </summary>
     public async IAsyncEnumerable<byte[]> EngineDecodeStreamAsync(
         string slotKey, int nPredict, string? requestJson, string traceId,
         [EnumeratorCancellation] CancellationToken ct)

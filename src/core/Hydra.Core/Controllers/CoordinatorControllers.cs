@@ -124,8 +124,15 @@ public class CompletionsController : ControllerBase
 		}
 		finally
 		{
-			// Always release the decode slot, even on client cancel/disconnect.
-			_scheduler.NotifyStreamComplete(sessionId);
+			// Fire-and-forget on purpose: the SSE stream is already done (or
+			// the client cancelled) — the HTTP response should not wait for the
+			// round-trip to StateGet + Store Put. The race that #277 fixed
+			// is still closed because NotifyStreamComplete awaits the bg-save
+			// internally *before* releasing the slot lease, so the slot is not
+			// returned to the pool while a save is in flight. Disposal of the
+			// lease is wrapped in try/catch inside NotifyStreamComplete so an
+			// exception becomes a log line rather than an unobserved task.
+			_ = _scheduler.NotifyStreamComplete(sessionId);
 		}
 	}
 }
