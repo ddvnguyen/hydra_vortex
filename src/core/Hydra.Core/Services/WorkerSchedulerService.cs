@@ -1094,12 +1094,46 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// decode_ms is finalized in NotifyStreamComplete — the stream is still
 			// running when this state returns Done.
 			item.DecodeStartMs = item.ElapsedMs;
-			// Ask llama-server to emit a final usage chunk so token counts are
-			// available on streamed requests (OpenAI omits usage from streams by default).
-			item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
 			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			_pipelineCts[item.SessionId] = cts;
-			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, cts.Token);
+
+			IAsyncEnumerable<byte[]> streamTask;
+			if (_cfg.UseLlamaEngine)
+			{
+				// Engine mode streaming: use EngineDecode RPC with streaming
+				var slotId = item.DecodeSlot ?? item.LastIdSlot ?? 0;
+				var maxTokensVal = item.Request.TryGetValue("max_tokens", out var mtv2) && mtv2 != null
+					? Convert.ToInt32(mtv2) : 512;
+				var isWarmSession = item.Entry?.NPast > 0;
+				var hasMessages = item.Messages is { Count: > 0 }
+					&& !item.KvRestoredForDecode
+					&& !isWarmSession
+					&& item.LastIdSlot == null
+					&& item.PrefillWorker == null;
+
+				string? messagesJson = hasMessages ? JsonSerializer.Serialize(item.Messages) : null;
+				if (hasMessages)
+					_log.Information("decode_engine_atomic_stream Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
+						item.SessionId, w.Name, slotId, maxTokensVal);
+				else
+					_log.Information("decode_engine_cross_gpu_stream Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
+						item.SessionId, w.Name, slotId, maxTokensVal);
+
+				var llamaRpc = GetLlamaRpcClient(w);
+				var rpcStream = llamaRpc.EngineDecodeStreamAsync(
+					slotId.ToString(), maxTokensVal, messagesJson, item.TraceId, cts.Token);
+				// Convert RPC token chunks to SSE format
+				streamTask = ConvertRpcStreamToSse(rpcStream, item.SessionId, item.TraceId, cts.Token);
+			}
+			else
+			{
+				// Legacy HTTP streaming: use ProxyCompletionStreamAsync
+				// Ask llama-server to emit a final usage chunk so token counts are
+				// available on streamed requests (OpenAI omits usage from streams by default).
+				item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
+				streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, cts.Token);
+			}
+
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			// Defer BgSave until stream completes — slot is still processing now.
 			// Set before StreamCompletion to avoid race: a fast stream could finish
@@ -1888,5 +1922,52 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
 		_llamaRpcClients[w.Name] = client;
 		return client;
+	}
+
+	// ── Engine mode streaming: convert RPC token chunks to SSE format ──
+
+	private async IAsyncEnumerable<byte[]> ConvertRpcStreamToSse(
+		IAsyncEnumerable<byte[]> rpcStream, string sessionId, string traceId,
+		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+	{
+		// Send initial role chunk
+		var roleChunk = JsonSerializer.Serialize(new
+		{
+			choices = new[]
+			{
+				new
+				{
+					delta = new { role = "assistant", content = "" },
+					index = 0
+				}
+			}
+		});
+		yield return Encoding.UTF8.GetBytes($"data: {roleChunk}\n\n");
+
+		// RPC stream yields raw token bytes (already parsed by RpcClient.RequestStreamAsync)
+		await foreach (var tokenBytes in rpcStream.WithCancellation(ct))
+		{
+			if (tokenBytes.Length == 0)
+				continue;
+
+			var tokenStr = Encoding.UTF8.GetString(tokenBytes);
+
+			// Convert to SSE format
+			var sseChunk = JsonSerializer.Serialize(new
+			{
+				choices = new[]
+				{
+					new
+					{
+						delta = new { content = tokenStr },
+						index = 0
+					}
+				}
+			});
+			yield return Encoding.UTF8.GetBytes($"data: {sseChunk}\n\n");
+		}
+
+		// Send final [DONE] chunk
+		yield return Encoding.UTF8.GetBytes("data: [DONE]\n\n");
 	}
 }

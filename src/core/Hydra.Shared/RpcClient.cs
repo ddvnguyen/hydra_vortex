@@ -153,17 +153,49 @@ public class RpcClient : IAsyncDisposable
                 await ReadExactAsync(_stream!, metaBuf, token);
             }
 
-            var remaining = (long)header.PayloadLen;
-            var buf = new byte[65536];
-
-            while (remaining > 0)
+            // For streaming RPC (EngineDecode), PayloadLen=0 and tokens are streamed
+            // as 4-byte length + N-byte token until connection is closed.
+            // For non-streaming RPC, PayloadLen > 0 and we read that many bytes.
+            if (header.PayloadLen > 0)
             {
-                var toRead = (int)Math.Min(buf.Length, remaining);
-                var read = await _stream!.ReadAsync(buf.AsMemory(0, toRead), token);
-                if (read == 0)
-                    throw new EndOfStreamException("Connection closed while reading stream response");
-                remaining -= read;
-                yield return buf[..read];
+                var remaining = (long)header.PayloadLen;
+                var buf = new byte[65536];
+
+                while (remaining > 0)
+                {
+                    var toRead = (int)Math.Min(buf.Length, remaining);
+                    var read = await _stream!.ReadAsync(buf.AsMemory(0, toRead), token);
+                    if (read == 0)
+                        throw new EndOfStreamException("Connection closed while reading stream response");
+                    remaining -= read;
+                    yield return buf[..read];
+                }
+            }
+            else
+            {
+                // Streaming RPC: read tokens as 4-byte length + N-byte token
+                var lenBuf = new byte[4];
+                while (true)
+                {
+                    // Read 4-byte length
+                    var lenRead = await _stream!.ReadAsync(lenBuf.AsMemory(0, 4), token);
+                    if (lenRead == 0)
+                        break; // Connection closed
+                    if (lenRead < 4)
+                        throw new EndOfStreamException("Incomplete token length");
+
+                    var tokenLen = BitConverter.ToUInt32(lenBuf, 0);
+                    if (tokenLen == 0)
+                        continue; // Skip empty tokens
+
+                    // Read token bytes
+                    var tokenBuf = new byte[tokenLen];
+                    var tokenRead = await _stream!.ReadAsync(tokenBuf.AsMemory(0, (int)tokenLen), token);
+                    if (tokenRead < tokenLen)
+                        throw new EndOfStreamException("Incomplete token data");
+
+                    yield return tokenBuf;
+                }
             }
 
             completed = true;
@@ -427,16 +459,12 @@ public class RpcClient : IAsyncDisposable
     }
 
     public async IAsyncEnumerable<byte[]> EngineDecodeStreamAsync(
-        string slotKey, int[] promptTokens, int nPredict, string traceId,
+        string slotKey, int nPredict, string? requestJson, string traceId,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var nPredictBytes = BitConverter.GetBytes(nPredict);
-        var tokensBytes = new byte[promptTokens.Length * sizeof(int)];
-        Buffer.BlockCopy(promptTokens, 0, tokensBytes, 0, tokensBytes.Length);
-        var payload = new byte[nPredictBytes.Length + tokensBytes.Length];
-        nPredictBytes.CopyTo(payload, 0);
-        tokensBytes.CopyTo(payload, nPredictBytes.Length);
-
+        // Build JSON payload: {"n_predict": N, "messages": [...] or null}
+        var json = $"{{\"n_predict\":{nPredict},\"messages\":{requestJson ?? "null"}}}";
+        var payload = Encoding.UTF8.GetBytes(json);
         await foreach (var chunk in RequestStreamAsync(OpCode.EngineDecode, slotKey, payload, traceId, ct))
             yield return chunk;
     }
