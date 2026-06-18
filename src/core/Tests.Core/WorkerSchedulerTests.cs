@@ -207,7 +207,7 @@ public sealed class WorkerSchedulerTests
         Assert.True(scheduler._pendingTimelines.ContainsKey("sess_stream"));
         Assert.False(item.Phases.ContainsKey("total_ms"));
 
-        scheduler.NotifyStreamComplete("sess_stream");
+        await scheduler.NotifyStreamComplete("sess_stream");
 
         Assert.False(scheduler._pendingTimelines.ContainsKey("sess_stream"));
         Assert.True(item.Phases.ContainsKey("decode_ms"));

@@ -390,4 +390,75 @@ public sealed class EngineModeTests
         Assert.Equal("1.  **Analyze the Request**",
             msg.GetProperty("reasoning_content").GetString());
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Issue #277 regression: bg_save vs next-decode slot race
+    //
+    // Before the fix, the bg_save ran in fire-and-forget `Task.Run` after the
+    // lease was disposed. A new decode on the same slot would TryAcquireSlot
+    // and start its chat completion before the bg_save's StateGet RPC had
+    // returned, racing on llama-server's per-slot serialization and hanging
+    // for the full 30s HTTP timeout. The fix makes the bg_save await-synchronous
+    // in BgSaveAsync (and the streaming equivalent in NotifyStreamComplete) so
+    // the slot isn't returned to the pool until the StateGet completes.
+    //
+    // We assert that two consecutive turns on the same session both complete
+    // well under the 30s timeout.
+    // ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task MultiTurn_ConsecutiveTurns_NoSlotRaceHang()
+    {
+        // Cold-atomic mode so each turn gets the same RTX slot 0 (warm affinity
+        // on a non-existent entry would force migration). Two turns back-to-back
+        // exercise the bg_save → new-decode path that hung in the live system.
+        await using var f = new EngineFixture(runMode: "fast");
+        var proxy = (TestCompletionProxy)f.Proxy;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Turn 1 — establishes a warm session entry in the ledger on RTX slot 0.
+        await f.SubmitAsync("sess_race_1", 500, 100);
+        var t1 = sw.ElapsedMilliseconds;
+        sw.Restart();
+
+        // Turn 2 — comes in quickly. The previous turn's bg_save must complete
+        // (synchronous BgSaveAsync) before the slot is returned to the pool, so
+        // the new decode gets a clean slot. Pre-fix, this hung for ~30s.
+        var turn2 = f.SubmitAsync("sess_race_1", 300, 50);
+        if (await Task.WhenAny(turn2, Task.Delay(5000)) != turn2)
+        {
+            Assert.Fail("Turn 2 hung for >5s — slot race regression (issue #277)");
+        }
+        await turn2;
+        var t2 = sw.ElapsedMilliseconds;
+
+        Assert.True(t1 < 3000, $"Turn 1 unexpectedly slow: {t1}ms");
+        Assert.True(t2 < 3000, $"Turn 2 unexpectedly slow: {t2}ms — slot race?");
+        Assert.Equal(2, proxy.NonStreamingCalls.Count);
+    }
+
+    [Fact]
+    public async Task MultiTurn_StreamingConsecutiveTurns_NoSlotRaceHang()
+    {
+        // Same regression for the streaming path. NotifyStreamComplete's deferred
+        // bg_save was also fire-and-forget; the fix awaits it before disposing
+        // the warm lease. We exercise the streaming path with stream:true and
+        // ensure a follow-up turn doesn't hang.
+        await using var f = new EngineFixture(runMode: "fast");
+        var proxy = (TestCompletionProxy)f.Proxy;
+
+        var turn1 = f.SubmitAsync("sess_race_stream", 500, 100, stream: true);
+        if (await Task.WhenAny(turn1, Task.Delay(5000)) != turn1)
+        {
+            Assert.Fail("Turn 1 (streaming) hung for >5s — slot race regression (issue #277)");
+        }
+        await turn1;
+
+        var turn2 = f.SubmitAsync("sess_race_stream", 300, 50, stream: true);
+        if (await Task.WhenAny(turn2, Task.Delay(5000)) != turn2)
+        {
+            Assert.Fail("Turn 2 (streaming) hung for >5s — slot race regression (issue #277)");
+        }
+        await turn2;
+    }
 }

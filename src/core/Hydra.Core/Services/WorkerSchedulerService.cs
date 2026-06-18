@@ -1163,40 +1163,46 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> BgSaveAsync(WorkItem item)
 	{
-		_ = Task.Run(async () =>
+		// Issue #277: BgSave was previously fire-and-forget (`_ = Task.Run(...)`).
+		// The race: a new decode can TryAcquireSlot the same slot and start its chat
+		// completion while the previous turn's StateGet RPC is still in flight on
+		// llama-server, which serializes per-slot — the new decode hangs for the
+		// 30s HTTP timeout. Fix: await the bg_save synchronously so it completes
+		// before BgSaveAsync returns. The state machine blocks for the (typically
+		// sub-second) bg_save, but the response is already sent to the client so
+		// the user sees no extra latency. Only the next queued item is delayed.
+		var w = item.DecodeWorker!;
+		var storeKey = $"{item.SessionId}.kv";
+
+		try
 		{
-			try
+			if (_cfg.UseLlamaEngine && item.KvBlob != null)
 			{
-				var w = item.DecodeWorker!;
-				var storeKey = $"{item.SessionId}.kv";
+				// Engine mode: KV blob already in memory from EngineDecode
+				await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+					storeKey, item.KvBlob, item.TraceId, CancellationToken.None);
+				item.KvBlob = null;
+				_ledger.MarkStoreState(item.SessionId);
+				_log.Information("bg_saved Sid={Sid} (engine, KvBlob)", item.SessionId);
+			}
+			else
+			{
+				var slotId = item.LastIdSlot ?? 0;
+				var llamaRpc = GetLlamaRpcClient(w);
+				var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+					slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
 
-				if (_cfg.UseLlamaEngine && item.KvBlob != null)
+				if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
 				{
-					// Engine mode: KV blob already in memory from EngineDecode
 					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-						storeKey, item.KvBlob, item.TraceId, CancellationToken.None);
-					item.KvBlob = null;
+						storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
 					_ledger.MarkStoreState(item.SessionId);
-					_log.Information("bg_saved Sid={Sid} (engine, KvBlob)", item.SessionId);
-				}
-				else
-				{
-					var slotId = item.LastIdSlot ?? 0;
-					var llamaRpc = GetLlamaRpcClient(w);
-					var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-						slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
-
-					if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
-					{
-						await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-							storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
-						_ledger.MarkStoreState(item.SessionId);
-						_log.Information("bg_saved Sid={Sid}", item.SessionId);
-					}
+					_log.Information("bg_saved Sid={Sid}", item.SessionId);
 				}
 			}
-			catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
-		});
+		}
+		catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
+
 		return WorkItemState.Done;
 	}
 
@@ -1237,7 +1243,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			sessionId, nodeName, lease.SlotId);
 	}
 
-	public void NotifyStreamComplete(string sessionId)
+	public async Task NotifyStreamComplete(string sessionId)
 	{
 		// Key _streamCompleted by TraceId (per-turn) to avoid stale entries
 		// from failed requests leaking into subsequent turns for the same session.
@@ -1265,27 +1271,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo2.WorkerName);
 			if (w != null)
 			{
-				_ = Task.Run(async () =>
+				// Issue #277: await the bg_save synchronously here too. The lease
+				// disposal below returns the slot to the pool; the next decode on
+				// this slot will then run on a clean llama-server state.
+				try
 				{
-					try
+					var llamaRpc = GetLlamaRpcClient(w);
+					var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+						bgInfo2.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo2.TraceId, CancellationToken.None);
+					if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
 					{
-						var llamaRpc = GetLlamaRpcClient(w);
-						var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-							bgInfo2.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo2.TraceId, CancellationToken.None);
-						if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
-						{
-							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-								$"{sessionId}.kv", stateResp.Payload, bgInfo2.TraceId, CancellationToken.None);
-							_ledger.MarkStoreState(sessionId);
-							_log.Information("bg_saved Sid={Sid}", sessionId);
-						}
-						else
-						{
-							_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
-						}
+						await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+							$"{sessionId}.kv", stateResp.Payload, bgInfo2.TraceId, CancellationToken.None);
+						_ledger.MarkStoreState(sessionId);
+						_log.Information("bg_saved Sid={Sid}", sessionId);
 					}
-					catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
-				});
+					else
+					{
+						_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
+					}
+				}
+				catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
 			}
 		}
 
@@ -1293,7 +1299,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			_log.Information("stream_done_release Sid={Sid} Worker={W} Slot={Slot}",
 				sessionId, lease.WorkerName, lease.SlotId);
-			lease.DisposeAsync().AsTask().ContinueWith(_ => { });
+			await lease.DisposeAsync();
 			_decodeSlotSignal.Release();
 		}
 		else
