@@ -89,4 +89,4 @@ services:
     binary: /opt/hydra/bin/nvidia_gpu_exporter
     port: 9835
     args:
-      - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
+      - "--query-field-names=name,driver_version,uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
