@@ -132,6 +132,58 @@ llama-server knows nothing about Store or sessions — it only manages its own s
 plus tokens generated in this session). The next completion request sent to this slot
 MUST have `n_tokens > n_past` or the KV cache will be invalidated.
 
+### llama-engine HTTP Endpoints (via --port, active)
+llama-engine exposes HTTP endpoints for easier testing and interaction with Hydra.Core.
+These endpoints use standard HTTP/1.1 with Server-Sent Events (SSE) for streaming.
+Default port: 8080 (configurable via `--port`).
+
+```
+GET  /health                    Liveness check
+                                Response: {"status":"ok"}
+
+GET  /version                   Engine version information
+                                Response: {"version":"E1","engine":"llama-engine"}
+
+GET  /slots                     List all slot states
+                                Response: [] (currently returns empty array)
+
+GET  /slots/:id/state/meta      Get slot metadata (n_past, state_size)
+                                Response: {"slot_id":<N>,"n_past":<N>,"state_size":<N>}
+
+POST /v1/chat/completions       OpenAI-compatible chat completion API
+                                Request body: OpenAI chat completion format
+                                Response: OpenAI chat completion format
+                                Streaming: Server-Sent Events (SSE) when stream=true
+```
+
+**Why HTTP/1.1 + SSE instead of HTTP/3?**
+- HTTP/3 (QUIC) requires massive C++ dependencies (nghttp3, quiche, boringssl)
+- Contradicts our minimal-dependency principle
+- HTTP/1.1 + SSE provides good streaming that's easy to test with curl
+- Can add HTTP/2/3 later if needed without breaking changes
+
+**Testing with curl:**
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Version info
+curl http://localhost:8080/version
+
+# Slot metadata
+curl http://localhost:8080/slots/0/state/meta
+
+# Chat completion (non-streaming)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}]}'
+
+# Chat completion (streaming with SSE)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
 ## Status Codes
 ```
 0x00  OK          Operation succeeded

@@ -590,7 +590,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.DecodeSlot = slot;
 				item.DecodeLease = new SlotLease(aw.Name, slot, item.SessionId, LeaseLifetime.Long, _tracker);
 				LastDispatchedNode = aw.Name;
-				return WorkItemState.ModelLoadDecode;
+				// In engine mode, model is loaded at startup — skip ModelLoadDecode
+				return _cfg.UseLlamaEngine ? WorkItemState.Decode : WorkItemState.ModelLoadDecode;
 			}
 		}
 
@@ -634,7 +635,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.PrefillLease = new SlotLease(pfWorker.Name, pfSlot, item.SessionId,
 				LeaseLifetime.Short, _tracker);
 			LastDispatchedNode = pfWorker.Name;
-			return WorkItemState.ModelLoadPrefill;
+			// In engine mode, model is loaded at startup — skip ModelLoadPrefill
+			return _cfg.UseLlamaEngine ? WorkItemState.PrefixRestore : WorkItemState.ModelLoadPrefill;
 		}
 
 		_log.Warning("cold_route_no_worker Est={Est} Workers={Workers}", item.EstimatedTokens, string.Join(",", _cfg.Workers.Select(w => $"{w.Name}(cd={w.CanDecode},cp={w.CanPrefill})")));
@@ -728,33 +730,65 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private async Task<WorkItemState> PrefillAsync(WorkItem item, CancellationToken ct)
 	{
 		var w = item.PrefillWorker!;
-		var body = new Dictionary<string, object>(item.Request)
-		{
-			["stream"] = false,
-			["n_predict"] = 0
-		};
-		// Pin to the same slot where the prefix checkpoint was restored
-		// (set by ColdRouteAsync, or by PrefixRestoreAsync). When the
-		// prefix KV was loaded via StatePut, the slot already has n_past
-		// cached tokens — using any other slot would waste them.
-		if (item.PrefillSlot == null)
-			item.PrefillSlot = await Router.PickIdleSlot(w.LlamaUrl, ct) ?? 0;
-		body["id_slot"] = item.PrefillSlot.Value;
-		var resp = await _proxy.ProxyCompletionAsync(w.LlamaUrl, body, item.TraceId, ct);
-		if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
-			item.PrefillSlot = se.GetInt32();
-		item.LastIdSlot = item.PrefillSlot;
 
-		// Extract n_past from prefill usage
-		item.NPastAfter = ExtractTotalTokens(resp);
-		_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est}",
-			item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens);
-		if (item.NPastAfter > 0)
+		if (_cfg.UseLlamaEngine)
 		{
-			_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
-			// Resolve slot from health if slot_id is null
-			if (item.PrefillSlot == null || item.PrefillSlot == 0)
-				ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
+			// Engine mode: use EnginePrefill RPC which tokenizes internally
+			item.KvRestoredForDecode = false;
+			var slotId = item.PrefillSlot ?? 0;
+			var body = new Dictionary<string, object>(item.Request)
+			{
+				["stream"] = false,
+				["n_predict"] = 0,
+				["messages"] = item.Messages
+			};
+			if (item.PrefillSlot == null)
+				item.PrefillSlot = slotId;
+			var requestJson = JsonSerializer.Serialize(body);
+			var llamaRpc = GetLlamaRpcClient(w);
+			var resp = await llamaRpc.EnginePrefillAsync(slotId.ToString(), requestJson, item.TraceId, ct);
+			if (resp.Status != (byte)StatusCode.Ok)
+				throw new InvalidOperationException($"EnginePrefill failed: {resp.Meta}");
+
+			var meta = resp.Meta != null
+				? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
+				: null;
+			item.NPastAfter = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
+			item.KvBlob = resp.Payload; // KV state blob for SaveKv
+
+			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est}",
+				item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens);
+			if (item.NPastAfter > 0)
+			{
+				_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
+				if (item.PrefillSlot == null || item.PrefillSlot == 0)
+					ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
+			}
+		}
+		else
+		{
+			var body = new Dictionary<string, object>(item.Request)
+			{
+				["stream"] = false,
+				["n_predict"] = 0
+			};
+			if (item.PrefillSlot == null)
+				item.PrefillSlot = await Router.PickIdleSlot(w.LlamaUrl, ct) ?? 0;
+			body["id_slot"] = item.PrefillSlot.Value;
+			var resp = await _proxy.ProxyCompletionAsync(w.LlamaUrl, body, item.TraceId, ct);
+			if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
+				item.PrefillSlot = se.GetInt32();
+			item.LastIdSlot = item.PrefillSlot;
+
+			item.NPastAfter = ExtractTotalTokens(resp);
+			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est}",
+				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens);
+			if (item.NPastAfter > 0)
+			{
+				_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
+				if (item.PrefillSlot == null || item.PrefillSlot == 0)
+					ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
+			}
 		}
 
 		CoordinatorMetrics.PrefillDuration.WithLabels(w.Name, RouteLabel(item))
@@ -770,7 +804,40 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.SessionId, slotId, item.NPastAfter, w.Name);
 		try
 		{
-			var payload = await SaveKvStateCoreAsync(w, slotId, item.SessionId, item.NPastAfter, item.TraceId, ct);
+			// In engine mode, the KV blob is already in item.KvBlob from EnginePrefill
+			byte[]? payload;
+			if (_cfg.UseLlamaEngine && item.KvBlob != null)
+			{
+				payload = item.KvBlob;
+				item.KvBlob = null; // Free memory early
+				// Save to store (same logic as SaveKvStateCoreAsync)
+				var storeKey = $"{item.SessionId}.kv";
+				if (_cfg.EnableChunks)
+				{
+					var chunks = ChunkEngine.ChunkAndHash(payload);
+					var orderedHashes = chunks.Select(c => c.Hash).ToList();
+					var missing = await SyncMissingAsync(storeKey, orderedHashes, item.TraceId, ct);
+					await PushMissingChunksAsync(storeKey, item.SessionId, missing, chunks, payload, item.TraceId, ct);
+					await PutManifestAsync(storeKey, item.NPastAfter, payload.Length, chunks, item.TraceId, ct);
+					if (_chunkCache != null)
+					{
+						await _chunkCache.SaveHashesAsync(item.SessionId, orderedHashes, ct);
+						foreach (var c in chunks)
+							await _chunkCache.SaveChunkDataAsync(item.SessionId, c.Hash,
+								payload.AsSpan(c.Index * _cfg.ChunkSize, Math.Min(_cfg.ChunkSize, (int)(payload.Length - c.Index * _cfg.ChunkSize))).ToArray(), ct);
+					}
+				}
+				else
+				{
+					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+						storeKey, payload, item.TraceId, ct);
+				}
+			}
+			else
+			{
+				payload = await SaveKvStateCoreAsync(w, slotId, item.SessionId, item.NPastAfter, item.TraceId, ct);
+			}
+
 			if (payload == null)
 				throw new InvalidOperationException($"StateGet RPC failed for save");
 
@@ -965,8 +1032,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 				item.NPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : item.NPastAfter;
 			}
-			_log.Information("state_restored Sid={Sid} NPast={N} Node={Node}",
-				item.SessionId, item.NPastAfter, w.Name);
+		_log.Information("state_restored Sid={Sid} NPast={N} Node={Node}",
+			item.SessionId, item.NPastAfter, w.Name);
+		item.KvRestoredForDecode = true;
 		}
 		catch (Exception ex)
 		{
@@ -992,6 +1060,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 			_log.Warning(ex, "restore_skipped Sid={Sid} — continuing without KV restore", item.SessionId);
 			item.NPastAfter = 0;
+			item.KvRestoredForDecode = false;
 		}
 		if (item.NPastAfter > 0)
 			_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -1025,12 +1094,46 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// decode_ms is finalized in NotifyStreamComplete — the stream is still
 			// running when this state returns Done.
 			item.DecodeStartMs = item.ElapsedMs;
-			// Ask llama-server to emit a final usage chunk so token counts are
-			// available on streamed requests (OpenAI omits usage from streams by default).
-			item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
 			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			_pipelineCts[item.SessionId] = cts;
-			var streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, cts.Token);
+
+			IAsyncEnumerable<byte[]> streamTask;
+			if (_cfg.UseLlamaEngine)
+			{
+				// Engine mode streaming: use EngineDecode RPC with streaming
+				var slotId = item.DecodeSlot ?? item.LastIdSlot ?? 0;
+				var maxTokensVal = item.Request.TryGetValue("max_tokens", out var mtv2) && mtv2 != null
+					? Convert.ToInt32(mtv2) : 512;
+				var isWarmSession = item.Entry?.NPast > 0;
+				var hasMessages = item.Messages is { Count: > 0 }
+					&& !item.KvRestoredForDecode
+					&& !isWarmSession
+					&& item.LastIdSlot == null
+					&& item.PrefillWorker == null;
+
+				string? messagesJson = hasMessages ? JsonSerializer.Serialize(item.Messages) : null;
+				if (hasMessages)
+					_log.Information("decode_engine_atomic_stream Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
+						item.SessionId, w.Name, slotId, maxTokensVal);
+				else
+					_log.Information("decode_engine_cross_gpu_stream Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
+						item.SessionId, w.Name, slotId, maxTokensVal);
+
+				var llamaRpc = GetLlamaRpcClient(w);
+				var rpcStream = llamaRpc.EngineDecodeStreamAsync(
+					slotId.ToString(), maxTokensVal, messagesJson, item.TraceId, cts.Token);
+				// Convert RPC token chunks to SSE format
+				streamTask = ConvertRpcStreamToSse(rpcStream, item.SessionId, item.TraceId, cts.Token);
+			}
+			else
+			{
+				// Legacy HTTP streaming: use ProxyCompletionStreamAsync
+				// Ask llama-server to emit a final usage chunk so token counts are
+				// available on streamed requests (OpenAI omits usage from streams by default).
+				item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
+				streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, cts.Token);
+			}
+
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			// Defer BgSave until stream completes — slot is still processing now.
 			// Set before StreamCompletion to avoid race: a fast stream could finish
@@ -1038,7 +1141,80 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
 			item.StreamCompletion.TrySetResult(item.DecodeChunks);
 			item.Response = new { streamed = true };
+			// Register session in ledger so /status can find it (cold_atomic streaming
+			// skips RestoreKvAsync which would have registered; n_past will be updated
+			// by TrackStreamNPast as the stream emits usage chunks).
+			if (_ledger.Lookup(item.SessionId) == null)
+				_ledger.Register(item.SessionId, w.Name, item.DecodeSlot, item.NPastAfter, item.PrefixHash);
 			return WorkItemState.Done;
+		}
+		else if (_cfg.UseLlamaEngine)
+		{
+			// Engine mode (non-streaming): use EngineDecode RPC.
+			// Send messages (atomic prefill+decode) only when the KV is NOT
+			// already in the slot. KV is present when:
+			//   - Warm affinity: slot has KV from previous decode (LastIdSlot set)
+			//   - Cross-GPU/migration: KV restored via StatePut (KvRestoredForDecode set)
+			var slotId = item.DecodeSlot ?? item.LastIdSlot ?? 0;
+			var maxTokensVal = item.Request.TryGetValue("max_tokens", out var mtv2) && mtv2 != null
+				? Convert.ToInt32(mtv2) : 512;
+			var isWarmSession = item.Entry?.NPast > 0;
+			var hasMessages = item.Messages is { Count: > 0 }
+				&& !item.KvRestoredForDecode
+				&& !isWarmSession
+				&& item.LastIdSlot == null
+				&& item.PrefillWorker == null;
+
+			string? messagesJson = hasMessages ? JsonSerializer.Serialize(item.Messages) : null;
+			if (hasMessages)
+				_log.Information("decode_engine_atomic Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
+					item.SessionId, w.Name, slotId, maxTokensVal);
+			else
+				_log.Information("decode_engine_cross_gpu Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
+					item.SessionId, w.Name, slotId, maxTokensVal);
+
+			var llamaRpc = GetLlamaRpcClient(w);
+			var resp = await llamaRpc.EngineDecodeAsync(
+				slotId.ToString(), maxTokensVal, messagesJson, item.TraceId, ct);
+
+			if (resp.Status != (byte)StatusCode.Ok)
+				throw new InvalidOperationException($"EngineDecode failed: {resp.Meta}");
+
+			var meta = resp.Meta != null
+				? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
+				: null;
+			var tokensGenerated = meta?.TryGetValue("tokens_generated", out var tg) == true ? tg.GetInt32() : 0;
+			var nPast = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
+			item.NPastAfter = nPast > 0 ? nPast : item.NPastAfter;
+
+			var generatedText = resp.Payload != null ? Encoding.UTF8.GetString(resp.Payload) : "";
+			item.Response = new Dictionary<string, object>
+			{
+				["choices"] = new List<Dictionary<string, object>>
+				{
+					new()
+					{
+						["message"] = new Dictionary<string, object>
+						{
+							["role"] = "assistant",
+							["content"] = generatedText
+						}
+					}
+				},
+				["usage"] = new Dictionary<string, object>
+				{
+					["prompt_tokens"] = Math.Max(0, item.NPastAfter - tokensGenerated),
+					["completion_tokens"] = tokensGenerated,
+					["total_tokens"] = item.NPastAfter
+				}
+			};
+			item.TokensIn = item.NPastAfter;
+			item.TokensOut = tokensGenerated;
+			item.LastIdSlot = slotId;
+			TrackAfterCompletion(item.SessionId, (Dictionary<string, object>)item.Response);
+			// Register in ledger so Lookup succeeds (atomic path skips RestoreKvAsync)
+			if (_ledger.Lookup(item.SessionId) == null)
+				_ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
 		}
 		else
 		{
@@ -1066,18 +1242,31 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			try
 			{
 				var w = item.DecodeWorker!;
-				var slotId = item.LastIdSlot ?? 0;
 				var storeKey = $"{item.SessionId}.kv";
-				var llamaRpc = GetLlamaRpcClient(w);
-				var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-					slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
 
-				if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
+				if (_cfg.UseLlamaEngine && item.KvBlob != null)
 				{
+					// Engine mode: KV blob already in memory from EngineDecode
 					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-						storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
+						storeKey, item.KvBlob, item.TraceId, CancellationToken.None);
+					item.KvBlob = null;
 					_ledger.MarkStoreState(item.SessionId);
-					_log.Information("bg_saved Sid={Sid}", item.SessionId);
+					_log.Information("bg_saved Sid={Sid} (engine, KvBlob)", item.SessionId);
+				}
+				else
+				{
+					var slotId = item.LastIdSlot ?? 0;
+					var llamaRpc = GetLlamaRpcClient(w);
+					var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+						slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
+
+					if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
+					{
+						await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+							storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
+						_ledger.MarkStoreState(item.SessionId);
+						_log.Information("bg_saved Sid={Sid}", item.SessionId);
+					}
 				}
 			}
 			catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
@@ -1090,7 +1279,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	public async Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct)
 	{
 		if (!_warmLeases.TryRemove(sessionId, out var lease))
+		{
+			_ledger.MarkEvicted(sessionId);
 			return;
+		}
 
 		// Save KV before erasing the slot — the GPU data is still live
 		await SaveSlotStateBeforeEvictAsync(sessionId, nodeName, lease.SlotId, "evict-api", ct);
@@ -1532,7 +1724,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var missingHashes = chunks.Where(c => !knownHashes.Contains(c.Hash)).Select(c => c.Hash).ToList();
 		if (missingHashes.Count > 0)
 		{
-			var knownList = JsonSerializer.SerializeToUtf8Bytes(chunks.Select(c => c.Hash).ToList());
+			// Send only the hashes the client ALREADY has (from prevState + local cache).
+			// The Store diffs them against the manifest and returns the missing chunks.
+			// Sending all manifest hashes would cause the Store to return nothing,
+			// leaving the assembled blob as all zeros.
+			var knownList = JsonSerializer.SerializeToUtf8Bytes(knownHashes.ToList());
 			var storeResp = await StoreClient.RequestAsync(OpCode.GetChunked, storeKey, knownList, traceId, ct);
 			if (storeResp.Status != (byte)StatusCode.Ok)
 				throw new InvalidDataException($"GET_CHUNKED failed (status=0x{storeResp.Status:X2}): {storeResp.Meta}");
@@ -1726,5 +1922,52 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
 		_llamaRpcClients[w.Name] = client;
 		return client;
+	}
+
+	// ── Engine mode streaming: convert RPC token chunks to SSE format ──
+
+	private async IAsyncEnumerable<byte[]> ConvertRpcStreamToSse(
+		IAsyncEnumerable<byte[]> rpcStream, string sessionId, string traceId,
+		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+	{
+		// Send initial role chunk
+		var roleChunk = JsonSerializer.Serialize(new
+		{
+			choices = new[]
+			{
+				new
+				{
+					delta = new { role = "assistant", content = "" },
+					index = 0
+				}
+			}
+		});
+		yield return Encoding.UTF8.GetBytes($"data: {roleChunk}\n\n");
+
+		// RPC stream yields raw token bytes (already parsed by RpcClient.RequestStreamAsync)
+		await foreach (var tokenBytes in rpcStream.WithCancellation(ct))
+		{
+			if (tokenBytes.Length == 0)
+				continue;
+
+			var tokenStr = Encoding.UTF8.GetString(tokenBytes);
+
+			// Convert to SSE format
+			var sseChunk = JsonSerializer.Serialize(new
+			{
+				choices = new[]
+				{
+					new
+					{
+						delta = new { content = tokenStr },
+						index = 0
+					}
+				}
+			});
+			yield return Encoding.UTF8.GetBytes($"data: {sseChunk}\n\n");
+		}
+
+		// Send final [DONE] chunk
+		yield return Encoding.UTF8.GetBytes("data: [DONE]\n\n");
 	}
 }

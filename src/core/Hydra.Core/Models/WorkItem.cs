@@ -60,6 +60,10 @@ public sealed class WorkItem
 	public int TokensOut { get; set; }
 	/// <summary>Size of the KV state blob (KV + native checkpoint) saved/restored for this request, bytes.</summary>
 	public long KvBytes { get; set; }
+	/// <summary>KV state blob held in memory between Prefill→SaveKv and RestoreKv→Decode (engine mode).</summary>
+	public byte[]? KvBlob { get; set; }
+	/// <summary>True when RestoreKv loaded KV into the slot before Decode (engine mode cross-GPU).</summary>
+	public bool KvRestoredForDecode { get; set; }
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>
 	public bool PrefixCacheHit { get; set; }
 	public Dictionary<string, long> Phases { get; } = new();

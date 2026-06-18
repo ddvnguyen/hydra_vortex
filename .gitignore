@@ -112,3 +112,4 @@ src/core/Tests.Integration/TestResults/test_results*
 # Node.js
 **/node_modules/**
 .hydra-head-token
+.opencode/

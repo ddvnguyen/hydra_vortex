@@ -42,9 +42,15 @@ public enum OpCode : byte
     SaveStateChunked    = 0x26,
     RestoreStateChunked = 0x27,
     StateGet      = 0x30,
-StatePut      = 0x31,
+    StatePut      = 0x31,
     StateMeta     = 0x32,
     GetManifest   = 0x33,
+    EngineConfigure = 0x40,
+    EngineInfo      = 0x41,
+    EnginePrefill   = 0x42,
+    EngineDecode    = 0x43,
+    EngineSetExpertMode = 0x44,
+    EngineSwapQuant = 0x45,
 }
 
 public enum StatusCode : byte
