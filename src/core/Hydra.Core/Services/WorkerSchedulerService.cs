@@ -1346,7 +1346,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			_log.Information("stream_done_release Sid={Sid} Worker={W} Slot={Slot}",
 				sessionId, lease.WorkerName, lease.SlotId);
-			await lease.DisposeAsync();
+			// Disposal can throw (e.g. RpcClient.DisposeAsync in the lease's
+			// llama RPC). The controller fires NotifyStreamComplete
+			// fire-and-forget, so an unobserved exception would be lost.
+			// Wrap + log explicitly.
+			try { await lease.DisposeAsync(); }
+			catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
 			_decodeSlotSignal.Release();
 		}
 		else

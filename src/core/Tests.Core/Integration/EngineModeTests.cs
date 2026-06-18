@@ -19,7 +19,6 @@ public sealed class EngineModeTests
         // non-OK status with empty meta, simulating an out-of-date llama-server
         // binary (or any future engine RPC regression).
         public bool MakeEnginePrefillFail { get; set; } = false;
-        public bool MakeEngineDecodeFail { get; set; } = false;
 
         // When set, the engine prefill throws OperationCanceledException as if
         // the caller's CancellationToken was cancelled. Review note: the catch
@@ -49,9 +48,6 @@ public sealed class EngineModeTests
                     (byte)StatusCode.Ok,
                     JsonSerializer.Serialize(new { n_past = 2000, state_size = 4096 }),
                     new byte[4096]),
-
-                OpCode.EngineDecode when MakeEngineDecodeFail => new RpcResponse(
-                    (byte)StatusCode.Error, Meta: null, Payload: Array.Empty<byte>()),
 
                 OpCode.EngineDecode => new RpcResponse(
                     (byte)StatusCode.Ok,
