@@ -311,7 +311,7 @@ public sealed class CoordinatorConfigTests
 
             var rtx = workers.Single(w => w.Name == "rtx");
             Assert.Equal(3, rtx.WorkerType);
-            Assert.Equal("balanced", rtx.RouterModelName);
+            Assert.Equal("mini", rtx.RouterModelName);
             Assert.Equal("mini", rtx.PrefillModelName);
             Assert.Equal("balanced", rtx.DecodeModelName);
 
