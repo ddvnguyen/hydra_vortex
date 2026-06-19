@@ -189,7 +189,7 @@ cmake -B build_sm120 \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_BUILD_TESTS=OFF
-cmake --build build_sm120 --target llama-server -j$(nproc)
+cmake --build build_sm120 --target llama-engine -j$(nproc)
 ```
 
 #### P100 (Pascal sm_60, CUDA 12.9)
@@ -215,7 +215,7 @@ cmake -B build_sm60 \
   -DBUILD_SHARED_LIBS=OFF \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-cmake --build build_sm60 --target llama-server -j$(nproc)
+cmake --build build_sm60 --target llama-engine -j$(nproc)
 ```
 
 #### Deploy RTX
