@@ -187,7 +187,23 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                                   (quant_key selects the new quant file; tensor_pattern limits scope, e.g. "blk\\.5\\.ffn_.*_exps")
                         Response: meta={"swapped":<N>,"bytes":<N>,"swap_ms":<N>,"kv_preserved":<bool>}
                                   payload_len=0
+
+0x46  PIPELINE_ATTACH   Two-engine PIPELINE attach (prima.cpp-style) — see epic #161
+                        Request:  key="<slot_id>", payload=JSON {"peer":"<host:port>","ot_split":"<regex>"}
+                                  The head tells the worker which tensors to own; the worker loads
+                                  them from its OWN local model file (no weight transfer), and only
+                                  boundary activations cross the link afterwards.
+                        Response: meta={"mode":"pipeline|solo","peer_connected":<bool>}
+                                  (engine reports "solo"+peer_connected:false on failure →
+                                  caller falls back to single-engine)
+                                  payload_len=0
 ```
+
+**Two-engine run modes (one binary, role flag):** the engine launches as
+`--role standalone|head|worker`. A head also takes `--peer <host:port>` and an
+`--override-tensor` (`-ot`) regex selecting the tensors the peer owns. PIPELINE
+(`0x46`) and COMBINED (`0x44`) both reuse the same embedded worker serving loop.
+See epic #161 and `docs/milestone-perf.md` for the launch topology.
 
 **Error handling for control ops:**
 - `BUSY` (0x04) — slot is currently processing another request; caller retries with
@@ -195,7 +211,7 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
 - `ERROR` (0x02) — server-side failure; meta JSON carries `{"error":"<msg>"}`. Caller
   is responsible for deciding whether to fall back to HTTP (see `EnginePrefillAsync`
   fallback path in `WorkerSchedulerService.cs` — issue #279).
-- The 0x40-0x45 opcodes are NOT supported by the legacy `llama-server` binary (which
+- The 0x40-0x46 opcodes are NOT supported by the legacy `llama-server` binary (which
   only implements 0x30-0x32). The Coordinator detects the binary mismatch and falls
   back to the HTTP prefill path (see `fix/m-perf-p1-279`).
 

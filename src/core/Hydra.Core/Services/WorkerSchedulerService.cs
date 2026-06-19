@@ -39,6 +39,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
+	// Two-engine "work together": peer-engine leases held for the request's duration,
+	// and the active mode per session (for the active-sessions gauge on release).
+	private readonly ConcurrentDictionary<string, SlotLease> _peerLeases = new();
+	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
 	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new(); // traceIds whose streaming has finished
 	private readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
 	private readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
@@ -568,6 +572,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> ColdRouteAsync(WorkItem item)
 	{
+		// Two-engine "work together": a large request may recruit a second engine.
+		// The head runs prefill+decode (engine mode handles both internally) with the
+		// peer attached; if activation fails at decode time we transparently fall back
+		// to solo. Gated behind PipelineEnabled/CombinedEnabled (default off).
+		var mePlan = MultiEngineRouter.Select(_cfg, _cfg.Workers, _tracker, _health, item.EstimatedTokens);
+		if (mePlan is { } plan && TryAcquireMultiEngine(item, plan))
+			return WorkItemState.Decode;
+
 		// Cold route: no warm slot/cache to reuse — the chosen worker prefills the
 		// full prompt. Gate the single-worker atomic route on the prompt size only
 		// (output is ignored). Warm follow-ups are handled in RouteAsync / migration.
@@ -642,6 +654,141 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		_log.Warning("cold_route_no_worker Est={Est} Workers={Workers}", item.EstimatedTokens, string.Join(",", _cfg.Workers.Select(w => $"{w.Name}(cd={w.CanDecode},cp={w.CanPrefill})")));
 		return WorkItemState.None;
 	}
+
+	// ── Two-engine "work together" ──────────────────────────────────────────
+
+	/// <summary>
+	/// Reserve both the head slot and the peer slot for a multi-engine request, and stamp the
+	/// plan onto the item. "Ensure both engine workers free" — if either acquisition fails the
+	/// other is released and we return false so the caller falls back to the normal route.
+	/// </summary>
+	private bool TryAcquireMultiEngine(WorkItem item, MultiEngineRouter.Plan plan)
+	{
+		if (!_tracker.TryAcquireSlot(plan.Head.Name, out var headSlot, "decode"))
+			return false;
+		if (!_tracker.TryAcquireSlot(plan.Peer.Name, out var peerSlot, "decode"))
+		{
+			_tracker.ReleaseSlot(plan.Head.Name, headSlot);
+			return false;
+		}
+
+		var modeStr = ModeLabel(plan.Mode);
+		item.RouteType = $"cold_{modeStr}";
+		item.MultiMode = plan.Mode;
+		item.MultiPeer = plan.Peer.Name;
+		item.MultiSplit = plan.OtSplit;
+		item.DecodeWorker = plan.Head;
+		item.DecodeSlot = headSlot;
+		item.DecodeLease = new SlotLease(plan.Head.Name, headSlot, item.SessionId, LeaseLifetime.Long, _tracker);
+		item.PeerLease = new SlotLease(plan.Peer.Name, peerSlot, item.SessionId, LeaseLifetime.Long, _tracker);
+		LastDispatchedNode = plan.Head.Name;
+
+		CoordinatorMetrics.RequestsTotal.WithLabels(plan.Head.Name, item.RouteType).Inc();
+		CoordinatorMetrics.ColdSessionStarts.Inc();
+		CoordinatorMetrics.MultiEngineAttempts.WithLabels(plan.Head.Name, modeStr).Inc();
+		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} PeerSlot={PS} Split={Split} Est={Est}",
+			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name, peerSlot, plan.OtSplit, item.EstimatedTokens);
+		return true;
+	}
+
+	/// <summary>
+	/// Activate the chosen multi-engine mode on the head just before decode. COMBINED flips the
+	/// MoE expert tensors onto the peer's RPC backend (EngineSetExpertMode); PIPELINE attaches the
+	/// peer and hands it its --override-tensor split (EnginePipelineAttach). Any failure — RPC
+	/// error, or the engine reporting it stayed solo — degrades transparently to solo decode.
+	/// </summary>
+	private async Task ApplyMultiEngineAsync(WorkItem item, WorkerConfig head, int slotId, CancellationToken ct)
+	{
+		if (item.MultiMode == MultiEngineMode.None) return;
+		var modeStr = ModeLabel(item.MultiMode);
+		var llamaRpc = GetLlamaRpcClient(head);
+		try
+		{
+			Hydra.Shared.RpcResponse resp;
+			if (item.MultiMode == MultiEngineMode.Combined)
+			{
+				resp = await llamaRpc.EngineSetExpertModeAsync(slotId.ToString(), "combined", item.TraceId, ct);
+			}
+			else
+			{
+				var addr = !string.IsNullOrWhiteSpace(head.PeerHost)
+					? $"{head.PeerHost}:{head.PeerPort}"
+					: ResolvePeerAddr(item.MultiPeer);
+				resp = await llamaRpc.EnginePipelineAttachAsync(slotId.ToString(), addr, item.MultiSplit ?? "", item.TraceId, ct);
+			}
+
+			if (resp.Status == (byte)StatusCode.Ok && !ReportsSolo(resp.Meta))
+			{
+				CoordinatorMetrics.MultiEngineActive.WithLabels(head.Name, modeStr).Inc();
+				CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Inc();
+				CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(1);
+				_activeMultiSessions[item.SessionId] = modeStr;
+				_log.Information("multiengine_active Sid={Sid} Mode={Mode} Head={Head} Peer={Peer}",
+					item.SessionId, modeStr, head.Name, item.MultiPeer);
+			}
+			else
+			{
+				item.MultiFellBack = true;
+				CoordinatorMetrics.MultiEngineFallback.WithLabels(head.Name, modeStr, "peer_declined").Inc();
+				CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
+				_log.Warning("multiengine_fallback Sid={Sid} Mode={Mode} Status={St} Meta={Meta}",
+					item.SessionId, modeStr, resp.Status, resp.Meta);
+			}
+		}
+		catch (Exception ex)
+		{
+			item.MultiFellBack = true;
+			CoordinatorMetrics.MultiEngineFallback.WithLabels(head.Name, modeStr, "exception").Inc();
+			CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
+			_log.Warning(ex, "multiengine_activate_error Sid={Sid} Mode={Mode}", item.SessionId, modeStr);
+		}
+	}
+
+	private string ResolvePeerAddr(string? peerName)
+	{
+		var peer = _cfg.Workers.FirstOrDefault(w => w.Name == peerName);
+		if (peer == null) return peerName ?? "";
+		var host = !string.IsNullOrWhiteSpace(peer.PeerHost) ? peer.PeerHost! : new Uri(peer.LlamaUrl).Host;
+		var port = peer.PeerPort > 0 ? peer.PeerPort : peer.LlamaRpcPort;
+		return $"{host}:{port}";
+	}
+
+	private static bool ReportsSolo(string? meta)
+	{
+		if (string.IsNullOrWhiteSpace(meta)) return false;
+		try
+		{
+			var m = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(meta);
+			foreach (var key in new[] { "mode", "expert_mode" })
+				if (m?.TryGetValue(key, out var v) == true && v.ValueKind == JsonValueKind.String
+					&& string.Equals(v.GetString(), "solo", StringComparison.OrdinalIgnoreCase))
+					return true;
+			if (m?.TryGetValue("peer_connected", out var pc) == true && pc.ValueKind == JsonValueKind.False)
+				return true;
+		}
+		catch { }
+		return false;
+	}
+
+	private async Task ReleasePeerLeaseAsync(string sessionId, SlotLease lease)
+	{
+		await lease.DisposeAsync();
+		if (_activeMultiSessions.TryRemove(sessionId, out var modeStr))
+			CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Dec();
+	}
+
+	private static string ModeLabel(MultiEngineMode mode) =>
+		mode == MultiEngineMode.Pipeline ? "pipeline" : "combined";
+
+	/// <summary>Working-together status surfaced on the response (and in /status) for observability.</summary>
+	internal static Dictionary<string, object> MultiEngineStatus(WorkItem item) => new()
+	{
+		["engine_mode"] = item.MultiFellBack ? "solo" : ModeLabel(item.MultiMode),
+		["requested_mode"] = ModeLabel(item.MultiMode),
+		["peer"] = item.MultiPeer ?? "",
+		["split"] = item.MultiSplit ?? "",
+		["fell_back"] = item.MultiFellBack
+	};
 
 	private async Task<WorkItemState> ModelLoadAsync(WorkItem item)
 	{
@@ -1144,6 +1291,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			_pipelineCts[item.SessionId] = cts;
 
+			// Two-engine "work together": activate the peer before decode (no-op when solo).
+			if (_cfg.UseLlamaEngine)
+				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
+
 			// HTTP streaming for chat completions (works for both engine and legacy modes).
 			// The engine RPC (EngineDecodeStreamAsync) was previously used here in engine
 			// mode, but the RPC payload is just raw bytes — it collapsed the model's
@@ -1174,6 +1325,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		else
 		{
+			// Two-engine "work together": activate the peer before decode (no-op when solo).
+			if (_cfg.UseLlamaEngine)
+				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, ct);
+
 			// HTTP proxy for chat completions (works for both engine and legacy modes).
 			// The engine RPC (EngineDecodeAsync) was previously used here in engine
 			// mode, but the RPC payload is just raw bytes — it collapsed the model's
@@ -1187,6 +1342,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
 			if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
 				item.LastIdSlot = se.GetInt32();
+			if (item.MultiMode != MultiEngineMode.None)
+				resp["hydra"] = MultiEngineStatus(item);
 			item.Response = resp;
 			item.TokensIn = ExtractUsageInt(resp, "prompt_tokens");
 			item.TokensOut = ExtractUsageInt(resp, "completion_tokens");
@@ -1375,6 +1532,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
 			}
 
+			// Release the peer lease (two-engine) once the stream is fully drained.
+			if (_peerLeases.TryRemove(sessionId, out var peerLease))
+			{
+				peerLease.DisposeAsync().AsTask().ContinueWith(_ => { });
+				if (_activeMultiSessions.TryRemove(sessionId, out var modeStr))
+					CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Dec();
+			}
+
 			// Fire-and-forget the Store Put. The slot is already free; this
 			// write no longer blocks the next request. If the process dies
 			// before the Put completes, the state is lost (same as before,
@@ -1505,6 +1670,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			item.DecodeLease = null;
+		}
+
+		// Peer lease (two-engine): for non-streaming or already-finished streams, release now;
+		// for an in-flight stream, hand it to NotifyStreamComplete alongside the warm decode lease.
+		if (item.PeerLease != null)
+		{
+			if (item.IsStreaming && end == WorkItemState.Done && !streamFinishedEarly)
+				_peerLeases[item.SessionId] = item.PeerLease;
+			else
+				await ReleasePeerLeaseAsync(item.SessionId, item.PeerLease);
+			item.PeerLease = null;
 		}
 
 		if (item.IsStreaming && end == WorkItemState.Done)

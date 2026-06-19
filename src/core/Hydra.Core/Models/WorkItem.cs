@@ -51,6 +51,16 @@ public sealed class WorkItem
 	public int? DecodeSlot { get; set; }
 	public SlotLease? PrefillLease { get; set; }
 	public SlotLease? DecodeLease { get; set; }
+	/// <summary>Two-engine "work together": the mode chosen for this request (None = solo).</summary>
+	public MultiEngineMode MultiMode { get; set; } = MultiEngineMode.None;
+	/// <summary>Lease on the recruited peer engine, held for the request's duration (None = solo).</summary>
+	public SlotLease? PeerLease { get; set; }
+	/// <summary>Name of the peer engine recruited (for status/metrics/logging).</summary>
+	public string? MultiPeer { get; set; }
+	/// <summary>The --override-tensor split pushed to the peer (for status surfacing).</summary>
+	public string? MultiSplit { get; set; }
+	/// <summary>True when the chosen multi-engine mode could not be activated and we ran solo.</summary>
+	public bool MultiFellBack { get; set; }
 	public string RouteType { get; set; } = "";
 	public SessionEntry? Entry { get; set; }
 	public int NPastAfter { get; set; }

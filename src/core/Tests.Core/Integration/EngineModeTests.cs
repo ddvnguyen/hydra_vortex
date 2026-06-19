@@ -14,6 +14,8 @@ public sealed class EngineModeTests
     internal sealed class EngineTestRpcClient : RpcClient
     {
         public List<(OpCode Op, string Key, byte[] Payload)> Calls { get; } = new();
+        /// <summary>When set, EnginePipelineAttach/EngineSetExpertMode report failure (peer down).</summary>
+        public bool FailMultiEngineAttach { get; set; }
 
         // Regression hooks for #279: when set, the matching opcode returns
         // non-OK status with empty meta, simulating an out-of-date llama-server
@@ -33,6 +35,12 @@ public sealed class EngineModeTests
             string traceId, CancellationToken ct)
         {
             Calls.Add((op, key, payload.ToArray()));
+
+            if ((op == OpCode.EnginePipelineAttach || op == OpCode.EngineSetExpertMode) && FailMultiEngineAttach)
+                return Task.FromResult(new RpcResponse(
+                    (byte)StatusCode.Error,
+                    JsonSerializer.Serialize(new { mode = "solo", peer_connected = false }),
+                    []));
 
             var response = op switch
             {
@@ -95,13 +103,17 @@ public sealed class EngineModeTests
         public EngineFixture(
             string runMode = "concurrency",
             int rtxSlots = 2,
-            int p100Slots = 1)
+            int p100Slots = 1,
+            bool pipeline = false,
+            bool combined = false,
+            string multiPolicy = "pipeline")
         {
             Health = new TestHealthMonitor();
             Proxy = new TestCompletionProxy(totalTokens: 150, slotId: 0);
             Ledger = new SessionLedger();
             Tracker = new WorkerTracker();
 
+            var multiEngine = pipeline || combined;
             Cfg = new CoordinatorConfig
             {
                 RunMode = runMode,
@@ -110,10 +122,18 @@ public sealed class EngineModeTests
                 WarmSlotVerificationEnabled = false,
                 MixPrecisionEnabled = false,
                 AtomicThreshold = 2048,
+                PipelineEnabled = pipeline,
+                CombinedEnabled = combined,
+                MultiEnginePolicy = multiPolicy,
+                MultiEngineThreshold = 10,
                 Workers = new List<WorkerConfig>
                 {
-                    new() { Name = "rtx",  Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = rtxSlots,  PrefillPriority = 1, DecodePriority = 2 },
-                    new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://192.168.122.21:8086", WorkerType = 2, Slots = p100Slots, PrefillPriority = 100, DecodePriority = 1 },
+                    new() { Name = "rtx",  Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = rtxSlots,  PrefillPriority = 1, DecodePriority = 2,
+                        Role = multiEngine ? "head" : "standalone", PeerWorker = multiEngine ? "p100" : null,
+                        PeerHost = "192.168.122.21", PeerPort = 9700,
+                        PipelineCapable = multiEngine, CombinedCapable = multiEngine,
+                        PipelineOtSplit = "blk\\.(2[0-9]|3[0-9])\\..*=PEER", CombinedOtSplit = "ffn_.*_exps=PEER" },
+                    new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://192.168.122.21:8086", WorkerType = 2, Slots = p100Slots, PrefillPriority = 100, DecodePriority = 1, Role = multiEngine ? "worker" : "standalone" },
                 }
             };
             foreach (var w in Cfg.Workers)
@@ -209,6 +229,86 @@ public sealed class EngineModeTests
 
         int np2 = f.Ledger.Lookup("sess_ea2")!.NPast;
         Assert.True(np2 >= np1, $"NPast should grow: {np1} -> {np2}");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Two-engine "work together" (PIPELINE / COMBINED)
+    // ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task MultiEngine_Pipeline_AttachesPeerAndDecodes()
+    {
+        await using var f = new EngineFixture(pipeline: true);
+        var proxy = (TestCompletionProxy)f.Proxy;
+
+        var result = await f.SubmitAsync("sess_me1", 20000, 100);
+
+        Assert.True(f.Rpc.HasCall(OpCode.EnginePipelineAttach),
+            "Large request should attach the pipeline peer");
+        var attach = f.Rpc.PayloadAsUtf8(OpCode.EnginePipelineAttach);
+        Assert.Contains("ot_split", attach);
+        Assert.Contains("PEER", attach);
+        // Decode itself always goes through the HTTP proxy (issue #273 hotfix);
+        // PIPELINE only changes which tensors the head/peer own underneath.
+        Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
+            "Engine chat-completion path is disabled (issue #273 hotfix)");
+        Assert.Single(proxy.NonStreamingCalls);
+        Assert.Equal("http://localhost:8080", proxy.NonStreamingCalls[0].NodeUrl);
+
+        var dict = Assert.IsType<Dictionary<string, object>>(result);
+        var hydra = Assert.IsType<Dictionary<string, object>>(dict["hydra"]);
+        Assert.Equal("pipeline", hydra["engine_mode"]);
+        Assert.Equal("p100", hydra["peer"]);
+        Assert.False((bool)hydra["fell_back"]);
+    }
+
+    [Fact]
+    public async Task MultiEngine_Combined_SetsExpertMode()
+    {
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined");
+
+        var result = await f.SubmitAsync("sess_me2", 20000, 100);
+
+        Assert.True(f.Rpc.HasCall(OpCode.EngineSetExpertMode),
+            "COMBINED should flip expert mode on the head");
+        Assert.Equal("combined", Encoding.UTF8.GetString(
+            f.Rpc.Calls.First(c => c.Op == OpCode.EngineSetExpertMode).Payload));
+
+        var hydra = Assert.IsType<Dictionary<string, object>>(
+            ((Dictionary<string, object>)result!)["hydra"]);
+        Assert.Equal("combined", hydra["engine_mode"]);
+    }
+
+    [Fact]
+    public async Task MultiEngine_FallsBackToSolo_WhenPeerDeclines()
+    {
+        await using var f = new EngineFixture(pipeline: true);
+        f.Rpc.FailMultiEngineAttach = true;
+        var proxy = (TestCompletionProxy)f.Proxy;
+
+        var result = await f.SubmitAsync("sess_me3", 20000, 100);
+
+        Assert.True(f.Rpc.HasCall(OpCode.EnginePipelineAttach), "Attach is attempted");
+        // Decode still runs (solo), via the HTTP proxy like every other decode.
+        Assert.Single(proxy.NonStreamingCalls);
+
+        var hydra = Assert.IsType<Dictionary<string, object>>(
+            ((Dictionary<string, object>)result!)["hydra"]);
+        Assert.True((bool)hydra["fell_back"]);
+        Assert.Equal("solo", hydra["engine_mode"]);
+        Assert.Equal("pipeline", hydra["requested_mode"]);
+    }
+
+    [Fact]
+    public async Task MultiEngine_Disabled_NoAttach()
+    {
+        await using var f = new EngineFixture(); // pipeline/combined both off
+
+        await f.SubmitAsync("sess_me4", 20000, 100);
+
+        Assert.False(f.Rpc.HasCall(OpCode.EnginePipelineAttach),
+            "No peer attach when multi-engine is disabled");
+        Assert.False(f.Rpc.HasCall(OpCode.EngineSetExpertMode));
     }
 
     // ─────────────────────────────────────────────────────────────────────
