@@ -302,6 +302,43 @@ The Coordinator distinguishes `ERROR` (real failure) from `NOT_IMPLEMENTED` (a k
 stub on this server build) so it can fall back to solo mode cleanly for stubbed opcodes
 without raising the "engine RPC failed" alert that `ERROR` would.
 
+## Cross-Model KV Safety (M-Perf.9 #289)
+
+The model identity (`model_alias` / `model_hash` / `model_path`) on `STATE_META` (0x32)
+and `STATE_GET` (0x30) lets the Coordinator detect a model mismatch at restore time.
+The KV cache is **quantization-dependent**: a Q3_K prefill produces different KV values
+for the same input than a Q5_K prefill, so transferring KV across quantizations silently
+corrupts decode output.
+
+The Coordinator runs `CrossModelGuard.Decide(storedHash, slotHash, allowCrossModelKvReuse)`
+in `WorkerSchedulerService.RestoreKvAsync` after the StatePut. Outcomes:
+
+| Stored hash | Slot hash | Flag | Outcome | Coordinator action |
+|---|---|---|---|---|
+| empty | empty | — | `Skip` | Proceed (pre-#289 back-compat or META failure) |
+| empty | known | — | `Skip` | Proceed (no stored identity to check) |
+| known | empty | — | `Skip` | Proceed (META failed, can't verify) |
+| known | known | matches | `Proceed` | Proceed (same model, same hash) |
+| known | known | **differs** | `Abort` | Erase slot, re-prefill on the correct model |
+| known | known | differs, `ALLOW=true` | `WarnAndProceed` | Log warning, proceed (likely corrupt decode) |
+
+Operational implications:
+
+- **Same model across P/D phases** is the only safe configuration. Workers that run
+  the same GGUF file produce the same `model_hash`, so cross-worker restores
+  (e.g. RTX prefill → P100 decode) work as long as both load the same model file.
+- **Cross-quantization P/D is mathematically broken** (Q3_K prefill KV ≠ Q5_K weights).
+  The guard would correctly `Abort` such a restore. Operators wanting this must set
+  `HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true` and accept the corrupt-decode risk.
+- The `model_hash` is computed once at model load time (SHA-256 of the GGUF file) and
+  cached on the `llama_model` struct (`llama_model_hash()` in `include/llama.h`).
+  The hash is stable for the model's lifetime; rebuilding the same GGUF produces a
+  different hash.
+- See `src/core/Hydra.Core/Services/CrossModelGuard.cs` for the pure function and
+  `src/core/Tests.Core/CrossModelGuardTests.cs` for the test matrix. The
+  `hydra_cross_model_kv_proceeded_total` / `_skipped_total` / `_warned_total` /
+  `_aborted_total` Prometheus counters expose the decision distribution.
+
 ## Streaming Behavior
 - Payloads > 1 MB MUST be streamed in chunks (default 256 KB read/write buffer)
 - Server MUST NOT buffer entire payload in memory before processing

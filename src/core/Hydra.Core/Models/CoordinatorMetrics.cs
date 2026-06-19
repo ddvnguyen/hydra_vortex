@@ -137,6 +137,16 @@ internal static class CoordinatorMetrics
         "Restores allowed despite model_hash mismatch (ALLOW_CROSS_MODEL_KV_REUSE=true)",
         new CounterConfiguration { LabelNames = new[] { "worker" } });
 
+    public static readonly Counter CrossModelKvSkipped = Metrics.CreateCounter(
+        "hydra_cross_model_kv_skipped_total",
+        "Cross-model check skipped: at least one model_hash empty (pre-#289 data or META failure)",
+        new CounterConfiguration { LabelNames = new[] { "worker" } });
+
+    public static readonly Counter CrossModelKvProceeded = Metrics.CreateCounter(
+        "hydra_cross_model_kv_proceeded_total",
+        "Cross-model check passed: stored and slot model_hash match",
+        new CounterConfiguration { LabelNames = new[] { "worker" } });
+
     public static readonly Counter ModelFallbackTotal = Metrics.CreateCounter(
         "hydra_model_fallback_total",
         "Engine PREFILL fallback: requested model unknown, used resident model",
