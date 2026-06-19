@@ -25,11 +25,12 @@ Environment variables:
 """
 
 import os
-import re
 from uuid import uuid4
 
 import httpx
 import pytest
+
+from prom_helpers import parse_prom_lines, sum_counter
 
 COORD_URL       = os.environ.get("COORD_URL",       "http://localhost:9000")
 COORD_METRICS   = os.environ.get("COORD_METRICS_URL", "http://localhost:9501/metrics")
@@ -92,23 +93,25 @@ async def _get_counter(name: str, labels: dict[str, str] | None = None) -> float
     """
     Read a single Prometheus counter value. Pass `labels` to filter to a
     specific label set. Returns 0.0 if the counter is absent.
+
+    Sums across all matching series — the cross-model guard counters are
+    per-worker (label `worker`), so an unlabeled query returns the total
+    across all workers (rtx + p100). Pass `labels={"worker": "rtx"}` to
+    filter to one worker.
+
+    The parser itself lives in `prom_helpers.py` and is unit-tested in
+    `test_prom_helpers.py` (no live stack required). The earlier inline
+    regex here required whitespace immediately after the metric name,
+    which never matched labeled series like
+    `hydra_cross_model_kv_proceeded_total{worker="rtx"} 1` and made
+    the assertions below false negatives — see PR #296 review.
     """
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(COORD_METRICS)
         resp.raise_for_status()
         body = resp.text
-    pattern = ""
-    if labels:
-        # Build a label matcher: name{label1="v1",label2="v2"}
-        kv = ",".join(f'{k}="{v}"' for k, v in labels.items())
-        pattern = rf"^{re.escape(name)}\{{{re.escape(kv)}\}}\s+([0-9.eE+\-]+)$"
-    else:
-        pattern = rf"^{re.escape(name)}\s+([0-9.eE+\-]+)$"
-    for line in body.splitlines():
-        m = re.match(pattern, line)
-        if m:
-            return float(m.group(1))
-    return 0.0
+    samples = parse_prom_lines(body)
+    return sum_counter(samples, name, labels=labels)
 
 
 @pytest.mark.system

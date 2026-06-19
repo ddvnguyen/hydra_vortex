@@ -132,7 +132,16 @@ public sealed record CoordinatorConfig
 					 PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
 				 }) ?? [];
 
-		// Fallback default worker for testing
+		// Fallback default worker for testing (single-model, no per-phase
+		// model swap). Interpretation (b) of the mix-precision P/D split —
+		// see `DevelopmentRunBook.md` → *Mix-Precision P/D Split Semantics*
+		// and `specs/rpc-protocol.md` → *Cross-Model KV Safety* for the
+		// rationale. Per-phase model names (e.g. prefill_model_name="nano"
+		// + decode_model_name="balanced") would have been the old
+		// cross-quantization shape, which is mathematically broken (Q3_K KV
+		// != Q5_K weights) — the cross-model guard would safely Abort the
+		// restore rather than corrupt output, but it's noisy. Align with
+		// the production `infra/hydra-core/config/workers.json` shape.
 		return new List<WorkerConfig>
 		  {
 				new()
@@ -144,9 +153,7 @@ public sealed record CoordinatorConfig
 					WorkerType = 3,
 					Slots = 2,
 					PrefillPriority = 1,
-					DecodePriority = 2,
-					PrefillModelName = "nano",
-					DecodeModelName = "balanced"
+					DecodePriority = 2
 				},
 				new()
 				{
