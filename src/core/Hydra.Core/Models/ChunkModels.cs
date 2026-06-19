@@ -9,7 +9,14 @@ public sealed record Manifest(
     int NPast,
     long TotalSize,
     List<ChunkRef> Chunks,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    // M-Perf.9 #289: model identity of the slot that built this KV cache.
+    // Empty for pre-#289 manifests (the cross-model guard treats "both empty"
+    // as "skip"). Stored in PG alongside n_past/total_size so the model
+    // identity survives a Coordinator restart.
+    string ModelAlias = "",
+    string ModelHash  = "",
+    string ModelPath  = ""
 );
 
 public sealed record ChunkedPutResult(

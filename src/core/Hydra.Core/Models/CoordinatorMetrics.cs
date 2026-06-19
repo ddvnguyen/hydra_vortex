@@ -120,9 +120,25 @@ internal static class CoordinatorMetrics
         "hydra_save_kv_errors_total", "Background bg-save Put failed (state lost; next resume will be cold)");
 
     // Issue #286: duration of the fire-and-forget bg-save Put. Useful for
-    // sizing the slow-disk / write-bandwidth problem separately from
-    // the slot-release-lag metric (which only captures the StateGet RPC).
+    // sizing the slow-disk / write-bandwidth problem separately from the
+    // slot-release-lag metric (which only captures the StateGet RPC).
     public static readonly Histogram SaveKvAsyncDuration = Metrics.CreateHistogram(
         "hydra_save_kv_async_seconds", "Background bg-save Put duration",
         new[] { "result" });
+
+    // ── M-Perf.9 / Issue #289: cross-model KV safety ──
+    public static readonly Counter CrossModelKvAborted = Metrics.CreateCounter(
+        "hydra_cross_model_kv_aborted_total",
+        "Restores aborted because slot model_hash differs from stored KV model_hash",
+        new CounterConfiguration { LabelNames = new[] { "worker" } });
+
+    public static readonly Counter CrossModelKvWarned = Metrics.CreateCounter(
+        "hydra_cross_model_kv_warned_total",
+        "Restores allowed despite model_hash mismatch (ALLOW_CROSS_MODEL_KV_REUSE=true)",
+        new CounterConfiguration { LabelNames = new[] { "worker" } });
+
+    public static readonly Counter ModelFallbackTotal = Metrics.CreateCounter(
+        "hydra_model_fallback_total",
+        "Engine PREFILL fallback: requested model unknown, used resident model",
+        new CounterConfiguration { LabelNames = new[] { "worker", "requested" } });
 }

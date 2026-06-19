@@ -192,6 +192,17 @@ public class ProtocolTests
         Assert.Equal(0x43, (byte)OpCode.EngineDecode);
         Assert.Equal(0x44, (byte)OpCode.EngineSetExpertMode);
         Assert.Equal(0x45, (byte)OpCode.EngineSwapQuant);
+        Assert.Equal(0x46, (byte)OpCode.EnginePipelineAttach);
+    }
+
+    [Fact]
+    public void OpCode_EnginePipelineAttach_IsAt0x46()
+    {
+        // M-Perf.9 (#289): two-engine "work together" attach. The opcode
+        // lives in the same 0x40-0x46 range as the rest of the engine
+        // control plane; the C++ side stubs the handler with
+        // NOT_IMPLEMENTED until issue #287 lands.
+        Assert.Equal(0x46, (byte)OpCode.EnginePipelineAttach);
     }
 
     [Fact]

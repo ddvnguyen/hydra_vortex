@@ -105,6 +105,18 @@ public class CompletionsController : ControllerBase
 			{
 				Response.ContentType = "text/event-stream";
 				Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
+				// M-Perf.9 #289: surface the model identity that served this
+				// response. The hash is truncated to 12 hex chars (48 bits =
+				// 6 bytes of entropy, enough to disambiguate a few hundred
+				// GGUFs in practice) to keep the header short for log
+				// readability. Full 64-char hash is in the X-Hydra-Model
+				// trailer (see below) for debugging.
+				var model = _scheduler.LastDispatchedModel;
+				var modelHash = _scheduler.LastDispatchedModelHash;
+				if (!string.IsNullOrEmpty(model))
+					Response.Headers["X-Hydra-Model"] = model;
+				if (!string.IsNullOrEmpty(modelHash))
+					Response.Headers["X-Hydra-Model-Hash"] = modelHash.Length > 12 ? modelHash[..12] : modelHash;
 				await foreach (var chunk in stream.WithCancellation(ct))
 				{
 					await Response.Body.WriteAsync(chunk, ct);
@@ -112,6 +124,16 @@ public class CompletionsController : ControllerBase
 				return new EmptyResult();
 			}
 
+			// Non-streaming path: headers must be set on the JsonResult
+			// controller context, not on the response body. We attach the
+			// same model identity headers here.
+			Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
+			var modelNs = _scheduler.LastDispatchedModel;
+			var modelHashNs = _scheduler.LastDispatchedModelHash;
+			if (!string.IsNullOrEmpty(modelNs))
+				Response.Headers["X-Hydra-Model"] = modelNs;
+			if (!string.IsNullOrEmpty(modelHashNs))
+				Response.Headers["X-Hydra-Model-Hash"] = modelHashNs.Length > 12 ? modelHashNs[..12] : modelHashNs;
 			return new JsonResult(result);
 		}
 		catch (OperationCanceledException)
