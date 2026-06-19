@@ -87,7 +87,11 @@ automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
    `gh issue list --label review-finding --state open`; set the item's Status →
    In Progress. → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
-   follow the milestone doc. → `docs/workflow/02-implement.md`
+   follow the milestone doc. → `docs/workflow/02-implement.md`. **If you change
+   a submodule (e.g. `src/llama-cpp`): push the fork branch to its public
+   remote BEFORE bumping the parent's submodule pointer** — a dangling SHA
+   makes the PR unreviewable and breaks fresh clones. Verify with
+   `git ls-remote <fork-url> <branch> | grep <sha>`.
 3. **Test / verify** — unit (`dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`) + E2E
    (`pytest tests/system`) green before PR.
    → `docs/workflow/03-test-verify.md`

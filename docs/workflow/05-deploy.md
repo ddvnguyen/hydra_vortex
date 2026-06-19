@@ -69,19 +69,44 @@ skopeo inspect docker://ghcr.io/ddvnguyen/llama-server-sm60:engine | jq .Digest
 
 ### 3. Push the fork + bump submodule
 
-**Push the fork** branch `hydra-state-streaming` to its remote **and** bump the
-`src/llama-cpp` submodule pointer in the parent repo. Skipping the push leaves the
-pinned SHA dangling → breaks fresh clones and the Deploy CI job.
+**Order matters — always push the fork BEFORE the parent submodule bump is
+merged.** A parent commit that points at an un-pushed submodule SHA leaves the
+PR unreviewable and breaks fresh clones. See `02-implement.md` for the
+contributor-side rule and `04-commit-pr.md` for the verification step.
+
+This step assumes the contributor already pushed during step 2 of the task
+lifecycle (`02-implement.md`). If the submodule bump merged before the fork
+was pushed, the only remediation is a follow-up PR that re-points to a
+reachable SHA.
 
 ```bash
-# In src/llama-cpp/
-git push origin hydra-state-streaming
+# 0. Verify the parent commit's pinned SHA is reachable on the fork.
+#    (This must already be true before merge; this is a belt-and-braces check.)
+SHA=$(git ls-tree HEAD src/llama-cpp | awk '{print $3}')
+URL=$(git config --file .gitmodules --get submodule.src/llama-cpp.url)
+BRANCH=$(git config --file .gitmodules --get submodule.src/llama-cpp.branch)
+git ls-remote "$URL" "refs/heads/$BRANCH" | grep -q "$SHA" \
+  || { echo "FATAL: $SHA is not on $URL  $BRANCH — fix before deploy"; exit 1; }
 
-# Back in parent repo
+# 1. Re-confirm the fork branch is up to date with the pinned SHA.
+#    (The CI build only fetches the submodule pointer; it does not push it.)
+cd src/llama-cpp
+git fetch origin
+git push origin "$BRANCH"   # no-op if already up to date
+
+# 2. (Optional) Bump the parent pointer in a follow-up commit if a
+#    separate fix landed on the fork but not in the parent. The normal
+#    case is: the parent commit that pinned the SHA was already in the
+#    PR, and the fork push was done in step 2 of the task lifecycle.
 cd ../..
 git add src/llama-cpp
+git diff --cached --submodule=log   # confirm the diff is the SHA only
 git commit -m "chore: bump llama.cpp submodule to <sha>"
 ```
+
+**Reminder for `deploy-llama` CI job** — it checks out the submodule with
+`submodules: true`. A dangling pinned SHA makes the CI job fail at the
+checkout step, not at the deploy step. Catch this at PR time, not at deploy.
 
 ## Deploy to RTX
 RTX runs hydra-head as a **container** (`hydra-head-rtx`). Rebuild and redeploy:
