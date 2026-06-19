@@ -31,12 +31,19 @@ internal sealed class TestCompletionProxy : ICompletionProxyService
 	private readonly int _totalTokens;
 	private readonly int _slotId;
 
+	public List<(string NodeUrl, Dictionary<string, object> Body, string TraceId)> NonStreamingCalls { get; } = new();
+	public List<(string NodeUrl, Dictionary<string, object> Body, string TraceId)> StreamingCalls { get; } = new();
+	public Dictionary<string, object>? ResponseOverride { get; set; }
+
 	public TestCompletionProxy(int totalTokens = 150, int slotId = 0)
 		=> (_totalTokens, _slotId) = (totalTokens, slotId);
 
 	public Task<Dictionary<string, object>> ProxyCompletionAsync(
 		string nodeUrl, Dictionary<string, object> body, string traceId, CancellationToken ct)
 	{
+		NonStreamingCalls.Add((nodeUrl, new Dictionary<string, object>(body), traceId));
+		if (ResponseOverride != null)
+			return Task.FromResult(ResponseOverride);
 		return Task.FromResult(new Dictionary<string, object>
 		{
 			["id_slot"] = _slotId,
@@ -48,6 +55,7 @@ internal sealed class TestCompletionProxy : ICompletionProxyService
 		string nodeUrl, Dictionary<string, object> body, string traceId,
 		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
 	{
+		StreamingCalls.Add((nodeUrl, new Dictionary<string, object>(body), traceId));
 		yield return Encoding.UTF8.GetBytes("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n");
 		yield return Encoding.UTF8.GetBytes(
 			$"data: {{\"id_slot\":{_slotId},\"usage\":{{\"total_tokens\":{_totalTokens}}}}}\n\n");
@@ -243,7 +251,7 @@ public sealed class AffinityPathTests
 		lock (e!) { e.NodeName = "rtx"; e.SlotId = 0; e.SlotFreed = false; }
 
 		// Signal stream completion to release decode slot (held on Long lease)
-		f.Scheduler.NotifyStreamComplete("sess_a4");
+		await f.Scheduler.NotifyStreamComplete("sess_a4");
 
 		// Busy P100
 		Assert.True(f.Tracker.TryAcquireSlot("p100", out _));

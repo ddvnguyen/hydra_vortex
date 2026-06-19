@@ -14,6 +14,13 @@ internal static class CoordinatorMetrics
     public static readonly Counter UpstreamTimeouts = Metrics.CreateCounter(
         "hydra_upstream_timeouts_total", "Prefill/complete timeouts");
 
+    // Engine RPC prefill fell back to the HTTP path. Issues #273 (chat)
+    // and #279 (prefill) — see PrefillAsync in WorkerSchedulerService.
+    // Non-zero rate means the deployed llama-server binary is out of date
+    // with the C# engine integration, or a regression in the engine RPC.
+    public static readonly Counter EnginePrefillFallbacks = Metrics.CreateCounter(
+        "hydra_engine_prefill_fallbacks_total", "Engine RPC prefill fell back to HTTP", "node", "reason");
+
     public static readonly Counter MigrationsTotal = Metrics.CreateCounter(
         "hydra_migrations_total", "Total migrations", "from_node", "to_node");
 
@@ -92,4 +99,30 @@ internal static class CoordinatorMetrics
         "hydra_prefill_queue_depth", "Pending requests in prefill queue");
     public static readonly Gauge DecodeQueueDepth = Metrics.CreateGauge(
         "hydra_decode_queue_depth", "Pending requests in decode queue");
+
+    // Issue #284: time from NotifyStreamComplete start to slot lease release.
+    // Should be < 1s for cold sessions; up to 60-120s for warm sessions where
+    // the bg-save (StateGet + Put to Store) is awaited before release.
+    // A p99 > 5 min indicates the bg-save is starving the slot pool.
+    public static readonly Histogram SlotReleaseLag = Metrics.CreateHistogram(
+        "hydra_slot_release_lag_seconds", "Time to release slot after request end",
+        new[] { "node" });
+
+    // Issue #284: count of times NotifyStreamComplete hit a non-fatal error
+    // (e.g. EmitTimeline threw). The lease-release is in a try/catch+finally
+    // so the slot is still released, but the operator should know.
+    public static readonly Counter SlotReleaseErrors = Metrics.CreateCounter(
+        "hydra_slot_release_errors_total", "NotifyStreamComplete threw before lease release (slot was still released by finally)");
+
+    // Issue #286: bg-save (Store Put) errors. The Put is now fire-and-forget
+    // so a failure is logged + counted but does not block slot release.
+    public static readonly Counter SaveKvErrors = Metrics.CreateCounter(
+        "hydra_save_kv_errors_total", "Background bg-save Put failed (state lost; next resume will be cold)");
+
+    // Issue #286: duration of the fire-and-forget bg-save Put. Useful for
+    // sizing the slow-disk / write-bandwidth problem separately from
+    // the slot-release-lag metric (which only captures the StateGet RPC).
+    public static readonly Histogram SaveKvAsyncDuration = Metrics.CreateHistogram(
+        "hydra_save_kv_async_seconds", "Background bg-save Put duration",
+        new[] { "result" });
 }

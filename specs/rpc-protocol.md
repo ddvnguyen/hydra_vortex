@@ -132,40 +132,88 @@ llama-server knows nothing about Store or sessions — it only manages its own s
 plus tokens generated in this session). The next completion request sent to this slot
 MUST have `n_tokens > n_past` or the KV cache will be invalidated.
 
-### llama-engine RPC Operations (engine mode, via --rpc-port)
-The engine binary serves these over the binary RPC transport. key = slot_id as ASCII decimal.
+### llama-engine Control Operations (via --rpc-port, active)
+Hydra.Core drives the `llama-engine` binary entirely over binary RPC. These opcodes
+control prefill, decode, and state transfer end-to-end without falling through to HTTP.
+The engine **only** owns its own slots and KV cache; Store/Session routing is the
+Coordinator's responsibility (Coordinator calls Store RPC, then engine RPC). The
+opcodes live in the `0x40-0x45` range so the `0x33-0x3F` range stays free for future
+Coordinator↔Store extensions (currently `GET_MANIFEST = 0x33`).
+
+key = slot_id as ASCII decimal string (e.g. `"0"`).
 
 ```
-0x40  ENGINE_CONFIGURE   Configure engine for a request. payload=JSON config.
-0x41  ENGINE_INFO        Query engine capabilities/state.
-                         Response meta (two-engine fields):
-                           {"role":"standalone|head|worker",
-                            "mode":"solo|pipeline|combined",
-                            "peer_connected":<bool>,"peer_addr":"<host:port>",
-                            "layer_split":"<ot-regex>","combined_capable":<bool>,
-                            "pipeline_capable":<bool>}
-0x42  ENGINE_PREFILL     Prefill prompt (n_predict=0). meta={"n_past":N,"state_size":N}.
-0x43  ENGINE_DECODE      Generate tokens (streaming). meta may carry
-                         {"mode":"...","peer_connected":<bool>} so the coordinator
-                         can detect transparent fallback.
-0x44  ENGINE_SET_EXPERT_MODE  COMBINED expert-split flip. payload="solo"|"combined".
-                         Response meta reports the ACTUAL mode applied (engine may
-                         report "solo" if the peer is unreachable → caller falls back).
-0x45  ENGINE_SWAP_QUANT  Dynamic quant swap. payload=[2B keylen][key][tensor-regex].
-0x46  ENGINE_PIPELINE_ATTACH  Two-engine PIPELINE attach (prima.cpp-style).
-                         payload=JSON {"peer":"<host:port>","ot_split":"<regex>"}.
-                         The head tells the worker which tensors to own; the worker
-                         loads them from its OWN local model file (no weight transfer),
-                         and only boundary activations cross the link afterwards.
-                         Response meta reports the actual mode ("pipeline" on success,
-                         "solo" + "peer_connected":false on failure → caller falls back).
+0x40  CONFIGURE         Set engine params (n_predict, sampler, batch size, ctx, …)
+                        Request:  key="<slot_id>", payload=JSON {"n_predict":N,"temperature":F,
+                                       "top_p":F,"top_k":N,"seed":N,"batch":N,"ctx":N,...}
+                        Response: meta={"applied":true,"params":{...echo...}}
+                                  payload_len=0
+
+0x41  INFO              Report engine capabilities (arch, quant, peer, ctx, expert modes)
+                        Request:  key="<slot_id>", payload_len=0
+                        Response: meta={"arch":"qwen35moe","quant":"Q4_K_M",
+                                        "peer":"<host:port or solo>",
+                                        "ctx":<N>,"n_layer":<N>,"expert_modes":["solo","combined"]}
+                                  payload_len=0
+
+0x42  PREFILL           Run prefill only (n_predict=0), return n_past and state blob inline
+                        Request:  key="<slot_id>", payload=JSON request body
+                                  (OpenAI chat-completions schema — messages / prompt / images)
+                        Response: meta={"n_past":<N>,"tokens_processed":<N>,"prefill_ms":<N>}
+                                  payload=raw KV state bytes (sized as `payload_len`; ~800 MB at 60-80K ctx)
+                        Note: caller is responsible for keeping `n_tokens > n_past` on the
+                              next completion — otherwise the KV cache is invalidated (see
+                              CLAUDE.md "Critical Facts").
+
+0x43  DECODE            Run decode with streaming token output
+                        Request:  key="<slot_id>", payload=JSON {"n_predict":N,"messages":[...]}
+                        Response: meta={"tokens_generated":<N>,"n_past":<N>,"stop_reason":"<eos|length|n_tokens_limit>"}
+                                  payload=streamed frames of [4B token_id][4B logprob][1B flags]
+                                          (flags: 0x01=final; remaining bits reserved)
+                        Streaming model: single RPC response, server writes payload
+                                         incrementally as tokens are generated. Client
+                                         reads via `RequestStreamAsync` (chunked reader
+                                         in `RpcClient.cs`). `payload_len` in the
+                                         response header is set to the total expected
+                                         size; partial writes are flushed per token.
+
+0x44  SET_EXPERT_MODE   Switch expert mode (solo / combined) — see E2 epic #161-E2
+                        Request:  key="<slot_id>", payload="solo" | "combined"
+                        Response: meta={"mode":"solo|combined","switch_ms":<N>,"next_request_mode":"solo|combined"}
+                                  payload_len=0
+
+0x45  SWAP_QUANT        Swap expert quantization — see E3 epic #161-E3
+                        Request:  key="<slot_id>", payload=[2B quant_key_len LE][quant_key UTF-8][tensor_pattern UTF-8]
+                                  (quant_key selects the new quant file; tensor_pattern limits scope, e.g. "blk\\.5\\.ffn_.*_exps")
+                        Response: meta={"swapped":<N>,"bytes":<N>,"swap_ms":<N>,"kv_preserved":<bool>}
+                                  payload_len=0
+
+0x46  PIPELINE_ATTACH   Two-engine PIPELINE attach (prima.cpp-style) — see epic #161
+                        Request:  key="<slot_id>", payload=JSON {"peer":"<host:port>","ot_split":"<regex>"}
+                                  The head tells the worker which tensors to own; the worker loads
+                                  them from its OWN local model file (no weight transfer), and only
+                                  boundary activations cross the link afterwards.
+                        Response: meta={"mode":"pipeline|solo","peer_connected":<bool>}
+                                  (engine reports "solo"+peer_connected:false on failure →
+                                  caller falls back to single-engine)
+                                  payload_len=0
 ```
 
 **Two-engine run modes (one binary, role flag):** the engine launches as
 `--role standalone|head|worker`. A head also takes `--peer <host:port>` and an
-`--override-tensor` (`-ot`) regex selecting the tensors the peer owns. PIPELINE and
-COMBINED both reuse the same embedded worker serving loop. See the multi-engine plan and
-`docs/milestone-perf.md` for the launch topology.
+`--override-tensor` (`-ot`) regex selecting the tensors the peer owns. PIPELINE
+(`0x46`) and COMBINED (`0x44`) both reuse the same embedded worker serving loop.
+See epic #161 and `docs/milestone-perf.md` for the launch topology.
+
+**Error handling for control ops:**
+- `BUSY` (0x04) — slot is currently processing another request; caller retries with
+  exponential backoff (Coordinator scheduler decides).
+- `ERROR` (0x02) — server-side failure; meta JSON carries `{"error":"<msg>"}`. Caller
+  is responsible for deciding whether to fall back to HTTP (see `EnginePrefillAsync`
+  fallback path in `WorkerSchedulerService.cs` — issue #279).
+- The 0x40-0x46 opcodes are NOT supported by the legacy `llama-server` binary (which
+  only implements 0x30-0x32). The Coordinator detects the binary mismatch and falls
+  back to the HTTP prefill path (see `fix/m-perf-p1-279`).
 
 ### llama-engine HTTP Endpoints (via --port, active)
 llama-engine exposes HTTP endpoints for easier testing and interaction with Hydra.Core.

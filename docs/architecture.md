@@ -79,6 +79,17 @@ Flow for a new session in `concurrency` mode:
 
 The `X-Hydra-Prefill-Node` and `X-Hydra-Node` response headers name the two GPUs used.
 
+**Engine-mode decode path (post-#273):** In engine mode (`HYDRA_LLAMA_ENGINE=true`),
+the control-RPC plane (opcodes 0x40–0x45) is used **only for prefill and KV state
+transfer** (`EnginePrefill` 0x42 → KV blob inline, `StateGet` 0x30, `StatePut` 0x31).
+The actual decode (token streaming back to the client) **always** uses the HTTP
+`/v1/chat/completions` SSE path — even when the llama binary is the `llama-engine`
+fork. The engine-RPC `EngineDecode` (0x43) and `EngineDecodeStreamAsync` client
+methods are retained for the future E2 (expert-mode) spike but are not on the
+production path. This split exists because the raw-bytes `EngineDecode` payload
+collapsed `reasoning_content` → `content` and dropped `finish_reason` / `id_slot`
+/ `timings`, breaking the OAI schema that the Coordinator must return to clients.
+
 ---
 
 ## 4. Routing Algorithm

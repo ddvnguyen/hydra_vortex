@@ -877,42 +877,89 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private async Task<WorkItemState> PrefillAsync(WorkItem item, CancellationToken ct)
 	{
 		var w = item.PrefillWorker!;
+		var engineFailed = false;
+		string? engineFailReason = null;
 
 		if (_cfg.UseLlamaEngine)
 		{
-			// Engine mode: use EnginePrefill RPC which tokenizes internally
-			item.KvRestoredForDecode = false;
-			var slotId = item.PrefillSlot ?? 0;
-			var body = new Dictionary<string, object>(item.Request)
+			// Engine mode: use EnginePrefill RPC which tokenizes internally.
+			// Defensive fallback (#279): if the engine RPC fails — e.g., the
+			// deployed llama-server binary is older than the C# integration
+			// and doesn't know opcode 0x42, or any future regression — fall
+			// through to the HTTP path below instead of returning 503. The
+			// HTTP path uses the same OAI body and slot, so the user-visible
+			// behavior is identical except for a slightly higher prefill
+			// latency (HTTP JSON overhead vs the binary engine RPC).
+			try
 			{
-				["stream"] = false,
-				["n_predict"] = 0,
-				["messages"] = item.Messages
-			};
-			if (item.PrefillSlot == null)
-				item.PrefillSlot = slotId;
-			var requestJson = JsonSerializer.Serialize(body);
-			var llamaRpc = GetLlamaRpcClient(w);
-			var resp = await llamaRpc.EnginePrefillAsync(slotId.ToString(), requestJson, item.TraceId, ct);
-			if (resp.Status != (byte)StatusCode.Ok)
-				throw new InvalidOperationException($"EnginePrefill failed: {resp.Meta}");
+				item.KvRestoredForDecode = false;
+				var slotId = item.PrefillSlot ?? 0;
+				var body = new Dictionary<string, object>(item.Request)
+				{
+					["stream"] = false,
+					["n_predict"] = 0,
+					["messages"] = item.Messages
+				};
+				if (item.PrefillSlot == null)
+					item.PrefillSlot = slotId;
+				var requestJson = JsonSerializer.Serialize(body);
+				var llamaRpc = GetLlamaRpcClient(w);
+				var resp = await llamaRpc.EnginePrefillAsync(slotId.ToString(), requestJson, item.TraceId, ct);
+				if (resp.Status != (byte)StatusCode.Ok)
+					throw new InvalidOperationException($"EnginePrefill failed: {resp.Meta}");
 
-			var meta = resp.Meta != null
-				? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
-				: null;
-			item.NPastAfter = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
-			item.KvBlob = resp.Payload; // KV state blob for SaveKv
+				var meta = resp.Meta != null
+					? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
+					: null;
+				item.NPastAfter = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
+				item.KvBlob = resp.Payload; // KV state blob for SaveKv
 
-			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est}",
-				item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens);
-			if (item.NPastAfter > 0)
+				_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est}",
+					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens);
+				if (item.NPastAfter > 0)
+				{
+					_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
+					if (item.PrefillSlot == null || item.PrefillSlot == 0)
+						ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
+				}
+			}
+			catch (Exception ex) when (ex is not OperationCanceledException)
 			{
-				_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
-				if (item.PrefillSlot == null || item.PrefillSlot == 0)
-					ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
+				// Engine RPC failed — fall through to the HTTP path below.
+				// The HTTP path uses the same slot (item.PrefillSlot, already
+				// acquired in ColdRouteAsync) and the same OAI body
+				// (item.Request). The HTTP prefill on the same slot either
+				// reuses the prefix cache or re-prefills from scratch —
+				// either way the slot ends up with the right KV state for
+				// SaveKv → migration → decode.
+				//
+				// Correctness note: the fallback's SaveKv path (called after
+				// the HTTP prefill succeeds) uses the StateGet RPC opcode
+				// (0x40), which the older binary DOES support — the 2-commit
+				// gap behind #279 only added the 0x42 (EnginePrefill) dispatch,
+				// not the 0x40 (StateGet) one. So in the specific #279 scenario,
+				// the save path is unaffected by the same binary mismatch. If
+				// a future gap ever covers StateGet, this fallback's correctness
+				// degrades and we need to revisit.
+				engineFailed = true;
+				engineFailReason = ex.Message;
+				item.KvBlob = null; // engine didn't produce a blob
+				CoordinatorMetrics.EnginePrefillFallbacks
+					.WithLabels(w.Name, "engine_rpc_error")
+					.Inc();
+				_log.Warning(ex,
+					"engine_prefill_fell_back_to_http Sid={Sid} Worker={W} Slot={Slot} Reason={Reason}",
+					item.SessionId, w.Name, item.PrefillSlot, engineFailReason);
 			}
 		}
-		else
+
+		// HTTP path — taken when:
+		//   - Legacy non-engine mode (_cfg.UseLlamaEngine = false), OR
+		//   - Engine mode but the engine RPC failed above (engineFailed = true).
+		// In both cases the path is identical: send an OAI chat-completion
+		// with n_predict=0 to the llama-server, which will tokenize the
+		// prompt, reuse the slot's prefix cache, and prefill the rest.
+		if (!_cfg.UseLlamaEngine || engineFailed)
 		{
 			var body = new Dictionary<string, object>(item.Request)
 			{
@@ -928,8 +975,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.LastIdSlot = item.PrefillSlot;
 
 			item.NPastAfter = ExtractTotalTokens(resp);
-			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est}",
-				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens);
+			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est} ViaHttp={Http}",
+				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens, engineFailed);
 			if (item.NPastAfter > 0)
 			{
 				_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -1244,44 +1291,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			_pipelineCts[item.SessionId] = cts;
 
-			IAsyncEnumerable<byte[]> streamTask;
+			// Two-engine "work together": activate the peer before decode (no-op when solo).
 			if (_cfg.UseLlamaEngine)
-			{
-				// Engine mode streaming: use EngineDecode RPC with streaming
-				var slotId = item.DecodeSlot ?? item.LastIdSlot ?? 0;
-				// Two-engine "work together": activate the peer before decode (no-op when solo).
-				await ApplyMultiEngineAsync(item, w, slotId, cts.Token);
-				var maxTokensVal = item.Request.TryGetValue("max_tokens", out var mtv2) && mtv2 != null
-					? Convert.ToInt32(mtv2) : 512;
-				var isWarmSession = item.Entry?.NPast > 0;
-				var hasMessages = item.Messages is { Count: > 0 }
-					&& !item.KvRestoredForDecode
-					&& !isWarmSession
-					&& item.LastIdSlot == null
-					&& item.PrefillWorker == null;
+				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
 
-				string? messagesJson = hasMessages ? JsonSerializer.Serialize(item.Messages) : null;
-				if (hasMessages)
-					_log.Information("decode_engine_atomic_stream Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
-						item.SessionId, w.Name, slotId, maxTokensVal);
-				else
-					_log.Information("decode_engine_cross_gpu_stream Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
-						item.SessionId, w.Name, slotId, maxTokensVal);
-
-				var llamaRpc = GetLlamaRpcClient(w);
-				var rpcStream = llamaRpc.EngineDecodeStreamAsync(
-					slotId.ToString(), maxTokensVal, messagesJson, item.TraceId, cts.Token);
-				// Convert RPC token chunks to SSE format
-				streamTask = ConvertRpcStreamToSse(rpcStream, item.SessionId, item.TraceId, cts.Token);
-			}
-			else
-			{
-				// Legacy HTTP streaming: use ProxyCompletionStreamAsync
-				// Ask llama-server to emit a final usage chunk so token counts are
-				// available on streamed requests (OpenAI omits usage from streams by default).
-				item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
-				streamTask = _proxy.ProxyCompletionStreamAsync(w.LlamaUrl, item.Request, item.TraceId, cts.Token);
-			}
+			// HTTP streaming for chat completions (works for both engine and legacy modes).
+			// The engine RPC (EngineDecodeStreamAsync) was previously used here in engine
+			// mode, but the RPC payload is just raw bytes — it collapsed the model's
+			// `reasoning_content` into `content` and dropped `finish_reason`/`id_slot`/
+			// `timings`, making the response unusable for reasoning models like
+			// Qwopus3.6-35B-A3B (--reasoning on). The HTTP proxy preserves the full
+			// OpenAI schema including `reasoning_content`. The engine RPC is still used
+			// for prefill (EnginePrefill) and KV state (StateGet/Put). See issue #273.
+			// Ask llama-server to emit a final usage chunk so token counts are
+			// available on streamed requests (OpenAI omits usage from streams by default).
+			item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
+			IAsyncEnumerable<byte[]> streamTask = _proxy.ProxyCompletionStreamAsync(
+				w.LlamaUrl, item.Request, item.TraceId, cts.Token);
 
 			item.DecodeChunks = TrackStreamNPast(streamTask, item);
 			// Defer BgSave until stream completes — slot is still processing now.
@@ -1297,88 +1323,39 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				_ledger.Register(item.SessionId, w.Name, item.DecodeSlot, item.NPastAfter, item.PrefixHash);
 			return WorkItemState.Done;
 		}
-		else if (_cfg.UseLlamaEngine)
-		{
-			// Engine mode (non-streaming): use EngineDecode RPC.
-			// Send messages (atomic prefill+decode) only when the KV is NOT
-			// already in the slot. KV is present when:
-			//   - Warm affinity: slot has KV from previous decode (LastIdSlot set)
-			//   - Cross-GPU/migration: KV restored via StatePut (KvRestoredForDecode set)
-			var slotId = item.DecodeSlot ?? item.LastIdSlot ?? 0;
-			// Two-engine "work together": activate the peer before decode (no-op when solo).
-			await ApplyMultiEngineAsync(item, w, slotId, ct);
-			var maxTokensVal = item.Request.TryGetValue("max_tokens", out var mtv2) && mtv2 != null
-				? Convert.ToInt32(mtv2) : 512;
-			var isWarmSession = item.Entry?.NPast > 0;
-			var hasMessages = item.Messages is { Count: > 0 }
-				&& !item.KvRestoredForDecode
-				&& !isWarmSession
-				&& item.LastIdSlot == null
-				&& item.PrefillWorker == null;
-
-			string? messagesJson = hasMessages ? JsonSerializer.Serialize(item.Messages) : null;
-			if (hasMessages)
-				_log.Information("decode_engine_atomic Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
-					item.SessionId, w.Name, slotId, maxTokensVal);
-			else
-				_log.Information("decode_engine_cross_gpu Sid={Sid} Node={Node} Slot={Slot} MaxTokens={Mt}",
-					item.SessionId, w.Name, slotId, maxTokensVal);
-
-			var llamaRpc = GetLlamaRpcClient(w);
-			var resp = await llamaRpc.EngineDecodeAsync(
-				slotId.ToString(), maxTokensVal, messagesJson, item.TraceId, ct);
-
-			if (resp.Status != (byte)StatusCode.Ok)
-				throw new InvalidOperationException($"EngineDecode failed: {resp.Meta}");
-
-			var meta = resp.Meta != null
-				? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
-				: null;
-			var tokensGenerated = meta?.TryGetValue("tokens_generated", out var tg) == true ? tg.GetInt32() : 0;
-			var nPast = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
-			item.NPastAfter = nPast > 0 ? nPast : item.NPastAfter;
-
-			var generatedText = resp.Payload != null ? Encoding.UTF8.GetString(resp.Payload) : "";
-			item.Response = new Dictionary<string, object>
-			{
-				["choices"] = new List<Dictionary<string, object>>
-				{
-					new()
-					{
-						["message"] = new Dictionary<string, object>
-						{
-							["role"] = "assistant",
-							["content"] = generatedText
-						}
-					}
-				},
-				["usage"] = new Dictionary<string, object>
-				{
-					["prompt_tokens"] = Math.Max(0, item.NPastAfter - tokensGenerated),
-					["completion_tokens"] = tokensGenerated,
-					["total_tokens"] = item.NPastAfter
-				}
-			};
-			item.TokensIn = item.NPastAfter;
-			item.TokensOut = tokensGenerated;
-			item.LastIdSlot = slotId;
-			if (item.MultiMode != MultiEngineMode.None)
-				((Dictionary<string, object>)item.Response)["hydra"] = MultiEngineStatus(item);
-			TrackAfterCompletion(item.SessionId, (Dictionary<string, object>)item.Response);
-			// Register in ledger so Lookup succeeds (atomic path skips RestoreKvAsync)
-			if (_ledger.Lookup(item.SessionId) == null)
-				_ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
-		}
 		else
 		{
+			// Two-engine "work together": activate the peer before decode (no-op when solo).
+			if (_cfg.UseLlamaEngine)
+				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, ct);
+
+			// HTTP proxy for chat completions (works for both engine and legacy modes).
+			// The engine RPC (EngineDecodeAsync) was previously used here in engine
+			// mode, but the RPC payload is just raw bytes — it collapsed the model's
+			// `reasoning_content` into `content` and dropped `finish_reason`/`id_slot`/
+			// `timings`, making the response unusable for reasoning models like
+			// Qwopus3.6-35B-A3B (--reasoning on). The HTTP proxy preserves the full
+			// OpenAI schema including `reasoning_content`. The engine RPC is still used
+			// for prefill (EnginePrefill) and KV state (StateGet/Put). See issue #273.
 			using var syncCts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			var resp = await _proxy.ProxyCompletionAsync(
 				w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
 			if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
 				item.LastIdSlot = se.GetInt32();
+			if (item.MultiMode != MultiEngineMode.None)
+				resp["hydra"] = MultiEngineStatus(item);
 			item.Response = resp;
 			item.TokensIn = ExtractUsageInt(resp, "prompt_tokens");
 			item.TokensOut = ExtractUsageInt(resp, "completion_tokens");
+
+			// Register in ledger so /status can find the session. The cold_atomic HTTP
+			// path skips RestoreKvAsync (which would have registered in the P/D split
+			// path). The previous engine path registered inline; the HTTP path never
+			// did and sessions went missing from /status. Register first so the
+			// TrackAfterCompletion call below can update NPast on the live entry.
+			if (_ledger.Lookup(item.SessionId) == null)
+				_ledger.Register(item.SessionId, w.Name,
+					item.LastIdSlot ?? 0, item.NPastAfter, item.PrefixHash);
 
 			// Track n_past from completion response
 			TrackAfterCompletion(item.SessionId, resp);
@@ -1390,40 +1367,46 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> BgSaveAsync(WorkItem item)
 	{
-		_ = Task.Run(async () =>
+		// Issue #277: BgSave was previously fire-and-forget (`_ = Task.Run(...)`).
+		// The race: a new decode can TryAcquireSlot the same slot and start its chat
+		// completion while the previous turn's StateGet RPC is still in flight on
+		// llama-server, which serializes per-slot — the new decode hangs for the
+		// 30s HTTP timeout. Fix: await the bg_save synchronously so it completes
+		// before BgSaveAsync returns. The state machine blocks for the (typically
+		// sub-second) bg_save, but the response is already sent to the client so
+		// the user sees no extra latency. Only the next queued item is delayed.
+		var w = item.DecodeWorker!;
+		var storeKey = $"{item.SessionId}.kv";
+
+		try
 		{
-			try
+			if (_cfg.UseLlamaEngine && item.KvBlob != null)
 			{
-				var w = item.DecodeWorker!;
-				var storeKey = $"{item.SessionId}.kv";
+				// Engine mode: KV blob already in memory from EngineDecode
+				await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+					storeKey, item.KvBlob, item.TraceId, CancellationToken.None);
+				item.KvBlob = null;
+				_ledger.MarkStoreState(item.SessionId);
+				_log.Information("bg_saved Sid={Sid} (engine, KvBlob)", item.SessionId);
+			}
+			else
+			{
+				var slotId = item.LastIdSlot ?? 0;
+				var llamaRpc = GetLlamaRpcClient(w);
+				var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+					slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
 
-				if (_cfg.UseLlamaEngine && item.KvBlob != null)
+				if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
 				{
-					// Engine mode: KV blob already in memory from EngineDecode
 					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-						storeKey, item.KvBlob, item.TraceId, CancellationToken.None);
-					item.KvBlob = null;
+						storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
 					_ledger.MarkStoreState(item.SessionId);
-					_log.Information("bg_saved Sid={Sid} (engine, KvBlob)", item.SessionId);
-				}
-				else
-				{
-					var slotId = item.LastIdSlot ?? 0;
-					var llamaRpc = GetLlamaRpcClient(w);
-					var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-						slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
-
-					if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
-					{
-						await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-							storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
-						_ledger.MarkStoreState(item.SessionId);
-						_log.Information("bg_saved Sid={Sid}", item.SessionId);
-					}
+					_log.Information("bg_saved Sid={Sid}", item.SessionId);
 				}
 			}
-			catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
-		});
+		}
+		catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
+
 		return WorkItemState.Done;
 	}
 
@@ -1464,77 +1447,168 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			sessionId, nodeName, lease.SlotId);
 	}
 
-	public void NotifyStreamComplete(string sessionId)
+	public async Task NotifyStreamComplete(string sessionId)
 	{
-		// Key _streamCompleted by TraceId (per-turn) to avoid stale entries
-		// from failed requests leaking into subsequent turns for the same session.
-		if (_pendingBgSaves.TryGetValue(sessionId, out var bgInfo) && bgInfo.TraceId is { Length: > 0 } traceId)
-			_streamCompleted.TryAdd(traceId, 0);
-
-		// Emit the deferred timeline now that the stream is done — decode_ms/total_ms
-		// cover the full stream duration.
-		if (_pendingTimelines.TryRemove(sessionId, out var timelineItem))
+		// Issue #284 + #286: two related bugs fixed together.
+		//
+		// 1) Lease release was at the END of NotifyStreamComplete (in the finally
+		//    block), AFTER the bg-save's StateGet + Store Put completed. For
+		//    14K-20K-token warm sessions, the bg-save is ~100-200 MB; the
+		//    RPC + disk write could take 10-60s. The slot was held the whole
+		//    time, starving the pool under opencode-style concurrent load.
+		//
+		// 2) An exception in the early steps (TryAdd / TryRemove / EmitTimeline)
+		//    could skip the finally, leaking the slot forever.
+		//
+		// Fix: capture the state blob via StateGet, then release the slot
+		// IMMEDIATELY, then write to Store. The blob is in our memory
+		// (stateResp.Payload is a fresh byte[] from ReadPayloadAsync) so the
+		// Put no longer needs the engine slot. The Put is fire-and-forget
+		// below: NotifyStreamComplete returns as soon as the slot is free.
+		// The defensive finally in #285 stays in place in case the early
+		// steps throw before we reach the in-block slot release.
+		var releaseStart = System.Diagnostics.Stopwatch.StartNew();
+		string? releaseNode = null;
+		try
 		{
-			FinalizeStreamPhases(timelineItem);
-			CoordinatorMetrics.DecodeDuration
-				.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown", RouteLabel(timelineItem))
-				.Observe(timelineItem.Phases.GetValueOrDefault("decode_ms") / 1000.0);
-			EmitTimeline(timelineItem);
-		}
+			// Key _streamCompleted by TraceId (per-turn) to avoid stale entries
+			// from failed requests leaking into subsequent turns for the same session.
+			if (_pendingBgSaves.TryGetValue(sessionId, out var bgInfo) && bgInfo.TraceId is { Length: > 0 } traceId)
+				_streamCompleted.TryAdd(traceId, 0);
 
-		// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct)
-		if (_pipelineCts.TryRemove(sessionId, out var pipelineCts))
-			pipelineCts.Dispose();
-
-		// Fire deferred BgSave — the slot is now idle, StateGet will succeed
-		if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
-		{
-			var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo2.WorkerName);
-			if (w != null)
+			// Emit the deferred timeline now that the stream is done — decode_ms/total_ms
+			// cover the full stream duration.
+			if (_pendingTimelines.TryRemove(sessionId, out var timelineItem))
 			{
-				_ = Task.Run(async () =>
+				FinalizeStreamPhases(timelineItem);
+				CoordinatorMetrics.DecodeDuration
+					.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown", RouteLabel(timelineItem))
+					.Observe(timelineItem.Phases.GetValueOrDefault("decode_ms") / 1000.0);
+				EmitTimeline(timelineItem);
+			}
+
+			// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct)
+			if (_pipelineCts.TryRemove(sessionId, out var pipelineCts))
+				pipelineCts.Dispose();
+
+			// Capture the KV blob from the engine. This RPC must hold the slot
+			// (it reads from the engine's slot buffer), but it's a single round
+			// trip that returns a fresh byte[] in our memory.
+			Hydra.Shared.RpcResponse? stateResp = null;
+			string? bgTraceId = null;
+			if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
+			{
+				var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo2.WorkerName);
+				if (w != null)
 				{
+					releaseNode = w.Name;
+					bgTraceId = bgInfo2.TraceId;
 					try
 					{
 						var llamaRpc = GetLlamaRpcClient(w);
-						var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+						stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
 							bgInfo2.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo2.TraceId, CancellationToken.None);
-						if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
-						{
-							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-								$"{sessionId}.kv", stateResp.Payload, bgInfo2.TraceId, CancellationToken.None);
-							_ledger.MarkStoreState(sessionId);
-							_log.Information("bg_saved Sid={Sid}", sessionId);
-						}
-						else
-						{
-							_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
-						}
 					}
-					catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
-				});
+					catch (Exception ex) { _log.Error(ex, "bg_state_get_failed"); }
+				}
+			}
+
+			// ★ Release slot NOW — the blob is in our memory (or StateGet failed,
+			// in which case there's no blob to save). The Put below does not need
+			// the slot. This is the key change for #286: slot-release lag drops
+			// from 10-60s to <100ms.
+			if (_warmLeases.TryRemove(sessionId, out var lease))
+			{
+				_log.Information("stream_done_release Sid={Sid} Worker={W} Slot={Slot}",
+					sessionId, lease.WorkerName, lease.SlotId);
+				if (releaseNode is null) releaseNode = lease.WorkerName;
+				try { await lease.DisposeAsync(); }
+				catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
+				_decodeSlotSignal.Release();
+			}
+			else
+			{
+				_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
+					sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
+			}
+
+			// Release the peer lease (two-engine) once the stream is fully drained.
+			if (_peerLeases.TryRemove(sessionId, out var peerLease))
+			{
+				peerLease.DisposeAsync().AsTask().ContinueWith(_ => { });
+				if (_activeMultiSessions.TryRemove(sessionId, out var modeStr))
+					CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Dec();
+			}
+
+			// Fire-and-forget the Store Put. The slot is already free; this
+			// write no longer blocks the next request. If the process dies
+			// before the Put completes, the state is lost (same as before,
+			// since the old code also Put in this same task — just with the
+			// slot held the whole time). Failures are logged, not raised.
+			if (stateResp is { Status: (byte)Hydra.Shared.StatusCode.Ok })
+			{
+				_ = WriteStateToStoreAsync(stateResp.Payload, sessionId, bgTraceId ?? "");
+			}
+			else if (stateResp is { Status: not (byte)Hydra.Shared.StatusCode.Ok })
+			{
+				_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
 			}
 		}
-
-		// Release the peer lease (two-engine) once the stream is fully drained.
-		if (_peerLeases.TryRemove(sessionId, out var peerLease))
+		catch (Exception ex)
 		{
-			peerLease.DisposeAsync().AsTask().ContinueWith(_ => { });
-			if (_activeMultiSessions.TryRemove(sessionId, out var modeStr))
-				CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Dec();
+			// Issue #284: a non-fatal error in the early steps must not leak the slot.
+			// Log + count, then fall through to lease release in finally.
+			_log.Error(ex, "stream_complete_early_error Sid={Sid}", sessionId);
+			CoordinatorMetrics.SlotReleaseErrors.Inc();
 		}
+		finally
+		{
+			// Defensive recovery: if the try block threw before reaching the
+			// in-block lease release, release here. TryRemove is idempotent,
+			// so a double release is impossible.
+			if (_warmLeases.TryRemove(sessionId, out var lease))
+			{
+				_log.Information("stream_done_release_recovery Sid={Sid} Worker={W} Slot={Slot}",
+					sessionId, lease.WorkerName, lease.SlotId);
+				if (releaseNode is null) releaseNode = lease.WorkerName;
+				try { await lease.DisposeAsync(); }
+				catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
+				_decodeSlotSignal.Release();
+			}
 
-		if (_warmLeases.TryRemove(sessionId, out var lease))
-		{
-			_log.Information("stream_done_release Sid={Sid} Worker={W} Slot={Slot}",
-				sessionId, lease.WorkerName, lease.SlotId);
-			lease.DisposeAsync().AsTask().ContinueWith(_ => { });
-			_decodeSlotSignal.Release();
+			// Issue #284: record the time the slot was held after the request ended.
+			releaseStart.Stop();
+			CoordinatorMetrics.SlotReleaseLag
+				.WithLabels(releaseNode ?? "unknown")
+				.Observe(releaseStart.Elapsed.TotalSeconds);
 		}
-		else
+	}
+
+	// Fire-and-forget disk write. Runs in a separate task so NotifyStreamComplete
+	// can return as soon as the slot is released. Failures are logged.
+	private async Task WriteStateToStoreAsync(byte[] stateBlob, string sessionId, string traceId)
+	{
+		var saveStart = System.Diagnostics.Stopwatch.StartNew();
+		try
 		{
-			_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
-				sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
+			await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+				$"{sessionId}.kv", stateBlob, traceId, CancellationToken.None);
+			_ledger.MarkStoreState(sessionId);
+			_log.Information("bg_saved Sid={Sid} bytes={Bytes} ms={Ms}",
+				sessionId, stateBlob.Length, saveStart.ElapsedMilliseconds);
+		}
+		catch (Exception ex)
+		{
+			_log.Error(ex, "bg_save_async_failed Sid={Sid} bytes={Bytes}",
+				sessionId, stateBlob.Length);
+			CoordinatorMetrics.SaveKvErrors.Inc();
+		}
+		finally
+		{
+			saveStart.Stop();
+			CoordinatorMetrics.SaveKvAsyncDuration
+				.WithLabels("ok") // could be enriched with success/failure label
+				.Observe(saveStart.Elapsed.TotalSeconds);
 		}
 	}
 
@@ -2094,52 +2168,5 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
 		_llamaRpcClients[w.Name] = client;
 		return client;
-	}
-
-	// ── Engine mode streaming: convert RPC token chunks to SSE format ──
-
-	private async IAsyncEnumerable<byte[]> ConvertRpcStreamToSse(
-		IAsyncEnumerable<byte[]> rpcStream, string sessionId, string traceId,
-		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
-	{
-		// Send initial role chunk
-		var roleChunk = JsonSerializer.Serialize(new
-		{
-			choices = new[]
-			{
-				new
-				{
-					delta = new { role = "assistant", content = "" },
-					index = 0
-				}
-			}
-		});
-		yield return Encoding.UTF8.GetBytes($"data: {roleChunk}\n\n");
-
-		// RPC stream yields raw token bytes (already parsed by RpcClient.RequestStreamAsync)
-		await foreach (var tokenBytes in rpcStream.WithCancellation(ct))
-		{
-			if (tokenBytes.Length == 0)
-				continue;
-
-			var tokenStr = Encoding.UTF8.GetString(tokenBytes);
-
-			// Convert to SSE format
-			var sseChunk = JsonSerializer.Serialize(new
-			{
-				choices = new[]
-				{
-					new
-					{
-						delta = new { content = tokenStr },
-						index = 0
-					}
-				}
-			});
-			yield return Encoding.UTF8.GetBytes($"data: {sseChunk}\n\n");
-		}
-
-		// Send final [DONE] chunk
-		yield return Encoding.UTF8.GetBytes("data: [DONE]\n\n");
 	}
 }
