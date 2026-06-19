@@ -40,8 +40,12 @@
 > ```
 >
 > If the verification fails, **do not open the PR**. Push the submodule branch
-> from inside the submodule's working tree (`git -C src/llama-cpp push origin
-> <branch>`), re-bump the parent, and re-verify. This is the exact failure mode
+> from inside the submodule's working tree (`git -C src/llama-cpp push ddvnguyen
+> hydra-fork`), re-bump the parent, and re-verify. This is the exact failure mode
 > that triggered review-finding P0 on PR #290.
+>
+> **Cross-repo coordination.** If this PR pairs with a fork PR in
+> `ddvnguyen/llama.cpp` (i.e. the C++ change lives there first), the parent PR
+> body must cross-link it. See `08-llama-fork.md` for the linking rules.
 
 → Next: `05-deploy.md` (if runtime/fork touched) else `07-issue-and-close.md`

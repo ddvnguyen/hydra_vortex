@@ -104,6 +104,10 @@ automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
 7. **Issue + close-out** — new problem → `gh issue create --label review-finding`
    (auto-added to the Project); finished item's Status → Done (auto on PR-merge/close).
    → `docs/workflow/07-issue-and-close.md`
+8. **Cross-repo coordination** *(only if the change touches `src/llama-cpp`)* —
+   file the **fork issue** in `ddvnguyen/llama.cpp`, open the **fork PR** against
+   `hydra-fork`, push the fork **before** the parent submodule bump, and
+   cross-link both sides. → `docs/workflow/08-llama-fork.md`
 
 ## GitHub Workflow (MANDATORY for all coding agents)
 

@@ -11,7 +11,7 @@ Redeploy via the control plane —
 ## llama.cpp fork change — three parts
 
 ### 1. Build per node
-Build the engine-enabled llama-server with the `hydra-state-streaming` branch patches:
+Build the engine-enabled llama-server with the `hydra-fork` branch patches:
 
 | Node   | Arch   | CUDA      | Build flags                              | Output path                    |
 |--------|--------|-----------|------------------------------------------|--------------------------------|
@@ -78,6 +78,12 @@ This step assumes the contributor already pushed during step 2 of the task
 lifecycle (`02-implement.md`). If the submodule bump merged before the fork
 was pushed, the only remediation is a follow-up PR that re-points to a
 reachable SHA.
+
+**Cross-repo coordination.** When a Hydra feature requires a C++ change, the
+work must produce a **fork issue** in `ddvnguyen/llama.cpp` *and* a **fork PR**
+merged to `hydra-fork` *before* the parent submodule bump lands. The
+`08-llama-fork.md` step is the canonical coordinator for that flow; this
+deploy step is the parent-side mirror of the same work.
 
 ```bash
 # 0. Verify the parent commit's pinned SHA is reachable on the fork.
