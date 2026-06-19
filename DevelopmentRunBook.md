@@ -3,25 +3,36 @@
 ## Service Map
 
 ```
-Client (HTTP) → Hydra.Core :9000              [C#/.NET 10 — HTTP API + Store + Router]
+Client (HTTP) → Hydra.Core :9000             [C#/.NET 10 — HTTP API + Store + Router]
                  │ HTTP completions                │ HTTP completions
                  │ RPC StateGet/Put (:9503)        │ RPC StateGet/Put (:9502)
                  ▼                                 ▼
-            llama :8080                       llama :8086          [C++ fork]
-            hydra RPC :9503                   hydra RPC :9502
+            Hydra Head RTX                    Hydra Head P100            [Go]
+            │  llama :8080                    │  llama :8086            [C++ fork]
+            │  hydra RPC :9503                │  hydra RPC :9502
+            │  node_exporter :9100            │  node_exporter :9100
+            │  nvidia_exporter :9835          │  nvidia_exporter :9835
+            │  promtail :9080                 │  promtail :9081
+            ▼                                 ▼
 
             /mnt/llm-ram/store/ (tmpfs, managed by Hydra.Core)
 ```
 
-| Port    | Service       | Lang     | Debug Config              |
-|---------|---------------|----------|---------------------------|
-| 9000    | Hydra.Core    | C#       | HTTP API (OpenAI-compat)  |
-| 9500    | Hydra.Core    | C#       | Store RPC (internal)      |
-| 9501    | Hydra.Core    | C#       | Metrics endpoint          |
-| 8080    | llama RTX     | C++      | HTTP completions          |
-| 9503    | llama RTX     | C++      | hydra RPC (StateGet/Put)  |
-| 8086    | llama P100    | C++      | HTTP completions (VM)     |
-| 9502    | llama P100    | C++      | hydra RPC (StateGet/Put)  |
+| Port    | Service       | Lang     | Node  | Purpose                     |
+|---------|---------------|----------|-------|-----------------------------|
+| 9000    | Hydra.Core    | C#       | host  | HTTP API (OpenAI-compat)    |
+| 9500    | Hydra.Core    | C#       | host  | Store RPC (internal)        |
+| 9501    | Hydra.Core    | C#       | host  | Metrics endpoint            |
+| 9700    | Hydra Head    | Go       | RTX   | Head API (/status, /health) |
+| 8080    | llama RTX     | C++      | RTX   | HTTP completions            |
+| 9503    | llama RTX     | C++      | RTX   | hydra RPC (StateGet/Put)    |
+| 9100    | node_exporter | Go       | RTX   | Host metrics                |
+| 9835    | nvidia_exporter | Go    | RTX   | GPU metrics                 |
+| 9700    | Hydra Head    | Go       | P100  | Head API (/status, /health) |
+| 8086    | llama P100    | C++      | P100  | HTTP completions (VM)       |
+| 9502    | llama P100    | C++      | P100  | hydra RPC (StateGet/Put)    |
+| 9100    | node_exporter | Go       | P100  | Host metrics                |
+| 9835    | nvidia_exporter | Go    | P100  | GPU metrics                 |
 
 ---
 
@@ -53,11 +64,11 @@ bash scripts/start-env.sh
 Idempotent — checks what is already running and only starts what is missing. Handles:
 - Hydra.Core (single C# binary) via `infra/docker-compose.hydra.yml`
 - Infra/observability (Loki + Promtail + Prometheus + Grafana) via `infra/docker-compose.infra.yml`
-- llama-server RTX via the `infra/llama-rtx-node/` container (mounts `build_sm120/` directly)
-- llama-server P100 via SSH + user systemd on the VM (no sudo needed)
+- Hydra Head RTX via container (`infra/hydra-head/Dockerfile.rtx`)
+- Hydra Head P100 via SSH + user systemd on the VM
 
-Requires pre-built llama binaries (see **Infrastructure** section). Use `--skip-p100` if the
-P100 VM is unavailable.
+Requires pre-built hydra-head binary and llama-server OCI images (see **Hydra Head** section).
+Use `--skip-p100` if the P100 VM is unavailable.
 
 ```bash
 bash scripts/start-env.sh --skip-p100   # RTX only
@@ -72,19 +83,24 @@ cd infra && podman-compose -f docker-compose.infra.yml up -d
 # Hydra.Core (single C# binary with host networking)
 podman-compose -f docker-compose.hydra.yml up -d
 
-# llama-server RTX (containerised, mounts build_sm120/ directly)
-cd infra/llama-rtx-node && podman-compose up -d
+# Hydra Head — RTX (container)
+bash scripts/deploy-hydra-head.sh rtx
 
-# llama-server P100 (user systemd on VM, no sudo)
-ssh hydra-p100 "systemctl --user start llama-p100"
+# Hydra Head — P100 (VM systemd)
+bash scripts/deploy-hydra-head.sh p100
+
+# Both nodes
+bash scripts/deploy-hydra-head.sh all
 
 # Verify
 curl -s http://localhost:9000/health
+curl -s http://localhost:9700/status       # RTX Hydra Head
+curl -s http://192.168.122.21:9700/status  # P100 Hydra Head
 ```
 
-> **Note:** Hydra.Core contacts llama-server directly via HTTP (completions, slots/state
-> endpoints) and via hydra RPC (StateGet/Put/Meta on ports 9503/9502). No intermediate
-> Agent layer.
+> **Note:** Hydra Head manages llama-server + node_exporter + nvidia_exporter + promtail
+> on each node. The old `infra/llama-rtx-node/` container and `llama-p100` systemd
+> service are [DEPRECATED]. Hydra.Core contacts llama-server directly via HTTP.
 
 ---
 
@@ -188,12 +204,38 @@ separate design pass for cross-model token sharing. Not in scope for this PR.
 
 *(tmpfs for Store is managed automatically by compose — no host setup needed)*
 
-### llama-server patched build
+### Hydra Head (Go node agent)
+
+Build and deploy Hydra Head, which manages llama-server + 3 sub-services on each GPU node.
+
+```bash
+# Build
+go build -C src/head -o ../../bin/hydra-head .
+
+# Run locally (RTX config, requires model files)
+bin/hydra-head -global infra/hydra-head/config/global.yaml \
+               -node infra/hydra-head/config/node-rtx.yaml \
+               -api-port 9700
+
+# Test
+go test -C src/head ./internal/...
+
+# Deploy to both nodes
+bash scripts/deploy-hydra-head.sh all
+```
+
+**APIs:** `GET /status`, `GET /health`, `POST /restart?name=<service>`, `POST /update`
+
+### llama-server from source (build only)
 
 The fork lives in `src/llama-cpp` (submodule, default branch `hydra-fork` of
 `ddvnguyen/llama.cpp`; `.gitmodules` `branch = hydra-fork`).
 Build dirs are at `/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm{60,120}/`.
-Binaries are picked up by the RTX container (volume mount) and copied to the P100 VM.
+These builds produce the binaries that get pushed to OCI registry (ghcr.io).
+
+> **Note:** llama-server is deployed via OCI registry, not manual copy. Use the build
+> commands below only when you need to update the OCI images. See "Deploy via Hydra Head"
+> above for the actual deployment workflow.
 
 **Prerequisites:** CUDA 12.9 + CUDA 13.2 at `/opt/software/cuda/`, GCC 14 at `/usr/bin/gcc-14`.
 
@@ -252,22 +294,37 @@ cmake -B build_sm60 \
 cmake --build build_sm60 --target llama-engine -j$(nproc)
 ```
 
-#### Deploy RTX
+#### Deploy via Hydra Head
 
-The RTX container (`infra/llama-rtx-node/docker-compose.yml`) mounts
-`/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm120/` at `/llama`.
-Restarting the container picks up the new binary automatically:
+llama-server is now deployed via Hydra Head, not manual container/systemd management.
+Hydra Head pulls the llama-server binary from ghcr.io at startup (see OCI Registry in CLAUDE.md).
 
 ```bash
-cd infra/llama-rtx-node && podman-compose restart
+# Deploy Hydra Head to RTX (container with OCI pull)
+bash scripts/deploy-hydra-head.sh rtx
+
+# Deploy Hydra Head to P100 (systemd + config push)
+bash scripts/deploy-hydra-head.sh p100
+
+# Both nodes
+bash scripts/deploy-hydra-head.sh all
 ```
 
-#### Deploy P100
+The deploy script handles building the hydra-head binary, building/pushing the container image
+(RTX), copying configs and systemd unit (P100), and restarting services.
 
-The P100 VM runs llama-server via a user systemd service. The binary lives at
-`/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server` on the VM.
-Sudo is required to replace it (VM has passwordless sudo for user `vm1`).
+To push updated llama-server binaries to OCI registry:
+```bash
+# Build sm60/sm120, then push to ghcr.io
+podman tag localhost/llama-server-sm60 ghcr.io/ddvnguyen/llama-server-sm60:$(git rev-parse --short HEAD)
+podman tag localhost/llama-server-sm120 ghcr.io/ddvnguyen/llama-server-sm120:$(git rev-parse --short HEAD)
+podman push ghcr.io/ddvnguyen/llama-server-sm60:$(git rev-parse --short HEAD)
+podman push ghcr.io/ddvnguyen/llama-server-sm120:$(git rev-parse --short HEAD)
+# Then update the tag in infra/hydra-head/config/node-{rtx,p100}.yaml
+```
 
+Or, for a quick P100 update that bypasses the OCI pull flow, replace the
+binary directly on the VM (still supported):
 ```bash
 # 1. Copy to VM (scp uses ~/.ssh/config alias hydra-p100 → vm1@192.168.122.21)
 # Build output is named llama-engine (#261/#262 rename); the VM-side deploy
@@ -284,8 +341,16 @@ systemctl --user restart llama-p100
 curl http://192.168.122.21:8086/health
 ```
 
-> **CI alternative:** The `deploy-llama` GitHub workflow handles P100 deploy via
-> `rsync` + SSH (CI runner has direct terminal access).
+To pull the latest binary without restarting Hydra Head:
+```bash
+curl -X POST http://localhost:9700/update      \
+  -H "Content-Type: application/json"           \
+  -d '{"name":"llama-server","source":"ghcr.io/ddvnguyen/llama-server-sm120:NEWSHA"}'
+curl -X POST http://localhost:9700/restart?name=llama
+```
+
+> **Old approach (deprecated):** `infra/llama-rtx-node/docker-compose.yml` (RTX container),
+> `systemctl --user restart llama-p100` (P100 systemd). Replaced by hydra-head.
 
 #### Verify id_slot in response
 

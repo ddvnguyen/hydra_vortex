@@ -20,19 +20,28 @@ cache state between GPUs without re-prefill.
 Client (HTTP) → Hydra.Core :9000 [C#/.NET 10]
                     │ HTTP            │ HTTP
                     ▼                 ▼
-              llama RTX :8080    llama P100 :8086  [C++ fork]
-                    │ RPC              │ RPC
-                    └────────┬─────────┘
-                             ▼
-                       Store RPC :9500 + tmpfs
-                       /mnt/llm-ram/store/
+              Hydra Head RTX      Hydra Head P100 [Go]
+              (container)         (VM systemd)
+                   │                    │
+                   ▼                    ▼
+              llama RTX :8080     llama P100 :8086  [C++ fork]
+              + node_exporter     + node_exporter
+              + nvidia_exporter   + nvidia_exporter
+              + promtail          + promtail
+                   │                    │
+                   │ RPC               │ RPC
+                   └───────┬───────────┘
+                           ▼
+                     Store RPC :9500 + tmpfs
+                     /mnt/llm-ram/store/
 ```
 
 ## Language Decisions (FINAL — do not change)
-| Service     | Language  | Reason                                      |
-|-------------|-----------|---------------------------------------------|
-| Hydra.Core  | C# .NET 10 | System.IO.Pipelines, Socket.SendFileAsync   |
-| llama-server| C++ (fork)| +3 streaming state endpoints only           |
+| Service      | Language  | Reason                                      |
+|--------------|-----------|---------------------------------------------|
+| Hydra.Core   | C# .NET 10| System.IO.Pipelines, Socket.SendFileAsync   |
+| Hydra Head   | Go        | Single binary, process management, OCI pull |
+| llama-server | C++ (fork)| +3 streaming state endpoints only           |
 
 ## Critical Facts (POC verified)
 - P100 prefill: 110 tok/s → 80K context = 12 minutes. RTX handles large prefill.
@@ -44,6 +53,49 @@ Client (HTTP) → Hydra.Core :9000 [C#/.NET 10]
   (turn-2 cached_tokens 1229/1251). Was: "SSM truncation BROKEN; --cache-prompt useless."
 - n_tokens MUST be > n_past or cache is nuked. Coordinator must guard this.
 - KV state at 60-80K context: ~800 MB.
+
+## Hydra Head (Go node agent)
+Replaces the old Agent containers + manual llama-server deployment. Single Go binary per GPU
+node that manages 4 sub-services: llama-server, node_exporter, nvidia_exporter, promtail.
+
+### Source & Deploy
+| What | Where |
+|------|-------|
+| Go module | `src/head/` (module `github.com/ddvnguyen/hydra_vortex/hydra-head`) |
+| Config files | `infra/hydra-head/config/global.yaml` + per-node overrides |
+| Deploy script | `scripts/deploy-hydra-head.sh` |
+| RTX Dockerfile | `infra/hydra-head/Dockerfile.rtx` (based on CUDA base `Dockerfile_26.04_cuda13.2`) |
+| P100 systemd unit | `infra/hydra-head/hydra-head.service` |
+
+### 4-Service Management
+Hydra Head owns lifecycle (start/stop/restart/auto-restart with backoff) of:
+- llama-server
+- node_exporter (P100 only; RTX uses host-level exporter in infra-host pod)
+- nvidia_exporter (P100 only; RTX uses host-level exporter in infra-host pod)
+- promtail
+
+Each service is controlled via per-node `services:` YAML config (`enabled`, `binary`, `config`, `port`, `args`).
+
+### OCI Registry
+llama-server binary pulled from ghcr.io at startup via `crane` library:
+- `ghcr.io/ddvnguyen/llama-server-sm60:69e9835ab` (P100, 62 MB)
+- `ghcr.io/ddvnguyen/llama-server-sm120:69e9835ab` (RTX, 84 MB)
+
+Built `FROM scratch` with the statically-linked CUDA binary as the single file.
+No more mount-based deploys of `build_sm120/` or `build_sm60/`.
+
+### Log Separation
+Promtail detects llama-server log patterns (`^\d+\.\d+\.\d+\.\d+\s+[A-Z]\s+`) and labels
+them `component=llama-server` vs `component=hydra-head` in Loki.
+
+### Deprecated infra (replaced by hydra-head)
+| Old file | Replacement |
+|----------|-------------|
+| `infra/quadlets/hydra-agent-rtx.container` | Agents merged into Hydra.Core |
+| `infra/quadlets/hydra-agent-p100.container` | Agents merged into Hydra.Core |
+| `infra/systemd/llama-p100-user.service` | Managed by hydra-head |
+| `infra/llama-rtx-node/docker-compose.yml` | `infra/hydra-head/Dockerfile.rtx` |
+| `scripts/deploy-llama.sh` | `scripts/deploy-hydra-head.sh` |
 
 ## llama.cpp Fork (hydra-state-streaming branch)
 Three new endpoints added to tools/server/server.cpp:
@@ -87,11 +139,7 @@ automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
    `gh issue list --label review-finding --state open`; set the item's Status →
    In Progress. → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
-   follow the milestone doc. → `docs/workflow/02-implement.md`. **If you change
-   a submodule (e.g. `src/llama-cpp`): push the fork branch to its public
-   remote BEFORE bumping the parent's submodule pointer** — a dangling SHA
-   makes the PR unreviewable and breaks fresh clones. Verify with
-   `git ls-remote <fork-url> <branch> | grep <sha>`.
+   follow the milestone doc. → `docs/workflow/02-implement.md`
 3. **Test / verify** — unit (`dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`) + E2E
    (`pytest tests/system`) green before PR.
    → `docs/workflow/03-test-verify.md`
@@ -104,10 +152,6 @@ automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
 7. **Issue + close-out** — new problem → `gh issue create --label review-finding`
    (auto-added to the Project); finished item's Status → Done (auto on PR-merge/close).
    → `docs/workflow/07-issue-and-close.md`
-8. **Cross-repo coordination** *(only if the change touches `src/llama-cpp`)* —
-   file the **fork issue** in `ddvnguyen/llama.cpp`, open the **fork PR** against
-   `hydra-fork`, push the fork **before** the parent submodule bump, and
-   cross-link both sides. → `docs/workflow/08-llama-fork.md`
 
 ## GitHub Workflow (MANDATORY for all coding agents)
 
@@ -155,6 +199,9 @@ Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
 - Content-addressed chunking at Store level, not llama.cpp level (M2)
 - No shared filesystem between nodes (Hydra Store RPC replaces NFS/virtiofs)
 - llama.cpp fork minimal: only 3 endpoints in server.cpp, no core changes
+- Hydra Head in Go: single binary per GPU node, 4-service management (llama + exporters + promtail)
+- llama-server distributed via OCI registry (ghcr.io), pulled at startup — no shared mounts
+- 2-layer YAML config for hydra-head: global.yaml + per-node overrides
 
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host machine, i7-12700K, 64 GB
@@ -164,8 +211,8 @@ Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
 
 ## Monitoring & Observability
 Prometheus + Loki + Grafana + Promtail run as Quadlet systemd user services
-(files in `infra/quadlets/`); Hydra services (Hydra.Core) also
-run as Quadlet services. Grafana at :3000, Prometheus at :9091, Loki at :3100.
+(files in `infra/quadlets/`); Hydra services (Hydra.Core) also run via
+podman compose. Grafana at :3000, Prometheus at :9091, Loki at :3100.
 
 ### Start everything
 ```bash
@@ -174,8 +221,8 @@ bash scripts/start-env.sh
 
 # Or start individual stacks:
 bash scripts/start-infra.sh           # infra observability only
-bash scripts/start-hydra.sh           # hydra core + llama backends
-bash scripts/start-hydra.sh --skip-p100  # skip P100 llama-server
+bash scripts/start-hydra.sh           # hydra core + hydra-head on RTX
+bash scripts/deploy-hydra-head.sh all # deploy hydra-head to both nodes
 ```
 
 ### Key dashboards/metrics endpoints
@@ -186,6 +233,7 @@ bash scripts/start-hydra.sh --skip-p100  # skip P100 llama-server
 - llama RTX metrics: http://localhost:8080/metrics
 - Node exporter: http://localhost:9100/metrics
 - GPU exporter: http://localhost:9835/metrics
+- Hydra Head API: http://localhost:9700/status (RTX), http://192.168.122.21:9700/status (P100)
 
 ### Logs
 Container logs shipped via containerized Promtail → Loki using Docker service
@@ -198,6 +246,9 @@ Filter by `$trace_id` template variable to correlate logs across services.
 
 **Log pipeline:** `k8s-file` → `ctr.log` (CRI) → `docker_sd_configs` →
 `relabel_configs` (component/node/container/job) → `cri` parser → Loki.
+
+**P100 logs:** Promtail reads journald for `hydra-head.service` unit, then regex-splits
+llama-server lines from hydra-head lines via log pattern detection (see Log Separation above).
 
 **Prerequisite:** Podman's log driver must be `k8s-file` (set in
 `~/.config/containers/containers.conf`) — journald has no file-backed logs for
