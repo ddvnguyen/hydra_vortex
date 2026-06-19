@@ -223,7 +223,7 @@ cmake -B build_sm120 \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_BUILD_TESTS=OFF
-cmake --build build_sm120 --target llama-server -j$(nproc)
+cmake --build build_sm120 --target llama-engine -j$(nproc)
 ```
 
 #### P100 (Pascal sm_60, CUDA 12.9)
@@ -249,7 +249,7 @@ cmake -B build_sm60 \
   -DBUILD_SHARED_LIBS=OFF \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-cmake --build build_sm60 --target llama-server -j$(nproc)
+cmake --build build_sm60 --target llama-engine -j$(nproc)
 ```
 
 #### Deploy RTX
@@ -270,7 +270,9 @@ Sudo is required to replace it (VM has passwordless sudo for user `vm1`).
 
 ```bash
 # 1. Copy to VM (scp uses ~/.ssh/config alias hydra-p100 → vm1@192.168.122.21)
-scp build_sm60/bin/llama-server hydra-p100:/tmp/llama-server-new
+# Build output is named llama-engine (#261/#262 rename); the VM-side deploy
+# path/filename is still llama-server until the infra config migrates.
+scp build_sm60/bin/llama-engine hydra-p100:/tmp/llama-server-new
 
 # 2. Deploy on the VM (must be run interactively — sudo needs a terminal)
 

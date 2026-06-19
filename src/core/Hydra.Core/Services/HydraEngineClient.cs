@@ -125,7 +125,11 @@ public sealed class HydraEngineClient
         CancellationToken ct)
         => _rpc.EngineDecodeStreamAsync(slotKey, nPredict, requestJson, traceId, ct);
 
-    /// <summary>Engine SET_EXPERT_MODE (0x44). Stubbed on the C++ side; returns NOT_IMPLEMENTED today.</summary>
+    /// <summary>Engine SET_EXPERT_MODE (0x44). Implemented (issue #287/#260 COMBINED half);
+    /// switches the engine's expert-placement mode ("solo" | "combined") and reports the
+    /// ACTUAL applied mode in the response (may be "solo" when "combined" was requested
+    /// but the engine never dual-loaded expert tensors onto a peer). Coordinator's
+    /// ReportsSolo() reads the response to detect the fallback.</summary>
     public Task<RpcResponse> EngineSetExpertModeAsync(
         string slotKey, string mode, string traceId, CancellationToken ct)
         => _rpc.EngineSetExpertModeAsync(slotKey, mode, traceId, ct);

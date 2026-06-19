@@ -148,7 +148,7 @@ Hydra.Core drives the `llama-engine` binary entirely over binary RPC. These opco
 control prefill, decode, and state transfer end-to-end without falling through to HTTP.
 The engine **only** owns its own slots and KV cache; Store/Session routing is the
 Coordinator's responsibility (Coordinator calls Store RPC, then engine RPC). The
-opcodes live in the `0x40-0x45` range so the `0x33-0x3F` range stays free for future
+opcodes live in the `0x40-0x46` range so the `0x33-0x3F` range stays free for future
 Coordinator↔Store extensions (currently `GET_MANIFEST = 0x33`).
 
 key = slot_id as ASCII decimal string (e.g. `"0"`).
@@ -160,12 +160,24 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                         Response: meta={"applied":true,"params":{...echo...}}
                                   payload_len=0
 
-0x41  INFO              Report engine capabilities (arch, quant, peer, ctx, expert modes)
+0x41  INFO              Report engine capabilities + two-engine status
                         Request:  key="<slot_id>", payload_len=0
-                        Response: meta={"arch":"qwen35moe","quant":"Q4_K_M",
-                                        "peer":"<host:port or solo>",
-                                        "ctx":<N>,"n_layer":<N>,"expert_modes":["solo","combined"]}
+                        Response: meta={"engine":"llama-server-hydra","version":"E1",
+                                        "capabilities":["prefill","decode","state_transfer",
+                                                         "expert_mode","quant_swap","preset","model_hash"],
+                                        "preset_aliases":["<alias>",...],
+                                        "role":"standalone|head|worker",
+                                        "mode":"solo|combined",
+                                        "peer_connected":<bool>,
+                                        "peer_addr":"<host:port, empty if not configured>",
+                                        "layer_split":"<combined tensor-name regex, empty if not configured>",
+                                        "combined_capable":<bool>,
+                                        "pipeline_capable":false}
                                   payload_len=0
+                        Note: `combined_capable`/`peer_connected` reflect whether the engine
+                        successfully dual-loaded expert tensors onto its --rpc-engine peer at
+                        startup (issue #287/#260) — they are NOT a live per-call peer health
+                        check. `pipeline_capable` stays false until #287's PIPELINE half lands.
 
 0x42  PREFILL           Run prefill only (n_predict=0), return n_past and state blob inline
                         Request:  key="<slot_id>", payload=JSON request body
@@ -197,10 +209,15 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                                          response header is set to the total expected
                                          size; partial writes are flushed per token.
 
-0x44  SET_EXPERT_MODE   Switch expert mode (solo / combined) — see E2 epic #161-E2
+0x44  SET_EXPERT_MODE   Switch expert mode (solo / combined) — implemented, issue #287/#260
                         Request:  key="<slot_id>", payload="solo" | "combined"
-                        Response: meta={"mode":"solo|combined","switch_ms":<N>,"next_request_mode":"solo|combined"}
+                        Response: meta={"success":<bool>,"mode":"solo|combined"}
                                   payload_len=0
+                        `mode` is the ACTUAL mode now in effect, which can be "solo" even
+                        when "combined" was requested — the engine only honors "combined"
+                        when it dual-loaded expert tensors onto its --rpc-engine peer at
+                        startup (`combined_capable` in INFO). The Coordinator's
+                        `ReportsSolo()` reads this key to detect the fallback.
 
 0x45  SWAP_QUANT        Swap expert quantization — see E3 epic #161-E3
                         Request:  key="<slot_id>", payload=[2B quant_key_len LE][quant_key UTF-8][tensor_pattern UTF-8]
@@ -220,9 +237,23 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
 ```
 
 **Two-engine run modes (one binary, role flag):** the engine launches as
-`--role standalone|head|worker`. A head also takes `--peer <host:port>` and an
-`--override-tensor` (`-ot`) regex selecting the tensors the peer owns. PIPELINE
-(`0x46`) and COMBINED (`0x44`) both reuse the same embedded worker serving loop.
+`--role standalone|head|worker` (default `standalone`, zero behavior change).
+
+- **COMBINED worker** (issue #287/#260, implemented): `--role worker --ggml-rpc-port <port>`.
+  No model load, no HTTP/control-RPC serving — the process is purely an embedded
+  ggml-RPC backend exposing its local GPU(s) on `<port>` (same wire protocol
+  `tools/rpc/rpc-server.cpp` serves standalone; here it's embedded in the engine
+  binary so one role flag switches solo↔worker without a separate process).
+  Blocks for the process lifetime.
+- **COMBINED head** (implemented): `--role head --rpc-engine <peer host:port>
+  --combined-ot-pattern "<tensor-name regex>"`. At startup, after loading its model,
+  the head dual-loads every expert tensor whose name matches the pattern onto the
+  peer's embedded RPC backend (one-time network copy — see `llama_hydra_load_combined_experts`
+  in `include/llama-hydra.h`) while keeping its own local copy, so SOLO always still
+  works. `SET_EXPERT_MODE` (`0x44`) then flips between them per request.
+- **PIPELINE** (`0x46`, prima.cpp-style layer split): role/transport scaffolding only —
+  stubbed `NOT_IMPLEMENTED` (issue #287, remaining half).
+
 See epic #161 and `docs/milestone-perf.md` for the launch topology.
 
 **Error handling for control ops:**

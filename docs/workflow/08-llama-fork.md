@@ -127,8 +127,8 @@ gh pr create --repo ddvnguyen/llama.cpp \
 ...
 
 ## Test plan
-- [ ] cmake --build build_sm120 --target llama-server
-- [ ] cmake --build build_sm60  --target llama-server
+- [ ] cmake --build build_sm120 --target llama-engine
+- [ ] cmake --build build_sm60  --target llama-engine
 - [ ] (any model-level checks)
 "
 ```
