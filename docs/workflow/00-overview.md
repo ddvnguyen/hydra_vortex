@@ -12,6 +12,9 @@ status. There is nothing to cross-link by hand.
 pick up ─► implement ─► test/verify ─► commit ─► PR ─► CI/merge
    ▲                                                       │  (Closes #N → Done)
    └──────── issue + close-out ◄─ check monitoring ◄─ deploy ◄┘
+                                                     ▲
+                                  step 8 (llama.cpp fork change) intersects
+                                  at 02-implement / 04-commit-pr / 05-deploy
 ```
 
 | # | Step | Doc | Primary tool |
@@ -23,6 +26,7 @@ pick up ─► implement ─► test/verify ─► commit ─► PR ─► CI/me
 | 5 | Deploy (if runtime) | `05-deploy.md` | `DevelopmentRunBook.md` |
 | 6 | Check monitoring | `06-monitoring.md` | Grafana |
 | 7 | Issue + close-out | `07-issue-and-close.md` | `gh` + GitHub MCP |
+| 8 | Cross-repo coordination *(only if `src/llama-cpp` changes)* | `08-llama-fork.md` | `gh` against `ddvnguyen/llama.cpp` |
 
 Principles:
 - **One platform.** Roadmap = GitHub Project "Hydra Vortex"; milestones = native GitHub
