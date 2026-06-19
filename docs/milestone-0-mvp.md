@@ -122,14 +122,14 @@ cmake -B build-rtx -G Ninja \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DGGML_NATIVE=ON
-cmake --build build-rtx --target llama-server -j4
+cmake --build build-rtx --target llama-engine -j4
 
 # P100 (copy source + build inside VM) — Pascal sm_60
 cmake -B build-p100 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=60 \
   -DGGML_CUDA=ON \
   -DGGML_NATIVE=ON
-cmake --build build-p100 --target llama-server -j4
+cmake --build build-p100 --target llama-engine -j4
 ```
 
 ### M0.0.5: Verify endpoints

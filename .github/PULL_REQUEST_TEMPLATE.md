@@ -36,6 +36,6 @@
 - [ ] Pinned submodule SHA is verified reachable from the submodule's
       public remote: `git ls-remote <fork-url> <branch> | grep <sha>`
 - [ ] If the C++ side was changed: the build was run locally
-      (`cmake --build build_sm120 --target llama-server`, etc.) and the
+      (`cmake --build build_sm120 --target llama-engine`, etc.) and the
       `tools/server/server-task.h` / `server-rpc.h` / `server-context.cpp`
       diffs were reviewed against the existing struct layout

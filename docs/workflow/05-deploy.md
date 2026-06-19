@@ -15,8 +15,11 @@ Build the engine-enabled llama-server with the `hydra-fork` branch patches:
 
 | Node   | Arch   | CUDA      | Build flags                              | Output path                    |
 |--------|--------|-----------|------------------------------------------|--------------------------------|
-| RTX    | sm_120 | CUDA 13.2 | `GGML_CUDA_FORCE_CUBLAS=ON`              | `src/llama-cpp/build_sm120/bin/llama-server` |
-| P100   | sm_60  | CUDA 12.9 | `GGML_CUDA_FORCE_CUBLAS=ON`              | `src/llama-cpp/build_sm60/bin/llama-server`  |
+| RTX    | sm_120 | CUDA 13.2 | `GGML_CUDA_FORCE_CUBLAS=ON`              | `src/llama-cpp/build_sm120/bin/llama-engine` |
+| P100   | sm_60  | CUDA 12.9 | `GGML_CUDA_FORCE_CUBLAS=ON`              | `src/llama-cpp/build_sm60/bin/llama-engine`  |
+
+(Build output is named `llama-engine` since the #261/#262 rename. Deployed
+paths below still use `llama-server` until the infra config migrates.)
 
 **sm_60 build (P100) — explicit CUDA toolkit path** to avoid CMake cache cross-contamination from sm_120 build:
 ```bash
@@ -31,7 +34,7 @@ cmake -S . -B build_sm60 \
   -DLLAMA_CUDA_BY_DEFAULT=OFF \
   -DLLAMA_RPC=ON \
   -DLLAMA_SERVER=ON && \
-cmake --build build_sm60 --config Release -j$(nproc) --target llama-server
+cmake --build build_sm60 --config Release -j$(nproc) --target llama-engine
 ```
 
 ### 2. Push OCI image for binary distribution
@@ -43,7 +46,7 @@ Hydra-head pulls the llama-server binary from a container image in ghcr.io. Afte
 podman build -f infra/hydra-head/Dockerfile.rtx -t hydra-head:rtx .
 # Or push just the binary as an OCI artifact:
 skopeo copy --format=oci \
-  dir:src/llama-cpp/build_sm120/bin/llama-server \
+  dir:src/llama-cpp/build_sm120/bin/llama-engine \
   docker://ghcr.io/ddvnguyen/llama-server:engine
 ```
 
@@ -53,7 +56,7 @@ skopeo copy --format=oci \
 cd src/llama-cpp/build_sm60/bin
 podman build -t llama-server-sm60:engine -f- . <<'DOCKERFILE'
 FROM scratch
-COPY llama-server /llama-server
+COPY llama-engine /llama-server
 ENTRYPOINT ["/llama-server"]
 DOCKERFILE
 
@@ -139,7 +142,7 @@ if the binary already exists on disk. To deploy a new llama-server binary direct
 
 ```bash
 # Build sm_60 binary (see section 1), then:
-rsync -avz src/llama-cpp/build_sm60/bin/llama-server \
+rsync -avz src/llama-cpp/build_sm60/bin/llama-engine \
   hydra-p100:/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
 
 # Restart hydra-head to pick up the new binary:

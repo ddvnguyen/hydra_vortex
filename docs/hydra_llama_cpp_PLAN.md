@@ -159,7 +159,7 @@ specs/rpc-protocol.md            EDIT   add ops 0x30-0x32 with response formats
 cmake -B build-rtx -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=120 \
   -DGGML_CUDA=ON -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_NATIVE=ON
-cmake --build build-rtx --target llama-server -j4
+cmake --build build-rtx --target llama-engine -j4
 ```
 
 **P100 (KVM VM):**
@@ -167,7 +167,7 @@ cmake --build build-rtx --target llama-server -j4
 cmake -B build-p100 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=60 \
   -DGGML_CUDA=ON -DGGML_NATIVE=ON
-cmake --build build-p100 --target llama-server -j4
+cmake --build build-p100 --target llama-engine -j4
 ```
 
 **Run RTX server:**

@@ -314,24 +314,24 @@ python3 --version
 pip install -e ".[dev]"
 
 # 4. Build llama.cpp — RTX (sm_120, cuBLAS)
-#    Output: src/llama-cpp/build_sm120/bin/llama-server  (gitignored, stays on filesystem)
+#    Output: src/llama-cpp/build_sm120/bin/llama-engine  (gitignored, stays on filesystem)
 cd src/llama-cpp
 cmake -B build_sm120 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=120 \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DGGML_NATIVE=ON
-cmake --build build_sm120 --target llama-server -j4
+cmake --build build_sm120 --target llama-engine -j4
 cd ../..
 
 # 5. Build llama.cpp — P100 (sm_60)
-#    Output: src/llama-cpp/build_sm60/bin/llama-server  (rsynced to VM by scripts)
+#    Output: src/llama-cpp/build_sm60/bin/llama-engine  (rsynced to VM by scripts)
 cd src/llama-cpp
 cmake -B build_sm60 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=60 \
   -DGGML_CUDA=ON \
   -DGGML_NATIVE=ON
-cmake --build build_sm60 --target llama-server -j4
+cmake --build build_sm60 --target llama-engine -j4
 cd ../..
 
 # 6. One-time P100 VM setup (no sudo needed)
@@ -748,7 +748,7 @@ cd src/llama-cpp
 
 # CPU-only (fast compile, for syntax checks)
 cmake -B build-check -DGGML_CPU_ONLY=ON -G Ninja
-cmake --build build-check --target llama-server
+cmake --build build-check --target llama-engine
 
 # RTX (host) — Blackwell sm_120
 cmake -B build-rtx -G Ninja \
@@ -756,14 +756,14 @@ cmake -B build-rtx -G Ninja \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DGGML_NATIVE=ON
-cmake --build build-rtx --target llama-server -j4
+cmake --build build-rtx --target llama-engine -j4
 
 # P100 (VM) — Pascal sm_60
 cmake -B build-p100 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=60 \
   -DGGML_CUDA=ON \
   -DGGML_NATIVE=ON
-cmake --build build-p100 --target llama-server -j4
+cmake --build build-p100 --target llama-engine -j4
 ```
 
 ### C# (.NET 10)

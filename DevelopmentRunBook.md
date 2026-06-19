@@ -236,7 +236,9 @@ Sudo is required to replace it (VM has passwordless sudo for user `vm1`).
 
 ```bash
 # 1. Copy to VM (scp uses ~/.ssh/config alias hydra-p100 → vm1@192.168.122.21)
-scp build_sm60/bin/llama-server hydra-p100:/tmp/llama-server-new
+# Build output is named llama-engine (#261/#262 rename); the VM-side deploy
+# path/filename is still llama-server until the infra config migrates.
+scp build_sm60/bin/llama-engine hydra-p100:/tmp/llama-server-new
 
 # 2. Deploy on the VM (must be run interactively — sudo needs a terminal)
 
