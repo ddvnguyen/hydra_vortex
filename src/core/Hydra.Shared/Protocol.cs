@@ -51,6 +51,11 @@ public enum OpCode : byte
     EngineDecode    = 0x43,
     EngineSetExpertMode = 0x44,
     EngineSwapQuant = 0x45,
+    // Two-engine "work together": the head tells the worker to attach as a
+    // prima.cpp-style pipeline peer. Payload = JSON {"peer":"host:port","ot_split":"<regex>"}.
+    // The worker loads the assigned tensors from its OWN local model (no weight transfer);
+    // only boundary activations cross the link afterwards.
+    EnginePipelineAttach = 0x46,
 }
 
 public enum StatusCode : byte

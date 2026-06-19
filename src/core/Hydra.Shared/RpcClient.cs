@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using System.Runtime.CompilerServices;
 
@@ -473,6 +474,19 @@ public class RpcClient : IAsyncDisposable
     {
         var payload = Encoding.UTF8.GetBytes(mode);
         return await RequestAsync(OpCode.EngineSetExpertMode, slotKey, payload, traceId, ct);
+    }
+
+    /// <summary>
+    /// Tell the head engine to attach <paramref name="peer"/> as a pipeline worker for this slot,
+    /// assigning it the tensors matching <paramref name="otSplit"/> (an --override-tensor regex).
+    /// The worker loads those tensors from its own local model file; only the assignment crosses
+    /// the wire, never the weights. Returns the engine's actual attach result in the response meta.
+    /// </summary>
+    public async Task<RpcResponse> EnginePipelineAttachAsync(string slotKey, string peer, string otSplit, string traceId, CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(new { peer, ot_split = otSplit });
+        var payload = Encoding.UTF8.GetBytes(json);
+        return await RequestAsync(OpCode.EnginePipelineAttach, slotKey, payload, traceId, ct);
     }
 
     public async Task<RpcResponse> EngineSwapQuantAsync(string slotKey, string quantKey, string tensorPattern, string traceId, CancellationToken ct)

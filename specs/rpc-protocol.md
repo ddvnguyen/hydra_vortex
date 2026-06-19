@@ -132,6 +132,41 @@ llama-server knows nothing about Store or sessions — it only manages its own s
 plus tokens generated in this session). The next completion request sent to this slot
 MUST have `n_tokens > n_past` or the KV cache will be invalidated.
 
+### llama-engine RPC Operations (engine mode, via --rpc-port)
+The engine binary serves these over the binary RPC transport. key = slot_id as ASCII decimal.
+
+```
+0x40  ENGINE_CONFIGURE   Configure engine for a request. payload=JSON config.
+0x41  ENGINE_INFO        Query engine capabilities/state.
+                         Response meta (two-engine fields):
+                           {"role":"standalone|head|worker",
+                            "mode":"solo|pipeline|combined",
+                            "peer_connected":<bool>,"peer_addr":"<host:port>",
+                            "layer_split":"<ot-regex>","combined_capable":<bool>,
+                            "pipeline_capable":<bool>}
+0x42  ENGINE_PREFILL     Prefill prompt (n_predict=0). meta={"n_past":N,"state_size":N}.
+0x43  ENGINE_DECODE      Generate tokens (streaming). meta may carry
+                         {"mode":"...","peer_connected":<bool>} so the coordinator
+                         can detect transparent fallback.
+0x44  ENGINE_SET_EXPERT_MODE  COMBINED expert-split flip. payload="solo"|"combined".
+                         Response meta reports the ACTUAL mode applied (engine may
+                         report "solo" if the peer is unreachable → caller falls back).
+0x45  ENGINE_SWAP_QUANT  Dynamic quant swap. payload=[2B keylen][key][tensor-regex].
+0x46  ENGINE_PIPELINE_ATTACH  Two-engine PIPELINE attach (prima.cpp-style).
+                         payload=JSON {"peer":"<host:port>","ot_split":"<regex>"}.
+                         The head tells the worker which tensors to own; the worker
+                         loads them from its OWN local model file (no weight transfer),
+                         and only boundary activations cross the link afterwards.
+                         Response meta reports the actual mode ("pipeline" on success,
+                         "solo" + "peer_connected":false on failure → caller falls back).
+```
+
+**Two-engine run modes (one binary, role flag):** the engine launches as
+`--role standalone|head|worker`. A head also takes `--peer <host:port>` and an
+`--override-tensor` (`-ot`) regex selecting the tensors the peer owns. PIPELINE and
+COMBINED both reuse the same embedded worker serving loop. See the multi-engine plan and
+`docs/milestone-perf.md` for the launch topology.
+
 ### llama-engine HTTP Endpoints (via --port, active)
 llama-engine exposes HTTP endpoints for easier testing and interaction with Hydra.Core.
 These endpoints use standard HTTP/1.1 with Server-Sent Events (SSE) for streaming.

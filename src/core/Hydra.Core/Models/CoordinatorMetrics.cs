@@ -74,6 +74,18 @@ internal static class CoordinatorMetrics
     public static readonly Histogram RequestLatency = Metrics.CreateHistogram(
         "hydra_request_latency_seconds", "End-to-end request latency", new[] { "node", "route_type" });
 
+    // ── Two-engine "work together" (PIPELINE / COMBINED) ──
+    public static readonly Counter MultiEngineAttempts = Metrics.CreateCounter(
+        "hydra_multiengine_attempts_total", "Requests that attempted a multi-engine mode", "node", "mode");
+    public static readonly Counter MultiEngineActive = Metrics.CreateCounter(
+        "hydra_multiengine_active_total", "Requests that activated a multi-engine mode", "node", "mode");
+    public static readonly Counter MultiEngineFallback = Metrics.CreateCounter(
+        "hydra_multiengine_fallback_total", "Multi-engine activations that fell back to solo", "node", "mode", "reason");
+    public static readonly Gauge MultiEngineActiveSessions = Metrics.CreateGauge(
+        "hydra_multiengine_active_sessions", "Currently active multi-engine sessions", "mode");
+    public static readonly Gauge EnginePeerUp = Metrics.CreateGauge(
+        "hydra_engine_peer_up", "Whether a head engine's peer is reachable (1/0)", "node", "peer");
+
     public static readonly Gauge MainQueueDepth = Metrics.CreateGauge(
         "hydra_main_queue_depth", "Pending requests in main classifier queue");
     public static readonly Gauge PrefillQueueDepth = Metrics.CreateGauge(

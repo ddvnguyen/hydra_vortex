@@ -22,8 +22,26 @@ public sealed record WorkerConfig
 	public string? PrefillModelName { get; init; }
 	public string? DecodeModelName { get; init; }
 
+	// ── Two-engine "work together" (prima.cpp-style PIPELINE + expert-split COMBINED) ──
+	// Role of this engine in a multi-engine topology: "standalone" (default), "head", "worker".
+	public string Role { get; init; } = "standalone";
+	// For a head: the Name of the worker engine it recruits as its peer (must exist in Workers).
+	public string? PeerWorker { get; init; }
+	// Where the head reaches the peer engine for inter-node activations (Hydra HY RPC).
+	public string? PeerHost { get; init; }
+	public int PeerPort { get; init; }
+	// --override-tensor split strings the head pushes to the peer, per mode.
+	// PIPELINE: contiguous layer-window regex owned by the peer (loaded locally on the peer).
+	// COMBINED: expert-tensor regex routed to the peer's ggml RPC backend.
+	public string? PipelineOtSplit { get; init; }
+	public string? CombinedOtSplit { get; init; }
+	// Capability flags, refreshed from the engine's EngineInfo health poll.
+	public bool PipelineCapable { get; init; }
+	public bool CombinedCapable { get; init; }
+
 	public bool CanPrefill => (WorkerType & 1) != 0;
 	public bool CanDecode => (WorkerType & 2) != 0;
+	public bool IsHead => string.Equals(Role, "head", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -58,6 +76,14 @@ public sealed record CoordinatorConfig
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
 	public bool EnableChunks { get; init; } = EnvBool("HYDRA_COORD_ENABLE_CHUNKS", false);
 	public bool UseLlamaEngine { get; init; } = EnvBool("HYDRA_LLAMA_ENGINE", false);
+	// ── Two-engine "work together" (default OFF; only meaningful in engine mode) ──
+	// PIPELINE = prima.cpp-style layer-window split; COMBINED = ggml expert-split.
+	public bool PipelineEnabled { get; init; } = EnvBool("HYDRA_COORD_PIPELINE_ENABLED", false);
+	public bool CombinedEnabled { get; init; } = EnvBool("HYDRA_COORD_COMBINED_ENABLED", false);
+	// A request recruits a second engine only when its prompt exceeds this many tokens.
+	public int MultiEngineThreshold { get; init; } = EnvInt("HYDRA_COORD_MULTI_ENGINE_THRESHOLD", 8192);
+	// When both modes are enabled and a request qualifies, which to prefer: "pipeline" | "combined".
+	public string MultiEnginePolicy { get; init; } = Env("HYDRA_COORD_MULTI_ENGINE_POLICY", "pipeline");
 	public int ChunkSize { get; init; } = EnvInt("HYDRA_STORE_CHUNK_SIZE", 8192) * 1024;
 	public string PrefixCheckpointName { get; init; } = Env("HYDRA_COORD_PREFIX_CHECKPOINT_NAME", "system_prompt");
 	public List<WorkerConfig> Workers { get; set; } = [];
