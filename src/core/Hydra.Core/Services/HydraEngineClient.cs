@@ -25,6 +25,20 @@ public sealed class HydraEngineClient
     public async Task<EngineInfo?> EngineInfoAsync(string traceId, CancellationToken ct)
     {
         var resp = await _rpc.EngineInfoAsync("", traceId, ct);
+        if (resp.Status == (byte)StatusCode.NotImplemented)
+        {
+            // The engine binary doesn't support INFO — likely a pre-#289 build.
+            // Return a sentinel so the caller can short-circuit (treat as no
+            // engine support and fall back to the HTTP /v1/chat/completions path).
+            return new EngineInfo
+            {
+                Engine         = "unknown",
+                Version        = "",
+                Capabilities   = new HashSet<string>(),
+                PresetAliases  = new HashSet<string>(),
+                NotImplemented = true
+            };
+        }
         if (resp.Status != (byte)StatusCode.Ok || string.IsNullOrEmpty(resp.Meta))
             return null;
         try
@@ -42,6 +56,10 @@ public sealed class HydraEngineClient
     /// to the engine. Returns the parsed response meta (n_past, state_size,
     /// model_alias, model_hash, model_path, model_fallback) and the raw KV
     /// blob (the response payload, may be empty for non-engine builds).
+    ///
+    /// When the engine returns <see cref="StatusCode.NotImplemented"/> (the
+    /// pre-#289 build path), the returned object's <see cref="EnginePrefillResult.NotImplemented"/>
+    /// is <c>true</c> and the caller should fall back to the HTTP path.
     /// </summary>
     public async Task<EnginePrefillResult?> EnginePrefillAsync(
         int slotId, string? model, string requestJson, string traceId, CancellationToken ct)
@@ -60,6 +78,15 @@ public sealed class HydraEngineClient
         var payloadJson = node.ToJsonString();
         var resp = await _rpc.EnginePrefillAsync(
             slotId.ToString(), payloadJson, traceId, ct);
+
+        if (resp.Status == (byte)StatusCode.NotImplemented)
+        {
+            return new EnginePrefillResult
+            {
+                NotImplemented = true,
+                KvBlob         = Array.Empty<byte>()
+            };
+        }
 
         if (resp.Status != (byte)StatusCode.Ok)
             return null;
@@ -125,6 +152,15 @@ public sealed class EngineInfo
     [JsonPropertyName("preset_aliases")]
     public HashSet<string> PresetAliases { get; init; } = new();
 
+    /// <summary>
+    /// True when the engine returned <see cref="StatusCode.NotImplemented"/>
+    /// for the INFO call (pre-#289 binary that doesn't speak the new
+    /// opcodes). The caller should treat this as "engine support absent"
+    /// and fall back to the HTTP /v1/chat/completions path.
+    /// </summary>
+    [JsonIgnore]
+    public bool NotImplemented { get; init; }
+
     public bool HasCapability(string name) => Capabilities.Contains(name);
 }
 
@@ -146,4 +182,11 @@ public sealed class EnginePrefillResult
     /// <summary>Raw KV state blob returned by the engine (caller takes ownership).</summary>
     [JsonIgnore]
     public byte[] KvBlob { get; init; } = Array.Empty<byte>();
+
+    /// <summary>
+    /// True when the engine returned <see cref="StatusCode.NotImplemented"/>
+    /// for the PREFILL call. The caller should fall back to the HTTP path.
+    /// </summary>
+    [JsonIgnore]
+    public bool NotImplemented { get; init; }
 }

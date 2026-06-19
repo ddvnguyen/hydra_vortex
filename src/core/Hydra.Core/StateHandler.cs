@@ -187,7 +187,13 @@ public sealed class StateHandler
         var pushed = await PushMissingChunksAsync(storeKey, sid, missing, traceId, ct);
 
         // ── Step 4: write the authoritative ordered manifest (validates residency). ─────
-        await PutManifestAsync(storeKey, meta.NPast, totalSize, chunks, traceId, ct);
+        // M-Perf.9 #289: persist model identity from the slot META so the
+        // cross-model guard in WorkerSchedulerService.RestoreKvAsync can
+        // detect a model swap across a Coordinator restart. On pre-#289
+        // binaries the three fields are "" and the guard skips.
+        await PutManifestAsync(
+            storeKey, meta.NPast, totalSize, chunks, traceId, ct,
+            meta.ModelAlias ?? "", meta.ModelHash ?? "", meta.ModelPath ?? "");
 
         await _chunkCache.SaveHashesAsync(sid, orderedHashes, ct);
         await _chunkCache.EvictLRUAsync();
@@ -297,14 +303,24 @@ public sealed class StateHandler
 
     // PUT_MANIFEST (0x15): write the authoritative ordered manifest. The Store refuses if
     // any referenced chunk is not resident, so a partial push can never corrupt restore.
+    //
+    // M-Perf.9 #289: when model identity is provided, it's persisted alongside
+    // n_past/total_size so the cross-model guard in WorkerSchedulerService.
+    // RestoreKvAsync can detect a model swap across a Coordinator restart.
+    // The default '' values preserve back-compat: pre-#289 callers pass nothing
+    // and the guard treats "both empty" as "skip".
     private async Task PutManifestAsync(
         string storeKey, int nPast, long totalSize, List<ChunkRef> chunks,
-        string traceId, CancellationToken ct)
+        string traceId, CancellationToken ct,
+        string modelAlias = "", string modelHash = "", string modelPath = "")
     {
         var manifest = new
         {
             n_past = nPast,
             total_size = totalSize,
+            model_alias = modelAlias,
+            model_hash  = modelHash,
+            model_path  = modelPath,
             chunks = chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size }),
         };
         var payload = JsonSerializer.SerializeToUtf8Bytes(manifest);

@@ -60,12 +60,13 @@ public enum OpCode : byte
 
 public enum StatusCode : byte
 {
-    Ok         = 0x00,
-    NotFound   = 0x01,
-    Error      = 0x02,
-    BadRequest = 0x05,
-    Partial    = 0x03,
-    Busy       = 0x04,
+    Ok             = 0x00,
+    NotFound       = 0x01,
+    Error          = 0x02,
+    Partial        = 0x03,
+    Busy           = 0x04,
+    BadRequest     = 0x05,
+    NotImplemented = 0x06,
 }
 
 public static class Protocol

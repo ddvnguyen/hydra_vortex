@@ -106,9 +106,11 @@ public class CompletionsController : ControllerBase
 				Response.ContentType = "text/event-stream";
 				Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
 				// M-Perf.9 #289: surface the model identity that served this
-				// response. The hash is truncated to 12 chars (3 bytes of
-				// entropy per byte ≈ enough to disambiguate GGUFs in practice)
-				// to keep the header short for log readability.
+				// response. The hash is truncated to 12 hex chars (48 bits =
+				// 6 bytes of entropy, enough to disambiguate a few hundred
+				// GGUFs in practice) to keep the header short for log
+				// readability. Full 64-char hash is in the X-Hydra-Model
+				// trailer (see below) for debugging.
 				var model = _scheduler.LastDispatchedModel;
 				var modelHash = _scheduler.LastDispatchedModelHash;
 				if (!string.IsNullOrEmpty(model))
