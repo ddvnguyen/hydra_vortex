@@ -145,9 +145,42 @@ See [`.env.example`](.env.example) for all configurable values.
 | `HYDRA_CORE_LOG_LEVEL` | `INFO` | Hydra.Core |
 | `HYDRA_CORE_WORKERS` | (JSON) | Hydra.Core worker config |
 | `HYDRA_CHUNK_CACHE_DIR` | `/tmp/hydra-chunk-cache` | Hydra.Core local chunk hash cache |
+| `HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE` | `false` | Hydra.Core — M-Perf.9 #289 cross-model KV safety override |
 
 Config is compiled-in with defaults. Use environment variables or
 `appsettings.json` to override.
+
+---
+
+## Mix-Precision P/D Split Semantics (M-Perf.9 #289)
+
+`HYDRA_COORD_MIX_PRECISION_ENABLED=true` was historically paired with per-worker
+`prefill_model_name` / `decode_model_name` to do a Q3_K prefill + Q5_K decode
+("mix-precision"). **This configuration is mathematically broken** and is no
+longer supported by default:
+
+- The KV cache is **quantization-dependent**: a Q3_K prefill produces different
+  K/V values for the same input than a Q5_K prefill, so transferring KV between
+  quantizations silently corrupts decode output.
+- The cross-model guard in `WorkerSchedulerService.RestoreKvAsync` would
+  correctly `Abort` such a transfer (see `specs/rpc-protocol.md` →
+  *Cross-Model KV Safety*).
+- Operators wanting the old behaviour can set
+  `HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true` and accept the corrupt-decode risk.
+
+**Recommended configuration** (interpretation *b — same model, different worker choice*):
+
+- `prefill_model_name` and `decode_model_name` are **unset** on all workers
+  (see `infra/hydra-core/config/workers.json`).
+- Pre-fill and decode use the same model (the resident one), so the cross-model
+  guard's `Proceed` outcome applies naturally.
+- The router still picks the right worker for each phase — the RTX is preferred
+  for prefill, the P100 for decode when the RTX slots are saturated. This is
+  the heterogeneous-GPU optimization, *not* a per-phase quantization switch.
+
+**Two-engine, two-models** (interpretation *c* — small distill for prefill,
+large target for decode) is the long-term M-Perf track goal but requires a
+separate design pass for cross-model token sharing. Not in scope for this PR.
 
 ---
 
@@ -157,7 +190,8 @@ Config is compiled-in with defaults. Use environment variables or
 
 ### llama-server patched build
 
-The fork lives in `src/llama-cpp` (submodule, branch `hydra-state-streaming`).
+The fork lives in `src/llama-cpp` (submodule, default branch `hydra-fork` of
+`ddvnguyen/llama.cpp`; `.gitmodules` `branch = hydra-fork`).
 Build dirs are at `/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm{60,120}/`.
 Binaries are picked up by the RTX container (volume mount) and copied to the P100 VM.
 
