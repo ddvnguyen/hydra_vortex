@@ -30,6 +30,15 @@ public sealed class SlotMeta
     public long StateSize { get; init; }
     [JsonPropertyName("is_processing")]
     public bool IsProcessing { get; init; }
+    /// <summary>Alias of the model that built the KV in this slot (e.g. "balanced"). Empty if unknown / single-model mode without aliases.</summary>
+    [JsonPropertyName("model_alias")]
+    public string ModelAlias { get; init; } = "";
+    /// <summary>SHA-256 hex of the GGUF file the KV was built with. Empty if the server did not provide one.</summary>
+    [JsonPropertyName("model_hash")]
+    public string ModelHash { get; init; } = "";
+    /// <summary>Full path of the GGUF file the KV was built with.</summary>
+    [JsonPropertyName("model_path")]
+    public string ModelPath { get; init; } = "";
 }
 
 public sealed class RestoreResult

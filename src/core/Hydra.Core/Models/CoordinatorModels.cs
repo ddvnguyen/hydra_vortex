@@ -71,6 +71,14 @@ public sealed record CoordinatorConfig
 	public int WorkerErrorThreshold { get; init; } = EnvInt("HYDRA_COORD_WORKER_ERROR_THRESHOLD", 3);
 	public string RunMode { get; init; } = Env("HYDRA_COORD_RUN_MODE", "concurrency");
 	public bool MixPrecisionEnabled { get; init; } = EnvBool("HYDRA_COORD_MIX_PRECISION_ENABLED", false);
+	/// <summary>
+	/// When true, allow a KV cache built with model A to be restored into a slot
+	/// loaded with model B (warn + proceed). When false (default), such restores
+	/// are aborted and the request re-prefills on the correct model.
+	/// Issue #289 (M-Perf.9).
+	/// </summary>
+	public bool AllowCrossModelKvReuse { get; init; } =
+		EnvBool("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE", false);
 	public bool RawSlot { get; init; } = EnvBool("HYDRA_COORD_RAW_SLOT", false);
 	public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);

@@ -113,8 +113,13 @@ llama-server knows nothing about Store or sessions — it only manages its own s
 ```
 0x30  STATE_GET   Stream full KV state out as response payload
                   Request:  key="<slot_id>", payload_len=0
-                  Response: meta={"n_past":<N>,"state_size":<N>}
+                  Response: meta={"n_past":<N>,"state_size":<N>,
+                                  "model_alias":"<alias or filename>",
+                                  "model_hash":"<64-char hex SHA-256 of GGUF>",
+                                  "model_path":"<absolute path to GGUF>"}
                             payload=<raw KV bytes, ~800 MB>
+                  M-Perf.9 #289: model identity is included in the response so
+                  the Coordinator can record which model built the KV.
 
 0x31  STATE_PUT   Restore KV state from request payload
                   Request:  key="<slot_id>", payload=<raw KV bytes>
@@ -124,8 +129,14 @@ llama-server knows nothing about Store or sessions — it only manages its own s
 0x32  STATE_META  Slot metadata only — no KV serialization (cheap)
                   Request:  key="<slot_id>", payload_len=0
                   Response: meta={"slot_id":<N>,"n_past":<N>,
-                                  "state_size":<N>,"is_processing":<bool>}
+                                  "state_size":<N>,"is_processing":<bool>,
+                                  "model_alias":"<alias or filename>",
+                                  "model_hash":"<64-char hex SHA-256 of GGUF>",
+                                  "model_path":"<absolute path to GGUF>"}
                             payload_len=0
+                  M-Perf.9 #289: model_alias / model_hash / model_path are
+                  added in #289. Pre-feature servers return the response
+                  without these fields (back-compat).
 ```
 
 **n_past definition:** `n_prompt_tokens_cache + n_decoded` (prompt tokens in KV cache
@@ -159,7 +170,16 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
 0x42  PREFILL           Run prefill only (n_predict=0), return n_past and state blob inline
                         Request:  key="<slot_id>", payload=JSON request body
                                   (OpenAI chat-completions schema — messages / prompt / images)
-                        Response: meta={"n_past":<N>,"tokens_processed":<N>,"prefill_ms":<N>}
+                                  M-Perf.9 #289: optional `"model":"<alias>"` field. Absent or
+                                  empty → no swap, prefill on resident model. Present +
+                                  alias known to the engine → swap to that model first.
+                                  Present + alias unknown → fall back to resident model
+                                  and set `model_fallback:true` in the response.
+                        Response: meta={"n_past":<N>,"tokens_processed":<N>,"prefill_ms":<N>,
+                                         "model_alias":"<alias or filename>",
+                                         "model_hash":"<64-char hex SHA-256 of GGUF>",
+                                         "model_path":"<absolute path to GGUF>",
+                                         "model_fallback":<bool>}
                                   payload=raw KV state bytes (sized as `payload_len`; ~800 MB at 60-80K ctx)
                         Note: caller is responsible for keeping `n_tokens > n_past` on the
                               next completion — otherwise the KV cache is invalidated (see
@@ -269,12 +289,18 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ## Status Codes
 ```
-0x00  OK          Operation succeeded
-0x01  NOT_FOUND   Key or session not found
-0x02  ERROR       Operation failed (error detail in meta JSON)
-0x03  PARTIAL     Partial result (used in chunked operations)
-0x04  BUSY        Slot or node is busy, retry later
+0x00  OK               Operation succeeded
+0x01  NOT_FOUND        Key or session not found
+0x02  ERROR            Operation failed (error detail in meta JSON)
+0x03  PARTIAL          Partial result (used in chunked operations)
+0x04  BUSY             Slot or node is busy, retry later
+0x05  BAD_REQUEST      Malformed payload (parse / schema error) — added M-Perf.9 #289
+0x06  NOT_IMPLEMENTED  Opcode stubbed (e.g. `0x46` PIPELINE_ATTACH until #287) — added M-Perf.9 #289
 ```
+
+The Coordinator distinguishes `ERROR` (real failure) from `NOT_IMPLEMENTED` (a known
+stub on this server build) so it can fall back to solo mode cleanly for stubbed opcodes
+without raising the "engine RPC failed" alert that `ERROR` would.
 
 ## Streaming Behavior
 - Payloads > 1 MB MUST be streamed in chunks (default 256 KB read/write buffer)

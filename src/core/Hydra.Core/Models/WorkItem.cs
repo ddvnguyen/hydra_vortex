@@ -76,6 +76,16 @@ public sealed class WorkItem
 	public bool KvRestoredForDecode { get; set; }
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>
 	public bool PrefixCacheHit { get; set; }
+
+	// ── Engine model identity (M-Perf.9 #289) ──
+	/// <summary>Alias of the model that built the KV for this slot, e.g. "balanced".</summary>
+	public string? KvModelAlias { get; set; }
+	/// <summary>SHA-256 hex of the GGUF file the KV was built with. Used for cross-model safety checks.</summary>
+	public string? KvModelHash { get; set; }
+	/// <summary>Full path of the GGUF file the KV was built with, e.g. "/models/.../Balanced.gguf".</summary>
+	public string? KvModelPath { get; set; }
+	/// <summary>True when the engine received a `model` value it could not resolve and fell back to the resident model.</summary>
+	public bool KvModelFallback { get; set; }
 	public Dictionary<string, long> Phases { get; } = new();
 	private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 	public long ElapsedMs => (Stopwatch.GetTimestamp() - _startTimestamp) * 1000 / Stopwatch.Frequency;

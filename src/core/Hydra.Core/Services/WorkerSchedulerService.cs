@@ -59,6 +59,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	};
 
 	public string? LastDispatchedNode { get; private set; }
+	/// <summary>Alias of the model that built the most recent prefill (M-Perf.9 #289).</summary>
+	public string? LastDispatchedModel { get; private set; }
+	/// <summary>SHA-256 hex of the model that built the most recent prefill (M-Perf.9 #289).</summary>
+	public string? LastDispatchedModelHash { get; private set; }
 
 	public WorkerSchedulerService(
 		CoordinatorConfig config,
@@ -900,22 +904,44 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					["n_predict"] = 0,
 					["messages"] = item.Messages
 				};
+				// M-Perf.9 #289: include the prefill model alias so the engine
+				// can swap to it (or fall back to the resident model if the
+				// alias is unknown / no preset is configured). When null, the
+				// engine uses the current resident model — pre-feature behavior.
+				var prefillModel = Router.PrefillModel(w);
+				if (prefillModel != null)
+					body["model"] = prefillModel;
 				if (item.PrefillSlot == null)
 					item.PrefillSlot = slotId;
 				var requestJson = JsonSerializer.Serialize(body);
 				var llamaRpc = GetLlamaRpcClient(w);
-				var resp = await llamaRpc.EnginePrefillAsync(slotId.ToString(), requestJson, item.TraceId, ct);
-				if (resp.Status != (byte)StatusCode.Ok)
-					throw new InvalidOperationException($"EnginePrefill failed: {resp.Meta}");
+				var engine = new HydraEngineClient(llamaRpc);
+				var prefillResult = await engine.EnginePrefillAsync(slotId, prefillModel, requestJson, item.TraceId, ct);
+				if (prefillResult == null)
+					throw new InvalidOperationException("EnginePrefill returned no result");
 
-				var meta = resp.Meta != null
-					? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta)
-					: null;
-				item.NPastAfter = meta?.TryGetValue("n_past", out var np) == true ? np.GetInt32() : 0;
-				item.KvBlob = resp.Payload; // KV state blob for SaveKv
+				item.NPastAfter = prefillResult.NPast;
+				item.KvBlob = prefillResult.KvBlob; // KV state blob for SaveKv
 
-				_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est}",
-					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens);
+				// M-Perf.9 #289: capture the model identity the engine actually
+				// used. These ride item.KvModelAlias/Hash/Path/Fallback into the
+				// request_timeline log line, the Store manifest (via the session
+				// ledger), and the RestoreKvAsync cross-model guard below.
+				item.KvModelAlias    = prefillResult.ModelAlias;
+				item.KvModelHash     = prefillResult.ModelHash;
+				item.KvModelPath     = prefillResult.ModelPath;
+				item.KvModelFallback = prefillResult.ModelFallback;
+				LastDispatchedModel     = item.KvModelAlias;
+				LastDispatchedModelHash = item.KvModelHash;
+				if (item.KvModelFallback && prefillModel != null)
+				{
+					CoordinatorMetrics.ModelFallbackTotal
+						.WithLabels(w.Name, prefillModel).Inc();
+				}
+
+				_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est} Model={Model} Fallback={Fb}",
+					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens,
+					item.KvModelAlias ?? "?", item.KvModelFallback);
 				if (item.NPastAfter > 0)
 				{
 					_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -966,6 +992,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				["stream"] = false,
 				["n_predict"] = 0
 			};
+			// M-Perf.9 #289: pass the configured model alias so llama-server's
+			// router mode loads the right preset (when one is configured). In
+			// single-model mode this is ignored. We use the configured alias
+			// for the model-identity record; the model_hash is filled in by
+			// the slot META query below when the server populates it.
+			var prefillModel = Router.PrefillModel(w);
+			if (prefillModel != null && !body.ContainsKey("model"))
+				body["model"] = prefillModel;
 			if (item.PrefillSlot == null)
 				item.PrefillSlot = await Router.PickIdleSlot(w.LlamaUrl, ct) ?? 0;
 			body["id_slot"] = item.PrefillSlot.Value;
@@ -975,8 +1009,36 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.LastIdSlot = item.PrefillSlot;
 
 			item.NPastAfter = ExtractTotalTokens(resp);
-			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est} ViaHttp={Http}",
-				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens, engineFailed);
+
+			// M-Perf.9 #289: capture model identity for the cross-model guard.
+			// The HTTP path can't learn the model_hash from the response
+			// (the OAI completion response doesn't carry it), so we query the
+			// slot META. The META call also confirms the slot's n_past and
+			// surfaces the engine's model_alias/model_hash/model_path fields
+			// (when the server supports them).
+			item.KvModelAlias = prefillModel;
+			try
+			{
+				var slotMeta = await GetLlamaClient(w).GetStateMetaAsync(item.PrefillSlot ?? 0, ct);
+				if (!string.IsNullOrEmpty(slotMeta.ModelAlias))
+					item.KvModelAlias = slotMeta.ModelAlias;
+				if (!string.IsNullOrEmpty(slotMeta.ModelHash))
+					item.KvModelHash = slotMeta.ModelHash;
+				if (!string.IsNullOrEmpty(slotMeta.ModelPath))
+					item.KvModelPath = slotMeta.ModelPath;
+			}
+			catch (Exception ex)
+			{
+				// Non-fatal: the cross-model guard will skip the check
+				// (both hashes empty) if we couldn't query META.
+				_log.Debug(ex, "prefill_meta_query_failed Slot={Slot}", item.PrefillSlot);
+			}
+			LastDispatchedModel     = item.KvModelAlias;
+			LastDispatchedModelHash = item.KvModelHash;
+
+			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est} ViaHttp={Http} Model={Model}",
+				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens, engineFailed,
+				item.KvModelAlias ?? "?");
 			if (item.NPastAfter > 0)
 			{
 				_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -1226,6 +1288,81 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 				item.NPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : item.NPastAfter;
 			}
+
+			// M-Perf.9 #289: cross-model safety check. After the StatePut
+			// succeeded, query the slot META to learn what model is currently
+			// resident on the slot, then compare its model_hash to the
+			// stored KV's model_hash (carried on item.KvModelHash from the
+			// prefill that built it). If they differ, the restored KV would
+			// be decoded by a different model — silently corrupt. Default
+			// behaviour: abort the restore, erase the slot, and re-prefill on
+			// the correct model. When AllowCrossModelKvReuse=true: warn and
+			// proceed (the model will likely reject the KV at decode time).
+			try
+			{
+				var slotMeta = await GetLlamaClient(w).GetStateMetaAsync(slotId, ct);
+				bool bothHashesKnown = !string.IsNullOrEmpty(item.KvModelHash)
+				                    && !string.IsNullOrEmpty(slotMeta.ModelHash);
+				bool hashesMatch    = bothHashesKnown
+				                    && string.Equals(item.KvModelHash, slotMeta.ModelHash,
+				                                     StringComparison.Ordinal);
+
+				if (bothHashesKnown && !hashesMatch)
+				{
+					if (!_cfg.AllowCrossModelKvReuse)
+					{
+						_log.Warning("cross_model_kv_aborted slot={Slot} stored={Stored} slot={SlotHash} item={Item} — re-prefilling",
+							slotId, item.KvModelHash, slotMeta.ModelHash, item.SessionId);
+						CoordinatorMetrics.CrossModelKvAborted.WithLabels(w.Name).Inc();
+						// Erase the slot we just wrote into (otherwise the
+						// same-node skip would skip the re-prefill's PREFILL
+						// state by trusting the now-incorrect slot).
+						try
+						{
+							await GetLlamaClient(w).EraseSlotAsync(slotId, ct);
+						}
+						catch (Exception eraseEx)
+						{
+							_log.Warning(eraseEx, "cross_model_erase_failed Slot={Slot}", slotId);
+						}
+						if (item.DecodeLease != null)
+						{
+							await item.DecodeLease.DisposeAsync();
+							item.DecodeLease = null;
+							_decodeSlotSignal.Release();
+						}
+						if (item.PrefillWorker?.CanDecode == true
+							&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot2, "decode-fallback"))
+						{
+							item.DecodeWorker = item.PrefillWorker;
+							item.DecodeSlot = fbSlot2;
+							item.DecodeLease = new SlotLease(item.PrefillWorker.Name, fbSlot2, item.SessionId,
+								LeaseLifetime.Long, _tracker);
+						}
+						item.NPastAfter = 0;
+						item.KvRestoredForDecode = false;
+						CoordinatorMetrics.RestoreKvDuration.WithLabels(w.Name, RouteLabel(item))
+							.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
+						return WorkItemState.Prefill;
+					}
+					_log.Warning("cross_model_kv_warn slot={Slot} stored={Stored} slot={SlotHash} — allow_cross_model_kv_reuse=true",
+						slotId, item.KvModelHash, slotMeta.ModelHash);
+					CoordinatorMetrics.CrossModelKvWarned.WithLabels(w.Name).Inc();
+				}
+				else if (!bothHashesKnown)
+				{
+					_log.Debug("cross_model_kv_skipped_empty slot={Slot} item={Item} — back-compat",
+						slotId, item.SessionId);
+				}
+			}
+			catch (Exception ex)
+			{
+				// Non-fatal: META query failed. The decode may produce a
+				// corrupted response but we don't fail-closed here because
+				// the META endpoint may not be available on older builds.
+				_log.Warning(ex, "cross_model_check_failed slot={Slot} — proceeding without check", slotId);
+			}
+
 		_log.Information("state_restored Sid={Sid} NPast={N} Node={Node}",
 			item.SessionId, item.NPastAfter, w.Name);
 		item.KvRestoredForDecode = true;
