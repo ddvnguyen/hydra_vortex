@@ -468,6 +468,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				item.RouteType = "affinity";
 				CoordinatorMetrics.RequestsTotal.WithLabels(target.Name, "affinity").Inc();
+				CoordinatorMetrics.RequestsTotalAll.Inc();
 				CoordinatorMetrics.WarmSessionStarts.Inc();
 				item.DecodeWorker = target;
 				item.DecodeSlot = slot;
@@ -521,6 +522,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				item.RouteType = "cross_node";
 				CoordinatorMetrics.RequestsTotal.WithLabels(alt.Name, "cross_node").Inc();
+				CoordinatorMetrics.RequestsTotalAll.Inc();
 				CoordinatorMetrics.CrossNodeAffinityTotal.Inc();
 				item.DecodeWorker = alt;
 				item.DecodeSlot = altSlot;
@@ -540,6 +542,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			item.RouteType = "migration";
 			CoordinatorMetrics.RequestsTotal.WithLabels(entry.NodeName ?? "unknown", "migration").Inc();
+			CoordinatorMetrics.RequestsTotalAll.Inc();
 			CoordinatorMetrics.MigrationSessionStarts.Inc();
 			item.State = WorkItemState.PickDecode;
 			return await PickDecodeAsync(item);
@@ -601,6 +604,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				item.RouteType = "cold_atomic";
 				CoordinatorMetrics.RequestsTotal.WithLabels(aw.Name, "cold_atomic").Inc();
+				CoordinatorMetrics.RequestsTotalAll.Inc();
 				CoordinatorMetrics.ColdSessionStarts.Inc();
 				item.DecodeWorker = aw;
 				item.DecodeSlot = slot;
@@ -645,6 +649,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			item.RouteType = item.RouteType ?? "cold_concurrency";
 			CoordinatorMetrics.RequestsTotal.WithLabels(pfWorker.Name, item.RouteType).Inc();
+			CoordinatorMetrics.RequestsTotalAll.Inc();
 			CoordinatorMetrics.ColdSessionStarts.Inc();
 			item.PrefillWorker = pfWorker;
 			item.PrefillSlot = pfSlot;
@@ -688,6 +693,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		LastDispatchedNode = plan.Head.Name;
 
 		CoordinatorMetrics.RequestsTotal.WithLabels(plan.Head.Name, item.RouteType).Inc();
+		CoordinatorMetrics.RequestsTotalAll.Inc();
 		CoordinatorMetrics.ColdSessionStarts.Inc();
 		CoordinatorMetrics.MultiEngineAttempts.WithLabels(plan.Head.Name, modeStr).Inc();
 		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} PeerSlot={PS} Split={Split} Est={Est}",
