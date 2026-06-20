@@ -29,7 +29,6 @@ services:
       - HYDRA_COORD_ENABLE_CHUNKS=true
       - HYDRA_STORE_CHUNK_SIZE=8192
       - HYDRA_LOG_LOKI_URL=http://localhost:3100
-      - HYDRA_LLAMA_ENGINE=true
     healthcheck:
       test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
       interval: 10s
@@ -38,4 +37,4 @@ services:
       start_period: 20s
     labels:
       component: hydra
-    restart: unless-stopped
+    restart: always

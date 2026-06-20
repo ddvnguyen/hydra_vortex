@@ -7,7 +7,7 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm60:engine
+    source: ghcr.io/ddvnguyen/llama-server-sm60:c357ad25b
     binary: llama-server
     dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
 
@@ -40,9 +40,6 @@ llama:
 
     # Chat template
     chat-template-kwargs: '{"preserve_thinking": true}'
-
-    # Reasoning — required for Qwen3 thinking mode (outputs reasoning_content)
-    reasoning: on
 
 services:
   # hydra-head manages these as subprocesses. The systemd services

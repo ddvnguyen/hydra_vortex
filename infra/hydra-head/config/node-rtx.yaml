@@ -7,7 +7,7 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm120:engine
+    source: ghcr.io/ddvnguyen/llama-server-sm120:c357ad25b
     binary: llama-server
     dest: /llama/bin/llama-server
   # Sidecar exporters — downloaded into the image at build time, managed
@@ -31,20 +31,14 @@ llama:
   port: 8080
   rpc_port: 9503
   params:
-    # Direct model load (required for engine RPC mode — router mode does not
-    # expose slots to the RPC process, causing EnginePrefill/Decode to fail
-    # with "invalid slot ID").
-    model: /models/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
-    alias: balanced
-    n-cpu-moe: 30
-    override-tensor: 'token_embd\.weight=CPU'
+    # Router mode — preset files (/models/preset.ini) define the per-model
+    # params (n-cpu-moe, ctx-size, n-gpu-layers, …). Don't override those
+    # here or you risk overriding the preset's tuned offload counts and OOMing
+    # the GPU (e.g. setting n-cpu-moe=18 instead of the preset's 26 forces
+    # more layers onto a 16GB RTX and triggers cudaMalloc failures).
+    models-preset: /opt/hydra/config/preset.ini
+    models-max: 1
     chat-template-file: /models/qwen3.6_merged_template.jinja
-
-    # Chat template kwargs — enables Qwen3 thinking mode
-    chat-template-kwargs: '{"preserve_thinking": true}'
-
-    # Reasoning — required for Qwen3 thinking mode (outputs reasoning_content)
-    reasoning: on
 
     # Context and parallelism
     ctx-size: 320000
@@ -66,6 +60,7 @@ llama:
     NVIDIA_VISIBLE_DEVICES: all
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
+    LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
 
 # Sidecar services — hydra-head manages these as child processes. The
 # host Quadlets (infra-node-exporter / infra-nvidia-exporter / infra-promtail)
@@ -89,4 +84,4 @@ services:
     binary: /opt/hydra/bin/nvidia_gpu_exporter
     port: 9835
     args:
-      - "--query-field-names=name,driver_version,uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
+      - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
