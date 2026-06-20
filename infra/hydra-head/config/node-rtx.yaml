@@ -7,7 +7,7 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm120:347c7899f
+    source: ghcr.io/ddvnguyen/llama-server-sm120:c357ad25b
     binary: llama-server
     dest: /llama/bin/llama-server
   # Sidecar exporters — downloaded into the image at build time, managed

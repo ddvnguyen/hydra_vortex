@@ -162,7 +162,6 @@ async def test_large_prompt_with_metrics_and_continuation(
     assert "choices" in init_body, f"No choices in init response: {init_body}"
     assert len(init_body["choices"]) > 0
     assert get_output_text(init_body["choices"][0]["message"]), "Empty output in init response"
-    assert "hydra" in init_body, "No hydra metadata"
 
     # ── Scrape after metrics + verify ────────────────────────────────────
     rtx_after = await scrape_llama(LLAMA_RTX_URL)

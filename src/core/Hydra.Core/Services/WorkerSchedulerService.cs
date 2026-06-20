@@ -1428,12 +1428,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					case CrossModelGuard.Outcome.Skip:
 						_log.Debug("cross_model_kv_skipped_empty slot={Slot} item={Item} — back-compat",
 							slotId, item.SessionId);
+						CoordinatorMetrics.CrossModelKvSkipped.WithLabels(w.Name).Inc();
 						break;
 
 					case CrossModelGuard.Outcome.Proceed:
 					default:
 						// Hashes match (or both empty AND not Skip — which
 						// shouldn't happen, but is a safe no-op). Fall through.
+						CoordinatorMetrics.CrossModelKvProceeded.WithLabels(w.Name).Inc();
 						break;
 				}
 			}
