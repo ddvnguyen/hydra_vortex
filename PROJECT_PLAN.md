@@ -19,9 +19,13 @@ across heterogeneous GPU nodes, enabling session migration without re-prefill.
          │ HTTP         │ HTTP
          ▼              ▼
   ┌──────────┐    ┌──────────┐
-  │ llama    │    │ llama    │  C++ fork
-  │ RTX      │    │ P100     │  hydra-state-streaming
-  │ :8080    │    │ :8086    │
+  │ Hydra    │    │ Hydra    │  Go node agent
+  │ Head RTX │    │ Head P100│  4-service mgmt
+  │ (container)  │ (VM systemd)
+  │  │ llama :8080  │  │ llama :8086  C++ fork
+  │  │ node_exp     │  │ node_exp
+  │  │ nvidia_exp   │  │ nvidia_exp
+  │  │ promtail     │  │ promtail
   │  │ RPC   │    │  │ RPC   │
   │  ▼       │    │  ▼       │
   └────┬─────┘    └────┬─────┘
@@ -40,23 +44,35 @@ across heterogeneous GPU nodes, enabling session migration without re-prefill.
 | Component   | Language       | Reason                                            |
 |-------------|----------------|---------------------------------------------------|
 | Hydra.Core  | C# / .NET 10   | System.IO.Pipelines, Socket.SendFileAsync, team   |
+| Hydra Head  | Go             | Single binary, process mgmt, OCI pull, 4-service  |
 | llama-server| C++ (fork)     | +3 streaming state endpoints, no other changes    |
 
 ## Architecture Notes
 Hydra.Core is a single C# binary with an embedded coordinator. It contacts
-llama-servers directly via HTTP (no intermediate Agent layer). KV state ops use
+llama-servers directly via HTTP (through Hydra Head's process management). KV state ops use
 binary RPC (StateGet/StatePut) directly to llama-server's hydra RPC port (RTX :9503,
 P100 :9502). Store RPC (Put/Get) is internal to Hydra.Core, backed by tmpfs.
 
-## Worker Node Model
-Each GPU node is configured as a `WorkerNodeConfig`:
+Hydra Head is a Go node agent that manages 4 sub-services per GPU node:
+llama-server, node_exporter, nvidia_exporter, promtail. It handles binary deployment
+via OCI registry (ghcr.io) with 2-layer YAML config.
 
+## Worker Node Model
+
+Each GPU node is managed by Hydra Head with these characteristics:
+
+| Node | Mode | HW | Sub-services |
+|------|------|------|-------------|
+| RTX | container | 5060 Ti 16 GB sm_120 | llama + promtail (host exporters stay in infra-host pod) |
+| P100 | VM systemd | Tesla P100 16 GB sm_60 | llama + node_exporter + nvidia_exporter + promtail |
+
+Coordinator worker config (unchanged):
 | Field | Default | Meaning |
 |---|---|---|
-| `worker_type` | `3` | Bitwise: `1`=prefill-only, `2`=decode-only, `3`=mixed |
-| `prefill_priority` | `1` | Lower = preferred for prefill (1 is best) |
-| `decode_priority` | `1` | Lower = preferred for decode |
-| `decode_speed_tps` | `30.0` | Estimated decode tok/s (scheduling hint) |
+| `worker_type` | `3` | `3`=both, `2`=decode-only, `1`=prefill-only |
+| `prefill_priority` | `1` | Lower preferred for prefill |
+| `decode_priority` | `1` | Lower preferred for decode |
+| `decode_speed_tps` | `30.0` | Estimated decode tok/s |
 
 **Run modes** (`HYDRA_COORD_RUN_MODE`):
 - `fast` (default) — session affinity; one GPU handles both prefill and decode per session
@@ -116,9 +132,31 @@ All source code lives under `src/`.
 │   │
 │   ├── llama-cpp/               git submodule — hydra-state-streaming branch
 │   │
+│   ├── head/                    Go — Hydra Head node agent
+│   │   ├── main.go               entry point
+│   │   ├── go.mod / go.sum
+│   │   └── internal/
+│   │       ├── api/               HTTP API (/status, /health, /restart, /update)
+│   │       ├── config/            YAML loading, 2-layer merge, CLI args
+│   │       ├── health/            idle/busy mode health checker
+│   │       ├── process/           4-service lifecycle manager
+│   │       └── registry/          OCI registry pull via crane
+│   │
 │   └── tests/                   Python system/E2E tests
 │
-├── infra/                       docker-compose monitoring stack (Prometheus, Loki, Grafana)
+├── infra/
+│   ├── hydra-head/               Hydra Head deploy configs
+│   │   ├── Dockerfile.rtx         RTX container build
+│   │   ├── hydra-head.service     P100 systemd unit
+│   │   └── config/
+│   │       ├── global.yaml        shared params (models, infra endpoints)
+│   │       ├── node-rtx.yaml      RTX-specific (router mode, services: disabled)
+│   │       └── node-p100.yaml     P100-specific (model, services: all enabled)
+│   ├── docker-compose.hydra.yml  Hydra.Core container
+│   ├── docker-compose.infra.yml   Infra/observability stack
+│   ├── quadlets/                  systemd quadlet units (infra-host pod, services)
+│   ├── prometheus/                scrape configs + alerts
+│   └── promtail/                  log pipeline configs
 ├── specs/                       protocol & service specs
 └── docs/                        milestone docs + architecture + diagrams
 ```
