@@ -271,6 +271,25 @@ public sealed class AffinityPathTests
 		var warm = f.Scheduler.GetWarmLeasesSnapshot();
 		Assert.True(warm.ContainsKey("sess_a5"), "Session should have a warm lease across turns");
 	}
+
+	[Fact]
+	public async Task Affinity_NormalTurnGrowth_DoesNotEvict()
+	{
+		// Regression test for #304: a typical follow-up turn grows the prompt
+		// by a small amount (it does not shrink it). Only genuine shrinkage
+		// (truncated history) should trigger n_past_guard eviction — normal
+		// growth must stay on the warm affinity path with zero RPC calls.
+		await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 1000);
+		await f.SubmitAsync("sess_a6", 2000, 100);
+		int baseline = f.Ledger.Lookup("sess_a6")!.NPast;
+		Assert.True(baseline > 0, "Baseline n_past should be set after turn 1");
+
+		f.Rpc.ClearCalls();
+		await f.SubmitAsync("sess_a6", baseline + 50, 100); // realistic per-turn growth
+
+		Assert.Empty(f.Rpc.Calls); // no StateGet save-before-evict — guard must not fire
+		Assert.True(f.Scheduler.WarmLeaseCount >= 1, "Warm lease should persist for normal growth");
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -68,6 +68,7 @@ public sealed record CoordinatorConfig
 		EnvInt("HYDRA_COORD_ATOMIC_THRESHOLD", EnvInt("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", 2048));
 	public int WarmThreshold { get; init; } = EnvInt("HYDRA_COORD_WARM_THRESHOLD", 5120);
 	public double NPastGuardThreshold { get; init; } = double.Parse(Env("HYDRA_COORD_N_PAST_GUARD_THRESHOLD", "0.6"));
+	public int NPastGuardTolerance { get; init; } = EnvInt("HYDRA_COORD_N_PAST_GUARD_TOLERANCE", 50);
 	public int WorkerErrorThreshold { get; init; } = EnvInt("HYDRA_COORD_WORKER_ERROR_THRESHOLD", 3);
 	public string RunMode { get; init; } = Env("HYDRA_COORD_RUN_MODE", "concurrency");
 	public bool MixPrecisionEnabled { get; init; } = EnvBool("HYDRA_COORD_MIX_PRECISION_ENABLED", false);
