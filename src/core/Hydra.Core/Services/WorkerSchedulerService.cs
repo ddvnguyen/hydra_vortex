@@ -443,9 +443,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Compare against NPromptTokens (prompt_tokens from last response) rather
 			// than NPast (total_tokens including thinking tokens) to avoid false
 			// positives caused by Qwen3.5 reasoning tokens being hidden from the client.
+			// NPastGuardTolerance is slack on the *shrinkage* side only (estimation
+			// noise) — normal turn-over-turn growth must never evict here; the
+			// WarmThreshold check below is what caps growth that's too large to
+			// warm-prefill cheaply (e.g. on P100).
 			var guardBaseline = entry.NPromptTokens > 0 ? entry.NPromptTokens : entry.NPast;
 			if (guardBaseline > 0 && item.EstimatedTokens > 0
-				&& item.EstimatedTokens < guardBaseline + _cfg.NPastGuardTolerance)
+				&& item.EstimatedTokens + _cfg.NPastGuardTolerance < guardBaseline)
 			{
 				_log.Warning("n_past_guard Evicted={Sid} Est={Est} GuardBaseline={Past} Tolerance={Tol} NPrompt={NP} NPast={Total} — warm slot would nuke cache",
 					item.SessionId, item.EstimatedTokens, guardBaseline, _cfg.NPastGuardTolerance, entry.NPromptTokens, entry.NPast);

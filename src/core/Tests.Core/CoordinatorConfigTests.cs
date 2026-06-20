@@ -62,7 +62,7 @@ public sealed class CoordinatorConfigTests
         Assert.Equal(2048, cfg.AtomicThreshold);
         Assert.Equal(5120, cfg.WarmThreshold);
         Assert.Equal(1800, cfg.LlamaRequestTimeoutS);
-        Assert.Equal(1024, cfg.NPastGuardTolerance);
+        Assert.Equal(50, cfg.NPastGuardTolerance);
     }
 
     [Fact]
