@@ -175,7 +175,7 @@ public class HealthController : ControllerBase
 	{
 		var nodes = new Dictionary<string, object>();
 		foreach (var w in _cfg.Workers)
-			nodes[w.Name] = new { healthy = _tracker.IsHealthy(w.Name), slots_total = w.Slots, slots_idle = _ledger.ActiveCountOnNode(w.Name) == 0 ? w.Slots : 0, stuck_slots = 0 };
+			nodes[w.Name] = new { healthy = _tracker.IsHealthy(w.Name), slots_total = w.Slots, slots_idle = _tracker.FreeSlotCount(w.Name), stuck_slots = 0 };
 		return new JsonResult(new { status = _health.IsStoreHealthy ? "healthy" : "degraded", nodes, store = new { healthy = _health.IsStoreHealthy } });
 	}
 
@@ -186,7 +186,7 @@ public class HealthController : ControllerBase
 		var nodes = new Dictionary<string, object>();
 		foreach (var w in _cfg.Workers)
 			nodes[w.Name] = new { tracker_status = _tracker.GetStatus(w.Name), busy_duration_s = _tracker.GetElapsedSeconds(w.Name), slots_total = w.Slots, slots_idle = 0 };
-		return new JsonResult(new { sessions = new { active = _ledger.ActiveCount, sessions }, routing_stats = new { total = 0 }, nodes });
+		return new JsonResult(new { sessions = new { active = _ledger.ActiveCount, sessions }, routing_stats = new { total = CoordinatorMetrics.RequestsTotalAll.Value }, nodes });
 	}
 }
 

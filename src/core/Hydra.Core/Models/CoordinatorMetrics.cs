@@ -11,6 +11,15 @@ internal static class CoordinatorMetrics
     public static readonly Counter RequestsTotal = Metrics.CreateCounter(
         "hydra_requests_total", "Total requests routed", "node", "reason");
 
+    // Non-labelled mirror of RequestsTotal. The labelled counter's Value
+    // property in prometheus-net 8.x only returns the un-labelled child
+    // value, not the sum across all (node, reason) combinations. We need
+    // a flat total for the /status endpoint (issue #274), so we increment
+    // this alongside the labelled one at every Inc site in
+    // WorkerSchedulerService.cs.
+    public static readonly Counter RequestsTotalAll = Metrics.CreateCounter(
+        "hydra_requests_total_all", "Total requests routed (no labels, for /status)");
+
     public static readonly Counter UpstreamTimeouts = Metrics.CreateCounter(
         "hydra_upstream_timeouts_total", "Prefill/complete timeouts");
 
