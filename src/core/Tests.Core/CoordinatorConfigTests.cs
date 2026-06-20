@@ -62,6 +62,7 @@ public sealed class CoordinatorConfigTests
         Assert.Equal(2048, cfg.AtomicThreshold);
         Assert.Equal(5120, cfg.WarmThreshold);
         Assert.Equal(1800, cfg.LlamaRequestTimeoutS);
+        Assert.Equal(1024, cfg.NPastGuardTolerance);
     }
 
     [Fact]
@@ -94,6 +95,20 @@ public sealed class CoordinatorConfigTests
         finally
         {
             Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", null);
+        }
+    }
+
+    [Fact]
+    public void NPastGuardTolerance_FromEnv()
+    {
+        Environment.SetEnvironmentVariable("HYDRA_COORD_N_PAST_GUARD_TOLERANCE", "2048");
+        try
+        {
+            Assert.Equal(2048, new CoordinatorConfig().NPastGuardTolerance);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_N_PAST_GUARD_TOLERANCE", null);
         }
     }
 

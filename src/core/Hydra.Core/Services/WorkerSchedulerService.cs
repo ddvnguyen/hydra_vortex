@@ -445,10 +445,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// positives caused by Qwen3.5 reasoning tokens being hidden from the client.
 			var guardBaseline = entry.NPromptTokens > 0 ? entry.NPromptTokens : entry.NPast;
 			if (guardBaseline > 0 && item.EstimatedTokens > 0
-				&& item.EstimatedTokens < guardBaseline + 50)
+				&& item.EstimatedTokens < guardBaseline + _cfg.NPastGuardTolerance)
 			{
-				_log.Warning("n_past_guard Evicted={Sid} Est={Est} GuardBaseline={Past} NPrompt={NP} NPast={Total} — warm slot would nuke cache",
-					item.SessionId, item.EstimatedTokens, guardBaseline, entry.NPromptTokens, entry.NPast);
+				_log.Warning("n_past_guard Evicted={Sid} Est={Est} GuardBaseline={Past} Tolerance={Tol} NPrompt={NP} NPast={Total} — warm slot would nuke cache",
+					item.SessionId, item.EstimatedTokens, guardBaseline, _cfg.NPastGuardTolerance, entry.NPromptTokens, entry.NPast);
 				return await EvictWarmAndColdRouteAsync(item);
 			}
 
