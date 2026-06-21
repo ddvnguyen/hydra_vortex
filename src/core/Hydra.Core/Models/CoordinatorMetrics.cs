@@ -42,6 +42,9 @@ internal static class CoordinatorMetrics
     public static readonly Gauge WorkerBusySeconds = Metrics.CreateGauge(
         "hydra_worker_busy_seconds", "Worker busy duration (leak detection)", "node");
 
+    public static readonly Gauge StuckSlots = Metrics.CreateGauge(
+        "hydra_stuck_slots", "Slots stuck (is_processing && n_remain==0) past the watchdog threshold, per node", "node");
+
     public static readonly Counter CrossNodeAffinityTotal = Metrics.CreateCounter(
         "hydra_cross_node_affinity_total", "Cross-node affinity dispatches");
 

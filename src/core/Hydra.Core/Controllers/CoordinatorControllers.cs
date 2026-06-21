@@ -175,7 +175,7 @@ public class HealthController : ControllerBase
 	{
 		var nodes = new Dictionary<string, object>();
 		foreach (var w in _cfg.Workers)
-			nodes[w.Name] = new { healthy = _tracker.IsHealthy(w.Name), slots_total = w.Slots, slots_idle = _tracker.FreeSlotCount(w.Name), stuck_slots = 0 };
+			nodes[w.Name] = new { healthy = _tracker.IsHealthy(w.Name), slots_total = w.Slots, slots_idle = _tracker.FreeSlotCount(w.Name), stuck_slots = _health.GetNodeInfo(w.Name)?.StuckSlots ?? 0 };
 		return new JsonResult(new { status = _health.IsStoreHealthy ? "healthy" : "degraded", nodes, store = new { healthy = _health.IsStoreHealthy } });
 	}
 
