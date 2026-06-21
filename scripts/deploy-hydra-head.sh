@@ -102,29 +102,14 @@ deploy_rtx() {
     warn "No host auth.json at $AUTH_FILE_SRC — llama-server pull may fail"
   fi
 
-  # Set up a socat-relayed docker socket for promtail. The host's
-  # podman.sock is 0660 owned by ddv, but the in-container hydra user
-  # (uid 1001) can't read it. socat creates a new socket with 0666
-  # permission that anyone in the container can read.
-  PROMTAIL_SOCK_DIR="/tmp/hydra-head-promtail-sock"
-  mkdir -p "$PROMTAIL_SOCK_DIR"
-  rm -f "$PROMTAIL_SOCK_DIR/docker.sock"
-  nohup socat -t 300 "UNIX-LISTEN:$PROMTAIL_SOCK_DIR/docker.sock,reuseaddr,fork,unlink-early,mode=666" \
-                  "UNIX-CONNECT:/run/user/1000/podman/podman.sock" &>/tmp/hydra-promtail-socat.log &
-  SOCAT_PID=$!
-  sleep 1
-  if [ -S "$PROMTAIL_SOCK_DIR/docker.sock" ]; then
-    ok "Promtail docker.sock proxy ready (socat pid=$SOCAT_PID)"
-  else
-    warn "Promtail docker.sock proxy failed to start; promtail will get EACCES"
-  fi
-
   # Run container with auth token. Volume mounts:
-  #   - host auth.json (ro):      ghcr.io creds for in-container pulls
-  #   - host /proc /sys / (ro):   node_exporter reads host metrics
-  #   - proxied podman socket:    promtail discovers all host containers
-  #   - /mnt/containers (ro):     promtail reads each container's CRI log
-  #   - promtail positions vol:   persistent cursor for log shipping
+  #   - host auth.json (ro):          ghcr.io creds for in-container pulls
+  #   - host /proc /sys / (ro):       node_exporter reads host metrics
+  #   - host podman socket (rw):      promtail discovers all host containers
+  #                                   (in-container uid 1000 == host ddv,
+  #                                   so direct mount works — no socat)
+  #   - /mnt/containers (ro):         promtail reads each container's CRI log
+  #   - promtail positions vol:       persistent cursor for log shipping
   podman run -d \
     --name hydra-head-rtx \
     --network host \
@@ -140,9 +125,10 @@ deploy_rtx() {
     -v /proc:/host/proc:ro \
     -v /sys:/host/sys:ro \
     -v /:/rootfs:ro \
-    -v "$PROMTAIL_SOCK_DIR:/var/run/socks:rw" \
+    -v /run/user/1000/podman:/var/run/socks:rw \
     -v /mnt/containers/:/mnt/containers/:ro \
     -v hydra-head-promtail-positions:/opt/hydra/promtail-positions:rw \
+    -v "$REPO_ROOT/src/llama-cpp/build_sm120/bin/:/llama/bin/:ro" \
     "${AUTH_FILE_MOUNTS[@]}" \
     hydra-head:rtx
 

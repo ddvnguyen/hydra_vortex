@@ -42,6 +42,17 @@ done
 echo '========================================'
 echo 'LAUNCHING HYDRA HEAD'
 echo '========================================'
+
+# Backward-compat fallback: promtail-rtx.yml's second docker_sd_configs
+# entry still references /var/run/socks/docker.sock (kept for debugging
+# + older deploys that may have used a socat relay). Idempotently
+# symlink podman.sock -> docker.sock when only the direct mount is
+# present, so promtail's fallback socket is always available.
+if [ -S /var/run/socks/podman.sock ] && [ ! -e /var/run/socks/docker.sock ]; then
+  echo 'Creating /var/run/socks/docker.sock -> podman.sock symlink (promtail fallback)'
+  ln -sf /var/run/socks/podman.sock /var/run/socks/docker.sock
+fi
+
 echo "Args: $@"
 echo ''
 

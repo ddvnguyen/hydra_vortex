@@ -20,8 +20,13 @@ clients:
 scrape_configs:
   - job_name: docker-containers
     docker_sd_configs:
-      # Mounted in via socat proxy (host podman.sock is 0660, the
-      # in-container hydra user can't read it directly).
+      # Primary: host podman socket mounted directly at /var/run/socks.
+      # Since the in-container hydra user runs as uid 1000 (= host ddv)
+      # and the host podman.sock is srw-rw-rw-, it can read it without
+      # a socat relay. The previous socat-relay design (docker.sock) is
+      # kept as a fallback for older deploys / debugging.
+      - host: unix:///var/run/socks/podman.sock
+        refresh_interval: 5s
       - host: unix:///var/run/socks/docker.sock
         refresh_interval: 5s
     relabel_configs:
