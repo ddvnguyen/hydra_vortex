@@ -53,7 +53,13 @@ public sealed class SessionEvictionService : BackgroundService
 					}
 
 					_ledger.MarkEvicted(sid);
-					_tracker.Release(entry.NodeName);
+					// A6: release the session's actual slot, not an arbitrary one popped
+					// off the node's held-stack. Release(name) pops a non-deterministic
+					// slot and could free the wrong session's reservation.
+					if (entry.SlotId.HasValue)
+						_tracker.ReleaseSlot(entry.NodeName, entry.SlotId.Value);
+					else
+						_tracker.Release(entry.NodeName);
 				}
 
 				if (staleIds.Count > 0)
