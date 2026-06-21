@@ -64,6 +64,9 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
 
             var busy = _tracker.GetElapsedSeconds(w.Name);
             CoordinatorMetrics.WorkerBusySeconds.WithLabels(w.Name).Set(busy);
+
+            int stuck; lock (_lock) stuck = _nodes.TryGetValue(w.Name, out var n) ? n.StuckSlots : 0;
+            CoordinatorMetrics.StuckSlots.WithLabels(w.Name).Set(stuck);
         }
 
         IsStoreHealthy = true;
@@ -106,16 +109,30 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
             {
                 Id = s.Id,
                 NPast = s.NPast,
-                IsProcessing = s.IsProcessing
+                IsProcessing = s.IsProcessing,
+                NRemain = s.NRemain
             }).ToList(),
             ConsecutiveFailures = 0
         };
         info.SlotsIdle = info.Slots.Count(s => !s.IsProcessing);
         info.CurrentModel = await llama.GetLoadedModelAsync(ct);
 
-        lock (_lock) { _nodes[w.Name] = info; }
-        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I} Model={M}",
-            w.Name, slots.Count, info.SlotsIdle, info.CurrentModel);
+        // Stuck-slot watchdog (#299/C7): carry the per-slot stuck counter across
+        // poll cycles. A slot still processing with nothing left to generate
+        // (n_remain==0) for StuckSlotCycles consecutive polls is counted as stuck.
+        // StuckSlots was previously declared but never populated.
+        lock (_lock)
+        {
+            _nodes.TryGetValue(w.Name, out var prev);
+            info.StuckSlots = StuckSlotDetector.Apply(prev?.Slots, info.Slots, _cfg.StuckSlotCycles);
+            foreach (var slot in info.Slots)
+                if (slot.StuckPollCount == _cfg.StuckSlotCycles)  // log once, on the cycle it crosses
+                    _log.Warning("stuck_slot_detected Node={N} Slot={S} Cycles={C} NPast={P}",
+                        w.Name, slot.Id, slot.StuckPollCount, slot.NPast);
+            _nodes[w.Name] = info;
+        }
+        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I} Stuck={K} Model={M}",
+            w.Name, slots.Count, info.SlotsIdle, info.StuckSlots, info.CurrentModel);
     }
 
     private void OnFail(string name)
@@ -142,7 +159,8 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         CurrentModel = src.CurrentModel,
         Slots = src.Slots.Select(s => new Models.SlotInfo
         {
-            Id = s.Id, NPast = s.NPast, IsProcessing = s.IsProcessing
+            Id = s.Id, NPast = s.NPast, IsProcessing = s.IsProcessing,
+            NRemain = s.NRemain, StuckPollCount = s.StuckPollCount
         }).ToList()
     };
 }

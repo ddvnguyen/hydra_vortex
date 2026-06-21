@@ -141,13 +141,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			?? throw new InvalidOperationException($"Target worker '{targetNodeName}' not found or cannot decode");
 
 		CoordinatorMetrics.MigrationsTotal.WithLabels(fromNode, targetNodeName).Inc();
-
-		// Issue #306 / C5 fix: MigrationLatency was defined but never
-		// observed. Wrap the body in a stopwatch and observe the elapsed
-		// seconds on the success path. The pre-check throw above is a
-		// precondition (no migration happened) so it is intentionally not
-		// observed — only successful migrations land in the histogram.
-		var sw = System.Diagnostics.Stopwatch.StartNew();
+		// Issue #306 / #299 C5 fix: MigrationLatency was defined but never
+		// observed. Wrap the body in a stopwatch (migrateStart) and observe
+		// the elapsed seconds on the success path. The pre-check throws above
+		// are preconditions (no migration happened) so they are intentionally
+		// not observed — only successful migrations land in the histogram.
+		var migrateStart = System.Diagnostics.Stopwatch.StartNew();
 
 		var storeKey = $"{sessionId}.kv";
 		var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
@@ -156,25 +155,40 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 			throw new InvalidOperationException($"Store Get failed for migration: {storeResp.Meta}");
 
-		var slotId = 0;
-		var llamaRpc = GetLlamaRpcClient(targetWorker);
-		var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
-			slotId.ToString(), storeResp.Payload, traceId, ct);
+		// A5: acquire a real slot on the target instead of assuming slot 0. The
+		// lease is held for the StatePut and released in finally so a failed
+		// migration can never leak the slot.
+		if (!_tracker.TryAcquireSlot(targetWorker.Name, out var slotId, "migrate"))
+			throw new InvalidOperationException($"No free slot on target worker '{targetNodeName}' for migration");
+		var migrateLease = new SlotLease(targetWorker.Name, slotId, sessionId, LeaseLifetime.Short, _tracker);
 
-		var nPastAfter = 0;
-		if (putResp.Meta != null)
+		int nPastAfter;
+		try
 		{
-			var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
-			nPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : 0;
+			var llamaRpc = GetLlamaRpcClient(targetWorker);
+			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+				slotId.ToString(), storeResp.Payload, traceId, ct);
+
+			nPastAfter = 0;
+			if (putResp.Meta != null)
+			{
+				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
+				nPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : 0;
+			}
+		}
+		finally
+		{
+			await migrateLease.DisposeAsync();
 		}
 
-		_ledger.Register(sessionId, targetNodeName, 0, nPastAfter, entry.PrefixHash);
-		sw.Stop();
-		CoordinatorMetrics.MigrationLatency.WithLabels(fromNode, targetNodeName).Observe(sw.Elapsed.TotalSeconds);
-		_log.Information("migrate_done Sid={Sid} To={Node} NPast={N} LatencyS={L:F3}",
-			sessionId, targetNodeName, nPastAfter, sw.Elapsed.TotalSeconds);
+		_ledger.Register(sessionId, targetNodeName, slotId, nPastAfter, entry.PrefixHash);
+		// C5: MigrationLatency was defined but never observed — record it now.
+		CoordinatorMetrics.MigrationLatency.WithLabels(fromNode, targetNodeName)
+			.Observe(migrateStart.Elapsed.TotalSeconds);
+		_log.Information("migrate_done Sid={Sid} To={Node} Slot={Slot} NPast={N} LatencyS={L:F3}",
+			sessionId, targetNodeName, slotId, nPastAfter, migrateStart.Elapsed.TotalSeconds);
 
-		return new { migrated = true, session_id = sessionId, target = targetNodeName, n_past = nPastAfter };
+		return new { migrated = true, session_id = sessionId, target = targetNodeName, slot = slotId, n_past = nPastAfter };
 	}
 
 	public async Task RunAsync(CancellationToken ct)
@@ -525,9 +539,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					{
 						_log.Warning("verify_warm_slot_failed Sid={Sid} Slot={Slot}",
 							item.SessionId, entry.SlotId);
-						await SaveSlotStateBeforeEvictAsync(item.SessionId, item.DecodeWorker!.Name, item.DecodeSlot ?? 0, item.TraceId, default);
-						await item.DecodeLease.DisposeAsync();
+						// A1: the slot-state save is a network RPC that can throw. Detach
+						// the lease and dispose it in a finally so a save failure can never
+						// leak the decode slot.
+						var verifyLease = item.DecodeLease;
 						item.DecodeLease = null;
+						try
+						{
+							await SaveSlotStateBeforeEvictAsync(item.SessionId, item.DecodeWorker!.Name, item.DecodeSlot ?? 0, item.TraceId, default);
+						}
+						finally
+						{
+							await verifyLease.DisposeAsync();
+						}
 						_ledger.MarkEvicted(item.SessionId);
 						item.State = WorkItemState.PickDecode;
 						return await PickDecodeAsync(item);
@@ -540,11 +564,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					_log.Warning("n_past_guard Sid={Sid} NPast={N} Est={E}",
 						item.SessionId, entry.NPast, item.EstimatedTokens);
-					_ledger.UpdateNPast(item.SessionId, 0);
-					await SaveSlotStateBeforeEvictAsync(item.SessionId, item.DecodeWorker!.Name, item.DecodeSlot ?? 0, item.TraceId, default);
-					_ledger.MarkEvicted(item.SessionId);
-					await item.DecodeLease.DisposeAsync();
+					// A1: same leak window — detach + dispose in finally around the save RPC.
+					var guardLease = item.DecodeLease;
 					item.DecodeLease = null;
+					_ledger.UpdateNPast(item.SessionId, 0);
+					try
+					{
+						await SaveSlotStateBeforeEvictAsync(item.SessionId, item.DecodeWorker!.Name, item.DecodeSlot ?? 0, item.TraceId, default);
+					}
+					finally
+					{
+						await guardLease.DisposeAsync();
+					}
+					_ledger.MarkEvicted(item.SessionId);
 					item.State = WorkItemState.PickDecode;
 					return await PickDecodeAsync(item);
 				}
@@ -1800,9 +1832,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			// Release the peer lease (two-engine) once the stream is fully drained.
+			// A4: await the release with its own try/catch instead of fire-and-forget —
+			// a swallowed dispose exception previously leaked the peer slot silently.
 			if (_peerLeases.TryRemove(sessionId, out var peerLease))
 			{
-				peerLease.DisposeAsync().AsTask().ContinueWith(_ => { });
+				try { await peerLease.DisposeAsync(); }
+				catch (Exception ex) { _log.Error(ex, "peer_lease_dispose_failed Sid={Sid}", sessionId); }
 				if (_activeMultiSessions.TryRemove(sessionId, out var modeStr))
 					CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Dec();
 			}
