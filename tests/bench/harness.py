@@ -184,14 +184,30 @@ class BenchmarkHarness:
         base_url: str = "http://localhost:9000",
         model: str = "balanced",
         timeout_s: float = 600.0,
+        coord_metrics_url: str | None = None,
     ) -> None:
+        """
+        :param coord_metrics_url: Optional URL of the Coordinator's
+            Prometheus endpoint (e.g. ``http://localhost:9501/metrics``).
+            When set, ``report()`` scrapes ``hydra_warm_session_starts``
+            and ``hydra_cold_session_starts`` to compute the true
+            warm-hit rate. When ``None``, the harness falls back to the
+            (always-zero) per-request ``hydra.warm_hit`` SSE field, which
+            no C# code emits — see review on #307.
+        """
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_s = timeout_s
+        self.coord_metrics_url = coord_metrics_url
         self._results: list[_RequestResult] = []
         self._start_wall: float | None = None
         self._end_wall: float | None = None
         self._extra: dict[str, Any] = {}
+        # Metrics snapshot at the start of each run() call, used to
+        # compute the per-run warm/cold delta. (None when coord_metrics_url
+        # is unset or the initial scrape failed.)
+        self._metrics_start_warm: int | None = None
+        self._metrics_start_cold: int | None = None
 
     # ── Public entry points ──────────────────────────────────────────
 
@@ -277,6 +293,14 @@ class BenchmarkHarness:
         for _ in range(warmup):
             await self.submit(messages, sid_factory(), max_tokens=max_tokens, stream=stream)
 
+        # Snapshot the warm/cold counters now so report() can compute
+        # the per-run delta. Done after warmup so the warmup traffic
+        # (which warms caches) doesn't count as "warm hit" of the
+        # measurement window.
+        snap = self._scrape_warm_cold_counts()
+        if snap != (None, None):
+            self._metrics_start_warm, self._metrics_start_cold = snap
+
         self._start_wall = time.monotonic()
         sem = asyncio.Semaphore(concurrency)
 
@@ -301,7 +325,25 @@ class BenchmarkHarness:
         totals = [r.total_s * 1000.0 for r in ok]
         elapsed = (self._end_wall or time.monotonic()) - (self._start_wall or self._end_wall or time.monotonic())
         elapsed = max(elapsed, 1e-9)
-        warm = sum(1 for r in self._results if r.warm_hit)
+        # Review #307: per-request `hydra.warm_hit` SSE field is never
+        # emitted by the C# side (grep empty), so the per-result `warm_hit`
+        # flag is always False. When `coord_metrics_url` is configured,
+        # use the Prometheus counter delta over the run as the source of
+        # truth. Fall back to the (always-zero) per-request counter when
+        # the URL is missing or the snapshot can't be taken.
+        warm, cold = self._scrape_warm_cold_counts()
+        if warm is not None and cold is not None and self._metrics_start_warm is not None:
+            # Per-run delta. The Coordinator's counters are cumulative
+            # since process start; without the delta we'd be measuring
+            # "share of all-time requests that were warm" rather than
+            # "share of THIS run that was warm".
+            start_warm = self._metrics_start_warm
+            start_cold = self._metrics_start_cold or 0
+            warm = max(0, warm - start_warm)
+            cold = max(0, cold - start_cold)
+        else:
+            warm = sum(1 for r in self._results if r.warm_hit)
+            cold = max(0, len(self._results) - warm)
         return Report(
             n=len(self._results),
             errors=sum(1 for r in self._results if r.error is not None),
@@ -321,6 +363,52 @@ class BenchmarkHarness:
         )
 
     # ── Persistence ─────────────────────────────────────────────────
+
+    def _scrape_warm_cold_counts(self) -> tuple[int | None, int | None]:
+        """
+        Scrape ``hydra_warm_session_starts`` and ``hydra_cold_session_starts``
+        from the Coordinator's :9501/metrics endpoint, summed across label
+        combinations. Returns ``(None, None)`` if the URL is unset, the
+        endpoint is unreachable, or either counter is missing — in which
+        case the caller falls back to the (zero) per-request warm_hit
+        flag.
+
+        The counters are cumulative since process start; this method
+        reports the snapshot, not a delta. For a tight warm-hit signal
+        across one ``run()`` call, callers should compute a delta
+        externally. For the bench's pass/fail signal, the current
+        snapshot is sufficient: the Coordinator's counters are
+        dominated by the bench's own traffic in any realistic scenario.
+        """
+        if not self.coord_metrics_url:
+            return None, None
+        import urllib.request
+        try:
+            with urllib.request.urlopen(self.coord_metrics_url, timeout=5.0) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            return None, None
+        warm_total = 0.0
+        cold_total = 0.0
+        for line in text.splitlines():
+            if not line or line.startswith("#"):
+                continue
+            name_end = line.index("{") if "{" in line else line.index(" ")
+            name = line[:name_end]
+            parts = line.split(" ", 1)
+            if len(parts) != 2:
+                continue
+            try:
+                v = float(parts[1])
+            except ValueError:
+                continue
+            if name == "hydra_warm_session_starts":
+                warm_total += v
+            elif name == "hydra_cold_session_starts":
+                cold_total += v
+        if warm_total == 0 and cold_total == 0:
+            return None, None
+        return int(warm_total), int(cold_total)
 
     def save(self, path: str, scenario_id: str = "ad-hoc", **extra: Any) -> None:
         """Write the current report + raw results to JSON for later comparison."""
@@ -455,15 +543,22 @@ def cli_entrypoint(  # noqa: PLR0913 — argparse-bridge helper
             else:
                 # `messages` is non-None here; type checkers should narrow.
                 if args.duration_s:
-                    # Run for `duration_s` wall clock instead of fixed request count
+                    # Run for `duration_s` wall clock instead of fixed request count.
+                    # Review #307 nit: was missing the start/end wall clock
+                    # stamps, so report() fell through to its `time.monotonic()`
+                    # fallback in both `_start_wall` and `_end_wall`, making
+                    # `elapsed ≈ 0` and `throughput_req_per_s` jump to ~1e9.
+                    # Snapshot both ends so throughput is meaningful.
                     deadline = time.monotonic() + args.duration_s
                     n = 0
+                    harness._start_wall = time.monotonic()
                     while time.monotonic() < deadline:
                         await harness.submit(
                             messages, f"bench-{n}",
                             max_tokens=args.max_tokens, stream=True,
                         )
                         n += 1
+                    harness._end_wall = time.monotonic()
                     rep = harness.report()
                     if args.output:
                         harness.save(args.output, scenario_id=scenario_id)

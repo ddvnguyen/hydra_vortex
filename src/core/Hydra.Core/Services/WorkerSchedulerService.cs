@@ -204,16 +204,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// watchdog validation. The age of the oldest lease is the
 			// canary — a value that grows unbounded while the warm-hit
 			// rate is 0 means the eviction watchdog is not reclaiming.
-			if (_warmLeases.IsEmpty)
-			{
-				CoordinatorMetrics.WarmLeaseMaxAge.Set(0);
-			}
-			else
-			{
-				var oldest = _warmLeases.Values.Min(v => v.CreatedAt);
-				CoordinatorMetrics.WarmLeaseMaxAge.Set(
-					(System.DateTime.UtcNow - oldest).TotalSeconds);
-			}
+			//
+			// Race fix (review #307): `_warmLeases.IsEmpty` and
+			// `_warmLeases.Values.Min(...)` are not atomic. A lease can be
+			// removed between the two calls, which would make Min() throw
+			// InvalidOperationException on an empty sequence. The loop
+			// is fire-and-forget (`_ = ReportQueueDepthAsync(ct)`), so an
+			// unhandled throw here would permanently stop the entire
+			// queue-depth + warm-lease metric stream. Use a single LINQ
+			// pipeline guarded by `DefaultIfEmpty` so the metric always
+			// reports a valid value (now=now when no leases are held).
+			var oldest = _warmLeases.Values
+				.Select(v => v.CreatedAt)
+				.DefaultIfEmpty(System.DateTime.UtcNow)
+				.Min();
+			var ageSeconds = (System.DateTime.UtcNow - oldest).TotalSeconds;
+			CoordinatorMetrics.WarmLeaseMaxAge.Set(
+				ageSeconds < 0 ? 0 : ageSeconds);
 			await Task.Delay(TimeSpan.FromSeconds(5), ct);
 		}
 	}

@@ -75,6 +75,17 @@ STATUS_NAMES = {
 
 # ── RPC client (async TCP) ──────────────────────────────────────────────
 
+# NOTE: this RPC client re-implements the wire format from
+# `specs/rpc-protocol.md` and `src/core/Hydra.Shared/Protocol.cs` in
+# Python. The duplication is intentional — the C# client is a private
+# member of the Hydra.Core binary, and we don't want this driver to
+# depend on the dotnet build. Review #307 flagged this as worth a
+# note: any future addition to the wire format MUST be mirrored here
+# AND in specs/rpc-protocol.md. If the formats drift, this client will
+# silently corrupt on read or write — the protocol is binary, so an
+# off-by-one in the header will manifest as a stuck deserializer, not
+# a clean parse error.
+
 @dataclass
 class RpcResponse:
     status: int
@@ -399,20 +410,27 @@ async def cap2_decode_only(
                          notes="both paths unavailable")
     if engine_tokens is None and legacy_tokens is not None:
         return CapResult("cap2_decode", "token_text (legacy only)", legacy_tokens, "n/a", "n/a", "SKIP",
-                         notes="engine decode not implemented in this build")
+                         notes="engine decode not implemented in this build. Token-equivalence is validated by EngineModeTests (C#) — see src/core/Tests.Core/Integration/EngineModeTests.cs")
     if engine_tokens and legacy_tokens and engine_tokens != "<...>":
         return CapResult("cap2_decode", "token_text", legacy_tokens[:80], engine_tokens[:80],
                          "see notes", "SKIP",
-                         notes=f"engine uses token-id stream; legacy uses text — compare via tokenizer on the C# side")
+                         notes=f"engine uses token-id stream; legacy uses text. **FUNCTIONAL GAP** (review #307): Python driver has no tokenizer, so token-exact compare is delegated to EngineModeTests (C#) — see src/core/Tests.Core/Integration/EngineModeTests.cs")
     if legacy_ms == 0 or engine_ms == 0:
         return CapResult("cap2_decode", "ms_legacy_vs_engine",
                          round(legacy_ms, 1), round(engine_ms, 1),
                          "n/a", "SKIP",
                          notes="one path produced no timing — likely unavailable")
 
+    # Latency-only pass criterion. **FUNCTIONAL GAP** (review #307): the
+    # reframe's cap 2 is "same token stream" — the Python driver doesn't
+    # have a Qwen3 tokenizer, so this bench can only check latency. The
+    # token-exact compare is validated by EngineModeTests.cs on the C#
+    # side; this row should be read as "latency OK" not "tokens
+    # equivalent". A future improvement: add a shared vocab file
+    # (tokenizer.json) and decode the engine's token-id stream here.
     return CapResult("cap2_decode", "ms_legacy_vs_engine", round(legacy_ms, 1), round(engine_ms, 1),
                      round(engine_ms - legacy_ms, 1), "PASS" if engine_ms <= legacy_ms * 1.5 else "FAIL",
-                     notes="engine <= 1.5x legacy is the pass bar (latency, not functional)")
+                     notes="LATENCY ONLY — engine <= 1.5x legacy. Token-exact equivalence: see EngineModeTests.cs (review #307).")
 
 
 async def cap3_kv_save(
@@ -465,9 +483,17 @@ async def cap4_kv_restore(
 ) -> CapResult:
     """Cap 4: KV restore — decode after save/restore matches decode without round-trip.
 
-    This is a structural check: we confirm both paths accept a state blob
-    without error. We don't run a full decode-after-restore here (it would
-    need a tokenizer); that's covered by the integration tests.
+    **FUNCTIONAL GAP** (review #307): this bench confirms the state blob
+    is *accepted* by STATE_PUT (0x31) but does NOT verify that decode
+    after restore produces the same tokens as decode without the
+    round-trip. The reframe's cap 4 is "decode after restore == decode
+    without save/restore round-trip" — that requires a tokenizer
+    (same gap as cap 2) and a C# integration test. See
+    `src/core/Tests.Core/Integration/EngineModeTests.cs`.
+
+    The legacy path (STATE_PUT via the fork's HTTP `/slots/{id}/state`
+    endpoint) is also not tested here — that needs a binary client
+    on the legacy port.
     """
     body = _small_request_body(seed=seed)
     payload = json.dumps(body).encode()

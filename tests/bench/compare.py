@@ -86,32 +86,60 @@ def _resolve_result_metric(result: dict[str, Any], key: str) -> float | None:
 
 # ─── Diff logic ─────────────────────────────────────────────────────────
 
-def _classify_delta(baseline: float, current: float, max_regression: float) -> tuple[float, str]:
+def _direction(key: str) -> str:
+    """Return "lower" for latency (lower=better) or "higher" for throughput / rate."""
+    if key in THROUGHPUT_METRICS or key.endswith("_rate"):
+        return "higher"
+    return "lower"
+
+
+def _is_improvement(key: str, baseline: float, current: float) -> bool:
+    """Latencies: lower is better. Throughput / rate: higher is better."""
+    if _direction(key) == "higher":
+        return current > baseline
+    return current < baseline
+
+
+def _classify_delta(
+    key: str, baseline: float, current: float, max_regression: float,
+) -> tuple[float, str]:
     """
-    Returns (delta_pct, verdict) where verdict is one of
-      "absent"    — at least one side is missing the metric
+    Returns (delta_pct, verdict) where verdict is one of:
+      "absent"    — at least one side is missing the metric (or baseline is 0)
       "improved"  — current is strictly better than baseline
                     (lower for latencies, higher for throughput / rate)
-      "ok"        — current is within +-max_regression of baseline
+      "ok"        — current is within ±max_regression of baseline
       "regressed" — current is more than max_regression worse than baseline
                     (advisory; only fails with --fail-on-regression)
+
+    Direction matters: for a latency (lower=better), a 50% bump in
+    `current` is a regression; for a throughput metric (higher=better),
+    a 50% drop in `current` is a regression. We use `_direction` to
+    distinguish so throughput regressions are caught.
     """
     if baseline == 0:
         # Treat zero baseline as "absent" so we don't divide by zero.
         # Real baselines should never be exactly 0 for a meaningful metric.
         if current == 0:
             return 0.0, "absent"
-        return float("inf") if current > 0 else 0.0, "ok"
+        # For higher-is-better with a zero baseline, any positive current
+        # is an improvement; for lower-is-better, a positive current is
+        # already a regression-shaped move, but without a baseline we can't
+        # quantify it — report as absent.
+        if _direction(key) == "higher" and current > 0:
+            return float("inf"), "improved"
+        return float("inf"), "absent"
 
-    return_pct = (current - baseline) / baseline * 100.0
-    return return_pct, "ok"
+    delta_pct = (current - baseline) / baseline * 100.0
+    improvement = _is_improvement(key, baseline, current)
+    regression_magnitude = abs(delta_pct)
+    threshold_pct = max_regression * 100.0
 
-
-def _is_improvement(key: str, baseline: float, current: float) -> bool:
-    """Latencies: lower is better. Throughput / rate: higher is better."""
-    if key in THROUGHPUT_METRICS or key.endswith("_rate"):
-        return current > baseline
-    return current < baseline
+    if improvement and regression_magnitude >= threshold_pct:
+        return delta_pct, "improved"
+    if not improvement and regression_magnitude >= threshold_pct:
+        return delta_pct, "regressed"
+    return delta_pct, "ok"
 
 
 # ─── Report rendering ──────────────────────────────────────────────────
@@ -148,12 +176,7 @@ def render_report(
         c = _resolve_result_metric(current, key)
         if b is None or c is None:
             continue
-        delta_pct, verdict = _classify_delta(b, c, max_regression)
-        if verdict == "ok":
-            if _is_improvement(key, b, c):
-                verdict = "improved"
-            elif delta_pct > max_regression * 100.0:
-                verdict = "regressed"
+        delta_pct, verdict = _classify_delta(key, b, c, max_regression)
         rows.append((key, b, c, delta_pct, verdict))
         verdict_marker = "ADVISORY" if verdict == "regressed" else verdict.upper()
         lines.append(

@@ -49,6 +49,18 @@ public sealed class SessionEvictionService : BackgroundService
 							// eviction rate. Non-zero is expected; a rate
 							// higher than the warm-hit rate is the canary
 							// for S10.
+							//
+							// Note: this counter is incremented on EVERY
+							// successful reclaim, not only on "stuck" leases
+							// (the SessionIdleTimeoutS is conservative enough
+							// that virtually every reclaim is a normal idle
+							// eviction, not a stuck-lease recovery). The
+							// "stuck" in the metric name is a misnomer —
+							// rename to `hydra_warm_leases_reclaimed_total`
+							// tracked in review #307. The canary in
+							// issue #306 is rate(reclaimed) vs rate(warm
+							// sessions), so the signal is in the ratio, not
+							// the absolute count.
 							CoordinatorMetrics.StuckWarmLeases.Inc();
 							continue;
 						}
