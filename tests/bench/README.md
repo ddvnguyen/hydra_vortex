@@ -127,4 +127,80 @@ issue's **C5 fix**), so the comparator can read it directly from
 - **#269** (pipelined prefill) — covered by S11 (land with the feature).
 - **#299** (V2 coordinator) — S10 is the watchdog validation.
 - **#200** (mix-precision swap) — covered by S12.
+
+## Engine A/B driver (`ab_engine.py`) — issue #306 reframed
+
+`tests/bench/ab_engine.py` is the focused A/B confirmation asked for in
+the reframed issue #306. It drives the same request through both
+transports on the same llama-server binary:
+
+| | New engine | Legacy fork |
+|---|---|---|
+| Transport | Binary RPC opcodes `0x40–0x46` (PREFILL 0x42, DECODE 0x43, INFO 0x41, …) | HTTP `/v1/chat/completions` + state opcodes `0x30–0x32` (STATE_GET/META) |
+| Driven via | `RpcClient` (minimal Python wire-protocol client) | `urllib` HTTP path |
+
+It runs 7 capability checks and prints an A/B table. Exits **1** if any
+capability fails equivalence; **0** if all PASS or SKIP (an
+unreachable engine is SKIP, not FAIL — "detect, don't assume").
+
+| # | Capability | Engine side | Legacy side | Equivalence check |
+|---|------------|-------------|-------------|-------------------|
+| 1 | **Prefill only** | PREFILL `0x42` (n_predict=0) → `n_past` | HTTP prefill + STATE_META `0x32` | `n_past` within ±2 tokens |
+| 2 | **Decode only** | DECODE `0x43` (token-id stream) | HTTP `/v1/chat/completions` (text) | engine ≤ 1.5× legacy latency; text-vs-token comparison noted as C#-side |
+| 3 | **KV save** | PREFILL inline state blob | STATE_META `state_size` | sizes within 1 KB |
+| 4 | **KV restore** | PREFILL → STATE_PUT `0x31` round-trip | (no Python binary legacy client — noted) | engine reports `restored=true` |
+| 5 | **Metadata** | INFO `0x41` + STATE_META `0x32` | GET `/slots/0/state/meta` | `n_past` within ±2 |
+| 6 | **Metrics** | scrape `:9501/metrics` for `hydra_prefill_seconds_count` + `hydra_migration_latency_seconds` (C5 fix) | same | required declared+>0, optional declared |
+| 7 | **Observability** | RPC with explicit `trace_id` | HTTP POST with `session_id=trace` | both round-trip (no error) |
+
+### Running
+
+```bash
+# Both paths reachable (engine RPC on :9503, legacy HTTP on :8080)
+python -m tests.bench.ab_engine \
+    --engine-rpc 127.0.0.1:9503 \
+    --legacy-http http://127.0.0.1:8080 \
+    --output /tmp/ab-engine-results.json
+
+# Engine only (legacy skipped — useful for smoke testing the engine)
+python -m tests.bench.ab_engine --engine-rpc 127.0.0.1:9503 --skip-legacy
+
+# When the engine binary is pre-#289 (no `0x40–0x46`), the script
+# detects `NOT_IMPLEMENTED` from `INFO 0x41` and SKIPs the engine
+# column for capabilities that need it. No false failures.
+```
+
+### Notes for the operator
+
+- **Engine RPC port not on the host by default.** The `hydra-head-rtx`
+  container's `9503` (engine binary RPC) is only exposed inside the
+  podman network. To run the A/B end-to-end from the host, either
+  exec into the container, or add a port mapping to
+  `infra/hydra-head/Dockerfile.rtx`. The script's connection failure
+  is reported as a clean "engine column SKIP" rather than a crash.
+- **Both transports on the same binary.** The reframed #306 assumes
+  the same llama-server build supports both RPC and HTTP. This is
+  true for the engine build (b9541-c357ad25b) — it serves
+  `/v1/chat/completions` and the `0x30–0x32` state opcodes AND the
+  `0x40–0x46` engine opcodes on the same port set.
+- **C5 fix is verified by the metric being declared**, not by
+  `migration_latency_count > 0`. The histogram is only emitted once
+  a real migration runs; in a normal session the counter is 0 but
+  the type declaration is enough to prove the fix shipped.
+- **The full JSON output (`/tmp/ab-engine-results.json` by default)**
+  is structured for later `compare.py` runs against a future
+  baseline.
+
+### Difference from the per-scenario suite (S1–S12)
+
+| | `ab_engine.py` (issue #306 reframed) | `s1_*`–`s12_*` (issue #306 original) |
+|---|---|---|
+| Goal | Confirm the new engine produces equivalent output to the legacy fork | Measure P/D split perf under load |
+| Scope | 7 capabilities, single request each | 12 scenarios with N=20–50 sustained load |
+| Live load | No | Yes |
+| Exit code | 0=PASS, 1=FAIL (advisory) | 0 (advisory per issue scoping) |
+| Use | `python -m tests.bench.ab_engine` after deploy | `python -m tests.bench.s4_cold_concurrency --output ...` for periodic perf checks |
+
+Both can coexist; `ab_engine.py` is a quick smoke-test post-deploy,
+the per-scenario suite is the periodic perf regression check.
 - **#201** (Qwen35MoE KV cache restore) — covered by S9 (n_past guard).
