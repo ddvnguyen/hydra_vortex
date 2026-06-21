@@ -56,6 +56,7 @@ public sealed record CoordinatorConfig
 	public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
 	public string PrefixCheckpointName { get; init; } = Env("HYDRA_COORD_PREFIX_CHECKPOINT_NAME", "system_prompt");
+	public bool DevModeEnabled { get; init; } = EnvBool("HYDRA_DEV_MODE", false);
 	public List<WorkerConfig> Workers { get; set; } = [];
 
 	public static List<WorkerConfig> LoadWorkers()
