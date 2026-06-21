@@ -1,0 +1,20 @@
+{
+  "engine": {
+    "wall_ms": 4616,
+    "prompt_tokens": 956,
+    "cached_tokens": 0,
+    "prompt_ms": 4458,
+    "prompt_tok_per_s": 214.4,
+    "predicted_ms": 129,
+    "predicted_tok_per_s": 38.7
+  },
+  "official": {
+    "wall_ms": 4706,
+    "prompt_tokens": 957,
+    "cached_tokens": 0,
+    "prompt_ms": 4551,
+    "prompt_tok_per_s": 210.3,
+    "predicted_ms": 135,
+    "predicted_tok_per_s": 37.1
+  }
+}
