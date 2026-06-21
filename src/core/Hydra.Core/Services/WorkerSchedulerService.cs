@@ -666,6 +666,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 				var nPast = meta?.TryGetValue("n_past", out var n) == true
 					? n.GetInt32() : 0;
+
+				// Guard: if estimated tokens <= cached n_past, the cache will be nuked.
+				// Force cold route (full re-prefill) instead of proceeding to prefill.
+				if (nPast > 0 && item.EstimatedTokens > 0
+					&& item.EstimatedTokens < nPast + 50)
+				{
+					_log.Warning("n_past_guard_prefix Restore={Sid} NPast={Past} Est={Est} — evicting warm slot",
+						item.SessionId, nPast, item.EstimatedTokens);
+					return await EvictWarmAndColdRouteAsync(item);
+				}
+
 				if (nPast > 0)
 					_ledger.UpdateNPast(item.SessionId, nPast);
 			}
