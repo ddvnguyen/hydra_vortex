@@ -1,4 +1,9 @@
+using System.Text.Json;
+using Hydra.Core.Models;
+using Hydra.Core.Repositories;
+using Hydra.Core.Services;
 using Hydra.Shared;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Tests.Core.Integration;
@@ -95,5 +100,62 @@ public sealed class MigrationApiTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => f.Scheduler.MigrateSessionAsync("sess_mig", "does_not_exist", default));
+    }
+
+    // A5 finally: the StatePut into the target slot is fault-injectable (it goes
+    // through the llama RPC double). When it throws, the slot acquired moments
+    // earlier MUST still be released in the finally — the core leak the fix closes.
+    [Fact]
+    public async Task Migrate_StatePutThrows_AcquiredSlotReleasedInFinally()
+    {
+        var cfg = MakeMigrationConfig();
+        var ledger = new SessionLedger();
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+        var sp = new ServiceCollection().BuildServiceProvider();
+
+        // Store Get succeeds; the llama StatePut throws.
+        var rpc = new ThrowOnOpRpcClient(throwOn: OpCode.StatePut);
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker,
+            new TestCompletionProxy(), new TestHealthMonitor(), rpc, sp, Serilog.Log.Logger);
+        scheduler.AgentClientFactory = (_, _) => rpc;
+
+        ledger.Register("sess_mig", "rtx", slotId: 1, nPast: 100);
+        ledger.MarkStoreState("sess_mig");
+        var p100FreeBefore = tracker.FreeSlotCount("p100");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => scheduler.MigrateSessionAsync("sess_mig", "p100", default));
+
+        // The slot acquired before the failing StatePut was released in finally.
+        Assert.Equal(p100FreeBefore, tracker.FreeSlotCount("p100"));
+    }
+
+    private static CoordinatorConfig MakeMigrationConfig() => new()
+    {
+        PrefixCheckpointEnabled = false,
+        WarmSlotVerificationEnabled = false,
+        Workers = new List<WorkerConfig>
+        {
+            new() { Name = "rtx",  Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080",      WorkerType = 3, Slots = 2, PrefillPriority = 1,   DecodePriority = 2 },
+            new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://192.168.122.21:8086", WorkerType = 2, Slots = 1, PrefillPriority = 100, DecodePriority = 1 },
+        }
+    };
+}
+
+// RPC double that returns Ok for every op except the one it is told to fail on,
+// where it throws — lets a test fault-inject a specific stage of a flow.
+internal sealed class ThrowOnOpRpcClient : RpcClient
+{
+    private readonly OpCode _throwOn;
+    public ThrowOnOpRpcClient(OpCode throwOn) : base("test", 0) => _throwOn = throwOn;
+
+    public override Task<RpcResponse> RequestAsync(
+        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+    {
+        if (op == _throwOn)
+            throw new InvalidOperationException($"injected RPC failure on {op}");
+        var meta = JsonSerializer.Serialize(new { n_past = 2000, restored = true, stored = true });
+        return Task.FromResult(new RpcResponse((byte)StatusCode.Ok, meta, Array.Empty<byte>()));
     }
 }
