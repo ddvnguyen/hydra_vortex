@@ -44,6 +44,12 @@ public sealed class SessionEvictionService : BackgroundService
 						try
 						{
 							await _scheduler.EvictWarmSessionAsync(sid, entry.NodeName, ct);
+							// Issue #306: count watchdog reclaims so the bench
+							// suite can correlate warm-hit rate with the
+							// eviction rate. Non-zero is expected; a rate
+							// higher than the warm-hit rate is the canary
+							// for S10.
+							CoordinatorMetrics.StuckWarmLeases.Inc();
 							continue;
 						}
 						catch (Exception ex)

@@ -1,0 +1,111 @@
+{
+  "_comment": [
+    "Captured on issue #306 pickup. Numbers are nominal seed values;",
+    "re-capture via 'python -m tests.bench.<scenario> --output results/pr.json'",
+    "and overwrite when perf intentionally changes.",
+    "compare.py exits 0 on regression (advisory only)."
+  ],
+  "version": 1,
+  "captured_at": "2026-06-21T00:00:00Z",
+  "model": "balanced",
+  "scenarios": {
+    "s1_warm_affinity": {
+      "n": 200,
+      "concurrency": 10,
+      "ttft_p50_ms": 25,
+      "ttft_p95_ms": 45,
+      "ttft_p99_ms": 80,
+      "tpot_p50_ms": 20,
+      "tpot_p95_ms": 35,
+      "total_p50_ms": 2400,
+      "total_p95_ms": 4500,
+      "warm_hit_rate": 0.95,
+      "throughput_req_per_s": 4.0
+    },
+    "s2_warm_miss": {
+      "n": 30,
+      "ttft_p50_ms": 1800,
+      "ttft_p95_ms": 4200,
+      "ttft_p99_ms": 4900,
+      "total_p50_ms": 5800,
+      "total_p95_ms": 8200,
+      "warm_hit_rate": 0.0,
+      "throughput_req_per_s": 0.5
+    },
+    "s3_cold_atomic": {
+      "n": 50,
+      "ttft_p50_ms": 800,
+      "ttft_p95_ms": 1300,
+      "total_p50_ms": 5200,
+      "total_p95_ms": 6000,
+      "throughput_req_per_s": 1.2
+    },
+    "s4_cold_concurrency": {
+      "n": 100,
+      "concurrency": 2,
+      "ttft_p50_ms": 3800,
+      "ttft_p95_ms": 4200,
+      "ttft_p99_ms": 4400,
+      "total_p50_ms": 8000,
+      "total_p95_ms": 8500,
+      "total_p99_ms": 9000,
+      "throughput_req_per_s": 0.45
+    },
+    "s5_long_context_60k": {
+      "n": 20,
+      "ttft_p50_ms": 11000,
+      "ttft_p95_ms": 13500,
+      "total_p50_ms": 13800,
+      "total_p95_ms": 15000,
+      "throughput_req_per_s": 0.15
+    },
+    "s6_long_context_80k": {
+      "n": 10,
+      "ttft_p50_ms": 14000,
+      "ttft_p95_ms": 16500,
+      "total_p50_ms": 17000,
+      "total_p95_ms": 18500,
+      "throughput_req_per_s": 0.10
+    },
+    "s7_burst": {
+      "n": 200,
+      "concurrency": 50,
+      "ttft_p50_ms": 4200,
+      "ttft_p95_ms": 9500,
+      "ttft_p99_ms": 18000,
+      "total_p50_ms": 9500,
+      "total_p95_ms": 22000,
+      "throughput_req_per_s": 8.5
+    },
+    "s8_worker_death": {
+      "n": 10,
+      "ttft_p50_ms": 4500,
+      "ttft_p95_ms": 11000,
+      "detection_s_p95": 4.5,
+      "failover_success_rate": 0.8
+    },
+    "s9_npast_guard": {
+      "n": 20,
+      "ttft_p50_ms": 4200,
+      "ttft_p95_ms": 4800,
+      "restore_triggered_rate": 1.0
+    },
+    "s10_stale_lease": {
+      "n": 1,
+      "watchdog_reclaim_s_p95": 35.0
+    },
+    "s11_pipelined_prefill": {
+      "_comment": "Requires issue #269 to land; not yet measurable.",
+      "n": 0,
+      "ttft_p50_ms": 0,
+      "ttft_p95_ms": 0,
+      "throughput_req_per_s": 0
+    },
+    "s12_mix_precision_swap": {
+      "_comment": "Requires issue #200 to land; not yet measurable.",
+      "n": 0,
+      "swap_s_p50": 0,
+      "swap_s_p95": 0
+    }
+  }
+}
