@@ -56,6 +56,9 @@ public sealed record CoordinatorConfig
 	public int HealthPollIntervalS { get; init; } = EnvInt("HYDRA_COORD_HEALTH_POLL_INTERVAL_S", 20);
 	public int HealthPollTimeoutS { get; init; } = EnvInt("HYDRA_COORD_HEALTH_POLL_TIMEOUT_S", 30);
 	public int HealthMaxFailures { get; init; } = EnvInt("HYDRA_COORD_HEALTH_MAX_FAILURES", 3);
+	// Stuck-slot watchdog (#299/C7): a slot reporting is_processing && n_remain==0 for this
+	// many consecutive health-poll cycles is counted as stuck (surfaced via NodeInfo.StuckSlots).
+	public int StuckSlotCycles { get; init; } = EnvInt("HYDRA_COORD_STUCK_SLOT_CYCLES", 3);
 	public float CharsPerToken { get; init; } = float.Parse(Env("HYDRA_COORD_CHARS_PER_TOKEN", "4.0"));
 	public int LlamaRequestTimeoutS { get; init; } = EnvInt("HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S", 1800);
 	public int SessionIdleTimeoutS { get; init; } = EnvInt("HYDRA_COORD_SESSION_IDLE_TIMEOUT_S", 3600);
@@ -226,6 +229,9 @@ public sealed class SlotInfo
 	public int Id { get; set; }
 	public bool IsProcessing { get; set; }
 	public int NPast { get; set; }
+	/// <summary>Remaining tokens to generate, from llama /slots. 0 while processing = stuck candidate.</summary>
+	public int NRemain { get; set; }
 	public DateTime LastActive { get; set; } = DateTime.UtcNow;
+	/// <summary>Consecutive health-poll cycles this slot has looked stuck (is_processing && n_remain==0).</summary>
 	public int StuckPollCount { get; set; }
 }
