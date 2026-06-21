@@ -160,4 +160,30 @@ internal static class CoordinatorMetrics
         "hydra_model_fallback_total",
         "Engine PREFILL fallback: requested model unknown, used resident model",
         new CounterConfiguration { LabelNames = new[] { "worker", "requested" } });
+
+    // ── M-Perf / Issue #306: bench-harness observability ──
+    // Age (in seconds) of the oldest warm-lease currently held. A non-zero
+    // value that grows over time is an early signal that the eviction
+    // watchdog is not reclaiming (S10). Set in
+    // WorkerSchedulerService.ReportQueueDepthAsync.
+    public static readonly Gauge WarmLeaseMaxAge = Metrics.CreateGauge(
+        "hydra_warm_lease_max_age_seconds",
+        "Age of the oldest warm lease (seconds). 0 when no leases are held.");
+
+    // Age (in seconds) of the item that was just dequeued from the head of
+    // the main classifier queue. Captured per-dequeue in
+    // ClassifyItemAsync. A persistently high value means requests are
+    // queueing behind a slow worker (backpressure / starvation).
+    public static readonly Gauge QueueHeadAge = Metrics.CreateGauge(
+        "hydra_queue_head_age_seconds",
+        "Age (s) of the most recently dequeued main-queue head. 0 when idle.");
+
+    // Number of warm leases reclaimed by the eviction watchdog since
+    // process start. Incremented in SessionEvictionService after a
+    // successful EvictWarmSessionAsync. Non-zero rate in steady state is
+    // expected; a non-zero absolute value with a warm-hit rate of 0 is
+    // the canary for S10.
+    public static readonly Counter StuckWarmLeases = Metrics.CreateCounter(
+        "hydra_stuck_warm_leases_total",
+        "Warm leases reclaimed by the eviction watchdog since process start.");
 }

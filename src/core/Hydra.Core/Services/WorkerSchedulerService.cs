@@ -142,6 +142,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		CoordinatorMetrics.MigrationsTotal.WithLabels(fromNode, targetNodeName).Inc();
 
+		// Issue #306 / C5 fix: MigrationLatency was defined but never
+		// observed. Wrap the body in a stopwatch and observe the elapsed
+		// seconds on the success path. The pre-check throw above is a
+		// precondition (no migration happened) so it is intentionally not
+		// observed — only successful migrations land in the histogram.
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+
 		var storeKey = $"{sessionId}.kv";
 		var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
 			storeKey, ReadOnlyMemory<byte>.Empty, traceId, ct);
@@ -162,7 +169,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 
 		_ledger.Register(sessionId, targetNodeName, 0, nPastAfter, entry.PrefixHash);
-		_log.Information("migrate_done Sid={Sid} To={Node} NPast={N}", sessionId, targetNodeName, nPastAfter);
+		sw.Stop();
+		CoordinatorMetrics.MigrationLatency.WithLabels(fromNode, targetNodeName).Observe(sw.Elapsed.TotalSeconds);
+		_log.Information("migrate_done Sid={Sid} To={Node} NPast={N} LatencyS={L:F3}",
+			sessionId, targetNodeName, nPastAfter, sw.Elapsed.TotalSeconds);
 
 		return new { migrated = true, session_id = sessionId, target = targetNodeName, n_past = nPastAfter };
 	}
@@ -190,6 +200,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			CoordinatorMetrics.MainQueueDepth.Set(_mainQueue.Reader.Count);
 			CoordinatorMetrics.PrefillQueueDepth.Set(_prefillQueue.Reader.Count);
 			CoordinatorMetrics.DecodeQueueDepth.Set(_decodeQueue.Reader.Count);
+			// Issue #306: surface warm-lease age for the bench suite's S10
+			// watchdog validation. The age of the oldest lease is the
+			// canary — a value that grows unbounded while the warm-hit
+			// rate is 0 means the eviction watchdog is not reclaiming.
+			//
+			// Race fix (review #307): `_warmLeases.IsEmpty` and
+			// `_warmLeases.Values.Min(...)` are not atomic. A lease can be
+			// removed between the two calls, which would make Min() throw
+			// InvalidOperationException on an empty sequence. The loop
+			// is fire-and-forget (`_ = ReportQueueDepthAsync(ct)`), so an
+			// unhandled throw here would permanently stop the entire
+			// queue-depth + warm-lease metric stream. Use a single LINQ
+			// pipeline guarded by `DefaultIfEmpty` so the metric always
+			// reports a valid value (now=now when no leases are held).
+			var oldest = _warmLeases.Values
+				.Select(v => v.CreatedAt)
+				.DefaultIfEmpty(System.DateTime.UtcNow)
+				.Min();
+			var ageSeconds = (System.DateTime.UtcNow - oldest).TotalSeconds;
+			CoordinatorMetrics.WarmLeaseMaxAge.Set(
+				ageSeconds < 0 ? 0 : ageSeconds);
 			await Task.Delay(TimeSpan.FromSeconds(5), ct);
 		}
 	}
@@ -239,6 +270,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			item.RecordPhase("queue_wait_ms");
 			CoordinatorMetrics.QueueWaitDuration.Observe(item.Phases["queue_wait_ms"] / 1000.0);
+			// Issue #306: surface the dequeued head's age as a gauge so the
+			// bench suite can detect head-of-line blocking. The histogram
+			// above captures the distribution; this gauge gives a current
+			// reading for Grafana single-stat panels.
+			CoordinatorMetrics.QueueHeadAge.Set(item.Phases["queue_wait_ms"] / 1000.0);
 			var next = await DispatchAsync(item, ct);
 			if (next is WorkItemState.Done or WorkItemState.Failed or WorkItemState.Cancelled)
 			{

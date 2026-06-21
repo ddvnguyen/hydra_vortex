@@ -1,0 +1,54 @@
+{
+  "engine": [
+    {
+      "call": 1,
+      "wall_ms": 1478,
+      "prompt_tokens": 140,
+      "cached_tokens": 0,
+      "prompt_ms": 1327,
+      "prompt_tok_per_s": 105.5
+    },
+    {
+      "call": 2,
+      "wall_ms": 1370,
+      "prompt_tokens": 140,
+      "cached_tokens": 0,
+      "prompt_ms": 1221,
+      "prompt_tok_per_s": 114.6
+    },
+    {
+      "call": 3,
+      "wall_ms": 1384,
+      "prompt_tokens": 140,
+      "cached_tokens": 0,
+      "prompt_ms": 1242,
+      "prompt_tok_per_s": 112.7
+    }
+  ],
+  "official": [
+    {
+      "call": 1,
+      "wall_ms": 1512,
+      "prompt_tokens": 140,
+      "cached_tokens": 0,
+      "prompt_ms": 1361,
+      "prompt_tok_per_s": 102.9
+    },
+    {
+      "call": 2,
+      "wall_ms": 210,
+      "prompt_tokens": 140,
+      "cached_tokens": 136,
+      "prompt_ms": 64,
+      "prompt_tok_per_s": 62.9
+    },
+    {
+      "call": 3,
+      "wall_ms": 211,
+      "prompt_tokens": 140,
+      "cached_tokens": 136,
+      "prompt_ms": 67,
+      "prompt_tok_per_s": 59.5
+    }
+  ]
+}
