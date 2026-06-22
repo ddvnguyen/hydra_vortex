@@ -116,12 +116,15 @@ func main() {
 	defer manager.Shutdown()
 
 	llamaURL := fmt.Sprintf("http://%s:%d", cfg.Llama.Host, cfg.Llama.Port)
+	// Bumped from 3 to 30 (issue #326): P100 model load takes 3-5 min
+	// on slow VM disk, and the old maxFails=3 with 60s idleInterval
+	// meant hydra-head would kill the loading process at 3:00 every time.
 	checker := health.NewChecker(
 		llamaURL,
 		logger,
 		60*time.Second,
 		300*time.Second,
-		3,
+		30,
 	)
 	checker.SetOnUnhealthy(func() {
 		logger.Warn("llama-server unhealthy, triggering restart")
