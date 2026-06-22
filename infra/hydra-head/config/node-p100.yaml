@@ -60,3 +60,12 @@ services:
     port: 9835
     args:
       - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
+
+# P100 lives in a KVM VM with a slow virtio disk. Model load
+# (mmap'ing 16GB of GGUF) takes 235-300s on this hardware, so the
+# default max_fails=3 (3 min kill budget) is too aggressive — the
+# hydra-head health checker would kill the llama-server 5-60s
+# before the model finishes loading. Bump to 30 (≈30 min budget).
+# Closes #326.
+health:
+  max_fails: 30
