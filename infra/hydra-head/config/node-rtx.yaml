@@ -10,7 +10,7 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm120:c357ad25b
+    source: ghcr.io/ddvnguyen/llama-server-sm120:f518cff16
     binary: llama-server
     dest: /llama/bin/llama-server
   node_exporter:
