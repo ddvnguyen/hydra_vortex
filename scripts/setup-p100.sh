@@ -6,6 +6,14 @@
 #
 # No sudo required on the VM — everything installs in user scope (~/.config/systemd/user/).
 # After this runs, use: bash scripts/deploy-hydra-head.sh p100   (day-to-day startup)
+#
+# Note (2026-06-22): previously this script also installed host-side
+# systemd services for the 3 exporters + promtail, then disabled
+# them at the end (the in-container hydra-head owns them as
+# subprocesses). All four host-side systemd services are now
+# REMOVED entirely — the binaries alone are installed, and
+# hydra-head spawns them as children. This script reflects that
+# (no service files installed, no disable step at the end).
 set -euo pipefail
 
 VM="hydra-p100"
@@ -20,14 +28,14 @@ ssh -o ConnectTimeout=10 -o BatchMode=yes "$VM" true || {
 echo "==> Creating required directories on VM"
 ssh "$VM" "
   mkdir -p \$HOME/.config/systemd/user
-  mkdir -p \$HOME/hydra/bin \$HOME/hydra/config
+  mkdir -p \$HOME/hydra/bin \$HOME/hydra/config \$HOME/.config/promtail
   mkdir -p /mnt/kv_slots 2>/dev/null || true
 "
 
 echo "==> Enabling user session lingering (survive SSH logout)"
 ssh "$VM" "loginctl enable-linger" || true
 
-echo "==> Installing promtail for log shipping"
+echo "==> Installing promtail binary (hydra-head spawns as child)"
 ssh "$VM" "
   set -euo pipefail
   if command -v promtail &>/dev/null; then
@@ -41,17 +49,14 @@ ssh "$VM" "
   fi
 "
 
-echo "==> Deploying promtail config and service"
-scp "$REPO_ROOT/infra/promtail/promtail-p100.yml" "$VM:/tmp/"
-scp "$REPO_ROOT/infra/systemd/promtail-p100.service" "$VM:/tmp/"
+echo "==> Copying promtail config to in-container path"
 ssh "$VM" "
-  sudo cp /tmp/promtail-p100.yml /etc/promtail/config.yml
-  sudo cp /tmp/promtail-p100.service /etc/systemd/system/
-  sudo systemctl daemon-reload && sudo systemctl enable --now promtail-p100
+  mkdir -p \$HOME/.config/promtail
 "
+scp "$REPO_ROOT/infra/promtail/promtail-rtx.yml" "$VM:/tmp/promtail-config.yml"
+ssh "$VM" "cp /tmp/promtail-config.yml \$HOME/.config/promtail/config.yml"
 
-echo "==> Installing node-exporter for system metrics"
-ssh "$VM" "mkdir -p ~/.local/bin ~/.config/systemd/user"
+echo "==> Installing node_exporter binary (hydra-head spawns as child)"
 ssh "$VM" "
   if [ -f ~/.local/bin/node_exporter ]; then
     echo 'node_exporter already installed'
@@ -63,10 +68,8 @@ ssh "$VM" "
     echo 'node_exporter installed'
   fi
 "
-scp "$REPO_ROOT/infra/systemd/node-exporter-p100.service" "$VM:~/.config/systemd/user/node-exporter.service"
-ssh "$VM" "systemctl --user daemon-reload && systemctl --user enable --now node-exporter"
 
-echo "==> Installing nvidia-gpu-exporter for GPU metrics"
+echo "==> Installing nvidia_gpu_exporter binary (hydra-head spawns as child)"
 ssh "$VM" "
   if [ -f ~/.local/bin/nvidia_gpu_exporter ]; then
     echo 'nvidia_gpu_exporter already installed'
@@ -78,17 +81,6 @@ ssh "$VM" "
     echo 'nvidia_gpu_exporter installed'
   fi
 "
-scp "$REPO_ROOT/infra/systemd/nvidia-exporter-p100.service" "$VM:~/.config/systemd/user/nvidia-exporter.service"
-ssh "$VM" "systemctl --user daemon-reload && systemctl --user enable --now nvidia-exporter"
-
-echo ""
-echo "==> Cleanup: disable redundant systemd sidecar services"
-echo "    (hydra-head manages these as subprocesses)"
-ssh "$VM" "
-  sudo systemctl disable --now promtail-p100 2>/dev/null || true
-  systemctl --user disable --now node-exporter nvidia-exporter 2>/dev/null || true
-  echo '  Redundant services disabled'
-"
 
 echo ""
 echo "==> Setup complete. To deploy hydra-head to P100:"
@@ -97,3 +89,7 @@ echo ""
 echo "    Or manually:"
 echo "    ssh $VM 'systemctl --user start hydra-head'"
 echo "    curl http://192.168.122.21:9700/status   # hydra-head API"
+echo ""
+echo "    The 4 child services (llama / node_exporter / nvidia_gpu_exporter"
+echo "    / promtail) are managed by hydra-head itself — no separate systemd"
+echo "    services to start or stop."

@@ -855,20 +855,25 @@ src/core/Tests.Core/ChunkStoreTests.cs    ← chunk store tests
 ### Implementing Observability
 ```
 infra/Dockerfile                                  ← Multi-target: hydra-core (one SDK pull)
-infra/docker-compose.hydra.yml                     ← Hydra.Core service (host networking)
+infra/docker-compose.hydra.yml                     ← Hydra.Core service (host networking, in pod_hydra-system)
 infra/docker-compose.infra.yml                     ← Observability stack + exporters
 infra/prometheus/prometheus.yml                   ← scrape target config (network_mode: host)
 infra/loki/loki-config.yml                        ← log storage config
-infra/promtail/promtail-config.yml                ← container promtail docker_sd_configs
+infra/promtail/promtail-rtx.yml                   ← in-container promtail config (used by hydra-head-rtx + P100)
 infra/grafana/datasources/datasources.yml          ← datasource provisioning
 infra/grafana/dashboards/hydra-dashboard.json      ← metrics + logs + trace_id filter panel
 infra/grafana/dashboards/dashboard-providers.yml   ← auto-load dashboards
 
-# promtail config lives in the repo: infra/promtail/promtail-config.yml
-~/.config/systemd/user/promtail.service            ← host promtail systemd unit
-~/.local/bin/promtail                              ← host promtail binary
-~/.local/bin/container-log-shipper.sh              ← tails podman logs -f to /tmp/container-logs/
-~/.config/systemd/user/container-log-shipper.service  ← log shipper systemd unit
+# Node exporter + nvidia_gpu_exporter are NOT in the repo —
+# they're pulled by hydra-head at startup (binaries pinned in
+# src/head/internal/config/{global,node-p100}.yaml). They run as
+# children of hydra-head, NOT as host-side systemd services.
+
+# The host-side promtail systemd service (infra-promtail) was
+# removed in commit 5f2c231. promtail-rtx.yml is the only
+# promtail config; the in-container promtail (port 9080) ships
+# logs from all host containers via the directly-mounted podman
+# socket (userns=host, no socat proxy).
 
 src/core/Hydra.Core/StoreMetrics.cs                   ← Hydra.Core Store Prometheus metrics
 src/core/Hydra.Core/HydraMetrics.cs                   ← Hydra.Core API metrics

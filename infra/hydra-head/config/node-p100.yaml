@@ -42,10 +42,9 @@ llama:
     chat-template-kwargs: '{"preserve_thinking": true}'
 
 services:
-  # hydra-head manages these as subprocesses. The systemd services
-  # installed by setup-p100.sh are redundant — disable them after deploy:
-  #   sudo systemctl disable --now promtail-p100
-  #   systemctl --user disable --now node-exporter nvidia-exporter
+  # hydra-head manages these as subprocesses (no systemd services
+  # for them — the old infra-promtail / node-exporter / nvidia-exporter
+  # host services were removed in commit 5f2c231 + this follow-up).
   promtail:
     enabled: true
     binary: /usr/local/bin/promtail
