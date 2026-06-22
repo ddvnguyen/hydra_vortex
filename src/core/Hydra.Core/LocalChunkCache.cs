@@ -1,190 +1,125 @@
-using System.Collections.Concurrent;
-using System.Text.Json;
+using Hydra.Core.Caching;
 
 namespace Hydra.Core;
 
-public sealed class LocalChunkCache : IDisposable
+/// <summary>
+/// Two-tier chunk cache facade. Preserves the legacy LocalChunkCache API
+/// (used by WorkerSchedulerService and StateHandler) on top of:
+///   * L1 = <see cref="LocalFsChunkCache"/>: per-session, tmpfs, byte-LRU
+///     (default 20 GB), with at-write eviction and periodic sweep.
+///   * L2 = <see cref="IContentChunkStore"/> (PgChunkCache): per-content-hash,
+///     PG-backed, age×idle/use_count LRU (default 50 GB).
+///
+/// Save path: write-through to L1 and L2 simultaneously. L1 is the hot fast
+/// path; L2 is the durable best-effort. L1 evictions do NOT need to demote
+/// to L2 because L2 was already populated at write time.
+///
+/// Read path: L1 first (per session+hash); on miss, L2 by content hash (a
+/// hit promotes the chunk back to L1 on the next SaveChunkDataAsync for
+/// that session).
+///
+/// Closes M3-P1 #332 (no eviction → tmpfs fills → P/D split broken).
+/// </summary>
+public sealed class LocalChunkCache : IChunkCache
 {
-    private readonly DirectoryInfo _cacheDir;
-    private readonly int _maxSessions;
-    private readonly ConcurrentDictionary<string, SessionChunkCache> _caches = new();
+    private readonly LocalFsChunkCache _l1;
+    private readonly IContentChunkStore? _l2;
     private bool _disposed;
 
-    public LocalChunkCache(string cacheDir, int maxSessions = 100)
+    /// <summary>New: L1 + optional L2.</summary>
+    public LocalChunkCache(LocalFsChunkCache l1, IContentChunkStore? l2 = null)
     {
-        _cacheDir = new DirectoryInfo(cacheDir);
-        _maxSessions = maxSessions;
-
-        if (!_cacheDir.Exists)
-            _cacheDir.Create();
+        _l1 = l1 ?? throw new ArgumentNullException(nameof(l1));
+        _l2 = l2;
     }
+
+    /// <summary>Back-compat ctor (L1 only, no L2). Used by tests and ad-hoc
+    /// local runs that don't want a PG dependency.</summary>
+    public LocalChunkCache(string cacheDir, int maxSessions)
+        : this(new LocalFsChunkCache(cacheDir, MaxBytesFromSessions(maxSessions)), null)
+    {
+    }
+
+    private static long MaxBytesFromSessions(int maxSessions)
+    {
+        // Back-compat: 50 sessions × 1 GB ≈ 50 GB cap. The byte-budget
+        // ctor is the source of truth going forward; this is just so old
+        // call sites that pass a session count keep working.
+        return (long)maxSessions * 1024L * 1024L * 1024L;
+    }
+
+    public long L1UsedBytes => _l1.L1UsedBytes;
 
     public Task SaveHashesAsync(string sessionId, List<string> hashes, CancellationToken ct)
-    {
-        if (_disposed) return Task.CompletedTask;
-
-        var path = CachePath(sessionId);
-
-        var cache = new SessionChunkCache
-        {
-            SessionId = sessionId,
-            ChunkHashes = hashes,
-            SavedAt = DateTime.UtcNow
-        };
-
-        _caches[sessionId] = cache;
-
-        var json = JsonSerializer.Serialize(cache);
-        return File.WriteAllTextAsync(path, json, ct);
-    }
+        => _l1.SaveHashesAsync(sessionId, hashes, ct);
 
     public async Task SaveChunkDataAsync(string sessionId, string hash, byte[] chunkData, CancellationToken ct)
     {
-        if (_disposed || chunkData == null || chunkData.Length == 0) return;
-
-        var safeSessionId = sessionId.Replace('/', '_').Replace('\\', '_');
-        var chunkPath = Path.Combine(_cacheDir.FullName, $"{safeSessionId}.{hash}");
-        var dir = new FileInfo(chunkPath).Directory;
-        if (dir is not null && !dir.Exists)
-            dir.Create();
-
-        await File.WriteAllBytesAsync(chunkPath, chunkData, ct);
+        await _l1.SaveChunkDataAsync(sessionId, hash, chunkData, ct);
+        // Write-through to L2 (best-effort; L2 failures must not break the
+        // foreground save path).
+        if (_l2 is not null && chunkData is not null && chunkData.Length > 0)
+        {
+            try
+            {
+                await _l2.PutAsync(hash, chunkData, ct);
+            }
+            catch
+            {
+                // L2 is a best-effort cache; the L1 has the chunk and the
+                // Store has the durable copy. Surface via the L2 error metric
+                // would be a follow-up; for now, swallow.
+            }
+        }
     }
 
-    // Synchronous version for use in non-async contexts (e.g., ChunkHashTeeStream.Read).
     public void SaveChunkData(string sessionId, string hash, byte[] chunkData)
     {
-        if (_disposed || chunkData == null || chunkData.Length == 0) return;
-
-        var safeSessionId = sessionId.Replace('/', '_').Replace('\\', '_');
-        var chunkPath = Path.Combine(_cacheDir.FullName, $"{safeSessionId}.{hash}");
-        var dir = new FileInfo(chunkPath).Directory;
-        if (dir is not null && !dir.Exists)
-            dir.Create();
-
-        File.WriteAllBytes(chunkPath, chunkData);
+        _l1.SaveChunkData(sessionId, hash, chunkData);
+        if (_l2 is not null && chunkData is not null && chunkData.Length > 0)
+        {
+            // Sync L2 write: fire-and-forget task. Same rationale as the
+            // async overload — L2 failures must not break the foreground.
+            _ = Task.Run(async () =>
+            {
+                try { await _l2.PutAsync(hash, chunkData, CancellationToken.None); }
+                catch { /* best-effort */ }
+            });
+        }
     }
 
     public async Task<byte[]?> GetChunkDataAsync(string sessionId, string hash, CancellationToken ct)
     {
-        if (_disposed) return null;
-
-        var safeSessionId = sessionId.Replace('/', '_').Replace('\\', '_');
-        var chunkPath = Path.Combine(_cacheDir.FullName, $"{safeSessionId}.{hash}");
-        if (!File.Exists(chunkPath))
-            return null;
-
-        return await File.ReadAllBytesAsync(chunkPath, ct);
-    }
-
-    public async Task<List<string>> LoadHashesAsync(string sessionId, CancellationToken ct)
-    {
-        if (_disposed) return [];
-
-        if (_caches.TryGetValue(sessionId, out var cached))
-            return cached.ChunkHashes;
-
-        var path = CachePath(sessionId);
-        if (!File.Exists(path))
-            return [];
-
-        var json = await File.ReadAllTextAsync(path, ct);
-        var cache = JsonSerializer.Deserialize<SessionChunkCache>(json);
-        if (cache is null)
-            return [];
-
-        _caches[sessionId] = cache;
-        return cache.ChunkHashes;
-    }
-
-    public bool HasCachedHashes(string sessionId)
-    {
-        if (_disposed) return false;
-
-        // Check in-memory cache first.
-        if (_caches.ContainsKey(sessionId))
-            return true;
-
-        // Fall back to disk check.
-        var path = CachePath(sessionId);
-        return File.Exists(path);
-    }
-
-    public Task ClearAsync(string sessionId)
-    {
-        if (_disposed) return Task.CompletedTask;
-
-        _caches.TryRemove(sessionId, out _);
-        var path = CachePath(sessionId);
-        if (File.Exists(path))
-            File.Delete(path);
-
-        var safeSessionId = sessionId.Replace('/', '_').Replace('\\', '_');
-        foreach (var file in _cacheDir.EnumerateFiles($"{safeSessionId}.*"))
+        var hit = await _l1.GetChunkDataAsync(sessionId, hash, ct);
+        if (hit is not null)
         {
-            try
-            {
-                if (file.Name.EndsWith(".chunks.json")) continue; // keep index
-                file.Delete();
-            }
-            catch { /* ignore */ }
+            ChunkCacheMetrics.L1Hits.Inc();
+            return hit;
         }
-
-        return Task.CompletedTask;
+        ChunkCacheMetrics.L1Misses.Inc();
+        if (_l2 is null) return null;
+        // L1 miss → L2 by content hash. We do NOT promote the L2 hit to
+        // L1 here (no L1 session context for an out-of-session chunk);
+        // the next SaveChunkDataAsync for the same hash repopulates L1.
+        return await _l2.GetAsync(hash, ct);
     }
 
-    public async Task<int> EvictLRUAsync()
-    {
-        if (_disposed) return 0;
+    public Task<List<string>> LoadHashesAsync(string sessionId, CancellationToken ct)
+        => _l1.LoadHashesAsync(sessionId, ct);
 
-        var evicted = 0;
-        while (_caches.Count > _maxSessions)
-        {
-            var oldest = _caches.Values
-                .OrderBy(c => c.SavedAt)
-                .FirstOrDefault();
-            if (oldest is null) break;
+    public bool HasCachedHashes(string sessionId) => _l1.HasCachedHashes(sessionId);
 
-            _caches.TryRemove(oldest.SessionId, out _);
-            var path = CachePath(oldest.SessionId);
-            if (File.Exists(path))
-                File.Delete(path);
+    public bool HasChunkData(string sessionId, string hash) => _l1.HasChunkData(sessionId, hash);
 
-            await ClearAsync(oldest.SessionId);
+    public Task ClearAsync(string sessionId) => _l1.ClearAsync(sessionId);
 
-            evicted++;
-        }
-
-        return evicted;
-    }
-
-    public int CachedSessionCount => _caches.Count;
-
-    public bool HasChunkData(string sessionId, string hash)
-    {
-        if (_disposed) return false;
-
-        var safeSessionId = sessionId.Replace('/', '_').Replace('\\', '_');
-        var chunkPath = Path.Combine(_cacheDir.FullName, $"{safeSessionId}.{hash}");
-        return File.Exists(chunkPath);
-    }
-
-    private string CachePath(string sessionId)
-    {
-        var safeName = sessionId.Replace('/', '_').Replace('\\', '_');
-        return Path.Combine(_cacheDir.FullName, $"{safeName}.chunks.json");
-    }
+    public Task<int> EvictLRUAsync() => _l1.EvictLRUAsync();
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
-        _caches.Clear();
+        _l1.Dispose();
+        _l2?.Dispose();
     }
-}
-
-internal sealed class SessionChunkCache
-{
-    public string SessionId { get; set; } = "";
-    public List<string> ChunkHashes { get; set; } = [];
-    public DateTime SavedAt { get; set; } = DateTime.UtcNow;
 }
