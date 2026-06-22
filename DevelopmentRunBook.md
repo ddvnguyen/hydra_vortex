@@ -208,6 +208,15 @@ separate design pass for cross-model token sharing. Not in scope for this PR.
 
 Build and deploy Hydra Head, which manages llama-server + 3 sub-services on each GPU node.
 
+> **⚠️ `go` is NOT in the default PATH.** It lives at `~/go-sdk/go/bin/go` (v1.23.4,
+> installed from tarball, no `apt` access). Set it first:
+> ```bash
+> export PATH=$HOME/go-sdk/go/bin:$PATH
+> go version
+> # go version go1.23.4 linux/amd64
+> ```
+> See [`docs/build-environment.md`](docs/build-environment.md) for the full env.
+
 ```bash
 # Build
 go build -C src/head -o ../../bin/hydra-head .
