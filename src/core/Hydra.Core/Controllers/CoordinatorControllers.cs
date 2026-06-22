@@ -123,9 +123,10 @@ public class HealthController : ControllerBase
 	private readonly ISessionLedger _ledger;
 	private readonly IWorkerTracker _tracker;
 	private readonly IHealthMonitorService _health;
+	private readonly IWorkerScheduler _scheduler;
 
-	public HealthController(CoordinatorConfig cfg, ISessionLedger ledger, IWorkerTracker tracker, IHealthMonitorService health)
-		=> (_cfg, _ledger, _tracker, _health) = (cfg, ledger, tracker, health);
+	public HealthController(CoordinatorConfig cfg, ISessionLedger ledger, IWorkerTracker tracker, IHealthMonitorService health, IWorkerScheduler scheduler)
+		=> (_cfg, _ledger, _tracker, _health, _scheduler) = (cfg, ledger, tracker, health, scheduler);
 
 	[HttpGet("/health")]
 	public IActionResult Health()

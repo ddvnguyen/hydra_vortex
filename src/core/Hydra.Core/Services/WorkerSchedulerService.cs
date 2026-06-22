@@ -22,9 +22,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		_storeClient ?? throw new InvalidOperationException("Store RPC client not wired — check coordinator config");
 	private readonly IServiceProvider _serviceProvider;
 	private readonly ILogger _log;
-	private readonly Channel<WorkItem> _mainQueue;
-	private readonly Channel<WorkItem> _prefillQueue;
-	private readonly Channel<WorkItem> _decodeQueue;
+	private Channel<WorkItem> _mainQueue;
+	private Channel<WorkItem> _prefillQueue;
+	private Channel<WorkItem> _decodeQueue;
 	private readonly CancellationTokenSource _cts = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _agentClients = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _llamaRpcClients = new();
@@ -144,6 +144,56 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		_log.Information("migrate_done Sid={Sid} To={Node} NPast={N}", sessionId, targetNodeName, nPastAfter);
 
 		return new { migrated = true, session_id = sessionId, target = targetNodeName, n_past = nPastAfter };
+	}
+
+	public async Task<object> ResetSystemAsync(CancellationToken ct)
+	{
+		try
+		{
+			// Step 1: Cancel in-flight pipelines — signal all consumers to stop.
+			_cts.Cancel();
+
+			// Step 2: Signal pending timelines.
+			foreach (var (sid, item) in _pendingTimelines)
+			{
+				if (item.StreamCompletion.TrySetException(new OperationCanceledException("System reset")))
+					item.Completion.TrySetCanceled();
+			}
+
+			// Step 3: Drain queues by recreating Channels.
+			_mainQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(500));
+			_prefillQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(50));
+			_decodeQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(100));
+
+			// Step 4: Release all tracker slots.
+			foreach (var w in _cfg.Workers)
+				_tracker.ReleaseAllSlots(w.Name);
+
+			// Step 5: Clear warm leases.
+			foreach (var (sid, lease) in _warmLeases)
+			{
+				await lease.DisposeAsync();
+				_warmLeases.TryRemove(sid, out _);
+			}
+
+			// Step 6: Clear session ledger.
+			_ledger.ClearAll();
+
+			// Step 7: Clear pending state collections.
+			_streamCompleted.Clear();
+			_pendingBgSaves.Clear();
+			_prefixSet.Clear();
+
+			// Step 8: Reset Prometheus gauges.
+			foreach (var w in _cfg.Workers)
+				CoordinatorMetrics.ActiveSessions.WithLabels(w.Name).Set(0);
+
+			return new { status = "ok", timestamp = DateTime.UtcNow };
+		}
+		catch
+		{
+			return new { status = "reset_failed", error = true };
+		}
 	}
 
 	public async Task RunAsync(CancellationToken ct)

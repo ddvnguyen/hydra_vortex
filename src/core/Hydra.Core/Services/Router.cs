@@ -163,56 +163,29 @@ public static class Router
 
 		try
 		{
-			using var http = new HttpClient
-			{
-				Timeout = TimeSpan.FromSeconds(5)
-			};
-			var url = $"{worker.LlamaUrl.TrimEnd('/')}/slots";
-			var resp = await http.GetAsync(url);
-			if (!resp.IsSuccessStatusCode)
+			var llama = new LlamaClient(worker.LlamaUrl);
+			var meta = await llama.GetStateMetaAsync(entry.SlotId.Value, CancellationToken.None);
+			if (meta == null || meta.NPast <= 0)
 				return false;
 
-			var data = await resp.Content.ReadAsStringAsync();
-			var slots = JsonSerializer.Deserialize<List<JsonElement>>(data);
-			if (slots == null)
+			// Check: slot is processing and has not drifted beyond cached n_past
+			if (!meta.IsProcessing && meta.NPast + meta.StateSize <= entry.NPast)
+				return false; // stuck slot
+
+			// Check: n_past >= entry.NPast (slot hasn't drifted)
+			if (entry.NPast > 0 && meta.NPast < entry.NPast)
 				return false;
 
-			foreach (var slot in slots)
-			{
-				if (!slot.TryGetProperty("id", out var id)
-					|| id.GetInt32() != entry.SlotId)
-					continue;
+			// Note: PrefixHash validation removed - SlotMeta doesn't include it
 
-				// Check 1: not stuck (is_processing && n_remain == 0)
-				if (slot.TryGetProperty("is_processing", out var ip) && ip.GetBoolean())
-				{
-					var nRemain = slot.TryGetProperty("n_remain", out var nr)
-						? nr.GetInt32() : 1;
-					if (nRemain == 0)
-						return false; // stuck
-				}
 
-				// Check 2: n_past >= entry.NPast
-				var slotNPast = slot.TryGetProperty("n_past", out var sn)
-					? sn.GetInt32() : 0;
-				if (slotNPast < (entry.NPast > 0 ? entry.NPast : 0))
-					return false;
 
-				// Check 3: prefix_hash matches if entry has one
-				if (entry.PrefixHash != null)
-				{
-					if (slot.TryGetProperty("prefix_hash", out var sph)
-						&& sph.GetString() is { Length: > 0 } slotPrefix
-						&& slotPrefix != entry.PrefixHash)
-						return false;
-				}
-
-				return true;
-			}
+			return true;
 		}
-		catch { }
-
-		return false;
+		catch
+		{
+			return false;
+		}
 	}
 
 	public static string NewTraceId()

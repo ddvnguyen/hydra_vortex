@@ -19,6 +19,7 @@ public interface ISessionLedger
     void Remove(string sessionId);
     Dictionary<string, object> AllSessions();
     Task RestoreFromStoreAsync(string storeHost, int storePort, CancellationToken ct);
+    void ClearAll();
 }
 
 public interface IWorkerTracker
@@ -46,4 +47,5 @@ public interface IWorkerTracker
     int FreeSlotCount(string name);
     bool HasFreeSlot(string name);
     int TotalSlots(string name);
+    void ReleaseAllSlots(string workerName);
 }

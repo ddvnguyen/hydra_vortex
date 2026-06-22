@@ -17,6 +17,7 @@ public interface IWorkerScheduler
     Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct);
     Task RunAsync(CancellationToken ct);
     void NotifyStreamComplete(string sessionId);
+    Task<object> ResetSystemAsync(CancellationToken ct);
     int WarmLeaseCount { get; }
 }
 
