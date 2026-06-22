@@ -13,6 +13,7 @@ services:
       - /mnt/llm-ram:size=30G
     volumes:
       - ./hydra-core/config:/etc/hydra/config:ro
+      - /mnt/SSD/hydra-backup:/mnt/SSD/hydra-backup:rw
     environment:
       - HYDRA_STORE_HOST=0.0.0.0
       - HYDRA_STORE_PORT=9500
