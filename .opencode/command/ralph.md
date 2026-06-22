@@ -195,10 +195,12 @@ Check the diff + body + checks for:
 
 Use `gh pr review` (NOT `gh pr comment`) so the review is a proper GitHub review action. The body MUST start with `[REVIEW]`.
 
-**If clean → APPROVE:**
+**Note on self-approval:** GitHub blocks the PR author from approving their own PR (`gh pr review --approve` errors with `Review Can not approve your own pull request`). In this project the dispatcher == PR author, so the default is `--comment` (a comment-only review action, allowed on your own PR). The verdict (`APPROVED` / `CHANGES REQUESTED`) is in the body text. If the dispatcher is a different user than the PR author, swap `--comment` for `--approve` / `--request-changes` for stronger merge-check semantics.
+
+**If clean → post as `--comment` with verdict APPROVED in the body:**
 
 ```bash
-gh pr review "$PR" --repo ddvnguyen/hydra_vortex --approve --body "[REVIEW] APPROVED
+gh pr review "$PR" --repo ddvnguyen/hydra_vortex --comment --body "[REVIEW] APPROVED
 
 Reviewed: <commit SHA>, +<adds>/-<dels> across <N> files.
 Build: <local status> / CI: <CI status, or 'offline — pre-existing infra'>
@@ -209,10 +211,10 @@ Tests: <X/Y new pass>; <pre-existing failure noted if any>.
 Closes #<issue> cleanly. <optional: short note on what this enables>"
 ```
 
-**If findings → REQUEST CHANGES + file review-finding issues (one per finding):**
+**If findings → post as `--comment` with verdict CHANGES REQUESTED in the body, plus file review-finding issues (one per finding):**
 
 ```bash
-gh pr review "$PR" --repo ddvnguyen/hydra_vortex --request-changes --body "[REVIEW] CHANGES REQUESTED
+gh pr review "$PR" --repo ddvnguyen/hydra_vortex --comment --body "[REVIEW] CHANGES REQUESTED
 
 Reviewed: <commit SHA>, +<adds>/-<dels> across <N> files.
 Build: <status> / CI: <status>
@@ -262,6 +264,6 @@ In the final user-facing report, include:
 
 ### When to stop the cycle
 
-- **Stop on APPROVED** — the PR is approved, ready for human merge. Do NOT auto-merge.
-- **Stop on CHANGES REQUESTED** — comment posted, issues filed, other devs handle. The dispatcher does NOT loop on its own; the user re-invokes `/ralph <issue>` after the fixes are pushed to re-review.
+- **Stop on `[REVIEW] APPROVED`** — the PR is approved, ready for human merge. Do NOT auto-merge.
+- **Stop on `[REVIEW] CHANGES REQUESTED`** — comment posted, issues filed, other devs handle. The dispatcher does NOT loop on its own; the user re-invokes `/ralph <issue>` after the fixes are pushed to re-review.
 - **Hard block** — surface to the user immediately (e.g., the change is too large for a single PR, requires design discussion, requires user decision).
