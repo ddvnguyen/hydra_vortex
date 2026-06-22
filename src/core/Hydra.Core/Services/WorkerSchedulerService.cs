@@ -2606,10 +2606,33 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		try
 		{
+			// "0" is safe here even though CONFIGURE is framed per-slot on the wire:
+			// every slot in a llama-engine process shares one llama_context
+			// (server-context.cpp's slot-init loop sets slot.ctx_tgt = ctx_tgt for
+			// all slots), so configuring slot 0 applies engine-wide — same scope
+			// as the existing SET_EXPERT_MODE call below.
 			var configJson = $"{{\"state_chunk_size\":{_cfg.StateChunkSizeBytes}}}";
 			var resp = await client.EngineConfigureAsync("0", configJson, "startup-configure", CancellationToken.None);
 			if (resp.Status != (byte)StatusCode.Ok)
+			{
 				_log.Warning("engine_configure_state_chunk_size_rejected Worker={Worker} Status={Status}", workerName, resp.Status);
+				return;
+			}
+			// The engine clamps to [64 KiB, 64 MiB] and echoes the post-clamp value
+			// as "state_chunk_size_applied" — surface a mismatch instead of silently
+			// trusting the OK status (the engine would otherwise look "configured"
+			// while actually running on a different chunk size than requested).
+			if (!string.IsNullOrWhiteSpace(resp.Meta))
+			{
+				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(resp.Meta);
+				if (meta?.TryGetValue("state_chunk_size_applied", out var applied) == true
+					&& applied.TryGetInt64(out var appliedBytes)
+					&& appliedBytes != _cfg.StateChunkSizeBytes)
+				{
+					_log.Warning("engine_configure_state_chunk_size_clamped Worker={Worker} Requested={Requested} Applied={Applied}",
+						workerName, _cfg.StateChunkSizeBytes, appliedBytes);
+				}
+			}
 		}
 		catch (Exception ex)
 		{
