@@ -24,7 +24,7 @@ func TestCheckerIdleMode(t *testing.T) {
 	defer server.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	checker := NewChecker(server.URL, logger, 100*time.Millisecond, 500*time.Millisecond, 3)
+	checker := NewChecker(server.URL, "/slots", logger, 100*time.Millisecond, 500*time.Millisecond, 3)
 	defer checker.Stop()
 
 	checker.Start()
@@ -47,7 +47,7 @@ func TestCheckerBusyMode(t *testing.T) {
 	defer server.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	checker := NewChecker(server.URL, logger, 100*time.Millisecond, 500*time.Millisecond, 3)
+	checker := NewChecker(server.URL, "/slots", logger, 100*time.Millisecond, 500*time.Millisecond, 3)
 	defer checker.Stop()
 
 	checker.Start()
@@ -72,7 +72,7 @@ func TestCheckerUnhealthy(t *testing.T) {
 	defer server.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	checker := NewChecker(server.URL, logger, 50*time.Millisecond, 100*time.Millisecond, 3)
+	checker := NewChecker(server.URL, "/slots", logger, 50*time.Millisecond, 100*time.Millisecond, 3)
 	defer checker.Stop()
 
 	var restartCalled atomic.Bool
@@ -96,7 +96,7 @@ func TestCheckerHealthy(t *testing.T) {
 	defer server.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	checker := NewChecker(server.URL, logger, 50*time.Millisecond, 100*time.Millisecond, 3)
+	checker := NewChecker(server.URL, "/slots", logger, 50*time.Millisecond, 100*time.Millisecond, 3)
 	defer checker.Stop()
 
 	checker.Start()

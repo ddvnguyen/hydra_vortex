@@ -43,7 +43,7 @@ sleep 10
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	manager := process.NewManager(cfg, logger)
-	checker := health.NewChecker("http://localhost:18080", logger, 10*time.Second, 30*time.Second, 3)
+	checker := health.NewChecker("http://localhost:18080", "/slots", logger, 10*time.Second, 30*time.Second, 3)
 	regMgr := registry.NewManager(logger, tmpDir)
 
 	server := NewServer(cfg, manager, checker, regMgr, logger, authToken)

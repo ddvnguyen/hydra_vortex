@@ -26,6 +26,7 @@ type SlotStatus struct {
 
 type Checker struct {
 	baseURL       string
+	path          string
 	logger        *slog.Logger
 	client        *http.Client
 	mode          Mode
@@ -39,10 +40,14 @@ type Checker struct {
 	onUnhealthy   func()
 }
 
-func NewChecker(baseURL string, logger *slog.Logger, idleInterval, busyInterval time.Duration, maxFails int) *Checker {
+func NewChecker(baseURL, path string, logger *slog.Logger, idleInterval, busyInterval time.Duration, maxFails int) *Checker {
 	ctx, cancel := context.WithCancel(context.Background())
+	if path == "" {
+		path = "/slots"
+	}
 	return &Checker{
 		baseURL:      baseURL,
+		path:         path,
 		logger:       logger,
 		client:       &http.Client{Timeout: 5 * time.Second},
 		mode:         ModeIdle,
@@ -146,14 +151,14 @@ func (c *Checker) check() {
 }
 
 func (c *Checker) getSlots() ([]SlotStatus, error) {
-	resp, err := c.client.Get(c.baseURL + "/slots")
+	resp, err := c.client.Get(c.baseURL + c.path)
 	if err != nil {
-		return nil, fmt.Errorf("GET /slots: %w", err)
+		return nil, fmt.Errorf("GET %s: %w", c.path, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /slots returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("GET %s returned %d", c.path, resp.StatusCode)
 	}
 
 	var slots []SlotStatus
