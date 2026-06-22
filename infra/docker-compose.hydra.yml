@@ -123,14 +123,22 @@ services:
       - HYDRA_COORD_ENABLE_CHUNKS=true
       - HYDRA_STORE_CHUNK_SIZE=8192
       - HYDRA_LOG_LOKI_URL=http://localhost:3100
-      # CRITICAL: put the local chunk cache inside the bounded tmpfs,
-      # not the container's /tmp. Default path is
-      # /tmp/hydra-coord-chunk-cache which lives in the overlay's
-      # writable layer — unbounded, has filled /mnt/containers to
-      # 100% on this box (52 GB of KV state in the overlay). Putting
-      # it under /mnt/llm-ram/ makes the cache bounded by the tmpfs
-      # size (30G) and RAM-backed (fast).
+      # M3-P1 #332: two-tier chunk cache. L1 = tmpfs byte-LRU (20 GB);
+      # L2 = PG chunk_data_l2 age-LRU (50 GB, age×idle/use_count).
+      # Legacy HYDRA_COORD_CHUNK_CACHE_DIR is honored for back-compat
+      # (used as the L1 base; the new layout moves chunks under a
+      # chunk-cache-l1/ subdir so a runaway L1 cannot collide with the
+      # live /mnt/llm-ram/store path).
       - HYDRA_COORD_CHUNK_CACHE_DIR=/mnt/llm-ram/chunk-cache
+      - HYDRA_COORD_CHUNK_CACHE_L1_DIR=/mnt/llm-ram/chunk-cache-l1
+      - HYDRA_COORD_CHUNK_CACHE_L1_MAX_BYTES=21474836480
+      - HYDRA_CHUNK_CACHE_BACKEND=pg
+      - HYDRA_CHUNK_CACHE_PG_CONN=Host=localhost;Database=hydra_store;Username=hydra;Password=hydra
+      - HYDRA_CHUNK_CACHE_L2_MAX_BYTES=53687091200
+      - HYDRA_CHUNK_CACHE_L2_LOW_WATER=0.9
+      - HYDRA_CHUNK_CACHE_L2_GC_INTERVAL_SECONDS=300
+      - HYDRA_CHUNK_CACHE_L2_VACUUM_INTERVAL_SECONDS=3600
+      - HYDRA_CHUNK_CACHE_L2_BATCH_SIZE=500
     healthcheck:
       test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
       interval: 10s

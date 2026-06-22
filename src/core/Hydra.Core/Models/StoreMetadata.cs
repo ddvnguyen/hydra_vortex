@@ -39,6 +39,20 @@ public sealed class StoreMetadata : IAsyncDisposable
 
         CREATE INDEX IF NOT EXISTS ix_sessions_updated ON sessions(updated_at DESC);
         CREATE INDEX IF NOT EXISTS ix_chunks_unbacked  ON chunks(backed_up) WHERE backed_up = false;
+
+        -- M3-P1 #332: L2 chunk cache. Content-addressed, byte-budgeted (50 GB default).
+        -- Eviction score = (now - created_at) * (now - last_used) / use_count.
+        -- Hard-triggered GC on Put when size > L2MaxBytes; soft-triggered every
+        -- L2GcIntervalSeconds. Survives Coordinator restart.
+        CREATE TABLE IF NOT EXISTS chunk_data_l2(
+            hash        TEXT        PRIMARY KEY,
+            bytes       BYTEA       NOT NULL,
+            size        INT         NOT NULL,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_used   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            use_count   BIGINT      NOT NULL DEFAULT 1);
+        CREATE INDEX IF NOT EXISTS ix_chunk_data_l2_last_used  ON chunk_data_l2(last_used);
+        CREATE INDEX IF NOT EXISTS ix_chunk_data_l2_created_at ON chunk_data_l2(created_at);
         """;
 
     public StoreMetadata(string connectionString, Serilog.ILogger? log = null)

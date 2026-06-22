@@ -1,4 +1,5 @@
 using Hydra.Core.Controllers;
+using Hydra.Core.Caching;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Shared;
@@ -97,13 +98,38 @@ public static class CoordinatorServiceExtensions
         });
         services.AddHostedService(sp => sp.GetRequiredService<SessionEvictionService>());
 
-        // Local chunk cache for delta restore
-        services.AddSingleton<LocalChunkCache>(_ =>
+        // Two-tier chunk cache (M3-P1 #332). L1 = tmpfs byte-LRU; L2 = PG
+        // chunk_data_l2 age-LRU. Falls back to L1-only if the L2 backend
+        // is disabled (HYDRA_CHUNK_CACHE_BACKEND=fs) or the PG connection
+        // cannot be reached. We register IContentChunkStore conditionally
+        // (so GetService<>() returns null when the L2 is unavailable) and
+        // the LocalChunkCache facade handles the null L2 path.
+        services.AddSingleton<LocalFsChunkCache>(_ =>
         {
-            var cacheDir = Environment.GetEnvironmentVariable("HYDRA_COORD_CHUNK_CACHE_DIR")
-                ?? "/tmp/hydra-coord-chunk-cache";
-            return new LocalChunkCache(cacheDir, 50);
+            var cfg = new ChunkCacheConfig();
+            return new LocalFsChunkCache(cfg.L1Dir, cfg.L1MaxBytes);
         });
+        var l2Cfg = new ChunkCacheConfig();
+        if (!string.Equals(l2Cfg.L2Backend, "fs", StringComparison.OrdinalIgnoreCase))
+        {
+            // Probe PG at boot. NpgsqlDataSourceBuilder.Build() is lazy and
+            // opens no connection, so we open one here to catch unreachable
+            // PG and fall back to L1-only (graceful degradation).
+            var l2 = new PgChunkCache(l2Cfg);
+            if (l2.TryProbe())
+            {
+                services.AddSingleton<IContentChunkStore>(l2);
+            }
+            else
+            {
+                Serilog.Log.ForContext("component", "chunkcache")
+                    .Warning("L2 PG unreachable at boot; running with L1-only cache");
+                l2.Dispose();
+            }
+        }
+        services.AddSingleton<LocalChunkCache>(sp => new LocalChunkCache(
+            sp.GetRequiredService<LocalFsChunkCache>(),
+            sp.GetService<IContentChunkStore>()));
 
         // Scheduler background runner
         services.AddHostedService<SchedulerBackgroundRunner>();
