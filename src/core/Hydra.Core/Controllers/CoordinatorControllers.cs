@@ -74,15 +74,29 @@ public class CompletionsController : ControllerBase
 			&& mt is JsonElement mte ? mte.GetInt32() : 1024;
 		// Ensure max_tokens is in the body so llama-server gets it (OpenWebUI omits it)
 		body["max_tokens"] = maxTokens;
-		string? sessionId = body.TryGetValue("session_id", out var sid)
-			&& sid is JsonElement side ? side.GetString() : null;
+		// Session ID resolution priority:
+		//   1. X-Session-Id HTTP header (Python Coordinator compat)
+		//   2. x-opencode-session HTTP header (opencode proxy injection)
+		//   3. x-conversation-id HTTP header (generic conversation tracking)
+		//   4. session_id from JSON body
+		//   5. Auto-derived from message content (SHA256 fallback)
+		string? sessionId = null;
+		if (Request.Headers.TryGetValue("X-Session-Id", out var xsHdr))
+			sessionId = xsHdr.FirstOrDefault();
+		if (sessionId == null && Request.Headers.TryGetValue("x-opencode-session", out var osHdr))
+			sessionId = osHdr.FirstOrDefault();
+		if (sessionId == null && Request.Headers.TryGetValue("x-conversation-id", out var ciHdr))
+			sessionId = ciHdr.FirstOrDefault();
+		if (sessionId == null && body.TryGetValue("session_id", out var sid)
+			&& sid is JsonElement side)
+			sessionId = side.GetString();
+
+		// Strip internal fields before forwarding to llama-server
+		body.Remove("session_id");
 
 		// Single pass: derive session ID, token estimate, and prefix hash
 		var summary = Router.SummarizeMessages(messages);
 		sessionId ??= summary.SessionId;
-
-		// Trace: dump full request params
-		Console.Error.WriteLine($"event=request_full {System.Text.Json.JsonSerializer.Serialize(body)}");
 
 		try
 		{
@@ -91,6 +105,18 @@ public class CompletionsController : ControllerBase
 			{
 				Response.ContentType = "text/event-stream";
 				Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
+				// M-Perf.9 #289: surface the model identity that served this
+				// response. The hash is truncated to 12 hex chars (48 bits =
+				// 6 bytes of entropy, enough to disambiguate a few hundred
+				// GGUFs in practice) to keep the header short for log
+				// readability. Full 64-char hash is in the X-Hydra-Model
+				// trailer (see below) for debugging.
+				var model = _scheduler.LastDispatchedModel;
+				var modelHash = _scheduler.LastDispatchedModelHash;
+				if (!string.IsNullOrEmpty(model))
+					Response.Headers["X-Hydra-Model"] = model;
+				if (!string.IsNullOrEmpty(modelHash))
+					Response.Headers["X-Hydra-Model-Hash"] = modelHash.Length > 12 ? modelHash[..12] : modelHash;
 				await foreach (var chunk in stream.WithCancellation(ct))
 				{
 					await Response.Body.WriteAsync(chunk, ct);
@@ -98,6 +124,16 @@ public class CompletionsController : ControllerBase
 				return new EmptyResult();
 			}
 
+			// Non-streaming path: headers must be set on the JsonResult
+			// controller context, not on the response body. We attach the
+			// same model identity headers here.
+			Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
+			var modelNs = _scheduler.LastDispatchedModel;
+			var modelHashNs = _scheduler.LastDispatchedModelHash;
+			if (!string.IsNullOrEmpty(modelNs))
+				Response.Headers["X-Hydra-Model"] = modelNs;
+			if (!string.IsNullOrEmpty(modelHashNs))
+				Response.Headers["X-Hydra-Model-Hash"] = modelHashNs.Length > 12 ? modelHashNs[..12] : modelHashNs;
 			return new JsonResult(result);
 		}
 		catch (OperationCanceledException)
@@ -110,8 +146,15 @@ public class CompletionsController : ControllerBase
 		}
 		finally
 		{
-			// Always release the decode slot, even on client cancel/disconnect.
-			_scheduler.NotifyStreamComplete(sessionId);
+			// Fire-and-forget on purpose: the SSE stream is already done (or
+			// the client cancelled) — the HTTP response should not wait for the
+			// round-trip to StateGet + Store Put. The race that #277 fixed
+			// is still closed because NotifyStreamComplete awaits the bg-save
+			// internally *before* releasing the slot lease, so the slot is not
+			// returned to the pool while a save is in flight. Disposal of the
+			// lease is wrapped in try/catch inside NotifyStreamComplete so an
+			// exception becomes a log line rather than an unobserved task.
+			_ = _scheduler.NotifyStreamComplete(sessionId);
 		}
 	}
 }
@@ -133,7 +176,7 @@ public class HealthController : ControllerBase
 	{
 		var nodes = new Dictionary<string, object>();
 		foreach (var w in _cfg.Workers)
-			nodes[w.Name] = new { healthy = _tracker.IsHealthy(w.Name), slots_total = w.Slots, slots_idle = _ledger.ActiveCountOnNode(w.Name) == 0 ? w.Slots : 0, stuck_slots = 0 };
+			nodes[w.Name] = new { healthy = _tracker.IsHealthy(w.Name), slots_total = w.Slots, slots_idle = _tracker.FreeSlotCount(w.Name), stuck_slots = _health.GetNodeInfo(w.Name)?.StuckSlots ?? 0 };
 		return new JsonResult(new { status = _health.IsStoreHealthy ? "healthy" : "degraded", nodes, store = new { healthy = _health.IsStoreHealthy } });
 	}
 
@@ -144,7 +187,7 @@ public class HealthController : ControllerBase
 		var nodes = new Dictionary<string, object>();
 		foreach (var w in _cfg.Workers)
 			nodes[w.Name] = new { tracker_status = _tracker.GetStatus(w.Name), busy_duration_s = _tracker.GetElapsedSeconds(w.Name), slots_total = w.Slots, slots_idle = 0 };
-		return new JsonResult(new { sessions = new { active = _ledger.ActiveCount, sessions }, routing_stats = new { total = 0 }, nodes });
+		return new JsonResult(new { sessions = new { active = _ledger.ActiveCount, sessions }, routing_stats = new { total = CoordinatorMetrics.RequestsTotalAll.Value }, nodes });
 	}
 
 	[HttpPost("/admin/reset")]

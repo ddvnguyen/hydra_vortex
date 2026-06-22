@@ -207,7 +207,7 @@ public sealed class WorkerSchedulerTests
         Assert.True(scheduler._pendingTimelines.ContainsKey("sess_stream"));
         Assert.False(item.Phases.ContainsKey("total_ms"));
 
-        scheduler.NotifyStreamComplete("sess_stream");
+        await scheduler.NotifyStreamComplete("sess_stream");
 
         Assert.False(scheduler._pendingTimelines.ContainsKey("sess_stream"));
         Assert.True(item.Phases.ContainsKey("decode_ms"));
@@ -312,5 +312,76 @@ public sealed class WorkItemIntegrationTests
 
         Assert.Equal(WorkItemState.Decode, item.State);
         Assert.True(item.IsStreaming);
+    }
+
+    // ── M-Perf.9 (#289): model identity on WorkItem ──
+
+    [Fact]
+    public void WorkItem_DefaultModelIdentity_IsEmpty()
+    {
+        var item = new WorkItem(
+            new Dictionary<string, object>(),
+            new List<Dictionary<string, object>>(),
+            "sess", "trace", null, 1, 10);
+
+        Assert.Null(item.KvModelAlias);
+        Assert.Null(item.KvModelHash);
+        Assert.Null(item.KvModelPath);
+        Assert.False(item.KvModelFallback);
+    }
+
+    [Fact]
+    public void WorkItem_CanCarryModelIdentityAcrossStates()
+    {
+        // The model identity rides the WorkItem from PrefillAsync (where the
+        // engine reports the model that built the KV) through SaveKv
+        // (where it's stored in the manifest meta) into RestoreKvAsync
+        // (where it's compared against the slot's current model).
+        var item = new WorkItem(
+            new Dictionary<string, object>(),
+            new List<Dictionary<string, object>>(),
+            "sess", "trace", null, 1, 10);
+        item.KvModelAlias = "balanced";
+        item.KvModelHash  = "deadbeef" + new string('0', 56);
+        item.KvModelPath  = "/models/Balanced.gguf";
+        item.KvModelFallback = false;
+
+        Assert.Equal("balanced", item.KvModelAlias);
+        Assert.Equal(64, item.KvModelHash!.Length);
+        Assert.Equal("/models/Balanced.gguf", item.KvModelPath);
+        Assert.False(item.KvModelFallback);
+    }
+
+    [Fact]
+    public void CoordinatorConfig_AllowCrossModelKvReuse_DefaultsFalse()
+    {
+        // Default (no env var) must be false — strict by default.
+        var prev = Environment.GetEnvironmentVariable("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE", null);
+            var cfg = new CoordinatorConfig { Workers = new() };
+            Assert.False(cfg.AllowCrossModelKvReuse);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE", prev);
+        }
+    }
+
+    [Fact]
+    public void CoordinatorConfig_AllowCrossModelKvReuse_FromEnvTrue()
+    {
+        var prev = Environment.GetEnvironmentVariable("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE", "true");
+            var cfg = new CoordinatorConfig { Workers = new() };
+            Assert.True(cfg.AllowCrossModelKvReuse);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE", prev);
+        }
     }
 }

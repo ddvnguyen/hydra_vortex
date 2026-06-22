@@ -1,4 +1,4 @@
 [submodule "src/llama-cpp"]
 	path = src/llama-cpp
 	url = https://github.com/ddvnguyen/llama.cpp
-	branch = hydra-state-streaming
+	branch = hydra-fork

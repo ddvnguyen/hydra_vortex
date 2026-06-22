@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using System.Runtime.CompilerServices;
 
@@ -21,7 +22,7 @@ public class RpcClient : IAsyncDisposable
     /// <summary>Default per-request timeout. Bounds the whole request (semaphore wait,
     /// connect, send, receive) so a wedged peer cannot poison the shared connection
     /// forever — callers passing CancellationToken.None are still protected.</summary>
-    public static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(120);
+    public static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(180);
 
     public RpcClient(string host, int port, TimeSpan? requestTimeout = null)
     {
@@ -153,17 +154,49 @@ public class RpcClient : IAsyncDisposable
                 await ReadExactAsync(_stream!, metaBuf, token);
             }
 
-            var remaining = (long)header.PayloadLen;
-            var buf = new byte[65536];
-
-            while (remaining > 0)
+            // For streaming RPC (EngineDecode), PayloadLen=0 and tokens are streamed
+            // as 4-byte length + N-byte token until connection is closed.
+            // For non-streaming RPC, PayloadLen > 0 and we read that many bytes.
+            if (header.PayloadLen > 0)
             {
-                var toRead = (int)Math.Min(buf.Length, remaining);
-                var read = await _stream!.ReadAsync(buf.AsMemory(0, toRead), token);
-                if (read == 0)
-                    throw new EndOfStreamException("Connection closed while reading stream response");
-                remaining -= read;
-                yield return buf[..read];
+                var remaining = (long)header.PayloadLen;
+                var buf = new byte[65536];
+
+                while (remaining > 0)
+                {
+                    var toRead = (int)Math.Min(buf.Length, remaining);
+                    var read = await _stream!.ReadAsync(buf.AsMemory(0, toRead), token);
+                    if (read == 0)
+                        throw new EndOfStreamException("Connection closed while reading stream response");
+                    remaining -= read;
+                    yield return buf[..read];
+                }
+            }
+            else
+            {
+                // Streaming RPC: read tokens as 4-byte length + N-byte token
+                var lenBuf = new byte[4];
+                while (true)
+                {
+                    // Read 4-byte length
+                    var lenRead = await _stream!.ReadAsync(lenBuf.AsMemory(0, 4), token);
+                    if (lenRead == 0)
+                        break; // Connection closed
+                    if (lenRead < 4)
+                        throw new EndOfStreamException("Incomplete token length");
+
+                    var tokenLen = BitConverter.ToUInt32(lenBuf, 0);
+                    if (tokenLen == 0)
+                        continue; // Skip empty tokens
+
+                    // Read token bytes
+                    var tokenBuf = new byte[tokenLen];
+                    var tokenRead = await _stream!.ReadAsync(tokenBuf.AsMemory(0, (int)tokenLen), token);
+                    if (tokenRead < tokenLen)
+                        throw new EndOfStreamException("Incomplete token data");
+
+                    yield return tokenBuf;
+                }
             }
 
             completed = true;
@@ -401,6 +434,83 @@ public class RpcClient : IAsyncDisposable
         var buf = new byte[payloadLen];
         await ReadExactAsync(stream, buf, ct);
         return buf;
+    }
+
+    public async Task<RpcResponse> EngineInfoAsync(string slotKey, string traceId, CancellationToken ct)
+        => await RequestAsync(OpCode.EngineInfo, slotKey, ReadOnlyMemory<byte>.Empty, traceId, ct);
+
+    public async Task<RpcResponse> EngineConfigureAsync(string slotKey, string configJson, string traceId, CancellationToken ct)
+    {
+        var payload = Encoding.UTF8.GetBytes(configJson);
+        return await RequestAsync(OpCode.EngineConfigure, slotKey, payload, traceId, ct);
+    }
+
+    public async Task<RpcResponse> EnginePrefillAsync(string slotKey, string requestJson, string traceId, CancellationToken ct)
+    {
+        var payload = Encoding.UTF8.GetBytes(requestJson);
+        return await RequestAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct);
+    }
+
+    /// <summary>
+    /// Engine DECODE (opcode 0x43), non-streaming variant.
+    /// Retained for the E2 expert-mode spike (#161-E2): when per-request
+    /// expert placement is enabled, the engine may re-decode from a saved
+    /// checkpoint via this RPC. Currently no production code path uses it
+    /// (engine-mode chat decode is HTTP — see docs/architecture.md §3 and
+    /// PR #282 review). Wire-format tests live in Tests.Shared.EngineOpcodeTests.
+    /// </summary>
+    public async Task<RpcResponse> EngineDecodeAsync(string slotKey, int nPredict, string? requestJson, string traceId, CancellationToken ct)
+    {
+        // Build JSON payload: {"n_predict": N, "messages": [...] or null}
+        var json = $"{{\"n_predict\":{nPredict},\"messages\":{requestJson ?? "null"}}}";
+        var payload = Encoding.UTF8.GetBytes(json);
+        return await RequestAsync(OpCode.EngineDecode, slotKey, payload, traceId, ct);
+    }
+
+    /// <summary>
+    /// Engine DECODE (opcode 0x43), streaming variant.
+    /// See <see cref="EngineDecodeAsync"/> for the retention rationale.
+    /// </summary>
+    public async IAsyncEnumerable<byte[]> EngineDecodeStreamAsync(
+        string slotKey, int nPredict, string? requestJson, string traceId,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        // Build JSON payload: {"n_predict": N, "messages": [...] or null}
+        var json = $"{{\"n_predict\":{nPredict},\"messages\":{requestJson ?? "null"}}}";
+        var payload = Encoding.UTF8.GetBytes(json);
+        await foreach (var chunk in RequestStreamAsync(OpCode.EngineDecode, slotKey, payload, traceId, ct))
+            yield return chunk;
+    }
+
+    public async Task<RpcResponse> EngineSetExpertModeAsync(string slotKey, string mode, string traceId, CancellationToken ct)
+    {
+        var payload = Encoding.UTF8.GetBytes(mode);
+        return await RequestAsync(OpCode.EngineSetExpertMode, slotKey, payload, traceId, ct);
+    }
+
+    /// <summary>
+    /// Tell the head engine to attach <paramref name="peer"/> as a pipeline worker for this slot,
+    /// assigning it the tensors matching <paramref name="otSplit"/> (an --override-tensor regex).
+    /// The worker loads those tensors from its own local model file; only the assignment crosses
+    /// the wire, never the weights. Returns the engine's actual attach result in the response meta.
+    /// </summary>
+    public async Task<RpcResponse> EnginePipelineAttachAsync(string slotKey, string peer, string otSplit, string traceId, CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(new { peer, ot_split = otSplit });
+        var payload = Encoding.UTF8.GetBytes(json);
+        return await RequestAsync(OpCode.EnginePipelineAttach, slotKey, payload, traceId, ct);
+    }
+
+    public async Task<RpcResponse> EngineSwapQuantAsync(string slotKey, string quantKey, string tensorPattern, string traceId, CancellationToken ct)
+    {
+        var quantKeyBytes = Encoding.UTF8.GetBytes(quantKey);
+        var patternBytes = Encoding.UTF8.GetBytes(tensorPattern);
+        var quantKeyLenBytes = BitConverter.GetBytes((ushort)quantKeyBytes.Length);
+        var payload = new byte[quantKeyLenBytes.Length + quantKeyBytes.Length + patternBytes.Length];
+        quantKeyLenBytes.CopyTo(payload, 0);
+        quantKeyBytes.CopyTo(payload, quantKeyLenBytes.Length);
+        patternBytes.CopyTo(payload, quantKeyLenBytes.Length + quantKeyBytes.Length);
+        return await RequestAsync(OpCode.EngineSwapQuant, slotKey, payload, traceId, ct);
     }
 
     public async ValueTask DisposeAsync()

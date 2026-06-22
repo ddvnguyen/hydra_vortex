@@ -1,6 +1,7 @@
 using Hydra.Core.Controllers;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
+using Hydra.Shared;
 using Hydra.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -14,6 +15,13 @@ public static class CoordinatorServiceExtensions
     {
 		// Config
 		services.AddSingleton(config);
+
+		// Sync global chunk size constants
+		if (config.EnableChunks)
+		{
+			ChunkEngine.CHUNK_SIZE = config.ChunkSize;
+			ChunkConstants.ChunkSize = config.ChunkSize;
+		}
 
 		// HTTP client factory for llama-server health/chat calls
 		services.AddHttpClient();
@@ -61,7 +69,10 @@ public static class CoordinatorServiceExtensions
             var health = sp.GetRequiredService<IHealthMonitorService>();
             var storeClient = new Hydra.Shared.RpcClient(cfg.StoreHost, cfg.StorePort);
             var log = Serilog.Log.ForContext("component", "coordinator");
-            return new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, storeClient, sp, log);
+            var chunkCache = cfg.EnableChunks
+                ? sp.GetRequiredService<LocalChunkCache>()
+                : null;
+            return new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, storeClient, sp, log, chunkCache);
         });
 
 		services.AddSingleton<IHealthMonitorService, HealthMonitorService>(sp =>
@@ -85,6 +96,14 @@ public static class CoordinatorServiceExtensions
             return new SessionEvictionService(cfg, ledger, tracker, scheduler, log);
         });
         services.AddHostedService(sp => sp.GetRequiredService<SessionEvictionService>());
+
+        // Local chunk cache for delta restore
+        services.AddSingleton<LocalChunkCache>(_ =>
+        {
+            var cacheDir = Environment.GetEnvironmentVariable("HYDRA_COORD_CHUNK_CACHE_DIR")
+                ?? "/tmp/hydra-coord-chunk-cache";
+            return new LocalChunkCache(cacheDir, 50);
+        });
 
         // Scheduler background runner
         services.AddHostedService<SchedulerBackgroundRunner>();

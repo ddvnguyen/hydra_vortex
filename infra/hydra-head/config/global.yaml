@@ -13,33 +13,36 @@ llama:
     cache-type-v: q8_0
     cache-type-k: q8_0
     kv-unified: true
-    
+
     # Batching and caching
     cont-batching: true
     cache-prompt: true
     cache-reuse: 64
-    
+
     # Priority
     prio: 3
     prio-batch: 1
-    
+
     # RoPE scaling
     rope-scaling: yarn
-    rope-scale: 12
+    rope-scale: 5
     yarn-orig-ctx: 32768
-    
+
     # Inference settings
     reasoning: on
     jinja: true
     timeout: 1800
-    
+
+    # Chat template kwargs — enables Qwen3 thinking mode (preserves reasoning_content in stream)
+    chat-template-kwargs: '{"preserve_thinking": true}'
+
     # Logging
-    log-prefix: true
+    log-prefix: false
     metrics: true
     slots: true
     perf: true
     log-verbosity: 4
-    
+
     # Context management
     context-shift: true
 
@@ -59,3 +62,12 @@ services:
     enabled: false
   nvidia_exporter:
     enabled: false
+
+# Health checker for the llama-server subprocess. Defaults are safe
+# for fast NVMe hosts (RTX: model load ≈30s). Slow VM disks (P100:
+# model load = 235-300s) override max_fails in node-p100.yaml.
+health:
+  path: /slots                  # HTTP endpoint the checker probes
+  interval_idle_sec: 60         # probe interval when llama is idle
+  interval_busy_sec: 300        # probe interval when llama is busy
+  max_fails: 3                 # consecutive failures → restart

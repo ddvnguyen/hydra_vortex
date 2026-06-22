@@ -798,6 +798,163 @@
           }
         }
       }
+    },
+    {
+      "type": "row",
+      "title": "P/D Performance (Issue #306 bench)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "P/D request rate (req/s, by node × phase)",
+      "description": "Issue #306: aggregate prefill + decode request rates over time. Backed by hydra_prefill_seconds and hydra_decode_seconds histograms. Read by s4_cold_concurrency and s3_cold_atomic.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (node) (rate(hydra_prefill_seconds_count[1m]))",
+          "legendFormat": "prefill {{node}}"
+        },
+        {
+          "expr": "sum by (node) (rate(hydra_decode_seconds_count[1m]))",
+          "legendFormat": "decode {{node}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Warm-slot hit rate",
+      "description": "Issue #306: share of requests served from a warm slot vs cold prefill. The S1 success criterion is >=0.95 P50 over a multi-turn session. A persistent drop to 0 with non-zero hydra_stuck_warm_leases_total is the S10 canary.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(hydra_warm_session_starts[5m])) / clamp_min(sum(rate(hydra_warm_session_starts[5m])) + sum(rate(hydra_cold_session_starts[5m])), 0.001)",
+          "legendFormat": "warm hit rate"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Phase latency p99 (s)",
+      "description": "Issue #306: per-phase p99 latency for prefill + decode. Use this to spot regressions early — the compare.py regression gate fires when p95 regresses >10% on S4.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, session_type) (rate(hydra_prefill_seconds_bucket[5m])))",
+          "legendFormat": "prefill p99 {{session_type}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, session_type) (rate(hydra_decode_seconds_bucket[5m])))",
+          "legendFormat": "decode p99 {{session_type}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 43
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue depth (active requests at each stage)",
+      "description": "Issue #306 + E4 (#269): the number of requests currently sitting in each pipeline stage. A persistently positive decode queue with an empty prefill queue means the prefill stage is the bottleneck; the reverse means the decode stage is.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "expr": "hydra_main_queue_depth",
+          "legendFormat": "main (classifier)"
+        },
+        {
+          "expr": "hydra_prefill_queue_depth",
+          "legendFormat": "prefill"
+        },
+        {
+          "expr": "hydra_decode_queue_depth",
+          "legendFormat": "decode"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 43
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
     }
   ]
 }

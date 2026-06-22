@@ -471,6 +471,14 @@ public sealed class StoreServer : RpcServer
 
 			int nPast = root.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0;
 			long totalSize = root.TryGetProperty("total_size", out var ts) ? ts.GetInt64() : 0;
+			// M-Perf.9 #289: parse the model identity of the slot that built
+			// this KV (so the cross-model guard in WorkerSchedulerService.
+			// RestoreKvAsync can detect a model swap across a Coordinator
+			// restart). Pre-#289 manifests don't carry these keys; the
+			// TryGetProperty returns false and the fields stay "".
+			string modelAlias = root.TryGetProperty("model_alias", out var ma) ? (ma.GetString() ?? "") : "";
+			string modelHash  = root.TryGetProperty("model_hash",  out var mh) ? (mh.GetString() ?? "") : "";
+			string modelPath  = root.TryGetProperty("model_path",  out var mp) ? (mp.GetString() ?? "") : "";
 
 			var chunks = new List<ChunkRef>();
 			var missing = new List<string>();
@@ -500,7 +508,8 @@ public sealed class StoreServer : RpcServer
 			}
 
 			chunks.Sort((a, b) => a.Index.CompareTo(b.Index));
-			await Metadata.UpsertManifestAsync(key, nPast, totalSize, chunks, ct);
+			await Metadata.UpsertManifestAsync(key, nPast, totalSize, chunks, ct,
+				modelAlias, modelHash, modelPath);
 
 			var meta = $$"""{"written":true,"chunks":{{chunks.Count}},"n_past":{{nPast}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
@@ -532,6 +541,14 @@ public sealed class StoreServer : RpcServer
 			var payload = JsonSerializer.SerializeToUtf8Bytes(new {
 				n_past = manifest.NPast,
 				total_size = manifest.TotalSize,
+				// M-Perf.9 #289: surface the model identity of the slot that
+				// built this KV. WorkerSchedulerService.RestoreKvAsync reads
+				// it to gate the cross-model safety check. Pre-#289 sessions
+				// have empty strings and the guard treats "both empty" as
+				// "skip" (back-compat).
+				model_alias = manifest.ModelAlias,
+				model_hash  = manifest.ModelHash,
+				model_path  = manifest.ModelPath,
 				chunks = manifest.Chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size })
 			});
 

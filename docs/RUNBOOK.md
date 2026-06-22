@@ -314,24 +314,24 @@ python3 --version
 pip install -e ".[dev]"
 
 # 4. Build llama.cpp — RTX (sm_120, cuBLAS)
-#    Output: src/llama-cpp/build_sm120/bin/llama-server  (gitignored, stays on filesystem)
+#    Output: src/llama-cpp/build_sm120/bin/llama-engine  (gitignored, stays on filesystem)
 cd src/llama-cpp
 cmake -B build_sm120 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=120 \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DGGML_NATIVE=ON
-cmake --build build_sm120 --target llama-server -j4
+cmake --build build_sm120 --target llama-engine -j4
 cd ../..
 
 # 5. Build llama.cpp — P100 (sm_60)
-#    Output: src/llama-cpp/build_sm60/bin/llama-server  (rsynced to VM by scripts)
+#    Output: src/llama-cpp/build_sm60/bin/llama-engine  (rsynced to VM by scripts)
 cd src/llama-cpp
 cmake -B build_sm60 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=60 \
   -DGGML_CUDA=ON \
   -DGGML_NATIVE=ON
-cmake --build build_sm60 --target llama-server -j4
+cmake --build build_sm60 --target llama-engine -j4
 cd ../..
 
 # 6. One-time P100 VM setup (no sudo needed)
@@ -748,7 +748,7 @@ cd src/llama-cpp
 
 # CPU-only (fast compile, for syntax checks)
 cmake -B build-check -DGGML_CPU_ONLY=ON -G Ninja
-cmake --build build-check --target llama-server
+cmake --build build-check --target llama-engine
 
 # RTX (host) — Blackwell sm_120
 cmake -B build-rtx -G Ninja \
@@ -756,14 +756,14 @@ cmake -B build-rtx -G Ninja \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DGGML_NATIVE=ON
-cmake --build build-rtx --target llama-server -j4
+cmake --build build-rtx --target llama-engine -j4
 
 # P100 (VM) — Pascal sm_60
 cmake -B build-p100 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=60 \
   -DGGML_CUDA=ON \
   -DGGML_NATIVE=ON
-cmake --build build-p100 --target llama-server -j4
+cmake --build build-p100 --target llama-engine -j4
 ```
 
 ### C# (.NET 10)
@@ -855,20 +855,25 @@ src/core/Tests.Core/ChunkStoreTests.cs    ← chunk store tests
 ### Implementing Observability
 ```
 infra/Dockerfile                                  ← Multi-target: hydra-core (one SDK pull)
-infra/docker-compose.hydra.yml                     ← Hydra.Core service (host networking)
+infra/docker-compose.hydra.yml                     ← Hydra.Core service (host networking, in pod_hydra-system)
 infra/docker-compose.infra.yml                     ← Observability stack + exporters
 infra/prometheus/prometheus.yml                   ← scrape target config (network_mode: host)
 infra/loki/loki-config.yml                        ← log storage config
-infra/promtail/promtail-config.yml                ← container promtail docker_sd_configs
+infra/promtail/promtail-rtx.yml                   ← in-container promtail config (used by hydra-head-rtx + P100)
 infra/grafana/datasources/datasources.yml          ← datasource provisioning
 infra/grafana/dashboards/hydra-dashboard.json      ← metrics + logs + trace_id filter panel
 infra/grafana/dashboards/dashboard-providers.yml   ← auto-load dashboards
 
-# promtail config lives in the repo: infra/promtail/promtail-config.yml
-~/.config/systemd/user/promtail.service            ← host promtail systemd unit
-~/.local/bin/promtail                              ← host promtail binary
-~/.local/bin/container-log-shipper.sh              ← tails podman logs -f to /tmp/container-logs/
-~/.config/systemd/user/container-log-shipper.service  ← log shipper systemd unit
+# Node exporter + nvidia_gpu_exporter are NOT in the repo —
+# they're pulled by hydra-head at startup (binaries pinned in
+# src/head/internal/config/{global,node-p100}.yaml). They run as
+# children of hydra-head, NOT as host-side systemd services.
+
+# The host-side promtail systemd service (infra-promtail) was
+# removed in commit 5f2c231. promtail-rtx.yml is the only
+# promtail config; the in-container promtail (port 9080) ships
+# logs from all host containers via the directly-mounted podman
+# socket (userns=host, no socat proxy).
 
 src/core/Hydra.Core/StoreMetrics.cs                   ← Hydra.Core Store Prometheus metrics
 src/core/Hydra.Core/HydraMetrics.cs                   ← Hydra.Core API metrics

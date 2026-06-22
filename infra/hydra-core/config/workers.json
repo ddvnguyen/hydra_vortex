@@ -10,10 +10,8 @@
     "prefill_priority": 1,
     "decode_priority": 2,
     "decode_speed_tps": 200,
-    "prefill_model_name": "mini",
-    "decode_model_name": "balanced",
-    "router_model_name": "balanced",
-    "_comment": "RTX llama-server runs in router mode (--models-preset /models/preset.ini --models-max 1). Mix-precision: prefill uses 'mini' (Q3_K, ncmoe=2, 1187 pp t/s), decode uses 'balanced' (Q5_K, ncmoe=18, 50 tg/s). On every cold dispatch the coordinator POSTs /models/load to ensure the right preset is hot; llama-server returns success even if the model is already loaded."
+    "_comment": "ABLATEST TEST (m-perf ablation): RTX prefill on mini (Q3_K), decode routes to P100 (Q5_K balanced) -- cross-quant KV transfer. HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true bypasses CrossModelGuard. **Output is expected to be garbage** -- this is a measurement run, not a production config. To revert: remove prefill_model_name and set HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=false.",
+    "prefill_model_name": "mini"
   },
   {
     "name": "p100",
@@ -26,6 +24,6 @@
     "prefill_priority": 2,
     "decode_priority": 1,
     "decode_speed_tps": 28,
-    "_comment": "P100 llama-server runs in single-model mode (--model /mnt/readonly_data/...gguf), not router mode — /models/load returns 404. Leave prefill_model_name / decode_model_name / router_model_name UNSET so CoordinatorConfig.LoadWorkers and Router.PrefillModel/DecodeModel return null and the model_load call is skipped (Router.PrefillModel is gated by `if (m != null)` in WorkerSchedulerService.ModelLoadAsync)."
+    "_comment": "P100 llama-server runs in single-model mode (--model /mnt/readonly_data/...gguf), not router mode \u2014 /models/load returns 404. Leave prefill_model_name / decode_model_name / router_model_name UNSET so CoordinatorConfig.LoadWorkers and Router.PrefillModel/DecodeModel return null and the model_load call is skipped (Router.PrefillModel is gated by `if (m != null)` in WorkerSchedulerService.ModelLoadAsync). The cross-model guard checks the P100's slot model_hash against the stored KV's model_hash on restore (since the P100 runs the same model as the RTX, the hashes match \u2192 Proceed). When a Coordinator restart loses the in-memory manifest, the model identity is read from the chunked manifest in the Store (PutManifestAsync writes it alongside n_past / total_size / chunks)."
   }
 ]

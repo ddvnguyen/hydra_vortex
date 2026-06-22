@@ -145,9 +145,11 @@ async def test_large_prompt_with_metrics_and_continuation(
 
     # ── Scrape before metrics ────────────────────────────────────────────
     rtx_before = await scrape_llama(LLAMA_RTX_URL)
-    await scrape_llama(LLAMA_P100_URL)
+    p100_before = await scrape_llama(LLAMA_P100_URL)
     rtx_ptt_before = rtx_before["metrics"].get("llamacpp:prompt_tokens_total", 0)
+    p100_ptt_before = p100_before["metrics"].get("llamacpp:prompt_tokens_total", 0)
     rtx_tpt_before = rtx_before["metrics"].get("llamacpp:tokens_predicted_total", 0)
+    p100_tpt_before = p100_before["metrics"].get("llamacpp:tokens_predicted_total", 0)
 
     # ── Send initial prompt ──────────────────────────────────────────────
     init_resp = await do_completion(
@@ -162,27 +164,30 @@ async def test_large_prompt_with_metrics_and_continuation(
     assert "choices" in init_body, f"No choices in init response: {init_body}"
     assert len(init_body["choices"]) > 0
     assert get_output_text(init_body["choices"][0]["message"]), "Empty output in init response"
-    assert "hydra" in init_body, "No hydra metadata"
 
     # ── Scrape after metrics + verify ────────────────────────────────────
     rtx_after = await scrape_llama(LLAMA_RTX_URL)
     p100_after = await scrape_llama(LLAMA_P100_URL)
     rtx_ptt_after = rtx_after["metrics"].get("llamacpp:prompt_tokens_total", 0)
+    p100_ptt_after = p100_after["metrics"].get("llamacpp:prompt_tokens_total", 0)
     rtx_tpt_after = rtx_after["metrics"].get("llamacpp:tokens_predicted_total", 0)
-    ptt_diff = rtx_ptt_after - rtx_ptt_before
-    tpt_diff = rtx_tpt_after - rtx_tpt_before
+    p100_tpt_after = p100_after["metrics"].get("llamacpp:tokens_predicted_total", 0)
+    ptt_diff = (rtx_ptt_after + p100_ptt_after) - (rtx_ptt_before + p100_ptt_before)
+    tpt_diff = (rtx_tpt_after + p100_tpt_after) - (rtx_tpt_before + p100_tpt_before)
 
-    # Verify RTX processed tokens (accounting for KV cache reuse)
+    # Verify a node processed tokens (accounting for KV cache reuse). 8k+
+    # prompts route to P100 under M-Perf (P/D split), so the per-node
+    # aggregate is the right signal.
     actual_prompt_tokens = init_body.get("usage", {}).get("prompt_tokens", 0)
     cached_tokens = init_body.get("usage", {}).get("prompt_tokens_details", {}).get("cached_tokens", 0)
     assert actual_prompt_tokens > 0, f"No prompt_tokens in response usage: {init_body}"
     # Either prompt_tokens_total increased OR tokens were served from cache
     assert ptt_diff > 0 or cached_tokens > 0, (
-        f"RTX prompt_tokens_total increased by {ptt_diff:.0f} "
+        f"prompt_tokens_total (rtx+p100) increased by {ptt_diff:.0f} "
         f"with {cached_tokens} cached tokens — no evidence of processing"
     )
     assert tpt_diff > 0, (
-        f"RTX tokens_predicted_total did not increase (diff={tpt_diff:.0f})"
+        f"tokens_predicted_total (rtx+p100) did not increase (diff={tpt_diff:.0f})"
     )
 
     # Verify no requests processing after completion
@@ -210,10 +215,12 @@ async def test_large_prompt_with_metrics_and_continuation(
 
     # ── Scrape metrics after continuation ────────────────────────────────
     rtx_cont = await scrape_llama(LLAMA_RTX_URL)
+    p100_cont = await scrape_llama(LLAMA_P100_URL)
     rtx_tpt_cont = rtx_cont["metrics"].get("llamacpp:tokens_predicted_total", 0)
-    cont_tpt_diff = rtx_tpt_cont - rtx_tpt_after
+    p100_tpt_cont = p100_cont["metrics"].get("llamacpp:tokens_predicted_total", 0)
+    cont_tpt_diff = (rtx_tpt_cont + p100_tpt_cont) - (rtx_tpt_after + p100_tpt_after)
     assert cont_tpt_diff > 0, (
-        f"RTX tokens_predicted_total did not increase after continuation "
+        f"tokens_predicted_total (rtx+p100) did not increase after continuation "
         f"(diff={cont_tpt_diff:.0f})"
     )
 

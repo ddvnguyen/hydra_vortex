@@ -118,10 +118,11 @@ func main() {
 	llamaURL := fmt.Sprintf("http://%s:%d", cfg.Llama.Host, cfg.Llama.Port)
 	checker := health.NewChecker(
 		llamaURL,
+		cfg.Health.Path,
 		logger,
-		60*time.Second,
-		300*time.Second,
-		3,
+		time.Duration(cfg.Health.IntervalIdleSec)*time.Second,
+		time.Duration(cfg.Health.IntervalBusySec)*time.Second,
+		cfg.Health.MaxFails,
 	)
 	checker.SetOnUnhealthy(func() {
 		logger.Warn("llama-server unhealthy, triggering restart")

@@ -16,6 +16,7 @@ type Config struct {
 	Services ServicesConfig `yaml:"services"`
 	Infra    InfraConfig    `yaml:"infra"`
 	Binaries BinariesConfig `yaml:"binaries"`
+	Health   HealthConfig   `yaml:"health"`
 }
 
 type NodeConfig struct {
@@ -67,6 +68,31 @@ type BinaryConfig struct {
 	BinaryChecksum string `yaml:"binary_checksum"` // SHA256 of the extracted binary file
 	Binary         string `yaml:"binary"`          // Name of binary to extract from image
 	Dest           string `yaml:"dest"`            // Destination path
+}
+
+// HealthConfig controls the llama-server health checker (interval,
+// retry budget, HTTP path). Defaults are safe for fast NVMe hosts
+// (RTX); slow VM disks (P100) override MaxFails in node-p100.yaml.
+type HealthConfig struct {
+	// Path is the HTTP endpoint the checker probes. Default "/slots"
+	// works with llama-server's existing /slots handler (returns 503
+	// while the model is loading, 200 once ready).
+	Path string `yaml:"path"`
+
+	// IntervalIdleSec is the probe interval (seconds) when llama is
+	// idle. Default 60.
+	IntervalIdleSec int `yaml:"interval_idle_sec"`
+
+	// IntervalBusySec is the probe interval (seconds) when llama is
+	// processing at least one request. Default 300.
+	IntervalBusySec int `yaml:"interval_busy_sec"`
+
+	// MaxFails is the number of consecutive failed probes before
+	// hydra-head restarts the llama-server. Default 3.
+	//
+	// For P100 (slow VM disk, model load = 235-300s), bump to 30
+	// (≈30 min budget). For RTX (fast NVMe, model load ≈30s), 3 is fine.
+	MaxFails int `yaml:"max_fails"`
 }
 
 func Load(globalPath, nodePath string) (*Config, error) {
@@ -181,6 +207,22 @@ func mergeConfigs(global, node *Config) *Config {
 
 	if merged.Binaries == nil {
 		merged.Binaries = global.Binaries
+	}
+
+	// Health: node values override global; zero values (Go default)
+	// fall through to global. Per-field merge so a node can override
+	// only MaxFails while inheriting the rest of the defaults.
+	if merged.Health.Path == "" {
+		merged.Health.Path = global.Health.Path
+	}
+	if merged.Health.IntervalIdleSec == 0 {
+		merged.Health.IntervalIdleSec = global.Health.IntervalIdleSec
+	}
+	if merged.Health.IntervalBusySec == 0 {
+		merged.Health.IntervalBusySec = global.Health.IntervalBusySec
+	}
+	if merged.Health.MaxFails == 0 {
+		merged.Health.MaxFails = global.Health.MaxFails
 	}
 
 	return &merged
@@ -302,6 +344,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Llama.RPCPort == 0 {
 		return fmt.Errorf("llama.rpc_port is required")
+	}
+	if c.Health.MaxFails < 0 {
+		return fmt.Errorf("health.max_fails must be >= 0, got %d", c.Health.MaxFails)
+	}
+	if c.Health.IntervalIdleSec < 0 {
+		return fmt.Errorf("health.interval_idle_sec must be >= 0, got %d", c.Health.IntervalIdleSec)
+	}
+	if c.Health.IntervalBusySec < 0 {
+		return fmt.Errorf("health.interval_busy_sec must be >= 0, got %d", c.Health.IntervalBusySec)
 	}
 	return nil
 }

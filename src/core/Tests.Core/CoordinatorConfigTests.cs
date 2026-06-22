@@ -62,6 +62,7 @@ public sealed class CoordinatorConfigTests
         Assert.Equal(2048, cfg.AtomicThreshold);
         Assert.Equal(5120, cfg.WarmThreshold);
         Assert.Equal(1800, cfg.LlamaRequestTimeoutS);
+        Assert.Equal(50, cfg.NPastGuardTolerance);
     }
 
     [Fact]
@@ -94,6 +95,20 @@ public sealed class CoordinatorConfigTests
         finally
         {
             Environment.SetEnvironmentVariable("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", null);
+        }
+    }
+
+    [Fact]
+    public void NPastGuardTolerance_FromEnv()
+    {
+        Environment.SetEnvironmentVariable("HYDRA_COORD_N_PAST_GUARD_TOLERANCE", "2048");
+        try
+        {
+            Assert.Equal(2048, new CoordinatorConfig().NPastGuardTolerance);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_N_PAST_GUARD_TOLERANCE", null);
         }
     }
 
@@ -291,8 +306,14 @@ public sealed class CoordinatorConfigTests
     public void LoadWorkers_ProductionConfigFile_LoadsBothWorkersWithCorrectModelFields()
     {
         // Pin the live production file (committed to infra/hydra-core/config/workers.json).
-        // Asserts the shape: RTX has prefill_model_name=mini, decode_model_name=balanced (router mode,
-        // mix-precision P/D split); P100 has no model fields (single-model server, /models/load returns 404).
+        // Asserts the shape: BOTH workers have all model_* fields NULL — interpretation (b) of the
+        // mix-precision P/D split (same model across prefill and decode phases; the cross-model
+        // guard in WorkerSchedulerService.RestoreKvAsync accepts the restore when both slots
+        // load the same GGUF file, which produces the same model_hash). Pre-#289 / pre-PR-292
+        // the RTX had prefill_model_name=mini, decode_model_name=balanced; that configuration
+        // was mathematically broken (Q3_K KV != Q5_K weights) and is no longer supported by
+        // default. See docs/workflow/08-llama-fork.md and the cross-model safety section in
+        // specs/rpc-protocol.md for the full reasoning.
         // If this test breaks, the compose deployment will break.
         var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
         var configPath = Path.Combine(repoRoot, "infra", "hydra-core", "config", "workers.json");
@@ -311,9 +332,9 @@ public sealed class CoordinatorConfigTests
 
             var rtx = workers.Single(w => w.Name == "rtx");
             Assert.Equal(3, rtx.WorkerType);
-            Assert.Equal("balanced", rtx.RouterModelName);
-            Assert.Equal("mini", rtx.PrefillModelName);
-            Assert.Equal("balanced", rtx.DecodeModelName);
+            Assert.Null(rtx.RouterModelName);
+            Assert.Null(rtx.PrefillModelName);
+            Assert.Null(rtx.DecodeModelName);
 
             var p100 = workers.Single(w => w.Name == "p100");
             Assert.Equal(2, p100.WorkerType);

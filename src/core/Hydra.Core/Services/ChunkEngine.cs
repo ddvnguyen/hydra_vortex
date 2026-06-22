@@ -7,7 +7,7 @@ namespace Hydra.Core;
 
 public static class ChunkEngine
 {
-    public const int CHUNK_SIZE = 1 * 1024 * 1024;
+    public static int CHUNK_SIZE = 8 * 1024 * 1024;
 
     public static string ComputeHash(ReadOnlySpan<byte> data)
     {

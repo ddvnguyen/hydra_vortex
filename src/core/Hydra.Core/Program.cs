@@ -27,6 +27,12 @@ await using var metadata = new StoreMetadata(cfg.PgConn);
 var engine = new StorageEngine(cfg.StoreDirectory);
 var chunkStore = new ChunkStore(cfg.StoreDirectory);
 
+// Sync chunk size from env
+var chunkSizeKb = int.Parse(Environment.GetEnvironmentVariable("HYDRA_STORE_CHUNK_SIZE") ?? "8192");
+var chunkSize = chunkSizeKb * 1024;
+ChunkEngine.CHUNK_SIZE = chunkSize;
+ChunkConstants.ChunkSize = chunkSize;
+
 // Clean up orphaned .tmp files from previous crashes.
 foreach (var tmp in chunkStore.ChunksDirectory.EnumerateFiles("*.tmp"))
     try { tmp.Delete(); } catch { }

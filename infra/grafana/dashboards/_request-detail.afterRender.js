@@ -72,10 +72,12 @@ try {
   };
   const typeOf = function (rt, prefixHit) {
     rt = (rt || '').toLowerCase();
-    if (rt.indexOf('migration') >= 0) return { t: 'RESUME', c: '#a371f7', d: 'Full cache resume' };
-    if (rt.indexOf('affinity') >= 0 || rt.indexOf('warm') >= 0) return { t: 'WARM', c: '#2f81f7', d: 'Prefix cache hit' };
-    if (prefixHit === 'true') return { t: 'COLD+', c: '#db6d28', d: 'Prefix reused, cold decode' };
-    return { t: 'COLD', c: '#db6d28', d: 'Fresh prompt' };
+    if (rt === 'migration')      return { t: 'RESUME', c: '#a371f7', d: 'Full KV restore from Store' };
+    if (rt === 'cold_atomic')    return { t: 'ATOMIC', c: '#db6d28', d: 'Single node — prefill+decode on same GPU' };
+    if (rt === 'cold_concurrency') return { t: 'SPLIT',  c: '#d29922', d: 'Split — prefill on one node, decode on another' };
+    if (rt.indexOf('warm') >= 0 || rt.indexOf('affinity') >= 0) return { t: 'WARM', c: '#2f81f7', d: 'Warm slot affinity — no prefill needed' };
+    if (prefixHit === 'true')    return { t: 'PREFIX', c: '#58a6ff', d: 'Prefix checkpoint reused, partial prefill' };
+    return { t: 'COLD', c: '#db6d28', d: 'Fresh full prefill from scratch' };
   };
 
   // ── Phase model ─────────────────────────────────────────────────────
@@ -96,35 +98,30 @@ try {
   };
 
   // ── Build row model ─────────────────────────────────────────────────
-  const rows = [];
+    const rows = [];
+  const merged = {};  // trace_id → merged row
   flat.forEach(function (d, i) {
     const traceId = String(d.trace_id || '');
     const sessionId = String(d.session_id || '');
-    // Drop rows with no usable identifier (incomplete Loki entries from CRI
-    // partial-line drops) — no trace_id AND no session_id means nothing to
-    // identify the request.
     if (!traceId && !sessionId) return;
+
     const phases = [];
     let cum = 0;
     ORDER.forEach(function (k) {
       const meta = PHASE[k];
       const dur = num(d[meta.key]);
       if (dur <= 0) return;
+      if (k === 'restore_kv' && num(d.kv_bytes) === 0) return;
       phases.push({ k: k, label: meta.label, color: meta.color, dur: dur, start: cum });
       cum += dur;
     });
-    const total = num(d.total_ms) || cum || 1;
-    // Prefer the C#-emitted timestamp_ms; fall back to Loki's own Time
-    // (nanosecond epoch from the log entry) so older log lines — emitted
-    // before the timestamp_ms field was added — still display a time.
-    // Try multiple field names that Grafana/Loki may expose.
+    const total = num(d.total_ms) || cum || 0;
     let tsMs = d.timestamp_ms || d.Time || d.time || d.ts || d.timestamp;
     if (tsMs && Number(tsMs) > 1e15) tsMs = Math.floor(Number(tsMs) / 1e6);
-    d._tsMs = Number(tsMs) || 0;
-    // Drop rows with no usable timestamp either — they'd render as 00:00:00
-    // and confuse the sorted list.
-    if (!d._tsMs) return;
-    rows.push({
+    if (!Number(tsMs)) return;
+
+    const key = traceId || sessionId;
+    const row = {
       id: traceId ? traceId.slice(0, 8) : sessionId.slice(0, 12),
       traceId: traceId,
       sessionId: sessionId,
@@ -140,7 +137,38 @@ try {
       kvBytes: num(d.kv_bytes),
       phases: phases,
       total: total,
-    });
+      status: String(d.status || ''),
+      _tsMs: Number(tsMs),
+    };
+
+    // Merge multiple entries for same trace_id — later entry wins for fields
+    // that are non-zero, phases accumulate.
+    const cur = merged[key];
+    if (cur && row._tsMs > cur._tsMs) {
+      const isFinal = row.status === 'done' || total > 0;
+      if (isFinal) {
+        // Final entry: replace phases and totals with complete data
+        merged[key] = row;
+      } else {
+        // Partial update: merge fields but keep phases from final only
+        Object.keys(row).forEach(function (k) {
+          if (k === 'phases' || k === 'total' || k === '_tsMs') return;
+          if (row[k] !== undefined && row[k] !== '' && row[k] !== 0) cur[k] = row[k];
+        });
+        cur._tsMs = row._tsMs;
+        cur.timestamp = row.timestamp;
+      }
+    } else if (!cur) {
+      merged[key] = row;
+    }
+  });
+
+  Object.values(merged).forEach(function (r) {
+    // Compute total from phases if not set (in-flight requests)
+    if (!r.total) {
+      r.total = r.phases.reduce(function (s, p) { return s + p.dur; }, 0);
+    }
+    rows.push(r);
   });
 
   const S = (window.__hydraTL = window.__hydraTL || { view: 'composition', sel: 0, detail: true });
@@ -193,9 +221,12 @@ try {
       const tc = typeOf(r.route, r.prefixHit);
       const sel = ri === S.sel;
       html += '<div data-row="' + ri + '" style="display:flex;align-items:center;height:' + rowH + 'px;box-sizing:border-box;cursor:pointer;border-bottom:1px solid #161b22;border-left:2px solid ' + (sel ? '#388bfd' : 'transparent') + ';background:' + (sel ? 'rgba(56,139,253,0.07)' : 'transparent') + ';">';
-      html += '<div style="width:172px;flex:none;padding:0 10px;min-width:0;">';
-      html += '<div style="display:flex;align-items:center;gap:5px;"><span style="font-family:monospace;font-size:11px;font-weight:600;color:#ffffff;">' + esc(r.id) + '</span><span style="font-size:8px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + tc.t + '</span></div>';
-      html += '<div style="font-size:10px;color:#ffffff;font-family:monospace;">' + r.timestamp + ' &middot; ' + ms(r.total) + 's</div></div>';
+      html += '<div style="width:180px;flex:none;padding:0 10px;min-width:0;">';
+      html += '<div style="display:flex;align-items:center;gap:5px;"><span style="font-family:monospace;font-size:11px;font-weight:600;color:#ffffff;">' + esc(r.id) + '</span><span style="font-size:8px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + tc.t + '</span>' + (r.prefixHit === 'true' ? '<span style="font-size:7px;font-weight:700;color:#3fb950;border:1px solid #3fb9504d;border-radius:2px;padding:1px 3px;font-family:monospace;">CACHE</span>' : '') + '</div>';
+      html += '<div style="font-size:10px;color:#ffffff;font-family:monospace;">' + r.timestamp;
+      if (r.status && r.status !== 'done') html += ' <span style="color:#d29922;">' + esc(r.status) + '</span>';
+      else html += ' &middot; ' + ms(r.total) + 's';
+      html += '</div></div>';
 
       // Phase bars
       html += '<div style="flex:1;position:relative;height:' + rowH + 'px;min-width:0;">';
@@ -248,15 +279,16 @@ try {
       html += '</div></div>';
 
       // Metric tiles
+      const tpsColor = tps == null ? '#8b949e' : (tps >= 20 ? '#3fb950' : (tps >= 10 ? '#d29922' : '#f85149'));
       const tiles = [
         ['Total latency', ms(r.total), 's', '#e6edf3'],
         ['TTFT', ms(ttft), 's', '#58a6ff'],
-        ['Throughput', tps == null ? '\u2014' : tps, tps == null ? '' : 'tok/s', '#3fb950'],
+        ['Throughput', tps == null ? '\u2014' : tps, tps == null ? '' : 'tok/s', tpsColor],
         ['Tokens in / out', r.tokensIn + ' / ' + r.tokensOut, '', '#c9d1d9'],
         ['KV cache', kvMiB, kvMiB === '\u2014' ? '' : 'MiB', '#d29922'],
       ];
       html += '<div style="display:flex;gap:1px;background:#21262d;border-radius:6px;overflow:hidden;flex-wrap:wrap;margin:10px 14px;">';
-      tiles.forEach(function (t) { html += '<div style="flex:1;min-width:80px;background:#0d1117;padding:8px 10px;"><div style="font-size:9px;color:#ffffff;text-transform:uppercase;letter-spacing:0.05em;">' + t[0] + '</div><div style="font-family:monospace;font-size:13px;font-weight:600;color:#ffffff;margin-top:3px;">' + t[1] + '<span style="font-size:10px;color:#ffffff;margin-left:2px;">' + t[2] + '</span></div></div>'; });
+      tiles.forEach(function (t) { html += '<div style="flex:1;min-width:80px;background:#0d1117;padding:8px 10px;"><div style="font-size:9px;color:#ffffff;text-transform:uppercase;letter-spacing:0.05em;">' + t[0] + '</div><div style="font-family:monospace;font-size:13px;font-weight:600;color:' + t[3] + ';margin-top:3px;">' + t[1] + '<span style="font-size:10px;color:' + t[3] + ';margin-left:2px;">' + t[2] + '</span></div></div>'; });
       html += '</div>';
 
       // Phase breakdown
@@ -276,10 +308,14 @@ try {
       html += '</div>';
 
       // Servers info (with model alias when present)
+      const isAtomic = r.prefillNode === '-';
+      const pNode = isAtomic ? r.decodeNode : r.prefillNode;
+      const pModel = isAtomic ? r.decodeModel : r.prefillModel;
       html += '<div style="margin:10px 14px;padding:8px 10px;background:#161b22;border-radius:6px;">';
       html += '<div style="font-size:9px;color:#ffffff;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Servers</div>';
-      html += '<div style="display:flex;gap:8px;font-size:11px;align-items:center;"><span style="color:#ffffff;font-weight:600;min-width:48px;">Prefill</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(r.prefillNode) + '</span>';
-      if (r.prefillModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:9px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(r.prefillModel) + '</span>';
+      html += '<div style="display:flex;gap:8px;font-size:11px;align-items:center;"><span style="color:#ffffff;font-weight:600;min-width:48px;">Prefill</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(pNode) + '</span>';
+      if (pModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:9px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(pModel) + '</span>';
+      if (isAtomic) html += '<span style="margin-left:6px;font-size:8px;font-weight:700;color:#d29922;background:#d299221f;border:1px solid #d299224d;border-radius:3px;padding:1px 5px;font-family:monospace;">ATOMIC</span>';
       html += '</div>';
       html += '<div style="display:flex;gap:8px;font-size:11px;margin-top:2px;align-items:center;"><span style="color:#ffffff;font-weight:600;min-width:48px;">Decode</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(r.decodeNode) + '</span>';
       if (r.decodeModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:9px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(r.decodeModel) + '</span>';

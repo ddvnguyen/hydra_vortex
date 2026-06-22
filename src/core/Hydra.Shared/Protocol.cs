@@ -42,19 +42,31 @@ public enum OpCode : byte
     SaveStateChunked    = 0x26,
     RestoreStateChunked = 0x27,
     StateGet      = 0x30,
-StatePut      = 0x31,
+    StatePut      = 0x31,
     StateMeta     = 0x32,
     GetManifest   = 0x33,
+    EngineConfigure = 0x40,
+    EngineInfo      = 0x41,
+    EnginePrefill   = 0x42,
+    EngineDecode    = 0x43,
+    EngineSetExpertMode = 0x44,
+    EngineSwapQuant = 0x45,
+    // Two-engine "work together": the head tells the worker to attach as a
+    // prima.cpp-style pipeline peer. Payload = JSON {"peer":"host:port","ot_split":"<regex>"}.
+    // The worker loads the assigned tensors from its OWN local model (no weight transfer);
+    // only boundary activations cross the link afterwards.
+    EnginePipelineAttach = 0x46,
 }
 
 public enum StatusCode : byte
 {
-    Ok         = 0x00,
-    NotFound   = 0x01,
-    Error      = 0x02,
-    BadRequest = 0x05,
-    Partial    = 0x03,
-    Busy       = 0x04,
+    Ok             = 0x00,
+    NotFound       = 0x01,
+    Error          = 0x02,
+    Partial        = 0x03,
+    Busy           = 0x04,
+    BadRequest     = 0x05,
+    NotImplemented = 0x06,
 }
 
 public static class Protocol

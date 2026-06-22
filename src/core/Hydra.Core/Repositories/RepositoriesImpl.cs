@@ -28,6 +28,7 @@ public sealed class SessionLedger : ISessionLedger
 
     public void UpdateLastUsed(string sid) { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.LastUsed = DateTime.UtcNow; } }
     public void UpdateNPast(string sid, int nPast) { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.NPast = nPast; } }
+    public void UpdateNPromptTokens(string sid, int n) { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.NPromptTokens = n; } }
 
     public void MarkEvicted(string sid)
     { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.SlotFreed = true; e.HasStoreState = true; } }
@@ -61,7 +62,7 @@ public sealed class SessionLedger : ISessionLedger
     {
         var r = new Dictionary<string, object>();
         foreach (var (_, e) in _sessions)
-            lock (e) r[e.SessionId] = new { session_id = e.SessionId, node = e.NodeName, slot_id = e.SlotId, n_past = e.NPast, has_store_state = e.HasStoreState, slot_freed = e.SlotFreed };
+            lock (e) r[e.SessionId] = new { session_id = e.SessionId, node = e.NodeName, slot_id = e.SlotId, n_past = e.NPast, n_prompt_tokens = e.NPromptTokens, has_store_state = e.HasStoreState, slot_freed = e.SlotFreed };
         return r;
     }
 
@@ -90,7 +91,7 @@ public sealed class SessionLedger : ISessionLedger
                 if (!string.IsNullOrEmpty(sid) && nPast > 0)
                 {
                     var entry = Register(sid, "", null, nPast);
-                    lock (entry) { entry.HasStoreState = true; }
+                    lock (entry) { entry.HasStoreState = true; entry.SlotFreed = true; }
                 }
             }
         }
@@ -150,6 +151,8 @@ public sealed class WorkerTracker : IWorkerTracker
     {
         if (_pools.TryGetValue(name, out var pool))
             pool.Return(slotId);
+        if (_states.TryGetValue(name, out var s))
+            lock (s) { s.BusySince = null; }
     }
 
     public int FreeSlotCount(string name)

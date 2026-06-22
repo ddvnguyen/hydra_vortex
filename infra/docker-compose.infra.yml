@@ -1,50 +1,14 @@
 name: hydra-infra
 
-services:
-#   node-exporter:
-#     image: prom/node-exporter:latest
-#     network_mode: host
-#     pid: host
-#     volumes:
-#       - /proc:/host/proc:ro
-#       - /sys:/host/sys:ro
-#       - /:/rootfs:ro
-#     command:
-#       - --path.procfs=/host/proc
-#       - --path.sysfs=/host/sys
-#       - --path.rootfs=/rootfs
-#     healthcheck:
-#       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9100/metrics"]
-#       interval: 15s
-#       timeout: 5s
-#       retries: 3
-#       start_period: 10s
-#     labels:
-#       component: observability
-#     restart: unless-stopped
+# The infra-host pod — Loki, Prometheus, Grafana, Postgres, the
+# Grafana image renderer, Open WebUI, and pgAdmin. The 3 exporters
+# (node-exporter / nvidia_gpu_exporter / promtail) used to live
+# here as host-side systemd services; they were removed in
+# commit 5f2c231 — the in-container hydra-head now manages them
+# as subprocesses. The host promtail-prometheus image
+# (`grafana/promtail:3.4`) is no longer used either.
 
-#   nvidia-exporter:
-#     image: nvidia/dcgm-exporter:latest
-#     ports:
-#       - "9835:9400"
-#     cap_add:
-#       - SYS_ADMIN
-#     healthcheck:
-#       test: ["CMD", "/usr/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9400"]
-#       interval: 15s
-#       timeout: 5s
-#       retries: 3
-#       start_period: 10s
-#     labels:
-#       component: observability
-#     restart: unless-stopped
-#     deploy:
-#       resources:
-#         reservations:
-#           devices:
-#             - driver: nvidia
-#               count: all
-#               capabilities: [gpu, utility]
+services:
 
   loki:
     image: grafana/loki:3.4
@@ -64,20 +28,6 @@ services:
     labels:
       component: observability
     restart: unless-stopped
-
-#   promtail:
-#     image: grafana/promtail:3.4
-#     volumes:
-#       - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
-#       - /run/user/1000/podman/podman.sock:/var/run/docker.sock:ro
-#       - /mnt/containers/:/mnt/containers/:ro
-#       - promtail-positions:/var/lib/promtail
-#     command: -config.file=/etc/promtail/promtail-config.yml
-#     depends_on:
-#       - loki
-#     labels:
-#       component: observability
-#     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
@@ -153,7 +103,7 @@ services:
     restart: unless-stopped
 
   renderer:
-    image: grafana/grafana-image-renderer:latest
+    image: grafana/grafana-image-renders:latest
     network_mode: host
     environment:
       - HTTP_PORT=8081
@@ -204,7 +154,6 @@ volumes:
   loki-data:
   prometheus-data:
   grafana-data:
-  promtail-positions:
   pgadmin-data:
   pg-data:
   openwebui-data:

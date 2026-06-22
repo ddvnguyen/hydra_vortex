@@ -10,11 +10,18 @@ public sealed class StoreMetadata : IAsyncDisposable
 
     private const string Schema = """
         CREATE TABLE IF NOT EXISTS sessions(
-            session_id TEXT PRIMARY KEY,
-            n_past     INT    NOT NULL DEFAULT 0,
-            total_size BIGINT NOT NULL DEFAULT 0,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+            session_id  TEXT PRIMARY KEY,
+            n_past      INT    NOT NULL DEFAULT 0,
+            total_size  BIGINT NOT NULL DEFAULT 0,
+            -- M-Perf.9 #289: model identity of the slot that built this KV cache.
+            -- Nullable + back-compat default '' so the schema is additive: pre-#289
+            -- sessions get empty model_* and the cross-model guard treats that
+            -- as "skip" (no-op on restore).
+            model_alias TEXT NOT NULL DEFAULT '',
+            model_hash  TEXT NOT NULL DEFAULT '',
+            model_path  TEXT NOT NULL DEFAULT '',
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now());
 
         CREATE TABLE IF NOT EXISTS chunks(
             hash         TEXT PRIMARY KEY,
@@ -102,23 +109,33 @@ public sealed class StoreMetadata : IAsyncDisposable
 
     public async Task UpsertManifestAsync(
         string sessionId, int nPast, long totalSize,
-        IReadOnlyList<ChunkRef> chunks, CancellationToken ct = default)
+        IReadOnlyList<ChunkRef> chunks, CancellationToken ct = default,
+        // M-Perf.9 #289: model identity passed by the caller (WorkerSchedulerService)
+        // so a Coordinator restart can still gate RestoreKvAsync on model_hash.
+        string modelAlias = "", string modelHash = "", string modelPath = "")
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
         await using var upsertSession = conn.CreateCommand();
         upsertSession.CommandText = """
-            INSERT INTO sessions (session_id, n_past, total_size)
-            VALUES (@sid, @np, @ts)
+            INSERT INTO sessions (session_id, n_past, total_size,
+                                  model_alias, model_hash, model_path)
+            VALUES (@sid, @np, @ts, @ma, @mh, @mp)
             ON CONFLICT (session_id) DO UPDATE SET
                 n_past = EXCLUDED.n_past,
                 total_size = EXCLUDED.total_size,
+                model_alias = EXCLUDED.model_alias,
+                model_hash = EXCLUDED.model_hash,
+                model_path = EXCLUDED.model_path,
                 updated_at = now()
             """;
         upsertSession.Parameters.AddWithValue("sid", sessionId);
         upsertSession.Parameters.AddWithValue("np", nPast);
         upsertSession.Parameters.AddWithValue("ts", totalSize);
+        upsertSession.Parameters.AddWithValue("ma", modelAlias);
+        upsertSession.Parameters.AddWithValue("mh", modelHash);
+        upsertSession.Parameters.AddWithValue("mp", modelPath);
         upsertSession.Transaction = tx;
         await upsertSession.ExecuteNonQueryAsync(ct);
 
@@ -218,15 +235,25 @@ public sealed class StoreMetadata : IAsyncDisposable
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
 
         await using var sessionCmd = conn.CreateCommand();
-        sessionCmd.CommandText = "SELECT n_past, total_size FROM sessions WHERE session_id = @sid";
+        // M-Perf.9 #289: read the 3 model-identity columns too so the cross-model
+        // guard in WorkerSchedulerService.RestoreKvAsync survives a Coordinator
+        // restart. Pre-#289 sessions get '' for the 3 fields via the schema
+        // default; the guard treats "both empty" as "skip".
+        sessionCmd.CommandText = """
+            SELECT n_past, total_size, model_alias, model_hash, model_path
+            FROM sessions WHERE session_id = @sid
+            """;
         sessionCmd.Parameters.AddWithValue("sid", sessionId);
         await using var reader = await sessionCmd.ExecuteReaderAsync(ct);
 
         if (!await reader.ReadAsync(ct))
             return null;
 
-        var nPast = reader.GetInt32(0);
-        var totalSize = reader.GetInt64(1);
+        var nPast      = reader.GetInt32(0);
+        var totalSize  = reader.GetInt64(1);
+        var modelAlias = reader.GetString(2);
+        var modelHash  = reader.GetString(3);
+        var modelPath  = reader.GetString(4);
         await reader.CloseAsync();
 
         await using var chunksCmd = conn.CreateCommand();
@@ -249,7 +276,9 @@ public sealed class StoreMetadata : IAsyncDisposable
             chunks.Add(new ChunkRef(idx, hash, size));
         }
 
-        return new Manifest(sessionId, 1, nPast, totalSize, chunks, DateTime.UtcNow);
+        return new Manifest(
+            sessionId, 1, nPast, totalSize, chunks, DateTime.UtcNow,
+            modelAlias, modelHash, modelPath);
     }
 
     public async Task MarkBackedUpAsync(string hash, string nvmePath, CancellationToken ct = default)

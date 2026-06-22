@@ -1,6 +1,60 @@
-name: hydra-core
+name: hydra-system
+
+# Hydra Core + Hydra Head (RTX) — single source of truth for the
+# "hydra system" stack on the RTX host. P100 is a separate VM and is
+# NOT in this compose.
+#
+# The pod runs as `userns_mode: host` (set at the pod level here, NOT
+# on individual services — podman rejects `--userns` and `--pod`
+# together). With host userns, container uids match host uids
+# directly, so the in-container promtail can read host files
+# (`/mnt/containers/*/ctr.log`, `/mnt/SSD/hydra-backup`, the host
+# podman auth.json) without chmod 644. Both services also set
+# `user: 1000:1000` to run as the host ddv user.
+#
+# Deploy with:
+#   export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
+#   podman compose -f infra/docker-compose.hydra.yml up -d
+# (note: podman-compose is not used; podman 5.x has native compose support)
+
+# Pod-level userns_mode. We set it to "host" with the intent of
+# getting host userns in the containers, but on rootless podman
+# (this host runs `podman` as ddv, not root) this is **silently
+# downgraded** to the default subuid mapping. The in-container
+# uid 1000 (set via `user: 1000:1000` per service) ends up mapped
+# to a host subuid (typically 100999), not the actual host uid
+# 1000 (ddv). That has a real consequence for bind mounts:
+# files written by the container end up owned by the subuid
+# (e.g. 100999:100999), not by ddv. Host ddv can read them (mode
+# 644) but cannot `chown` them back to 1000:1000 — the host's
+# NTFS partition (`/mnt/SSD` is `ntfs3`) doesn't store POSIX
+# ownership semantics either, which makes recovery a `chmod
+# 777` + delete-by-content job, not a `chown`.
+#
+# The fix in this compose is NOT to set per-service userns_mode
+# (that breaks with the well-known podman error `--userns and
+# --pod cannot be set together`). Instead, the `core` service
+# wraps its ENTRYPOINT with a one-line shell that ensures
+# `$HYDRA_STORE_BACKUP_DIR/chunks` exists and is mode 777 before
+# the C# binary starts. With mode 777, the subuid-mapped user
+# can create new files in there, and the chunks-dir regression
+# we saw in 2026-06-22 (chunks dir created at 755 by an earlier
+# root-owned run, then `UnauthorizedAccessException` every 10s
+# on every write-behind cycle) cannot recur.
+#
+# The `userns_mode: "host"` line below is kept as documentation
+# of intent. It applies to the POD ONLY (compose generates
+# `--userns=host` on `podman pod create`), but as noted, rootless
+# podman downgrades this — see the comment on each service for
+# the real-world consequences.
+userns_mode: "host"
+
+# ── Named volumes ─────────────────────────────────────────────────────────
+volumes:
+  hydra-head-promtail-positions:
 
 services:
+  # ── Hydra Core: C# coordinator + Store + chunked manifest ─────────────
   core:
     build:
       context: ..
@@ -8,11 +62,50 @@ services:
       target: core
       tags:
         - localhost/hydra-core:latest
+    image: localhost/hydra-core:latest
+    # NO per-service userns_mode here — podman rejects
+    # `--userns` combined with `--pod` with
+    # `Error: --userns and --pod cannot be set together`,
+    # which would prevent the container from starting. The
+    # pod-level `userns_mode: "host"` is enough; rootless
+    # podman silently downgrades it to subuid mapping, but
+    # the workaround in `command:` (chmod 777 on the
+    # write-behind chunks dir) makes the in-container
+    # process able to write to it regardless.
     network_mode: host
+    user: "1000:1000"
+    # Wrap the C# ENTRYPOINT with a one-liner that ensures
+    # the write-behind target dir is mode 777 (writable by
+    # the in-container subuid-mapped user). Without this,
+    # an earlier root-owned run may have left the dir at
+    # 755, and the C# WriteBehindService throws
+    # `UnauthorizedAccessException` every 10s on every
+    # cycle (see review-finding 2026-06-22).
+    #
+    # NB: we use `mkdir -m 777` (NOT `chmod 777`) because
+    # the in-container process is subuid-mapped (uid 100999)
+    # and the dir on the host is owned by ddv (uid 1000);
+    # chmod from a non-owner is denied on NTFS (the
+    # `/mnt/SSD` partition is `ntfs3`). `mkdir -m 777`
+    # sets the mode at create time and works because the
+    # creating process IS the owner of the newly-created
+    # dir.
+    #
+    # We also override `entrypoint` (not `command`) because
+    # the Dockerfile has `ENTRYPOINT ["dotnet", "Hydra.Core.dll"]`
+    # and no CMD. With compose's `command:` set, the final
+    # process becomes `dotnet Hydra.Core.dll <command-args>` —
+    # dotnet silently ignores anything after the assembly name,
+    # so a `command: ["/bin/sh", "-c", "mkdir -m 777 …"]` would
+    # never run. The shell wrapper below REPLACES the dotnet
+    # entrypoint, runs the mkdir, then `exec`s into dotnet.
+    entrypoint: ["/bin/sh", "-c", "mkdir -m 777 -p \"$${HYDRA_STORE_BACKUP_DIR}/chunks\" && exec dotnet Hydra.Core.dll"]
     tmpfs:
       - /mnt/llm-ram:size=30G
     volumes:
       - ./hydra-core/config:/etc/hydra/config:ro
+      - /mnt/SSD/hydra-backup:/mnt/SSD/hydra-backup:rw
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
     environment:
       - HYDRA_STORE_HOST=0.0.0.0
       - HYDRA_STORE_PORT=9500
@@ -23,10 +116,21 @@ services:
       - HYDRA_STORE_RESTORE_TOP_N=10
       - HYDRA_COORD_PORT=9000
       - HYDRA_COORD_MIX_PRECISION_ENABLED=true
+      - HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true
       - HYDRA_COORD_ATOMIC_THRESHOLD=2048
       - HYDRA_COORD_WARM_THRESHOLD=5120
       - HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers.json
+      - HYDRA_COORD_ENABLE_CHUNKS=true
+      - HYDRA_STORE_CHUNK_SIZE=8192
       - HYDRA_LOG_LOKI_URL=http://localhost:3100
+      # CRITICAL: put the local chunk cache inside the bounded tmpfs,
+      # not the container's /tmp. Default path is
+      # /tmp/hydra-coord-chunk-cache which lives in the overlay's
+      # writable layer — unbounded, has filled /mnt/containers to
+      # 100% on this box (52 GB of KV state in the overlay). Putting
+      # it under /mnt/llm-ram/ makes the cache bounded by the tmpfs
+      # size (30G) and RAM-backed (fast).
+      - HYDRA_COORD_CHUNK_CACHE_DIR=/mnt/llm-ram/chunk-cache
     healthcheck:
       test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
       interval: 10s
@@ -35,4 +139,63 @@ services:
       start_period: 20s
     labels:
       component: hydra
-    restart: unless-stopped
+    restart: always
+
+  # ── Hydra Head (RTX): Go node agent + llama-server + 3 sidecars ─────
+  # Manages: llama-server (Mini / Balanced from /llama/bin via OCI),
+  # node_exporter, nvidia_gpu_exporter, promtail. All in one container.
+  #
+  # Image is built separately by `bash scripts/deploy-hydra-head.sh rtx`
+  # (not by this compose — the Dockerfile is infra/hydra-head/Dockerfile.rtx,
+  # not infra/Dockerfile).
+  head-rtx:
+    image: localhost/hydra-head:rtx
+    # NO per-service userns_mode here — same reason as `core`:
+    # `--userns and --pod cannot be set together`.
+    network_mode: host
+    user: "1000:1000"
+    devices:
+      - nvidia.com/gpu=all
+    depends_on:
+      - core
+    volumes:
+      # Model + KV slot data
+      - /mnt/SSD:/models:ro
+      - hydra-head-promtail-positions:/opt/hydra/promtail-positions:rw
+      # Configs (RTX-specific)
+      - ./hydra-head/config:/opt/hydra/config:ro
+      # Pre-built llama-server binary (mounted from build dir so the OCI
+      # image doesn't need to re-pull on every start)
+      - ../src/llama-cpp/build_sm120/bin/:/llama/bin/:ro
+      # ghcr.io creds for in-container pulls
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
+      # Host filesystem for node_exporter + promtail to read ctr.log
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      # Podman socket for promtail's docker_sd_configs to find all
+      # host containers. The socket is owned by host uid 1000 (ddv),
+      # so the container MUST run as uid 1000 to read it. With
+      # --user 1000:1000 this works without socat or symlinks.
+      - /run/user/1000/podman:/var/run/socks:rw
+      # Source: same path mounted by 'core' so the backup dir is real
+      - /mnt/containers/:/mnt/containers/:ro
+    environment:
+      # Auth token: generated by scripts/deploy-hydra-head.sh, stored
+      # in $REPO_ROOT/.hydra-head-token. The deploy script reads it
+      # and passes it via the shell. For compose: set
+      # HYDRA_HEAD_AUTH_TOKEN in your shell before running
+      # `podman compose ... up -d`, e.g.:
+      #   export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
+      - HYDRA_HEAD_AUTH_TOKEN=${HYDRA_HEAD_AUTH_TOKEN:?must export HYDRA_HEAD_AUTH_TOKEN}
+      - REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9700/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    labels:
+      component: hydra-head
+      node: rtx
+    restart: always

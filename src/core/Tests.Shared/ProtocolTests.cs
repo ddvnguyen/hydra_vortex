@@ -186,6 +186,34 @@ public class ProtocolTests
         Assert.Equal(0x31, (byte)OpCode.StatePut);
         Assert.Equal(0x32, (byte)OpCode.StateMeta);
         Assert.Equal(0x33, (byte)OpCode.GetManifest);
+        Assert.Equal(0x40, (byte)OpCode.EngineConfigure);
+        Assert.Equal(0x41, (byte)OpCode.EngineInfo);
+        Assert.Equal(0x42, (byte)OpCode.EnginePrefill);
+        Assert.Equal(0x43, (byte)OpCode.EngineDecode);
+        Assert.Equal(0x44, (byte)OpCode.EngineSetExpertMode);
+        Assert.Equal(0x45, (byte)OpCode.EngineSwapQuant);
+        Assert.Equal(0x46, (byte)OpCode.EnginePipelineAttach);
+    }
+
+    [Fact]
+    public void OpCode_EnginePipelineAttach_IsAt0x46()
+    {
+        // M-Perf.9 (#289): two-engine "work together" attach. The opcode
+        // lives in the same 0x40-0x46 range as the rest of the engine
+        // control plane; the C++ side stubs the handler with
+        // NOT_IMPLEMENTED until issue #287 lands.
+        Assert.Equal(0x46, (byte)OpCode.EnginePipelineAttach);
+    }
+
+    [Fact]
+    public void OpCode_EngineOpcodes_DoNotCollideWithStoreOrAgentRanges()
+    {
+        // Guard: the engine block (0x40-0x45) was deliberately placed after
+        // GetManifest (0x33) and before the 0x80+ reserved band. A future
+        // edit that reuses 0x33-0x3F for a different layer would silently
+        // alias the engine block on the wire.
+        Assert.True((byte)OpCode.EngineConfigure >= 0x40);
+        Assert.True((byte)OpCode.EngineSwapQuant <= 0x45);
     }
 
     [Fact]

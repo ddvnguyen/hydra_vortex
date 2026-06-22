@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 # Deploy Hydra Head to GPU nodes
 # Usage: bash scripts/deploy-hydra-head.sh [rtx|p100|all]
+#
+# RTX path (since #322 / PR #328):
+#   - Build Go binary + container image
+#   - Deploy via `podman compose -f infra/docker-compose.hydra.yml up -d`
+#     which brings up `core` + `head-rtx` as a single pod with
+#     userns=host (so the in-container promtail can read /mnt/containers/
+#     ctr.log directly, no socat proxy needed).
+#   - The compose file is the source of truth for mount paths,
+#     env vars, health checks, and resource limits.
+#
+# P100 path (still uses systemd, not in compose):
+#   - rsync binary + configs to hydra-p100
+#   - install / enable systemd service
+#   - hydra-head is rebuilt with the configurable health-check
+#     values (PR #328) so the slow-VM-disk model load (3-5 min)
+#     doesn't trigger the kill loop any more.
 
 set -euo pipefail
 
@@ -24,7 +40,7 @@ generate_token() {
     ok "Using existing auth token from $TOKEN_FILE"
     return
   fi
-  
+
   step "Generating new auth token"
   # Generate a random 32-byte hex token
   openssl rand -hex 32 > "$TOKEN_FILE"
@@ -34,47 +50,44 @@ generate_token() {
 
 get_token() {
   if [ ! -f "$TOKEN_FILE" ]; then
-    die "Auth token not found. Run with 'generate' first."
+    die "Auth token not found at $TOKEN_FILE. Run: openssl rand -hex 32 > $TOKEN_FILE"
   fi
   cat "$TOKEN_FILE"
 }
 
-# ── Build ─────────────────────────────────────────────────────────────────────
-step "Building hydra-head"
+# ── Go Build ─────────────────────────────────────────────────────────────────
+build_go() {
+  step "Building hydra-head (Go)"
 
-export PATH=$HOME/go-sdk/go/bin:$PATH
-if ! command -v go &>/dev/null; then
-  die "Go not found. Install with: mkdir -p ~/go-sdk && cd /tmp && wget https://go.dev/dl/go1.25.0.linux-amd64.tar.gz && tar -C ~/go-sdk -xzf go1.25.0.linux-amd64.tar.gz"
-fi
+  export PATH=$HOME/go-sdk/go/bin:$PATH
+  if ! command -v go &>/dev/null; then
+    die "Go not found. Install with: mkdir -p ~/go-sdk && cd /tmp && wget https://go.dev/dl/go1.25.0.linux-amd64.tar.gz && tar -C ~/go-sdk -xzf go1.25.0.linux-amd64.tar.gz — see docs/build-environment.md"
+  fi
 
-go build -C "$REPO_ROOT/src/head" -o "$REPO_ROOT/bin/hydra-head" .
-ok "Built bin/hydra-head"
+  go build -C "$REPO_ROOT/src/head" -o "$REPO_ROOT/bin/hydra-head" .
+  ok "Built bin/hydra-head ($(stat -c '%s' bin/hydra-head) bytes)"
+}
 
-# Generate auth token
-generate_token
-AUTH_TOKEN=$(get_token)
-
-# ── Deploy Functions ──────────────────────────────────────────────────────────
-deploy_rtx() {
-  step "Deploying to RTX (container)"
+# ── Container Image Build ────────────────────────────────────────────────────
+build_rtx_image() {
+  step "Building hydra-head:rtx image"
 
   if ! command -v podman &>/dev/null; then
     die "podman not found"
   fi
 
-  # Build container image
   podman build -f infra/hydra-head/Dockerfile.rtx -t hydra-head:rtx .
   ok "Built container image hydra-head:rtx"
+}
 
-  # Stop existing container if running
-  if podman container exists hydra-head-rtx 2>/dev/null; then
-    podman stop hydra-head-rtx
-    podman rm hydra-head-rtx
-  fi
-
-  # Pre-stop the 3 host sidecar Quadlets — hydra-head now manages these
-  # as child processes inside this container, so the host ports (9100,
-  # 9835, 9080) must be free for the in-container children to bind.
+# ── Pre-deploy Cleanup ───────────────────────────────────────────────────────
+# Host-side exporter Quadlets (infra-node-exporter / infra-nvidia-
+# exporter / infra-promtail) were removed in commit TBD. The in-
+# container hydra-head now owns :9100/:9835/:9080 exclusively. This
+# function is a no-op kept for backward-compat with hosts that still
+# have the old Quadlets installed.
+stop_host_sidecars() {
+  if ! command -v systemctl &>/dev/null; then return; fi
   export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
   for svc in infra-node-exporter infra-nvidia-exporter infra-promtail; do
@@ -84,82 +97,91 @@ deploy_rtx() {
     fi
   done
   unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
+}
 
-  # Persistent volume for promtail positions (so log cursors survive
-  # container restarts, replacing the old promtail-positions.volume).
+# ── Auth File Sanity Check ──────────────────────────────────────────────────
+# The in-container hydra-head needs to read the host's podman auth.json
+# to pull llama-server from ghcr.io. With userns=host the container
+# user (uid 1000) IS host user (uid 1000), so the file just needs to
+# be at the standard path and be readable. If it's 600, the chmod below
+# is a no-op; if it's 644, no change. We do this defensively because
+# the persistent copy at ~/.config/containers/auth.json is what the
+# user actually maintains; the /run/user/1000/... copy is a tmpfs
+# shadow of it.
+check_auth_file() {
+  local auth_file="$HOME/.config/containers/auth.json"
+  local xdg_auth="/run/user/$(id -u)/containers/auth.json"
+  for f in "$auth_file" "$xdg_auth"; do
+    if [ -f "$f" ]; then
+      local mode
+      mode=$(stat -c '%a' "$f")
+      if [ "$mode" = "600" ]; then
+        chmod 644 "$f" && ok "chmod 644 $f (was 600; in-container uid 1000 needs to read it)"
+      fi
+    fi
+  done
+}
+
+# ── Deploy: RTX via compose ──────────────────────────────────────────────────
+deploy_rtx() {
+  step "Deploying to RTX (compose)"
+
+  # Build prerequisites
+  build_go
+  generate_token
+  AUTH_TOKEN=$(get_token)
+  build_rtx_image
+  stop_host_sidecars
+  check_auth_file
+
+  # Ensure the promtail positions volume exists (compose declares it but
+  # `podman compose up` won't create volumes in --build=skip mode).
   if ! podman volume exists hydra-head-promtail-positions 2>/dev/null; then
     podman volume create hydra-head-promtail-positions
   fi
 
-  # Mount the host's podman auth file so the in-container hydra-head can
-  # pull llama-server from ghcr.io (which now requires auth).
-  AUTH_FILE_SRC="/run/user/1000/containers/auth.json"
-  AUTH_FILE_MOUNTS=()
-  if [ -f "$AUTH_FILE_SRC" ]; then
-    AUTH_FILE_MOUNTS=(-v "$AUTH_FILE_SRC:/run/host-ctrs-auth.json:ro")
-    ok "Mounting host podman auth for ghcr.io pulls"
-  else
-    warn "No host auth.json at $AUTH_FILE_SRC — llama-server pull may fail"
+  # Drop any pre-compose standalone container (we used to run a single
+  # hydra-head-rtx container via `podman run`; the compose brings it
+  # up under the pod_hydra-system name).
+  if podman container exists hydra-head-rtx 2>/dev/null; then
+    podman stop hydra-head-rtx 2>/dev/null || true
+    podman rm hydra-head-rtx 2>/dev/null || true
   fi
+  # Also drop the old manually-created 'hydra-system' pod (from before
+  # the compose existed). It's safe to remove — compose will recreate.
+  for old_pod in hydra-system pod_hydra-system; do
+    if podman pod exists "$old_pod" 2>/dev/null; then
+      timeout 10 podman pod rm -f "$old_pod" 2>/dev/null || true
+    fi
+  done
 
-  # Set up a socat-relayed docker socket for promtail. The host's
-  # podman.sock is 0660 owned by ddv, but the in-container hydra user
-  # (uid 1001) can't read it. socat creates a new socket with 0666
-  # permission that anyone in the container can read.
-  PROMTAIL_SOCK_DIR="/tmp/hydra-head-promtail-sock"
-  mkdir -p "$PROMTAIL_SOCK_DIR"
-  rm -f "$PROMTAIL_SOCK_DIR/docker.sock"
-  nohup socat -t 300 "UNIX-LISTEN:$PROMTAIL_SOCK_DIR/docker.sock,reuseaddr,fork,unlink-early,mode=666" \
-                  "UNIX-CONNECT:/run/user/1000/podman/podman.sock" &>/tmp/hydra-promtail-socat.log &
-  SOCAT_PID=$!
-  sleep 1
-  if [ -S "$PROMTAIL_SOCK_DIR/docker.sock" ]; then
-    ok "Promtail docker.sock proxy ready (socat pid=$SOCAT_PID)"
-  else
-    warn "Promtail docker.sock proxy failed to start; promtail will get EACCES"
+  # Export the token so podman-compose picks it up via ${HYDRA_HEAD_AUTH_TOKEN:?}
+  export HYDRA_HEAD_AUTH_TOKEN
+  export HYDRA_HEAD_AUTH_TOKEN
+
+  # Deploy. Use `up` (not `up -d`) so we see errors; it returns
+  # immediately when containers are detached.
+  if ! podman compose -f infra/docker-compose.hydra.yml up -d 2>&1 | tail -10; then
+    die "podman compose up failed — check the output above. Common causes: HYDRA_HEAD_AUTH_TOKEN not exported, image not built, or userns conflict."
   fi
+  ok "Compose up: core + head-rtx in pod hydra-system"
 
-  # Run container with auth token. Volume mounts:
-  #   - host auth.json (ro):      ghcr.io creds for in-container pulls
-  #   - host /proc /sys / (ro):   node_exporter reads host metrics
-  #   - proxied podman socket:    promtail discovers all host containers
-  #   - /mnt/containers (ro):     promtail reads each container's CRI log
-  #   - promtail positions vol:   persistent cursor for log shipping
-  podman run -d \
-    --name hydra-head-rtx \
-    --network host \
-    --device nvidia.com/gpu=all \
-    --health-cmd="curl -f http://localhost:9700/health || exit 1" \
-    --health-interval=30s \
-    --health-timeout=5s \
-    --health-start-period=15s \
-    --health-retries=3 \
-    -e HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN" \
-    -e REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json \
-    -v /mnt/SSD:/models:ro \
-    -v /proc:/host/proc:ro \
-    -v /sys:/host/sys:ro \
-    -v /:/rootfs:ro \
-    -v "$PROMTAIL_SOCK_DIR:/var/run/socks:rw" \
-    -v /mnt/containers/:/mnt/containers/:ro \
-    -v hydra-head-promtail-positions:/opt/hydra/promtail-positions:rw \
-    "${AUTH_FILE_MOUNTS[@]}" \
-    hydra-head:rtx
+  # Wait for both healthchecks to pass
+  step "Waiting for health"
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    sleep 3
+    if curl -sf http://localhost:9000/health >/dev/null 2>&1 \
+       && curl -sf http://localhost:9700/health >/dev/null 2>&1; then
+      ok "Both core (:9000) and head-rtx (:9700) are healthy"
+      break
+    fi
+    if [ "$i" = "15" ]; then
+      warn "Health not fully green after 45s — check `podman ps` and `podman logs <ctr>`"
+    fi
+  done
 
-  ok "Started hydra-head-rtx container"
-
-  # Wait for health
-  sleep 3
-  if curl -sf http://localhost:9700/health &>/dev/null; then
-    ok "Hydra Head RTX is healthy"
-  else
-    warn "Hydra Head RTX not responding yet (may still be starting)"
-  fi
-
-  # Verify the 3 sidecar exporters are responding on their host ports.
-  # Allow them a few seconds to spawn (they're started after the
-  # OCI pull completes which can take ~30s for the llama image).
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  # Verify the 3 in-container sidecar exporters are responding
+  for i in 1 2 3 4 5; do
     sleep 3
     if curl -sf http://localhost:9100/metrics >/dev/null 2>&1 \
        && curl -sf http://localhost:9835/metrics >/dev/null 2>&1 \
@@ -168,32 +190,45 @@ deploy_rtx() {
       break
     fi
   done
+
+  # Verify promtail is actually shipping (not just running but stuck)
+  sleep 5
+  local sent_bytes
+  sent_bytes=$(curl -sf http://localhost:9080/metrics 2>/dev/null | awk '/^promtail_sent_bytes_total/ {print $2}')
+  if [ -n "$sent_bytes" ] && [ "$sent_bytes" != "0" ]; then
+    ok "promtail shipping: $sent_bytes bytes sent to Loki"
+  else
+    warn "promtail_sent_bytes_total = ${sent_bytes:-N/A} — promtail may not be shipping yet, check /var/log/hydra/promtail.log"
+  fi
 }
 
+# ── Deploy: P100 via systemd (not in compose) ────────────────────────────────
 deploy_p100() {
-  step "Deploying to P100 (VM)"
-  
+  step "Deploying to P100 (VM, systemd)"
+
   if ! ssh -o ConnectTimeout=5 -o BatchMode=yes hydra-p100 true 2>/dev/null; then
     die "Cannot reach hydra-p100 via SSH (check ~/.ssh/config)"
   fi
-  
+
   # Create directories
   ssh hydra-p100 "sudo mkdir -p /opt/hydra/bin /opt/hydra/config /etc/hydra-head"
-  
+
   # Copy binary
   rsync -avz bin/hydra-head hydra-p100:/opt/hydra/bin/hydra-head
   ok "Copied hydra-head binary"
-  
-  # Copy config files
+
+  # Copy config files (incl. the new health: section from PR #328 —
+  # node-p100.yaml overrides max_fails: 30 so the slow-VM-disk
+  # model load doesn't get killed).
   rsync -avz infra/hydra-head/config/global.yaml hydra-p100:/opt/hydra/config/global.yaml
   rsync -avz infra/hydra-head/config/node-p100.yaml hydra-p100:/opt/hydra/config/node-p100.yaml
   ok "Copied config files"
-  
+
   # Create environment file with auth token
   ssh hydra-p100 "echo 'HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN' | sudo tee /etc/hydra-head/env > /dev/null"
   ssh hydra-p100 "sudo chmod 600 /etc/hydra-head/env"
   ok "Created auth token environment file"
-  
+
   # Copy systemd service
   scp infra/hydra-head/hydra-head.service hydra-p100:/tmp/hydra-head.service
   ssh hydra-p100 "
@@ -201,24 +236,24 @@ deploy_p100() {
     sudo systemctl daemon-reload
   "
   ok "Installed systemd service"
-  
+
   # Stop existing service
   ssh hydra-p100 "sudo systemctl stop hydra-head 2>/dev/null || true"
-  
+
   # Start service
   ssh hydra-p100 "sudo systemctl enable --now hydra-head"
   ok "Started hydra-head service"
-  
+
   # Wait for health
   sleep 3
   if ssh hydra-p100 "curl -sf http://localhost:9700/health" &>/dev/null; then
     ok "Hydra Head P100 is healthy"
   else
-    warn "Hydra Head P100 not responding yet (may still be starting)"
+    warn "Hydra Head P100 not responding yet (may still be starting; model load = 3-5 min on P100 VM disk)"
   fi
 }
 
-# ── Deploy ────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 case "$TARGET" in
   rtx)
     deploy_rtx
@@ -238,8 +273,9 @@ esac
 step "Deployment complete"
 echo -e "${GREEN}${BOLD}Hydra Head deployed successfully.${NC}"
 echo ""
-echo "  RTX API:  http://localhost:9700/status"
-echo "  P100 API: http://192.168.122.21:9700/status"
+echo "  RTX Core API:  http://localhost:9000/health"
+echo "  RTX Head API:  http://localhost:9700/status"
+echo "  P100 Head API: http://192.168.122.21:9700/status"
 echo ""
 echo "  Auth token: $TOKEN_FILE"
 echo "  Test: curl -H 'Authorization: Bearer \$(cat $TOKEN_FILE)' http://localhost:9700/status | jq"

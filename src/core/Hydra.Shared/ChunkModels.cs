@@ -15,5 +15,5 @@ public sealed record ChunkRef(
 /// </summary>
 public static class ChunkConstants
 {
-    public const int ChunkSize = 1 * 1024 * 1024; // 1 MB per chunk
+    public static int ChunkSize = 8 * 1024 * 1024; // 8 MB per chunk
 }

@@ -51,6 +51,16 @@ public sealed class WorkItem
 	public int? DecodeSlot { get; set; }
 	public SlotLease? PrefillLease { get; set; }
 	public SlotLease? DecodeLease { get; set; }
+	/// <summary>Two-engine "work together": the mode chosen for this request (None = solo).</summary>
+	public MultiEngineMode MultiMode { get; set; } = MultiEngineMode.None;
+	/// <summary>Lease on the recruited peer engine, held for the request's duration (None = solo).</summary>
+	public SlotLease? PeerLease { get; set; }
+	/// <summary>Name of the peer engine recruited (for status/metrics/logging).</summary>
+	public string? MultiPeer { get; set; }
+	/// <summary>The --override-tensor split pushed to the peer (for status surfacing).</summary>
+	public string? MultiSplit { get; set; }
+	/// <summary>True when the chosen multi-engine mode could not be activated and we ran solo.</summary>
+	public bool MultiFellBack { get; set; }
 	public string RouteType { get; set; } = "";
 	public SessionEntry? Entry { get; set; }
 	public int NPastAfter { get; set; }
@@ -60,8 +70,22 @@ public sealed class WorkItem
 	public int TokensOut { get; set; }
 	/// <summary>Size of the KV state blob (KV + native checkpoint) saved/restored for this request, bytes.</summary>
 	public long KvBytes { get; set; }
+	/// <summary>KV state blob held in memory between Prefill→SaveKv and RestoreKv→Decode (engine mode).</summary>
+	public byte[]? KvBlob { get; set; }
+	/// <summary>True when RestoreKv loaded KV into the slot before Decode (engine mode cross-GPU).</summary>
+	public bool KvRestoredForDecode { get; set; }
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>
 	public bool PrefixCacheHit { get; set; }
+
+	// ── Engine model identity (M-Perf.9 #289) ──
+	/// <summary>Alias of the model that built the KV for this slot, e.g. "balanced".</summary>
+	public string? KvModelAlias { get; set; }
+	/// <summary>SHA-256 hex of the GGUF file the KV was built with. Used for cross-model safety checks.</summary>
+	public string? KvModelHash { get; set; }
+	/// <summary>Full path of the GGUF file the KV was built with, e.g. "/models/.../Balanced.gguf".</summary>
+	public string? KvModelPath { get; set; }
+	/// <summary>True when the engine received a `model` value it could not resolve and fell back to the resident model.</summary>
+	public bool KvModelFallback { get; set; }
 	public Dictionary<string, long> Phases { get; } = new();
 	private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 	public long ElapsedMs => (Stopwatch.GetTimestamp() - _startTimestamp) * 1000 / Stopwatch.Frequency;
@@ -84,6 +108,8 @@ public sealed class WorkItem
 	}
 	public IAsyncEnumerable<byte[]>? DecodeChunks { get; set; }
 	public int? LastIdSlot { get; set; }
+	public CancellationToken HttpCancellationToken { get; set; }
+	public CancellationTokenSource? PipelineCts { get; set; }
 
 	public WorkItem(
 	  	Dictionary<string, object> request,

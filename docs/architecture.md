@@ -79,6 +79,17 @@ Flow for a new session in `concurrency` mode:
 
 The `X-Hydra-Prefill-Node` and `X-Hydra-Node` response headers name the two GPUs used.
 
+**Engine-mode decode path (post-#273):** In engine mode (`HYDRA_LLAMA_ENGINE=true`),
+the control-RPC plane (opcodes 0x40–0x45) is used **only for prefill and KV state
+transfer** (`EnginePrefill` 0x42 → KV blob inline, `StateGet` 0x30, `StatePut` 0x31).
+The actual decode (token streaming back to the client) **always** uses the HTTP
+`/v1/chat/completions` SSE path — even when the llama binary is the `llama-engine`
+fork. The engine-RPC `EngineDecode` (0x43) and `EngineDecodeStreamAsync` client
+methods are retained for the future E2 (expert-mode) spike but are not on the
+production path. This split exists because the raw-bytes `EngineDecode` payload
+collapsed `reasoning_content` → `content` and dropped `finish_reason` / `id_slot`
+/ `timings`, breaking the OAI schema that the Coordinator must return to clients.
+
 ---
 
 ## 4. Routing Algorithm
@@ -400,3 +411,101 @@ abort and to filter `LLAMA_TOKEN_NULL` in multimodal-safe builds.
 Build flags:
 - RTX host: `GGML_CUDA_FORCE_CUBLAS=ON`, `-arch sm_120`
 - P100 KVM VM: `-arch sm_60`
+
+## 15. Engine Model Identity (M-Perf.9, #289)
+
+A KV cache built with one model is **incompatible** with a different model — restoring a
+Mini-built cache into a Balanced-loaded slot silently produces a corrupted response.
+The Coordinator therefore tracks the model identity alongside every KV blob and refuses
+to restore cross-model.
+
+### What the engine reports
+
+Every `STATE_META` and `STATE_GET` response (opcodes `0x32` / `0x30`) now carries three
+new fields:
+
+| Field | Type | Source | Purpose |
+|---|---|---|---|
+| `model_alias` | string | `impl->model_name` (preset alias or filename) | identifies the *alias* the slot was loaded under |
+| `model_hash`  | 64-char hex | `llama_model_hash(model)` (SHA-256 of the GGUF) | the *strong identity* of the model that built the KV |
+| `model_path`  | string | `params_base.model.path` | the GGUF file the model was loaded from |
+
+`model_hash` is computed once in `llama_model_load_from_file` (after the file is opened
+and the model is constructed) and stored on the `llama_model` struct as `hash_hex`. The
+self-contained `llama_hash_file_sha256` helper in `src/llama-hash.cpp` does the hashing
+(no OpenSSL / libcrypto dependency). ~1-2s for a 25 GB file on NVMe — paid once at
+load, negligible compared to the model-load cost itself.
+
+### What the Coordinator does with it
+
+1. **`PrefillAsync`** captures `model_alias` / `model_hash` / `model_path` / `model_fallback`
+   from the PREFILL response (engine mode) or from a post-prefill META query (HTTP
+   fallback). These ride on `item.KvModelAlias` / `KvModelHash` / `KvModelPath` /
+   `KvModelFallback` for the rest of the request's lifecycle and surface on the
+   `request_timeline` logfmt line.
+
+2. **`RestoreKvAsync`** runs a cross-model guard after the StatePut succeeds: queries
+   the slot META, compares `item.KvModelHash` against `meta.ModelHash`, and on mismatch:
+   - **`HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=false` (default)** — aborts the restore,
+     erases the slot, and re-prefills on the correct model. Increments
+     `hydra_cross_model_kv_aborted_total{worker}`.
+   - **`HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true`** — logs a warning and proceeds
+     (the model will likely reject the KV at decode time, but no silent corruption).
+     Increments `hydra_cross_model_kv_warned_total{worker}`.
+
+3. **Controller** adds `X-Hydra-Model` and `X-Hydra-Model-Hash` (first 12 chars) response
+   headers so clients can correlate responses with the model that produced them.
+
+### Engine PREFILL with model
+
+`EnginePrefill` (opcode `0x42`) now accepts an optional `model` key in the request JSON:
+
+```json
+{ "model": "balanced", "messages": [...], "slot_id": 0 }
+```
+
+Behavior matrix:
+
+| `model` value | Engine has it in preset | Result |
+|---|---|---|
+| absent / null / "" | n/a | prefill on resident model (no behavior change) |
+| alias the engine knows | yes | swap to that model, then prefill |
+| alias the engine doesn't know | no | `model_fallback: true` in response, prefill on resident model, log `model_unknown` warning |
+
+The `model` field is **never** sent to the engine by the Coordinator when no model is
+configured (`Router.PrefillModel` returns `null`) — preserves the pre-feature behavior
+on workers running in single-model mode (P100 today).
+
+### Back-compat
+
+Old KV blobs in the Store have no `model_hash` in their meta. The cross-model guard
+treats `bothEmpty` as "skip" (pre-feature data is always restored). Operators who want
+the guard on legacy data should re-prefill all sessions. Pre-feature `SlotMeta` reads
+default the new fields to empty strings, so a META endpoint on an older binary returns
+empty `model_alias` / `model_hash` and the Coordinator behaves as before.
+
+### New metrics
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `hydra_cross_model_kv_aborted_total` | Counter | `worker` | restores aborted on hash mismatch |
+| `hydra_cross_model_kv_warned_total` | Counter | `worker` | restores allowed despite mismatch (flag=true) |
+| `hydra_model_fallback_total` | Counter | `worker, requested` | engine fell back to resident model |
+
+### Wire opcodes (engine control plane, 0x40-0x46)
+
+Reuses the existing `--rpc-port` (RTX `:9503`, P100 `:9502`) — no new port.
+
+| Opcode | Name | Status |
+|---|---|---|
+| `0x40` | EngineConfigure | stub |
+| `0x41` | EngineInfo | implemented — returns `{engine, version, capabilities, preset_aliases}` |
+| `0x42` | EnginePrefill | implemented — accepts optional `model`, returns `model_alias/hash/path/fallback` |
+| `0x43` | EngineDecode | implemented (HTTP preferred for streaming per #273) |
+| `0x44` | EngineSetExpertMode | stub (issue #287) |
+| `0x45` | EngineSwapQuant | stub (issue #287) |
+| `0x46` | EnginePipelineAttach | **stubbed: returns `NOT_IMPLEMENTED` until #287** |
+
+Status code `0x06` (`HYDRA_STATUS_NOT_IMPLEMENTED`) lets the Coordinator distinguish a
+genuine error from a not-yet-built opcode — the stub returns `{"success": false,
+"error": "..."}` with this status so the Coordinator falls back cleanly to solo mode.

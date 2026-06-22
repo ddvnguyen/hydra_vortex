@@ -22,8 +22,26 @@ public sealed record WorkerConfig
 	public string? PrefillModelName { get; init; }
 	public string? DecodeModelName { get; init; }
 
+	// ── Two-engine "work together" (prima.cpp-style PIPELINE + expert-split COMBINED) ──
+	// Role of this engine in a multi-engine topology: "standalone" (default), "head", "worker".
+	public string Role { get; init; } = "standalone";
+	// For a head: the Name of the worker engine it recruits as its peer (must exist in Workers).
+	public string? PeerWorker { get; init; }
+	// Where the head reaches the peer engine for inter-node activations (Hydra HY RPC).
+	public string? PeerHost { get; init; }
+	public int PeerPort { get; init; }
+	// --override-tensor split strings the head pushes to the peer, per mode.
+	// PIPELINE: contiguous layer-window regex owned by the peer (loaded locally on the peer).
+	// COMBINED: expert-tensor regex routed to the peer's ggml RPC backend.
+	public string? PipelineOtSplit { get; init; }
+	public string? CombinedOtSplit { get; init; }
+	// Capability flags, refreshed from the engine's EngineInfo health poll.
+	public bool PipelineCapable { get; init; }
+	public bool CombinedCapable { get; init; }
+
 	public bool CanPrefill => (WorkerType & 1) != 0;
 	public bool CanDecode => (WorkerType & 2) != 0;
+	public bool IsHead => string.Equals(Role, "head", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -36,7 +54,11 @@ public sealed record CoordinatorConfig
 	public string StoreHost { get; init; } = Env("HYDRA_COORD_STORE_HOST", "127.0.0.1");
 	public int StorePort { get; init; } = EnvInt("HYDRA_COORD_STORE_PORT", 9500);
 	public int HealthPollIntervalS { get; init; } = EnvInt("HYDRA_COORD_HEALTH_POLL_INTERVAL_S", 20);
+	public int HealthPollTimeoutS { get; init; } = EnvInt("HYDRA_COORD_HEALTH_POLL_TIMEOUT_S", 30);
 	public int HealthMaxFailures { get; init; } = EnvInt("HYDRA_COORD_HEALTH_MAX_FAILURES", 3);
+	// Stuck-slot watchdog (#299/C7): a slot reporting is_processing && n_remain==0 for this
+	// many consecutive health-poll cycles is counted as stuck (surfaced via NodeInfo.StuckSlots).
+	public int StuckSlotCycles { get; init; } = EnvInt("HYDRA_COORD_STUCK_SLOT_CYCLES", 3);
 	public float CharsPerToken { get; init; } = float.Parse(Env("HYDRA_COORD_CHARS_PER_TOKEN", "4.0"));
 	public int LlamaRequestTimeoutS { get; init; } = EnvInt("HYDRA_COORD_LLAMA_REQUEST_TIMEOUT_S", 1800);
 	public int SessionIdleTimeoutS { get; init; } = EnvInt("HYDRA_COORD_SESSION_IDLE_TIMEOUT_S", 3600);
@@ -49,12 +71,32 @@ public sealed record CoordinatorConfig
 		EnvInt("HYDRA_COORD_ATOMIC_THRESHOLD", EnvInt("HYDRA_COORD_ATOMIC_TOKEN_THRESHOLD", 2048));
 	public int WarmThreshold { get; init; } = EnvInt("HYDRA_COORD_WARM_THRESHOLD", 5120);
 	public double NPastGuardThreshold { get; init; } = double.Parse(Env("HYDRA_COORD_N_PAST_GUARD_THRESHOLD", "0.6"));
+	public int NPastGuardTolerance { get; init; } = EnvInt("HYDRA_COORD_N_PAST_GUARD_TOLERANCE", 50);
 	public int WorkerErrorThreshold { get; init; } = EnvInt("HYDRA_COORD_WORKER_ERROR_THRESHOLD", 3);
 	public string RunMode { get; init; } = Env("HYDRA_COORD_RUN_MODE", "concurrency");
 	public bool MixPrecisionEnabled { get; init; } = EnvBool("HYDRA_COORD_MIX_PRECISION_ENABLED", false);
+	/// <summary>
+	/// When true, allow a KV cache built with model A to be restored into a slot
+	/// loaded with model B (warn + proceed). When false (default), such restores
+	/// are aborted and the request re-prefills on the correct model.
+	/// Issue #289 (M-Perf.9).
+	/// </summary>
+	public bool AllowCrossModelKvReuse { get; init; } =
+		EnvBool("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE", false);
 	public bool RawSlot { get; init; } = EnvBool("HYDRA_COORD_RAW_SLOT", false);
 	public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
+	public bool EnableChunks { get; init; } = EnvBool("HYDRA_COORD_ENABLE_CHUNKS", false);
+	public bool UseLlamaEngine { get; init; } = EnvBool("HYDRA_LLAMA_ENGINE", false);
+	// ── Two-engine "work together" (default OFF; only meaningful in engine mode) ──
+	// PIPELINE = prima.cpp-style layer-window split; COMBINED = ggml expert-split.
+	public bool PipelineEnabled { get; init; } = EnvBool("HYDRA_COORD_PIPELINE_ENABLED", false);
+	public bool CombinedEnabled { get; init; } = EnvBool("HYDRA_COORD_COMBINED_ENABLED", false);
+	// A request recruits a second engine only when its prompt exceeds this many tokens.
+	public int MultiEngineThreshold { get; init; } = EnvInt("HYDRA_COORD_MULTI_ENGINE_THRESHOLD", 8192);
+	// When both modes are enabled and a request qualifies, which to prefer: "pipeline" | "combined".
+	public string MultiEnginePolicy { get; init; } = Env("HYDRA_COORD_MULTI_ENGINE_POLICY", "pipeline");
+	public int ChunkSize { get; init; } = EnvInt("HYDRA_STORE_CHUNK_SIZE", 8192) * 1024;
 	public string PrefixCheckpointName { get; init; } = Env("HYDRA_COORD_PREFIX_CHECKPOINT_NAME", "system_prompt");
 	public bool DevModeEnabled { get; init; } = EnvBool("HYDRA_DEV_MODE", false);
 	public List<WorkerConfig> Workers { get; set; } = [];
@@ -95,7 +137,16 @@ public sealed record CoordinatorConfig
 					 PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
 				 }) ?? [];
 
-		// Fallback default worker for testing
+		// Fallback default worker for testing (single-model, no per-phase
+		// model swap). Interpretation (b) of the mix-precision P/D split —
+		// see `DevelopmentRunBook.md` → *Mix-Precision P/D Split Semantics*
+		// and `specs/rpc-protocol.md` → *Cross-Model KV Safety* for the
+		// rationale. Per-phase model names (e.g. prefill_model_name="nano"
+		// + decode_model_name="balanced") would have been the old
+		// cross-quantization shape, which is mathematically broken (Q3_K KV
+		// != Q5_K weights) — the cross-model guard would safely Abort the
+		// restore rather than corrupt output, but it's noisy. Align with
+		// the production `infra/hydra-core/config/workers.json` shape.
 		return new List<WorkerConfig>
 		  {
 				new()
@@ -107,9 +158,7 @@ public sealed record CoordinatorConfig
 					WorkerType = 3,
 					Slots = 2,
 					PrefillPriority = 1,
-					DecodePriority = 2,
-					PrefillModelName = "nano",
-					DecodeModelName = "balanced"
+					DecodePriority = 2
 				},
 				new()
 				{
@@ -151,6 +200,7 @@ public sealed class SessionEntry
 	public string NodeName { get; set; } = "";
 	public int? SlotId { get; set; }
 	public int NPast { get; set; }
+	public int NPromptTokens { get; set; }
 	public bool HasStoreState { get; set; }
 	public bool SlotFreed { get; set; }
 	public string? PrefixHash { get; set; }
@@ -180,6 +230,9 @@ public sealed class SlotInfo
 	public int Id { get; set; }
 	public bool IsProcessing { get; set; }
 	public int NPast { get; set; }
+	/// <summary>Remaining tokens to generate, from llama /slots. 0 while processing = stuck candidate.</summary>
+	public int NRemain { get; set; }
 	public DateTime LastActive { get; set; } = DateTime.UtcNow;
+	/// <summary>Consecutive health-poll cycles this slot has looked stuck (is_processing && n_remain==0).</summary>
 	public int StuckPollCount { get; set; }
 }
