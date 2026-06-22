@@ -1,0 +1,16 @@
+# Build image for hydra_vortex .NET 10 build/test
+# Used by the /ralph subagent dispatch flow to isolate build memory from the host.
+# Running `dotnet build` / `dotnet test` directly on the host uses 4-8 GB RAM and
+# can starve the running Core container (see 2026-06-22 SIGSEGV cascade in Core 0.9.0).
+#
+# Built once, cached, reused by every /ralph dispatch.
+# To rebuild:  podman build -f infra/Dockerfile.build -t hydra-build:latest .
+FROM mcr.microsoft.com/dotnet/sdk:10.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        libpq-dev \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+CMD ["bash"]

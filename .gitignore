@@ -112,4 +112,6 @@ src/core/Tests.Integration/TestResults/test_results*
 # Node.js
 **/node_modules/**
 .hydra-head-token
-.opencode/
+# .opencode/ is project-level opencode config (commands, skills, agents).
+# Only ignore ephemeral session files; commands/skills/agents are shared.
+.opencode/sessions/
