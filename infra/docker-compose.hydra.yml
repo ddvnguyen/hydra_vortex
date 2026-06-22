@@ -59,6 +59,14 @@ services:
       - HYDRA_COORD_ENABLE_CHUNKS=true
       - HYDRA_STORE_CHUNK_SIZE=8192
       - HYDRA_LOG_LOKI_URL=http://localhost:3100
+      # CRITICAL: put the local chunk cache inside the bounded tmpfs,
+      # not the container's /tmp. Default path is
+      # /tmp/hydra-coord-chunk-cache which lives in the overlay's
+      # writable layer — unbounded, has filled /mnt/containers to
+      # 100% on this box (52 GB of KV state in the overlay). Putting
+      # it under /mnt/llm-ram/ makes the cache bounded by the tmpfs
+      # size (30G) and RAM-backed (fast).
+      - HYDRA_COORD_CHUNK_CACHE_DIR=/mnt/llm-ram/chunk-cache
     healthcheck:
       test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/localhost/9501"]
       interval: 10s
