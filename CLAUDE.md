@@ -12,7 +12,8 @@ cache state between GPUs without re-prefill.
    chunked dedup, prefix checkpoints, n_past guard (10 min)
 3. `specs/rpc-protocol.md` — binary wire format + all opcodes (5 min)
 4. `## Task Lifecycle` (below) + `docs/workflow/` — how to work a task end-to-end
-5. Active milestone `docs/milestone-perf.md` (M-Perf) + `DevelopmentRunBook.md` for
+5. Active milestone: **Llama-Engine — P/D split mix-quant** (M-Perf done); see
+   `docs/milestone-perf.md` for the completed perf track + `DevelopmentRunBook.md` for
    build/run/test. Live board: GitHub Project (`docs/GITHUB_PROJECT_SETUP.md`).
 
 ## Architecture
@@ -108,22 +109,24 @@ Without these patches, nothing else in the system makes sense.
 Build RTX: GGML_CUDA_FORCE_CUBLAS=ON, sm_120. Build P100: sm_60.
 
 ## Milestones
-Core M0–M2 built. Roadmap **restructured 2026-06** around the Tier-1 performance
-track (**M-Perf supersedes the old "M3 Production"**). Tracked in the GitHub Project
-"Hydra Vortex" + native Milestones (`docs/GITHUB_PROJECT_SETUP.md`); detail in
-`docs/milestone-*.md`.
+Core M0–M2 built; **M-Perf done** (2026-06). Roadmap **restructured 2026-06** around the
+Tier-1 performance track; with M-Perf complete the active track is now **Llama-Engine —
+P/D split mix-quant**. M3/M4/M5 are kept but reframed as a later **Production phase** (not
+active now). Tracked in the GitHub Project "Hydra Vortex" + native Milestones
+(`docs/GITHUB_PROJECT_SETUP.md`); detail in `docs/milestone-*.md`.
 
-| MS      | Goal                                                       | Status  |
-|---------|------------------------------------------------------------|---------|
-| M0      | llama fork + Store + Agent + System test                   | ✅ done  |
-| M1      | Coordinator + routing + session + migration                | ✅ done  |
-| M2      | Chunked dedup + prefix checkpoints                         | ✅ done  |
-| Phase 0 | Stabilize: green CI, restore obs, rebase onto remote       | ▶ now   |
-| M-Perf  | Heterogeneous perf: spec-decode → P/D streaming → pipeline | ▶ next  |
-| M3      | Persistence (NVMe write-behind, **C# re-spec**) + obs harden | planned |
-| M4      | Model mgmt & multi-modal (dist, dynamic load, vision/…)    | planned |
-| M5      | LLM obs & agentic (Langfuse, A/B testing, agentic)         | planned |
-| Phase 5 | Semantic KV: KV DAG + git-aware prefix cache (#107)        | planned |
+| MS          | Goal                                                       | Status  |
+|-------------|------------------------------------------------------------|---------|
+| M0          | llama fork + Store + Agent + System test                   | ✅ done  |
+| M1          | Coordinator + routing + session + migration                | ✅ done  |
+| M2          | Chunked dedup + prefix checkpoints                         | ✅ done  |
+| Phase 0     | Stabilize: green CI, restore obs, rebase onto remote       | ✅ done  |
+| M-Perf      | Heterogeneous perf: spec-decode → P/D streaming → pipeline | ✅ done  |
+| Llama-Engine| **P/D split mix-quant** (RTX precise prefill / P100 quant decode, worker policy, pipelined prefill, dynamic quant swap) | ▶ now   |
+| M3          | Persistence (NVMe write-behind, **C# re-spec**) + obs harden | Production (later) |
+| M4          | Model mgmt & multi-modal (dist, dynamic load, vision/…)    | Production (later) |
+| M5          | LLM obs & agentic (Langfuse, A/B testing, agentic)         | Production (later) |
+| Phase 5     | Semantic KV: KV DAG + git-aware prefix cache (#107)        | planned |
 
 Phase 5 (Store v2 "Semantic KV", #107) design: `docs/kv-dag-architecture.md` (KV DAG, git-aware
 reuse, content-defined chunking; quantization excluded), decomposed as issues #107-A … #107-I.
@@ -135,7 +138,7 @@ source of truth** (issues = work items, PRs link via `Closes #N`, board status i
 automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
 
 1. **Pick up** — choose from the **GitHub Project board** (`gh project item-list` /
-   GitHub MCP), filtered by Milestone (currently M-Perf), or
+   GitHub MCP), filtered by Milestone (currently Llama-Engine — P/D split mix-quant), or
    `gh issue list --label review-finding --state open`; set the item's Status →
    In Progress. → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
@@ -179,7 +182,8 @@ Do not manually close a monitoring issue without investigating the root cause.
 
 ## Planning (GitHub Projects)
 Roadmap/planning lives in the **GitHub Project v2 "Hydra Vortex"** (same repo as code).
-Milestones = native GitHub **Milestones** (`Phase 0`, `M-Perf`, `M3`, `M4`, `M5`);
+Milestones = native GitHub **Milestones** (`Phase 0`, `M-Perf`, `Llama-Engine — P/D split
+mix-quant`, `M3`, `M4`, `M5`);
 work items = **issues** with Status / Priority fields on the board. PRs link to issues
 via `Closes #N`; built-in workflows auto-add items and set **Status → Done** on
 merge/close — **no manual cross-linking**. Drive it with `gh project` / `gh issue`
@@ -188,9 +192,10 @@ layout + setup: `docs/GITHUB_PROJECT_SETUP.md`.
 
 
 ## Starting Point
-Core M0–M2 are done. Start from the **GitHub Project board**, filtered to the active
-Milestone (currently **M-Perf** — `docs/milestone-perf.md`), and follow the **Task
-Lifecycle** above. Build/run/test commands are in `DevelopmentRunBook.md`.
+Core M0–M2 and **M-Perf are done**. Start from the **GitHub Project board**, filtered to
+the active Milestone (currently **Llama-Engine — P/D split mix-quant**), and follow the
+**Task Lifecycle** above. M3/M4/M5 are deferred to a later Production phase. Build/run/test
+commands are in `DevelopmentRunBook.md`.
 
 ## Key Design Decisions (do not relitigate)
 - No Ray until possible M4+ (2 nodes, not needed)

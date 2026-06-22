@@ -162,22 +162,24 @@ All source code lives under `src/`.
 ```
 
 ## Milestones
-Core M0–M2 is built. The roadmap was **restructured 2026-06** around the Tier-1
-heterogeneous-performance track: **M-Perf supersedes the old monolithic "M3
-Production"**, and the old M3 scope was re-homed into M3/M4/M5 below. Live roadmap
-is in **GitHub Projects "Hydra Vortex"** (see `docs/GITHUB_PROJECT_SETUP.md`);
-per-milestone detail in `docs/milestone-*.md`.
+Core M0–M2 is built and **M-Perf is done** (2026-06). The roadmap was **restructured
+2026-06** around the Tier-1 heterogeneous-performance track; with M-Perf complete the
+active track is now **Llama-Engine — P/D split mix-quant**. M3/M4/M5 are kept but
+reframed as a later **Production phase** (not active now). Live roadmap is in **GitHub
+Projects "Hydra Vortex"** (see `docs/GITHUB_PROJECT_SETUP.md`); per-milestone detail in
+`docs/milestone-*.md`.
 
-| MS      | Name                           | Scope                                                       | Status   |
-|---------|--------------------------------|-------------------------------------------------------------|----------|
-| M0      | MVP Test                       | llama fork + Store + Agent + system verify                  | ✅ done   |
-| M1      | Core System                    | Coordinator + routing + session + migration                 | ✅ done   |
-| M2      | Advanced                       | Chunked dedup + prefix checkpoints                          | ✅ done   |
-| Phase 0 | Stabilize                      | Green CI/CD, restore obs, rebase local onto remote          | ▶ now    |
-| M-Perf  | Heterogeneous Performance      | spec-decode → P/D streaming → pipeline (Tier-1, ~6–8 wk)    | ▶ next   |
-| M3      | Persistence & Real Obs         | NVMe write-behind persistence (**C# re-spec**) + obs harden | planned  |
-| M4      | Model Management & Multi-Modal  | model distribution, dynamic load, vision/embed/audio        | planned  |
-| M5      | LLM Obs & Agentic              | Langfuse tracing, A/B testing, agentic system               | planned  |
+| MS           | Name                           | Scope                                                       | Status   |
+|--------------|--------------------------------|-------------------------------------------------------------|----------|
+| M0           | MVP Test                       | llama fork + Store + Agent + system verify                  | ✅ done   |
+| M1           | Core System                    | Coordinator + routing + session + migration                 | ✅ done   |
+| M2           | Advanced                       | Chunked dedup + prefix checkpoints                          | ✅ done   |
+| Phase 0      | Stabilize                      | Green CI/CD, restore obs, rebase local onto remote          | ✅ done   |
+| M-Perf       | Heterogeneous Performance      | spec-decode → P/D streaming → pipeline (Tier-1)            | ✅ done   |
+| Llama-Engine | P/D split mix-quant            | RTX precise prefill / P100 quant decode, worker policy, pipelined prefill, dynamic quant swap | ▶ now    |
+| M3           | Persistence & Real Obs         | NVMe write-behind persistence (**C# re-spec**) + obs harden | Production (later) |
+| M4           | Model Management & Multi-Modal  | model distribution, dynamic load, vision/embed/audio        | Production (later) |
+| M5           | LLM Obs & Agentic              | Langfuse tracing, A/B testing, agentic system               | Production (later) |
 
 ## Verified Facts
 | Fact                         | Value        |
