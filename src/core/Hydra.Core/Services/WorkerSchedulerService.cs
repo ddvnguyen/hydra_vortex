@@ -1141,51 +1141,110 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.SessionId, slotId, item.NPastAfter, w.Name);
 		try
 		{
-			// In engine mode, the KV blob is already in item.KvBlob from EnginePrefill
+			// M-Perf.10: split the save into the engine→core RPC phase
+			// (measured around SaveKvStateCoreAsync / the engine-mode
+			// payload receipt) and the core→Store phase (measured around
+			// the chunked Put + manifest). The dashboard shows RPC in the
+			// main timeline and Store as a background indicator. The
+			// chunk-cache writes (below) are intentionally not part of
+			// either phase — they're local tmpfs and now fire-and-forget.
+			//
+			// Engine mode: the KV blob is already in item.KvBlob from
+			// EnginePrefill, so the "RPC" is essentially zero (the blob
+			// is already in our process). We still record it for the
+			// dashboard so the row layout is consistent across modes.
 			byte[]? payload;
 			if (_cfg.UseLlamaEngine && item.KvBlob != null)
 			{
+				var rpcMs = item.RecordPhase("save_kv_rpc_ms");
+				CoordinatorMetrics.SaveKvRpcDuration.WithLabels(w.Name, RouteLabel(item))
+					.Observe(rpcMs / 1000.0);
 				payload = item.KvBlob;
 				item.KvBlob = null; // Free memory early
-				// Save to store (same logic as SaveKvStateCoreAsync)
-				var storeKey = $"{item.SessionId}.kv";
-				if (_cfg.EnableChunks)
-				{
-					var chunks = ChunkEngine.ChunkAndHash(payload);
-					var orderedHashes = chunks.Select(c => c.Hash).ToList();
-					var missing = await SyncMissingAsync(storeKey, orderedHashes, item.TraceId, ct);
-					await PushMissingChunksAsync(storeKey, item.SessionId, missing, chunks, payload, item.TraceId, ct);
-					// M-Perf.9 #289: persist model identity alongside the KV so
-					// the cross-model guard in RestoreKvAsync can detect a model
-					// swap between prefill and decode (e.g. Mini prefill → Balanced
-					// decode would otherwise silently corrupt the response).
-					await PutManifestAsync(
-						storeKey, item.NPastAfter, payload.Length, chunks,
-						item.TraceId, ct,
-						item.KvModelAlias ?? "", item.KvModelHash ?? "", item.KvModelPath ?? "");
-					if (_chunkCache != null)
-					{
-						await _chunkCache.SaveHashesAsync(item.SessionId, orderedHashes, ct);
-						foreach (var c in chunks)
-							await _chunkCache.SaveChunkDataAsync(item.SessionId, c.Hash,
-								payload.AsSpan(c.Index * _cfg.ChunkSize, Math.Min(_cfg.ChunkSize, (int)(payload.Length - c.Index * _cfg.ChunkSize))).ToArray(), ct);
-					}
-				}
-				else
-				{
-					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-						storeKey, payload, item.TraceId, ct);
-				}
 			}
 			else
 			{
 				payload = await SaveKvStateCoreAsync(w, slotId, item.SessionId, item.NPastAfter, item.TraceId, ct);
+				var rpcMs = item.RecordPhase("save_kv_rpc_ms");
+				CoordinatorMetrics.SaveKvRpcDuration.WithLabels(w.Name, RouteLabel(item))
+					.Observe(rpcMs / 1000.0);
 			}
 
 			if (payload == null)
 				throw new InvalidOperationException($"StateGet RPC failed for save");
 
 			item.KvBytes = payload.Length;
+
+			// Save to store (core→Store phase). The chunked Put + manifest
+			// stays synchronous because P/D split's RestoreKvAsync needs
+			// the manifest to find chunks. The chunk-cache writes (below)
+			// are async because they're local tmpfs and only used for
+			// future prefix-cache / chunk-cache hits.
+			var storeKey = $"{item.SessionId}.kv";
+			if (_cfg.EnableChunks)
+			{
+				var chunks = ChunkEngine.ChunkAndHash(payload);
+				var orderedHashes = chunks.Select(c => c.Hash).ToList();
+				var missing = await SyncMissingAsync(storeKey, orderedHashes, item.TraceId, ct);
+				await PushMissingChunksAsync(storeKey, item.SessionId, missing, chunks, payload, item.TraceId, ct);
+				// M-Perf.9 #289: persist model identity alongside the KV so
+				// the cross-model guard in RestoreKvAsync can detect a model
+				// swap between prefill and decode (e.g. Mini prefill → Balanced
+				// decode would otherwise silently corrupt the response).
+				await PutManifestAsync(
+					storeKey, item.NPastAfter, payload.Length, chunks,
+					item.TraceId, ct,
+					item.KvModelAlias ?? "", item.KvModelHash ?? "", item.KvModelPath ?? "");
+				var storeMs = item.RecordPhase("save_kv_store_ms");
+				CoordinatorMetrics.SaveKvStoreDuration.WithLabels(w.Name, RouteLabel(item))
+					.Observe(storeMs / 1000.0);
+
+				// M-Perf.10: chunk-cache writes are local tmpfs and used
+				// only as a future-read optimisation. Make them truly
+				// fire-and-forget so they no longer block the request.
+				// The C# Store writes above already completed (manifest
+				// is the source of truth for restore), so the request
+				// can proceed to decode immediately. The chunk-cache
+				// will be populated within a few hundred ms in the
+				// background; if the next request on the same prefix
+				// arrives before the cache write finishes, it falls
+				// through to the Store (which has the chunks).
+				if (_chunkCache != null)
+				{
+					var cache = _chunkCache;
+					var sid = item.SessionId;
+					var payloadCopy = payload;
+					var hashesCopy = orderedHashes;
+					var chunkSize = _cfg.ChunkSize;
+					_ = Task.Run(async () =>
+					{
+						try
+						{
+							await cache.SaveHashesAsync(sid, hashesCopy, CancellationToken.None);
+							foreach (var c in chunks)
+							{
+								var slice = payloadCopy.AsSpan(
+									c.Index * chunkSize,
+									Math.Min(chunkSize, (int)(payloadCopy.Length - c.Index * chunkSize))).ToArray();
+								await cache.SaveChunkDataAsync(sid, c.Hash, slice, CancellationToken.None);
+							}
+						}
+						catch (Exception ex)
+						{
+							_log.Warning(ex, "chunk_cache_bg_save_failed Sid={Sid}", sid);
+						}
+					});
+				}
+			}
+			else
+			{
+				await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+					storeKey, payload, item.TraceId, ct);
+				var storeMs = item.RecordPhase("save_kv_store_ms");
+				CoordinatorMetrics.SaveKvStoreDuration.WithLabels(w.Name, RouteLabel(item))
+					.Observe(storeMs / 1000.0);
+			}
+
 			var entry = _ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
 			lock (entry) { entry.HasStoreState = true; }
 			item.Entry = entry;
@@ -1232,15 +1291,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					LeaseLifetime.Long, _tracker);
 				_log.Information("save_fallback_decode Sid={Sid} Node={Node} Slot={Slot}",
 					item.SessionId, item.PrefillWorker.Name, fbSlot);
+				// Even on fallback, record the phases we did observe
+				// (e.g. the RPC happened; the store write failed). The
+				// catch block runs after the try body, so the rpc +
+				// store checkpoint values are already in item.Phases;
+				// we record the "save_kv_ms" rollup from them.
+				var totalMs = item.Phases.GetValueOrDefault("save_kv_rpc_ms")
+					+ item.Phases.GetValueOrDefault("save_kv_store_ms");
 				CoordinatorMetrics.SaveKvDuration.WithLabels(w.Name, RouteLabel(item))
-					.Observe(item.RecordPhase("save_kv_ms") / 1000.0);
+					.Observe(totalMs / 1000.0);
 				return WorkItemState.Decode;
 			}
 			_log.Error("save_fallback_no_slot Sid={Sid} — prefill node has no free decode slot", item.SessionId);
 			return WorkItemState.Failed;
 		}
+		// Back-compat metric: sum of the two new phases. Existing
+		// dashboards / alerts on hydra_save_kv_seconds keep working.
+		// Don't call RecordPhase("save_kv_ms") here — that would
+		// measure the small post-store overhead (ledger.Register),
+		// not the sum we want. Read the parts from Phases instead.
+		var total = item.Phases.GetValueOrDefault("save_kv_rpc_ms")
+			+ item.Phases.GetValueOrDefault("save_kv_store_ms");
 		CoordinatorMetrics.SaveKvDuration.WithLabels(w.Name, RouteLabel(item))
-			.Observe(item.RecordPhase("save_kv_ms") / 1000.0);
+			.Observe(total / 1000.0);
 		return WorkItemState.SaveDone;
 	}
 
@@ -2048,6 +2121,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var decodeModel = item.DecodeWorker != null
 			? (_health.GetNodeInfo(item.DecodeWorker.Name)?.CurrentModel ?? "")
 			: "";
+		// M-Perf.10: split save into rpc (engine→core) + store (core→Store)
+		// for the dashboard; keep save_kv_ms as the sum for back-compat.
+		var saveKvRpcMs = item.Phases.GetValueOrDefault("save_kv_rpc_ms");
+		var saveKvStoreMs = item.Phases.GetValueOrDefault("save_kv_store_ms");
+		var saveKvMs = saveKvRpcMs + saveKvStoreMs;
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -2057,7 +2135,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
 			$"prefill_model={prefillModel} decode_model={decodeModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
-			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
+			$"save_kv_ms={saveKvMs} " +
+			$"save_kv_rpc_ms={saveKvRpcMs} " +
+			$"save_kv_store_ms={saveKvStoreMs} " +
 			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
 			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
 			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes} " +
@@ -2077,6 +2157,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var decodeModel = item.DecodeWorker != null
 			? (_health.GetNodeInfo(item.DecodeWorker.Name)?.CurrentModel ?? "")
 			: "";
+		// M-Perf.10: split save into rpc (engine→core) + store (core→Store)
+		// for the dashboard; keep save_kv_ms as the sum for back-compat.
+		var saveKvRpcMs = item.Phases.GetValueOrDefault("save_kv_rpc_ms");
+		var saveKvStoreMs = item.Phases.GetValueOrDefault("save_kv_store_ms");
+		var saveKvMs = saveKvRpcMs + saveKvStoreMs;
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -2086,7 +2171,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
 			$"prefill_model={prefillModel} decode_model={decodeModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
-			$"save_kv_ms={item.Phases.GetValueOrDefault("save_kv_ms")} " +
+			$"save_kv_ms={saveKvMs} " +
+			$"save_kv_rpc_ms={saveKvRpcMs} " +
+			$"save_kv_store_ms={saveKvStoreMs} " +
 			$"restore_kv_ms={item.Phases.GetValueOrDefault("restore_kv_ms")} " +
 			$"decode_ms={item.Phases.GetValueOrDefault("decode_ms")} " +
 			$"total_ms={item.Phases.GetValueOrDefault("total_ms")} " +

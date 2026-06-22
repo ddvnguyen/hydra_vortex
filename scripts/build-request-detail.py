@@ -22,8 +22,10 @@ transformations = [
     {"id": "extractFields", "options": {"source": "Line", "format": "kvp"}},
     {"id": "convertFieldType", "options": {"conversions": [
         {"targetField": f, "destinationType": "number"} for f in [
-            "queue_wait_ms", "prefill_ms", "save_kv_ms", "restore_kv_ms",
-            "decode_ms", "total_ms", "tokens_in", "tokens_out", "kv_bytes",
+            "queue_wait_ms", "prefill_ms",
+            "save_kv_ms", "save_kv_rpc_ms", "save_kv_store_ms",
+            "restore_kv_ms", "decode_ms", "total_ms",
+            "tokens_in", "tokens_out", "kv_bytes",
         ]
     ]}},
     # NOTE: sorting is done in JS (after the timestamp fallback to

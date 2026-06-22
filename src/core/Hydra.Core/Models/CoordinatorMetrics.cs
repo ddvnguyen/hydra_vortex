@@ -67,7 +67,21 @@ internal static class CoordinatorMetrics
         "hydra_decode_seconds", "Decode time", new[] { "node", "session_type" });
 
     public static readonly Histogram SaveKvDuration = Metrics.CreateHistogram(
-        "hydra_save_kv_seconds", "KV save time", new[] { "node", "session_type" });
+        "hydra_save_kv_seconds", "KV save time (rpc + store; back-compat sum)",
+        new[] { "node", "session_type" });
+
+    // M-Perf.10: split save into two phases so the dashboard can show the
+    // engine→core RPC (in the main timeline) separately from the core→Store
+    // durability copy (shown as a background indicator). The split also
+    // makes it clear that the chunk-cache write is async (see
+    // WorkerSchedulerService.SaveKvAsync).
+    public static readonly Histogram SaveKvRpcDuration = Metrics.CreateHistogram(
+        "hydra_save_kv_rpc_seconds", "Engine→Core StateGet RPC during save",
+        new[] { "node", "session_type" });
+
+    public static readonly Histogram SaveKvStoreDuration = Metrics.CreateHistogram(
+        "hydra_save_kv_store_seconds", "Core→Store writes (manifest + chunks + chunk-cache)",
+        new[] { "node", "session_type" });
 
     public static readonly Histogram RestoreKvDuration = Metrics.CreateHistogram(
         "hydra_restore_kv_seconds", "KV restore time", new[] { "node", "session_type" });

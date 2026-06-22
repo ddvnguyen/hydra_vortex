@@ -81,14 +81,26 @@ try {
   };
 
   // ── Phase model ─────────────────────────────────────────────────────
+  // M-Perf.10: split the save into two parts.
+  //   save_kv_rpc  = engine→core StateGet RPC (in the main timeline)
+  //   save_kv_store = core→Store writes (shown as a background "durability"
+  //                  indicator below the row — it's mostly the manifest +
+  //                  chunked Put; the chunk-cache writes are now async)
+  // The legacy `save_kv_ms` (sum) is still emitted for back-compat but the
+  // dashboard renders the two parts.
   const PHASE = {
-    queue:      { key: 'queue_wait_ms', label: 'Queue',         color: '#6e7681' },
-    prefill:    { key: 'prefill_ms',    label: 'Prefill',       color: '#388bfd' },
-    save_kv:    { key: 'save_kv_ms',    label: 'Save cache',    color: '#d29922' },
-    restore_kv: { key: 'restore_kv_ms', label: 'Restore cache', color: '#a371f7' },
-    decode:     { key: 'decode_ms',     label: 'Decode',        color: '#3fb950' },
+    queue:         { key: 'queue_wait_ms',    label: 'Queue',         color: '#6e7681' },
+    prefill:       { key: 'prefill_ms',       label: 'Prefill',       color: '#388bfd' },
+    save_kv_rpc:   { key: 'save_kv_rpc_ms',   label: 'Save RPC',      color: '#d29922' },
+    save_kv_store: { key: 'save_kv_store_ms', label: 'Save store',    color: '#d29922', bg: true },
+    restore_kv:    { key: 'restore_kv_ms',    label: 'Restore cache', color: '#a371f7' },
+    decode:        { key: 'decode_ms',        label: 'Decode',        color: '#3fb950' },
   };
-  const ORDER = ['queue', 'prefill', 'save_kv', 'restore_kv', 'decode'];
+  // Main timeline order (Save RPC stays in the main row, Save store is
+  // pulled out for the background indicator).
+  const ORDER = ['queue', 'prefill', 'save_kv_rpc', 'restore_kv', 'decode'];
+  // Background indicator (rendered below the row).
+  const BG_ORDER = ['save_kv_store'];
 
   // Return the server name for a phase given the row's actual node data.
   const phaseServer = function (p, row) {
@@ -106,7 +118,9 @@ try {
     if (!traceId && !sessionId) return;
 
     const phases = [];
+    const bgPhases = [];
     let cum = 0;
+    // Main timeline phases (queue / prefill / save_kv_rpc / restore_kv / decode)
     ORDER.forEach(function (k) {
       const meta = PHASE[k];
       const dur = num(d[meta.key]);
@@ -114,6 +128,23 @@ try {
       if (k === 'restore_kv' && num(d.kv_bytes) === 0) return;
       phases.push({ k: k, label: meta.label, color: meta.color, dur: dur, start: cum });
       cum += dur;
+    });
+    // Background phases (save_kv_store — shown below the row, hatched).
+    // Note: the bg phase's start is aligned with where it WOULD have
+    // been in the main timeline (i.e. right after the RPC, before
+    // restore), so the visual matches the underlying order. Its
+    // duration is the store-write time, not added to the main total.
+    let bgCum = 0;
+    const rpcIdx = phases.findIndex(function (p) { return p.k === 'save_kv_rpc'; });
+    if (rpcIdx >= 0) {
+      // Anchor the bg phase just after the save_kv_rpc position.
+      bgCum = phases[rpcIdx].start + phases[rpcIdx].dur;
+    }
+    BG_ORDER.forEach(function (k) {
+      const meta = PHASE[k];
+      const dur = num(d[meta.key]);
+      if (dur <= 0) return;
+      bgPhases.push({ k: k, label: meta.label, color: meta.color, dur: dur, start: bgCum });
     });
     const total = num(d.total_ms) || cum || 0;
     let tsMs = d.timestamp_ms || d.Time || d.time || d.ts || d.timestamp;
@@ -136,6 +167,7 @@ try {
       tokensOut: num(d.tokens_out),
       kvBytes: num(d.kv_bytes),
       phases: phases,
+      bgPhases: bgPhases,
       total: total,
       status: String(d.status || ''),
       _tsMs: Number(tsMs),
@@ -228,7 +260,7 @@ try {
       else html += ' &middot; ' + ms(r.total) + 's';
       html += '</div></div>';
 
-      // Phase bars
+      // Phase bars (main timeline)
       html += '<div style="flex:1;position:relative;height:' + rowH + 'px;min-width:0;">';
       r.phases.forEach(function (p) {
         const leftPct = isComp ? (p.start / r.total * 100) : (p.start / domainMax * 100);
@@ -242,6 +274,29 @@ try {
         if (txt) html += '<span style="font-size:9px;font-weight:600;color:#ffffff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + txt + '</span>';
         html += '</div>';
       });
+      // M-Perf.10: background indicator (e.g. save_kv_store) — hatched
+      // bar below the main row, anchored to the same X position as the
+      // phase it accompanies. Sits in the same x-range; visually distinct
+      // (lower opacity + diagonal stripes) so the user knows it's the
+      // "durability copy" and not part of the user-visible latency.
+      if (r.bgPhases && r.bgPhases.length) {
+        r.bgPhases.forEach(function (p) {
+          const leftPct = isComp ? (p.start / r.total * 100) : (p.start / domainMax * 100);
+          const wPct = isComp ? (p.dur / r.total * 100) : (p.dur / domainMax * 100);
+          const w = Math.max(wPct, 1.5);
+          const bg = '#d29922';
+          // Diagonal-stripe pattern at lower opacity = "background work"
+          html += '<div title="' + esc(p.label) + ' (background) ' + ms(p.dur) + 's" '
+                + 'style="position:absolute;left:' + leftPct + '%;width:' + w + '%;'
+                + 'top:30px;height:6px;'
+                + 'background-image:repeating-linear-gradient(45deg,'
+                + 'rgba(210,153,34,0.55) 0,rgba(210,153,34,0.55) 3px,'
+                + 'rgba(210,153,34,0.18) 3px,rgba(210,153,34,0.18) 6px);'
+                + 'border:1px solid ' + bg + '99;'
+                + 'border-radius:2px;'
+                + 'box-shadow:inset 0 1px 0 rgba(255,255,255,0.08);"></div>';
+        });
+      }
       html += '</div></div>';
     });
     html += '</div></div>';
@@ -304,6 +359,25 @@ try {
         html += '<span style="font-family:monospace;font-size:10px;color:#ffffff;width:30px;text-align:right;">' + pct + '%</span>';
         html += '</div>';
       });
+      // M-Perf.10: background phases (e.g. save_kv_store) shown as
+      // a "background" sub-row, dimmer, with a small "BG" tag.
+      if (r.bgPhases && r.bgPhases.length) {
+        r.bgPhases.forEach(function (p) {
+          const pct = Math.round(p.dur / r.total * 100);
+          html += '<div style="padding:4px 0;border-top:1px dashed #21262d;display:flex;align-items:center;gap:6px;opacity:0.7;">';
+          // Hatched swatch matching the row indicator
+          html += '<span style="width:8px;height:8px;border-radius:2px;'
+                + 'background-image:repeating-linear-gradient(45deg,'
+                + 'rgba(210,153,34,0.55) 0,rgba(210,153,34,0.55) 2px,'
+                + 'rgba(210,153,34,0.18) 2px,rgba(210,153,34,0.18) 4px);'
+                + 'border:1px solid #d2992299;"></span>';
+          html += '<span style="font-size:11px;color:#ffffff;">' + esc(p.label) + '</span>';
+          html += '<span style="font-size:7px;font-weight:700;color:#7d8590;border:1px solid #30363d;border-radius:3px;padding:1px 4px;font-family:monospace;letter-spacing:0.05em;">BG</span>';
+          html += '<span style="margin-left:auto;font-family:monospace;font-size:10px;color:#7d8590;">' + ms(p.dur) + ' s</span>';
+          html += '<span style="font-family:monospace;font-size:10px;color:#7d8590;width:30px;text-align:right;">' + pct + '%</span>';
+          html += '</div>';
+        });
+      }
       html += '<div style="font-size:10px;color:#ffffff;margin-top:6px;padding-top:6px;border-top:1px solid #161b22;">Dominated by <span style="color:#ffffff;font-weight:600;">' + esc(dom.label) + '</span> (' + Math.round(dom.dur / r.total * 100) + '% of latency)</div>';
       html += '</div>';
 
