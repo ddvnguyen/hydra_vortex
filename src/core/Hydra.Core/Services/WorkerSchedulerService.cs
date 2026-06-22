@@ -2295,16 +2295,37 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return missing;
 	}
 
-	private async Task<int> PushMissingChunksAsync(string storeKey, string sessionId, List<string> missing, List<ChunkRef> allChunks, byte[] stateData, string traceId, CancellationToken ct)
+	internal async Task<int> PushMissingChunksAsync(string storeKey, string sessionId, List<string> missing, List<ChunkRef> allChunks, byte[] stateData, string traceId, CancellationToken ct)
 	{
 		if (missing.Count == 0) return 0;
 		const int BatchBytes = 32 * 1024 * 1024;
 		using var batch = new MemoryStream();
-		int pushed = 0;
+		int pending = 0;    // chunks buffered in the current (unflushed) batch
+		int pushedOk = 0;   // chunks successfully flushed in prior batches
 		async Task FlushAsync()
 		{
 			if (batch.Length == 0) return;
-			await StoreClient.RequestAsync(OpCode.PushChunks, storeKey, batch.ToArray(), traceId, ct);
+			// M-Perf / Issue #336: check the response. The Store's PUSH_CHUNKS
+			// returns a non-Ok status on transport failure, partial write, or
+			// store rejection (e.g. tmpfs full, disk error). Surfacing the
+			// status here — instead of letting the cascade fall through to
+			// PUT_MANIFEST's "manifest references N unresident chunks" — gives
+			// the operator the actual root cause. The throw happens BEFORE
+			// PutManifestAsync is called, so the manifest never sees a
+			// half-pushed state.
+			var resp = await StoreClient.RequestAsync(OpCode.PushChunks, storeKey, batch.ToArray(), traceId, ct);
+			if (resp.Status != (byte)StatusCode.Ok)
+			{
+				var reason = StatusReason(resp.Status);
+				var total = missing.Count;
+				CoordinatorMetrics.PushChunksFailures.WithLabels(reason).Inc();
+				_log.Error("push_chunks_failed Sid={Sid} wrote={Wrote}/{Total} status=0x{Status:X2} meta={Meta}",
+					sessionId, pushedOk, total, resp.Status, resp.Meta ?? "");
+				throw new InvalidDataException(
+					$"PUSH_CHUNKS failed (status=0x{resp.Status:X2}): {resp.Meta}");
+			}
+			pushedOk += pending;
+			pending = 0;
 			batch.SetLength(0);
 		}
 		var header = new byte[4];
@@ -2319,12 +2340,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			BinaryPrimitives.WriteInt32LittleEndian(header, chunkData.Length);
 			batch.Write(header);
 			batch.Write(chunkData);
-			pushed++;
+			pending++;
 			if (batch.Length >= BatchBytes) await FlushAsync();
 		}
 		await FlushAsync();
-		return pushed;
+		return pushedOk;
 	}
+
+	private static string StatusReason(byte status) => status switch
+	{
+		(byte)StatusCode.NotFound       => "not_found",
+		(byte)StatusCode.Error          => "error",
+		(byte)StatusCode.Partial        => "partial",
+		(byte)StatusCode.Busy           => "busy",
+		(byte)StatusCode.BadRequest     => "bad_request",
+		(byte)StatusCode.NotImplemented => "not_implemented",
+		_ => $"unknown_0x{status:X2}",
+	};
 
 	private async Task PutManifestAsync(
 		string storeKey, int nPast, long totalSize, List<ChunkRef> chunks,
