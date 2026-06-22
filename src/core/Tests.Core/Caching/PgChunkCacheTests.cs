@@ -7,7 +7,8 @@ namespace Tests.Core.Caching;
 /// <summary>
 /// PgChunkCache tests. Requires a reachable Postgres (the same instance
 /// Hydra.Core uses for the Store). Connection string is read from
-/// HYDRA_TEST_PG_CONN env var; if unset, tests are skipped (not failed).
+/// HYDRA_TEST_PG_CONN env var; if unset or unreachable, tests are
+/// visibly skipped (not silently returned).
 /// </summary>
 public sealed class PgChunkCacheTests : IDisposable
 {
@@ -66,10 +67,10 @@ public sealed class PgChunkCacheTests : IDisposable
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task PutAndGet_RoundTrips()
     {
-        if (!_enabled) return; // PG unavailable — silently skip (see test ctor)
+        Skip.IfNot(_enabled, "Postgres unavailable for tests (HYDRA_TEST_PG_CONN not set or unreachable)");
         _cache = new PgChunkCache(_cfg);
         var data = new byte[2048];
         Random.Shared.NextBytes(data);
@@ -81,19 +82,19 @@ public sealed class PgChunkCacheTests : IDisposable
         Assert.Equal(data, read);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Get_MissingHash_ReturnsNull()
     {
-        if (!_enabled) return;
+        Skip.IfNot(_enabled, "Postgres unavailable");
         _cache = new PgChunkCache(_cfg);
         var read = await _cache.GetAsync("nonexistent", CancellationToken.None);
         Assert.Null(read);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Put_SameHash_BumpsUseCount_KeepsOriginalCreatedAt()
     {
-        if (!_enabled) return;
+        Skip.IfNot(_enabled, "Postgres unavailable");
         _cache = new PgChunkCache(_cfg);
         var d1 = new byte[1024];
         var d2 = new byte[1024];
@@ -109,10 +110,10 @@ public sealed class PgChunkCacheTests : IDisposable
         Assert.Equal(2L, row.Value.useCount);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task EnforceCapacity_EvictsOldestFirst()
     {
-        if (!_enabled) return;
+        Skip.IfNot(_enabled, "Postgres unavailable");
         // Cap high enough that PutAsync's hard-trigger doesn't fire mid-test.
         // Target small enough that the explicit EnforceCapacityAsync below
         // has to evict ≥3 chunks.
@@ -124,21 +125,23 @@ public sealed class PgChunkCacheTests : IDisposable
         for (int i = 0; i < 10; i++)
             await _cache.PutAsync($"h{i:D2}", data, CancellationToken.None);
 
-        // Confirm we have all 10 chunks in place.
-        var usedBefore = await _cache.GetUsedBytesAsync(CancellationToken.None);
-        Assert.True(usedBefore >= 1_000_000, $"expected ≥1MB after 10 × 100KB puts, got {usedBefore}");
+        // Assert against the in-memory logical size (the budget we care
+        // about), not the physical size. Plain VACUUM does not shrink the
+        // heap, so the physical size is unreliable.
+        var usedLogicalBefore = await _cache.GetLogicalUsedBytesAsync(CancellationToken.None);
+        Assert.True(usedLogicalBefore >= 1_000_000, $"expected ≥1MB after 10 × 100KB puts, got {usedLogicalBefore}");
 
         var evicted = await _cache.EnforceCapacityAsync(targetBytes: 250_000, batchSize: 100, CancellationToken.None);
         Assert.True(evicted >= 3, $"expected ≥3 evicted, got {evicted}");
 
-        var used = await _cache.GetUsedBytesAsync(CancellationToken.None);
-        Assert.True(used <= 250_000 + 200_000, $"L2 over target: {used} bytes");
+        var usedLogical = await _cache.GetLogicalUsedBytesAsync(CancellationToken.None);
+        Assert.True(usedLogical <= 250_000 + 200_000, $"L2 logical size over target: {usedLogical} bytes");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task EnforceCapacity_OldNeverReadChunk_EvictedBeforeOldFrequentlyRead()
     {
-        if (!_enabled) return;
+        Skip.IfNot(_enabled, "Postgres unavailable");
         _cfg = _cfg with { L2MaxBytes = 1_000_000, L2LowWater = 0.5 };
         _cache = new PgChunkCache(_cfg);
         var data = new byte[50_000];
@@ -156,15 +159,32 @@ public sealed class PgChunkCacheTests : IDisposable
         Assert.False(await _cache.ExistsAsync("h_old_never_read", CancellationToken.None));
     }
 
-    [Fact]
-    public async Task GetUsedBytesAsync_ReportsTotalIncludingToast()
+    [SkippableFact]
+    public async Task GetLogicalUsedBytesAsync_ReflectsPutsAndDeletes()
     {
-        if (!_enabled) return;
+        Skip.IfNot(_enabled, "Postgres unavailable");
         _cache = new PgChunkCache(_cfg);
         var data = new byte[4096];
         await _cache.PutAsync("hb", data, CancellationToken.None);
-        var used = await _cache.GetUsedBytesAsync(CancellationToken.None);
-        Assert.True(used >= 4096);
+        var used = await _cache.GetLogicalUsedBytesAsync(CancellationToken.None);
+        Assert.Equal(4096L, used);
+
+        // Rewrite same hash — logical size should not double.
+        await _cache.PutAsync("hb", data, CancellationToken.None);
+        var usedAfter = await _cache.GetLogicalUsedBytesAsync(CancellationToken.None);
+        Assert.Equal(4096L, usedAfter);
+    }
+
+    [SkippableFact]
+    public void TryProbe_Unreachable_FailsCleanly()
+    {
+        var bad = new ChunkCacheConfig
+        {
+            L2PgConn = "Host=127.0.0.1;Port=1;Database=nope;Username=nope;Password=nope;Timeout=2",
+            L2GcIntervalSeconds = 3600,
+        };
+        using var cache = new PgChunkCache(bad);
+        Assert.False(cache.TryProbe());
     }
 
     public void Dispose()

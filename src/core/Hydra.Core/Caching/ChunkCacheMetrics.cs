@@ -40,11 +40,14 @@ public static class ChunkCacheMetrics
     public static readonly Gauge L2Bytes =
         Prometheus.Metrics.CreateGauge(
             "hydra_chunk_cache_l2_bytes",
-            "L2 chunk cache bytes (PG pg_total_relation_size, includes TOAST).");
-    public static readonly Gauge L2Chunks =
+            "L2 chunk cache logical bytes (sum of `size` column, in-memory). " +
+            "Drives the GC budget. Survives Pg restart because it is maintained locally.");
+    public static readonly Gauge L2BytesPhysical =
         Prometheus.Metrics.CreateGauge(
-            "hydra_chunk_cache_l2_chunks",
-            "L2 chunk cache row count.");
+            "hydra_chunk_cache_l2_bytes_physical",
+            "L2 chunk cache physical bytes (pg_total_relation_size, includes TOAST). " +
+            "For the dashboard only; do NOT use for budget enforcement — plain VACUUM " +
+            "does not shrink the heap, so this number stays inflated after deletes.");
     public static readonly Counter L2Hits =
         Prometheus.Metrics.CreateCounter(
             "hydra_chunk_cache_l2_hits_total",
@@ -52,7 +55,7 @@ public static class ChunkCacheMetrics
     public static readonly Counter L2Misses =
         Prometheus.Metrics.CreateCounter(
             "hydra_chunk_cache_l2_misses_total",
-            "L2 chunk cache misses (fell through to Store).");
+            "L2 chunk cache misses (fell through to Store, or PG unavailable).");
     public static readonly Counter L2Puts =
         Prometheus.Metrics.CreateCounter(
             "hydra_chunk_cache_l2_puts_total",

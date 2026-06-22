@@ -5,24 +5,28 @@ namespace Hydra.Core;
 /// (used by WorkerSchedulerService.cs and StateHandler.cs) on top of the new
 /// two-tier L1 (tmpfs, byte-LRU) + L2 (PG, age-LRU) implementation.
 ///
-/// All session-scoped methods key on (sessionId, hash) — the L2 is consulted
-/// by content hash only on a L1 miss, so the session index is not duplicated
-/// in the durable layer.
+/// All session-scoped methods key on (sessionId, hash). The L2 is consulted
+/// by content hash only on an L1 miss; the L2 does not duplicate the
+/// session index.
 /// </summary>
 public interface IChunkCache : IDisposable
 {
     /// <summary>Persist the ordered chunk-hash list for a session (L1 only).</summary>
     Task SaveHashesAsync(string sessionId, List<string> hashes, CancellationToken ct);
 
-    /// <summary>Persist a single chunk body. Writes L1; if L1 is over cap, the
-    /// oldest session is evicted and its chunks are demoted to L2 by content hash.</summary>
+    /// <summary>Persist a single chunk body. Writes L1; if L1 is over cap,
+    /// the oldest session is evicted to keep within 80% of the cap (the
+    /// L1 just drops the files — it does not demote to L2; the L2 is
+    /// populated by write-through from the facade).</summary>
     Task SaveChunkDataAsync(string sessionId, string hash, byte[] chunkData, CancellationToken ct);
 
     /// <summary>Synchronous variant — used by ChunkHashTeeStream which is not async.</summary>
     void SaveChunkData(string sessionId, string hash, byte[] chunkData);
 
-    /// <summary>Read a single chunk body. L1 first; on miss, L2 by content hash
-    /// (a hit promotes the chunk back to L1).</summary>
+    /// <summary>Read a single chunk body. L1 first; on miss, L2 by content
+    /// hash (the facade does write-through to the L2 at save time, so an
+    /// L2 hit means a session after a Core restart). Returns null on full
+    /// miss (caller falls through to the Store).</summary>
     Task<byte[]?> GetChunkDataAsync(string sessionId, string hash, CancellationToken ct);
 
     /// <summary>Read the ordered chunk-hash list for a session (L1 only).</summary>
@@ -40,8 +44,8 @@ public interface IChunkCache : IDisposable
     /// need them later.</summary>
     Task ClearAsync(string sessionId);
 
-    /// <summary>Evict oldest L1 sessions until under cap. Returns the number of
-    /// sessions evicted. L2 has its own background GC.</summary>
+    /// <summary>Evict oldest L1 sessions until under 80% of cap. Returns the
+    /// number of sessions evicted. L2 has its own background GC.</summary>
     Task<int> EvictLRUAsync();
 
     /// <summary>Current L1 bytes on disk. Surfaced as a metric.</summary>

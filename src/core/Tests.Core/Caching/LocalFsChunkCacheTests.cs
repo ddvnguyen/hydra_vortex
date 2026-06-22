@@ -110,4 +110,48 @@ public sealed class LocalFsChunkCacheTests : IDisposable
             .GetField("_l1", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
             ?.GetValue(facade));
     }
+
+    [Fact]
+    public async Task SaveChunkData_RewriteSameHash_DoesNotInflateByteCounter()
+    {
+        var cache = new LocalFsChunkCache(_cacheDir, maxBytes: 1024 * 1024);
+        var chunk = new byte[4096];
+        Random.Shared.NextBytes(chunk);
+
+        await cache.SaveChunkDataAsync("ses_1", "hA", chunk, CancellationToken.None);
+        var after1 = cache.L1UsedBytes;
+
+        // Rewrite the same (session, hash) — counter should not double.
+        await cache.SaveChunkDataAsync("ses_1", "hA", chunk, CancellationToken.None);
+        var after2 = cache.L1UsedBytes;
+
+        Assert.Equal(after1, after2);
+        Assert.Equal(4096L, after2);
+    }
+
+    [Fact]
+    public async Task RebuildFromDisk_AddsOrphanChunkToLRU()
+    {
+        // Pre-create the cache dir (the L1 ctor would do this, but we
+        // want to drop a file in BEFORE the ctor runs so the ctor's
+        // RebuildFromDisk sees it).
+        Directory.CreateDirectory(_cacheDir);
+        var data = new byte[2048];
+        Random.Shared.NextBytes(data);
+        var hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // Write a chunk file without an index — this is the "orphan".
+        File.WriteAllBytes(Path.Combine(_cacheDir, $"orphan_session.{hash}"), data);
+
+        // Cap at 1 KB so the orphan (2 KB) is already over the 80% low-water
+        // mark, forcing eviction.
+        var cache = new LocalFsChunkCache(_cacheDir, maxBytes: 1024);
+        // The orphan should be counted toward _usedBytes.
+        Assert.True(cache.L1UsedBytes >= 2048);
+
+        // And evictable: the byte counter should drop when the cache evicts
+        // (the orphan is registered in _caches during RebuildFromDisk).
+        var evicted = await cache.EvictLRUAsync();
+        Assert.True(evicted >= 1);
+        Assert.False(cache.HasChunkData("orphan_session", hash));
+    }
 }

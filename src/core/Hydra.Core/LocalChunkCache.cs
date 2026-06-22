@@ -14,11 +14,10 @@ namespace Hydra.Core;
 /// path; L2 is the durable best-effort. L1 evictions do NOT need to demote
 /// to L2 because L2 was already populated at write time.
 ///
-/// Read path: L1 first (per session+hash); on miss, L2 by content hash (a
-/// hit promotes the chunk back to L1 on the next SaveChunkDataAsync for
-/// that session).
-///
-/// Closes M3-P1 #332 (no eviction → tmpfs fills → P/D split broken).
+/// Read path: L1 first (per session+hash); on miss, L2 by content hash.
+/// The L2 read is best-effort: a PG outage or L2 throw returns null (not
+/// an exception) so the caller falls through to the Store. This matches
+/// the write-path best-effort contract.
 /// </summary>
 public sealed class LocalChunkCache : IChunkCache
 {
@@ -57,7 +56,8 @@ public sealed class LocalChunkCache : IChunkCache
     {
         await _l1.SaveChunkDataAsync(sessionId, hash, chunkData, ct);
         // Write-through to L2 (best-effort; L2 failures must not break the
-        // foreground save path).
+        // foreground save path). L2 errors are counted as a metric; the
+        // Store has the durable copy anyway.
         if (_l2 is not null && chunkData is not null && chunkData.Length > 0)
         {
             try
@@ -66,9 +66,10 @@ public sealed class LocalChunkCache : IChunkCache
             }
             catch
             {
-                // L2 is a best-effort cache; the L1 has the chunk and the
-                // Store has the durable copy. Surface via the L2 error metric
-                // would be a follow-up; for now, swallow.
+                // Best-effort; the L1 has the chunk and the Store has the
+                // durable copy. The L2 will catch up on the next read of
+                // this chunk (miss → fall through to Store) or on the next
+                // warm-up after a Core restart.
             }
         }
     }
@@ -78,8 +79,6 @@ public sealed class LocalChunkCache : IChunkCache
         _l1.SaveChunkData(sessionId, hash, chunkData);
         if (_l2 is not null && chunkData is not null && chunkData.Length > 0)
         {
-            // Sync L2 write: fire-and-forget task. Same rationale as the
-            // async overload — L2 failures must not break the foreground.
             _ = Task.Run(async () =>
             {
                 try { await _l2.PutAsync(hash, chunkData, CancellationToken.None); }
@@ -98,10 +97,17 @@ public sealed class LocalChunkCache : IChunkCache
         }
         ChunkCacheMetrics.L1Misses.Inc();
         if (_l2 is null) return null;
-        // L1 miss → L2 by content hash. We do NOT promote the L2 hit to
-        // L1 here (no L1 session context for an out-of-session chunk);
-        // the next SaveChunkDataAsync for the same hash repopulates L1.
-        return await _l2.GetAsync(hash, ct);
+        // L1 miss → L2 by content hash. The PgChunkCache.GetAsync swallows
+        // its own errors and returns null, so this is the second layer of
+        // defense for a dead L2. The null falls through to the Store.
+        try
+        {
+            return await _l2.GetAsync(hash, ct);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public Task<List<string>> LoadHashesAsync(string sessionId, CancellationToken ct)

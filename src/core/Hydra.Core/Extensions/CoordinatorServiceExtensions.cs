@@ -112,15 +112,19 @@ public static class CoordinatorServiceExtensions
         var l2Cfg = new ChunkCacheConfig();
         if (!string.Equals(l2Cfg.L2Backend, "fs", StringComparison.OrdinalIgnoreCase))
         {
-            try
+            // Probe PG at boot. NpgsqlDataSourceBuilder.Build() is lazy and
+            // opens no connection, so we open one here to catch unreachable
+            // PG and fall back to L1-only (graceful degradation).
+            var l2 = new PgChunkCache(l2Cfg);
+            if (l2.TryProbe())
             {
-                var l2 = new PgChunkCache(l2Cfg);
                 services.AddSingleton<IContentChunkStore>(l2);
             }
-            catch
+            else
             {
-                // PG unreachable at boot — fall back to L1-only. The system
-                // otherwise keeps running with degraded cache hit rate.
+                Serilog.Log.ForContext("component", "chunkcache")
+                    .Warning("L2 PG unreachable at boot; running with L1-only cache");
+                l2.Dispose();
             }
         }
         services.AddSingleton<LocalChunkCache>(sp => new LocalChunkCache(

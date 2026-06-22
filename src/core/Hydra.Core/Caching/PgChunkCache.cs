@@ -12,17 +12,26 @@ namespace Hydra.Core.Caching;
 /// High score = evict first. The / use_count term makes heavily-read chunks
 /// sticky even if old, and never-read chunks highly evictable.
 ///
+/// Byte accounting: the cap is enforced against the **logical** size
+/// (sum of \`size\` column), not \`pg_total_relation_size\`. Plain
+/// \`VACUUM (ANALYZE)\` does not shrink the heap — only \`VACUUM FULL\` or
+/// trailing-page truncation does. Driving the GC off physical size
+/// would make the loop chase an unreachable target and empty the cache.
+/// The \`l2_bytes\` gauge reports physical size for the dashboard, but
+/// the GC uses logical size, kept in memory and updated on every Put/Delete.
+///
 /// Two GC triggers:
 ///   * Soft: a Timer fires every <see cref="ChunkCacheConfig.L2GcIntervalSeconds"/>
 ///     (default 300 s) and runs EnforceCapacityAsync if the table is over the
 ///     configured low-water (cap × 0.9 by default).
-///   * Hard: every successful PutAsync checks the post-write size; if it
-///     crosses the cap, the GC runs synchronously (bounded) so a burst
+///   * Hard: every successful PutAsync checks the in-memory logical size;
+///     if it crosses the cap, the GC runs synchronously (bounded) so a burst
 ///     write cannot push the L2 past the cap between soft ticks.
 ///
 /// VACUUM cadence: after a meaningful eviction (>10 % of the low-water
 /// freed), and at most once per <see cref="ChunkCacheConfig.L2VacuumIntervalSeconds"/>
-/// (default 1 h). VACUUM reclaims TOAST space and updates planner stats.
+/// (default 1 h). VACUUM reclaims dead tuples for planner stats; it does
+/// not shrink the heap, so we don't depend on it for byte accounting.
 /// </summary>
 public sealed class PgChunkCache : IContentChunkStore
 {
@@ -30,8 +39,9 @@ public sealed class PgChunkCache : IContentChunkStore
     private readonly ChunkCacheConfig _cfg;
     private readonly Timer _gcTimer;
     private readonly SemaphoreSlim _gcLock = new(1, 1);
+    private long _logicalSizeBytes;     // sum of `size` column, updated in-memory on Put/Delete
+    private long _lastPhysicalSizeBytes; // refreshed by the soft sweep + boot probe
     private DateTime _lastVacuumUtc = DateTime.MinValue;
-    private long _evictedSinceLastVacuum;
     private bool _disposed;
 
     public PgChunkCache(ChunkCacheConfig cfg, ILogger? log = null)
@@ -45,13 +55,28 @@ public sealed class PgChunkCache : IContentChunkStore
         ChunkCacheMetrics.L2SizeHighWater.Set((long)(cfg.L2MaxBytes * cfg.L2LowWater));
 
         // Soft GC: scan and evict if over low-water, every cfg.L2GcIntervalSeconds.
-        // The first tick fires after one full interval to let the rest of the
-        // system come up.
         _gcTimer = new Timer(
             _ => _ = SafeSweepAsync(),
             state: null,
             dueTime: TimeSpan.FromSeconds(cfg.L2GcIntervalSeconds),
             period: TimeSpan.FromSeconds(cfg.L2GcIntervalSeconds));
+    }
+
+    /// <summary>Synchronous boot probe — returns false if PG is unreachable.</summary>
+    public bool TryProbe()
+    {
+        if (_disposed) return false;
+        try
+        {
+            using var conn = _dataSource.OpenConnection();
+            using var cmd = new NpgsqlCommand("SELECT 1", conn);
+            cmd.ExecuteScalar();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public async Task PutAsync(string hash, byte[] data, CancellationToken ct)
@@ -60,6 +85,10 @@ public sealed class PgChunkCache : IContentChunkStore
         if (string.IsNullOrEmpty(hash)) throw new ArgumentException("hash is required", nameof(hash));
         if (data is null || data.Length == 0) return;
 
+        // If a previous row exists, capture its size so the logical-size
+        // counter reflects the delta, not the new gross size. The first
+        // writer wins the age; subsequent writers only update last_used
+        // and use_count (the chunk is the same content-addressed blob).
         const string sql = """
             INSERT INTO chunk_data_l2 (hash, bytes, size)
             VALUES (@hash, @bytes, @size)
@@ -68,19 +97,31 @@ public sealed class PgChunkCache : IContentChunkStore
                     size       = EXCLUDED.size,
                     last_used  = now(),
                     use_count  = chunk_data_l2.use_count + 1
+            RETURNING (xmax = 0) AS inserted
             """;
-        await using var conn = await _dataSource.OpenConnectionAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql, conn);
-        cmd.Parameters.AddWithValue("hash", hash);
-        cmd.Parameters.Add(new NpgsqlParameter("bytes", NpgsqlTypes.NpgsqlDbType.Bytea) { Value = data });
-        cmd.Parameters.AddWithValue("size", data.Length);
-        await cmd.ExecuteNonQueryAsync(ct);
+        bool inserted;
+        await using (var conn = await _dataSource.OpenConnectionAsync(ct))
+        await using (var cmd = new NpgsqlCommand(sql, conn))
+        {
+            cmd.Parameters.AddWithValue("hash", hash);
+            cmd.Parameters.Add(new NpgsqlParameter("bytes", NpgsqlTypes.NpgsqlDbType.Bytea) { Value = data });
+            cmd.Parameters.AddWithValue("size", data.Length);
+            var result = await cmd.ExecuteScalarAsync(ct);
+            inserted = result is bool b && b;
+        }
         ChunkCacheMetrics.L2Puts.Inc();
+        if (inserted)
+        {
+            Interlocked.Add(ref _logicalSizeBytes, data.Length);
+        }
+        ChunkCacheMetrics.L2Bytes.Set(Interlocked.Read(ref _logicalSizeBytes));
 
         // Hard trigger: if the post-write size exceeds the cap, evict synchronously.
-        // The check is cheap (a single pg_total_relation_size query) and bounds
-        // the burst case between soft GC ticks.
-        await HardTriggerIfOverCapAsync(ct);
+        if (Interlocked.Read(ref _logicalSizeBytes) > _cfg.L2MaxBytes)
+        {
+            var target = (long)(_cfg.L2MaxBytes * _cfg.L2LowWater);
+            await EnforceCapacityAsync(target, _cfg.L2BatchSize, ct);
+        }
     }
 
     public async Task<byte[]?> GetAsync(string hash, CancellationToken ct)
@@ -88,65 +129,101 @@ public sealed class PgChunkCache : IContentChunkStore
         if (_disposed) return null;
         if (string.IsNullOrEmpty(hash)) return null;
 
-        // Single round-trip: SELECT then UPDATE in one CTE, FOR UPDATE so a
-        // concurrent GC cannot delete the row between the read and the
-        // last_used bump.
-        const string sql = """
-            WITH got AS (
-                SELECT bytes FROM chunk_data_l2 WHERE hash = @hash FOR UPDATE
-            ),
-            upd AS (
-                UPDATE chunk_data_l2
-                SET    last_used = now(), use_count = use_count + 1
-                WHERE  hash = @hash
-                RETURNING 1
-            )
-            SELECT bytes FROM got;
-            """;
-        await using var conn = await _dataSource.OpenConnectionAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql, conn);
-        cmd.Parameters.AddWithValue("hash", hash);
-        var result = await cmd.ExecuteScalarAsync(ct);
-        if (result is null || result is DBNull)
+        try
         {
+            // Single round-trip: SELECT then UPDATE in one CTE, FOR UPDATE so a
+            // concurrent GC cannot delete the row between the read and the
+            // last_used bump.
+            const string sql = """
+                WITH got AS (
+                    SELECT bytes FROM chunk_data_l2 WHERE hash = @hash FOR UPDATE
+                ),
+                upd AS (
+                    UPDATE chunk_data_l2
+                    SET    last_used = now(), use_count = use_count + 1
+                    WHERE  hash = @hash
+                    RETURNING 1
+                )
+                SELECT bytes FROM got;
+                """;
+            await using var conn = await _dataSource.OpenConnectionAsync(ct);
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("hash", hash);
+            var result = await cmd.ExecuteScalarAsync(ct);
+            if (result is null || result is DBNull)
+            {
+                ChunkCacheMetrics.L2Misses.Inc();
+                return null;
+            }
+            ChunkCacheMetrics.L2Hits.Inc();
+            return (byte[])result;
+        }
+        catch
+        {
+            // Best-effort: a PG outage must not break the read path. The
+            // facade will fall through to the Store.
             ChunkCacheMetrics.L2Misses.Inc();
             return null;
         }
-        ChunkCacheMetrics.L2Hits.Inc();
-        return (byte[])result;
     }
 
     public async Task<bool> ExistsAsync(string hash, CancellationToken ct)
     {
         if (_disposed) return false;
-        await using var conn = await _dataSource.OpenConnectionAsync(ct);
-        await using var cmd = new NpgsqlCommand("SELECT 1 FROM chunk_data_l2 WHERE hash = @hash", conn);
-        cmd.Parameters.AddWithValue("hash", hash);
-        return await cmd.ExecuteScalarAsync(ct) is not null;
+        try
+        {
+            await using var conn = await _dataSource.OpenConnectionAsync(ct);
+            await using var cmd = new NpgsqlCommand("SELECT 1 FROM chunk_data_l2 WHERE hash = @hash", conn);
+            cmd.Parameters.AddWithValue("hash", hash);
+            return await cmd.ExecuteScalarAsync(ct) is not null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
+    /// <summary>Logical size (sum of `size` column) — used for budget enforcement.</summary>
+    public Task<long> GetLogicalUsedBytesAsync(CancellationToken ct)
+        => Task.FromResult(Interlocked.Read(ref _logicalSizeBytes));
+
+    /// <summary>Physical size (pg_total_relation_size, includes heap + TOAST + indexes).
+    /// Used for the dashboard gauge only; do not use this for budget decisions.</summary>
     public async Task<long> GetUsedBytesAsync(CancellationToken ct)
     {
         if (_disposed) return 0;
-        await using var conn = await _dataSource.OpenConnectionAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT pg_total_relation_size('chunk_data_l2')", conn);
-        var v = await cmd.ExecuteScalarAsync(ct);
-        var bytes = v is long l ? l : (long)(v ?? 0L);
-        ChunkCacheMetrics.L2Bytes.Set(bytes);
-        return bytes;
+        try
+        {
+            await using var conn = await _dataSource.OpenConnectionAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                "SELECT pg_total_relation_size('chunk_data_l2')", conn);
+            var v = await cmd.ExecuteScalarAsync(ct);
+            var bytes = v is long l ? l : (long)(v ?? 0L);
+            _lastPhysicalSizeBytes = bytes;
+            ChunkCacheMetrics.L2BytesPhysical.Set(bytes);
+            return bytes;
+        }
+        catch
+        {
+            return _lastPhysicalSizeBytes;
+        }
     }
 
     public async Task<int> EnforceCapacityAsync(long targetBytes, int batchSize, CancellationToken ct)
     {
         if (_disposed) return 0;
-        // Serialize GC across soft and hard triggers so a burst of writes
-        // doesn't fan out into a hundred concurrent DELETEs.
         if (!await _gcLock.WaitAsync(0, ct)) return 0;
         var sw = Stopwatch.StartNew();
         try
         {
-            var startBytes = await GetUsedBytesAsync(ct);
+            // Drive off the in-memory logical size (the budget we care about),
+            // not the physical size. The first iteration may need to sync
+            // the in-memory counter from the DB on a cold start.
+            if (_logicalSizeBytes == 0)
+            {
+                await SyncLogicalSizeAsync(ct);
+            }
+            var startBytes = Interlocked.Read(ref _logicalSizeBytes);
             if (startBytes <= targetBytes) return 0;
 
             var bytesToFree = startBytes - targetBytes;
@@ -157,9 +234,6 @@ public sealed class PgChunkCache : IContentChunkStore
 
             while (freed < bytesToFree && rounds < maxRounds)
             {
-                // One round: pick the top `batchSize` chunks by eviction score
-                // (age × idle / use_count, with +1 smoothing for very young
-                // chunks to avoid divide-by-zero and 0-score for new chunks).
                 const string pickSql = """
                     WITH ranked AS (
                         SELECT hash,
@@ -204,6 +278,10 @@ public sealed class PgChunkCache : IContentChunkStore
                         roundFreed += rdr.GetInt32(0);
                 }
 
+                // Decrement the in-memory counter by the actual deleted bytes.
+                Interlocked.Add(ref _logicalSizeBytes, -roundFreed);
+                ChunkCacheMetrics.L2Bytes.Set(Interlocked.Read(ref _logicalSizeBytes));
+
                 freed += roundFreed;
                 evicted += victims.Count;
                 rounds++;
@@ -213,9 +291,10 @@ public sealed class PgChunkCache : IContentChunkStore
             {
                 ChunkCacheMetrics.L2EvictedChunks.Inc(evicted);
                 ChunkCacheMetrics.L2EvictedBytes.Inc(freed);
-                _evictedSinceLastVacuum += freed;
 
                 // VACUUM if meaningful eviction happened AND cooldown elapsed.
+                // VACUUM reclaims dead tuples for planner stats; it does not
+                // shrink the heap (so byte accounting does not depend on it).
                 var now = DateTime.UtcNow;
                 var freedRatio = (double)freed / Math.Max(1, startBytes);
                 if (freedRatio > 0.10 && (now - _lastVacuumUtc).TotalSeconds > _cfg.L2VacuumIntervalSeconds)
@@ -226,7 +305,6 @@ public sealed class PgChunkCache : IContentChunkStore
                         await using var vac = new NpgsqlCommand("VACUUM (ANALYZE) chunk_data_l2", conn);
                         await vac.ExecuteNonQueryAsync(ct);
                         _lastVacuumUtc = now;
-                        _evictedSinceLastVacuum = 0;
                     }
                     catch
                     {
@@ -235,10 +313,11 @@ public sealed class PgChunkCache : IContentChunkStore
                 }
             }
 
-            // Refresh the gauge so the dashboard reflects post-GC size.
-            await GetUsedBytesAsync(ct);
+            // Refresh the dashboard gauges.
+            ChunkCacheMetrics.L2Bytes.Set(Interlocked.Read(ref _logicalSizeBytes));
             ChunkCacheMetrics.L2GcRuns.Inc();
             ChunkCacheMetrics.L2GcDuration.Observe(sw.Elapsed.TotalSeconds);
+            await RefreshOldestAgeAsync(ct);
             return evicted;
         }
         finally
@@ -247,13 +326,34 @@ public sealed class PgChunkCache : IContentChunkStore
         }
     }
 
-    private async Task HardTriggerIfOverCapAsync(CancellationToken ct)
+    private async Task SyncLogicalSizeAsync(CancellationToken ct)
     {
-        var used = await GetUsedBytesAsync(ct);
-        if (used <= _cfg.L2MaxBytes) return;
-        // Drop to 80 % of cap so the next write doesn't immediately retrigger.
-        var target = (long)(_cfg.L2MaxBytes * _cfg.L2LowWater);
-        await EnforceCapacityAsync(target, _cfg.L2BatchSize, ct);
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT COALESCE(SUM(size), 0) FROM chunk_data_l2", conn);
+        var v = await cmd.ExecuteScalarAsync(ct);
+        var sum = v is long l ? l : (long)(v ?? 0L);
+        Interlocked.Exchange(ref _logicalSizeBytes, sum);
+        ChunkCacheMetrics.L2Bytes.Set(sum);
+    }
+
+    private async Task RefreshOldestAgeAsync(CancellationToken ct)
+    {
+        try
+        {
+            await using var conn = await _dataSource.OpenConnectionAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                "SELECT EXTRACT(EPOCH FROM (now() - MIN(created_at))) FROM chunk_data_l2", conn);
+            var v = await cmd.ExecuteScalarAsync(ct);
+            if (v is double d)
+                ChunkCacheMetrics.L2OldestAge.Set(d);
+            else if (v is decimal dec)
+                ChunkCacheMetrics.L2OldestAge.Set((double)dec);
+        }
+        catch
+        {
+            // Dashboard-only metric; non-fatal on failure.
+        }
     }
 
     private async Task SafeSweepAsync()
@@ -261,9 +361,14 @@ public sealed class PgChunkCache : IContentChunkStore
         try
         {
             if (_disposed) return;
+            // Soft sweep: refresh physical-size gauge (every tick), and run
+            // GC if the logical size is over low-water.
+            await GetUsedBytesAsync(CancellationToken.None);
+            await RefreshOldestAgeAsync(CancellationToken.None);
+            if (_logicalSizeBytes == 0)
+                await SyncLogicalSizeAsync(CancellationToken.None);
             var target = (long)(_cfg.L2MaxBytes * _cfg.L2LowWater);
-            var used = await GetUsedBytesAsync(CancellationToken.None);
-            if (used > target)
+            if (Interlocked.Read(ref _logicalSizeBytes) > target)
                 await EnforceCapacityAsync(target, _cfg.L2BatchSize, CancellationToken.None);
         }
         catch

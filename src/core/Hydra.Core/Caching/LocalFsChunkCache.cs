@@ -23,6 +23,7 @@ public sealed class LocalFsChunkCache : IChunkCache
     private readonly ConcurrentDictionary<string, SessionChunkCache> _caches = new();
     private long _usedBytes;
     private bool _disposed;
+    private readonly Timer _sweepTimer;
 
     public LocalFsChunkCache(string cacheDir, long maxBytes)
     {
@@ -38,8 +39,24 @@ public sealed class LocalFsChunkCache : IChunkCache
             _cacheDir.Create();
 
         // Rebuild in-memory state from disk so a restart preserves both the
-        // session index and the byte accounting.
+        // session index and the byte accounting. Orphan chunk files (chunks
+        // written without a corresponding index, e.g. by ChunkHashTeeStream
+        // on a session that was never SaveHashesAsync'd) are added to the
+        // _caches dict so the LRU can find them.
         RebuildFromDisk();
+
+        ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
+        ChunkCacheMetrics.L1Chunks.Set(_cacheDir.EnumerateFiles().Count());
+
+        // Periodic background sweep every 60 s. Independent of the L2's
+        // soft sweep; this is L1-only and keeps the L1 under cap even if
+        // the only write activity is reads (which still bump LRU timestamps
+        // but don't trigger the at-write eviction path).
+        _sweepTimer = new Timer(
+            _ => SafeSweep(),
+            state: null,
+            dueTime: TimeSpan.FromSeconds(60),
+            period: TimeSpan.FromSeconds(60));
     }
 
     public long L1MaxBytes => _maxBytes;
@@ -81,27 +98,29 @@ public sealed class LocalFsChunkCache : IChunkCache
         }
         else
         {
-            // Bump the LRU timestamp on every write — a session that's
-            // actively being written to is also being read from.
             _caches[sessionId].SavedAt = DateTime.UtcNow;
         }
 
-        // At-write check: if this write would push us over cap, evict first.
-        // The chunk we're about to write is counted toward the budget, so
-        // we trigger eviction when (used + newChunk) > max, leaving room.
-        var projected = Interlocked.Read(ref _usedBytes) + chunkData.Length;
+        // Subtract the old file size if this is a rewrite, so the byte
+        // counter reflects the delta not the gross new size. Content-addressed
+        // re-saves (same hash) should not inflate the budget.
+        long oldSize = 0;
+        if (File.Exists(chunkPath))
+            oldSize = new FileInfo(chunkPath).Length;
+
+        // At-write check: evict to 80% of cap when the new write would
+        // push the L1 over cap. Using the 80% target (not maxBytes - chunkSize)
+        // avoids thrashing near the cap.
+        var projected = Interlocked.Read(ref _usedBytes) + chunkData.Length - oldSize;
         if (projected > _maxBytes)
         {
-            // Evict until under (cap - 2*newChunk) so we don't thrash on
-            // every write. The 2x guard keeps headroom for the next write
-            // of the same size.
-            var lowWater = _maxBytes - (chunkData.Length * 2);
-            if (lowWater < 0) lowWater = _maxBytes / 2;
+            var lowWater = (long)(_maxBytes * 0.8);
             EvictUntilUnderBytes(lowWater);
         }
 
         await File.WriteAllBytesAsync(chunkPath, chunkData, ct);
-        Interlocked.Add(ref _usedBytes, chunkData.Length);
+        Interlocked.Add(ref _usedBytes, chunkData.Length - oldSize);
+        ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
     }
 
     public void SaveChunkData(string sessionId, string hash, byte[] chunkData)
@@ -124,16 +143,20 @@ public sealed class LocalFsChunkCache : IChunkCache
             _caches[sessionId].SavedAt = DateTime.UtcNow;
         }
 
-        var projected = Interlocked.Read(ref _usedBytes) + chunkData.Length;
+        long oldSize = 0;
+        if (File.Exists(chunkPath))
+            oldSize = new FileInfo(chunkPath).Length;
+
+        var projected = Interlocked.Read(ref _usedBytes) + chunkData.Length - oldSize;
         if (projected > _maxBytes)
         {
-            var lowWater = _maxBytes - (chunkData.Length * 2);
-            if (lowWater < 0) lowWater = _maxBytes / 2;
+            var lowWater = (long)(_maxBytes * 0.8);
             EvictUntilUnderBytes(lowWater);
         }
 
         File.WriteAllBytes(chunkPath, chunkData);
-        Interlocked.Add(ref _usedBytes, chunkData.Length);
+        Interlocked.Add(ref _usedBytes, chunkData.Length - oldSize);
+        ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
     }
 
     public async Task<byte[]?> GetChunkDataAsync(string sessionId, string hash, CancellationToken ct)
@@ -185,7 +208,6 @@ public sealed class LocalFsChunkCache : IChunkCache
         var path = CachePath(sessionId);
         if (File.Exists(path)) File.Delete(path);
 
-        // Drop all per-session chunk files; subtract their sizes from the byte counter.
         var safeSessionId = SafeName(sessionId);
         foreach (var file in _cacheDir.EnumerateFiles($"{safeSessionId}.*"))
         {
@@ -197,19 +219,20 @@ public sealed class LocalFsChunkCache : IChunkCache
             }
             catch { /* ignore */ }
         }
+        ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
         return Task.CompletedTask;
     }
 
     public Task<int> EvictLRUAsync()
     {
         if (_disposed) return Task.FromResult(0);
-        var evicted = EvictUntilUnderBytes((long)(_maxBytes * 0.8));
+        var lowWater = (long)(_maxBytes * 0.8);
+        var evicted = EvictUntilUnderBytes(lowWater);
         return Task.FromResult(evicted);
     }
 
     /// <summary>
     /// Forcibly evict LRU sessions until the L1 is under <paramref name="targetBytes"/>.
-    /// Used by SaveChunkDataAsync (at-write check) and the periodic background sweep.
     /// Returns the number of sessions evicted.
     /// </summary>
     private int EvictUntilUnderBytes(long targetBytes)
@@ -224,8 +247,6 @@ public sealed class LocalFsChunkCache : IChunkCache
             if (oldest is null) break;
 
             _caches.TryRemove(oldest.SessionId, out _);
-            // Subtract the bytes that ClearAsync would drop, and delete the files
-            // (avoiding the extra EnumerateFiles scan in ClearAsync).
             var safe = SafeName(oldest.SessionId);
             var path = CachePath(oldest.SessionId);
             if (File.Exists(path)) File.Delete(path);
@@ -242,8 +263,26 @@ public sealed class LocalFsChunkCache : IChunkCache
             evicted++;
         }
         if (evicted > 0)
+        {
             ChunkCacheMetrics.L1EvictedSessions.Inc(evicted);
+            ChunkCacheMetrics.L1EvictedBytes.Inc(Interlocked.Read(ref _usedBytes));
+            ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
+        }
         return evicted;
+    }
+
+    private void SafeSweep()
+    {
+        try
+        {
+            if (_disposed) return;
+            var lowWater = (long)(_maxBytes * 0.8);
+            EvictUntilUnderBytes(lowWater);
+        }
+        catch
+        {
+            // Best-effort; the next tick retries.
+        }
     }
 
     private string CachePath(string sessionId)
@@ -259,6 +298,9 @@ public sealed class LocalFsChunkCache : IChunkCache
     {
         _caches.Clear();
         long total = 0;
+        // First pass: read the index files (`.chunks.json`) and populate
+        // _caches. Their SavedAt comes from the file's LastWriteTimeUtc
+        // so a fresh restart preserves LRU ordering.
         foreach (var file in _cacheDir.EnumerateFiles())
         {
             if (file.Name.EndsWith(".chunks.json"))
@@ -267,21 +309,63 @@ public sealed class LocalFsChunkCache : IChunkCache
                 {
                     var json = File.ReadAllText(file.FullName);
                     var cache = JsonSerializer.Deserialize<SessionChunkCache>(json);
-                    if (cache != null) _caches[cache.SessionId] = cache;
+                    if (cache != null)
+                    {
+                        cache.SavedAt = file.LastWriteTimeUtc;
+                        _caches[cache.SessionId] = cache;
+                    }
                 }
                 catch { /* corrupt index; ignore */ }
             }
-            else
+        }
+        // Second pass: add the chunk data files to the byte counter, and
+        // (for chunks with no index entry) register a synthetic session so
+        // the LRU sweep can find them. Format: {safeSessionId}.{hash},
+        // where hash is 64 hex chars; we split on the last `.` and check
+        // the suffix is a 64-hex string.
+        foreach (var file in _cacheDir.EnumerateFiles())
+        {
+            if (file.Name.EndsWith(".chunks.json")) continue;
+            total += file.Length;
+
+            var dot = file.Name.LastIndexOf('.');
+            if (dot <= 0 || dot == file.Name.Length - 1) continue;
+            var safeSession = file.Name.Substring(0, dot);
+            var hashSuffix = file.Name.Substring(dot + 1);
+            if (hashSuffix.Length != 64) continue;
+            if (!IsAllHex(hashSuffix)) continue;
+            // Round-trip: SafeName replaces / and \ with _. We can't fully
+            // recover the original sessionId from the safe form (the
+            // round-trip is lossy), so we key the synthetic entry on the
+            // safe form. The save path will overwrite the index when a
+            // real SaveHashesAsync lands.
+            if (!_caches.ContainsKey(safeSession))
             {
-                total += file.Length;
+                _caches[safeSession] = new SessionChunkCache
+                {
+                    SessionId = safeSession,
+                    ChunkHashes = [],
+                    SavedAt = file.LastWriteTimeUtc
+                };
             }
         }
         Interlocked.Exchange(ref _usedBytes, total);
     }
 
+    private static bool IsAllHex(string s)
+    {
+        foreach (var c in s)
+        {
+            bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!ok) return false;
+        }
+        return true;
+    }
+
     public void Dispose()
     {
         _disposed = true;
+        _sweepTimer.Dispose();
         _caches.Clear();
     }
 
