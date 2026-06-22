@@ -46,7 +46,6 @@ public sealed class LocalFsChunkCache : IChunkCache
         RebuildFromDisk();
 
         ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
-        ChunkCacheMetrics.L1Chunks.Set(_cacheDir.EnumerateFiles().Count());
 
         // Periodic background sweep every 60 s. Independent of the L2's
         // soft sweep; this is L1-only and keeps the L1 under cap even if
@@ -239,6 +238,7 @@ public sealed class LocalFsChunkCache : IChunkCache
     {
         if (_disposed) return 0;
         var evicted = 0;
+        long freedBytes = 0;
         while (Interlocked.Read(ref _usedBytes) > targetBytes && _caches.Count > 0)
         {
             var oldest = _caches.Values
@@ -256,6 +256,7 @@ public sealed class LocalFsChunkCache : IChunkCache
                 try
                 {
                     Interlocked.Add(ref _usedBytes, -file.Length);
+                    freedBytes += file.Length;
                     file.Delete();
                 }
                 catch { /* ignore */ }
@@ -265,7 +266,7 @@ public sealed class LocalFsChunkCache : IChunkCache
         if (evicted > 0)
         {
             ChunkCacheMetrics.L1EvictedSessions.Inc(evicted);
-            ChunkCacheMetrics.L1EvictedBytes.Inc(Interlocked.Read(ref _usedBytes));
+            ChunkCacheMetrics.L1EvictedBytes.Inc(freedBytes);
             ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
         }
         return evicted;

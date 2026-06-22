@@ -15,10 +15,6 @@ public static class ChunkCacheMetrics
         Prometheus.Metrics.CreateGauge(
             "hydra_chunk_cache_l1_bytes",
             "L1 chunk cache bytes on disk (tmpfs).");
-    public static readonly Gauge L1Chunks =
-        Prometheus.Metrics.CreateGauge(
-            "hydra_chunk_cache_l1_chunks",
-            "L1 chunk cache row count (one file per chunk).");
     public static readonly Counter L1Hits =
         Prometheus.Metrics.CreateCounter(
             "hydra_chunk_cache_l1_hits_total",
@@ -34,7 +30,7 @@ public static class ChunkCacheMetrics
     public static readonly Counter L1EvictedBytes =
         Prometheus.Metrics.CreateCounter(
             "hydra_chunk_cache_l1_evicted_bytes_total",
-            "L1 bytes freed by byte-budget LRU.");
+            "L1 bytes freed by byte-budget LRU (accumulated, not residual).");
 
     // ── L2 (PgChunkCache, PG chunk_data_l2) ─────────────────────────────
     public static readonly Gauge L2Bytes =

@@ -54,6 +54,14 @@ public sealed class PgChunkCache : IContentChunkStore
         ChunkCacheMetrics.L2SizeCap.Set(cfg.L2MaxBytes);
         ChunkCacheMetrics.L2SizeHighWater.Set((long)(cfg.L2MaxBytes * cfg.L2LowWater));
 
+        // Warm the logical-size counter from the DB so the hard trigger
+        // can fire correctly on a restart where the table already has rows
+        // that survived (e.g. the previous Core was killed without a clean
+        // shutdown). Without this, _logicalSizeBytes starts at 0, Puts
+        // increment from 0, and a burst right after restart could overshoot
+        // the cap before the first soft sweep (300 s) fires.
+        try { SyncLogicalSize(); } catch { /* best-effort; the soft sweep will catch up */ }
+
         // Soft GC: scan and evict if over low-water, every cfg.L2GcIntervalSeconds.
         _gcTimer = new Timer(
             _ => _ = SafeSweepAsync(),
@@ -332,6 +340,18 @@ public sealed class PgChunkCache : IContentChunkStore
         await using var cmd = new NpgsqlCommand(
             "SELECT COALESCE(SUM(size), 0) FROM chunk_data_l2", conn);
         var v = await cmd.ExecuteScalarAsync(ct);
+        var sum = v is long l ? l : (long)(v ?? 0L);
+        Interlocked.Exchange(ref _logicalSizeBytes, sum);
+        ChunkCacheMetrics.L2Bytes.Set(sum);
+    }
+
+    /// <summary>Synchronous variant for ctor warm-up (one DB round-trip at boot).</summary>
+    private void SyncLogicalSize()
+    {
+        using var conn = _dataSource.OpenConnection();
+        using var cmd = new NpgsqlCommand(
+            "SELECT COALESCE(SUM(size), 0) FROM chunk_data_l2", conn);
+        var v = cmd.ExecuteScalar();
         var sum = v is long l ? l : (long)(v ?? 0L);
         Interlocked.Exchange(ref _logicalSizeBytes, sum);
         ChunkCacheMetrics.L2Bytes.Set(sum);

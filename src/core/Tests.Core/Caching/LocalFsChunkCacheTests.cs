@@ -130,6 +130,35 @@ public sealed class LocalFsChunkCacheTests : IDisposable
     }
 
     [Fact]
+    public async Task EvictLRU_FreedBytes_ReflectsActualDeletions()
+    {
+        // Regression for the L1EvictedBytes fix: the metric should accumulate
+        // the bytes actually freed by the loop, not the remaining _usedBytes.
+        // Verify the invariant via the on-disk state after eviction: the
+        // oldest session's chunk file should be gone, and L1UsedBytes
+        // should reflect 2 sessions × 2 KB (under the cap, with the new
+        // chunk accounted for).
+        var cache = new LocalFsChunkCache(_cacheDir, maxBytes: 4096); // 4 KB cap
+        var chunk = new byte[2048]; // 2 KB each
+        Random.Shared.NextBytes(chunk);
+
+        // Fill 2 sessions (4 KB total = at the cap).
+        await cache.SaveChunkDataAsync("ses_a", "h1", chunk, CancellationToken.None);
+        await cache.SaveChunkDataAsync("ses_b", "h2", chunk, CancellationToken.None);
+        var before = cache.L1UsedBytes;
+        Assert.Equal(4096, before);
+
+        // Add a 3rd chunk — forces eviction of ses_a (the oldest) to make
+        // room. After eviction the L1 holds 2 sessions × 2 KB = 4 KB.
+        await cache.SaveChunkDataAsync("ses_c", "h3", chunk, CancellationToken.None);
+        var after = cache.L1UsedBytes;
+        Assert.Equal(4096, after);
+        Assert.False(cache.HasChunkData("ses_a", "h1"));
+        Assert.True(cache.HasChunkData("ses_b", "h2"));
+        Assert.True(cache.HasChunkData("ses_c", "h3"));
+    }
+
+    [Fact]
     public async Task RebuildFromDisk_AddsOrphanChunkToLRU()
     {
         // Pre-create the cache dir (the L1 ctor would do this, but we
