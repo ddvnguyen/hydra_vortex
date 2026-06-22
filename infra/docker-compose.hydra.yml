@@ -17,9 +17,36 @@ name: hydra-system
 #   podman compose -f infra/docker-compose.hydra.yml up -d
 # (note: podman-compose is not used; podman 5.x has native compose support)
 
-# Pod-level userns_mode (NOT per-service). podman rejects
-# `--userns` combined with `--pod`; setting it at the pod level
-# here makes the whole pod run with host userns.
+# Pod-level userns_mode. We set it to "host" with the intent of
+# getting host userns in the containers, but on rootless podman
+# (this host runs `podman` as ddv, not root) this is **silently
+# downgraded** to the default subuid mapping. The in-container
+# uid 1000 (set via `user: 1000:1000` per service) ends up mapped
+# to a host subuid (typically 100999), not the actual host uid
+# 1000 (ddv). That has a real consequence for bind mounts:
+# files written by the container end up owned by the subuid
+# (e.g. 100999:100999), not by ddv. Host ddv can read them (mode
+# 644) but cannot `chown` them back to 1000:1000 — the host's
+# NTFS partition (`/mnt/SSD` is `ntfs3`) doesn't store POSIX
+# ownership semantics either, which makes recovery a `chmod
+# 777` + delete-by-content job, not a `chown`.
+#
+# The fix in this compose is NOT to set per-service userns_mode
+# (that breaks with the well-known podman error `--userns and
+# --pod cannot be set together`). Instead, the `core` service
+# wraps its ENTRYPOINT with a one-line shell that ensures
+# `$HYDRA_STORE_BACKUP_DIR/chunks` exists and is mode 777 before
+# the C# binary starts. With mode 777, the subuid-mapped user
+# can create new files in there, and the chunks-dir regression
+# we saw in 2026-06-22 (chunks dir created at 755 by an earlier
+# root-owned run, then `UnauthorizedAccessException` every 10s
+# on every write-behind cycle) cannot recur.
+#
+# The `userns_mode: "host"` line below is kept as documentation
+# of intent. It applies to the POD ONLY (compose generates
+# `--userns=host` on `podman pod create`), but as noted, rootless
+# podman downgrades this — see the comment on each service for
+# the real-world consequences.
 userns_mode: "host"
 
 # ── Named volumes ─────────────────────────────────────────────────────────
@@ -36,8 +63,43 @@ services:
       tags:
         - localhost/hydra-core:latest
     image: localhost/hydra-core:latest
+    # NO per-service userns_mode here — podman rejects
+    # `--userns` combined with `--pod` with
+    # `Error: --userns and --pod cannot be set together`,
+    # which would prevent the container from starting. The
+    # pod-level `userns_mode: "host"` is enough; rootless
+    # podman silently downgrades it to subuid mapping, but
+    # the workaround in `command:` (chmod 777 on the
+    # write-behind chunks dir) makes the in-container
+    # process able to write to it regardless.
     network_mode: host
     user: "1000:1000"
+    # Wrap the C# ENTRYPOINT with a one-liner that ensures
+    # the write-behind target dir is mode 777 (writable by
+    # the in-container subuid-mapped user). Without this,
+    # an earlier root-owned run may have left the dir at
+    # 755, and the C# WriteBehindService throws
+    # `UnauthorizedAccessException` every 10s on every
+    # cycle (see review-finding 2026-06-22).
+    #
+    # NB: we use `mkdir -m 777` (NOT `chmod 777`) because
+    # the in-container process is subuid-mapped (uid 100999)
+    # and the dir on the host is owned by ddv (uid 1000);
+    # chmod from a non-owner is denied on NTFS (the
+    # `/mnt/SSD` partition is `ntfs3`). `mkdir -m 777`
+    # sets the mode at create time and works because the
+    # creating process IS the owner of the newly-created
+    # dir.
+    #
+    # We also override `entrypoint` (not `command`) because
+    # the Dockerfile has `ENTRYPOINT ["dotnet", "Hydra.Core.dll"]`
+    # and no CMD. With compose's `command:` set, the final
+    # process becomes `dotnet Hydra.Core.dll <command-args>` —
+    # dotnet silently ignores anything after the assembly name,
+    # so a `command: ["/bin/sh", "-c", "mkdir -m 777 …"]` would
+    # never run. The shell wrapper below REPLACES the dotnet
+    # entrypoint, runs the mkdir, then `exec`s into dotnet.
+    entrypoint: ["/bin/sh", "-c", "mkdir -m 777 -p \"$${HYDRA_STORE_BACKUP_DIR}/chunks\" && exec dotnet Hydra.Core.dll"]
     tmpfs:
       - /mnt/llm-ram:size=30G
     volumes:
@@ -88,6 +150,8 @@ services:
   # not infra/Dockerfile).
   head-rtx:
     image: localhost/hydra-head:rtx
+    # NO per-service userns_mode here — same reason as `core`:
+    # `--userns and --pod cannot be set together`.
     network_mode: host
     user: "1000:1000"
     devices:

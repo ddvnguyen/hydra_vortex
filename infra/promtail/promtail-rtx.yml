@@ -49,12 +49,22 @@ scrape_configs:
       - cri: {}
 
       - match:
-          selector: '{container=~"hydra-head-rtx"}'
+          # New container name pattern (compose pod + multi-container
+          # service). Both `hydra-system_head-rtx_1` (compose) and the
+          # old `hydra-head-rtx` (legacy Quadlet) are accepted so this
+          # config is robust to either deployment.
+          selector: '{container=~"hydra-system_head-rtx_1|hydra-head-rtx"}'
           stages:
             - replace:
                 expression: '\x1b\[[0-9;]*[a-zA-Z]'
                 replace: ''
             - regex:
+                # llama-server emits lines like:
+                #   29.31.578.695 I srv  log_server_r: done request: ...
+                #   1782100000.123 main info: model loaded
+                # The first form has `IP-like 4-octet + level letter`
+                # and only llama-server produces it; hydra-head agent
+                # output never has that exact prefix.
                 expression: '^(?P<llama_ts>\d+\.\d+\.\d+\.\d+)\s+(?P<llama_level>[A-Z])\s+'
             - template:
                 source: "component"
@@ -68,13 +78,26 @@ scrape_configs:
                 node:
 
       - match:
-          selector: '{container=~"hydra-core"}'
+          # New container name pattern (compose pod). Also accepts the
+          # legacy `hydra-core` Quadlet name for backwards compat.
+          selector: '{container=~"hydra-system_core_1|hydra-core"}'
           stages:
             - template:
                 source: "component"
                 template: "hydra"
             - labels:
                 component:
+            # The core container is in the same RTX compose pod as
+            # head-rtx, so its `node` label is also "rtx". Set it
+            # explicitly here so the Loki stream can be filtered by
+            # `{component="hydra", node="rtx"}` (otherwise only the
+            # base docker_sd relabel fires and `node` is missing for
+            # containers without the docker label).
+            - template:
+                source: "node"
+                template: "rtx"
+            - labels:
+                node:
 
       - match:
           selector: '{container=~"hydra[-_]store[-_]?1?"}'
