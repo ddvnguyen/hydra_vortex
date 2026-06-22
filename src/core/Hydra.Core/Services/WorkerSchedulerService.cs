@@ -2591,6 +2591,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			? AgentClientFactory(rpcHost, w.LlamaRpcPort)
 			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
 		_llamaRpcClients[w.Name] = client;
+		_ = ConfigureStateChunkSizeAsync(client, w.Name);
 		return client;
+	}
+
+	/// <summary>
+	/// hydra#334: tell the engine what chunk size to use for STATE_GET socket
+	/// streaming (llama_io_write_socket) instead of relying on its compiled-in
+	/// default. Fire-and-forget, best-effort: legacy llama-server binaries don't
+	/// support CONFIGURE (0x40-0x46) and a failure here just leaves the engine on
+	/// its own 2 MiB default — never blocks or fails client creation.
+	/// </summary>
+	private async Task ConfigureStateChunkSizeAsync(Hydra.Shared.RpcClient client, string workerName)
+	{
+		try
+		{
+			var configJson = $"{{\"state_chunk_size\":{_cfg.StateChunkSizeBytes}}}";
+			var resp = await client.EngineConfigureAsync("0", configJson, "startup-configure", CancellationToken.None);
+			if (resp.Status != (byte)StatusCode.Ok)
+				_log.Warning("engine_configure_state_chunk_size_rejected Worker={Worker} Status={Status}", workerName, resp.Status);
+		}
+		catch (Exception ex)
+		{
+			_log.Warning(ex, "engine_configure_state_chunk_size_failed Worker={Worker}", workerName);
+		}
 	}
 }

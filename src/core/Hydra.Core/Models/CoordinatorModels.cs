@@ -97,6 +97,10 @@ public sealed record CoordinatorConfig
 	// When both modes are enabled and a request qualifies, which to prefer: "pipeline" | "combined".
 	public string MultiEnginePolicy { get; init; } = Env("HYDRA_COORD_MULTI_ENGINE_POLICY", "pipeline");
 	public int ChunkSize { get; init; } = EnvInt("HYDRA_STORE_CHUNK_SIZE", 8192) * 1024;
+	// hydra#334: chunk size for the engine's STATE_GET socket-stream (CONFIGURE/0x40
+	// "state_chunk_size"), sent once per worker connection. The engine itself defaults
+	// to 2 MiB if never configured (e.g. legacy binary that doesn't support CONFIGURE).
+	public int StateChunkSizeBytes { get; init; } = EnvInt("HYDRA_COORD_STATE_CHUNK_SIZE_KB", 2048) * 1024;
 	public string PrefixCheckpointName { get; init; } = Env("HYDRA_COORD_PREFIX_CHECKPOINT_NAME", "system_prompt");
 	public List<WorkerConfig> Workers { get; set; } = [];
 
