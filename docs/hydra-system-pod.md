@@ -51,13 +51,12 @@ pod_hydra-system
 ## The canonical start sequence
 
 ```bash
-# 1. The host sidecar Quadlets MUST be stopped — they own ports
-#    :9100 (node_exporter), :9835 (nvidia_gpu_exporter), :9080
-#    (promtail). If they're running, the in-container sidecars can't
-#    bind those ports.
-systemctl --user stop infra-node-exporter
-systemctl --user stop infra-nvidia-exporter
-systemctl --user stop infra-promtail
+# 1. The host-side exporter Quadlets (infra-node-exporter /
+#    infra-nvidia-exporter / infra-promtail) are GONE — they were
+#    removed in commit TBD. The in-container hydra-head now owns
+#    ports :9100/:9835/:9080. If you see "bind: address already in
+#    use" on those ports, check for stragglers:
+ss -tlnp | grep -E ':(9080|9100|9835) '
 
 # 2. (one-time per host) the host auth file must be world-readable
 #    for the in-container uid 1000 (= ddv) to read it.
@@ -72,8 +71,7 @@ The script does (in order):
 1. `go build` → `bin/hydra-head` (the Go agent)
 2. `podman build` → `localhost/hydra-head:rtx` (image with the Go
    binary baked in)
-3. Stops the 3 host sidecar Quadlets (so the in-container children
-   can bind :9100/:9835/:9080)
+3. ~~Stops the 3 host sidecar Quadlets~~ (no-op since they're gone)
 4. `chmod 644` the auth files (defensive, no-op if already 644)
 5. `podman compose -f infra/docker-compose.hydra.yml up -d`
 6. Waits for both healthchecks
@@ -89,7 +87,7 @@ If you try to start hydra-core or hydra-head-rtx with a bare
 |---|---|---|
 | `userns_mode: "host"` on the service | `Error: --userns and --pod cannot be set together` | Pod-level userns; service-level conflicts with pod creation |
 | Forget `--network host` | `Failed to bootstrap PG schema: Connection refused (127.0.0.1:5432)` | Postgres is on the host's loopback; without `--network host`, the container sees its own loopback (empty) |
-| Forget the host sidecar stop | `bind: address already in use` on :9100/:9835/:9080 | host infra-promtail / nvidia-exporter / node-exporter are still bound to these ports |
+| ~~Forget the host sidecar stop~~ (gone) | ~~`bind: address already in use` on :9100/:9835/:9080~~ | ~~host infra-promtail / nvidia-exporter / node-exporter are still bound to these ports~~ — **removed**: these Quadlets were deleted, the in-container children own the ports now |
 | Forget `chmod 644` on the auth file | `failed to pull binary: open /run/host-ctrs-auth.json: permission denied` (in container log) | in-container uid 1000 can't read a 600 file owned by host uid 1000 unless userns is `host` AND the file is world-readable |
 | Forget `HYDRA_COORD_CHUNK_CACHE_DIR` | `/mnt/containers` fills to 100% in a few hours; Loki / podman start failing | The default `HYDRA_COORD_CHUNK_CACHE_DIR` is `/tmp/hydra-coord-chunk-cache` (overlay, unbounded). Without overriding, 50+ GB of KV state accumulates in the overlay until the partition fills. |
 

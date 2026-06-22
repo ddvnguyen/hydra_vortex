@@ -81,9 +81,11 @@ build_rtx_image() {
 }
 
 # ── Pre-deploy Cleanup ───────────────────────────────────────────────────────
-# Stop the 3 host sidecar Quadlets (node-exporter, nvidia-exporter,
-# promtail) — the in-container hydra-head now manages them as children,
-# so the host ports (9100, 9835, 9080) must be free for it to bind.
+# Host-side exporter Quadlets (infra-node-exporter / infra-nvidia-
+# exporter / infra-promtail) were removed in commit TBD. The in-
+# container hydra-head now owns :9100/:9835/:9080 exclusively. This
+# function is a no-op kept for backward-compat with hosts that still
+# have the old Quadlets installed.
 stop_host_sidecars() {
   if ! command -v systemctl &>/dev/null; then return; fi
   export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
