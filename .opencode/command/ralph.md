@@ -102,6 +102,20 @@ podman run --rm --memory=8g --cpus=4 --network=host \
 
 Both must be 0 errors / 0 unexpected failures before PR. The pre-existing test failure `Tests.Core.CoordinatorConfigTests.LoadWorkers_ProductionConfigFile_LoadsBothWorkersWithCorrectModelFields` is known — note it but do NOT fix it in this PR.
 
+## Self-review before PR (mandatory, ~2 min)
+
+Before committing, re-read your own diff (`git diff <base>..HEAD`) and check for:
+
+- **Silent errors** — exceptions caught and ignored, return values discarded, `_log.Error` followed by `return`, `Log.Warning` without escalation
+- **Missing error handling** — null deref, missing `using` for `IDisposable`, resource leaks, un-awaited `Task` (fire-and-forget)
+- **Dead code / debug prints** — `Console.WriteLine` in production paths, `Console.WriteLine("[DEBUG]..."`, commented-out blocks, `# TODO` that should be issues
+- **Missed edge cases** — empty input, null keys, large payloads, concurrent access, the exact failure mode the issue was trying to fix
+- **Metric naming** — counters end in `_total`, gauges are bytes/int with a unit suffix where ambiguous (`_bytes`, `_seconds`, `_count`)
+- **Comment quality** — every public API has a one-line summary, no commented-out code, no unrelated `# TODO` pollution
+- **Push-before-PR** — if you touched `src/llama-cpp`, the fork SHA is reachable on `origin/hydra-fork` per `02-implement.md`
+
+Fix anything obvious, then commit. The dispatcher's external review will catch the rest.
+
 ## Task
 <insert the issue body / fix scope here, verbatim or summarised>
 
@@ -142,9 +156,99 @@ If you hit ambiguity you cannot resolve from the code/docs, **stop and report** 
 
 1. **Aggregate results.** Each subagent returns a PR URL.
 2. **Post a short comment on each issue** (e.g. `gh issue comment <N> --body "PR opened: <url>"`).
-3. **Clean up worktrees** the subagent didn't already clean up:
+3. **Run the Review and resolve cycle** (see below) for each PR opened.
+4. **Clean up worktrees** the subagent (or fix subagent) didn't already clean up:
    ```bash
    git worktree remove --force "$WORKTREE"
    ```
-4. **Report back to the user** with the PR URLs, branch names, and any flags (open questions, build warnings, pre-existing failures).
-5. **Do NOT merge.** Merging is a separate decision by the user.
+5. **Report back to the user** with the PR URLs, branch names, and any flags (review iterations, build warnings, pre-existing failures).
+6. **Do NOT merge.** Merging is a separate decision by the user.
+
+## Review and resolve cycle
+
+After each PR is opened, the dispatcher (you) reviews the PR. If findings exist, file them as `review-finding` issues and dispatch a fix subagent. Loop until the PR is clean, then mark it ready for review.
+
+### For each PR opened by a subagent
+
+#### 1. Read the PR
+
+```bash
+PR=<pr_number>
+gh pr view "$PR" --repo ddvnguyen/hydra_vortex \
+  --json title,body,files,additions,deletions,baseRefName,headRefName,mergeable,statusCheckRollup
+gh pr diff "$PR" --repo ddvnguyen/hydra_vortex | head -400   # cap; read more if needed
+gh pr checks "$PR" --repo ddvnguyen/hydra_vortex
+```
+
+#### 2. Review for issues
+
+Check the diff + body + checks for:
+
+- **Build & tests** — Did the subagent's container build + tests pass? Does CI pass? Are there new tests for new code? Is the test count reasonable (>= 1 test for the proposed fix, more for non-trivial changes)?
+- **Code quality** — Obvious bugs, race conditions, silently-caught exceptions, ignored returns, missing error handling, resource leaks, unbounded loops, off-by-one
+- **Design** — Does the change match the issue's proposed scope? Any scope creep? Any items from the issue body that the subagent missed or skipped?
+- **Edge cases** — Empty input, null/missing keys, concurrent access, large payloads, error paths. **Especially:** the failure mode the issue was specifically trying to fix — is the fix actually triggered by that mode?
+- **Conventions** — Commit message format, `Co-Authored-By` trailer, branch name matches `fix/mN-Psev-seq`, PR body has a Test Plan with actual numbers
+- **Project-specific** — Per `docs/workflow/04-commit-pr.md`: `Closes #N` link, submodule reachability (if submodule touched), no infra changes, no deploy
+
+#### 3. If issues: file findings + dispatch a fix subagent
+
+For each finding, file a `review-finding` issue:
+
+```bash
+gh issue create --repo ddvnguyen/hydra_vortex \
+  --title "[<seq>] <short description>" \
+  --label "review-finding" \
+  --body "Review finding from PR #$PR.
+
+**File / line:** <path>:<line>
+
+**Issue:** <what's wrong, with the code snippet>
+
+**Suggested fix:** <how to address>"
+```
+
+The `seq` follows the project's P-sev-seq convention (e.g., `M-Perf-P1-001`). For multiple findings from the same review, number sequentially.
+
+Then dispatch a **fix subagent** (one per PR, focused on all findings together — keep the cycle short). The fix subagent's spec is the same as the original subagent's spec, but with these adjustments:
+
+- **Branch:** the same branch the PR is from. Re-create the worktree from the branch (the original worktree may have been kept around or pruned):
+  ```bash
+  git worktree add "$WORKSPACE_PARENT/${REPO_NAME}-${N}-fix" "$BRANCH_NAME"
+  ```
+- **Worktree:** the fix worktree above
+- **Task scope:** the specific review findings (their issue numbers + descriptions), NOT the whole original issue body
+- **Commit message:** `fix: address PR #<PR> review — <finding summary>` (or `… — N findings` if several)
+- **PR body:** the fix subagent does NOT open a new PR. It pushes commits to the same branch. The existing PR is automatically updated.
+- **Return:** just the new commit SHAs + a 2-line summary, NOT a new PR URL
+
+#### 4. Re-review
+
+After the fix subagent pushes:
+
+```bash
+gh pr diff "$PR" --repo ddvnguyen/hydra_vortex | head -400
+gh pr checks "$PR" --repo ddvnguyen/hydra_vortex
+```
+
+If new findings appear, repeat from step 3. If the PR is clean (no findings, build green, tests green), continue to step 5.
+
+#### 5. Mark ready and report
+
+When the PR is clean:
+
+```bash
+gh pr ready "$PR" --repo ddvnguyen/hydra_vortex
+```
+
+Then report to the user with:
+- PR URL
+- Number of review-resolve iterations
+- Final build/test result
+- Any unaddressed risks or notes for the user
+
+### When to stop the cycle
+
+- **Stop on clean** — the PR has no findings, build is green, tests are green.
+- **Stop on hard block** — the finding is outside the subagent's scope (cross-repo coordination, design discussion, requires user decision). Surface the finding to the user instead of dispatching a fix.
+- **Cap iterations** — if more than 3 review-resolve cycles are needed on the same PR, the change is too large for a single subagent. Mark the PR as draft, surface to the user.
