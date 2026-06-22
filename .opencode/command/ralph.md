@@ -166,7 +166,7 @@ If you hit ambiguity you cannot resolve from the code/docs, **stop and report** 
 
 ## Review and resolve cycle
 
-After each PR is opened, the dispatcher (you) reviews the PR. If findings exist, file them as `review-finding` issues and dispatch a fix subagent. Loop until the PR is clean, then mark it ready for review.
+After each PR is opened, the dispatcher (you) reviews the PR. The review result is posted as a **GitHub review** (not a plain comment) via `gh pr review`, with a body that starts with the `[REVIEW]` prefix so it's filterable. Other devs (humans) handle any fixes — the dispatcher does NOT auto-fix and does NOT loop on its own.
 
 ### For each PR opened by a subagent
 
@@ -188,12 +188,52 @@ Check the diff + body + checks for:
 - **Code quality** — Obvious bugs, race conditions, silently-caught exceptions, ignored returns, missing error handling, resource leaks, unbounded loops, off-by-one
 - **Design** — Does the change match the issue's proposed scope? Any scope creep? Any items from the issue body that the subagent missed or skipped?
 - **Edge cases** — Empty input, null/missing keys, concurrent access, large payloads, error paths. **Especially:** the failure mode the issue was specifically trying to fix — is the fix actually triggered by that mode?
-- **Conventions** — Commit message format, `Co-Authored-By` trailer, branch name matches `fix/mN-Psev-seq`, PR body has a Test Plan with actual numbers
+- **Conventions** — Commit message format, `Co-Authored-By` trailer, branch name matches `fix/<area>-<slug>` or `fix/mN-Psev-seq`, PR body has a Test Plan with actual numbers
 - **Project-specific** — Per `docs/workflow/04-commit-pr.md`: `Closes #N` link, submodule reachability (if submodule touched), no infra changes, no deploy
 
-#### 3. If issues: file findings + dispatch a fix subagent
+#### 3. Post the [REVIEW] result
 
-For each finding, file a `review-finding` issue:
+Use `gh pr review` (NOT `gh pr comment`) so the review is a proper GitHub review action. The body MUST start with `[REVIEW]`.
+
+**If clean → APPROVE:**
+
+```bash
+gh pr review "$PR" --repo ddvnguyen/hydra_vortex --approve --body "[REVIEW] APPROVED
+
+Reviewed: <commit SHA>, +<adds>/-<dels> across <N> files.
+Build: <local status> / CI: <CI status, or 'offline — pre-existing infra'>
+Tests: <X/Y new pass>; <pre-existing failure noted if any>.
+
+<one-line summary of the fix>
+
+Closes #<issue> cleanly. <optional: short note on what this enables>"
+```
+
+**If findings → REQUEST CHANGES + file review-finding issues (one per finding):**
+
+```bash
+gh pr review "$PR" --repo ddvnguyen/hydra_vortex --request-changes --body "[REVIEW] CHANGES REQUESTED
+
+Reviewed: <commit SHA>, +<adds>/-<dels> across <N> files.
+Build: <status> / CI: <status>
+Tests: <X/Y new pass>
+
+### Findings
+
+**F1 [P1-sev] <short title>**
+- File: \`<path>:<line>\`
+- Issue: <what's wrong, with code snippet>
+- Suggested fix: <how to address>
+- Tracked: ddvnguyen/hydra_vortex#<review-finding-issue-num>
+
+**F2 [P2-sev] <short title>**
+- ...
+
+### Required changes
+- F1, F2 must be addressed before merge."
+```
+
+For each finding, also file a `review-finding` issue (so it's tracked on the Project board):
 
 ```bash
 gh issue create --repo ddvnguyen/hydra_vortex \
@@ -203,52 +243,25 @@ gh issue create --repo ddvnguyen/hydra_vortex \
 
 **File / line:** <path>:<line>
 
-**Issue:** <what's wrong, with the code snippet>
+**Issue:** <what's wrong, with code snippet>
 
-**Suggested fix:** <how to address>"
+**Suggested fix:** <how to address>
+
+**Blocker:** yes/no"
 ```
 
-The `seq` follows the project's P-sev-seq convention (e.g., `M-Perf-P1-001`). For multiple findings from the same review, number sequentially.
+The `seq` follows the project's P-sev-seq convention (e.g., `M-Perf-P1-001`). For multiple findings from the same review, number sequentially. Cross-link the issue number in the PR comment's Finding block (`Tracked: ddvnguyen/hydra_vortex#N`).
 
-Then dispatch a **fix subagent** (one per PR, focused on all findings together — keep the cycle short). The fix subagent's spec is the same as the original subagent's spec, but with these adjustments:
+#### 4. Report back to the user
 
-- **Branch:** the same branch the PR is from. Re-create the worktree from the branch (the original worktree may have been kept around or pruned):
-  ```bash
-  git worktree add "$WORKSPACE_PARENT/${REPO_NAME}-${N}-fix" "$BRANCH_NAME"
-  ```
-- **Worktree:** the fix worktree above
-- **Task scope:** the specific review findings (their issue numbers + descriptions), NOT the whole original issue body
-- **Commit message:** `fix: address PR #<PR> review — <finding summary>` (or `… — N findings` if several)
-- **PR body:** the fix subagent does NOT open a new PR. It pushes commits to the same branch. The existing PR is automatically updated.
-- **Return:** just the new commit SHAs + a 2-line summary, NOT a new PR URL
-
-#### 4. Re-review
-
-After the fix subagent pushes:
-
-```bash
-gh pr diff "$PR" --repo ddvnguyen/hydra_vortex | head -400
-gh pr checks "$PR" --repo ddvnguyen/hydra_vortex
-```
-
-If new findings appear, repeat from step 3. If the PR is clean (no findings, build green, tests green), continue to step 5.
-
-#### 5. Mark ready and report
-
-When the PR is clean:
-
-```bash
-gh pr ready "$PR" --repo ddvnguyen/hydra_vortex
-```
-
-Then report to the user with:
+In the final user-facing report, include:
 - PR URL
-- Number of review-resolve iterations
-- Final build/test result
-- Any unaddressed risks or notes for the user
+- Review verdict: `APPROVED` or `CHANGES REQUESTED (N findings)`
+- For `APPROVED`: the PR is ready for human merge
+- For `CHANGES REQUESTED`: the issue numbers of the filed findings (so the user can see them on the board)
 
 ### When to stop the cycle
 
-- **Stop on clean** — the PR has no findings, build is green, tests are green.
-- **Stop on hard block** — the finding is outside the subagent's scope (cross-repo coordination, design discussion, requires user decision). Surface the finding to the user instead of dispatching a fix.
-- **Cap iterations** — if more than 3 review-resolve cycles are needed on the same PR, the change is too large for a single subagent. Mark the PR as draft, surface to the user.
+- **Stop on APPROVED** — the PR is approved, ready for human merge. Do NOT auto-merge.
+- **Stop on CHANGES REQUESTED** — comment posted, issues filed, other devs handle. The dispatcher does NOT loop on its own; the user re-invokes `/ralph <issue>` after the fixes are pushed to re-review.
+- **Hard block** — surface to the user immediately (e.g., the change is too large for a single PR, requires design discussion, requires user decision).
