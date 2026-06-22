@@ -4,14 +4,23 @@ name: hydra-system
 # "hydra system" stack on the RTX host. P100 is a separate VM and is
 # NOT in this compose.
 #
-# Both services run as uid 1000 (the host ddv user) so the in-container
-# promtail (managed by hydra-head) can read /mnt/containers/*/ctr.log
-# directly without socat. This also matches the host auth.json owner
-# (ddv:ddv) so ghcr.io pulls work without chmod 644.
+# The pod runs as `userns_mode: host` (set at the pod level here, NOT
+# on individual services — podman rejects `--userns` and `--pod`
+# together). With host userns, container uids match host uids
+# directly, so the in-container promtail can read host files
+# (`/mnt/containers/*/ctr.log`, `/mnt/SSD/hydra-backup`, the host
+# podman auth.json) without chmod 644. Both services also set
+# `user: 1000:1000` to run as the host ddv user.
 #
 # Deploy with:
+#   export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
 #   podman compose -f infra/docker-compose.hydra.yml up -d
-#   (note: podman-compose is not used; podman 5.x has native compose support)
+# (note: podman-compose is not used; podman 5.x has native compose support)
+
+# Pod-level userns_mode (NOT per-service). podman rejects
+# `--userns` combined with `--pod`; setting it at the pod level
+# here makes the whole pod run with host userns.
+userns_mode: "host"
 
 # ── Named volumes ─────────────────────────────────────────────────────────
 volumes:
@@ -29,13 +38,6 @@ services:
     image: localhost/hydra-core:latest
     network_mode: host
     user: "1000:1000"
-    # CRITICAL: disable userns remapping. With the default userns,
-    # container uid 1000 maps to host uid 100999, which means
-    # uid=1000(ubuntu) inside can't read host files owned by ddv
-    # (uid 1000) — including /mnt/containers/ctr.log (700) and
-    # /mnt/containers/volumes/* (700). host userns makes container
-    # uids match host uids directly. See #325 follow-up.
-    userns_mode: "host"
     tmpfs:
       - /mnt/llm-ram:size=30G
     volumes:
@@ -88,9 +90,6 @@ services:
     image: localhost/hydra-head:rtx
     network_mode: host
     user: "1000:1000"
-    # See core service above — same userns fix applies here so the
-    # in-container promtail can read /mnt/containers/*/ctr.log.
-    userns_mode: "host"
     devices:
       - nvidia.com/gpu=all
     depends_on:

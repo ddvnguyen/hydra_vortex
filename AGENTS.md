@@ -9,7 +9,8 @@ Quick map:
   `docs/GITHUB_PROJECT_SETUP.md`.
 - **Code / PRs / CI issues → GitHub** (`gh`; review findings use the `review-finding`
   label).
-- **Build / run / test commands → `DevelopmentRunBook.md` and `docs/build-environment.md`.**
+- **Build / run / test commands → `DevelopmentRunBook.md`, `docs/build-environment.md`, `docs/hydra-system-pod.md`.**
+  - **`docs/hydra-system-pod.md`** is the canonical doc for starting/stopping/debugging the hydra-core + hydra-head-rtx pod. Read it before any `podman run` on either service.
   - Full-solution `dotnet test` requires `--settings src/Hydra.runsettings` to serialize assemblies (avoid PG contention); alternatively run per-project.
 - **Build env quirks** (read `docs/build-environment.md` first):
   - **`go` is NOT in default PATH.** It lives at `~/go-sdk/go/bin/go`
