@@ -161,22 +161,24 @@ public static class Router
 		if (entry.SlotId == null)
 			return false;
 
-		try
+	try
 		{
 			var llama = new LlamaClient(worker.LlamaUrl);
+
 			var meta = await llama.GetStateMetaAsync(entry.SlotId.Value, CancellationToken.None);
+
 			if (meta == null || meta.NPast <= 0)
 				return false;
 
-			// Check: slot is processing and has not drifted beyond cached n_past
-			if (!meta.IsProcessing && meta.NPast + meta.StateSize <= entry.NPast)
-				return false; // stuck slot
+			// Check: slot is actively processing or has recent activity
+			if (!meta.IsProcessing && meta.NPast <= entry.NPast)
+				return false; // slot not actively processing or hasn't advanced
 
 			// Check: n_past >= entry.NPast (slot hasn't drifted)
 			if (entry.NPast > 0 && meta.NPast < entry.NPast)
 				return false;
 
-			// Note: PrefixHash validation removed - SlotMeta doesn't include it
+			// Note: PrefixHash not available via STATE_META RPC — slot verification without prefix validation (review finding filed)
 
 
 

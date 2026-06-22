@@ -28,7 +28,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private Channel<WorkItem> _mainQueue;
 	private Channel<WorkItem> _prefillQueue;
 	private Channel<WorkItem> _decodeQueue;
-	private readonly CancellationTokenSource _cts = new();
+	private CancellationTokenSource _cts = new();
+
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _agentClients = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _llamaRpcClients = new();
 	private readonly HashSet<string> _prefixSet = [];
@@ -191,12 +192,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return new { migrated = true, session_id = sessionId, target = targetNodeName, slot = slotId, n_past = nPastAfter };
 	}
 
-	public async Task<object> ResetSystemAsync(CancellationToken ct)
+	  public async Task<object> ResetSystemAsync(CancellationToken ct)
 	{
 		try
 		{
-			// Step 1: Cancel in-flight pipelines — signal all consumers to stop.
+			// Step 0: Re-arm the CTS — cancel and replace it so RunAsync can restart.
 			_cts.Cancel();
+			var newCts = new CancellationTokenSource();
+			_cts = newCts;
+
+
+			// Step 1: Cancel in-flight pipelines — signal all consumers to stop.
 
 			// Step 2: Signal pending timelines.
 			foreach (var (sid, item) in _pendingTimelines)
@@ -233,6 +239,30 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			foreach (var w in _cfg.Workers)
 				CoordinatorMetrics.ActiveSessions.WithLabels(w.Name).Set(0);
 
+			// Step 9: Restart the consumer loop with the re-armed CTS.
+			var restartLoop = new CancellationTokenSource();
+			restartLoop.Token.Register(() => _cts.Cancel());
+
+			while (!restartLoop.IsCancellationRequested)
+			{
+				var prefillslots = Math.Max(1, _cfg.Workers.Count(w => w.CanPrefill));
+				var decodeSlots = Math.Max(1, _cfg.Workers.Count(w => w.CanDecode));
+
+				var tasks = new[]
+				{
+					RunClassifierAsync(_cfg.Workers.Count, _cts.Token),
+					RunPrefillConsumerAsync(prefillslots, _cts.Token),
+					RunDecodeConsumerAsync(decodeSlots, _cts.Token),
+				};
+
+				await Task.WhenAll(tasks);
+
+				if (!_cts.IsCancellationRequested)
+					continue; // tasks completed but CTS still alive — restart
+
+				restartLoop.Cancel(); // CTS was cancelled externally (shutdown or another reset)
+			}
+
 			return new { status = "ok", timestamp = DateTime.UtcNow };
 		}
 		catch
@@ -240,6 +270,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			return new { status = "reset_failed", error = true };
 		}
 	}
+
 
 	public async Task RunAsync(CancellationToken ct)
 	{
