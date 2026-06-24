@@ -178,6 +178,18 @@ internal static class CoordinatorMetrics
         "Engine PREFILL fallback: requested model unknown, used resident model",
         new CounterConfiguration { LabelNames = new[] { "worker", "requested" } });
 
+    // ── M-Perf / Issue #336: surface PUSH_CHUNKS failures ──
+    // Incremented in WorkerSchedulerService.PushMissingChunksAsync when the
+    // Store's PUSH_CHUNKS RPC returns a non-Ok status (transport error,
+    // partial write, store rejection). Before #336 the response was
+    // discarded, so the only operator-visible error was the cascading
+    // PUT_MANIFEST "unresident chunks" complaint — which misidentified the
+    // root cause as a manifest problem rather than a chunk-push problem.
+    public static readonly Counter PushChunksFailures = Metrics.CreateCounter(
+        "hydra_push_chunks_failures_total",
+        "PUSH_CHUNKS RPC failures (Store rejected or transport error)",
+        new CounterConfiguration { LabelNames = new[] { "reason" } });
+
     // ── M-Perf / Issue #306: bench-harness observability ──
     // Age (in seconds) of the oldest warm-lease currently held. A non-zero
     // value that grows over time is an early signal that the eviction
