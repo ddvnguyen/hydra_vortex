@@ -310,10 +310,10 @@ cmake -B build_sm60_v2 \
   -DBUILD_SHARED_LIBS=ON \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-cmake --build build_sm60_v2 --target llama-engine -j$(nproc)
+cmake --build build_sm60_v2 --target llama-server -j$(nproc)
 
 # Sanity check
-build_sm60_v2/bin/llama-engine --version
+build_sm60_v2/bin/llama-server --version
 # expected: version: <N> (<sha>) [shared]
 ```
 
@@ -350,9 +350,9 @@ Or, for a quick P100 update that bypasses the OCI pull flow, replace the
 binary directly on the VM (still supported):
 ```bash
 # 1. Copy to VM (scp uses ~/.ssh/config alias hydra-p100 → vm1@192.168.122.21)
-# Build output is named llama-engine (#261/#262 rename); the VM-side deploy
+# Both sm60 and sm120 builds now produce `llama-server`. The VM-side filename has always been `llama-server`.
 # path/filename is still llama-server until the infra config migrates.
-scp build_sm60/bin/llama-engine hydra-p100:/tmp/llama-server-new
+scp build_sm60_v2/bin/llama-server hydra-p100:/tmp/llama-server-new
 
 # 2. Deploy on the VM (must be run interactively — sudo needs a terminal)
 

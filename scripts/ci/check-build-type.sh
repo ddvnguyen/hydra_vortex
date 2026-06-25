@@ -8,8 +8,13 @@
 # different md5s of the launcher but the build_info() output looked
 # identical, so the difference was invisible in CI.
 #
-# After #349, llama-server --version reports [shared] or [static] so
-# we can fail fast. Use this script as a pre-deploy gate.
+# After ddvnguyen/hydra_vortex#349, llama-server --version reports
+# [shared] or [static] so we can fail fast. This script is invoked
+# from scripts/deploy-hydra-head.sh (smoke test before deploy).
+#
+# Note: pre-#349 builds of the same source report no [shared] token
+# at all (not "[static]"). This script treats both as failures, which
+# is the intended fail-fast — re-build with the new fork.
 
 set -euo pipefail
 
@@ -20,15 +25,15 @@ fi
 
 BIN="$1"
 if [[ ! -x "$BIN" ]]; then
-    echo "FATAL: $BIN is not executable" >&2
+    echo "FATAL: '$BIN' is not executable" >&2
     exit 2
 fi
 
-VERSION_OUT="$($BIN --version 2>&1 || true)"
+VERSION_OUT="$("$BIN" --version 2>&1 || true)"
 
 if ! grep -q '\[shared\]' <<<"$VERSION_OUT"; then
     cat >&2 <<INNER_EOF
-FATAL: $BIN is not a shared-lib build.
+FATAL: '$BIN' is not a shared-lib build.
 
   output: $VERSION_OUT
 
@@ -38,4 +43,4 @@ INNER_EOF
     exit 1
 fi
 
-echo "OK: $BIN reports $(grep -oE '\[shared\]' <<<"$VERSION_OUT" | head -1)"
+echo "OK: '$BIN' reports $(grep -oE '\[shared\]' <<<"$VERSION_OUT" | head -1)"

@@ -223,6 +223,9 @@ jobs:
           # Build hydra-head (Go binary)
           go build -C $GITHUB_WORKSPACE/src/head -o $GITHUB_WORKSPACE/bin/hydra-head . \
             2>&1 | tee /tmp/hydra-build-head.log | tail -3
+          # Unit tests for hydra-head Go packages
+          go test -C $GITHUB_WORKSPACE/src/head -count=1 ./... \
+            2>&1 | tee /tmp/hydra-test-head.log | tail -10
           # Build hydra-head RTX container
           podman build -f $GITHUB_WORKSPACE/infra/hydra-head/Dockerfile.rtx \
             -t localhost/hydra-head:rtx $GITHUB_WORKSPACE \
