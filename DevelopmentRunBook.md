@@ -257,9 +257,14 @@ cd $WORK
 
 Built at `/opt/software/cuda/13.2` with GCC 14 via `CMAKE_CUDA_HOST_COMPILER`.
 
+> **Default: shared-lib build (`-DBUILD_SHARED_LIBS=ON`).** Static builds
+> (`-DBUILD_SHARED_LIBS=OFF`) hang in the post-init phase on RTX — see
+> #346. The build-type label appears in `--version` (e.g. `[shared]`)
+> so a stale static build is self-identifying.
+
 ```bash
 CUDA_PATH=/opt/software/cuda/13.2
-cmake -B build_sm120 \
+cmake -B build_sm120_v3 \
   -DCMAKE_CUDA_ARCHITECTURES="120" \
   -DCPACK_PACKAGE_NAME="ik-llama-sm120-cuda13.2" \
   -DGGML_CUDA=ON \
@@ -267,14 +272,18 @@ cmake -B build_sm120 \
   -DGGML_RPC=ON \
   -DGGML_NATIVE=ON \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=OFF \
-  -DCMAKE_INSTALL_PREFIX=/usr/local \
-  -DCMAKE_INSTALL_RPATH="$CUDA_PATH/lib64" \
+  -DBUILD_SHARED_LIBS=ON \
+  -DCMAKE_BUILD_RPATH='$ORIGIN' \
+  -DCMAKE_INSTALL_RPATH='$ORIGIN' \
   -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_BUILD_TESTS=OFF
-cmake --build build_sm120 --target llama-engine -j$(nproc)
+cmake --build build_sm120_v3 --target llama-server -j$(nproc)
+
+# Sanity check: --version must show [shared]
+build_sm120_v3/bin/llama-server --version
+# expected: version: <N> (<sha>) [shared]
 ```
 
 #### P100 (Pascal sm_60, CUDA 12.9)
@@ -284,7 +293,7 @@ GCC 15+ fails with `error: unrecognized command-line option '-###'`).
 
 ```bash
 CUDA_PATH=/opt/software/cuda/12.9
-cmake -B build_sm60 \
+cmake -B build_sm60_v2 \
   -DCMAKE_CUDA_ARCHITECTURES="60" \
   -DCMAKE_CUDA_HOST_COMPILER="/usr/bin/g++-14" \
   -DGGML_RPC=ON \
@@ -294,13 +303,18 @@ cmake -B build_sm60 \
   -DGGML_CUDA_FA_ALL_QUANTS=OFF \
   -DGGML_NATIVE=ON \
   -DCPACK_INCLUDE_COMMANDS=ON \
-  -DCMAKE_INSTALL_RPATH="$CUDA_PATH/lib64" \
+  -DCMAKE_BUILD_RPATH='$ORIGIN' \
+  -DCMAKE_INSTALL_RPATH='$ORIGIN' \
   -DCMAKE_BUILD_TYPE=Release \
   -DLLAMA_BUILD_TESTS=OFF \
-  -DBUILD_SHARED_LIBS=OFF \
+  -DBUILD_SHARED_LIBS=ON \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-cmake --build build_sm60 --target llama-engine -j$(nproc)
+cmake --build build_sm60_v2 --target llama-engine -j$(nproc)
+
+# Sanity check
+build_sm60_v2/bin/llama-engine --version
+# expected: version: <N> (<sha>) [shared]
 ```
 
 #### Deploy via Hydra Head
