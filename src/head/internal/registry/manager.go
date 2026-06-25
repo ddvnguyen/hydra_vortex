@@ -30,16 +30,25 @@ func NewManager(logger *slog.Logger, cacheDir string) *Manager {
 
 // fileEntry is one regular-file entry inside a layer tar.
 type fileEntry struct {
-	rawName    string // original header.Name (e.g. "llama/llama-server")
+	rawName    string // original header.Name
 	normalized string // "./" and "/" stripped
-	dir        string // directory part of normalized (e.g. "llama") — "" if at root
-	base       string // basename (e.g. "llama-server")
+	dir        string // directory part of normalized
+	base       string // basename
 	size       int64
 }
 
 // PullBinary pulls a binary from an OCI registry. See extractBinary for
 // the multi-file (shared-library) handling.
+//
+// destination must end in /<binaryName>: the launcher lands at
+// destination, any sibling files (e.g. lib*.so*) land at the same
+// directory. filepath.Base(destination) must equal binaryName —
+// enforced below.
 func (m *Manager) PullBinary(source, destination, imageDigest, binaryChecksum, binaryName string) error {
+	if filepath.Base(destination) != binaryName {
+		return fmt.Errorf("destination %q does not end in /%s (binaryName); refusing to extract to a path that conflicts with single-file vs multi-file layouts", destination, binaryName)
+	}
+
 	m.logger.Info("pulling binary from registry",
 		"source", source, "destination", destination,
 		"image_digest", imageDigest, "binary_checksum", binaryChecksum,
@@ -69,6 +78,8 @@ func (m *Manager) PullBinary(source, destination, imageDigest, binaryChecksum, b
 		return fmt.Errorf("extract binary: %w", err)
 	}
 
+	// chmod 0755 is a no-op for multi-file (already set during write),
+	// and required for the single-file path (writeFileAtomic used 0644).
 	if err := os.Chmod(destination, 0755); err != nil {
 		return fmt.Errorf("chmod binary: %w", err)
 	}
@@ -105,8 +116,7 @@ func (m *Manager) verifyImageDigest(actual v1.Hash, expected string) error {
 	return nil
 }
 
-// extractBinary walks the image layers, finds the layer containing the
-// named binary, and routes to either the single-file or multi-file
+// extractBinary walks the image layers and routes to the appropriate
 // extraction path. See extractFromTar for the detection rules.
 func (m *Manager) extractBinary(img v1.Image, destination, binaryName string) error {
 	layers, err := img.Layers()
@@ -133,8 +143,6 @@ func (m *Manager) extractBinary(img v1.Image, destination, binaryName string) er
 			return fmt.Errorf("read layer %d: %w", i, err)
 		}
 
-		// bytes.NewReader is a ReadSeeker, which extractFromTar
-		// needs to re-walk for each entry.
 		layout, err := m.extractFromTar(bytes.NewReader(buf), destination, binaryName)
 		if err != nil {
 			return fmt.Errorf("extract from layer %d: %w", i, err)
@@ -147,21 +155,31 @@ func (m *Manager) extractBinary(img v1.Image, destination, binaryName string) er
 	return fmt.Errorf("binary '%s' not found in any layer", binaryName)
 }
 
-// extractFromTar walks the layer tar to classify the file layout, then
-// extracts via the appropriate path. Returns "" if the binary is not
-// present in this layer.
+// extractFromTar walks the layer tar ONCE, identifies all regular
+// files (and their bodies), and routes to the appropriate extraction
+// path. Returns "" if the binary is not present in this layer.
 //
 // Multi-file detection: if the layer contains the named binary AND
 // any other regular file in the same directory, the layer is treated
 // as a shared-library build. All files in that directory are
-// extracted together via an atomic directory swap. Otherwise the
-// legacy single-file path is used (atomic single-file rename,
-// unchanged).
+// extracted together to destDir/<basename>. Otherwise the legacy
+// single-file path is used (only the launcher is extracted to
+// destination).
 //
-// The reader must be an io.ReadSeeker (e.g. *bytes.Reader wrapping a
-// buffered layer) so re-walks can find each entry's body.
-func (m *Manager) extractFromTar(r io.ReadSeeker, destination, binaryName string) (string, error) {
-	var files []fileEntry
+// Crash-safety: every file is written via writeFileAtomic (temp +
+// fsync + rename). The destDir is NEVER removed or renamed, so a
+// crash mid-extract leaves the old contents intact (the partial new
+// files are in destDir/.<basename>.partial-* and are cleaned up on
+// the next pull).
+func (m *Manager) extractFromTar(r io.Reader, destination, binaryName string) (string, error) {
+	// Single pass over the tar: collect fileEntry + body bytes.
+	// archive/tar is forward-only, so we drain bodies as we walk and
+	// buffer them. For an N-file layer this is O(N) work, not O(N^2).
+	type fileWithBody struct {
+		entry fileEntry
+		body  []byte
+	}
+	var files []fileWithBody
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
@@ -179,14 +197,20 @@ func (m *Manager) extractFromTar(r io.ReadSeeker, destination, binaryName string
 		norm = strings.TrimPrefix(norm, "/")
 		dir, base := filepath.Split(norm)
 		dir = strings.TrimSuffix(dir, "/")
-		files = append(files, fileEntry{
-			rawName: raw, normalized: norm, dir: dir, base: base, size: hdr.Size,
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			return "", fmt.Errorf("read body for %q: %w", raw, err)
+		}
+		files = append(files, fileWithBody{
+			entry: fileEntry{rawName: raw, normalized: norm, dir: dir, base: base, size: hdr.Size},
+			body:  body,
 		})
 	}
 
-	var launcher *fileEntry
+	// Find the launcher
+	var launcher *fileWithBody
 	for i := range files {
-		if files[i].base == binaryName {
+		if files[i].entry.base == binaryName {
 			launcher = &files[i]
 			break
 		}
@@ -195,135 +219,70 @@ func (m *Manager) extractFromTar(r io.ReadSeeker, destination, binaryName string
 		return "", nil
 	}
 
-	launcherDir := launcher.dir
-	var siblings []fileEntry
+	launcherDir := launcher.entry.dir
+	var siblings []fileWithBody
 	for i := range files {
-		if files[i].dir == launcherDir {
+		if files[i].entry.dir == launcherDir {
 			siblings = append(siblings, files[i])
 		}
 	}
 
-	if len(siblings) <= 1 {
-		// Single-file path: copy launcher bytes to a temp file,
-		// then atomically rename. The layer is re-walked to find
-		// the entry body (archive/tar is forward-only).
-		launcherBytes, err := readTarFile(r, launcher.normalized)
-		if err != nil {
-			return "", fmt.Errorf("read launcher from tar: %w", err)
-		}
-		if err := writeFileAtomic(destination, launcherBytes); err != nil {
-			return "", fmt.Errorf("write launcher: %w", err)
-		}
-		m.logger.Debug("extracted single-file binary",
-			"path", destination, "bytes", len(launcherBytes),
-			"source", launcher.rawName)
-		return "single-file", nil
-	}
-
-	// Multi-file path: stage launcher + siblings into a temp dir,
-	// then atomically rename the temp dir over the dest dir.
-	// The dest dir will contain:
-	//   <destDir>/<binaryName>          (the launcher)
-	//   <destDir>/<sibling1>            (e.g. libllama-server-impl.so)
-	//   <destDir>/<sibling2>            (e.g. libllama.so.0)
-	//   ...
 	destDir := filepath.Dir(destination)
 	dstLocks.Lock(destDir)
 	defer dstLocks.Unlock(destDir)
 
-	// Stage into a sibling temp dir, then rename over the dest dir.
-	// The temp dir lives next to destDir so the rename is on the same
-	// filesystem (atomic on POSIX).
-	parent := filepath.Dir(destDir)
-	tempDir, err := os.MkdirTemp(parent, ".binary-multi-*.tmp")
-	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
+	if len(siblings) <= 1 {
+		// Single-file path: write the launcher bytes directly into
+		// destDir, atomic rename. Mode 0755 (executable).
+		if err := writeFileAtomic(destination, launcher.body, 0755); err != nil {
+			return "", fmt.Errorf("write launcher: %w", err)
+		}
+		m.logger.Debug("extracted single-file binary",
+			"path", destination, "bytes", len(launcher.body),
+			"source", launcher.entry.rawName)
+		return "single-file", nil
 	}
-	success := false
-	defer func() {
-		if !success {
-			os.RemoveAll(tempDir)
-		}
-	}()
 
+	// Multi-file path: write each file directly into destDir. The
+	// destDir is NOT removed or renamed — we just write into it. If
+	// the old contents had files that aren't in the new layer (e.g.
+	// an old version of libfoo.so), they linger harmlessly; the new
+	// files are the ones that matter. Per-file writeFileAtomic makes
+	// this crash-safe: a crash mid-extract leaves a .partial-*.tmp
+	// file in destDir that gets cleaned up on the next pull.
 	for _, sib := range siblings {
-		body, err := readTarFile(r, sib.normalized)
-		if err != nil {
-			return "", fmt.Errorf("read %s from tar: %w", sib.base, err)
+		mode := int64(0644)
+		if sib.entry.base == binaryName {
+			mode = 0755
 		}
-		out := filepath.Join(tempDir, sib.base)
-		if err := writeFileAtomic(out, body); err != nil {
-			return "", fmt.Errorf("write %s: %w", sib.base, err)
-		}
-		// Make the launcher executable in the staging dir. The
-		// file mode survives the rename into destDir.
-		if sib.isLauncherRaw(binaryName) {
-			if err := os.Chmod(out, 0755); err != nil {
-				return "", fmt.Errorf("chmod launcher: %w", err)
-			}
+		out := filepath.Join(destDir, sib.entry.base)
+		if err := writeFileAtomic(out, sib.body, mode); err != nil {
+			return "", fmt.Errorf("write %s: %w", sib.entry.base, err)
 		}
 		m.logger.Debug("extracted file",
-			"path", out, "bytes", len(body), "source", sib.rawName)
+			"path", out, "bytes", len(sib.body), "source", sib.entry.rawName,
+			"mode", fmt.Sprintf("%o", mode))
 	}
-
-	// Atomic directory swap. RemoveAll first because the dest dir
-	// may be a mount point we can't replace in place.
-	if err := os.RemoveAll(destDir); err != nil {
-		return "", fmt.Errorf("remove old dest dir: %w", err)
-	}
-	if err := os.Rename(tempDir, destDir); err != nil {
-		return "", fmt.Errorf("rename temp dir over dest: %w", err)
-	}
-	success = true
 	return "multi:" + launcherDir, nil
 }
 
-// isLauncherRaw is a small helper to keep the multi-file loop readable.
-func (e fileEntry) isLauncherRaw(binaryName string) bool { return e.base == binaryName }
-
-// readTarFile re-walks the tar stream to find an entry by its normalized
-// name and return its body bytes. The reader must be a *bytes.Reader
-// (or any io.ReadSeeker) so the caller can reset it for subsequent
-// re-walks. archive/tar is forward-only, so we re-seek to 0 before
-// each call.
-func readTarFile(r io.ReadSeeker, normalizedName string) ([]byte, error) {
-	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("seek: %w", err)
-	}
-	tr := tar.NewReader(r)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil, fmt.Errorf("entry %q not found in tar", normalizedName)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if hdr.Typeflag != tar.TypeReg {
-			continue
-		}
-		raw := hdr.Name
-		norm := strings.TrimPrefix(raw, "./")
-		norm = strings.TrimPrefix(norm, "/")
-		if norm != normalizedName {
-			// Drain the body so the next Next() is at the right place
-			// (only matters if we re-walk past this entry; safe
-			// regardless).
-			_, _ = io.Copy(io.Discard, tr)
-			continue
-		}
-		return io.ReadAll(tr)
-	}
-}
-
 // writeFileAtomic writes body to path via temp-file + fsync + rename.
-func writeFileAtomic(path string, body []byte) error {
+// Mode is applied to both the temp file (in case the rename fails
+// and the temp file is left behind) and the final path. The temp
+// file lives in the same dir as path so the rename is on the same
+// filesystem (atomic on POSIX).
+func writeFileAtomic(path string, body []byte, mode int64) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".partial-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
+	if err := tmp.Chmod(os.FileMode(mode)); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp: %w", err)
+	}
 	if _, err := tmp.Write(body); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
@@ -341,6 +300,11 @@ func writeFileAtomic(path string, body []byte) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
+	}
+	// Belt-and-braces: ensure the final path has the right mode
+	// (some filesystems reset the mode across the rename).
+	if err := os.Chmod(path, os.FileMode(mode)); err != nil {
+		return fmt.Errorf("chmod final: %w", err)
 	}
 	return nil
 }
@@ -372,7 +336,9 @@ func (m *Manager) PullAndVerify(source, destination, imageDigest, binaryChecksum
 }
 
 // dstLocks serialises concurrent extractions to the same dest dir.
-// Per-destination sync.Mutex is held briefly during the atomic swap.
+// Per-destination sync.Mutex is held briefly during the write loop.
+// Map is bounded by the number of distinct dest dirs in the system
+// (typically a handful).
 var dstLocks = newKeyMutex()
 
 type keyMutex struct {
