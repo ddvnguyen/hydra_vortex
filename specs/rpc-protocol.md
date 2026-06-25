@@ -166,18 +166,25 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                                         "capabilities":["prefill","decode","state_transfer",
                                                          "expert_mode","quant_swap","preset","model_hash"],
                                         "preset_aliases":["<alias>",...],
-                                        "role":"standalone|head|worker",
+                                        "solo_active":true,
+                                        "rpc_backend_active":<bool>,
                                         "mode":"solo|combined",
-                                        "peer_connected":<bool>,
                                         "peer_addr":"<host:port, empty if not configured>",
+                                        "peer_reachable":<bool>,
                                         "layer_split":"<combined tensor-name regex, empty if not configured>",
-                                        "combined_capable":<bool>,
+                                        "combined_head_attached":<bool>,
                                         "pipeline_capable":false}
                                   payload_len=0
-                        Note: `combined_capable`/`peer_connected` reflect whether the engine
-                        successfully dual-loaded expert tensors onto its --rpc-engine peer at
-                        startup (issue #287/#260) — they are NOT a live per-call peer health
-                        check. `pipeline_capable` stays false until #287's PIPELINE half lands.
+                        Note (issue #348): independent capability booleans replace the old
+                        single `role` string and the old `peer_connected`/`combined_capable`
+                        field pair, which used to alias the same underlying value. `solo_active`
+                        is always true — every engine always loads its model now. `rpc_backend_active`
+                        is true once `--ggml-rpc-port` started the embedded RPC server thread.
+                        `peer_reachable` is the startup TCP-probe result for `peer_addr`, distinct
+                        from `combined_head_attached`, which reflects whether the engine actually
+                        dual-loaded expert tensors onto that peer (issue #287/#260) — it is NOT a
+                        live per-call peer health check. `pipeline_capable` stays false until
+                        #287's PIPELINE half lands.
 
 0x42  PREFILL           Run prefill only (n_predict=0), return n_past and state blob inline
                         Request:  key="<slot_id>", payload=JSON request body
@@ -216,7 +223,7 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                         `mode` is the ACTUAL mode now in effect, which can be "solo" even
                         when "combined" was requested — the engine only honors "combined"
                         when it dual-loaded expert tensors onto its --rpc-engine peer at
-                        startup (`combined_capable` in INFO). The Coordinator's
+                        startup (`combined_head_attached` in INFO). The Coordinator's
                         `ReportsSolo()` reads this key to detect the fallback.
 
 0x45  SWAP_QUANT        Swap expert quantization — see E3 epic #161-E3
@@ -236,25 +243,57 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                                   payload_len=0
 ```
 
-**Two-engine run modes (one binary, role flag):** the engine launches as
-`--role standalone|head|worker` (default `standalone`, zero behavior change).
+**Two-engine run modes (composable flags, always-on dual role — issue #348):** there is
+no more `--role` flag. Every engine process always loads its model and serves SOLO
+inference — there is no longer a mode where model load is skipped. Two independent,
+combinable opt-in capabilities layer on top:
 
-- **COMBINED worker** (issue #287/#260, implemented): `--role worker --ggml-rpc-port <port>`.
-  No model load, no HTTP/control-RPC serving — the process is purely an embedded
-  ggml-RPC backend exposing its local GPU(s) on `<port>` (same wire protocol
-  `tools/rpc/rpc-server.cpp` serves standalone; here it's embedded in the engine
-  binary so one role flag switches solo↔worker without a separate process).
-  Blocks for the process lifetime.
-- **COMBINED head** (implemented): `--role head --rpc-engine <peer host:port>
-  --combined-ot-pattern "<tensor-name regex>"`. At startup, after loading its model,
-  the head dual-loads every expert tensor whose name matches the pattern onto the
-  peer's embedded RPC backend (one-time network copy — see `llama_hydra_load_combined_experts`
-  in `include/llama-hydra.h`) while keeping its own local copy, so SOLO always still
-  works. `SET_EXPERT_MODE` (`0x44`) then flips between them per request.
+- **RPC backend (peer-servable)**: `--ggml-rpc-port <port>`. Exposes this engine's
+  local GPU(s) as an embedded ggml-RPC backend on `<port>` (same wire protocol
+  `tools/rpc/rpc-server.cpp` serves standalone), on a background thread, alongside
+  this engine's own model load + HTTP + control-RPC + local inference, all in the
+  same process concurrently. Critically, this serves through the *same* backend
+  instance(s) the engine's own local inference already uses
+  (`ggml_backend_rpc_start_server_with_backends`, not the old
+  `ggml_backend_rpc_start_server`'s independent `ggml_backend_dev_init` per device) —
+  one backend instance per physical device for the whole process, not two contending
+  CUDA contexts. Local decode dispatch and inbound RPC graph-compute requests are
+  serialized via a per-device mutex (`ggml_backend_rpc_server_compute_lock`/`unlock` in
+  `ggml-rpc.cpp`, engaged from `llama-context.cpp`'s `graph_compute()` via
+  `llama_hydra_lock_compute`/`unlock_compute` — see `docs/spike-engine-mode-switch.md`
+  for the design rationale and measured serialization cost). Formerly `--role worker`,
+  which never loaded a model at all — that exclusivity is gone.
+- **COMBINED head**: `--rpc-engine <peer host:port> --combined-ot-pattern
+  "<tensor-name regex>"`. At startup, after loading its model, dual-loads every
+  expert tensor whose name matches the pattern onto the peer's exposed RPC backend
+  (one-time network copy — see `llama_hydra_load_combined_experts` in
+  `include/llama-hydra.h`) while keeping its own local copy, so SOLO always still
+  works. `SET_EXPERT_MODE` (`0x44`) then flips between them per request. Before
+  committing to the dual-load, the head queries the peer's free VRAM via
+  `ggml_backend_rpc_get_device_memory` and skips COMBINED (stays solo-only, same
+  graceful-degradation style as an unreachable peer) if the peer doesn't have enough
+  headroom for the tensors plus its own resident model/KV-cache footprint — the peer's
+  VRAM is no longer guaranteed empty now that it can simultaneously serve its own SOLO
+  duty. Formerly `--role head`.
+
+A node can have neither, either, or both capabilities active at once, alongside its
+own always-on SOLO duty — e.g. the P100 can simultaneously decode its own SOLO
+requests *and* serve as the RTX head's COMBINED-mode RPC backend, without a restart to
+flip between the two (issue #348; previously required restarting with a different
+`--role`).
+
 - **PIPELINE** (`0x46`, prima.cpp-style layer split): role/transport scaffolding only —
-  stubbed `NOT_IMPLEMENTED` (issue #287, remaining half).
+  stubbed `NOT_IMPLEMENTED` (issue #287, remaining half). Note: PIPELINE's design
+  intent is true zero-copy tensor sharing (the head tells the worker which tensors to
+  own; the worker loads them from its OWN local model file, no weight transfer) — a
+  different, more VRAM-efficient mechanism than COMBINED's one-time-copy
+  dual-residency, and NOT addressed by #348. A future zero-copy COMBINED variant
+  (exposing a peer's natively-loaded tensors by name over a new ggml-RPC verb, instead
+  of dual-loading a duplicate copy) is out of scope here and should be tracked as a
+  follow-up under the PIPELINE/#287-remaining-half work.
 
-See epic #161 and `docs/milestone-perf.md` for the launch topology.
+See epic #161 and `docs/milestone-perf.md` for the launch topology, and
+`docs/spike-engine-mode-switch.md` for the #348 design/measurement writeup.
 
 **Error handling for control ops:**
 - `BUSY` (0x04) — slot is currently processing another request; caller retries with
