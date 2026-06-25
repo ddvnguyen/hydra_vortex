@@ -135,6 +135,14 @@ is unvalidated against real sustained-decode KV growth (the COMBINED dual-load i
 was a small, short-lived 3-layer slice, not a long-running session) — treat it as a
 starting heuristic pending real production-shaped usage.
 
+**COMBINED-mode end-to-end validation is explicitly deferred to the #353 fix**, not waived:
+this spike verifies the SOLO+RPC-backend-coexistence half of #348's design (the part the
+original "not a supported pattern upstream" comment was worried about), but does not
+constitute a complete "no regression to COMBINED-only paths" demonstration on its own, since
+the COMBINED compute path itself currently crashes for reasons unrelated to #348. Re-running
+this same concurrent-traffic test against RTX's COMBINED path once #353 lands is the natural
+follow-up to close that gap.
+
 ## Known limitations
 
 - VRAM-headroom check is a one-shot, startup-time snapshot — does not protect against the
