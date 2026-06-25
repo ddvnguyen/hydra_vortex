@@ -80,6 +80,44 @@ build_rtx_image() {
   ok "Built container image hydra-head:rtx"
 }
 
+# ── Build-Type Gate (smoke test) ──────────────────────────────────────────────
+# Fail fast if the llama-server binary we'd bind-mount (RTX) or scp
+# (P100) is a static build. Static builds hang in the post-init phase
+# on RTX sm_120 (see ddvnguyen/hydra_vortex#346). After #349, the
+# build type is surfaced in `llama-server --version` as [shared] or
+# [static], and scripts/ci/check-build-type.sh enforces it.
+check_llama_build_type_local() {
+  local bind_src="$REPO_ROOT/src/llama-cpp/build_sm120_v3/bin/llama-server"
+  if [ ! -x "$bind_src" ]; then
+    # Fall back to the legacy path with a useful error if it doesn't exist either.
+    bind_src="$REPO_ROOT/src/llama-cpp/build_sm120/bin/llama-server"
+  fi
+  if [ ! -x "$bind_src" ]; then
+    die "llama-server binary not found at $REPO_ROOT/src/llama-cpp/build_sm120_v3/bin/llama-server (or build_sm120/bin/) — build it with DevelopmentRunBook.md"
+  fi
+  step "Build-type gate (RTX local binary)"
+  bash "$REPO_ROOT/scripts/ci/check-build-type.sh" "$bind_src" || \
+    die "RTX llama-server is a static build; would hang in post-init. Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
+}
+
+check_llama_build_type_p100() {
+  step "Build-type gate (P100 VM binary)"
+  local vm_bin="/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server"
+  local tmp
+  tmp=$(mktemp -d)
+  if ! scp "hydra-p100:$vm_bin" "$tmp/llama-server" 2>/dev/null; then
+    rm -rf "$tmp"
+    warn "Could not scp $vm_bin from hydra-p100 — skipping P100 build-type check"
+    return 0
+  fi
+  chmod +x "$tmp/llama-server"
+  if ! bash "$REPO_ROOT/scripts/ci/check-build-type.sh" "$tmp/llama-server"; then
+    rm -rf "$tmp"
+    die "P100 llama-server is a static build. Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
+  fi
+  rm -rf "$tmp"
+}
+
 # ── Pre-deploy Cleanup ───────────────────────────────────────────────────────
 # Host-side exporter Quadlets (infra-node-exporter / infra-nvidia-
 # exporter / infra-promtail) were removed in commit TBD. The in-
@@ -133,6 +171,7 @@ deploy_rtx() {
   build_rtx_image
   stop_host_sidecars
   check_auth_file
+  check_llama_build_type_local
 
   # Ensure the promtail positions volume exists (compose declares it but
   # `podman compose up` won't create volumes in --build=skip mode).
@@ -209,6 +248,8 @@ deploy_p100() {
   if ! ssh -o ConnectTimeout=5 -o BatchMode=yes hydra-p100 true 2>/dev/null; then
     die "Cannot reach hydra-p100 via SSH (check ~/.ssh/config)"
   fi
+
+  check_llama_build_type_p100
 
   # Create directories
   ssh hydra-p100 "sudo mkdir -p /opt/hydra/bin /opt/hydra/config /etc/hydra-head"
