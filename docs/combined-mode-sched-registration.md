@@ -47,44 +47,59 @@ backend in its list that owns the `RPC0[:]` buffer, finds none, and asserts.
 The global `ggml_backend_register` makes the backend *exist*; it does **not**
 add it to *this context's* scheduler. That is the gap.
 
-## Fix: peer backend must be a first-class scheduler backend
+## Fix (implemented): append the peer backend post-load and re-reserve
 
-llama.cpp already has the mechanism — it just runs too late for COMBINED. RPC
-servers passed at startup are folded into `model.devices` by
-`llama_prepare_model_devices()` (`src/llama.cpp:159-201`), and those devices
-become real sched backends at context construction. The fix is to make the
-COMBINED peer go through that same path:
+Two approaches were considered:
 
-**Register the COMBINED peer as an RPC device before context/sched
-construction**, so it is present in `model.devices` and therefore in the
-`ggml_backend_sched_new` backend list at `llama-context.cpp:439`. Then the
-dual-loaded `_rpc` expert tensors live on a backend the scheduler owns, and
-`split_graph` places the routed-expert ops on the peer instead of asserting.
+- **(A) Pre-load device registration** — fold the peer into `model.devices`
+  before construction (via `llama_prepare_model_devices`, `src/llama.cpp:159-201`)
+  so it joins the sched at `ggml_backend_sched_new` (`llama-context.cpp:439`).
+- **(B) Post-load sched rebuild** — load the model normally (all base weights
+  placed locally), then append a backend for the peer device and re-run the
+  scheduler reserve.
 
-Sequencing inside `llama_engine()`:
+**(B) was chosen.** Reading the code, `llama_context::sched_reserve()` is
+already a re-runnable method (guarded by `sched_need_reserve`) that builds a
+fresh `ggml_backend_sched` and re-reserves the worst-case graphs — so a
+post-load rebuild is neither exotic nor "mid-graph surgery." More importantly,
+(B) **sidesteps the tensor-placement problem entirely**: base weights are placed
+by the normal SOLO load and never move, and only the manually dual-loaded
+`ffn_*_exps_rpc` tensors live on the peer. The scheduler assigns ops by tensor
+location, so the routed-expert matmuls go to the peer automatically and
+everything else stays local — no override-tensor gymnastics, no risk of the
+peer being used for general offload. (A) would have required constraining
+placement so the peer didn't attract non-expert layers.
 
-1. Resolve `--combined-ot-pattern` / `--rpc-engine` peer **before** model load.
-2. If the peer is reachable, add it as an RPC device so it joins
-   `model.devices` (reuse `ggml_backend_rpc_add_server` + the device path that
-   `llama_prepare_model_devices` already consumes — do **not** invent a parallel
-   registration).
-3. Load the model / build the context: sched now includes the peer backend.
-4. Dual-load the expert weights onto that *same* peer backend (the existing
-   copy logic, but the buffer now belongs to a sched-known backend).
-5. `SET_EXPERT_MODE("combined")` becomes a pure pointer swap between local and
-   `_rpc` tensors — both already schedulable. No sched mutation at runtime.
+### Implementation (landed on `claude/pr-360-review-nh5a5a`)
 
-This generalizes the existing device mechanism rather than bolting a special
-case onto a frozen scheduler. It also removes the need for the post-hoc
-`ggml_backend_register` in `load_combined_experts`.
+`src/llama-context.{h,cpp}`:
+- Extract the constructor's backend-vector build loop into
+  `build_backend_buffer_vectors()` (single source of truth for
+  `backend_ptrs` / `backend_buft` / `backend_buf_exp_size`).
+- Add `bool hydra_add_combined_rpc_backend(ggml_backend_dev_t peer_dev)`:
+  `ggml_backend_dev_init` the peer, insert it into `backends` **before** the CPU
+  backend (preserving GPU/RPC-before-CPU order), rebuild the derived vectors,
+  set `sched_need_reserve` and call `sched_reserve()`. Context takes ownership
+  of the peer backend.
 
-### Why not rebuild the sched after dual-load?
+`src/llama-hydra.cpp` (`llama_hydra_load_combined_experts`):
+- After the dual-load copy, call `ctx->hydra_add_combined_rpc_backend(peer_dev)`.
+  On failure, clear the `_rpc` tensors and return solo-only (fail-open preserved).
 
-`ggml_backend_sched` has no public "add a backend" API; it is fixed at
-`ggml_backend_sched_new`. Recreating the sched mid-life would have to rebuild
-graph state and re-reserve buffers while a model is resident — invasive and
-easy to get wrong. Constructing the sched correctly the first time (peer
-included) is the smaller, safer change.
+The whole new path is reachable **only** when a COMBINED peer is configured and
+reachable, so SOLO is provably unaffected (it never calls the new method).
+
+### Known follow-up (worst-case reserve vs. mode switch)
+
+`load_combined_experts` runs at startup while `hydra_expert_mode` is still `0`,
+so the reserve graph built during the rebuild uses the *local* expert tensors —
+the peer backend is present but its compute buffer is reserved at ~0. When
+`SET_EXPERT_MODE("combined")` later flips the mode, the first COMBINED decode
+references the `_rpc` tensors and `ggml_backend_sched` allocates the peer's
+compute buffers on the fly (ggml-alloc grows as needed). Functionally correct,
+but to avoid a first-request realloc the `SET_EXPERT_MODE` handler could trigger
+a `sched_reserve()` with the combined graph. Tracked as a follow-up, not a
+blocker.
 
 ### Preserved behavior
 
