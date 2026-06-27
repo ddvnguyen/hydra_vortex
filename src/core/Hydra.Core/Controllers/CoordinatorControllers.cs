@@ -166,9 +166,10 @@ public class HealthController : ControllerBase
 	private readonly ISessionLedger _ledger;
 	private readonly IWorkerTracker _tracker;
 	private readonly IHealthMonitorService _health;
+	private readonly IWorkerScheduler _scheduler;
 
-	public HealthController(CoordinatorConfig cfg, ISessionLedger ledger, IWorkerTracker tracker, IHealthMonitorService health)
-		=> (_cfg, _ledger, _tracker, _health) = (cfg, ledger, tracker, health);
+	public HealthController(CoordinatorConfig cfg, ISessionLedger ledger, IWorkerTracker tracker, IHealthMonitorService health, IWorkerScheduler scheduler)
+		=> (_cfg, _ledger, _tracker, _health, _scheduler) = (cfg, ledger, tracker, health, scheduler);
 
 	[HttpGet("/health")]
 	public IActionResult Health()
@@ -179,7 +180,7 @@ public class HealthController : ControllerBase
 		return new JsonResult(new { status = _health.IsStoreHealthy ? "healthy" : "degraded", nodes, store = new { healthy = _health.IsStoreHealthy } });
 	}
 
-	[HttpGet("/status")]
+[HttpGet("/status")]
 	public IActionResult Status()
 	{
 		var sessions = _ledger.AllSessions().Values.ToList();
@@ -187,6 +188,16 @@ public class HealthController : ControllerBase
 		foreach (var w in _cfg.Workers)
 			nodes[w.Name] = new { tracker_status = _tracker.GetStatus(w.Name), busy_duration_s = _tracker.GetElapsedSeconds(w.Name), slots_total = w.Slots, slots_idle = 0 };
 		return new JsonResult(new { sessions = new { active = _ledger.ActiveCount, sessions }, routing_stats = new { total = CoordinatorMetrics.RequestsTotalAll.Value }, nodes });
+	}
+
+	[HttpPost("/admin/reset")]
+	public async Task<IActionResult> AdminReset(CancellationToken ct)
+	{
+		if (!_cfg.DevModeEnabled)
+			return NotFound();
+
+		var result = await _scheduler.ResetSystemAsync(ct);
+		return new JsonResult(result);
 	}
 }
 

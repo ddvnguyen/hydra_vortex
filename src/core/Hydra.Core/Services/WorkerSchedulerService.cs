@@ -25,10 +25,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly IServiceProvider _serviceProvider;
 	private readonly ILogger _log;
 	private readonly LocalChunkCache? _chunkCache;
-	private readonly Channel<WorkItem> _mainQueue;
-	private readonly Channel<WorkItem> _prefillQueue;
-	private readonly Channel<WorkItem> _decodeQueue;
-	private readonly CancellationTokenSource _cts = new();
+	private Channel<WorkItem> _mainQueue;
+	private Channel<WorkItem> _prefillQueue;
+	private Channel<WorkItem> _decodeQueue;
+	private CancellationTokenSource _cts = new();
+
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _agentClients = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _llamaRpcClients = new();
 	private readonly HashSet<string> _prefixSet = [];
@@ -190,6 +191,86 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		return new { migrated = true, session_id = sessionId, target = targetNodeName, slot = slotId, n_past = nPastAfter };
 	}
+
+	  public async Task<object> ResetSystemAsync(CancellationToken ct)
+	{
+		try
+		{
+			// Step 0: Re-arm the CTS — cancel and replace it so RunAsync can restart.
+			_cts.Cancel();
+			var newCts = new CancellationTokenSource();
+			_cts = newCts;
+
+
+			// Step 1: Cancel in-flight pipelines — signal all consumers to stop.
+
+			// Step 2: Signal pending timelines.
+			foreach (var (sid, item) in _pendingTimelines)
+			{
+				if (item.StreamCompletion.TrySetException(new OperationCanceledException("System reset")))
+					item.Completion.TrySetCanceled();
+			}
+
+			// Step 3: Drain queues by recreating Channels.
+			_mainQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(500));
+			_prefillQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(50));
+			_decodeQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(100));
+
+			// Step 4: Release all tracker slots.
+			foreach (var w in _cfg.Workers)
+				_tracker.ReleaseAllSlots(w.Name);
+
+			// Step 5: Clear warm leases.
+			foreach (var (sid, lease) in _warmLeases)
+			{
+				await lease.DisposeAsync();
+				_warmLeases.TryRemove(sid, out _);
+			}
+
+			// Step 6: Clear session ledger.
+			_ledger.ClearAll();
+
+			// Step 7: Clear pending state collections.
+			_streamCompleted.Clear();
+			_pendingBgSaves.Clear();
+			_prefixSet.Clear();
+
+			// Step 8: Reset Prometheus gauges.
+			foreach (var w in _cfg.Workers)
+				CoordinatorMetrics.ActiveSessions.WithLabels(w.Name).Set(0);
+
+			// Step 9: Restart the consumer loop with the re-armed CTS.
+			var restartLoop = new CancellationTokenSource();
+			restartLoop.Token.Register(() => _cts.Cancel());
+
+			while (!restartLoop.IsCancellationRequested)
+			{
+				var prefillslots = Math.Max(1, _cfg.Workers.Count(w => w.CanPrefill));
+				var decodeSlots = Math.Max(1, _cfg.Workers.Count(w => w.CanDecode));
+
+				var tasks = new[]
+				{
+					RunClassifierAsync(_cfg.Workers.Count, _cts.Token),
+					RunPrefillConsumerAsync(prefillslots, _cts.Token),
+					RunDecodeConsumerAsync(decodeSlots, _cts.Token),
+				};
+
+				await Task.WhenAll(tasks);
+
+				if (!_cts.IsCancellationRequested)
+					continue; // tasks completed but CTS still alive — restart
+
+				restartLoop.Cancel(); // CTS was cancelled externally (shutdown or another reset)
+			}
+
+			return new { status = "ok", timestamp = DateTime.UtcNow };
+		}
+		catch
+		{
+			return new { status = "reset_failed", error = true };
+		}
+	}
+
 
 	public async Task RunAsync(CancellationToken ct)
 	{
@@ -936,6 +1017,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 				var nPast = meta?.TryGetValue("n_past", out var n) == true
 					? n.GetInt32() : 0;
+
+				// Guard: if estimated tokens <= cached n_past, the cache will be nuked.
+				// Force cold route (full re-prefill) instead of proceeding to prefill.
+				if (nPast > 0 && item.EstimatedTokens > 0
+					&& item.EstimatedTokens < nPast + 50)
+				{
+					_log.Warning("n_past_guard_prefix Restore={Sid} NPast={Past} Est={Est} — evicting warm slot",
+						item.SessionId, nPast, item.EstimatedTokens);
+					return await EvictWarmAndColdRouteAsync(item);
+				}
+
 				if (nPast > 0)
 					_ledger.UpdateNPast(item.SessionId, nPast);
 			}

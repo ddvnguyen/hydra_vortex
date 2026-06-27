@@ -102,6 +102,7 @@ public sealed record CoordinatorConfig
 	// to 2 MiB if never configured (e.g. legacy binary that doesn't support CONFIGURE).
 	public int StateChunkSizeBytes { get; init; } = EnvInt("HYDRA_COORD_STATE_CHUNK_SIZE_KB", 2048) * 1024;
 	public string PrefixCheckpointName { get; init; } = Env("HYDRA_COORD_PREFIX_CHECKPOINT_NAME", "system_prompt");
+	public bool DevModeEnabled { get; init; } = EnvBool("HYDRA_DEV_MODE", false);
 	public List<WorkerConfig> Workers { get; set; } = [];
 
 	public static List<WorkerConfig> LoadWorkers()
