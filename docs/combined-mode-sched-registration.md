@@ -143,6 +143,38 @@ was needed — only how the *weight* tensor gets bound.
 Tracked as `ddvnguyen/llama.cpp#20`. Pure-protocol test (no GPU):
 `tests/test-hydra-rpc-bind.cpp`.
 
+### Follow-up fix: bound tensors need `GGML_BACKEND_BUFFER_USAGE_WEIGHTS` (llama.cpp#21)
+
+The first hardware run of the zero-copy fix (above) crashed under
+concurrent load: a multi-hundred-MB stall (`recv failed`/`send failed` on
+both ends) that looked at first like a `#348` compute-lock deadlock, but
+wasn't. Root cause: `ggml_backend_rpc_bind_remote_tensor` built the bound
+tensor's buffer via `ggml_backend_buffer_init` directly, which defaults
+`usage` to `GGML_BACKEND_BUFFER_USAGE_ANY`. The scheduler's weight-affinity
+heuristic (`ggml-backend.cpp:916`) only fires for
+`GGML_BACKEND_BUFFER_USAGE_WEIGHTS` buffers — normal model loads set this
+explicitly (`llama-model.cpp:1551`), which the bind path was missing.
+Without it, the scheduler mis-assigned the consuming op to the wrong
+backend and fetched the whole expert tensor back over `RPC_CMD_GET_TENSOR`
+instead of computing where the weight already lives. One-line fix:
+`ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS)`.
+This gap was latent in the original copy-based dual-load too (never set
+either) — only reachable once COMBINED compute itself stopped crashing.
+
+Re-tested: 25-cycle concurrent stress (P100 SOLO + RTX COMBINED
+simultaneously) completes with zero crashes, zero errors, `restart_count`
+flat on both nodes.
+
+**Remaining, separate, lower-severity finding (not fixed here):** under
+this same concurrent load, PREFILL takes ~70-75s on *both* nodes —
+including P100's own independent SOLO prefill, not touching RTX at all —
+vs ~0.2-0.5s sequential with the identical config. DECODE stays fast.
+This is a latency/contention issue, not a crash; not yet root-caused
+(candidates: compute-lock serialization cost under genuine GPU contention,
+or Coordinator health-poll traffic contention). Tracked in
+`ddvnguyen/llama.cpp#21` (re-scoped from the crash, which is now fixed, to
+this latency follow-up).
+
 ### Preserved behavior
 
 - **SOLO unaffected.** When no peer is configured/reachable, `model.devices`
