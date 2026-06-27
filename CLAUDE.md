@@ -198,6 +198,14 @@ the active Milestone (currently **Llama-Engine — P/D split mix-quant**), and f
 commands are in `DevelopmentRunBook.md`.
 
 ## Key Design Decisions (do not relitigate)
+- **One GPU = one compute task at a time** (invariant). "Dual-role" (SOLO /
+  COMBINED-peer) is a *capability the engine switches between*, NOT two workloads
+  running on one GPU at once. Concurrency exclusivity is a **Hydra Core scheduling
+  guarantee** (only borrow a *free* peer GPU for COMBINED), not a low-level lock —
+  this dissolves the #21 race class by construction. See `docs/architecture-principles.md` (P1–P3).
+- **Plan bold**: prefer architecture-level solutions over local patches; accept
+  architectural change when the long-term net is positive; judge every decision
+  against the roadmap (layer swap, single-GPU P/D mix-quant). See `docs/architecture-principles.md` (P4–P5).
 - No Ray until possible M4+ (2 nodes, not needed)
 - Store backed by tmpfs not S3/MinIO (sendfile + zero-copy)
 - Full KV state only (delta export impossible — SSM truncation broken)
