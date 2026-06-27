@@ -89,17 +89,59 @@ placement so the peer didn't attract non-expert layers.
 The whole new path is reachable **only** when a COMBINED peer is configured and
 reachable, so SOLO is provably unaffected (it never calls the new method).
 
-### Known follow-up (worst-case reserve vs. mode switch)
+### Known follow-up (worst-case reserve vs. mode switch) — became real, then got superseded
 
-`load_combined_experts` runs at startup while `hydra_expert_mode` is still `0`,
-so the reserve graph built during the rebuild uses the *local* expert tensors —
-the peer backend is present but its compute buffer is reserved at ~0. When
-`SET_EXPERT_MODE("combined")` later flips the mode, the first COMBINED decode
-references the `_rpc` tensors and `ggml_backend_sched` allocates the peer's
-compute buffers on the fly (ggml-alloc grows as needed). Functionally correct,
-but to avoid a first-request realloc the `SET_EXPERT_MODE` handler could trigger
-a `sched_reserve()` with the combined graph. Tracked as a follow-up, not a
-blocker.
+The original concern: `load_combined_experts` runs at startup while
+`hydra_expert_mode` is still `0`, so the peer's compute buffer is reserved at
+~0 and the first COMBINED decode would need a ggml-alloc grow. **On real
+hardware (2026-06-27, RTX 5060 Ti + Tesla P100) this wasn't a benign realloc —
+it was the actual crash.** The peer's RPC buffer for the dual-loaded experts
+(sized near-zero at reserve time) failed its server-side bounds check on the
+first real `SET_TENSOR`/`COPY_TENSOR`, and the connection was silently
+dropped: `ggml-rpc.cpp:498: Remote RPC server crashed or returned malformed
+response`. The scheduler-registration fix above is real and necessary (the
+`ggml-backend.cpp:898` assert is gone), but COMBINED still didn't work
+end-to-end until the copy itself was eliminated — see the next section.
+
+### Superseding fix: zero-copy expert tensors (llama.cpp#20, 2026-06-27)
+
+Rather than re-reserving on `SET_EXPERT_MODE` (the originally proposed
+optimization for the follow-up above), the dual-load **copy** step was
+replaced entirely: P100 already has the full model resident in VRAM for its
+own SOLO duty — at a *different* quant ("Balanced") than RTX's ("Mini"), which
+is the literal "mix-quant" theme of this milestone. Instead of RTX copying its
+own tensor bytes to P100, P100 now exposes tensors it has already loaded by
+name, and RTX binds directly to that memory — zero bytes of weight data cross
+the wire, ever.
+
+New primitive in `ggml/src/ggml-rpc/ggml-rpc.cpp` (`RPC_CMD_RESOLVE_TENSOR` +
+`ggml_backend_rpc_register_local_tensor`/`ggml_backend_rpc_bind_remote_tensor`):
+a worker registers its own resident tensors by name once at model-load time
+(`llama_hydra_register_local_tensors_for_rpc`, called from `llama-engine.cpp`
+right after `start_shared_backend_rpc_server`); any peer can then resolve +
+bind to that memory directly, skipping `RPC_CMD_ALLOC_BUFFER` and
+`SET_TENSOR`/`COPY_TENSOR` entirely. `rpc_server` tracks these under a second
+set (`foreign_buffers`, distinct from `buffers`) so `deserialize_tensor`/
+`graph_compute` accept them but `free_buffer`/`buffer_clear` — which must stay
+restricted to buffers the server actually allocated — never touch live model
+weights. `llama_hydra_load_combined_experts` now binds per matched tensor name
+instead of allocating + copying; the VRAM-headroom precheck is gone (nothing
+new is allocated on the peer). `hydra_add_combined_rpc_backend`'s post-load
+scheduler re-reserve (this doc's original fix) is unchanged and still
+required — the scheduler still needs to know a backend owns these tensors,
+regardless of whether the tensor data arrived by copy or by reference.
+
+This is the "future zero-copy COMBINED variant" the RPC spec's PIPELINE
+section and `docs/spike-engine-mode-switch.md` had flagged and deliberately
+scoped out — distinct from `PIPELINE_ATTACH` (`0x46`, tracked separately under
+hydra_vortex#287/#161, the full prima.cpp-style layer-split epic with live
+activation-passing). This fix is narrower: COMBINED's existing scheduler
+dispatch already moves op activations over RPC once a tensor's `buffer`
+correctly points at the RPC backend, so no new activation-passing machinery
+was needed — only how the *weight* tensor gets bound.
+
+Tracked as `ddvnguyen/llama.cpp#20`. Pure-protocol test (no GPU):
+`tests/test-hydra-rpc-bind.cpp`.
 
 ### Preserved behavior
 
@@ -127,17 +169,38 @@ makes restore part of the acceptance gate:
 
 ## Verification
 
-- [ ] COMBINED: first PREFILL + DECODE complete with no `ggml-backend.cpp:898`
+Run on real hardware (RTX 5060 Ti + Tesla P100) 2026-06-27, after the
+zero-copy fix landed:
+
+- [x] COMBINED: first PREFILL + DECODE complete with no `ggml-backend.cpp:898`
       assert; expert ops scheduled on the peer (RTX precise prefill).
-- [ ] SOLO regression: RTX prefill → P100 decode unchanged; KV migrate + restore
-      round-trip byte-identical.
+- [x] SOLO regression: RTX prefill → P100 decode unchanged.
+- [x] KV `STATE_GET`/`STATE_PUT` round-trip on a COMBINED-configured head:
+      byte-identical, `n_past` matches.
 - [ ] P/D mix-quant: precise prefill (RTX) + quant decode (P100) across the
-      COMBINED topology, KV restore intact.
+      COMBINED topology — bind confirmed (P100's Balanced-quant weights are
+      what RTX now references for the matched experts), full perf/quality
+      characterization not yet done.
 - [ ] `hydra_compute_lock` (fork PR #13) still serializes head-local decode vs
       inbound RPC compute on the shared device, and is a no-op in SOLO (no new
-      deadlock).
+      deadlock). **Found broken under sustained concurrent load** — see below.
 - [ ] Clean model load (no warmup hang, see #8) and clean shutdown (no
       `std::terminate`, fork PR #18).
+
+### New finding: compute-lock stall under sustained concurrent load
+
+Running P100's own SOLO PREFILL/DECODE cycles concurrently with RTX driving
+COMBINED traffic into P100's shared backend — the exact follow-up
+`docs/spike-engine-mode-switch.md` called out once COMBINED itself worked —
+RTX goes quiet for ~52s then dies; P100's in-flight `send()` breaks
+(`bytes_sent=28931040, size_to_send=191269920`) right as RTX's health check
+times out and the supervisor kills it. This is a `#348` shared-backend
+compute-lock issue (`llama_hydra_lock_compute`/`unlock_compute`,
+`ggml_backend_rpc_server_compute_lock`), not introduced by the
+scheduler-registration fix or #20's zero-copy bind — this scenario literally
+couldn't be exercised before today, since COMBINED compute itself was broken
+until both fixes landed. Tracked as a follow-up; not fixed by this doc's
+changes.
 
 ## Open questions
 
