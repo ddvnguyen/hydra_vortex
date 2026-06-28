@@ -76,7 +76,7 @@ func main() {
 	if otelURL == "" {
 		otelURL = "http://localhost:4318"
 	}
-	otelHandler, otelShutdown, err := hydralog.NewOTelHandler(
+	otelHandler, otelShutdown, otelShared, err := hydralog.NewOTelHandler(
 		context.Background(),
 		hydralog.Config{
 			Endpoint:          otelURL,
@@ -161,7 +161,7 @@ func main() {
 		regMgr = registry.NewManager(logger, "/tmp/hydra-registry-cache")
 	}
 
-	manager := process.NewManager(cfg, logger)
+	manager := process.NewManager(cfg, logger, otelShared)
 	defer manager.Shutdown()
 
 	llamaURL := fmt.Sprintf("http://%s:%d", cfg.Llama.Host, cfg.Llama.Port)
