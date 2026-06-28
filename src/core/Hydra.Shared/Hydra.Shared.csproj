@@ -9,8 +9,17 @@
 
   <ItemGroup>
     <PackageReference Include="Serilog" Version="4.2.0" />
-    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
-    <PackageReference Include="Serilog.Sinks.Grafana.Loki" Version="8.3.0" />
+    <!--
+      OpenTelemetry pipeline for log push to the OTel Collector
+      gateway (per-service direct push, see
+      docs/design-direct-push-logging.md § "Decision"). Replaces
+      the previous Serilog.Sinks.Grafana.Loki sink (dropped in
+      #363) which double-logged Hydra.Core to Loki under
+      {component="hydra"}.
+    -->
+    <PackageReference Include="Serilog.Sinks.OpenTelemetry" Version="4.0.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.10.0" />
   </ItemGroup>
 
 </Project>
