@@ -88,15 +88,21 @@ ignore its Langfuse/model-distribution mentions — those moved to M5/M4.)*
 - Docker compose: Prometheus + Loki + Grafana provisioned automatically
 - **Done when:** `docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up` → Grafana at `:3000` shows working dashboard
 
-### M3.2.3: Request Trace Logging (Loki + Grafana)
-- Serilog JSON stdout includes `@t`, `@mt`, `component`, `trace_id`, `source_context`
-- Log pipeline: `container-log-shipper` (host systemd --user) tails `podman logs -f` to
-  `/tmp/container-logs/<name>.log` → `promtail` (host systemd --user) scrapes files → Loki
-- Promtail runs on the host (not in Docker) because podman 5.7.0's Docker API has a
-  NULL-JSON bug breaking `docker_sd_configs`, and journald files are root-owned mode 600
+### M3.2.3: Request Trace Logging (Loki + Grafana) — replaced by #363
+- Per-service direct push to Loki via the OTel Collector gateway
+  (Quadlet `infra-otel-collector.container`, joined to the `infra-host` pod).
+  See `docs/design-direct-push-logging.md` for the full design.
+- Serilog output (Hydra.Core) and slog output (Hydra.Head + per-child
+  sidecars) all carry `service.name` / `service.instance.id` OTel
+  resource attributes. The collector's `transform/log_labels`
+  processor maps them to Loki stream labels `component` / `node`.
+- Promtail + `container-log-shipper` were removed in #363 (Promtail
+  EOL 2026-03-02; the OTel Collector is the modern path).
 - Grafana dashboard includes a **Trace ID** textbox variable `$trace_id`
-  - Enter a trace ID → filter all log panels by `{service=~".*"} |~ "$trace_id"`
-  - Shows the full request lifecycle across Store, Agent, and Coordinator
+  - Enter a trace ID → filter all log panels by
+    `{service=~".*"} | json | trace_id="$trace_id"` (trace_id is in
+    structured metadata, not a label).
+  - Shows the full request lifecycle across Store, Hydra.Head, and Coordinator.
 - No `hydra-tail` CLI — replaced by Grafana Explore or dashboard filter
 - **Done when:** enter trace_id in dashboard → logs from all services appear
 
