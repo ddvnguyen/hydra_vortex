@@ -177,14 +177,17 @@ jobs:
           systemctl --user daemon-reload
           systemctl --user stop infra-host-pod.service 2>/dev/null || true
           sleep 1
-          for s in infra-node-exporter infra-nvidia-exporter infra-loki infra-promtail infra-prometheus infra-grafana infra-pgadmin; do
+          # Note: infra-promtail removed in #363 — per-service
+          # labeled writers push directly to the OTel Collector
+          # (infra-otel-collector in the same pod).
+          for s in infra-node-exporter infra-nvidia-exporter infra-loki infra-otel-collector infra-prometheus infra-grafana infra-pgadmin; do
             systemctl --user start "$s.service" || true
           done
 
       - name: Verify infra services
         run: |
           sleep 10
-          for url in "http://localhost:9091" "http://localhost:3000" "http://localhost:3100" "http://localhost:8888"; do
+          for url in "http://localhost:9091" "http://localhost:3000" "http://localhost:3100" "http://localhost:13133" "http://localhost:8888"; do
             if curl -sf "$url" --connect-timeout 5 &>/dev/null; then
               echo "OK: $url"
             else
