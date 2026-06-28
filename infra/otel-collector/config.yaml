@@ -1,0 +1,104 @@
+# OTel Collector — per-service log gateway for Hydra.
+#
+# All Hydra services (C# Hydra.Core, Go Hydra.Head + child
+# llama-server / node_exporter / nvidia_gpu_exporter) push OTLP HTTP
+# to this collector on :4318. The collector normalizes OTel resource
+# attributes to Loki stream labels via the `transform` processor and
+# forwards to the local Loki on :3100.
+#
+# P100 services reach this collector at http://192.168.122.1:4318
+# (RTX host as seen from the KVM VM).
+#
+# See docs/design-direct-push-logging.md for the full design.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        # Loki's OTLP path is /otlp/v1/logs; we accept any path so
+        # clients can also push to the root if they prefer.
+
+processors:
+  # batch: amortize the Loki push across log records. Drop-oldest
+  # when the queue is full (bounded buffer; see design doc § Queue
+  # bounds for the explicit numbers).
+  batch:
+    timeout: 5s
+    send_batch_size: 8192
+
+  # memory_limiter: refuse new log records when RSS >80% of the
+  # container's memory cgroup limit. Spike limit is 25% so brief
+  # bursts don't trip the gate. (The collector Quadlet does not set
+  # a memory limit; this protects against OOM under sustained
+  # pressure from a misbehaving client.)
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # transform: map OTel resource attributes to log attributes that
+  # the Loki exporter reads as stream labels. Service.name is the
+  # "component" label (hydra, hydra-head, llama-server,
+  # node-exporter, nvidia-exporter); service.instance.id is the
+  # "node" label (rtx, p100); the level comes from the OTel
+  # log-record severity_text, which we copy to a "level" attribute
+  # the Loki exporter reads as a label.
+  transform/log_labels:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["component"], resource.attributes["service.name"])
+          - set(attributes["node"], resource.attributes["service.instance.id"])
+          - set(attributes["level"], attributes["severity_text"])
+      - context: resource
+        statements:
+          # Drop the high-cardinality OTel resource attributes from
+          # the log records' attribute set so they don't bloat Loki
+          # structured metadata. The collector already promoted
+          # service.name and service.instance.id to log attributes
+          # above.
+          - delete_key(resource.attributes, "telemetry.sdk.language")
+          - delete_key(resource.attributes, "telemetry.sdk.name")
+          - delete_key(resource.attributes, "telemetry.sdk.version")
+
+exporters:
+  # Loki: forward log records to the local Loki. The `loki` exporter
+  # reads the resource and log attributes set by transform/log_labels
+  # and uses them as Loki stream labels. Default labels are disabled
+  # so the labels come from the explicit attribute set above.
+  loki:
+    endpoint: http://localhost:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: false
+      job: false
+    headers:
+      X-Scope-OrgID: "hydra"
+
+  # Prometheus: expose the collector's own metrics for scrape by
+  # Prometheus. Includes otelcol_exporter_sent_log_records and
+  # otelcol_exporter_send_failed_log_records (the loss-detection
+  # counters).
+  prometheus:
+    endpoint: 0.0.0.0:8888
+    resource_to_telemetry_conversion:
+      enabled: true
+    # Constrain the metric set to what we care about to keep the
+    # scrape payload small. (The full set is ~120 metrics; we
+    # consume 6.)
+    metric_expiration: 5m
+
+service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+      level: basic
+  pipelines:
+    # Only the logs pipeline is wired. Traces + metrics pipelines
+    # are intentionally absent — Hydra services don't push them
+    # yet (the M-Perf / Llama-Engine work may add traces later).
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/log_labels, batch]
+      exporters: [loki, prometheus]
