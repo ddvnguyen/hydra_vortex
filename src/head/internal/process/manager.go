@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
+	hydralog "github.com/ddvnguyen/hydra_vortex/hydra-head/internal/logging"
 )
 
 type State string
@@ -36,6 +37,7 @@ type ProcessInfo struct {
 type Manager struct {
 	cfg       *config.Config
 	logger    *slog.Logger
+	otel      *hydralog.SharedLogger
 	processes map[string]*managedProcess
 	mu        sync.RWMutex // guards only the processes map
 	ctx       context.Context
@@ -62,11 +64,12 @@ type managedProcess struct {
 	done         chan struct{}
 }
 
-func NewManager(cfg *config.Config, logger *slog.Logger) *Manager {
+func NewManager(cfg *config.Config, logger *slog.Logger, otel *hydralog.SharedLogger) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		cfg:       cfg,
 		logger:    logger,
+		otel:      otel,
 		processes: make(map[string]*managedProcess),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -103,6 +106,50 @@ func (m *Manager) listRunning() []string {
 	return running
 }
 
+// childLoggerFor returns a per-child slog.Logger with the OTel
+// service.name set to the child's component label. The OTel
+// resource carries the parent's service.instance.id (rtx / p100)
+// unchanged. Falls back to a no-op (text-only) logger if the OTel
+// shared logger is not wired (e.g., in unit tests).
+//
+// Component mapping (matches the Loki `component` label
+// vocabulary in docs/design-direct-push-logging.md):
+//   "llama"          -> "llama-server"
+//   "node_exporter"  -> "node-exporter"
+//   "nvidia_exporter"-> "nvidia-exporter"
+//   anything else    -> "hydra-head" (the parent's component)
+func (m *Manager) childLoggerFor(childName string) *slog.Logger {
+	component := "hydra-head"
+	switch childName {
+	case "llama":
+		component = "llama-server"
+	case "node_exporter":
+		component = "node-exporter"
+	case "nvidia_exporter":
+		component = "nvidia-exporter"
+	}
+
+	if m.otel == nil {
+		// Fallback: text-only logger. Used by unit tests that
+		// construct a Manager without an OTel shared logger.
+		return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		}))
+	}
+
+	handler, _, err := m.otel.ChildHandler(component, os.Stdout)
+	if err != nil {
+		// Fallback on error — log to the parent's logger so the
+		// misconfiguration is visible in journalctl.
+		m.logger.Error("failed to build child OTel handler; using text fallback",
+			"child", childName, "component", component, "error", err)
+		return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		}))
+	}
+	return slog.New(handler)
+}
+
 func (m *Manager) StartLlama() error {
 	// Acquire per-name starting guard to prevent concurrent starts
 	m.startingMu.Lock()
@@ -130,11 +177,16 @@ func (m *Manager) StartLlama() error {
 		existing.mu.RUnlock()
 	}
 
-	// Build new proc with all initialization under proc.mu.
+	// Build new proc with all initialization under proc.mu. The
+	// logWriter is a per-child OTel-aware childWriter (see
+	// child_writer.go) — the manager already knows this is the
+	// llama process, so the writer's service.name resource
+	// attribute is set to "llama-server" at construction; no
+	// per-line regex is needed.
 	proc := &managedProcess{
 		name:      "llama",
 		state:     StateStarting,
-		logWriter: os.Stdout,
+		logWriter: newChildWriter(m.childLoggerFor("llama")),
 		done:      make(chan struct{}),
 	}
 
@@ -315,11 +367,15 @@ func (m *Manager) StartService(name string) error {
 		existing.mu.RUnlock()
 	}
 
-	// Build new proc with initial state under proc.mu.
+	// Build new proc with initial state under proc.mu. The
+	// logWriter is a per-child childWriter (see child_writer.go)
+	// with service.name set to the child's component label
+	// (e.g., "node-exporter", "nvidia-exporter") at construction;
+	// no per-line regex is needed.
 	proc := &managedProcess{
 		name:      name,
 		state:     StateStarting,
-		logWriter: os.Stdout,
+		logWriter: newChildWriter(m.childLoggerFor(name)),
 		done:      make(chan struct{}),
 	}
 

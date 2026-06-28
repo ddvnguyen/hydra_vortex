@@ -71,33 +71,24 @@ type Config struct {
 // internal batcher, which is bounded (see
 // docs/design-direct-push-logging.md § "Queue bounds" for the
 // explicit numbers).
-func NewOTelHandler(ctx context.Context, cfg Config) (slog.Handler, func(context.Context) error, error) {
+func NewOTelHandler(ctx context.Context, cfg Config) (slog.Handler, func(context.Context) error, *SharedLogger, error) {
 	if cfg.Endpoint == "" {
-		return nil, nil, fmt.Errorf("logging.NewOTelHandler: cfg.Endpoint is required")
+		return nil, nil, nil, fmt.Errorf("logging.NewOTelHandler: cfg.Endpoint is required")
 	}
 	if cfg.ServiceName == "" {
-		return nil, nil, fmt.Errorf("logging.NewOTelHandler: cfg.ServiceName is required")
+		return nil, nil, nil, fmt.Errorf("logging.NewOTelHandler: cfg.ServiceName is required")
 	}
 	if cfg.ServiceInstanceID == "" {
-		return nil, nil, fmt.Errorf("logging.NewOTelHandler: cfg.ServiceInstanceID is required")
+		return nil, nil, nil, fmt.Errorf("logging.NewOTelHandler: cfg.ServiceInstanceID is required")
 	}
 
 	// Build the OTel resource — these attributes become the Loki
 	// stream labels (component, node) after the collector's
 	// transform processor maps service.name → component and
 	// service.instance.id → node.
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(cfg.ServiceName),
-			semconv.ServiceNamespace(cfg.ServiceNamespace),
-			semconv.ServiceInstanceID(cfg.ServiceInstanceID),
-			semconv.DeploymentEnvironment(cfg.Environment),
-		),
-	)
+	res, err := buildResource(cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("logging.NewOTelHandler: build resource: %w", err)
+		return nil, nil, nil, fmt.Errorf("logging.NewOTelHandler: build resource: %w", err)
 	}
 
 	// Build the OTLP/HTTP log exporter. The exporter POSTs
@@ -107,7 +98,7 @@ func NewOTelHandler(ctx context.Context, cfg Config) (slog.Handler, func(context
 		otlploghttp.WithEndpointURL(cfg.Endpoint),
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("logging.NewOTelHandler: build exporter: %w", err)
+		return nil, nil, nil, fmt.Errorf("logging.NewOTelHandler: build exporter: %w", err)
 	}
 
 	// Build the OTel log SDK provider. The provider is the
@@ -115,11 +106,12 @@ func NewOTelHandler(ctx context.Context, cfg Config) (slog.Handler, func(context
 	// exporter asynchronously. QueueSize and BatchTimeout are
 	// explicit per the design doc § "Queue bounds" so a Loki or
 	// collector outage cannot OOM the hydra-head process.
+	processor := sdklog.NewBatchProcessor(exporter,
+		sdklog.WithMaxQueueSize(65_536), // matches C# QueueSize; 32 MB worst case at ~500 B/record
+	)
 	provider := sdklog.NewLoggerProvider(
 		sdklog.WithResource(res),
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter,
-			sdklog.WithMaxQueueSize(65_536), // matches C# QueueSize; 32 MB worst case at ~500 B/record
-		)),
+		sdklog.WithProcessor(processor),
 	)
 
 	// Wrap the OTel logger as a slog.Handler. The bridge converts
@@ -135,7 +127,86 @@ func NewOTelHandler(ctx context.Context, cfg Config) (slog.Handler, func(context
 		return provider.Shutdown(ctx)
 	}
 
-	return handler, shutdown, nil
+	// SharedLogger exposes the exporter + processor so child
+	// processes (llama-server, node_exporter, nvidia_exporter)
+	// can build their own LoggerProviders with overridden
+	// service.name resources (one per child, with the parent's
+	// service.instance.id unchanged). The shared exporter means
+	// the OTLP/HTTP connection is reused — children share the
+	// same outbound HTTP/2 stream.
+	shared := &SharedLogger{
+		exporter:  exporter,
+		processor: processor,
+		instance:  cfg.ServiceInstanceID,
+		namespace: cfg.ServiceNamespace,
+		env:       cfg.Environment,
+	}
+
+	return handler, shutdown, shared, nil
+}
+
+// SharedLogger is the exporter + processor bundle that child
+// processes share with the parent. Children build their own
+// LoggerProviders with a different `service.name` resource
+// attribute (so the collector's transform processor maps each
+// child to a different `component` Loki label), but the OTLP
+// exporter and the in-process batch are shared.
+type SharedLogger struct {
+	exporter  *otlploghttp.Exporter
+	processor sdklog.Processor
+	instance  string // service.instance.id (rtx / p100), unchanged for children
+	namespace string // service.namespace
+	env       string // deployment.environment.name
+}
+
+// ChildHandler returns a slog.Handler whose emitted records carry
+// the child's `service.name` resource attribute. The handler is
+// text-only (writes to textOut) — it does not push to the OTel
+// collector directly; instead, the caller should pass it through
+// a childWriter (in package process) which emits records through
+// the underlying OTel Logger with the overridden resource.
+//
+// The slog.Handler returned by ChildHandler is suitable for use
+// with `slog.New(handler)` to create a child-specific logger.
+func (s *SharedLogger) ChildHandler(serviceName string, textOut *os.File) (slog.Handler, *sdklog.LoggerProvider, error) {
+	if serviceName == "" {
+		return nil, nil, fmt.Errorf("logging.SharedLogger.ChildHandler: serviceName is required")
+	}
+	cfg := Config{
+		ServiceName:       serviceName,
+		ServiceNamespace:  s.namespace,
+		ServiceInstanceID: s.instance,
+		Environment:       s.env,
+	}
+	res, err := buildResource(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("logging.SharedLogger.ChildHandler: build resource: %w", err)
+	}
+
+	provider := sdklog.NewLoggerProvider(
+		sdklog.WithResource(res),
+		sdklog.WithProcessor(s.processor),
+	)
+
+	logger := provider.Logger(serviceName)
+	handler := newSlogToOtelHandler(logger, textOut, cfg)
+	return handler, provider, nil
+}
+
+// buildResource constructs the OTel resource used by the parent
+// hydra-head logger and by each child. Centralized so the parent
+// and children use the same shape (only service.name varies).
+func buildResource(cfg Config) (*resource.Resource, error) {
+	return resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName(cfg.ServiceName),
+			semconv.ServiceNamespace(cfg.ServiceNamespace),
+			semconv.ServiceInstanceID(cfg.ServiceInstanceID),
+			semconv.DeploymentEnvironment(cfg.Environment),
+		),
+	)
 }
 
 // newSlogToOtelHandler wraps an OTel logger as a slog.Handler. It
