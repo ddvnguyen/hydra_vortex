@@ -120,15 +120,16 @@ check_llama_build_type_p100() {
 
 # ── Pre-deploy Cleanup ───────────────────────────────────────────────────────
 # Host-side exporter Quadlets (infra-node-exporter / infra-nvidia-
-# exporter / infra-promtail) were removed in commit TBD. The in-
-# container hydra-head now owns :9100/:9835/:9080 exclusively. This
-# function is a no-op kept for backward-compat with hosts that still
-# have the old Quadlets installed.
+# exporter) were removed in commit TBD. The in-container hydra-head
+# now owns :9100/:9835 exclusively. infra-promtail was removed in
+# #363 — per-child labeled writers push logs to the OTel Collector
+# directly. This function is a no-op kept for backward-compat with
+# hosts that still have the old Quadlets installed.
 stop_host_sidecars() {
   if ! command -v systemctl &>/dev/null; then return; fi
   export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-  for svc in infra-node-exporter infra-nvidia-exporter infra-promtail; do
+  for svc in infra-node-exporter infra-nvidia-exporter; do
     if systemctl --user is-active --quiet "$svc.service" 2>/dev/null; then
       systemctl --user stop "$svc.service" 2>/dev/null || true
       ok "Stopped host $svc (replaced by hydra-head child)"
@@ -173,10 +174,11 @@ deploy_rtx() {
   check_auth_file
   check_llama_build_type_local
 
-  # Ensure the promtail positions volume exists (compose declares it but
-  # `podman compose up` won't create volumes in --build=skip mode).
-  if ! podman volume exists hydra-head-promtail-positions 2>/dev/null; then
-    podman volume create hydra-head-promtail-positions
+  # Ensure the promtail positions volume is removed (was used
+  # by the promtail binary inside hydra-head; Promtail is
+  # gone in #363, so the volume is no longer needed).
+  if podman volume exists hydra-head-promtail-positions 2>/dev/null; then
+    podman volume rm hydra-head-promtail-positions 2>/dev/null || true
   fi
 
   # Drop any pre-compose standalone container (we used to run a single
@@ -219,25 +221,25 @@ deploy_rtx() {
     fi
   done
 
-  # Verify the 3 in-container sidecar exporters are responding
+  # Verify the 2 in-container sidecar exporters are responding
+  # (promtail :9080 removed in #363 — per-child writers push
+  # directly to the OTel Collector.)
   for i in 1 2 3 4 5; do
     sleep 3
     if curl -sf http://localhost:9100/metrics >/dev/null 2>&1 \
-       && curl -sf http://localhost:9835/metrics >/dev/null 2>&1 \
-       && curl -sf http://localhost:9080/ready  >/dev/null 2>&1; then
-      ok "Sidecars up: node_exporter :9100, nvidia_gpu_exporter :9835, promtail :9080"
+       && curl -sf http://localhost:9835/metrics >/dev/null 2>&1; then
+      ok "Sidecars up: node_exporter :9100, nvidia_gpu_exporter :9835"
       break
     fi
   done
 
-  # Verify promtail is actually shipping (not just running but stuck)
+  # Verify the OTel Collector is healthy and the per-service
+  # push is working.
   sleep 5
-  local sent_bytes
-  sent_bytes=$(curl -sf http://localhost:9080/metrics 2>/dev/null | awk '/^promtail_sent_bytes_total/ {print $2}')
-  if [ -n "$sent_bytes" ] && [ "$sent_bytes" != "0" ]; then
-    ok "promtail shipping: $sent_bytes bytes sent to Loki"
+  if curl -sf http://localhost:13133/ >/dev/null 2>&1; then
+    ok "OTel Collector health: OK (port 13133)"
   else
-    warn "promtail_sent_bytes_total = ${sent_bytes:-N/A} — promtail may not be shipping yet, check /var/log/hydra/promtail.log"
+    warn "OTel Collector :13133 not responding — check systemctl --user status infra-otel-collector"
   fi
 }
 
