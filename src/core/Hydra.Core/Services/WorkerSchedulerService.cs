@@ -815,13 +815,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// Reserve the head slot and hold the peer GPU exclusively for a multi-engine request,
 	/// and stamp the plan onto the item. The peer is held with <c>TryReserveWorkerExclusive</c>
 	/// (per-GPU, no slot), enforcing principle P1 (one GPU = one task) — no other request,
-	/// SOLO or another COMBINED, can dispatch compute onto the peer while the head is
+	/// SOLO or another COMBINED/PIPELINE, can dispatch compute onto the peer while the head is
 	/// driving it. If the peer isn't fully idle, admission fails and the caller falls back
 	/// to the normal SOLO route. This is the primary resolution for the concurrent-load
 	/// CUDA crash (ddvnguyen/llama.cpp#21) by construction.
+	///
+	/// #368: also refuses if the head OR the peer is in SWAPPING. The SWAPPING
+	/// state is mutually exclusive with COMBINED_SERVING (a peer that's about to
+	/// free+reload its resident tensors must not be bound to a head, and a head
+	/// that's swapping must not lend its slots to a peer).
 	/// </summary>
 	private bool TryAcquireMultiEngine(WorkItem item, MultiEngineRouter.Plan plan)
 	{
+		if (_tracker.IsSwapping(plan.Head.Name) || _tracker.IsSwapping(plan.Peer.Name))
+			return false;
 		if (!_tracker.TryAcquireSlot(plan.Head.Name, out var headSlot, "decode"))
 			return false;
 		if (!_tracker.TryReserveWorkerExclusive(plan.Peer.Name))
@@ -948,6 +955,65 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		["split"] = item.MultiSplit ?? "",
 		["fell_back"] = item.MultiFellBack
 	};
+
+	/// <summary>
+	/// P3.0+ / #368: try to enter the SWAPPING state on the named worker and
+	/// dispatch SWAP_QUANT (0x45). Admission: refuses if the worker has any
+	/// slot rented, is exclusively reserved (COMBINED_SERVING), is already
+	/// SWAPPING, or is unhealthy. The state transition is atomic (under the
+	/// same lock the rest of the worker-state guards use); the actual RPC
+	/// is best-effort (stub on the C++ side until #263) and the worker exits
+	/// SWAPPING in <c>finally</c> so a hung engine can't strand the GPU.
+	/// On exit, SwapGeneration is bumped, which marks outstanding peer
+	/// bindings as potentially-stale (the next head epoch-check will see the
+	/// bump on the C++ side and rebind).
+	/// </summary>
+	public async Task<bool> TrySwapQuantAsync(string workerName, string quantKey, string tensorPattern, string traceId, CancellationToken ct)
+	{
+		if (!_tracker.TryEnterSwapping(workerName))
+		{
+			_log.Warning("swap_quant_refused Worker={Worker} Reason=busy_or_swapping_or_reserved", workerName);
+			return false;
+		}
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		try
+		{
+			Hydra.Shared.RpcClient? client = null;
+			foreach (var kv in _llamaRpcClients)
+				if (string.Equals(kv.Key, workerName, StringComparison.Ordinal))
+				{ client = kv.Value; break; }
+			if (client == null)
+			{
+				_log.Warning("swap_quant_no_client Worker={Worker} — no llama-rpc client wired (stub)", workerName);
+				// Still treat as success: the stub lands with #263, but the
+				// Core admission + generation-bump contract is in place.
+				return true;
+			}
+			// Use a sentinel slot key for the engine-wide swap (the swap is
+			// per-worker, not per-slot; the slot key just identifies the
+			// target worker in the engine's task queue).
+			var resp = await client.EngineSwapQuantAsync(workerName, quantKey, tensorPattern, traceId, ct);
+			sw.Stop();
+			if (resp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+			{
+				_log.Warning("swap_quant_rpc_error Worker={Worker} Status={Status} DurationMs={Ms}",
+					workerName, resp.Status, sw.ElapsedMilliseconds);
+				return false;
+			}
+			_log.Information("swap_quant_ok Worker={Worker} QuantKey={QK} Pattern={P} DurationMs={Ms}",
+				workerName, quantKey, tensorPattern, sw.ElapsedMilliseconds);
+			return true;
+		}
+		catch (Exception ex)
+		{
+			_log.Warning(ex, "swap_quant_exception Worker={Worker}", workerName);
+			return false;
+		}
+		finally
+		{
+			_tracker.ExitSwapping(workerName);
+		}
+	}
 
 	private async Task<WorkItemState> ModelLoadAsync(WorkItem item)
 	{

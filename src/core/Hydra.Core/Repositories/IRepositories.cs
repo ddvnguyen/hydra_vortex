@@ -75,4 +75,35 @@ public interface IWorkerTracker
 
     /// <summary>True if the worker is currently exclusively reserved (see <see cref="TryReserveWorkerExclusive"/>).</summary>
     bool IsExclusiveReserved(string name);
+
+    /// <summary>
+    /// P3.0+ / #368: transition the worker into the SWAPPING state. The SWAPPING
+    /// state is mutually exclusive with SOLO_BUSY and COMBINED_SERVING — a worker
+    /// in SWAPPING refuses new slot acquisitions, exclusive reservations, and
+    /// a second SWAPPING transition. Succeeds only when the worker is healthy,
+    /// has no slots rented, and is not already exclusively reserved or swapping.
+    /// Used by the SWAP_QUANT admission path to serialize the model
+    /// free/reload against COMBINED peer use (one GPU = one task, principle P1).
+    /// </summary>
+    bool TryEnterSwapping(string name);
+
+    /// <summary>
+    /// P3.0+ / #368: release the SWAPPING state. Idempotent. No-op if the
+    /// worker was not swapping. Called on completion of the SWAP_QUANT
+    /// operation, on RPC failure (so the GPU returns to service), and on
+    /// the lease-expiry path so a crashed swap can't strand the worker.
+    /// </summary>
+    void ExitSwapping(string name);
+
+    /// <summary>True if the worker is in the SWAPPING state.</summary>
+    bool IsSwapping(string name);
+
+    /// <summary>
+    /// P3.0+ / #368: a per-worker "swap generation" counter. Bumped on every
+    /// completed SWAPPING cycle. The head records the peer's swap generation
+    /// alongside the peer's binding epoch; on the next use of a binding
+    /// (or the next TryReserveWorkerExclusive on the peer), the head re-fetches
+    /// and refuses if the value differs. Cheap — reads one atomic per call.
+    /// </summary>
+    int GetSwapGeneration(string name);
 }

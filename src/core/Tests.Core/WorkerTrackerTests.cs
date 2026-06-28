@@ -372,4 +372,149 @@ public sealed class WorkerTrackerTests
         Assert.True(t.TryAcquireSlot("p100", out var s, "decode"));
         Assert.Equal(0, s);
     }
+
+    // ── P3.0+ / #368: SWAPPING state (mutually exclusive with SOLO_BUSY + COMBINED_SERVING) ──
+
+    [Fact]
+    public void TryEnterSwapping_Succeeds_When_AllFree()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryEnterSwapping("p100"));
+        Assert.True(t.IsSwapping("p100"));
+    }
+
+    [Fact]
+    public void TryEnterSwapping_Fails_If_Any_Slot_Busy()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryAcquireSlot("p100", out _, "decode"));
+        Assert.False(t.TryEnterSwapping("p100"));
+    }
+
+    [Fact]
+    public void TryEnterSwapping_Fails_If_Exclusive_Reserved()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.False(t.TryEnterSwapping("p100"));
+    }
+
+    [Fact]
+    public void TryEnterSwapping_Fails_If_Already_Swapping()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        Assert.True(t.TryEnterSwapping("p100"));
+        Assert.False(t.TryEnterSwapping("p100"));
+    }
+
+    [Fact]
+    public void TryEnterSwapping_Fails_If_Unhealthy()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        t.MarkUnhealthy("p100");
+        Assert.False(t.TryEnterSwapping("p100"));
+    }
+
+    [Fact]
+    public void TryEnterSwapping_Fails_For_Unknown()
+    {
+        var t = new WorkerTracker();
+        Assert.False(t.TryEnterSwapping("unknown"));
+    }
+
+    [Fact]
+    public void ExitSwapping_Allows_ReEntry_And_Bumps_Generation()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        Assert.Equal(0, t.GetSwapGeneration("p100"));
+
+        Assert.True(t.TryEnterSwapping("p100"));
+        t.ExitSwapping("p100");
+        Assert.Equal(1, t.GetSwapGeneration("p100"));
+        Assert.False(t.IsSwapping("p100"));
+
+        Assert.True(t.TryEnterSwapping("p100"));
+        t.ExitSwapping("p100");
+        Assert.Equal(2, t.GetSwapGeneration("p100"));
+    }
+
+    [Fact]
+    public void ExitSwapping_Idempotent()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        t.ExitSwapping("p100"); // not swapping → no-op
+        t.ExitSwapping("unknown"); // unknown → no-op
+        Assert.Equal(0, t.GetSwapGeneration("p100"));
+    }
+
+    [Fact]
+    public void Swapping_Blocks_TryAcquireSlot()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryEnterSwapping("p100"));
+        Assert.False(t.TryAcquireSlot("p100", out _, "decode"));
+    }
+
+    [Fact]
+    public void Swapping_Blocks_HasFreeSlot_And_FreeSlotCount()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.HasFreeSlot("p100"));
+        Assert.Equal(2, t.FreeSlotCount("p100"));
+        Assert.True(t.TryEnterSwapping("p100"));
+        Assert.False(t.HasFreeSlot("p100"));
+        Assert.Equal(0, t.FreeSlotCount("p100"));
+    }
+
+    [Fact]
+    public void Swapping_Blocks_IsFree_And_FreeWorkers()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("rtx");
+        t.InitWorker("p100");
+        Assert.True(t.TryEnterSwapping("p100"));
+        Assert.False(t.IsFree("p100"));
+        var free = t.FreeWorkers();
+        Assert.DoesNotContain("p100", free);
+        Assert.Contains("rtx", free);
+    }
+
+    [Fact]
+    public void Swapping_Blocks_TryReserveWorkerExclusive()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        Assert.True(t.TryEnterSwapping("p100"));
+        Assert.False(t.TryReserveWorkerExclusive("p100"));
+    }
+
+    [Fact]
+    public void Swapping_GetStatus_Reports_Swapping()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryEnterSwapping("p100"));
+        Assert.Equal("swapping", t.GetStatus("p100"));
+    }
+
+    [Fact]
+    public void Swapping_Takes_Priority_Over_ExclusiveReserved_In_GetStatus()
+    {
+        // (sanity) exclusive reservation must NOT be set when SWAPPING is set,
+        // and GetStatus prefers the SWAPPING label.
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        Assert.True(t.TryEnterSwapping("p100"));
+        Assert.False(t.TryReserveWorkerExclusive("p100"));
+        Assert.Equal("swapping", t.GetStatus("p100"));
+    }
 }
