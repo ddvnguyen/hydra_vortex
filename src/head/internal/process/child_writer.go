@@ -34,6 +34,7 @@ type childWriter struct {
 	mu     sync.Mutex
 	buf    []byte
 	logger *slog.Logger
+	closed  bool
 }
 
 // newChildWriter returns an io.Writer that emits each line to the
@@ -129,8 +130,50 @@ func (w *childWriter) emitLinesLocked() error {
 	}
 }
 
-// Ensure io.Writer is satisfied at compile time.
-var _ io.Writer = (*childWriter)(nil)
+// Ensure io.Writer and io.Closer are satisfied at compile time.
+var (
+	_ io.Writer = (*childWriter)(nil)
+	_ io.Closer = (*childWriter)(nil)
+)
+
+// Close flushes any remaining buffered bytes (a partial line
+// that didn't end with '\n') as a final log record. This is
+// the trailing-partial-line fix from PR #369 review: a child
+// that exits after writing a final line without a trailing
+// newline (common for crash/abort messages) would otherwise
+// leave that line in w.buf forever — exactly the line you most
+// want for forensics. The process manager calls Close on stop
+// after the SIGTERM → wait → KILL fallback path completes.
+//
+// Idempotent: a second call on an already-closed writer is a
+// no-op. Returns nil on success; returns any error from the
+// underlying flush.
+func (w *childWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+
+	// Flush any remaining partial line as a final log record.
+	// This is best-effort: if the line exceeds the buffer cap
+	// (1 MiB), it was already truncated by Write.
+	if len(w.buf) == 0 {
+		return nil
+	}
+	if w.logger != nil {
+		// Trim a trailing '\r' (some processes emit \r\n line
+		// endings). Otherwise emit as-is.
+		line := string(w.buf)
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		w.logger.Info(line)
+	}
+	w.buf = nil
+	return nil
+}
 
 // ensure strings is referenced (used by emitLinesLocked via
 // the strings.TrimRight-equivalent for the trailing '\r').

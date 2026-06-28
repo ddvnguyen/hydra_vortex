@@ -107,3 +107,74 @@ func TestChildWriterIsAnIOWriter(t *testing.T) {
 	// explicit `var _ io.Writer = (*childWriter)(nil)` assertion).
 	var _ io.Writer = (*childWriter)(nil)
 }
+
+// TestChildWriterCloseFlushesTrailingPartialLine covers the
+// trailing-partial-line fix from PR #369 review: a child that
+// exits after writing a final line without a trailing newline
+// (common for crash/abort messages) would otherwise leave that
+// line in w.buf forever. The Close() method must emit it as
+// a final log record.
+func TestChildWriterCloseFlushesTrailingPartialLine(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	w := newChildWriter(logger)
+
+	// Write a partial line (no trailing newline).
+	if _, err := w.Write([]byte("final crash message")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// Buffer has the partial line but no emit yet.
+	if got := buf.String(); got != "" {
+		t.Errorf("partial line emitted prematurely: %q", got)
+	}
+
+	// Close should flush it.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "final crash message") {
+		t.Errorf("Close should have emitted the trailing partial line; got %q", got)
+	}
+}
+
+// TestChildWriterCloseIsIdempotent ensures that calling Close
+// twice does not panic and returns nil.
+func TestChildWriterCloseIsIdempotent(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	w := newChildWriter(logger)
+
+	if _, err := w.Write([]byte("hello\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+}
+
+// TestChildWriterCloseHandlesCarriageReturn ensures that a
+// trailing \r (from Windows-style \r\n line endings) is
+// stripped before emission.
+func TestChildWriterCloseHandlesCarriageReturn(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	w := newChildWriter(logger)
+
+	if _, err := w.Write([]byte("trailing-CR\r")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if strings.Contains(buf.String(), "trailing-CR\r") {
+		t.Errorf("trailing \\r should have been stripped; got %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "trailing-CR") {
+		t.Errorf("expected the line emitted without trailing \\r; got %q", buf.String())
+	}
+}

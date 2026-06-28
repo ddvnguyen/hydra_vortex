@@ -58,6 +58,15 @@ type managedProcess struct {
 	lastExitCode int
 	lastError    string
 	logWriter    io.Writer
+	// childLogProvider is the OTel LoggerProvider that the
+	// childWriter uses. It wraps the *shared* processor (so the
+	// OTLP connection is reused) but has its own per-child
+	// resource (service.name=llama-server / node-exporter /
+	// nvidia-exporter). On stop/restart we Shutdown the
+	// provider to flush the in-process batch and release the
+	// queue — but we do NOT touch the shared processor, which
+	// is shared across all children + the parent.
+	childLogProvider func() error
 	manualStop   bool
 	startFunc    func() error
 	mu           sync.RWMutex // guards all fields below this point
@@ -112,13 +121,19 @@ func (m *Manager) listRunning() []string {
 // unchanged. Falls back to a no-op (text-only) logger if the OTel
 // shared logger is not wired (e.g., in unit tests).
 //
+// The returned *sdklog.LoggerProvider wraps the *shared*
+// processor — the caller is responsible for calling Shutdown on
+// it when the child stops/restarts, to flush the in-process batch
+// and release the queue. The shared processor is NOT torn down
+// here; it lives for the lifetime of the parent process.
+//
 // Component mapping (matches the Loki `component` label
 // vocabulary in docs/design-direct-push-logging.md):
 //   "llama"          -> "llama-server"
 //   "node_exporter"  -> "node-exporter"
 //   "nvidia_exporter"-> "nvidia-exporter"
 //   anything else    -> "hydra-head" (the parent's component)
-func (m *Manager) childLoggerFor(childName string) *slog.Logger {
+func (m *Manager) childLoggerFor(childName string) (*slog.Logger, func() error) {
 	component := "hydra-head"
 	switch childName {
 	case "llama":
@@ -132,22 +147,34 @@ func (m *Manager) childLoggerFor(childName string) *slog.Logger {
 	if m.otel == nil {
 		// Fallback: text-only logger. Used by unit tests that
 		// construct a Manager without an OTel shared logger.
-		return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+		noop := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
 			Level: slog.LevelInfo,
 		}))
+		return noop, func() error { return nil }
 	}
 
-	handler, _, err := m.otel.ChildHandler(component, os.Stdout)
+	handler, childProvider, err := m.otel.ChildHandler(component, os.Stdout)
 	if err != nil {
 		// Fallback on error — log to the parent's logger so the
 		// misconfiguration is visible in journalctl.
 		m.logger.Error("failed to build child OTel handler; using text fallback",
 			"child", childName, "component", component, "error", err)
-		return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		fb := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelInfo,
 		}))
+		return fb, func() error { return nil }
 	}
-	return slog.New(handler)
+
+	// Shutdown the child provider to flush the in-process batch
+	// and release the queue. The shared processor is NOT touched
+	// (it lives for the parent's lifetime). The context is short
+	// (5s) — this only flushes pending records, no I/O.
+	shutdown := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return childProvider.Shutdown(ctx)
+	}
+	return slog.New(handler), shutdown
 }
 
 func (m *Manager) StartLlama() error {
@@ -183,11 +210,13 @@ func (m *Manager) StartLlama() error {
 	// llama process, so the writer's service.name resource
 	// attribute is set to "llama-server" at construction; no
 	// per-line regex is needed.
+	childLogger, childLogShutdown := m.childLoggerFor("llama")
 	proc := &managedProcess{
-		name:      "llama",
-		state:     StateStarting,
-		logWriter: newChildWriter(m.childLoggerFor("llama")),
-		done:      make(chan struct{}),
+		name:             "llama",
+		state:            StateStarting,
+		logWriter:        newChildWriter(childLogger),
+		childLogProvider: childLogShutdown,
+		done:             make(chan struct{}),
 	}
 
 	// Pre-populate state that we want to preserve from a prior run, under proc.mu.
@@ -372,11 +401,13 @@ func (m *Manager) StartService(name string) error {
 	// with service.name set to the child's component label
 	// (e.g., "node-exporter", "nvidia-exporter") at construction;
 	// no per-line regex is needed.
+	childLogger, childLogShutdown := m.childLoggerFor(name)
 	proc := &managedProcess{
-		name:      name,
-		state:     StateStarting,
-		logWriter: newChildWriter(m.childLoggerFor(name)),
-		done:      make(chan struct{}),
+		name:             name,
+		state:            StateStarting,
+		logWriter:        newChildWriter(childLogger),
+		childLogProvider: childLogShutdown,
+		done:             make(chan struct{}),
 	}
 
 	// Preserve restart count if a prior instance exists.
@@ -478,10 +509,34 @@ func (m *Manager) stop(name string, isLlama bool) error {
 		// process exited cleanly
 	}
 
+	// Shutdown the child OTel LoggerProvider (flushes the
+	// in-process batch, releases the queue). The shared
+	// processor is NOT touched — it lives for the parent's
+	// lifetime. This is critical to prevent the leak flagged
+	// in PR #369 review: every StartLlama/StartService call
+	// builds a fresh provider, and without this shutdown a
+	// crash-looping child accumulates providers until OOM.
 	proc.mu.Lock()
+	shutdownFn := proc.childLogProvider
 	proc.state = StateStopped
 	proc.pid = 0
 	proc.mu.Unlock()
+	if shutdownFn != nil {
+		if err := shutdownFn(); err != nil {
+			m.logger.Warn("child OTel LoggerProvider shutdown failed",
+				"name", name, "error", err)
+		}
+	}
+
+	// Flush the child writer's remaining buffered bytes (e.g.,
+	// a final log line without a trailing newline on a crash).
+	// This is the trailing-partial-line fix from PR #369 review.
+	if cw, ok := proc.logWriter.(*childWriter); ok {
+		if err := cw.Close(); err != nil {
+			m.logger.Warn("child writer close failed",
+				"name", name, "error", err)
+		}
+	}
 
 	return nil
 }
