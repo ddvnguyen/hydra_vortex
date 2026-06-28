@@ -131,7 +131,7 @@ public sealed class WorkerTracker : IWorkerTracker
     {
         slotId = -1;
         if (!_states.TryGetValue(name, out var s)) return false;
-        lock (s) { if (!s.Healthy) return false; }
+        lock (s) { if (!s.Healthy || s.ExclusiveReserved) return false; }
         if (!_pools.TryGetValue(name, out var pool)) return false;
         if (!pool.TryRent(out slotId)) return false;
         if (!_held.TryGetValue(name, out var held)) return false;
@@ -149,10 +149,18 @@ public sealed class WorkerTracker : IWorkerTracker
     }
 
     public int FreeSlotCount(string name)
-        => _pools.TryGetValue(name, out var p) ? p.Free : 0;
+    {
+        if (!_pools.TryGetValue(name, out var p)) return 0;
+        if (_states.TryGetValue(name, out var s) && lockOn(s, x => x.ExclusiveReserved)) return 0;
+        return p.Free;
+    }
 
     public bool HasFreeSlot(string name)
-        => _pools.TryGetValue(name, out var p) && p.HasFree;
+    {
+        if (!_pools.TryGetValue(name, out var p) || !p.HasFree) return false;
+        if (_states.TryGetValue(name, out var s) && lockOn(s, x => x.ExclusiveReserved)) return false;
+        return true;
+    }
 
     public int TotalSlots(string name)
         => _pools.TryGetValue(name, out var p) ? p.Total : 0;
@@ -181,9 +189,9 @@ public sealed class WorkerTracker : IWorkerTracker
         foreach (var (n, s) in _states)
         {
             var hasFreeSlot = _pools.TryGetValue(n, out var p) && p.HasFree;
-            bool healthy;
-            lock (s) { healthy = s.Healthy; }
-            if (hasFreeSlot && healthy) r.Add(n);
+            bool healthy, exclusiveReserved;
+            lock (s) { healthy = s.Healthy; exclusiveReserved = s.ExclusiveReserved; }
+            if (hasFreeSlot && healthy && !exclusiveReserved) r.Add(n);
         }
         return r;
     }
@@ -203,7 +211,8 @@ public sealed class WorkerTracker : IWorkerTracker
     {
         var hasFreeSlot = _pools.TryGetValue(name, out var p) && p.HasFree;
         if (!hasFreeSlot) return false;
-        return _states.TryGetValue(name, out var s) && lockOn(s, s => s.Healthy);
+        if (!_states.TryGetValue(name, out var s)) return false;
+        return lockOn(s, x => x.Healthy && !x.ExclusiveReserved);
     }
 
     public string GetStatus(string name)
@@ -212,10 +221,34 @@ public sealed class WorkerTracker : IWorkerTracker
         var hasFreeSlot = _pools.TryGetValue(name, out var p) && p.HasFree;
         var total = _pools.TryGetValue(name, out var pool) ? pool.Total : 1;
         var free = _pools.TryGetValue(name, out var pp) ? pp.Free : 0;
+        var exclusive = lockOn(s, x => x.ExclusiveReserved);
+        if (exclusive && free == total) return "reserved";
         if (free == total) return "free";
         if (hasFreeSlot) return "partial";
         return lockOn(s, s => s.Role);
     }
+
+    public bool TryReserveWorkerExclusive(string name)
+    {
+        if (!_states.TryGetValue(name, out var s)) return false;
+        if (!_pools.TryGetValue(name, out var pool)) return false;
+        lock (s)
+        {
+            if (!s.Healthy || s.ExclusiveReserved) return false;
+            if (pool.Free != pool.Total) return false;
+            s.ExclusiveReserved = true;
+        }
+        return true;
+    }
+
+    public void ReleaseWorkerExclusive(string name)
+    {
+        if (_states.TryGetValue(name, out var s))
+            lock (s) { s.ExclusiveReserved = false; }
+    }
+
+    public bool IsExclusiveReserved(string name)
+        => _states.TryGetValue(name, out var s) && lockOn(s, x => x.ExclusiveReserved);
 
     public bool IsHealthy(string n) => _states.TryGetValue(n, out var s) && lockOn(s, s => s.Healthy);
 
@@ -236,5 +269,5 @@ public sealed class WorkerTracker : IWorkerTracker
     private static T lockOn<T>(WorkerState s, Func<WorkerState, T> f) { lock (s) return f(s); }
     private static bool lockOn(WorkerState s, Func<WorkerState, bool> f) { lock (s) return f(s); }
 
-    private sealed class WorkerState { public string Role = ""; public DateTime? BusySince; public int ErrorCount; public bool Healthy = true; }
+    private sealed class WorkerState { public string Role = ""; public DateTime? BusySince; public int ErrorCount; public bool Healthy = true; public bool ExclusiveReserved; }
 }

@@ -53,8 +53,10 @@ public sealed class WorkItem
 	public SlotLease? DecodeLease { get; set; }
 	/// <summary>Two-engine "work together": the mode chosen for this request (None = solo).</summary>
 	public MultiEngineMode MultiMode { get; set; } = MultiEngineMode.None;
-	/// <summary>Lease on the recruited peer engine, held for the request's duration (None = solo).</summary>
-	public SlotLease? PeerLease { get; set; }
+	/// <summary>Reservation on the recruited peer engine, held for the request's duration (None = solo).
+	/// Either a <see cref="SlotLease"/> (legacy per-slot) or an
+	/// <see cref="ExclusivePeerReservation"/> (P3.0+ per-GPU exclusivity, no slot).</summary>
+	public IPeerReservation? PeerLease { get; set; }
 	/// <summary>Name of the peer engine recruited (for status/metrics/logging).</summary>
 	public string? MultiPeer { get; set; }
 	/// <summary>The --override-tensor split pushed to the peer (for status surfacing).</summary>

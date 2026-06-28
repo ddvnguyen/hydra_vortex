@@ -246,6 +246,88 @@ public sealed class WorkerSchedulerTests
         Assert.True(item.Completion.Task.IsFaulted);
         Assert.IsType<InvalidOperationException>(item.Completion.Task.Exception!.InnerException);
     }
+
+    // ── P3.0 (#366): per-GPU exclusive peer reservation lifecycle ──
+
+    [Fact]
+    public async Task Finalize_Releases_Exclusive_Peer_Reservation()
+    {
+        // P3.0: when a multi-engine request finalizes (Done/Failed/Cancelled),
+        // the exclusive reservation on the peer must be released — even if
+        // the activate-degrade path (ReportsSolo) was taken. The lease is
+        // owned by the WorkItem; the scheduler releases it on finalize.
+        var cfg = new CoordinatorConfig
+        {
+            UseLlamaEngine = true,
+            PipelineEnabled = true,
+            Workers = new List<WorkerConfig>
+            {
+                new() { Name = "rtx", Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 2,
+                    Role = "head", PeerWorker = "p100",
+                    PeerHost = "192.168.122.21", PeerPort = 9700,
+                    PipelineCapable = true, PipelineOtSplit = "blk\\..*=PEER" },
+                new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://p100:8086", WorkerType = 2, Slots = 1, Role = "worker" }
+            }
+        };
+        var ledger = new SessionLedger();
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        // Manually run the acquire path: simulate TryAcquireMultiEngine's effect.
+        Assert.True(tracker.TryReserveWorkerExclusive("p100"));
+        Assert.True(tracker.IsExclusiveReserved("p100"));
+        var item = new WorkItem(
+            new Dictionary<string, object> { ["stream"] = false },
+            new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "test" } },
+            "sess_excl", "trace_excl", null, 20000, 100
+        );
+        item.MultiMode = MultiEngineMode.Pipeline;
+        item.MultiPeer = "p100";
+        item.DecodeWorker = cfg.Workers[0];
+        item.DecodeSlot = 0;
+        item.DecodeLease = new SlotLease("rtx", 0, item.SessionId, LeaseLifetime.Long, tracker);
+        item.PeerLease = new ExclusivePeerReservation("p100", tracker);
+
+        await scheduler.FinalizeAsync(item, WorkItemState.Done);
+
+        Assert.Null(item.PeerLease);
+        Assert.False(tracker.IsExclusiveReserved("p100"));
+        Assert.True(tracker.HasFreeSlot("p100"));
+    }
+
+    [Fact]
+    public async Task Finalize_Failed_Releases_Exclusive_Peer_Reservation()
+    {
+        // Symmetric to the Done case: even on Failed/Cancelled, the peer
+        // reservation must be released so the peer returns to service.
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("p100");
+        Assert.True(tracker.TryReserveWorkerExclusive("p100"));
+
+        var item = new WorkItem(
+            new(), new(), "sess_excl_fail", "trace", null, 1, 1
+        );
+        item.MultiMode = MultiEngineMode.Pipeline;
+        item.MultiPeer = "p100";
+        item.Error = new InvalidOperationException("boom");
+        item.PeerLease = new ExclusivePeerReservation("p100", tracker);
+
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        await scheduler.FinalizeAsync(item, WorkItemState.Failed);
+
+        Assert.Null(item.PeerLease);
+        Assert.False(tracker.IsExclusiveReserved("p100"));
+    }
 }
 
 public sealed class WorkItemIntegrationTests
