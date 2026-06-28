@@ -13,15 +13,14 @@ ContainerName=infra-otel-collector
 #  - 0.110.0 still bundles the contrib receivers/processors we use.
 #  - Avoids the "non-reproducible :latest" footgun (a future pull
 #    could ship without required components).
+# The contrib image is `FROM scratch` (no shell, no wget/curl),
+# so a container-level HealthCmd is impossible. The collector
+# health check is done from the host side (see
+# scripts/deploy-hydra-head.sh and the :13133 host probe).
 Image=otel/opentelemetry-collector-contrib:0.110.0
 Pod=infra-host.pod
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
 Exec=--config=/etc/otelcol/config.yaml
-HealthCmd=wget -q -O /dev/null http://localhost:13133/
-HealthInterval=15s
-HealthRetries=3
-HealthStartPeriod=10s
-HealthTimeout=5s
 
 [Service]
 Restart=on-failure

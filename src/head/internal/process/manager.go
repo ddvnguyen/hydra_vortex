@@ -195,12 +195,26 @@ func (m *Manager) StartLlama() error {
 	}()
 
 	// Check existing proc under proc.mu (not m.mu) to avoid race with monitorProcess.
+	// If a previous proc exists, we will REUSE its logWriter and
+	// childLogProvider (per the auto-restart fix in #2ae3800
+	// follow-up): building a new provider and then immediately
+	// discarding it (because we re-use the old logWriter) leaks
+	// the new provider — see the related review comment.
+	var existingLogger *slog.Logger
+	var existingLogShutdown func() error
 	if existing := m.getProcess("llama"); existing != nil {
 		existing.mu.RLock()
 		if existing.state == StateRunning {
 			existing.mu.RUnlock()
 			return fmt.Errorf("llama-server already running (PID %d)", existing.pid)
 		}
+		// Pull the old writer's components so we can reuse them
+		// below instead of building fresh ones that would be
+		// immediately discarded.
+		if cw, ok := existing.logWriter.(*childWriter); ok {
+			existingLogger = cw.logger
+		}
+		existingLogShutdown = existing.childLogProvider
 		existing.mu.RUnlock()
 	}
 
@@ -210,7 +224,16 @@ func (m *Manager) StartLlama() error {
 	// llama process, so the writer's service.name resource
 	// attribute is set to "llama-server" at construction; no
 	// per-line regex is needed.
-	childLogger, childLogShutdown := m.childLoggerFor("llama")
+	var childLogger *slog.Logger
+	var childLogShutdown func() error
+	if existingLogger != nil {
+		// Reuse the previous child's OTel resources (avoids
+		// leaking a fresh provider on every auto-restart).
+		childLogger = existingLogger
+		childLogShutdown = existingLogShutdown
+	} else {
+		childLogger, childLogShutdown = m.childLoggerFor("llama")
+	}
 	proc := &managedProcess{
 		name:             "llama",
 		state:            StateStarting,
@@ -223,7 +246,7 @@ func (m *Manager) StartLlama() error {
 	if existing := m.getProcess("llama"); existing != nil {
 		existing.mu.RLock()
 		proc.restartCount = existing.restartCount
-		proc.logWriter = existing.logWriter
+		// logWriter was already set above (either fresh or reused).
 		existing.mu.RUnlock()
 	}
 
@@ -386,13 +409,27 @@ func (m *Manager) StartService(name string) error {
 		m.startingMu.Unlock()
 	}()
 
-	// Check existing proc under proc.mu.
+	// Check existing proc under proc.mu. If a previous proc
+	// exists, we will REUSE its logWriter and childLogProvider
+	// (per the auto-restart fix in #2ae3800 follow-up): building
+	// a new provider and then immediately discarding it (because
+	// we re-use the old logWriter) leaks the new provider — see
+	// the related review comment.
+	var existingLogger *slog.Logger
+	var existingLogShutdown func() error
 	if existing := m.getProcess(name); existing != nil {
 		existing.mu.RLock()
 		if existing.state == StateRunning {
 			existing.mu.RUnlock()
 			return fmt.Errorf("%s already running (PID %d)", name, existing.pid)
 		}
+		// Pull the old writer's components so we can reuse them
+		// below instead of building fresh ones that would be
+		// immediately discarded.
+		if cw, ok := existing.logWriter.(*childWriter); ok {
+			existingLogger = cw.logger
+		}
+		existingLogShutdown = existing.childLogProvider
 		existing.mu.RUnlock()
 	}
 
@@ -401,7 +438,16 @@ func (m *Manager) StartService(name string) error {
 	// with service.name set to the child's component label
 	// (e.g., "node-exporter", "nvidia-exporter") at construction;
 	// no per-line regex is needed.
-	childLogger, childLogShutdown := m.childLoggerFor(name)
+	var childLogger *slog.Logger
+	var childLogShutdown func() error
+	if existingLogger != nil {
+		// Reuse the previous child's OTel resources (avoids
+		// leaking a fresh provider on every auto-restart).
+		childLogger = existingLogger
+		childLogShutdown = existingLogShutdown
+	} else {
+		childLogger, childLogShutdown = m.childLoggerFor(name)
+	}
 	proc := &managedProcess{
 		name:             name,
 		state:            StateStarting,
@@ -414,6 +460,7 @@ func (m *Manager) StartService(name string) error {
 	if existing := m.getProcess(name); existing != nil {
 		existing.mu.RLock()
 		proc.restartCount = existing.restartCount
+		// logWriter was already set above (either fresh or reused).
 		existing.mu.RUnlock()
 	}
 
@@ -509,31 +556,38 @@ func (m *Manager) stop(name string, isLlama bool) error {
 		// process exited cleanly
 	}
 
-	// Shutdown the child OTel LoggerProvider (flushes the
+	// Order matters: flush the child writer's remaining
+	// buffered bytes FIRST (while the OTel LoggerProvider is
+	// still alive), then shut down the provider. If we shut
+	// down first, Close() emits the trailing partial line to a
+	// dead provider and the line reaches stdout but not Loki —
+	// defeating the point of capturing it. This is the
+	// ordering fix from the second-pass PR #369 review.
+	proc.mu.Lock()
+	shutdownFn := proc.childLogProvider
+	proc.state = StateStopped
+	proc.pid = 0
+	proc.mu.Unlock()
+
+	// 1. Flush the child writer's remaining buffered bytes (a
+	// final log line without a trailing newline on a crash).
+	if cw, ok := proc.logWriter.(*childWriter); ok {
+		if err := cw.Close(); err != nil {
+			m.logger.Warn("child writer close failed",
+				"name", name, "error", err)
+		}
+	}
+
+	// 2. Shutdown the child OTel LoggerProvider (flushes the
 	// in-process batch, releases the queue). The shared
 	// processor is NOT touched — it lives for the parent's
 	// lifetime. This is critical to prevent the leak flagged
 	// in PR #369 review: every StartLlama/StartService call
 	// builds a fresh provider, and without this shutdown a
 	// crash-looping child accumulates providers until OOM.
-	proc.mu.Lock()
-	shutdownFn := proc.childLogProvider
-	proc.state = StateStopped
-	proc.pid = 0
-	proc.mu.Unlock()
 	if shutdownFn != nil {
 		if err := shutdownFn(); err != nil {
 			m.logger.Warn("child OTel LoggerProvider shutdown failed",
-				"name", name, "error", err)
-		}
-	}
-
-	// Flush the child writer's remaining buffered bytes (e.g.,
-	// a final log line without a trailing newline on a crash).
-	// This is the trailing-partial-line fix from PR #369 review.
-	if cw, ok := proc.logWriter.(*childWriter); ok {
-		if err := cw.Close(); err != nil {
-			m.logger.Warn("child writer close failed",
 				"name", name, "error", err)
 		}
 	}
