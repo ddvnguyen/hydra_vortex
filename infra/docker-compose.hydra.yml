@@ -122,7 +122,16 @@ services:
       - HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers.json
       - HYDRA_COORD_ENABLE_CHUNKS=true
       - HYDRA_STORE_CHUNK_SIZE=8192
-      - HYDRA_LOG_LOKI_URL=http://localhost:3100
+      # Per-service OTel log push (#363). Hydra.Core pushes
+      # OTLP/HTTP to the OTel Collector on the host (port 4318
+      # — joins the infra-host Quadlet pod which is on
+      # Network=host). The collector's transform processor
+      # maps service.name -> Loki 'component' label, so
+      # {component="hydra"} continues to work.
+      - OTEL_SERVICE_NAME=hydra
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://localhost:4318
+      - HYDRA_LOG_NODE=rtx
       # M3-P1 #332: two-tier chunk cache. L1 = tmpfs byte-LRU (20 GB);
       # L2 = PG chunk_data_l2 age-LRU (50 GB, age×idle/use_count).
       # Legacy HYDRA_COORD_CHUNK_CACHE_DIR is honored for back-compat
