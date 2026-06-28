@@ -19,11 +19,12 @@ import (
 	"log/slog"
 	"os"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	otelLog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 )
 
 // Config is the input to NewOTelHandler. It captures the OTel push
@@ -204,7 +205,14 @@ func buildResource(cfg Config) (*resource.Resource, error) {
 			semconv.ServiceName(cfg.ServiceName),
 			semconv.ServiceNamespace(cfg.ServiceNamespace),
 			semconv.ServiceInstanceID(cfg.ServiceInstanceID),
-			semconv.DeploymentEnvironment(cfg.Environment),
+			// DeploymentEnvironment was removed from the
+			// semconv helpers in v1.41.0; build the KeyValue
+			// directly with the well-known key. The
+			// collector's transform processor doesn't need
+			// this attribute (it copies service.name and
+			// service.instance.id to Loki labels;
+			// deployment.environment is metadata only).
+			attribute.String("deployment.environment.name", cfg.Environment),
 		),
 	)
 }
