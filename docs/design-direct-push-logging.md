@@ -18,7 +18,7 @@ The audit (2026-06-27) uncovered **10 concrete issues**, of which the highest-im
 |---|---|---|---|
 | 1 | **P100 promtail config is wrong** — `cri: {}` stage runs against journald, not `ctr.log` | `infra/promtail/promtail-rtx.yml:49` | P100 logs silently garbled; no clean way to debug |
 | 2 | **Hydra.Core double-logs** — Serilog writes to console JSON *and* to Loki directly | `src/core/Hydra.Shared/HydraLogging.cs:26-34` | 2× Loki ingestion cost; duplicate streams |
-| 3 | **Loki `max_entry_size: 256 KiB`** drops real prefill lines | `infra/loki/loki-config.yml` (no override; upstream default) | Whole batch around offender is lost (open: #324) |
+| 3 | **Loki `max_line_size: 256 KiB`** drops real prefill lines | `infra/loki/loki-config.yml` (no override; upstream default) | Whole batch around offender is lost (open: #324). Note: the field is `max_line_size` in Loki 3.4, not `max_entry_size` (the latter is a 3.5+ rename). |
 | 4 | **`component` label depends on a brittle regex** | `infra/promtail/promtail-rtx.yml:68` | New log format → wrong label silently |
 | 5 | **No HA** — if `hydra-head-rtx` dies, in-container Promtail dies too | (structural) | Log gap on every restart |
 | 6 | **Position file path is broken on P100** | `infra/promtail/promtail-rtx.yml:13` | P100 promtail silently fails to persist |
@@ -57,23 +57,24 @@ Adopt **per-service push to a single OTel Collector gateway**, which fans out to
                           ┌───────────────────────────┐
                           │ OTel Collector gateway    │
                           │ infra-host pod, :4318     │
-                          │  (single container)       │
+                          │  (single container,       │
+                          │   pinned contrib 0.110.0) │
                           │                           │
                           │  receivers:               │
                           │    otlp: { http: 4318 }   │
                           │  processors:              │
                           │    batch                  │
                           │    memory_limiter         │
+                          │    transform/log_labels   │
                           │  exporters:               │
-                          │    loki →                 │
-                          │      :3100/loki/api/v1/push│
-                          │    prometheus :8888       │
+                          │    otlphttp/loki →        │
+                          │      :3100/otlp/v1/logs   │
                           └───────────────────────────┘
                                        │
                                        ▼
                           ┌───────────────────────────┐
                           │ Loki 3.x :3100            │
-                          │  - max_entry_size: 1 MiB  │  ← fix #324
+                          │  - max_line_size: 1 MiB  │  ← fix #324
                           │  - ingestion_rate: 32 MB  │  ← see "Why ingestion rate stays at 32 MB"
                           │  - schema v13, tsdb index │  ← required for OTLP
                           │  - allow_structured_      │
@@ -106,7 +107,7 @@ The implementation assumes the runtime meets these constraints. Each was verifie
 | OTLP listener | `curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/x-protobuf' --data-binary '' localhost:3100/otlp/v1/logs` | 4xx non-404 | **422** ✅ |
 | Push listener | `curl -s -X POST -H 'Content-Type: application/json' -d '{}' localhost:3100/loki/api/v1/push` | 4xx with "at least one valid stream" | ✅ |
 | `core` network_mode | `grep network_mode infra/docker-compose.hydra.yml` for `core` | `host` | **host** ✅ (line 75) |
-| OTel contrib image pullable | `podman pull --authfile ~/.config/containers/auth.json otel/opentelemetry-collector-contrib:latest` | exit 0 | **192 MB pulled** ✅ |
+| OTel contrib image pullable | `podman pull --authfile ~/.config/containers/auth.json otel/opentelemetry-collector-contrib:0.110.0` | exit 0 | **192 MB pulled** ✅ |
 | Port 4318 free on RTX | `ss -tln \| grep :4318` | empty | **free** ✅ |
 | Port 4317 free on RTX | `ss -tln \| grep :4317` | empty | **free** ✅ |
 | P100 → RTX collector | `ssh hydra-p100 'curl -so/dev/null -w%{http_code} http://192.168.122.1:4318/'` | 200 (after deploy) | **000** (no collector yet — expected; lands in Phase 2) |
@@ -143,7 +144,12 @@ After=infra-host-pod.service
 
 [Container]
 ContainerName=infra-otel-collector
-Image=otel/opentelemetry-collector-contrib:latest
+# Pinned to 0.110.0 (not :latest). The :latest tag is non-reproducible
+# and may ship without the components we depend on. 0.110.0 retains
+# the `service.telemetry.metrics.address` config field (removed in
+# 0.111+), letting us expose the otelcol counters on :18888 (pgadmin
+# owns :8888).
+Image=otel/opentelemetry-collector-contrib:0.110.0
 Pod=infra-host.pod
 Volume=/mnt/WorkDisk/Workplace/hydra_vortex/infra/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
 Exec=--config=/etc/otelcol/config.yaml
@@ -176,38 +182,77 @@ processors:
     check_interval: 1s
     limit_percentage: 80
     spike_limit_percentage: 25
-  transform:
-    trace_logs:
-      # Map OTel resource attributes to Loki stream labels.
-      # (component, node) and (level) come from the OTel SDK; the
-      # collector normalizes them to the {component, node, level}
-      # Loki label vocabulary.
-      log_statements:
-        - context: log
-          statements:
-            - set(attributes["component"], resource["service.name"])
-            - set(attributes["node"], resource["service.instance.id"])
-            - set(attributes["level"], resource["service.level"])
+  transform/log_labels:
+    error_mode: ignore
+    log_statements:
+      # component and node come from the resource attributes;
+      # setting them at the resource scope means the Loki OTLP
+      # receiver maps them to stream labels (mirroring how
+      # service.name and service.instance.id are mapped).
+      - context: resource
+        statements:
+          - set(attributes["component"], attributes["service.name"])
+          - set(attributes["node"], attributes["service.instance.id"])
+      # level comes from the log-record severity_text, which is a
+      # top-level log field (NOT an attribute). `severity_text` is
+      # the correct symbol; `attributes["severity_text"]` is always
+      # nil and was a copy-paste bug in the first revision.
+      - context: log
+        statements:
+          - set(attributes["level"], severity_text)
 
 exporters:
-  loki:
-    endpoint: http://localhost:3100/loki/api/v1/push
-  prometheus:
-    endpoint: 0.0.0.0:8888
-    resource_to_telemetry_conversion:
-      enabled: true
+  # Push to Loki's native OTLP HTTP receiver at /otlp/v1/logs.
+  # The `loki` exporter was removed upstream (v0.99.0); the
+  # supported path is the OTLP HTTP exporter pointing at Loki's
+  # built-in OTLP listener. The wire protocol is the same OTLP/HTTP
+  # protobuf services use, so the entire pipeline is uniform.
+  otlphttp/loki:
+    endpoint: http://localhost:3100
+    logs_endpoint: http://localhost:3100/otlp/v1/logs
+    tls: { insecure: true }
+
+extensions:
+  # The legacy implicit :13133 health endpoint is gone in v0.110+;
+  # the health_check extension is opt-in. Quadlet's HealthCmd
+  # depends on this.
+  health_check:
+    endpoint: 0.0.0.0:13133
 
 service:
+  telemetry:
+    metrics:
+      # Expose the OTel collector's own counters
+      # (otelcol_exporter_sent_log_records / send_failed_log_records)
+      # on a non-default port. Default 8888 collides with pgadmin
+      # on this host; we use 18888.
+      address: 0.0.0.0:18888
+  extensions: [health_check]
   pipelines:
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, transform, batch]
-      exporters: [loki]
-  telemetry:
-    metrics: { address: 0.0.0.0:8888 }
+      processors: [memory_limiter, transform/log_labels, batch]
+      exporters: [otlphttp/loki]
 ```
 
-(Notes: the `transform` processor is a sketch; the implementation may use the more idiomatic `resource/log` mapping in the `loki` exporter's `default_labels_enabled` block. The full implementation lands in Phase 2.)
+(Notes:
+- The collector does NOT export via the deprecated `loki` exporter; the
+  `otlphttp` exporter pushes to Loki's native OTLP listener at
+  `/otlp/v1/logs`. This is the supported path.
+- A `prometheus` exporter is **not** included in the logs pipeline
+  because the `prometheus` exporter only supports the `metrics` data
+  type; placing it in a logs pipeline aborts the collector at startup
+  with `telemetry type is not supported`. The collector's own
+  counters are still available via `service.telemetry.metrics` on
+  `:18888`.
+- The `transform/log_labels` processor is correct as of v0.110.0 —
+  in resource scope, the local `attributes` symbol refers to the
+  resource's attribute map; setting `attributes["component"]` /
+  `attributes["node"]` here promotes them to resource attributes
+  that Loki's OTLP receiver maps to stream labels.
+- `severity_text` is the bare top-level log-record field, not an
+  attribute. The first revision's `attributes["severity_text"]` was
+  a copy-paste bug — the value is always nil.)
 
 ### Per-service responsibilities
 
@@ -216,7 +261,7 @@ service:
 | **Hydra.Core (C#)** | Replace `Serilog.Sinks.Grafana.Loki` with `Serilog.Sinks.OpenTelemetry` + `OpenTelemetry.Exporter.OpenTelemetryProtocol` + `OpenTelemetry.Extensions.Hosting`. Set OTel resource attributes `service.name=hydra`, `service.namespace=hydra-core`, `service.instance.id=<node>`, `deployment.environment.name=dev`, `service.level=<level>`. Set the `node` via `Enrich.WithProperty("node", …)` (env-driven: `HYDRA_LOG_NODE`). Map Serilog `Level` to the OTel `service.level` resource attribute. Map Serilog `LogContext` properties to OTel attributes. **Stop writing to the console** (Loki is enough; the 2× ingestion today is a bug). |
 | **Hydra.Head (Go)** | Drop `github.com/samber/slog-loki/v3` and `github.com/samber/slog-multi/v2`. Add `go.opentelemetry.io/otel/sdk/log` + `go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp`. Build an OTel log handler that exports OTLP HTTP to `cfg.OTel.URL` (default `http://localhost:4318`, P100 override `http://192.168.122.1:4318`). Set OTel resource attributes: `service.name=hydra-head`, `service.namespace=hydra-core`, `service.instance.id=<cfg.Node.Name>`, `service.level=<level>`. For each child-process stdout byte stream (`llama-server`, `node_exporter`, `nvidia_exporter`), replace `proc.LogWriter = os.Stdout` with a **per-child labeled writer at spawn time** (no regex on the hot path). The manager already knows the child name (`StartLlama` vs `StartService("node_exporter")`); each gets its own OTel log record producer with the right `service.name` resource attribute. |
 | **OTel Collector** | New container in the `infra-host` pod. Receives OTLP HTTP on `:4318`, normalizes resource attributes to Loki labels via `transform` processor, fans out to Loki (`/loki/api/v1/push`) and Prometheus (`:8888`). |
-| **Loki** | Bump `limits_config.max_entry_size` from default 256 KiB to 1 MiB (fixes #324). **Do not** bump `ingestion_rate_mb` (32 → 32) or `ingestion_burst_size_mb` (64 → 64) — see "Why ingestion rate stays at 32 MB". Confirm `schema_config` is `v13` and the index is `tsdb` (required for OTLP — already so, verified 2026-06-27). |
+| **Loki** | Bump `limits_config.max_line_size` from default 256 KiB to 1 MiB (fixes #324). **Do not** bump `ingestion_rate_mb` (32 → 32) or `ingestion_burst_size_mb` (64 → 64) — see "Why ingestion rate stays at 32 MB". Confirm `schema_config` is `v13` and the index is `tsdb` (required for OTLP — already so, verified 2026-06-27). |
 | **P100 systemd** | `node-p100.yaml` overrides `cfg.OTel.URL` to `http://192.168.122.1:4318` (the RTX collector). The journald-only log path is **kept** as a fallback for `journalctl` forensics; OTLP push is the new primary. |
 | **Promtail** | **Removed entirely.** The two promtail binaries (in `hydra-head-rtx` container + on P100 VM) are deleted. The `promtail:` block in `node-rtx.yaml` and `node-p100.yaml` is removed. The `Config.GeneratePromtailConfig` function in `src/head/internal/config/config.go:360-399` is marked `// Deprecated: per-service direct push since 2026-06`; the test in `config_test.go:248-263` stays. |
 | **Pod level** | **Keep `userns_mode: "host"`** for now — the `core` service's `mkdir -m 777` chunk-cache workaround still needs it (related to #333). Drop it in a follow-up PR after the rootless-podman uid-mapping fix lands. Add a `// TODO: drop userns_mode after #333` comment. |
@@ -269,7 +314,7 @@ A first-pass design bumped `ingestion_rate_mb: 32 → 64` and `ingestion_burst_s
 - Hydra.Core's log volume: ~50 info-level events per request × N concurrent requests × ~500 bytes/event average.
 - At 28 tok/s decode + ~1 prefill per minute on the P/D path, peak per-process log volume is bounded at ~1 MB/min.
 - 32 MB / 60 s = 533 KB/s aggregate — 32× headroom over the per-process peak.
-- The `max_entry_size: 1MiB` (4×) bump is what fixes #324; the ingestion rate doesn't need to move.
+- The `max_line_size: 1048576  # 1 MiB; Loki 3.4 (not the 3.5+ max_entry_size)` (4×) bump is what fixes #324; the ingestion rate doesn't need to move.
 
 Keep `ingestion_rate_mb: 32` and `ingestion_burst_size_mb: 64` (the current values). Add an alert on `loki_discarded_samples_total{reason="rate_limited"}` so a future burst is caught in minutes, not in a postmortem.
 
@@ -315,7 +360,7 @@ The trace_id appears as structured metadata in Loki (not a label), queryable via
 
 | File | Change |
 |---|---|
-| `infra/loki/loki-config.yml` | Add `max_entry_size: 1MiB` (fixes #324). **Do not** change `ingestion_rate_mb` or `ingestion_burst_size_mb` (see "Why ingestion rate stays at 32 MB"). |
+| `infra/loki/loki-config.yml` | Add `max_line_size: 1048576  # 1 MiB; Loki 3.4 (not the 3.5+ max_entry_size)` (fixes #324). **Do not** change `ingestion_rate_mb` or `ingestion_burst_size_mb` (see "Why ingestion rate stays at 32 MB"). |
 | `infra/otel-collector/config.yaml` (new) | OTLP HTTP receiver on `:4318`; `transform` processor maps OTel resource attributes to Loki stream labels; `loki` exporter to `http://localhost:3100/loki/api/v1/push`; `prometheus` exporter on `:8888`. |
 | `infra/quadlets/infra-otel-collector.container` (new) | Quadlet for the OTel Collector, joins the `infra-host` pod. |
 | `scripts/start-infra.sh` | Install + start the new Quadlet alongside existing infra-host services. |
@@ -348,7 +393,7 @@ The trace_id appears as structured metadata in Loki (not a label), queryable via
 The next dev should land these in **one PR** (hard cutover — see "Rollout" below). Each sub-task is one commit.
 
 - [ ] **Loki config** — `infra/loki/loki-config.yml`:
-  - `max_entry_size: 1MiB` (fixes #324)
+  - `max_line_size: 1048576  # 1 MiB; Loki 3.4 (not the 3.5+ max_entry_size)` (fixes #324)
   - `ingestion_rate_mb: 32` (unchanged)
   - `ingestion_burst_size_mb: 64` (unchanged)
 - [ ] **OTel Collector Quadlet** — `infra/quadlets/infra-otel-collector.container` (new) + `infra/otel-collector/config.yaml` (new) + `scripts/start-infra.sh` (install Quadlet)
@@ -413,7 +458,7 @@ The next dev should land these in **one PR** (hard cutover — see "Rollout" bel
 | Issue | Title | Disposition |
 |---|---|---|
 | #322 | promtail-rtx.yml hardcodes docker.sock; in-container promtail ships 0 bytes to Loki | Closed by the Promtail removal (this PR) |
-| #324 | Loki rejects hydra-core log entries >262144 bytes (max_entry_size) | Closed by the `max_entry_size: 1MiB` config bump (this PR) |
+| #324 | Loki rejects hydra-core log entries >262144 bytes (max_line_size) | Closed by the `max_line_size: 1048576  # 1 MiB; Loki 3.4 (not the 3.5+ max_entry_size)` config bump (this PR) |
 | #363 | (this issue) | Closes when the implementation PR merges |
 
 ## Acceptance criteria
@@ -591,7 +636,7 @@ The design was reviewed on 2026-06-27 (16-item review on issue #363). The first 
 | 11 | `HYDRA_LOG_LOKI_URL` semantics undefined | Resolved: drop the env var and the `Serilog.Sinks.Grafana.Loki` dependency. The OTLP push is the new primary path; no fallback. |
 | 12 | `taggingWriter` reuses the brittle regex | Resolved structurally: per-child labeled writers at spawn time. New "Per-child writers" subsection with Go code shape. The regex is gone. |
 | 13 | PR size + review strategy unstated | New "Review strategy" subsection in Rollout: squash merge, CI green + 1 reviewer per language group, required cross-links. |
-| 14 | Ingestion rate doubling unjustified | Resolved: stay at 32 MB. New "Why ingestion rate stays at 32 MB" subsection with the calculation. The `max_entry_size: 1MiB` (4×) bump stays; it's the one that fixes #324. |
+| 14 | Ingestion rate doubling unjustified | Resolved: stay at 32 MB. New "Why ingestion rate stays at 32 MB" subsection with the calculation. The `max_line_size: 1048576  # 1 MiB; Loki 3.4 (not the 3.5+ max_entry_size)` (4×) bump stays; it's the one that fixes #324. |
 | 15 | Container log-driver revert is operator-side | Resolved: the RUNBOOK entry now has an explicit step for the operator to switch `k8s-file` → `journald` after the cutover. Default stays `k8s-file` (no behavior change) until operators opt in. |
 | 16 | Milestone is the deferred M3 | M3 — "Persistence & Real Obs" is the right home: it's labeled "Real Obs" and this work is observability. The active Llama-Engine milestone is about P/D split. The reviewer may have confused the M3 label (which is open + scoped to "Real Obs") with the M3 sub-phase ("Production phase" per `CLAUDE.md`, deferred). The decision stands: this issue stays in M3. |
 
