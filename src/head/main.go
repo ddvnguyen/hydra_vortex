@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/api"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/health"
+	hydralog "github.com/ddvnguyen/hydra_vortex/hydra-head/internal/logging"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/process"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/registry"
 )
@@ -35,29 +37,76 @@ func main() {
 		*authToken = os.Getenv("HYDRA_HEAD_AUTH_TOKEN")
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	// Build the logger. The OTel handler is the primary path:
+	// it exports every record to the OTel Collector (or Loki's
+	// OTLP endpoint) via OTLP/HTTP. The same handler also writes
+	// a plain-text copy to os.Stdout for forensic reads
+	// (journalctl / podman logs); see
+	// internal/logging/otel_handler.go for details.
+	//
+	// cfg.OTel.URL is read after config.Load below (we need the
+	// node name from cfg.Node.Name), so we wire a two-stage
+	// setup: a text-only logger for the pre-config phase, then
+	// a swap to the OTel handler after the config is loaded.
+	bootLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
-
-	logger.Info("hydra-head starting",
+	bootLogger.Info("hydra-head starting",
 		"global_config", *globalConfig,
 		"node_config", *nodeConfig,
 		"api_port", *apiPort)
 
 	cfg, err := config.Load(*globalConfig, *nodeConfig)
 	if err != nil {
-		logger.Error("failed to load config", "error", err)
+		bootLogger.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		logger.Error("invalid config", "error", err)
+		bootLogger.Error("invalid config", "error", err)
 		os.Exit(1)
 	}
+
+	// Build the OTel handler now that we know the node name and
+	// the OTLP endpoint URL. The cfg.Infra.OTel.URL field is
+	// added in the next commit; until then we default to
+	// localhost:4318 (matches the OTel Collector Quadlet
+	// installed by the OTel Collector Quadlet setup).
+	otelURL := cfg.Infra.OTel.URL
+	if otelURL == "" {
+		otelURL = "http://localhost:4318"
+	}
+	otelHandler, otelShutdown, otelShared, err := hydralog.NewOTelHandler(
+		context.Background(),
+		hydralog.Config{
+			Endpoint:          otelURL,
+			ServiceName:       "hydra-head",
+			ServiceNamespace:  "hydra-core",
+			ServiceInstanceID: cfg.Node.Name,
+			Environment:       "dev",
+		},
+	)
+	if err != nil {
+		bootLogger.Error("failed to build OTel log handler", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otelShutdown(shutdownCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "otel log shutdown: %v\n", err)
+		}
+	}()
+
+	// From here on, the OTel handler is the primary logger. The
+	// boot logger is no longer used.
+	logger := slog.New(otelHandler)
+	slog.SetDefault(logger)
 
 	logger.Info("config loaded",
 		"node", cfg.Node.Name,
 		"mode", cfg.Node.Mode,
+		"otel_url", otelURL,
 		"llama_binary", cfg.Llama.Binary,
 		"llama_port", cfg.Llama.Port)
 
@@ -112,7 +161,7 @@ func main() {
 		regMgr = registry.NewManager(logger, "/tmp/hydra-registry-cache")
 	}
 
-	manager := process.NewManager(cfg, logger)
+	manager := process.NewManager(cfg, logger, otelShared)
 	defer manager.Shutdown()
 
 	llamaURL := fmt.Sprintf("http://%s:%d", cfg.Llama.Host, cfg.Llama.Port)

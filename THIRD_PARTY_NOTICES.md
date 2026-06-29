@@ -25,7 +25,12 @@ consult the upstream project for the authoritative license text.
 | prometheus-net.AspNetCore | MIT |
 | Npgsql | PostgreSQL License |
 | Serilog | Apache-2.0 |
-| Serilog.Sinks.Console | Apache-2.0 |
+| ~~Serilog.Sinks.Console~~ | (removed in #363 — Loki push is the new primary path) |
+| ~~Serilog.Sinks.Grafana.Loki~~ | (removed in #363 — replaced by OTel pipeline) |
+| Serilog.Sinks.OpenTelemetry | Apache-2.0 |
+| OpenTelemetry.Exporter | Apache-2.0 |
+| OpenTelemetry.Exporter.OpenTelemetryProtocol | Apache-2.0 |
+| OpenTelemetry.Extensions.Hosting | Apache-2.0 |
 
 ### Test-only (.NET)
 
@@ -57,6 +62,32 @@ consult the upstream project for the authoritative license text.
 | pytest | MIT |
 | pytest-asyncio | Apache-2.0 |
 | ruff | MIT |
+
+## Go (Hydra.Head)
+
+| Package | License |
+|---------|---------|
+| github.com/google/go-containerregistry | Apache-2.0 |
+| go.opentelemetry.io/otel | Apache-2.0 |
+| go.opentelemetry.io/otel/log | Apache-2.0 |
+| go.opentelemetry.io/otel/sdk | Apache-2.0 |
+| go.opentelemetry.io/otel/sdk/log | Apache-2.0 |
+| go.opentelemetry.io/otel/trace | Apache-2.0 |
+| go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp | Apache-2.0 |
+| gopkg.in/yaml.v3 | MIT |
+
+(Added in #363: the OTel Go SDK + `otlploghttp` exporter are
+the new log pipeline for Hydra.Head and its child processes.
+Hydra.Head no longer depends on `samber/slog-loki` /
+`samber/slog-multi` — those were not adopted.)
+
+## Container images
+
+| Image | License | Notes |
+|-------|---------|-------|
+| otel/opentelemetry-collector-contrib | Apache-2.0 | The OTel Collector gateway (Quadlet `infra-otel-collector.container`); pulls from Docker Hub in `start-infra.sh`. |
+| grafana/loki | AGPL-3.0 | The Loki log backend (Quadlet `infra-loki.container`). Grafana changed the Loki license from Apache-2.0 to AGPL-3.0 in v2.9.0; the local Loki 3.x instance is internally-facing (no external network exposure of its API), so the AGPL terms do not extend Hydra's distribution license. |
+| ~~grafana/promtail~~ | (removed in #363) | Promtail was EOL on 2026-03-02. The hydra-head image no longer bundles it. |
 
 > Versions are pinned in the respective `*.csproj` and `pyproject.toml` files.
 > If you add a dependency, please update this file. Avoid introducing

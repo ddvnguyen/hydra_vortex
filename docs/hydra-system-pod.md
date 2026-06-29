@@ -21,7 +21,7 @@ bash scripts/deploy-hydra-head.sh rtx
 podman pod ls                              # should show pod_hydra-system with 3 containers
 curl -s http://localhost:9000/health      # core
 curl -s http://localhost:9700/health      # head (head-rtx)
-curl -s http://localhost:9080/metrics | grep promtail_sent_bytes_total
+curl -s http://localhost:13133/ | head -1   # OTel Collector health
 ```
 
 ## The pod
@@ -38,7 +38,7 @@ pod_hydra-system
   hydra-head calls, hydra-head's health checker probes `core:9000`).
 - Both need to share the host network namespace (so they see the
   host podman socket, ctr.log, and host postgres on `127.0.0.1:5432`).
-- Both need `userns_mode: host` so the in-container promtail can
+- Both need `userns_mode: host` so the in-container Hydra.Core can
   read `/mnt/containers/*/ctr.log` (mode 700) and
   `/mnt/SSD/hydra-backup` (mode 770) — both owned by host uid 1000
   (ddv).
@@ -75,8 +75,10 @@ The script does (in order):
 4. `chmod 644` the auth files (defensive, no-op if already 644)
 5. `podman compose -f infra/docker-compose.hydra.yml up -d`
 6. Waits for both healthchecks
-7. Verifies `promtail_sent_bytes_total > 0` (catches the case where
-   promtail is running but not actually shipping)
+7. Verifies the OTel Collector is healthy (`curl -so/dev/null
+   -w'%{http_code}\n' http://localhost:13133/` returns 200) and that
+   the hydra streams are non-empty in Grafana Explore
+   (`{component="hydra"}`, `{component="llama-server", node="rtx"}`)
 
 ## Why a "manual podman run" doesn't work
 
@@ -107,11 +109,13 @@ podman ps --filter label=com.docker.compose.project=hydra-system
 curl -s http://localhost:9000/health | jq
 # {"status": "healthy", "nodes": {"rtx": {...}, "p100": {...}}, "store": {"healthy": true}}
 
-# Head + all 4 sub-processes (llama, node_exporter, nvidia_exporter, promtail)
+# Head + all 3 sub-processes (llama, node_exporter, nvidia_exporter).
+# (promtail removed in #363 — per-child labeled writers push directly
+# to the OTel Collector.)
 curl -s http://localhost:9700/status | jq '.processes'
 
 # Promtail actually shipping (not 0)?
-curl -s http://localhost:9080/metrics | grep "^promtail_sent_bytes_total"
+curl -s http://localhost:13133/ | head -1   # OTel Collector health
 # Should show a non-zero number after a few minutes
 
 # Are the 4 sub-processes running, not crash-looping?

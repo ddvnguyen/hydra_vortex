@@ -21,10 +21,6 @@ binaries:
     source: https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.2.1/nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz
     binary: nvidia_gpu_exporter
     dest: /opt/hydra/bin/nvidia_gpu_exporter
-  promtail:
-    source: https://github.com/grafana/loki/releases/download/v3.4.3/promtail-linux-amd64.zip
-    binary: promtail-linux-amd64
-    dest: /opt/hydra/bin/promtail
 
 llama:
   binary: /llama/bin/llama-server
@@ -61,10 +57,6 @@ llama:
     LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
 
 services:
-  promtail:
-    enabled: true
-    binary: /opt/hydra/bin/promtail
-    config: /opt/hydra/config/promtail-rtx.yml
   node_exporter:
     enabled: true
     binary: /opt/hydra/bin/node_exporter

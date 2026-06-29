@@ -50,8 +50,7 @@ name: hydra-system
 userns_mode: "host"
 
 # ── Named volumes ─────────────────────────────────────────────────────────
-volumes:
-  hydra-head-promtail-positions:
+# (hydra-head-promtail-positions removed in #363 — Promtail gone.)
 
 services:
   # ── Hydra Core: C# coordinator + Store + chunked manifest ─────────────
@@ -122,7 +121,16 @@ services:
       - HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers.json
       - HYDRA_COORD_ENABLE_CHUNKS=true
       - HYDRA_STORE_CHUNK_SIZE=8192
-      - HYDRA_LOG_LOKI_URL=http://localhost:3100
+      # Per-service OTel log push (#363). Hydra.Core pushes
+      # OTLP/HTTP to the OTel Collector on the host (port 4318
+      # — joins the infra-host Quadlet pod which is on
+      # Network=host). The collector's transform processor
+      # maps service.name -> Loki 'component' label, so
+      # {component="hydra"} continues to work.
+      - OTEL_SERVICE_NAME=hydra
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://localhost:4318
+      - HYDRA_LOG_NODE=rtx
       # M3-P1 #332: two-tier chunk cache. L1 = tmpfs byte-LRU (20 GB);
       # L2 = PG chunk_data_l2 age-LRU (50 GB, age×idle/use_count).
       # Legacy HYDRA_COORD_CHUNK_CACHE_DIR is honored for back-compat
@@ -169,7 +177,6 @@ services:
     volumes:
       # Model + KV slot data
       - /mnt/SSD:/models:ro
-      - hydra-head-promtail-positions:/opt/hydra/promtail-positions:rw
       # Configs (RTX-specific)
       - ./hydra-head/config:/opt/hydra/config:ro
       # Pre-built llama-server binary (mounted from build dir so the OCI
@@ -181,15 +188,11 @@ services:
       - ../src/llama-cpp/build_sm120_v3/bin/:/llama/bin/:ro
       # ghcr.io creds for in-container pulls
       - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
-      # Host filesystem for node_exporter + promtail to read ctr.log
+      # Host filesystem for node_exporter to read host /proc, /sys, /
+      # (its promtail-era host-mount siblings removed in #363).
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/rootfs:ro
-      # Podman socket for promtail's docker_sd_configs to find all
-      # host containers. The socket is owned by host uid 1000 (ddv),
-      # so the container MUST run as uid 1000 to read it. With
-      # --user 1000:1000 this works without socat or symlinks.
-      - /run/user/1000/podman:/var/run/socks:rw
       # Source: same path mounted by 'core' so the backup dir is real
       - /mnt/containers/:/mnt/containers/:ro
     environment:

@@ -38,7 +38,7 @@ sleep 10
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	mgr := NewManager(cfg, logger)
+	mgr := NewManager(cfg, logger, nil)
 	defer mgr.Shutdown()
 
 	if err := mgr.StartLlama(); err != nil {
@@ -101,7 +101,7 @@ sleep 10
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	mgr := NewManager(cfg, logger)
+	mgr := NewManager(cfg, logger, nil)
 	defer mgr.Shutdown()
 
 	if err := mgr.StartLlama(); err != nil {
@@ -156,7 +156,7 @@ exit 1
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	mgr := NewManager(cfg, logger)
+	mgr := NewManager(cfg, logger, nil)
 	defer mgr.Shutdown()
 
 	if err := mgr.StartLlama(); err != nil {
@@ -205,7 +205,7 @@ func TestConcurrentStartStopStateAccess(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	mgr := NewManager(cfg, logger)
+	mgr := NewManager(cfg, logger, nil)
 	defer mgr.Shutdown()
 
 	const testDuration = 2 * time.Second

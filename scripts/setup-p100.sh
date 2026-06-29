@@ -35,26 +35,11 @@ ssh "$VM" "
 echo "==> Enabling user session lingering (survive SSH logout)"
 ssh "$VM" "loginctl enable-linger" || true
 
-echo "==> Installing promtail binary (hydra-head spawns as child)"
-ssh "$VM" "
-  set -euo pipefail
-  if command -v promtail &>/dev/null; then
-    echo 'promtail already installed:' \$(promtail --version 2>&1 | head -1)
-  else
-    curl -sLO https://github.com/grafana/loki/releases/download/v3.4.3/promtail-linux-amd64.zip
-    unzip -o promtail-linux-amd64.zip && chmod +x promtail-linux-amd64
-    sudo mv promtail-linux-amd64 /usr/local/bin/promtail
-    rm -f promtail-linux-amd64.zip
-    echo 'promtail installed'
-  fi
-"
-
-echo "==> Copying promtail config to in-container path"
-ssh "$VM" "
-  mkdir -p \$HOME/.config/promtail
-"
-scp "$REPO_ROOT/infra/promtail/promtail-rtx.yml" "$VM:/tmp/promtail-config.yml"
-ssh "$VM" "cp /tmp/promtail-config.yml \$HOME/.config/promtail/config.yml"
+# Note: promtail install + config copy removed in #363 — per-child
+# labeled writers in hydra-head push logs to the OTel Collector
+# (which is on the RTX host) directly. P100 services reach it
+# at http://192.168.122.1:4318 via the cfg.Infra.OTel.URL
+# override in node-p100.yaml.
 
 echo "==> Installing node_exporter binary (hydra-head spawns as child)"
 ssh "$VM" "

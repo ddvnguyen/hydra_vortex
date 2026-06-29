@@ -54,10 +54,14 @@ infra:
     url: http://localhost:3100
   grafana:
     url: http://localhost:3000
+  otel:
+    # OTel Collector gateway — hydra-head pushes OTLP/HTTP here.
+    # The collector (Quadlet infra-otel-collector) lives on
+    # the RTX host's port 4318 and fans out to Loki. P100
+    # overrides this to http://192.168.122.1:4318.
+    url: http://localhost:4318
 
 services:
-  promtail:
-    enabled: false
   node_exporter:
     enabled: false
   nvidia_exporter:

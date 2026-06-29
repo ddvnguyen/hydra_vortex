@@ -52,6 +52,7 @@ type InfraConfig struct {
 	Prometheus EndpointConfig `yaml:"prometheus"`
 	Loki       EndpointConfig `yaml:"loki"`
 	Grafana    EndpointConfig `yaml:"grafana"`
+	OTel       EndpointConfig `yaml:"otel"`
 }
 
 type EndpointConfig struct {
@@ -173,6 +174,9 @@ func mergeConfigs(global, node *Config) *Config {
 	}
 	if merged.Infra.Grafana.URL == "" {
 		merged.Infra.Grafana.URL = global.Infra.Grafana.URL
+	}
+	if merged.Infra.OTel.URL == "" {
+		merged.Infra.OTel.URL = global.Infra.OTel.URL
 	}
 
 	if !merged.Services.Promtail.Enabled {

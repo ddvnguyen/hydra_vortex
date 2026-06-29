@@ -16,6 +16,15 @@ llama:
   working_dir: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin
   port: 8086
   rpc_port: 9502
+  env:
+    # Per-service OTel log push (#363). llama-server on P100
+    # is supervised by hydra-head and its stdout is captured
+    # by a per-child childWriter (commit 6). The child's OTel
+    # resource has service.name=llama-server; the writer
+    # pushes OTLP to the OTel Collector on the RTX host.
+    OTEL_SERVICE_NAME: llama-server
+    OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://192.168.122.1:4318
   params:
     # Model
     model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
@@ -45,10 +54,6 @@ services:
   # hydra-head manages these as subprocesses (no systemd services
   # for them — the old infra-promtail / node-exporter / nvidia-exporter
   # host services were removed in commit 5f2c231 + this follow-up).
-  promtail:
-    enabled: true
-    binary: /usr/local/bin/promtail
-    config: /home/vm1/.config/promtail/config.yml
   node_exporter:
     enabled: true
     binary: /home/vm1/.local/bin/node_exporter
