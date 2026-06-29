@@ -58,19 +58,21 @@ type managedProcess struct {
 	lastExitCode int
 	lastError    string
 	logWriter    io.Writer
-	// childLogProvider is the OTel LoggerProvider that the
-	// childWriter uses. It wraps the *shared* processor (so the
-	// OTLP connection is reused) but has its own per-child
-	// resource (service.name=llama-server / node-exporter /
-	// nvidia-exporter). On stop/restart we Shutdown the
-	// provider to flush the in-process batch and release the
-	// queue — but we do NOT touch the shared processor, which
-	// is shared across all children + the parent.
-	childLogProvider func() error
-	manualStop   bool
-	startFunc    func() error
-	mu           sync.RWMutex // guards all fields below this point
-	done         chan struct{}
+	// No `childLogProvider` field. The per-child OTel
+	// LoggerProvider is created once per child type
+	// (llama-server / node-exporter / nvidia-exporter) and
+	// reused on auto-restart (see StartLlama/StartService in
+	// this file). It is NEVER shut down by stop()/restart()
+	// because that would also tear down the SHARED processor
+	// (the SDK's LoggerProvider.Shutdown() walks all registered
+	// processors — see the second-pass PR #369 review). The
+	// shared batch is flushed once at parent shutdown via
+	// otelShutdown in main.go; child providers live for the
+	// parent's lifetime.
+	manualStop bool
+	startFunc  func() error
+	mu         sync.RWMutex // guards all fields below this point
+	done       chan struct{}
 }
 
 func NewManager(cfg *config.Config, logger *slog.Logger, otel *hydralog.SharedLogger) *Manager {
@@ -121,11 +123,17 @@ func (m *Manager) listRunning() []string {
 // unchanged. Falls back to a no-op (text-only) logger if the OTel
 // shared logger is not wired (e.g., in unit tests).
 //
-// The returned *sdklog.LoggerProvider wraps the *shared*
-// processor — the caller is responsible for calling Shutdown on
-// it when the child stops/restarts, to flush the in-process batch
-// and release the queue. The shared processor is NOT torn down
-// here; it lives for the lifetime of the parent process.
+// The returned child provider wraps the *shared* processor (so
+// the OTLP/HTTP connection is reused) but has its own per-child
+// resource (service.name=llama-server / node-exporter /
+// nvidia-exporter). It is INTENTIONALLY NEVER shut down — the
+// SDK's LoggerProvider.Shutdown() walks all registered
+// processors, and the shared processor must stay alive for the
+// parent's lifetime. Instead, the provider is reused across
+// auto-restarts (see StartLlama / StartService), so the per-child
+// provider count is bounded by the number of unique child
+// types (≤ 4: the parent + 3 children). The shared batch is
+// flushed once at parent shutdown via otelShutdown in main.go.
 //
 // Component mapping (matches the Loki `component` label
 // vocabulary in docs/design-direct-push-logging.md):
@@ -133,7 +141,7 @@ func (m *Manager) listRunning() []string {
 //   "node_exporter"  -> "node-exporter"
 //   "nvidia_exporter"-> "nvidia-exporter"
 //   anything else    -> "hydra-head" (the parent's component)
-func (m *Manager) childLoggerFor(childName string) (*slog.Logger, func() error) {
+func (m *Manager) childLoggerFor(childName string) *slog.Logger {
 	component := "hydra-head"
 	switch childName {
 	case "llama":
@@ -147,34 +155,26 @@ func (m *Manager) childLoggerFor(childName string) (*slog.Logger, func() error) 
 	if m.otel == nil {
 		// Fallback: text-only logger. Used by unit tests that
 		// construct a Manager without an OTel shared logger.
-		noop := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+		return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
 			Level: slog.LevelInfo,
 		}))
-		return noop, func() error { return nil }
 	}
 
-	handler, childProvider, err := m.otel.ChildHandler(component, os.Stdout)
+	handler, _, err := m.otel.ChildHandler(component, os.Stdout)
 	if err != nil {
 		// Fallback on error — log to the parent's logger so the
 		// misconfiguration is visible in journalctl.
 		m.logger.Error("failed to build child OTel handler; using text fallback",
 			"child", childName, "component", component, "error", err)
-		fb := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelInfo,
 		}))
-		return fb, func() error { return nil }
 	}
 
-	// Shutdown the child provider to flush the in-process batch
-	// and release the queue. The shared processor is NOT touched
-	// (it lives for the parent's lifetime). The context is short
-	// (5s) — this only flushes pending records, no I/O.
-	shutdown := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return childProvider.Shutdown(ctx)
-	}
-	return slog.New(handler), shutdown
+	// Do NOT shut down the returned child provider — see the
+	// comment on childLoggerFor above. The shared batch is
+	// flushed once at parent shutdown via otelShutdown in main.go.
+	return slog.New(handler)
 }
 
 func (m *Manager) StartLlama() error {
@@ -195,26 +195,26 @@ func (m *Manager) StartLlama() error {
 	}()
 
 	// Check existing proc under proc.mu (not m.mu) to avoid race with monitorProcess.
-	// If a previous proc exists, we will REUSE its logWriter and
-	// childLogProvider (per the auto-restart fix in #2ae3800
-	// follow-up): building a new provider and then immediately
-	// discarding it (because we re-use the old logWriter) leaks
-	// the new provider — see the related review comment.
+	// If a previous proc exists, we REUSE its inner logger
+	// (per the auto-restart fix in #30b9257 follow-up): building
+	// a new provider and then immediately discarding it (because
+	// we re-use the old logWriter) leaks the new provider.
+	// The child provider is NEVER shut down by stop()/restart() —
+	// it lives for the parent's lifetime (see the comment on
+	// childLoggerFor).
 	var existingLogger *slog.Logger
-	var existingLogShutdown func() error
 	if existing := m.getProcess("llama"); existing != nil {
 		existing.mu.RLock()
 		if existing.state == StateRunning {
 			existing.mu.RUnlock()
 			return fmt.Errorf("llama-server already running (PID %d)", existing.pid)
 		}
-		// Pull the old writer's components so we can reuse them
-		// below instead of building fresh ones that would be
-		// immediately discarded.
+		// Pull the old writer's inner logger so we can reuse
+		// it below instead of building a fresh one that would
+		// be immediately discarded.
 		if cw, ok := existing.logWriter.(*childWriter); ok {
 			existingLogger = cw.logger
 		}
-		existingLogShutdown = existing.childLogProvider
 		existing.mu.RUnlock()
 	}
 
@@ -225,21 +225,18 @@ func (m *Manager) StartLlama() error {
 	// attribute is set to "llama-server" at construction; no
 	// per-line regex is needed.
 	var childLogger *slog.Logger
-	var childLogShutdown func() error
 	if existingLogger != nil {
-		// Reuse the previous child's OTel resources (avoids
-		// leaking a fresh provider on every auto-restart).
+		// Reuse the previous child's logger (avoids leaking a
+		// fresh OTel LoggerProvider on every auto-restart).
 		childLogger = existingLogger
-		childLogShutdown = existingLogShutdown
 	} else {
-		childLogger, childLogShutdown = m.childLoggerFor("llama")
+		childLogger = m.childLoggerFor("llama")
 	}
 	proc := &managedProcess{
-		name:             "llama",
-		state:            StateStarting,
-		logWriter:        newChildWriter(childLogger),
-		childLogProvider: childLogShutdown,
-		done:             make(chan struct{}),
+		name:      "llama",
+		state:     StateStarting,
+		logWriter: newChildWriter(childLogger),
+		done:      make(chan struct{}),
 	}
 
 	// Pre-populate state that we want to preserve from a prior run, under proc.mu.
@@ -410,26 +407,26 @@ func (m *Manager) StartService(name string) error {
 	}()
 
 	// Check existing proc under proc.mu. If a previous proc
-	// exists, we will REUSE its logWriter and childLogProvider
-	// (per the auto-restart fix in #2ae3800 follow-up): building
-	// a new provider and then immediately discarding it (because
-	// we re-use the old logWriter) leaks the new provider — see
-	// the related review comment.
+	// exists, we REUSE its inner logger (per the auto-restart
+	// fix in #30b9257 follow-up): building a new provider and
+	// then immediately discarding it (because we re-use the old
+	// logWriter) leaks the new provider.
+	// The child provider is NEVER shut down by stop()/restart() —
+	// it lives for the parent's lifetime (see the comment on
+	// childLoggerFor).
 	var existingLogger *slog.Logger
-	var existingLogShutdown func() error
 	if existing := m.getProcess(name); existing != nil {
 		existing.mu.RLock()
 		if existing.state == StateRunning {
 			existing.mu.RUnlock()
 			return fmt.Errorf("%s already running (PID %d)", name, existing.pid)
 		}
-		// Pull the old writer's components so we can reuse them
-		// below instead of building fresh ones that would be
-		// immediately discarded.
+		// Pull the old writer's inner logger so we can reuse
+		// it below instead of building a fresh one that would
+		// be immediately discarded.
 		if cw, ok := existing.logWriter.(*childWriter); ok {
 			existingLogger = cw.logger
 		}
-		existingLogShutdown = existing.childLogProvider
 		existing.mu.RUnlock()
 	}
 
@@ -439,21 +436,18 @@ func (m *Manager) StartService(name string) error {
 	// (e.g., "node-exporter", "nvidia-exporter") at construction;
 	// no per-line regex is needed.
 	var childLogger *slog.Logger
-	var childLogShutdown func() error
 	if existingLogger != nil {
-		// Reuse the previous child's OTel resources (avoids
-		// leaking a fresh provider on every auto-restart).
+		// Reuse the previous child's logger (avoids leaking a
+		// fresh OTel LoggerProvider on every auto-restart).
 		childLogger = existingLogger
-		childLogShutdown = existingLogShutdown
 	} else {
-		childLogger, childLogShutdown = m.childLoggerFor(name)
+		childLogger = m.childLoggerFor(name)
 	}
 	proc := &managedProcess{
-		name:             name,
-		state:            StateStarting,
-		logWriter:        newChildWriter(childLogger),
-		childLogProvider: childLogShutdown,
-		done:             make(chan struct{}),
+		name:      name,
+		state:     StateStarting,
+		logWriter: newChildWriter(childLogger),
+		done:      make(chan struct{}),
 	}
 
 	// Preserve restart count if a prior instance exists.
@@ -558,36 +552,26 @@ func (m *Manager) stop(name string, isLlama bool) error {
 
 	// Order matters: flush the child writer's remaining
 	// buffered bytes FIRST (while the OTel LoggerProvider is
-	// still alive), then shut down the provider. If we shut
-	// down first, Close() emits the trailing partial line to a
-	// dead provider and the line reaches stdout but not Loki —
-	// defeating the point of capturing it. This is the
-	// ordering fix from the second-pass PR #369 review.
+	// still alive). We do NOT shut down the child OTel
+	// LoggerProvider here — the SDK's LoggerProvider.Shutdown()
+	// walks all registered processors, and the child provider
+	// uses the *shared* processor. Shutting it down would tear
+	// down the shared batch, breaking the parent and all other
+	// children. The shared batch is flushed once at parent
+	// shutdown via otelShutdown in main.go; the child providers
+	// (one per unique child type, ≤ 4) live for the parent's
+	// lifetime. See the second-pass PR #369 review for the
+	// details.
 	proc.mu.Lock()
-	shutdownFn := proc.childLogProvider
 	proc.state = StateStopped
 	proc.pid = 0
 	proc.mu.Unlock()
 
-	// 1. Flush the child writer's remaining buffered bytes (a
+	// Flush the child writer's remaining buffered bytes (a
 	// final log line without a trailing newline on a crash).
 	if cw, ok := proc.logWriter.(*childWriter); ok {
 		if err := cw.Close(); err != nil {
 			m.logger.Warn("child writer close failed",
-				"name", name, "error", err)
-		}
-	}
-
-	// 2. Shutdown the child OTel LoggerProvider (flushes the
-	// in-process batch, releases the queue). The shared
-	// processor is NOT touched — it lives for the parent's
-	// lifetime. This is critical to prevent the leak flagged
-	// in PR #369 review: every StartLlama/StartService call
-	// builds a fresh provider, and without this shutdown a
-	// crash-looping child accumulates providers until OOM.
-	if shutdownFn != nil {
-		if err := shutdownFn(); err != nil {
-			m.logger.Warn("child OTel LoggerProvider shutdown failed",
 				"name", name, "error", err)
 		}
 	}
