@@ -1,0 +1,138 @@
+{
+  "branchName": "#256",
+  "userStories": [
+    {
+      "id": "S-001",
+      "title": "[#245] Add n_past guard in PrefixRestoreAsync to prevent cache nuking",
+      "description": "After STATE_PUT restores KV cache with n_past=50000, if the next completion request has fewer tokens than cached n_past, llama.cpp silently erases the entire restored KV cache batch. Add a guard in WorkerSchedulerService.PrefixRestoreAsync that compares incoming prompt length against cached n_past and skips/clamps restore when user_tokens < cached_n_past * 0.85.",
+      "severity": "P0",
+      "milestone": "M-Perf",
+      "passes": false,
+      "files": [
+        "src/core/Hydra.Core/Services/WorkerSchedulerService.cs"
+      ],
+      "acceptanceCriteria": [
+        "n_tokens > n_past check exists in PrefixRestoreAsync",
+        "When estimated tokens < cached_n_past * 0.85, restore is skipped or clamped",
+        "Log warning when guard triggers"
+      ]
+    },
+    {
+      "id": "S-002",
+      "title": "[#246] Add unit tests for prefix-checkpoint save path (Stat\u2192Put guard, first-writer-wins, metric)",
+      "description": "The 4 tests added in PR #244 exercise only Router.ComputePrefixHash. Need to add tests with fake/mock StoreClient that assert the prefix-save branch in WorkerSchedulerService.SaveKvAsync: miss path (Stat returns non-Ok \u2192 Put issued), hit path (Stat returns Ok \u2192 no Put), disabled/null hash, and failure path (Store throws \u2192 exception swallowed).",
+      "severity": "P2",
+      "milestone": "M-Perf",
+      "passes": false,
+      "files": [
+        "src/core/Tests.Core/"
+      ],
+      "acceptanceCriteria": [
+        "Test: prefix-save miss path (Stat non-Ok \u2192 Put issued)",
+        "Test: prefix-save hit path (Stat Ok \u2192 no Put)",
+        "Test: disabled/null hash (no Store calls)",
+        "Test: failure path (Store throws \u2192 fire-and-forget swallows exception)"
+      ]
+    },
+    {
+      "id": "S-003",
+      "title": "[#256/#255] Add /admin/reset endpoint for full Hydra.Core hard-reset (dev mode)",
+      "description": "Add a POST /admin/reset endpoint that fully resets Hydra.Core internal state + erases all llama-server slots. Protected by HYDRA_DEV_MODE=true flag (default false, returns 404). Implementation follows exact steps in issue: cancel pipelines, fail pending timelines, recreate channels, release tracker slots, clear warm leases, clear session ledger, clear dictionaries, reset Prometheus gauges, erase llama slots.",
+      "severity": "P2",
+      "milestone": "M-Perf",
+      "passes": false,
+      "files": [
+        "src/core/Hydra.Core/Models/CoordinatorModels.cs",
+        "src/core/Hydra.Core/Controllers/CoordinatorControllers.cs",
+        "src/core/Hydra.Core/Services/IServices.cs",
+        "src/core/Hydra.Core/Services/WorkerSchedulerService.cs",
+        "src/core/Hydra.Core/Repositories/IRepositories.cs",
+        "src/core/Hydra.Core/Repositories/RepositoriesImpl.cs",
+        "src/core/Hydra.Core/Models/SlotPool.cs"
+      ],
+      "acceptanceCriteria": [
+        "POST /admin/reset returns 404 when HYDRA_DEV_MODE=false (default)",
+        "POST /admin/reset resets all state when HYDRA_DEV_MODE=true",
+        "All Prometheus gauges zeroed, counters unchanged",
+        "llama-server slots erased via LlamaClient.EraseSlotAsync",
+        "Unit tests for both enabled and disabled dev mode"
+      ]
+    },
+    {
+      "id": "S-004",
+      "title": "[#201-Bug1] Fix broken checkpoint after STATE_PUT (hybrid model intersection collapse)",
+      "description": "After STATE_PUT restores state, server-context.cpp creates a checkpoint using llama_memory_seq_pos_min/max which for hybrid models returns the INTERSECTION of attention and recurrent positions \u2014 collapsing to n_past-1 == n_past-1. This creates a partial-only checkpoint with NO attention KV data. Fix: after STATE_PUT, force create checkpoint using attention memory positions directly instead of hybrid intersection.",
+      "severity": "P0",
+      "milestone": "M-Perf",
+      "passes": false,
+      "files": [
+        "src/llama-cpp/tools/server/server-context.cpp"
+      ],
+      "acceptanceCriteria": [
+        "Checkpoint after STATE_PUT uses attention-only positions (0 to n_past-1)",
+        "No silent re-prefill on second turn after restore",
+        "Verified with 60K context test"
+      ]
+    },
+    {
+      "id": "S-005",
+      "title": "[#201-Bug4] Fix state size TOCTOU race (retry loop)",
+      "description": "server-context.cpp has a TOCTOU race: llama_state_get_size at line 2430 may return stale size when llama_state_get_data is called later. If another slot's processing changed state between the two calls, copied==0 triggers error. Fix: add retry loop (up to 3 attempts with short pauses) if copy fails.",
+      "severity": "P2",
+      "milestone": "M-Perf",
+      "passes": false,
+      "files": [
+        "src/llama-cpp/tools/server/server-context.cpp"
+      ],
+      "acceptanceCriteria": [
+        "Retry loop added on llama_state_get_data failure",
+        "Up to 3 attempts with short pauses",
+        "No silent failures on state save"
+      ]
+    },
+    {
+      "id": "S-006",
+      "title": "[#201-Bug3] Replace blocking buffer with zero-copy socket streaming API",
+      "description": "server-context.cpp line 2480-2482 uses llama_state_get_data with 800MB heap allocation. The true zero-copy API llama_state_seq_get_data_to_fd exists at llama-context.cpp:2899-2915 and streams tensor data directly to socket without intermediate buffering. Replace blocking buffer approach with socket-level streaming API.",
+      "severity": "P2",
+      "milestone": "M-Perf",
+      "passes": false,
+      "files": [
+        "src/llama-cpp/tools/server/server-context.cpp"
+      ],
+      "acceptanceCriteria": [
+        "800MB heap allocation removed",
+        "Zero-copy streaming via llama_state_seq_get_data_to_fd",
+        "No performance regression on state save"
+      ]
+    },
+    {
+      "id": "S-007",
+      "title": "[#252] Replace periodic /slots poll with event-driven verification + head\u2192core webhook",
+      "description": "Replace Hydra.Core's 20s periodic /slots poll with event-driven model. Phases: (A) head\u2192core webhook via Signaller in hydra-head, (B) Coordinator refactor: deadline tracking, CheckInFlightDeadlinesAsync every 5s, switch VerifyWarmSlotAsync to STATE_META RPC, add /admin/llama_event handler, (C) config + workers.json with prefillspeed_tps, (D) comprehensive tests.",
+      "severity": "P1",
+      "milestone": "M-Perf",
+      "passes": true,
+      "files": [
+        "src/head/internal/api/server.go",
+        "src/head/internal/process/manager.go",
+        "src/head/internal/config/config.go",
+        "src/core/Hydra.Core/Services/HealthMonitorService.cs",
+        "src/core/Hydra.Core/Services/WorkerSchedulerService.cs",
+        "src/core/Hydra.Core/Services/Router.cs",
+        "src/core/Hydra.Core/Controllers/CoordinatorControllers.cs",
+        "src/core/Hydra.Core/Models/CoordinatorModels.cs",
+        "infra/hydra-core/config/workers.json",
+        "docs/architecture.md"
+      ],
+      "acceptanceCriteria": [
+        "Steady-state: no health_poll_ok/log lines for 5+ minutes",
+        "slot_drift_detected fires within expected_ms*1.5 of stuck slot",
+        "On llama restart: llama_event_received within 1s, in-flight slots released",
+        "GET /health returns last_refresh_ts",
+        "Router.VerifyWarmSlotAsync uses STATE_META RPC not HTTP /slots",
+        "dotnet test src/core/Tests.Core/ \u2014 100% pass"
+      ]
+    }
+  ]
+}

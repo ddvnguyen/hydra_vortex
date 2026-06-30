@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Hydra.Core.Models;
+using Hydra.Core.Services;
 
 namespace Hydra.Core.Repositories;
 
@@ -65,6 +66,8 @@ public sealed class SessionLedger : ISessionLedger
         return r;
     }
 
+    public void ClearAll() => _sessions.Clear();
+
     public async Task RestoreFromStoreAsync(string storeHost, int storePort, CancellationToken ct)
     {
         try
@@ -113,6 +116,10 @@ public sealed class WorkerTracker : IWorkerTracker
 
     public WorkerTracker(int errorThreshold = 3) => _errorThreshold = errorThreshold;
 
+    private IWorkerScheduler? _scheduler;
+
+    internal void SetScheduler(IWorkerScheduler scheduler) => _scheduler = scheduler;
+
     public void InitWorker(string name)
     {
         _states.GetOrAdd(name, _ => new WorkerState());
@@ -153,6 +160,16 @@ public sealed class WorkerTracker : IWorkerTracker
 
     public bool HasFreeSlot(string name)
         => _pools.TryGetValue(name, out var p) && p.HasFree;
+
+    public void ReleaseAllSlots(string workerName)
+    {
+        if (!_held.TryGetValue(workerName, out var held)) return;
+        foreach (var slot in held)
+            ReleaseSlot(workerName, slot);
+        held.Clear();
+
+        // Note: Warm lease clearing is handled by ResetSystemAsync, not here
+    }
 
     public int TotalSlots(string name)
         => _pools.TryGetValue(name, out var p) ? p.Total : 0;
