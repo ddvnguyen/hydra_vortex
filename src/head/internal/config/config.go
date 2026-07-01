@@ -229,6 +229,24 @@ func mergeConfigs(global, node *Config) *Config {
 		merged.Health.MaxFails = global.Health.MaxFails
 	}
 
+	// ── Infra merge ───────────────────────────────────────────────────
+	// Per-node configs can override these selectively (e.g. P100 points
+	// the OTel endpoint at the RTX host's collector: infra.otel.url =
+	// http://192.168.122.1:4318). Fields set in the node config stay;
+	// blank fields inherit the global default.
+	if merged.Infra.Prometheus.URL == "" {
+		merged.Infra.Prometheus.URL = global.Infra.Prometheus.URL
+	}
+	if merged.Infra.Loki.URL == "" {
+		merged.Infra.Loki.URL = global.Infra.Loki.URL
+	}
+	if merged.Infra.Grafana.URL == "" {
+		merged.Infra.Grafana.URL = global.Infra.Grafana.URL
+	}
+	if merged.Infra.OTel.URL == "" {
+		merged.Infra.OTel.URL = global.Infra.OTel.URL
+	}
+
 	return &merged
 }
 

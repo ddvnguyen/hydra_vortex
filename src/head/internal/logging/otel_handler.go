@@ -95,8 +95,16 @@ func NewOTelHandler(ctx context.Context, cfg Config) (slog.Handler, func(context
 	// Build the OTLP/HTTP log exporter. The exporter POSTs
 	// protobuf-encoded ExportLogServiceRequest to cfg.Endpoint.
 	// It is goroutine-safe and internally batched.
+	//
+	// otlploghttp.WithEndpointURL sets the path from the URL, which may be
+	// empty (e.g. "http://localhost:4318" has path ""). The default path
+	// "/v1/logs" is the fallback ONLY when the path is not set by any
+	// option. When WithEndpointURL sets an empty path, the fallback is
+	// skipped and the SDK sends to the root URL — the collector returns
+	// 404. So we call WithURLPath("/v1/logs") explicitly.
 	exporter, err := otlploghttp.New(ctx,
 		otlploghttp.WithEndpointURL(cfg.Endpoint),
+		otlploghttp.WithURLPath("/v1/logs"),
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("logging.NewOTelHandler: build exporter: %w", err)

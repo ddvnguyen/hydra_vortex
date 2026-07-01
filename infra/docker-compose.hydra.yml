@@ -176,21 +176,23 @@ services:
       component: hydra
     restart: always
 
-  # ── Hydra Head (RTX): Go node agent + llama-server + 3 sidecars ─────
+  # ── Hydra Head (RTX 5060 Ti): Go node agent + llama-server + 3 sidecars ─
   # Manages: llama-server (Mini / Balanced from /llama/bin via OCI),
   # node_exporter, nvidia_gpu_exporter, promtail. All in one container.
   #
   # Image is built separately by `bash scripts/deploy-hydra-head.sh rtx`
   # (not by this compose — the Dockerfile is infra/hydra-head/Dockerfile.rtx,
   # not infra/Dockerfile).
-  head-rtx:
+  # Restricted to CUDA device 0 (the RTX 5060 Ti) — device 1 (the RTX 3060)
+  # is owned by head-rtx3060.
+  head-rtx5060ti:
     image: localhost/hydra-head:rtx
     # NO per-service userns_mode here — same reason as `core`:
     # `--userns and --pod cannot be set together`.
     network_mode: host
     user: "1000:1000"
     devices:
-      - nvidia.com/gpu=all
+      - nvidia.com/gpu=0
     depends_on:
       - core
     volumes:
@@ -230,6 +232,9 @@ services:
       #   export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
       - HYDRA_HEAD_AUTH_TOKEN=${HYDRA_HEAD_AUTH_TOKEN:?must export HYDRA_HEAD_AUTH_TOKEN}
       - REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json
+      # Pin to GPU 0 (5060 Ti) — device 1 (3060) belongs to head-rtx3060.
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9700/health"]
       interval: 30s
@@ -238,7 +243,7 @@ services:
       start_period: 15s
     labels:
       component: hydra-head
-      node: rtx
+      node: rtx5060ti
     restart: always
 
   # ── Hydra Head (RTX 3060): second Go agent on the same host ────────

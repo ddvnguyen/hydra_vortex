@@ -58,22 +58,28 @@ public static class HydraLogging
             .Enrich.FromLogContext()
             .Enrich.WithProperty("component", component)
             .Enrich.WithProperty("version", ServiceVersion)
-            // OpenTelemetry sink — pushes to the OTel Collector
-            // gateway. The endpoint defaults to
-            // http://localhost:4318 (RTX collector) and is
-            // overridden by OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
-            // (e.g., on P100 via node-p100.yaml).
+            // ── Console sink ────────────────────────────────────────────
+            // Writes structured JSON to stdout so the hydra-head supervisor
+            // (which captures child-process stdout) can push it via its own
+            // OTel pipeline. Also visible via `podman logs` for forensic use.
+            // The format is the standard Serilog JSON (not the
+            // Microsoft.Extensions.Logging `info:` prefix) so the Go head's
+            // per-child labeled writer (which sets service.name based on the
+            // child process) can pick it up.
+            .WriteTo.Console()
+            // ── OpenTelemetry sink ──────────────────────────────────────
+            // Pushes to the OTel Collector gateway. The endpoint defaults
+            // to http://localhost:4318 (RTX collector) and is overridden
+            // by OTEL_EXPORTER_OTLP_LOGS_ENDPOINT.
             //
-            // The sink uses the OpenTelemetry SDK's internal
-            // batch processor (configurable via the OTel SDK
-            // defaults; the SDK's own queue is bounded and
-            // drop-oldest on overflow). We do NOT use the
-            // BatchedOpenTelemetrySinkOptions here because
+            // The sink uses the OpenTelemetry SDK's internal batch
+            // processor (configurable via the OTel SDK defaults; the SDK's
+            // own queue is bounded and drop-oldest on overflow). We do NOT
+            // use the BatchedOpenTelemetrySinkOptions here because
             // BatchingOptions is a read-only property on
-            // BatchedOpenTelemetrySinkOptions in v4.0.0; the
-            // default OpenTelemetrySinkOptions path delegates
-            // batching to the OTel SDK which is what we want
-            // anyway.
+            // BatchedOpenTelemetrySinkOptions in v4.0.0; the default
+            // OpenTelemetrySinkOptions path delegates batching to the OTel
+            // SDK which is what we want anyway.
             .WriteTo.OpenTelemetry(opts =>
             {
                 opts.Endpoint = OtelEndpoint;

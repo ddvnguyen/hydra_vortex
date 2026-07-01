@@ -69,23 +69,16 @@ llama:
 
     # ── COMBINED engine-mode wiring (feat/add-rtx-3060-head) ───────────
     # The peer (rtx3060) is configured to expose its ggml RPC backend on
-    # :9504. The head is NOT configured to USE that peer here, because
-    # the llama.cpp fork at bcfdf7755 / f1801f524 has a runtime crash
-    # in `llama_hydra_load_combined_experts` → ggml_backend_rpc_add_server
-    # when the head starts with --rpc-engine + --ggml-rpc-port both
-    # set (the engine tries to bind the peer's experts but asserts
-    # inside libggml-rpc.so at +0x11183). Tracked as a fork-side bug
-    # for a follow-up PR in ddvnguyen/llama.cpp. Until that's fixed
-    # the head falls back to SOLO mode (Coordinator routes via the
-    # legacy P/D split path, NIAH-8000 verified end-to-end). The C#
-    # side is ready to drive COMBINED the moment the fork lands the
-    # fix (workers.json role/peer/combined_ot_split are set, env vars
-    # HYDRA_LLAMA_ENGINE + HYDRA_COORD_COMBINED_ENABLED are enabled,
-    # MultiEngineRouter picks a plan when estTokens > 4096 — it just
-    # never advertises the capability to the C# side today).
-    # ggml-rpc-port: 9505            # re-enable when the fork fix lands
-    # rpc-engine: "localhost:9504"
-    # combined-ot-pattern: "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"
+    # :9504. The head reaches into the 3060's backend to dispatch expert
+    # tensors via the ggml-RPC fork at f1801f524 + the fail-open fix in
+    # ggml_backend_rpc_get_device_count (hydra_vortex#376) so the TCP-up
+    # / RPC-down race window no longer aborts. Combined with the
+    # 'combined' capability advertisement in engine_info (#375), the C#
+    # side now sees a valid plan and drives SET_EXPERT_MODE("combined")
+    # on every > 4K request.
+    ggml-rpc-port: 9505
+    rpc-engine: "localhost:9506"
+    combined-ot-pattern: "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"
 
   env:
     NVIDIA_VISIBLE_DEVICES: all
