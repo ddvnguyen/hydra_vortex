@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
     <!--
       OpenTelemetry pipeline for log push to the OTel Collector
       gateway (per-service direct push, see

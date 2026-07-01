@@ -77,7 +77,7 @@ llama:
     # side now sees a valid plan and drives SET_EXPERT_MODE("combined")
     # on every > 4K request.
     ggml-rpc-port: 9505
-    rpc-engine: "localhost:9504"
+    rpc-engine: "localhost:9506"
     combined-ot-pattern: "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"
 
   env:
