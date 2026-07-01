@@ -61,6 +61,10 @@ public sealed class WorkItem
 	public string? MultiSplit { get; set; }
 	/// <summary>True when the chosen multi-engine mode could not be activated and we ran solo.</summary>
 	public bool MultiFellBack { get; set; }
+
+	/// <summary>Debug: force a specific engine mode for this single request, bypassing
+	/// MultiEngineRouter.Select. Set via <c>force_mode</c> in the request body (auto|solo|combined|pipeline).</summary>
+	public string ForceMode { get; set; } = "";
 	public string RouteType { get; set; } = "";
 	public SessionEntry? Entry { get; set; }
 	public int NPastAfter { get; set; }

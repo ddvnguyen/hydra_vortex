@@ -5,7 +5,7 @@
 # RTX path (since #322 / PR #328):
 #   - Build Go binary + container image
 #   - Deploy via `podman compose -f infra/docker-compose.hydra.yml up -d`
-#     which brings up `core` + `head-rtx` as a single pod with
+#     which brings up `core` + `head-rtx5060ti` as a single pod with
 #     userns=host (so the in-container promtail can read /mnt/containers/
 #     ctr.log directly, no socat proxy needed).
 #   - The compose file is the source of truth for mount paths,
@@ -231,7 +231,7 @@ deploy_rtx() {
   if ! podman compose -f infra/docker-compose.hydra.yml up -d 2>&1 | tail -10; then
     die "podman compose up failed — check the output above. Common causes: HYDRA_HEAD_AUTH_TOKEN not exported, image not built, or userns conflict."
   fi
-  ok "Compose up: core + head-rtx in pod hydra-system"
+  ok "Compose up: core + head-rtx5060ti in pod hydra-system"
 
   # Wait for both healthchecks to pass
   step "Waiting for health"
@@ -239,7 +239,7 @@ deploy_rtx() {
     sleep 3
     if curl -sf http://localhost:9000/health >/dev/null 2>&1 \
        && curl -sf http://localhost:9700/health >/dev/null 2>&1; then
-      ok "Both core (:9000) and head-rtx (:9700) are healthy"
+      ok "Both core (:9000) and head-rtx5060ti (:9700) are healthy"
       break
     fi
     if [ "$i" = "15" ]; then
@@ -357,7 +357,7 @@ deploy_rtx3060() {
   if ! podman compose -f infra/docker-compose.hydra.yml up -d 2>&1 | tail -10; then
     die "podman compose up failed (rtx3060 path) — check the output above. Common cause: image not built (run deploy_rtx first)."
   fi
-  ok "Compose up: core + head-rtx + head-rtx3060 in pod hydra-system"
+  ok "Compose up: core + head-rtx5060ti + head-rtx3060 in pod hydra-system"
 
   # Wait for the 3060 head to come up on :9701
   step "Waiting for head-rtx3060 health on :9701"
