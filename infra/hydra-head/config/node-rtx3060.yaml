@@ -39,10 +39,16 @@ binaries:
     dest: /opt/hydra/bin/nvidia_gpu_exporter
 
 llama:
-  binary: /llama/bin/llama-server
+  # The 3060 is the COMBINED peer. Like the head (rtx), it uses
+  # llama-engine so it can start its embedded ggml-RPC backend on
+  # :9504 (--ggml-rpc-port below). llama-server doesn't support
+  # --ggml-rpc-port. llama-engine accepts both SOLO and peer modes;
+  # the head (rtx) is the only one that needs --rpc-engine /
+  # --combined-ot-pattern.
+  binary: /llama/bin/llama-engine
   working_dir: /llama
   port: 8081                 # 8080 is owned by head-rtx (5060 Ti)
-  rpc_port: 9504             # 9503 is the 5060 Ti's llama RPC
+  rpc_port: 9504             # 9503 is the 5060 Ti's llama RPC; 9504 is the 3060's llama RPC (StateGet/Put)
   params:
     # Same direct single-model mode as the 5060 Ti's quick-test config
     # (no router/preset). 12 GB VRAM only fits the Q3_K-mini 35B-A3B
@@ -69,6 +75,17 @@ llama:
 
     # Slot management
     slot-prompt-similarity: 0.4
+
+    # ── COMBINED engine-mode peer wiring (feat/add-rtx-3060-head) ─────
+    # --ggml-rpc-port exposes this peer's ggml RPC backend on :9504.
+    # The head's llama-server (rtx) is configured with --rpc-engine
+    # localhost:9504 in node-rtx.yaml, so when the Coordinator
+    # activates COMBINED mode for a large request, the head reaches
+    # into the 3060's backend to dispatch expert tensors. The peer
+    # itself does NOT need --rpc-engine (it's not a head) and does
+    # NOT need --combined-ot-pattern (only the head enforces the
+    # split).
+    ggml-rpc-port: 9504
 
   env:
     # Force this process onto CUDA device 1 (the 3060). 0 is the 5060 Ti.
