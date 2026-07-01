@@ -132,4 +132,60 @@ public sealed class MultiEngineRouterTests
 		var (cfg, tracker) = Build(peerWorker: null);
 		Assert.Null(MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000));
 	}
+
+	// ── P3.0 (#366): peer must be exclusively reservable for COMBINED admission ──
+
+	[Fact]
+	public void Skips_When_Peer_Exclusive_Reserved()
+	{
+		// P3.0: an exclusively-reserved peer is invisible to the router — no
+		// concurrent SOLO will be routed to it while COMBINED is driving the head.
+		var (cfg, tracker) = Build();
+		Assert.True(tracker.TryReserveWorkerExclusive("p100"));
+		Assert.Null(MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000));
+	}
+
+	[Fact]
+	public void MultiSlot_Peer_Some_Slots_Free_Still_Skipped_For_Exclusive_Reservation()
+	{
+		// P3.0 admission requires the peer to be FULLY idle, not just have at
+		// least one free slot. The router's IsFree() check (any-free) is the
+		// first gate; the scheduler's TryReserveWorkerExclusive (all-free) is
+		// the second. Here we exercise the all-free gate.
+		var cfg = new CoordinatorConfig
+		{
+			UseLlamaEngine = true,
+			PipelineEnabled = true,
+			CombinedEnabled = false,
+			MultiEngineThreshold = 8192,
+			MultiEnginePolicy = "pipeline",
+			Workers = new List<WorkerConfig>
+			{
+				new()
+				{
+					Name = "rtx", Host = "localhost", RpcPort = 9601,
+					LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 1,
+					Role = "head", PeerWorker = "p100",
+					PipelineCapable = true, PipelineOtSplit = "blk\\..*=PEER"
+				},
+				new()
+				{
+					Name = "p100", Host = "localhost", RpcPort = 9602,
+					LlamaUrl = "http://p100:8086", WorkerType = 2, Slots = 2,
+					Role = "worker"
+				}
+			}
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+		// Rent 1 of 2 peer slots (so p100 is partial-free, not full-free)
+		Assert.True(tracker.TryAcquireSlot("p100", out _, "decode"));
+		// Router may still see p100 as "free" (any-free) — that's the first gate.
+		var plan = MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000);
+		// But the scheduler's second gate (all-free) will reject. We simulate
+		// that here by checking the tracker API:
+		Assert.False(tracker.TryReserveWorkerExclusive("p100"),
+			"Multi-slot peer with one busy slot must NOT be reservable for COMBINED");
+		_ = plan; // router may have picked the plan; the scheduler gate is what matters
+	}
 }

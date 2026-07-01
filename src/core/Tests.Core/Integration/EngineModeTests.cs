@@ -311,6 +311,93 @@ public sealed class EngineModeTests
         Assert.False(f.Rpc.HasCall(OpCode.EngineSetExpertMode));
     }
 
+    // ── P3.0 (#366): per-GPU exclusive peer reservation ──
+
+    [Fact]
+    public async Task Combined_Exclusive_Reserve_Is_Released_On_Completion()
+    {
+        // After a COMBINED request completes, the peer's exclusive reservation
+        // must be released so the peer returns to the pool of routable workers.
+        // p100 is configured with 2 slots to make the multi-slot invariant
+        // visible: a peer's "free" status must NOT collapse when one slot
+        // is busy, but it MUST collapse when exclusively reserved.
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2);
+
+        var result = await f.SubmitAsync("sess_p30_1", 20000, 100);
+
+        Assert.True(f.Rpc.HasCall(OpCode.EngineSetExpertMode),
+            "COMBINED should flip expert mode on the head");
+        var hydra = Assert.IsType<Dictionary<string, object>>(
+            ((Dictionary<string, object>)result!)["hydra"]);
+        Assert.Equal("combined", hydra["engine_mode"]);
+
+        // After completion, the peer must be back to the routable pool —
+        // the exclusive reservation has been released.
+        Assert.False(f.Tracker.IsExclusiveReserved("p100"));
+        Assert.True(f.Tracker.HasFreeSlot("p100"));
+        Assert.True(f.Tracker.IsFree("p100"));
+        Assert.Contains("p100", f.Tracker.FreeWorkers());
+    }
+
+    [Fact]
+    public async Task Combined_Solo_Fallback_Still_Releases_Exclusive_Reserve()
+    {
+        // P3.0 §"Failure handling": when the activate-degrade path
+        // (ReportsSolo = true) fires — the engine could not flip expert mode
+        // because the peer wasn't really there — the exclusive reservation
+        // must STILL be released (we don't want to strand the peer just
+        // because the head went solo).
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2);
+        f.Rpc.FailMultiEngineAttach = true;
+
+        var result = await f.SubmitAsync("sess_p30_2", 20000, 100);
+
+        var hydra = Assert.IsType<Dictionary<string, object>>(
+            ((Dictionary<string, object>)result!)["hydra"]);
+        Assert.True((bool)hydra["fell_back"]);
+        Assert.Equal("solo", hydra["engine_mode"]);
+
+        Assert.False(f.Tracker.IsExclusiveReserved("p100"),
+            "Solo-fallback must release the exclusive reservation");
+        Assert.True(f.Tracker.HasFreeSlot("p100"));
+    }
+
+    [Fact]
+    public void Peer_Exclusive_Reserve_Blocks_Concurrent_Solo_Acquisition()
+    {
+        // The core #21 invariant: while the peer is exclusively reserved for
+        // COMBINED, no concurrent actor (SOLO, another COMBINED, or any
+        // other routing path) may acquire a slot on it. All the existing
+        // routing entry points consult IWorkerTracker, which gates on
+        // ExclusiveReserved — verified here at the tracker level (the
+        // scheduler routes through this same gate).
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("p100", 2);
+
+        // Pre-reserve the peer as if COMBINED were driving it.
+        Assert.True(tracker.TryReserveWorkerExclusive("p100"));
+
+        // Every "I want a slot on p100" entry point must be closed.
+        Assert.False(tracker.TryAcquireSlot("p100", out _, "decode"),
+            "TryAcquireSlot must fail when peer is exclusively reserved");
+        Assert.False(tracker.TryAcquireSlot("p100", out _, "prefill"),
+            "TryAcquireSlot must fail regardless of role when peer is exclusively reserved");
+        Assert.False(tracker.TryAcquireSlot("p100", out _, "migrate"),
+            "TryAcquireSlot must fail for migrate too");
+        Assert.False(tracker.Acquire("p100", "decode"),
+            "Legacy Acquire must also fail");
+
+        // And the peer is not in the candidate list for new requests.
+        Assert.False(tracker.IsFree("p100"));
+        Assert.False(tracker.HasFreeSlot("p100"));
+        Assert.Equal(0, tracker.FreeSlotCount("p100"));
+        Assert.DoesNotContain("p100", tracker.FreeWorkers());
+
+        // Release restores all of the above.
+        tracker.ReleaseWorkerExclusive("p100");
+        Assert.True(tracker.TryAcquireSlot("p100", out _, "decode"));
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Cold concurrency (P/D split) path
     //

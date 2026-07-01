@@ -41,7 +41,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	// Two-engine "work together": peer-engine leases held for the request's duration,
 	// and the active mode per session (for the active-sessions gauge on release).
-	private readonly ConcurrentDictionary<string, SlotLease> _peerLeases = new();
+	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
 	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new(); // traceIds whose streaming has finished
 	private readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
@@ -812,15 +812,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	/// <summary>
-	/// Reserve both the head slot and the peer slot for a multi-engine request, and stamp the
-	/// plan onto the item. "Ensure both engine workers free" — if either acquisition fails the
-	/// other is released and we return false so the caller falls back to the normal route.
+	/// Reserve the head slot and hold the peer GPU exclusively for a multi-engine request,
+	/// and stamp the plan onto the item. The peer is held with <c>TryReserveWorkerExclusive</c>
+	/// (per-GPU, no slot), enforcing principle P1 (one GPU = one task) — no other request,
+	/// SOLO or another COMBINED, can dispatch compute onto the peer while the head is
+	/// driving it. If the peer isn't fully idle, admission fails and the caller falls back
+	/// to the normal SOLO route. This is the primary resolution for the concurrent-load
+	/// CUDA crash (ddvnguyen/llama.cpp#21) by construction.
 	/// </summary>
 	private bool TryAcquireMultiEngine(WorkItem item, MultiEngineRouter.Plan plan)
 	{
 		if (!_tracker.TryAcquireSlot(plan.Head.Name, out var headSlot, "decode"))
 			return false;
-		if (!_tracker.TryAcquireSlot(plan.Peer.Name, out var peerSlot, "decode"))
+		if (!_tracker.TryReserveWorkerExclusive(plan.Peer.Name))
 		{
 			_tracker.ReleaseSlot(plan.Head.Name, headSlot);
 			return false;
@@ -834,15 +838,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		item.DecodeWorker = plan.Head;
 		item.DecodeSlot = headSlot;
 		item.DecodeLease = new SlotLease(plan.Head.Name, headSlot, item.SessionId, LeaseLifetime.Long, _tracker);
-		item.PeerLease = new SlotLease(plan.Peer.Name, peerSlot, item.SessionId, LeaseLifetime.Long, _tracker);
+		item.PeerLease = new ExclusivePeerReservation(plan.Peer.Name, _tracker);
 		LastDispatchedNode = plan.Head.Name;
 
 		CoordinatorMetrics.RequestsTotal.WithLabels(plan.Head.Name, item.RouteType).Inc();
 		CoordinatorMetrics.RequestsTotalAll.Inc();
 		CoordinatorMetrics.ColdSessionStarts.Inc();
 		CoordinatorMetrics.MultiEngineAttempts.WithLabels(plan.Head.Name, modeStr).Inc();
-		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} PeerSlot={PS} Split={Split} Est={Est}",
-			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name, peerSlot, plan.OtSplit, item.EstimatedTokens);
+		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} Split={Split} Est={Est}",
+			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name, plan.OtSplit, item.EstimatedTokens);
 		return true;
 	}
 
@@ -925,7 +929,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return false;
 	}
 
-	private async Task ReleasePeerLeaseAsync(string sessionId, SlotLease lease)
+	private async Task ReleasePeerLeaseAsync(string sessionId, IPeerReservation lease)
 	{
 		await lease.DisposeAsync();
 		if (_activeMultiSessions.TryRemove(sessionId, out var modeStr))

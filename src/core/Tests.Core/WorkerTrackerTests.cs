@@ -208,4 +208,168 @@ public sealed class WorkerTrackerTests
         Assert.Contains("rtx", t.AllWorkers);
         Assert.Contains("p100", t.AllWorkers);
     }
+
+    // ── P3.0 (#366): per-GPU exclusive reservation ──
+
+    [Fact]
+    public void TryReserveWorkerExclusive_Succeeds_When_AllFree()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.True(t.IsExclusiveReserved("p100"));
+    }
+
+    [Fact]
+    public void TryReserveWorkerExclusive_Fails_For_Unknown()
+    {
+        var t = new WorkerTracker();
+        Assert.False(t.TryReserveWorkerExclusive("unknown"));
+    }
+
+    [Fact]
+    public void TryReserveWorkerExclusive_Fails_If_Any_Slot_Busy()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryAcquireSlot("p100", out _, "decode")); // 1/2 used
+        Assert.False(t.TryReserveWorkerExclusive("p100"));
+        Assert.False(t.IsExclusiveReserved("p100"));
+    }
+
+    [Fact]
+    public void TryReserveWorkerExclusive_Fails_If_All_Slots_Busy()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryAcquireSlot("p100", out _, "decode"));
+        Assert.True(t.TryAcquireSlot("p100", out _, "decode"));
+        Assert.False(t.TryReserveWorkerExclusive("p100"));
+    }
+
+    [Fact]
+    public void TryReserveWorkerExclusive_Fails_If_Already_Reserved()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.False(t.TryReserveWorkerExclusive("p100"));
+        Assert.True(t.IsExclusiveReserved("p100"));
+    }
+
+    [Fact]
+    public void TryReserveWorkerExclusive_Fails_When_Unhealthy()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        t.MarkUnhealthy("p100");
+        Assert.False(t.TryReserveWorkerExclusive("p100"));
+    }
+
+    [Fact]
+    public void ReleaseWorkerExclusive_Allows_ReservationAgain()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        t.ReleaseWorkerExclusive("p100");
+        Assert.False(t.IsExclusiveReserved("p100"));
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+    }
+
+    [Fact]
+    public void ReleaseWorkerExclusive_Idempotent()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100");
+        t.ReleaseWorkerExclusive("p100"); // not reserved → no-op
+        t.ReleaseWorkerExclusive("unknown"); // unknown → no-op
+        Assert.False(t.IsExclusiveReserved("p100"));
+    }
+
+    [Fact]
+    public void ExclusiveReserved_Blocks_TryAcquireSlot()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.False(t.TryAcquireSlot("p100", out _, "decode"));
+    }
+
+    [Fact]
+    public void ExclusiveReserved_Blocks_HasFreeSlot()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.HasFreeSlot("p100"));
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.False(t.HasFreeSlot("p100"));
+    }
+
+    [Fact]
+    public void ExclusiveReserved_Blocks_FreeSlotCount()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.Equal(2, t.FreeSlotCount("p100"));
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.Equal(0, t.FreeSlotCount("p100"));
+    }
+
+    [Fact]
+    public void ExclusiveReserved_Blocks_IsFree()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.IsFree("p100"));
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.False(t.IsFree("p100"));
+    }
+
+    [Fact]
+    public void ExclusiveReserved_Blocks_FreeWorkers()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("rtx");
+        t.InitWorker("p100");
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        var free = t.FreeWorkers();
+        Assert.DoesNotContain("p100", free);
+        Assert.Contains("rtx", free);
+    }
+
+    [Fact]
+    public void ExclusiveReserved_GetStatus_Reports_Reserved()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.Equal("free", t.GetStatus("p100"));
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.Equal("reserved", t.GetStatus("p100"));
+    }
+
+    [Fact]
+    public void ExclusiveReserved_One_Slot_Only_Reserves_If_All_Free()
+    {
+        // The all-free check is the heart of the safety property: a peer that
+        // has any active SOLO work cannot be borrowed, even partially.
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 1);
+        Assert.True(t.TryAcquireSlot("p100", out var s, "decode"));
+        Assert.False(t.TryReserveWorkerExclusive("p100"));
+        t.ReleaseSlot("p100", s);
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+    }
+
+    [Fact]
+    public void Release_After_Reservation_Restores_Slot_Acquisition()
+    {
+        var t = new WorkerTracker();
+        t.InitWorker("p100", 2);
+        Assert.True(t.TryReserveWorkerExclusive("p100"));
+        Assert.False(t.TryAcquireSlot("p100", out _, "decode"));
+        t.ReleaseWorkerExclusive("p100");
+        Assert.True(t.TryAcquireSlot("p100", out var s, "decode"));
+        Assert.Equal(0, s);
+    }
 }

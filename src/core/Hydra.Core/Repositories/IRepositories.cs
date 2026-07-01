@@ -47,4 +47,32 @@ public interface IWorkerTracker
     int FreeSlotCount(string name);
     bool HasFreeSlot(string name);
     int TotalSlots(string name);
+
+    /// <summary>
+    /// Succeeds only if the worker is healthy, has NO slots in use (all free), and
+    /// is not already exclusively reserved. Marks the worker exclusive so that
+    /// subsequent <see cref="TryAcquireSlot"/>, <see cref="HasFreeSlot"/>,
+    /// <see cref="FreeSlotCount"/>, and <see cref="IsFree"/> all report it
+    /// unavailable — no other request (SOLO or another COMBINED/PIPELINE) can
+    /// dispatch compute onto this GPU while the reservation is held.
+    ///
+    /// This is the per-GPU admission gate for two-engine "work together" modes,
+    /// enforcing principle P1 (one GPU = one task) and resolving the
+    /// concurrent-load CUDA crash from ddvnguyen/llama.cpp#21 by construction:
+    /// the peer GPU is exclusively held by the COMBINED head, so the peer's own
+    /// SOLO decode never runs while the head is dispatching expert compute into
+    /// it.
+    /// </summary>
+    bool TryReserveWorkerExclusive(string name);
+
+    /// <summary>
+    /// Releases an exclusive reservation made by <see cref="TryReserveWorkerExclusive"/>.
+    /// Idempotent. No-op if the worker was not reserved. Called on the peer's
+    /// request lifecycle: completion, head-lease expiry, peer-crash degrade to
+    /// solo, and the <c>ReportsSolo</c> activate-degrade path.
+    /// </summary>
+    void ReleaseWorkerExclusive(string name);
+
+    /// <summary>True if the worker is currently exclusively reserved (see <see cref="TryReserveWorkerExclusive"/>).</summary>
+    bool IsExclusiveReserved(string name);
 }
