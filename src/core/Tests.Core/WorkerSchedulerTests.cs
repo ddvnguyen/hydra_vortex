@@ -328,6 +328,116 @@ public sealed class WorkerSchedulerTests
         Assert.Null(item.PeerLease);
         Assert.False(tracker.IsExclusiveReserved("p100"));
     }
+
+    // ── P3.0+ / #368: SWAP_QUANT admission + lifecycle ──
+
+    [Fact]
+    public async Task TrySwapQuant_Succeeds_On_Idle_Worker_And_Bumps_Generation()
+    {
+        // SWAP_QUANT must succeed when the worker is fully idle (no slots,
+        // not exclusively reserved, not already SWAPPING). On exit,
+        // SwapGeneration is bumped, which marks outstanding peer bindings
+        // as potentially-stale (the next head epoch-check will see the
+        // bump on the C++ side and rebind).
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("p100", 2);
+        Assert.Equal(0, tracker.GetSwapGeneration("p100"));
+
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        bool ok = await scheduler.TrySwapQuantAsync("p100", "Q4_K_M", "blk\\.ffn_.*_exps", "trace_swap", CancellationToken.None);
+        Assert.True(ok, "SWAP_QUANT should succeed on an idle worker");
+        Assert.False(tracker.IsSwapping("p100"), "SWAPPING must be released after the operation");
+        Assert.Equal(1, tracker.GetSwapGeneration("p100"));
+    }
+
+    [Fact]
+    public async Task TrySwapQuant_Refused_When_Exclusive_Reserved()
+    {
+        // A peer that's exclusively reserved (COMBINED_SERVING) cannot be
+        // swapped out from under the head that owns it. This is the P3.0
+        // #368 §3 serialization rule: "SWAP_QUANT refuses while
+        // COMBINED_SERVING" — keeps principle P1 intact.
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("p100");
+        Assert.True(tracker.TryReserveWorkerExclusive("p100"));
+
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        bool ok = await scheduler.TrySwapQuantAsync("p100", "Q4_K_M", "blk\\.ffn_.*_exps", "trace_swap", CancellationToken.None);
+        Assert.False(ok, "SWAP_QUANT must refuse when peer is exclusively reserved");
+        Assert.True(tracker.IsExclusiveReserved("p100"), "exclusive reservation must be intact");
+        Assert.False(tracker.IsSwapping("p100"));
+        Assert.Equal(0, tracker.GetSwapGeneration("p100"));
+    }
+
+    [Fact]
+    public async Task TrySwapQuant_Refused_When_Slot_Busy()
+    {
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("p100", 2);
+        Assert.True(tracker.TryAcquireSlot("p100", out _, "decode")); // 1/2 used
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        bool ok = await scheduler.TrySwapQuantAsync("p100", "Q4_K_M", "blk\\.ffn_.*_exps", "trace_swap", CancellationToken.None);
+        Assert.False(ok, "SWAP_QUANT must refuse when peer has any slot in use");
+        Assert.Equal(0, tracker.GetSwapGeneration("p100"));
+    }
+
+    [Fact]
+    public async Task TrySwapQuant_Generation_Stays_Stable_When_Refused()
+    {
+        // Repeated refusals must not advance the generation — only a
+        // successful exit from SWAPPING bumps it.
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("p100");
+        Assert.True(tracker.TryAcquireSlot("p100", out _, "decode"));
+
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        for (int i = 0; i < 5; i++)
+            Assert.False(await scheduler.TrySwapQuantAsync("p100", "Q4_K_M", "blk\\.ffn_.*_exps", "trace_swap", CancellationToken.None));
+        Assert.Equal(0, tracker.GetSwapGeneration("p100"));
+    }
+
+    [Fact]
+    public async Task TrySwapQuant_Exits_Swapping_Even_On_Unknown_Worker()
+    {
+        // Defensive: a swap on a non-existent worker must not strand the
+        // tracker in SWAPPING (it can't, because TryEnterSwapping fails
+        // first, but the test pins the invariant).
+        var tracker = new WorkerTracker();
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        bool ok = await scheduler.TrySwapQuantAsync("does_not_exist", "Q4_K_M", ".*", "trace_swap", CancellationToken.None);
+        Assert.False(ok);
+        Assert.False(tracker.IsSwapping("does_not_exist"));
+    }
 }
 
 public sealed class WorkItemIntegrationTests

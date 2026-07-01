@@ -131,7 +131,7 @@ public sealed class WorkerTracker : IWorkerTracker
     {
         slotId = -1;
         if (!_states.TryGetValue(name, out var s)) return false;
-        lock (s) { if (!s.Healthy || s.ExclusiveReserved) return false; }
+        lock (s) { if (!s.Healthy || s.ExclusiveReserved || s.Swapping) return false; }
         if (!_pools.TryGetValue(name, out var pool)) return false;
         if (!pool.TryRent(out slotId)) return false;
         if (!_held.TryGetValue(name, out var held)) return false;
@@ -151,14 +151,14 @@ public sealed class WorkerTracker : IWorkerTracker
     public int FreeSlotCount(string name)
     {
         if (!_pools.TryGetValue(name, out var p)) return 0;
-        if (_states.TryGetValue(name, out var s) && lockOn(s, x => x.ExclusiveReserved)) return 0;
+        if (_states.TryGetValue(name, out var s) && lockOn(s, x => x.ExclusiveReserved || x.Swapping)) return 0;
         return p.Free;
     }
 
     public bool HasFreeSlot(string name)
     {
         if (!_pools.TryGetValue(name, out var p) || !p.HasFree) return false;
-        if (_states.TryGetValue(name, out var s) && lockOn(s, x => x.ExclusiveReserved)) return false;
+        if (_states.TryGetValue(name, out var s) && lockOn(s, x => x.ExclusiveReserved || x.Swapping)) return false;
         return true;
     }
 
@@ -189,9 +189,9 @@ public sealed class WorkerTracker : IWorkerTracker
         foreach (var (n, s) in _states)
         {
             var hasFreeSlot = _pools.TryGetValue(n, out var p) && p.HasFree;
-            bool healthy, exclusiveReserved;
-            lock (s) { healthy = s.Healthy; exclusiveReserved = s.ExclusiveReserved; }
-            if (hasFreeSlot && healthy && !exclusiveReserved) r.Add(n);
+            bool healthy, exclusiveReserved, swapping;
+            lock (s) { healthy = s.Healthy; exclusiveReserved = s.ExclusiveReserved; swapping = s.Swapping; }
+            if (hasFreeSlot && healthy && !exclusiveReserved && !swapping) r.Add(n);
         }
         return r;
     }
@@ -212,7 +212,7 @@ public sealed class WorkerTracker : IWorkerTracker
         var hasFreeSlot = _pools.TryGetValue(name, out var p) && p.HasFree;
         if (!hasFreeSlot) return false;
         if (!_states.TryGetValue(name, out var s)) return false;
-        return lockOn(s, x => x.Healthy && !x.ExclusiveReserved);
+        return lockOn(s, x => x.Healthy && !x.ExclusiveReserved && !x.Swapping);
     }
 
     public string GetStatus(string name)
@@ -221,8 +221,9 @@ public sealed class WorkerTracker : IWorkerTracker
         var hasFreeSlot = _pools.TryGetValue(name, out var p) && p.HasFree;
         var total = _pools.TryGetValue(name, out var pool) ? pool.Total : 1;
         var free = _pools.TryGetValue(name, out var pp) ? pp.Free : 0;
-        var exclusive = lockOn(s, x => x.ExclusiveReserved);
-        if (exclusive && free == total) return "reserved";
+        var locked = lockOn(s, x => (x.ExclusiveReserved, x.Swapping));
+        if (locked.Swapping && free == total) return "swapping";
+        if (locked.ExclusiveReserved && free == total) return "reserved";
         if (free == total) return "free";
         if (hasFreeSlot) return "partial";
         return lockOn(s, s => s.Role);
@@ -234,7 +235,7 @@ public sealed class WorkerTracker : IWorkerTracker
         if (!_pools.TryGetValue(name, out var pool)) return false;
         lock (s)
         {
-            if (!s.Healthy || s.ExclusiveReserved) return false;
+            if (!s.Healthy || s.ExclusiveReserved || s.Swapping) return false;
             if (pool.Free != pool.Total) return false;
             s.ExclusiveReserved = true;
         }
@@ -249,6 +250,46 @@ public sealed class WorkerTracker : IWorkerTracker
 
     public bool IsExclusiveReserved(string name)
         => _states.TryGetValue(name, out var s) && lockOn(s, x => x.ExclusiveReserved);
+
+    public bool TryEnterSwapping(string name)
+    {
+        if (!_states.TryGetValue(name, out var s)) return false;
+        if (!_pools.TryGetValue(name, out var pool)) return false;
+        lock (s)
+        {
+            if (!s.Healthy) return false;
+            if (s.Swapping) return false;
+            if (s.ExclusiveReserved) return false;
+            if (pool.Free != pool.Total) return false;
+            s.Swapping = true;
+            return true;
+        }
+    }
+
+    public void ExitSwapping(string name)
+    {
+        if (_states.TryGetValue(name, out var s))
+            lock (s)
+            {
+                // Only count actual swap cycles — a no-op call (worker wasn't
+                // swapping) leaves the generation alone so the head's
+                // epoch-check only trips on real events. A
+                // Generation bump = "the peer's resident tensors were
+                // freed and reloaded" — a structural change observable
+                // on the C++ side as a registry epoch bump.
+                if (s.Swapping)
+                {
+                    s.Swapping = false;
+                    s.SwapGeneration++;
+                }
+            }
+    }
+
+    public bool IsSwapping(string name)
+        => _states.TryGetValue(name, out var s) && lockOn(s, x => x.Swapping);
+
+    public int GetSwapGeneration(string name)
+        => _states.TryGetValue(name, out var s) ? lockOn(s, x => x.SwapGeneration) : 0;
 
     public bool IsHealthy(string n) => _states.TryGetValue(n, out var s) && lockOn(s, s => s.Healthy);
 
@@ -269,5 +310,5 @@ public sealed class WorkerTracker : IWorkerTracker
     private static T lockOn<T>(WorkerState s, Func<WorkerState, T> f) { lock (s) return f(s); }
     private static bool lockOn(WorkerState s, Func<WorkerState, bool> f) { lock (s) return f(s); }
 
-    private sealed class WorkerState { public string Role = ""; public DateTime? BusySince; public int ErrorCount; public bool Healthy = true; public bool ExclusiveReserved; }
+    private sealed class WorkerState { public string Role = ""; public DateTime? BusySince; public int ErrorCount; public bool Healthy = true; public bool ExclusiveReserved; public bool Swapping; public int SwapGeneration; }
 }
