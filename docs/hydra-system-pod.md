@@ -1,12 +1,14 @@
 # Hydra System — start / stop / debug
 
-The "hydra system" on the RTX host is **two services in one pod**:
-`hydra-system_core_1` (the C# coordinator + Store) and
-`hydra-system_head-rtx_1` (the Go node agent that manages the
-llama-server subprocess + 3 monitoring sidecars). They share a
-network namespace (`--network host`) and a userns
-(`userns_mode: host`), so they can talk over `127.0.0.1` and read
-each other's host files (ctr.log, auth.json, etc.).
+The "hydra system" on the host is **three services in one pod**:
+`hydra-system_core_1` (the C# coordinator + Store),
+`hydra-system_head-rtx_1` (the Go node agent for the **RTX 5060 Ti**,
+manages the llama-engine subprocess on CUDA0 + 3 monitoring sidecars),
+and `hydra-system_head-rtx3060_1` (the Go node agent for the **RTX 3060**,
+manages the llama-engine subprocess on CUDA1 + its own ggml-RPC backend on
+:9504 for COMBINED-mode peer dispatch). They all share a network namespace
+(`network_mode: host`) and a userns (`userns_mode: host`), so they can talk
+over `127.0.0.1` and read each other's host files (ctr.log, auth.json, etc.).
 
 The P100 is a separate VM and is NOT in this compose — it runs
 hydra-head under systemd. See `scripts/deploy-hydra-head.sh p100`.
@@ -16,11 +18,21 @@ hydra-head under systemd. See `scripts/deploy-hydra-head.sh p100`.
 ```bash
 # Build (only if you changed src/core or src/head or the Dockerfile)
 bash scripts/deploy-hydra-head.sh rtx
+bash scripts/deploy-hydra-head.sh rtx3060   # second head in the same pod; same image
+
+# Or rebuild the fat sm_86+sm_120 llama-engine if the fork changed
+(cd src/llama-cpp && mkdir -p build_sm86_sm120 && cd build_sm86_sm120 && \
+  cmake .. -G Ninja -DCMAKE_CUDA_ARCHITECTURES="86;120" \
+    -DGGML_CUDA=ON -DGGML_RPC=ON -DGGML_NVML=ON \
+    -DBUILD_SHARED_LIBS=ON -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 && \
+  cmake --build . -j$(nproc) --target llama-engine)
 
 # Verify
-podman pod ls                              # should show pod_hydra-system with 3 containers
-curl -s http://localhost:9000/health      # core
-curl -s http://localhost:9700/health      # head (head-rtx)
+podman pod ls                              # should show pod_hydra-system with 4 containers
+curl -s http://localhost:9000/health      # core (should show 3 nodes: rtx, rtx3060, p100)
+curl -s http://localhost:9700/health      # head (RTX 5060 Ti, ports 8080/9503)
+curl -s http://localhost:9701/health      # head (RTX 3060, ports 8081/9504)
+ss -tlnp | grep -E '9504|9505'             # ggml-RPC backends
 curl -s http://localhost:13133/ | head -1   # OTel Collector health
 ```
 
@@ -28,17 +40,20 @@ curl -s http://localhost:13133/ | head -1   # OTel Collector health
 
 ```
 pod_hydra-system
-  ├── pod_hydra-system-infra   (pause, host network, userns=host)
-  ├── hydra-system_core_1       (C# coordinator, port 9000, /health on :9501)
-  └── hydra-system_head-rtx_1   (Go agent, port 9700, llama :8080, sidecars :9100/:9835/:9080)
+  ├── pod_hydra-system-infra     (pause, host network, userns=host)
+  ├── hydra-system_core_1         (C# coordinator, port 9000, /health on :9501)
+  ├── hydra-system_head-rtx_1     (Go agent, port 9700, llama :8080, sidecars :9100/:9835)
+  └── hydra-system_head-rtx3060_1 (Go agent, port 9701, llama :8081, sidecars, ggml-RPC :9504)
 ```
 
 **Why one pod, not two separate containers:**
-- core + head need to talk over `127.0.0.1` (core's `Store` API
-  hydra-head calls, hydra-head's health checker probes `core:9000`).
-- Both need to share the host network namespace (so they see the
+- core + heads need to talk over `127.0.0.1` (core's `Store` API
+  hydra-head calls, hydra-head's health checker probes `core:9000`,
+  and the rtx head reaches rtx3060's ggml-RPC backend on `localhost:9504`
+  for COMBINED engine mode).
+- All three need to share the host network namespace (so they see the
   host podman socket, ctr.log, and host postgres on `127.0.0.1:5432`).
-- Both need `userns_mode: host` so the in-container Hydra.Core can
+- All three need `userns_mode: host` so the in-container Hydra.Core can
   read `/mnt/containers/*/ctr.log` (mode 700) and
   `/mnt/SSD/hydra-backup` (mode 770) — both owned by host uid 1000
   (ddv).
