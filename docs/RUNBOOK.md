@@ -394,8 +394,8 @@ bash scripts/start-env.sh --skip-p100
 ```
 
 Starts: Hydra.Core (single C# binary) + Observability (podman-compose), llama-server RTX
-(container with `build_sm120/` volume), llama-server P100 (user systemd on VM), and host
-log shipping services (`container-log-shipper` + `promtail` — systemd --user).
+(container with `build_sm120/` volume), llama-server P100 (user systemd on VM), and
+the OTel Collector gateway (Quadlet, joins the `infra-host` pod — see #363).
 
 Manual verification:
 ```bash
@@ -681,11 +681,27 @@ See the M2.1 sections above for the current C# implementation in Hydra.Core.
 - `:9501/metrics` — Store ops counter, bytes stored/sent, op duration histogram (`StoreMetrics.cs`)
 - `:9000/metrics` — Request counter, cache hits, active sessions
 
-**Loki + Promtail** — Promtail runs on the host (not in Docker). Pipeline:
-`container-log-shipper` (host systemd --user) tails `podman logs -f` to
-`/tmp/container-logs/<name>.log` → `promtail` (host systemd --user) scrapes files → Loki.
-Labels: `container`, `component`, `node` mapped via pipeline stages.
-Serilog JSON output already includes `trace_id`, `component`, `source_context`.
+**Loki + OTel Collector** — per-service direct push to the OTel Collector
+gateway (Quadlet `infra-otel-collector.container`, joined to the `infra-host`
+pod, port 4318). See #363 for the full design. Pipeline:
+`Hydra.Core / Hydra.Head / per-child llama-server / node_exporter /
+nvidia_exporter` push OTLP/HTTP to the collector → the collector's
+`transform/log_labels` processor maps OTel resource attributes to Loki
+stream labels (`component` ← `service.name`, `node` ←
+`service.instance.id`, `level` ← `severity_text`) → Loki.
+
+(Promtail and `container-log-shipper` were removed in #363. The
+old host-side `infra-promtail` Quadlet and the in-container
+`promtail` binary inside the hydra-head image are both gone. The
+new pipeline is per-service push; the only log scraper left in
+the system is the OTel Collector, which is a forwarder, not a
+parser.)
+
+For local forensic reads (when Loki or the collector is
+unreachable), hydra-head still writes a plain-text copy of its
+own log records to `os.Stdout` (visible via `journalctl -u
+hydra-head` on P100 and `podman logs hydra-system_head-rtx_1`
+on RTX).
 
 **Grafana dashboard** (`infra/grafana/dashboards/hydra-dashboard.json`):
 - Metric panels: request rate, active sessions, store ops/s, store bytes/s, save/restore p50/p95

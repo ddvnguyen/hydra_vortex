@@ -103,6 +103,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var traceId = Router.NewTraceId();
 		var item = new WorkItem(request, messages, sessionId, traceId, prefixHash, estimatedTokens, maxTokens);
 		item.HttpCancellationToken = ct;
+		if (request.TryGetValue("force_mode", out var fmRaw))
+		{
+			var fmStr = fmRaw is string fms ? fms
+				: fmRaw is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.String ? je.GetString()
+				: null;
+			if (!string.IsNullOrWhiteSpace(fmStr))
+			{
+				item.ForceMode = fmStr;
+				_log.Information("force_mode_applied Mode={Mode}", fmStr);
+			}
+			else
+			{
+				_log.Warning("force_mode_debug Raw={Raw} Type={Tp}", fmRaw, fmRaw?.GetType().FullName ?? "null");
+			}
+		}
 
 		_log.Information("request_received Sid={Sid} Stream={Stream}", sessionId, item.IsStreaming);
 
@@ -481,6 +496,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	// ── Gap 2-B + Gap 6: Route with verify warm slot + cross-node affinity ──
 	private async Task<WorkItemState> RouteAsync(WorkItem item)
 	{
+		// Debug force-mode: skip warm affinity when the caller explicitly requests
+		// a mode — warm reuse would bypass the cold multi-engine routing entirely.
+		if (!string.IsNullOrWhiteSpace(item.ForceMode))
+			return await EvictWarmAndColdRouteAsync(item);
+
 		var entry = _ledger.Lookup(item.SessionId);
 		item.Entry = entry;
 
@@ -651,13 +671,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> ColdRouteAsync(WorkItem item)
 	{
-		// Two-engine "work together": a large request may recruit a second engine.
-		// The head runs prefill+decode (engine mode handles both internally) with the
-		// peer attached; if activation fails at decode time we transparently fall back
-		// to solo. Gated behind PipelineEnabled/CombinedEnabled (default off).
-		var mePlan = MultiEngineRouter.Select(_cfg, _cfg.Workers, _tracker, _health, item.EstimatedTokens);
-		if (mePlan is { } plan && TryAcquireMultiEngine(item, plan))
-			return WorkItemState.Decode;
+		// Debug force-mode: bypass MultiEngineRouter.Select when the caller
+		// sets force_mode in the request body. Handy for testing COMBINED
+		// without adjusting the system's threshold/capability config.
+		if (!string.IsNullOrWhiteSpace(item.ForceMode))
+		{
+			var forcePlan = ForceMultiEnginePlan(_cfg, _tracker, _health, item);
+			if (forcePlan is { } plan && TryAcquireMultiEngine(item, plan))
+				return WorkItemState.Decode;
+		}
+		else
+		{
+			// Two-engine "work together": a large request may recruit a second engine.
+			var mePlan = MultiEngineRouter.Select(_cfg, _cfg.Workers, _tracker, _health, item.EstimatedTokens);
+			if (mePlan is { } plan && TryAcquireMultiEngine(item, plan))
+				return WorkItemState.Decode;
+		}
 
 		// Cold route: no warm slot/cache to reuse — the chosen worker prefills the
 		// full prompt. Gate the single-worker atomic route on the prompt size only
@@ -737,6 +766,50 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	// ── Two-engine "work together" ──────────────────────────────────────────
+
+	/// <summary>
+	/// Debug: construct a <see cref="MultiEngineRouter.Plan"/> from <c>item.ForceMode</c>,
+	/// bypassing the router's threshold and capability checks. Returns null when:
+	/// - <c>ForceMode</c> is <c>"solo"</c> or empty
+	/// - no suitable head+peer pair is free+healthy for the requested mode
+	/// - the mode string is unrecognized
+	/// </summary>
+	private MultiEngineRouter.Plan? ForceMultiEnginePlan(CoordinatorConfig cfg, IWorkerTracker tracker, IHealthMonitorService health, WorkItem item)
+	{
+		var mode = item.ForceMode.ToLowerInvariant();
+		if (mode == "solo" || mode == "") return null;
+		MultiEngineMode meMode;
+		string? otSplitKey;
+		if (mode == "combined")
+		{
+			meMode = MultiEngineMode.Combined;
+			otSplitKey = nameof(WorkerConfig.CombinedOtSplit);
+		}
+		else if (mode == "pipeline")
+		{
+			meMode = MultiEngineMode.Pipeline;
+			otSplitKey = nameof(WorkerConfig.PipelineOtSplit);
+		}
+		else return null;
+
+		foreach (var head in cfg.Workers
+			.Where(w => w.IsHead && tracker.IsFree(w.Name) && health.IsHealthy(w.Name))
+			.OrderBy(w => w.PrefillPriority))
+		{
+			if (string.IsNullOrWhiteSpace(head.PeerWorker)) continue;
+			var peer = cfg.Workers.FirstOrDefault(w => w.Name == head.PeerWorker);
+			if (peer == null || !tracker.IsFree(peer.Name) || !health.IsHealthy(peer.Name))
+				continue;
+
+			var split = mode == "combined" ? head.CombinedOtSplit : head.PipelineOtSplit;
+			if (string.IsNullOrWhiteSpace(split)) continue;
+
+			_log.Information("force_multiengine Mode={Mode} Head={Head} Peer={Peer} Split={Split}",
+				mode, head.Name, peer.Name, split);
+			return new MultiEngineRouter.Plan(head, peer, meMode, split);
+		}
+		return null;
+	}
 
 	/// <summary>
 	/// Reserve the head slot and hold the peer GPU exclusively for a multi-engine request,

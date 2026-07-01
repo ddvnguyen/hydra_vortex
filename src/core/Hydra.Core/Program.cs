@@ -125,6 +125,26 @@ if (coordEnabled)
             var builder = WebApplication.CreateSlimBuilder(args);
             builder.WebHost.UseUrls($"http://0.0.0.0:{coordCfg.Port}");
 
+            // Wire Microsoft.Extensions.Logging (ILogger<T>) through the
+            // Serilog pipeline. Without this, health poll logs, routing
+            // logs, state-transition logs etc. go only to the Microsoft
+            // ConsoleLoggerProvider (visible in podman logs but never
+            // reach the OTel collector → Loki). AddSerilog redirects them
+            // through the Serilog logger created at the top of this file,
+            // which has both a Console sink (structured JSON, visible in
+            // podman logs) and the OpenTelemetry sink (pushed to the OTel
+            // Collector gateway at localhost:4318/v1/logs).
+            // Wire Microsoft.Extensions.Logging through the Serilog
+            // pipeline so health poll / routing / state-transition logs
+            // reach the OTel collector. The underlying ILoggingBuilder
+            // from CreateSlimBuilder doesn't expose ClearProviders in the
+            // minimal hosting model, so the default ConsoleLoggerProvider
+            // remains active — logs appear twice in podman logs (once as
+            // the `info:` prefix from Microsoft, once as structured JSON
+            // from Serilog's console sink). Both paths push through the
+            // OTel sink to the collector.
+            builder.Logging.AddSerilog(Log.Logger);
+
             // DI: register all coordinator services
             builder.Services.AddCoordinator(coordCfg);
 

@@ -10,7 +10,14 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm120:f518cff16
+    # Fat binary: sm_86 (3060) + sm_120a (5060 Ti) in one SASS image.
+    # The 5060 Ti picks sm_120a; the 3060 picks sm_86. Same OCI image
+    # used by node-rtx3060.yaml. Bind-mount from
+    # src/llama-cpp/build_sm86_sm120/bin/ in docker-compose.hydra.yml
+    # shadows the registry pull, so the source is the OCI fallback
+    # only — used by hydra-head if the bind mount isn't present
+    # (e.g. on a host that doesn't build the fat binary itself).
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
     binary: llama-server
     dest: /llama/bin/llama-server
   node_exporter:
@@ -21,13 +28,19 @@ binaries:
     source: https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.2.1/nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz
     binary: nvidia_gpu_exporter
     dest: /opt/hydra/bin/nvidia_gpu_exporter
-  promtail:
-    source: https://github.com/grafana/loki/releases/download/v3.4.3/promtail-linux-amd64.zip
-    binary: promtail-linux-amd64
-    dest: /opt/hydra/bin/promtail
 
 llama:
-  binary: /llama/bin/llama-server
+  # Use llama-engine (not llama-server) for the head — the COMBINED
+  # engine mode is implemented in the llama-engine binary only (fork
+  # ddvnguyen/llama.cpp hydra-state-streaming branch). llama-engine
+  # accepts the same args as llama-server PLUS the hydra flags
+  # (--rpc-engine, --combined-ot-pattern, --ggml-rpc-port) that the
+  # filter function strips out of argv before common arg parsing
+  # (the llama-server binary doesn't have this filter, so it
+  # rejects the flags as "invalid argument"). llama-engine is a
+  # drop-in replacement for SOLO mode too — same /v1/chat/completions,
+  # /slots, /health, /metrics endpoints.
+  binary: /llama/bin/llama-engine
   working_dir: /llama
   port: 8080
   rpc_port: 9503
@@ -54,6 +67,19 @@ llama:
     # Slot management
     slot-prompt-similarity: 0.4
 
+    # ── COMBINED engine-mode wiring (feat/add-rtx-3060-head) ───────────
+    # The peer (rtx3060) is configured to expose its ggml RPC backend on
+    # :9504. The head reaches into the 3060's backend to dispatch expert
+    # tensors via the ggml-RPC fork at f1801f524 + the fail-open fix in
+    # ggml_backend_rpc_get_device_count (hydra_vortex#376) so the TCP-up
+    # / RPC-down race window no longer aborts. Combined with the
+    # 'combined' capability advertisement in engine_info (#375), the C#
+    # side now sees a valid plan and drives SET_EXPERT_MODE("combined")
+    # on every > 4K request.
+    ggml-rpc-port: 9505
+    rpc-engine: "localhost:9506"
+    combined-ot-pattern: "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"
+
   env:
     NVIDIA_VISIBLE_DEVICES: all
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
@@ -61,10 +87,6 @@ llama:
     LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
 
 services:
-  promtail:
-    enabled: true
-    binary: /opt/hydra/bin/promtail
-    config: /opt/hydra/config/promtail-rtx.yml
   node_exporter:
     enabled: true
     binary: /opt/hydra/bin/node_exporter

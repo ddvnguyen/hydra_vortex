@@ -54,20 +54,33 @@ infra:
     url: http://localhost:3100
   grafana:
     url: http://localhost:3000
+  otel:
+    # OTel Collector gateway — hydra-head pushes OTLP/HTTP here.
+    # The collector (Quadlet infra-otel-collector) lives on
+    # the RTX host's port 4318 and fans out to Loki. P100
+    # overrides this to http://192.168.122.1:4318.
+    url: http://localhost:4318
 
 services:
-  promtail:
-    enabled: false
   node_exporter:
     enabled: false
   nvidia_exporter:
     enabled: false
 
 # Health checker for the llama-server subprocess. Defaults are safe
-# for fast NVMe hosts (RTX: model load ≈30s). Slow VM disks (P100:
-# model load = 235-300s) override max_fails in node-p100.yaml.
+# for fast NVMe hosts (RTX 5060 Ti: model load ≈30-40s with mmap).
+# Slow VM disks (P100: model load = 235-300s) override max_fails in
+# node-p100.yaml.
+#
+# max_fails history: was 3 — too aggressive, killed the model-load
+# window on first start. Bumped to 10 (≈10 min budget) on 2026-07-01
+# because the /slots endpoint returns 503 from the moment the process
+# binds the port until the slot subsystem is fully wired (up to
+# ~40s in practice; longer on a cold mmap of the 12 GB Q3_K model).
+# The P100 already runs max_fails=30; this brings the host-side
+# minimum to the same order.
 health:
   path: /slots                  # HTTP endpoint the checker probes
   interval_idle_sec: 60         # probe interval when llama is idle
   interval_busy_sec: 300        # probe interval when llama is busy
-  max_fails: 3                 # consecutive failures → restart
+  max_fails: 10                 # consecutive failures → restart

@@ -1,0 +1,102 @@
+# OTel Collector — per-service log gateway for Hydra.
+#
+# All Hydra services (C# Hydra.Core, Go Hydra.Head + child
+# llama-server / node_exporter / nvidia_gpu_exporter) push OTLP HTTP
+# to this collector on :4318. The collector normalizes OTel resource
+# attributes to Loki stream labels via the `transform` processor and
+# forwards to Loki's native OTLP endpoint at /otlp/v1/logs.
+#
+# P100 services reach this collector at http://192.168.122.1:4318
+# (RTX host as seen from the KVM VM).
+#
+# See docs/design-direct-push-logging.md for the full design.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        # Loki's OTLP path is /otlp/v1/logs; we accept any path so
+        # clients can also push to the root if they prefer.
+
+processors:
+  # batch: amortize the Loki push across log records. Drop-oldest
+  # when the queue is full (bounded buffer; see design doc § Queue
+  # bounds for the explicit numbers).
+  batch:
+    timeout: 5s
+    send_batch_size: 8192
+
+  # memory_limiter: refuse new log records when RSS >80% of the
+  # container's memory cgroup limit. Spike limit is 25% so brief
+  # bursts don't trip the gate.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # transform: map OTel resource attributes to log attributes that
+  # Loki's OTLP receiver then maps to stream labels. service.name is
+  # the "component" label (hydra, hydra-head, llama-server,
+  # node-exporter, nvidia-exporter); service.instance.id is the
+  # "node" label (rtx, p100); the level comes from the OTel
+  # log-record severity_text (which lives at log scope, not
+  # resource scope).
+  transform/log_labels:
+    error_mode: ignore
+    log_statements:
+      - context: resource
+        statements:
+          # In resource scope, the local `attributes` is the
+          # resource's attribute map. Setting `component` and
+          # `node` here promotes them to resource attributes,
+          # which the Loki OTLP receiver maps to stream labels
+          # (mirroring how `service.name` and `service.instance.id`
+          # are mapped).
+          - set(attributes["component"], attributes["service.name"])
+          - set(attributes["node"], attributes["service.instance.id"])
+      - context: log
+        statements:
+          # `severity_text` is a top-level field on the log record,
+          # not an entry in the `attributes` map. Reading
+          # `attributes["severity_text"]` is always nil; the
+          # correct symbol is the bare `severity_text`.
+          - set(attributes["level"], severity_text)
+
+exporters:
+  # Push to Loki's native OTLP HTTP receiver at /otlp/v1/logs.
+  # We use `otlphttp` here (not the deprecated `loki` exporter
+  # which was removed upstream in v0.99.0+). The wire protocol
+  # is the same OTLP/HTTP protobuf that services use, so the
+  # entire pipeline is uniform.
+  otlphttp/loki:
+    endpoint: http://localhost:3100
+    logs_endpoint: http://localhost:3100/otlp/v1/logs
+    tls:
+      insecure: true
+
+extensions:
+  # health_check: exposes the /status endpoint on the health
+  # extension (default :13133). Required for systemd's
+  # HealthCmd= check. The contrib image v0.110+ requires this
+  # to be opt-in (the legacy implicit health endpoint is gone).
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  telemetry:
+    metrics:
+      # The OTel collector's own counters (otelcol_exporter_sent_log_records,
+      # otelcol_exporter_send_failed_log_records) are exposed on this
+      # address. We use port 18888 (not the default 8888) to avoid
+      # collision with pgadmin on this host.
+      address: 0.0.0.0:18888
+  extensions: [health_check]
+  pipelines:
+    # Only the logs pipeline is wired. Traces + metrics pipelines
+    # are intentionally absent — Hydra services don't push them
+    # yet (the M-Perf / Llama-Engine work may add traces later).
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/log_labels, batch]
+      exporters: [otlphttp/loki]

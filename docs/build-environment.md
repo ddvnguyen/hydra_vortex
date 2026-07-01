@@ -127,31 +127,133 @@ source .venv/bin/activate
 ## C++ — `src/llama-cpp/` (the llama.cpp fork — submodule)
 
 This is a **git submodule**. CMake + GCC + CUDA. See `docs/llama-bench-guide.md`
-for the canonical build commands.
+for the canonical build commands and `docs/combined-reservation-design.md` for
+the COMBINED engine-mode wire-up that ties this binary to the C# Coordinator.
+
+### Build targets
+
+The fork has **two** binaries the Hydra system uses:
+
+- `llama-server` — the standard server (P100, fallback). Accepts all standard
+  common args. Does **not** accept the COMBINED-mode flags
+  (`--rpc-engine`, `--combined-ot-pattern`, `--ggml-rpc-port`) — the
+  `extract_hydra_capability_flags` filter only lives in `llama-engine`.
+- `llama-engine` — drop-in replacement for `llama-server` PLUS the COMBINED
+  engine mode. Used by both the 5060 Ti (head) and the 3060 (peer) on the host.
+  Accepts the same args as `llama-server` plus the hydra flags.
 
 ### Quick reference
 
-| Target | CUDA | Build dir | Output |
-|---|---|---|---|
-| RTX 5060 Ti (sm_120) | 13.2 | `build_sm120/` | `bin/llama-engine` (17 KB launcher) + `lib*.so` (942 MB) |
-| P100 (sm_60) | 12.9 | `build_sm60/` | `bin/llama-server` (63 MB monolithic) |
+| Target | CUDA | Build dir | Output | Notes |
+|---|---|---|---|---|
+| RTX 5060 Ti (sm_120) | 13.2 | `build_sm120_v3/` | `bin/llama-engine` (17 KB launcher) + `lib*.so` (~942 MB) | Head's `n-gpu-layers: all` |
+| RTX 3060 (sm_86)    | 13.2 | `build_sm86/`     | `bin/llama-engine` (10 MB launcher) + `lib*.so` | Peer's `n-gpu-layers: 99` (12 GB VRAM) |
+| FAT sm_86+sm_120    | 13.2 | `build_sm86_sm120/` | One SASS image with both archs (159 MB) | **Preferred** — same binary serves both 5060 Ti + 3060. See cmake below. |
+| P100 (sm_60)        | 12.9 | `build_sm60/`     | `bin/llama-server` (63 MB monolithic) | P100 stays on its own build (separate CUDA 12.9 toolchain) |
 
 ```bash
-# RTX
-cmake -S src/llama-cpp -B src/llama-cpp/build_sm120 \
-  -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON \
-  -DCUDAToolkit_ROOT=/usr/local/cuda-13.2 \
-  -DLLAMA_CUDA_BY_DEFAULT=OFF -DLLAMA_RPC=ON -DLLAMA_SERVER=ON
-cmake --build src/llama-cpp/build_sm120 -j$(nproc) --target llama-server
+# FAT sm_86+sm_120 — one binary, both archs. CMAKE_CUDA_ARCHITECTURES is the
+# magic: cubins for sm_86 (Ampere, RTX 3060) and sm_120a (Blackwell, RTX
+# 5060 Ti) compiled into libggml-cuda.so.0.13.1. Confirmed via
+# `cuobjdump --list-elf` (see PR #373). -DGGML_RPC=ON is required for the
+# COMBINED engine mode (the embedded ggml-RPC backend) — was OFF in the
+# initial fat build; see fork-side issue #376.
+mkdir -p src/llama-cpp/build_sm86_sm120 && cd src/llama-cpp/build_sm86_sm120 && \
+  cmake .. -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=ON \
+    -DGGML_NATIVE=ON \
+    -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_CUDA_FA_ALL_QUANTS=OFF \
+    -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_CUDA_GRAPHS=ON -DGGML_CUDA_NCCL=ON \
+    -DGGML_RPC=ON -DGGML_NVML=ON \
+    -DCMAKE_CUDA_ARCHITECTURES="86;120" \
+    -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 \
+    -DCMAKE_INSTALL_RPATH='$ORIGIN;$ORIGIN/..' && \
+  cmake --build . --config Release -j$(nproc) --target llama-engine
+
+# RTX 5060 Ti only (sm_120) — used as fallback for hosts that don't build
+# the fat binary
+mkdir -p src/llama-cpp/build_sm120_v3 && cd src/llama-cpp/build_sm120_v3 && \
+  cmake .. -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+    -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CUDA_FA=ON \
+    -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_RPC=ON -DGGML_NVML=ON \
+    -DCMAKE_CUDA_ARCHITECTURES="120" \
+    -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 \
+    -DCMAKE_INSTALL_RPATH='$ORIGIN;$ORIGIN/..' && \
+  cmake --build . --config Release -j$(nproc) --target llama-engine
+
+# RTX 3060 only (sm_86) — small build, ~10 min, in case you want a per-arch
+# binary. Same cmake as the fat one but CMAKE_CUDA_ARCHITECTURES="86" alone.
+cd src/llama-cpp && mkdir -p build_sm86 && cd build_sm86 && \
+  cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+    -DGGML_CUDA=ON -DGGML_RPC=ON -DGGML_NVML=ON \
+    -DCMAKE_CUDA_ARCHITECTURES="86" \
+    -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 && \
+  cmake --build . --config Release -j$(nproc) --target llama-engine
 
 # P100 — needs explicit CUDA 12.9 path (CMake cache cross-contamination)
-cmake -S src/llama-cpp -B src/llama-cpp/build_sm60 \
-  -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON \
-  -DCUDAToolkit_ROOT=/usr/local/cuda-12.9 \
-  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc \
-  -DLLAMA_CUDA_BY_DEFAULT=OFF -DLLAMA_RPC=ON -DLLAMA_SERVER=ON
-cmake --build src/llama-cpp/build_sm60 -j$(nproc) --target llama-server
+mkdir -p src/llama-cpp/build_sm60 && cd src/llama-cpp/build_sm60 && \
+  cmake .. -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DGGML_CUDA_FA=ON \
+    -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_RPC=ON -DGGML_NVML=ON \
+    -DCUDAToolkit_ROOT=/opt/software/cuda/12.9 \
+    -DCMAKE_CUDA_COMPILER=/opt/software/cuda/12.9/bin/nvcc \
+    -DCMAKE_INSTALL_RPATH=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/lib \
+    -DCMAKE_BUILD_RPATH=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/lib \
+    -DLLAMA_CUDA_BY_DEFAULT=OFF -DLLAMA_RPC=ON -DLLAMA_SERVER=ON && \
+  cmake --build . --config Release -j$(nproc) --target llama-engine
 ```
+
+### Verifying the fat binary has both archs
+
+```bash
+# Should print alternating ELF files: libggml-cuda.1.sm_86.cubin
+# and libggml-cuda.2.sm_120a.cubin (and so on)
+cuobjdump --list-elf /path/to/build_sm86_sm120/bin/libggml-cuda.so | head
+```
+
+### Verifying the ggml-RPC backend is exposed at runtime
+
+The peer's `node-rtx3060.yaml` has `ggml-rpc-port: 9504`. When the 3060's
+llama-engine is up, you should see:
+```bash
+ss -tlnp | grep 9504
+# LISTEN 0  16  0.0.0.0:9504  *  users:(("llama-engine",...))
+```
+The head's `--ggml-rpc-port 9505` (rtx) stays commented out until #376 lands —
+with it enabled the engine currently crashes at model load inside
+`ggml_backend_rpc_add_server` (libggml-rpc.so offset +0x11183).
+
+### Build-time gates
+
+- `BUILD_SHARED_LIBS=ON` is **mandatory**. The launcher is dynamically linked
+  to `libllama-server-impl.so`, `libllama-common.so`, `libggml*.so`, etc. A
+  static build (`BUILD_SHARED_LIBS=OFF`, e.g. `build_sm120_static/`) hangs in
+  the post-init phase on the 5060 Ti — see #346.
+- `GGML_NATIVE=ON` tunes the build for the host CPU. Cheap, do it.
+- `GGML_CUDA_FORCE_CUBLAS=ON` skips the cuBLASLt path on Ada/Blackwell where
+  it has perf issues with some Q3_K / Q4_K dequant patterns. We want the
+  consistent cuBLAS path.
+- `GGML_CUDA_FA=ON` enables flash-attn. We need it for ctx > 8K.
+- `GGML_CUDA_FA_ALL_QUANTS=OFF` keeps the Q5_K/Q6_K flash-attn kernels
+  disabled (perf is worse for those quants on Blackwell).
+- `GGML_RPC=ON` is required for COMBINED engine mode (peer backend). The
+  initial fat build had it OFF — re-configure + rebuild if you're on
+  `build_sm86_sm120` from before 2026-07-01.
+- `CMAKE_CUDA_ARCHITECTURES="86;120"` for the fat binary. Use `"120"` or
+  `"86"` for the per-arch builds. The `120a` (Blackwell arch-specific) shows
+  up in `cuobjdump` automatically because the toolchain knows.
+
+### Common build failures
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `invalid argument: --rpc-engine` at startup (in llama-server, not llama-engine) | using `llama-server` binary in the head's config; it doesn't have the COMBINED filter | switch `llama.binary` to `llama-engine` (see `infra/hydra-head/config/node-rtx.yaml`) |
+| `RPC backend not available in this build` | forgot `-DGGML_RPC=ON` | reconfigure with `-DGGML_RPC=ON` + rebuild |
+| `nvcc not found` when targeting sm_60 | CMake cache picked up CUDA 13.2 path | delete `build_sm60/CMakeCache.txt` and re-run with `CUDAToolkit_ROOT=/opt/software/cuda/12.9` |
+| `unsupported GNU version 15` | gcc too new for older CUDA | use CUDA 12.9 (P100) or install `gcc-13` and use `CXX=/usr/bin/g++-13` for the build |
+| `BUILD_SHARED_LIBS=OFF` causes `llama-engine` to hang on first request | static build has no libllama-server-impl.so, falls through to a broken code path | set `BUILD_SHARED_LIBS=ON` (default in our cmake calls above) |
 
 ## CUDA toolkit selection
 
