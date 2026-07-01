@@ -10,13 +10,24 @@
 | Service | Lang | Port(s) | Runs on |
 |---|---|---|---|
 | Hydra.Core | C# / .NET 10 | `:9000` (HTTP API), `:9500` (Store RPC), `:9501` (debug/metrics) | host container |
-| llama-server RTX | C++ fork | `:8080` (HTTP), `:9503` (hydra RPC) | host container |
-| llama-server P100 | C++ fork | `:8086` (HTTP), `:9502` (hydra RPC) | **KVM VM** `192.168.122.21` |
+| llama-engine RTX 5060 Ti | C++ fork | `:8080` (HTTP), `:9503` (hydra RPC) | host container (CUDA0) |
+| llama-engine RTX 3060 | C++ fork | `:8081` (HTTP), `:9504` (hydra RPC + ggml-RPC peer for COMBINED) | host container (CUDA1) |
+| llama-engine P100 | C++ fork | `:8086` (HTTP), `:9502` (hydra RPC) | **KVM VM** `192.168.122.21` |
 
-Hydra.Core runs via `infra/docker-compose.hydra.yml` (hydra core, host networking) and
-`infra/docker-compose.infra.yml` (observability stack). The P100 llama-server at
+Hydra.Core runs via `infra/docker-compose.hydra.yml` (hydra core, hydra-head on RTX 5060 Ti,
+hydra-head on RTX 3060, all in the same `pod_hydra-system`) and
+`infra/docker-compose.infra.yml` (observability stack). The P100 llama-engine at
 `192.168.122.21:8086` is reached over the NAT bridge into the VM.
-The KVM VM hosts only the P100 llama-server.
+The KVM VM hosts only the P100 llama-engine.
+
+The 3060 (CUDA1) was added in PR #373 (feat/add-rtx-3060-head). It runs the same
+fat `llama-engine` binary as the 5060 Ti (sm_86+sm_120 SASS image, `cuobjdump`
+confirmed) and exposes its ggml-RPC backend on `:9504` so the 5060 Ti can use
+it as a COMBINED-mode expert-peer. The head's `--rpc-engine` flag is wired
+but commented out in `node-rtx.yaml` because the fork at f1801f524 has a
+runtime crash inside `ggml_backend_rpc_add_server` when both `--rpc-engine`
+and `--ggml-rpc-port` are set on the head (issue #376) — the 3060 stays
+exposed as a peer for when the fork fix lands.
 
 **Protocol rule:** All inter-service traffic between Hydra.Core and llama-servers uses
 direct HTTP (completions) and binary RPC (state ops). Client → Core is HTTP (OpenAI-compat).

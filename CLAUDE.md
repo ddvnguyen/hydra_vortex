@@ -1,10 +1,13 @@
 # Hydra — Claude Handoff
 
 ## What Is This
-Multi-GPU LLM inference system. Routes requests across RTX 5060 Ti and Tesla P100.
-All Hydra services run as containers on the host; Hydra.Core is the single C# binary; only
-llama-server P100 lives in a KVM VM (192.168.122.21:8086). Migrates ~800 MB KV
-cache state between GPUs without re-prefill.
+Multi-GPU LLM inference system. Routes requests across **RTX 5060 Ti** (sm_120,
+host), **RTX 3060** (sm_86, host — added in PR #373), and **Tesla P100** (sm_60,
+KVM VM). All Hydra services run as containers on the host; Hydra.Core is the
+single C# binary; only llama-server P100 lives in a KVM VM (192.168.122.21:8086).
+Migrates ~800 MB KV cache state between GPUs without re-prefill, and the
+2-GPU same-host pair (5060 Ti + 3060) is wired for the COMBINED engine
+mode (expert-split, see "COMBINED engine mode" below).
 
 ## Read These First
 1. `PROJECT_PLAN.md` — vision, structure, milestones (10 min)
@@ -19,41 +22,88 @@ cache state between GPUs without re-prefill.
 ## Architecture
 ```
 Client (HTTP) → Hydra.Core :9000 [C#/.NET 10]
-                    │ HTTP            │ HTTP
-                    ▼                 ▼
-              Hydra Head RTX      Hydra Head P100 [Go]
-              (container)         (VM systemd)
-                   │                    │
-                   ▼                    ▼
-              llama RTX :8080     llama P100 :8086  [C++ fork]
-              + node_exporter     + node_exporter
-              + nvidia_exporter   + nvidia_exporter
-              + promtail          + promtail
-                   │                    │
-                   │ RPC               │ RPC
-                   └───────┬───────────┘
-                           ▼
-                     Store RPC :9500 + tmpfs
-                     /mnt/llm-ram/store/
+                    │ HTTP            │ HTTP                │ HTTP
+                    ▼                 ▼                     ▼
+              Hydra Head RTX      Hydra Head RTX 3060     Hydra Head P100 [Go]
+              (container)         (container)            (VM systemd)
+                   │                    │                     │
+                   ▼                    ▼                     ▼
+              llama RTX :8080     llama RTX 3060 :8081     llama P100 :8086
+              (RTX 5060 Ti,        (RTX 3060, sm_86)        [C++ fork]
+              sm_120)              [C++ fork]
+              [C++ fork]                │                     │
+                   │                   │                     │
+                   ├──── ggml-RPC peer ─┤                     │
+                   │  (rtx3060 exposes  │                     │
+                   │   on :9504 for     │                     │
+                   │   COMBINED mode)   │                     │
+                   │                    │                     │
+                   │ RPC               │ RPC                 │ RPC
+                   └────────┬───────────┴─────────────────────┘
+                            ▼
+                      Store RPC :9500 + tmpfs
+                      /mnt/llm-ram/store/
 ```
+
+The 5060 Ti + 3060 are **same-host** (CUDA0 + CUDA1) and run in the same
+`pod_hydra-system`. The P100 is a **separate KVM VM**. Cross-host RPC
+goes through the Hydra Store on the host; same-host RPC is direct.
 
 ## Language Decisions (FINAL — do not change)
 | Service      | Language  | Reason                                      |
 |--------------|-----------|---------------------------------------------|
 | Hydra.Core   | C# .NET 10| System.IO.Pipelines, Socket.SendFileAsync   |
 | Hydra Head   | Go        | Single binary, process management, OCI pull |
-| llama-server | C++ (fork)| +3 streaming state endpoints only           |
+| llama-engine | C++ (fork)| Same binary as llama-server, +3 streaming state endpoints + COMBINED-mode filter for `--rpc-engine` / `--combined-ot-pattern` / `--ggml-rpc-port` (the COMBINED engine mode is only in `llama-engine`, NOT in `llama-server`) |
 
 ## Critical Facts (POC verified)
 - P100 prefill: 110 tok/s → 80K context = 12 minutes. RTX handles large prefill.
 - P100 decode: 28 tok/s — acceptable.
-- Cross-GPU save/restore: WORKS. cache_n=2964 after restore.
+- RTX 5060 Ti: ~200 tok/s decode (Q3_K-mini 35B-A3B, mmap). SOLO primary.
+- RTX 3060: ~60 tok/s decode (Q3_K-mini 35B-A3B, mmap). SOLO + COMBINED peer.
+- Cross-GPU save/restore: WORKS. cache_n=2964 after restore. P/D split verified
+  end-to-end 2026-07-01 with NIAH-8000: RTX prefill +3590, P100 KV restore +4,
+  P100 decode +119.
 - Prompt-cache reuse: FIXED for qwen35moe via the fork patch (recurrent/hybrid context
   checkpoints, port of ik_llama.cpp#1762). Follow-up turns now reuse cached KV
   (`restored context checkpoint`) instead of full re-prefill — verified live 2026-06-04
   (turn-2 cached_tokens 1229/1251). Was: "SSM truncation BROKEN; --cache-prompt useless."
 - n_tokens MUST be > n_past or cache is nuked. Coordinator must guard this.
 - KV state at 60-80K context: ~800 MB.
+
+## COMBINED engine mode (2-GPU 5060 Ti + 3060)
+
+The same-host pair can act as **one logical engine** for very large requests,
+using the ik/llama.cpp-style expert split — FFN expert tensors route to the
+peer's ggml-RPC backend. The C# side is fully wired; the fork side is partially
+wired and the 2-GPU path is currently blocked by 2 fork-side bugs:
+
+- C#: `MultiEngineRouter.Select` returns a Plan when `estTokens > 4096`,
+  `cfg.CombinedEnabled` is on, and the head advertises combined capability.
+  `workers.json` sets `rtx.role="head"`, `rtx.peer_worker="rtx3060"`,
+  `rtx.combined_capable=true`, `rtx.combined_ot_split="blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"`.
+  Env vars: `HYDRA_LLAMA_ENGINE=true`, `HYDRA_COORD_COMBINED_ENABLED=true`,
+  `HYDRA_COORD_PIPELINE_ENABLED=true`, `HYDRA_COORD_MULTI_ENGINE_POLICY=combined`,
+  `HYDRA_COORD_MULTI_ENGINE_THRESHOLD=4096`.
+- node-rtx3060.yaml: peer exposes `ggml-rpc-port: 9504` on the 3060's llama-engine.
+  Confirmed listening (`ss -tlnp` shows `0.0.0.0:9504`).
+- node-rtx.yaml: the head's `--rpc-engine` / `--ggml-rpc-port` /
+  `--combined-ot-pattern` flags are **commented out** in the config because
+  the fork at bcfdf7755 / f1801f524 crashes at model load when both are set.
+  See issue #376.
+
+When the fork-side bugs land, uncomment the three lines in
+`infra/hydra-head/config/node-rtx.yaml` and the C# side will start driving
+COMBINED end-to-end. Until then, the 5060 Ti falls back to SOLO mode and
+the Coordinator uses the legacy P/D split path (RTX prefill → P100 decode).
+
+Two pre-existing review-findings block the end-to-end exercise:
+- #375 — fork's `INFO` RPC (0x41) does not advertise `combined` / `pipeline`
+  in its capabilities set. C# reads the head's `CombinedCapable` from this
+  set; without `combined` advertised, `MultiEngineRouter` returns null.
+- #376 — fork's `llama_hydra_load_combined_experts` → `ggml_backend_rpc_add_server`
+  asserts inside libggml-rpc.so at +0x11183 when `--rpc-engine` + `--ggml-rpc-port`
+  are both set on the head. Crash at startup, before any HTTP endpoints come up.
 
 ## Hydra Head (Go node agent)
 Replaces the old Agent containers + manual llama-server deployment. Single Go binary per GPU
@@ -78,12 +128,19 @@ Hydra Head owns lifecycle (start/stop/restart/auto-restart with backoff) of:
 Each service is controlled via per-node `services:` YAML config (`enabled`, `binary`, `config`, `port`, `args`).
 
 ### OCI Registry
-llama-server binary pulled from ghcr.io at startup via `crane` library:
-- `ghcr.io/ddvnguyen/llama-server-sm60:69e9835ab` (P100, 62 MB)
-- `ghcr.io/ddvnguyen/llama-server-sm120:69e9835ab` (RTX, 84 MB)
+llama-engine (and llama-server) binary pulled from ghcr.io at startup via `crane`
+library. The same fat binary serves both the RTX 5060 Ti (sm_120a path) and the
+RTX 3060 (sm_86 path) — the 3060 + 5060-Ti in-pod pair share one image:
 
-Built `FROM scratch` with the statically-linked CUDA binary as the single file.
-No more mount-based deploys of `build_sm120/` or `build_sm60/`.
+- `ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine` (RTX 5060 Ti + RTX 3060, fat binary, 159 MB)
+- `ghcr.io/ddvnguyen/llama-server-sm60:5e2de4189-shared` (P100, sm_60, 205 MB)
+
+Built `FROM scratch` with the shared-lib build as the single file.
+The 3060 is configured (via node-rtx3060.yaml) to expose its ggml-RPC
+backend on `:9504` so the 5060 Ti (head) can reach it for COMBINED
+expert-split. No more mount-based deploys of `build_sm120/` / `build_sm60/`
+/ `build_sm86_sm120/` (the bind mount in compose is now the source of truth
+on this host; the OCI image is the fallback for other hosts).
 
 ### Log Separation
 Promtail detects llama-server log patterns (`^\d+\.\d+\.\d+\.\d+\s+[A-Z]\s+`) and labels
@@ -218,9 +275,18 @@ commands are in `DevelopmentRunBook.md`.
 
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host machine, i7-12700K, 64 GB
-- Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM at 192.168.122.21 (llama-server only)
+  (CUDA0 — primary; COMBINED-mode head when activated)
+- RTX 3060 12 GB sm_86, CUDA 13.2 — same host, i7-12700K, 64 GB
+  (CUDA1 — added in PR #373; SOLO decode worker + COMBINED peer of the
+  5060 Ti; exposes its ggml-RPC backend on :9504)
+- Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM at 192.168.122.21
+  (llama-engine only; cross-quant decode peer of the 5060 Ti in the
+  legacy P/D split path; model: Q5_K-balanced 35B-A3B)
 - tmpfs 30 GB at /mnt/llm-ram (compose-managed inside Store container)
-- Model: Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf (qwen35moe arch, MTP spec-decode, vision mmproj)
+- Model: Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf (qwen35moe arch, MTP
+  spec-decode, vision mmproj). Same-host GPUs load the Q3_K-mini quant
+  (12 GB fits on the 3060); P100 loads the Q5_K-balanced quant.
+  Cross-quant P/D split is gated on `HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true`.
 
 ## Monitoring & Observability
 Prometheus + Loki + Grafana + Promtail run as Quadlet systemd user services
@@ -243,10 +309,12 @@ bash scripts/deploy-hydra-head.sh all # deploy hydra-head to both nodes
 - Prometheus: http://localhost:9091
 - Core metrics: http://localhost:9501/metrics
 - Core API metrics: http://localhost:9000/metrics
-- llama RTX metrics: http://localhost:8080/metrics
+- llama RTX 5060 Ti metrics: http://localhost:8080/metrics
+- llama RTX 3060 metrics: http://localhost:8081/metrics
 - Node exporter: http://localhost:9100/metrics
 - GPU exporter: http://localhost:9835/metrics
-- Hydra Head API: http://localhost:9700/status (RTX), http://192.168.122.21:9700/status (P100)
+- Hydra Head API: http://localhost:9700/status (5060 Ti),
+  http://localhost:9701/status (RTX 3060), http://192.168.122.21:9700/status (P100)
 
 ### Logs
 Container logs shipped via containerized Promtail → Loki using Docker service

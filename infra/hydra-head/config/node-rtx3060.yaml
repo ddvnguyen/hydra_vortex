@@ -1,0 +1,112 @@
+# Hydra Head - RTX 3060 Node Configuration
+# Tesla RTX 3060 (sm_86, 12 GB) on the host machine. Sits next to the
+# RTX 5060 Ti (sm_120, 16 GB) and can act as its COMBINED-mode peer —
+# the two GPUs in `workers.json` form a single logical engine that the
+# Coordinator may recruit when a request is too large for one GPU's VRAM
+# budget. Also runs as a SOLO decode worker when free.
+#
+# Uses the same fat llama-server OCI image as the 5060 Ti
+# (sm_86+sm_120 in one binary — see scripts/deploy-hydra-head.sh rtx).
+# The 3060 picks the sm_86 SASS path; the 5060 Ti picks sm_120a.
+
+node:
+  name: rtx3060
+  mode: container
+
+binaries:
+  llama-server:
+    # Fat binary: sm_86 (Ampere, this card) + sm_120a (Blackwell, the
+    # 5060 Ti sitting next door on the same host). Same OCI image as
+    # node-rtx.yaml. Bind-mount from
+    # src/llama-cpp/build_sm86_sm120/bin/ in docker-compose.hydra.yml
+    # shadows the registry pull on this host. OCI source is the
+    # fallback for hosts that don't build the fat binary themselves.
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
+    binary: llama-server
+    dest: /llama/bin/llama-server
+  node_exporter:
+    # Exporter sidecars moved off the host and into the in-container
+    # hydra-head per PR #363. We bind the host's exporter at the
+    # standard port 9100 from the head-rtx container; the 3060 does
+    # not need its own copy (one nvidia exporter per host, one node
+    # exporter per host is enough).
+    source: https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+    binary: node_exporter
+    dest: /opt/hydra/bin/node_exporter
+  nvidia_gpu_exporter:
+    source: https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.2.1/nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz
+    binary: nvidia_gpu_exporter
+    dest: /opt/hydra/bin/nvidia_gpu_exporter
+
+llama:
+  # The 3060 is the COMBINED peer. Like the head (rtx), it uses
+  # llama-engine so it can start its embedded ggml-RPC backend on
+  # :9504 (--ggml-rpc-port below). llama-server doesn't support
+  # --ggml-rpc-port. llama-engine accepts both SOLO and peer modes;
+  # the head (rtx) is the only one that needs --rpc-engine /
+  # --combined-ot-pattern.
+  binary: /llama/bin/llama-engine
+  working_dir: /llama
+  port: 8081                 # 8080 is owned by head-rtx (5060 Ti)
+  rpc_port: 9504             # 9503 is the 5060 Ti's llama RPC; 9504 is the 3060's llama RPC (StateGet/Put)
+  params:
+    # Same direct single-model mode as the 5060 Ti's quick-test config
+    # (no router/preset). 12 GB VRAM only fits the Q3_K-mini 35B-A3B
+    # quant comfortably; the larger Balanced Q5_K is reserved for P100.
+    model: /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
+    chat-template-file: /models/qwen3.6_merged_template.jinja
+
+    # Per-model tuning — same as rtx config, with `n-gpu-layers: 99`
+    # (not `all`) so embedding/output land on CPU. The 3060's 12 GB
+    # VRAM cannot fit the full 35B; partial offload is the right move.
+    n-cpu-moe: 8
+    n-gpu-layers: 99
+    override-tensor: "token_embd\\.weight=CPU,output\\.weight=CPU,output_norm\\.weight=CPU"
+
+    # Context and parallelism — one slot only (12 GB).
+    ctx-size: 320000
+    parallel: 1
+
+    # Sampling — same as rtx
+    temp: 0.86
+    repeat-penalty: 1.06
+    top-k: 20
+    top-p: 0.95
+
+    # Slot management
+    slot-prompt-similarity: 0.4
+
+    # ── COMBINED engine-mode peer wiring (feat/add-rtx-3060-head) ─────
+    # --ggml-rpc-port exposes this peer's ggml RPC backend on :9504.
+    # The head's llama-server (rtx) is configured with --rpc-engine
+    # localhost:9504 in node-rtx.yaml, so when the Coordinator
+    # activates COMBINED mode for a large request, the head reaches
+    # into the 3060's backend to dispatch expert tensors. The peer
+    # itself does NOT need --rpc-engine (it's not a head) and does
+    # NOT need --combined-ot-pattern (only the head enforces the
+    # split).
+    ggml-rpc-port: 9504
+
+  env:
+    # Force this process onto CUDA device 1 (the 3060). 0 is the 5060 Ti.
+    CUDA_VISIBLE_DEVICES: "1"
+    NVIDIA_VISIBLE_DEVICES: "1"
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
+    LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
+
+services:
+  # Exporter sidecars disabled — head-rtx already publishes node_exporter
+  # and nvidia_gpu_exporter on :9100/:9835 on the host's network. A
+  # second copy per host would just scrape the same hardware and
+  # shadow the canonical Prometheus target.
+  promtail:
+    enabled: false
+  node_exporter:
+    enabled: false
+  nvidia_exporter:
+    enabled: false
+
+# Model load for the Q3_K-mini 35B-A3B on the 3060 takes ~20-25 s with
+# mmap. Default max_fails=10 (≈10 min idle budget) is plenty; no
+# override needed.

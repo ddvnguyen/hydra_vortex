@@ -10,8 +10,28 @@
     "prefill_priority": 1,
     "decode_priority": 2,
     "decode_speed_tps": 200,
-    "_comment": "ABLATEST TEST (m-perf ablation): RTX prefill on mini (Q3_K), decode routes to P100 (Q5_K balanced) -- cross-quant KV transfer. HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true bypasses CrossModelGuard. **Output is expected to be garbage** -- this is a measurement run, not a production config. To revert: remove prefill_model_name and set HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=false.",
-    "prefill_model_name": "mini"
+    "role": "head",
+    "peer_worker": "rtx3060",
+    "pipeline_capable": false,
+    "combined_capable": true,
+    "combined_ot_split": "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU",
+    "_comment_rtx": "RTX 5060 Ti (sm_120, 16 GB) on host. Mixed (prefill+decode) primary. COMBINED-mode head: when MultiEngineRouter picks a 2-GPU plan, it borrows rtx3060 as the expert-peer. The combined_ot_split regex is the ik/llama.cpp convention for routing FFN expert tensors to the peer's ggml RPC backend; the actual engine-side wiring is in ddvnguyen/llama.cpp#19/#20. For SOLO requests, rtx runs the Q3_K-mini 35B-A3B on its own (cache_n split 4.5 GB on CUDA0 + 5.0 GB on CUDA1 already proven in the old ablation config; the SOLO path no longer recruits the 3060 unless it's an explicit COMBINED request)."
+  },
+  {
+    "name": "rtx3060",
+    "host": "localhost",
+    "rpc_port": 9603,
+    "llama_rpc_port": 9504,
+    "llama_url": "http://localhost:8081",
+    "worker_type": 3,
+    "slots": 1,
+    "prefill_priority": 3,
+    "decode_priority": 3,
+    "decode_speed_tps": 60,
+    "role": "worker",
+    "pipeline_capable": false,
+    "combined_capable": true,
+    "_comment_rtx3060": "RTX 3060 (sm_86, 12 GB) on host. Mixed (prefill+decode) but lower priority than rtx. Two roles: (a) SOLO — runs its own Q3_K-mini 35B-A3B instance, slower than rtx (~60 tok/s vs ~200 tok/s decode). (b) COMBINED peer — rtx.peer_worker points here, so when a request exceeds MultiEngineThreshold and the engine advertises expert-mode support, this GPU is reserved exclusively for that request. VRAM budget (12 GB) is the limiter; the Q5_K-balanced model does not fit — only the Q3_K-mini can land here."
   },
   {
     "name": "p100",
@@ -24,6 +44,6 @@
     "prefill_priority": 2,
     "decode_priority": 1,
     "decode_speed_tps": 28,
-    "_comment": "P100 llama-server runs in single-model mode (--model /mnt/readonly_data/...gguf), not router mode \u2014 /models/load returns 404. Leave prefill_model_name / decode_model_name / router_model_name UNSET so CoordinatorConfig.LoadWorkers and Router.PrefillModel/DecodeModel return null and the model_load call is skipped (Router.PrefillModel is gated by `if (m != null)` in WorkerSchedulerService.ModelLoadAsync). The cross-model guard checks the P100's slot model_hash against the stored KV's model_hash on restore (since the P100 runs the same model as the RTX, the hashes match \u2192 Proceed). When a Coordinator restart loses the in-memory manifest, the model identity is read from the chunked manifest in the Store (PutManifestAsync writes it alongside n_past / total_size / chunks)."
+    "_comment_p100": "P100 llama-server runs in single-model mode (--model /mnt/readonly_data/...gguf), not router mode — /models/load returns 404. Leave prefill_model_name / decode_model_name / router_model_name UNSET so CoordinatorConfig.LoadWorkers and Router.PrefillModel/DecodeModel return null and the model_load call is skipped (Router.PrefillModel is gated by `if (m != null)` in WorkerSchedulerService.ModelLoadAsync). The cross-model guard checks the P100's slot model_hash against the stored KV's model_hash on restore (since the P100 runs the same model as the RTX, the hashes match → Proceed). When a Coordinator restart loses the in-memory manifest, the model identity is read from the chunked manifest in the Store (PutManifestAsync writes it alongside n_past / total_size / chunks)."
   }
 ]

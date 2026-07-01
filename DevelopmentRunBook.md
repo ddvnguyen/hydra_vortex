@@ -18,21 +18,24 @@ Client (HTTP) → Hydra.Core :9000             [C#/.NET 10 — HTTP API + Store 
             /mnt/llm-ram/store/ (tmpfs, managed by Hydra.Core)
 ```
 
-| Port    | Service       | Lang     | Node  | Purpose                     |
-|---------|---------------|----------|-------|-----------------------------|
-| 9000    | Hydra.Core    | C#       | host  | HTTP API (OpenAI-compat)    |
-| 9500    | Hydra.Core    | C#       | host  | Store RPC (internal)        |
-| 9501    | Hydra.Core    | C#       | host  | Metrics endpoint            |
-| 9700    | Hydra Head    | Go       | RTX   | Head API (/status, /health) |
-| 8080    | llama RTX     | C++      | RTX   | HTTP completions            |
-| 9503    | llama RTX     | C++      | RTX   | hydra RPC (StateGet/Put)    |
-| 9100    | node_exporter | Go       | RTX   | Host metrics                |
-| 9835    | nvidia_exporter | Go    | RTX   | GPU metrics                 |
-| 9700    | Hydra Head    | Go       | P100  | Head API (/status, /health) |
-| 8086    | llama P100    | C++      | P100  | HTTP completions (VM)       |
-| 9502    | llama P100    | C++      | P100  | hydra RPC (StateGet/Put)    |
-| 9100    | node_exporter | Go       | P100  | Host metrics                |
-| 9835    | nvidia_exporter | Go    | P100  | GPU metrics                 |
+| Port    | Service       | Lang     | Node      | Purpose                     |
+|---------|---------------|----------|-----------|-----------------------------|
+| 9000    | Hydra.Core    | C#       | host      | HTTP API (OpenAI-compat)    |
+| 9500    | Hydra.Core    | C#       | host      | Store RPC (internal)        |
+| 9501    | Hydra.Core    | C#       | host      | Metrics endpoint            |
+| 9700    | Hydra Head    | Go       | 5060 Ti   | Head API (/status, /health) |
+| 8080    | llama-engine  | C++      | 5060 Ti   | HTTP completions (RTX)      |
+| 9503    | llama-engine  | C++      | 5060 Ti   | hydra RPC (StateGet/Put)    |
+| 9701    | Hydra Head    | Go       | RTX 3060  | Head API (/status, /health) |
+| 8081    | llama-engine  | C++      | RTX 3060  | HTTP completions (3060)     |
+| 9504    | llama-engine  | C++      | RTX 3060  | hydra RPC + ggml-RPC peer   |
+| 9100    | node_exporter | Go       | host      | Host metrics                |
+| 9835    | nvidia_exporter | Go    | host      | GPU metrics                 |
+| 9700    | Hydra Head    | Go       | P100      | Head API (/status, /health) |
+| 8086    | llama-engine  | C++      | P100      | HTTP completions (VM)       |
+| 9502    | llama-engine  | C++      | P100      | hydra RPC (StateGet/Put)    |
+| 9100    | node_exporter | Go       | P100      | Host metrics                |
+| 9835    | nvidia_exporter | Go    | P100      | GPU metrics                 |
 
 ---
 
@@ -253,9 +256,12 @@ WORK=/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp
 cd $WORK
 ```
 
-#### RTX (Blackwell sm_120, CUDA 13.2)
+#### RTX 5060 Ti + RTX 3060 (fat sm_86+sm_120, CUDA 13.2) — preferred
 
-Built at `/opt/software/cuda/13.2` with GCC 14 via `CMAKE_CUDA_HOST_COMPILER`.
+One SASS image with both archs compiled in. The 5060 Ti (Blackwell, sm_120a)
+and the 3060 (Ampere, sm_86) pick their cubin at load time. Saves the
+per-arch build dance and is the binary that ships in
+`ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine` (159 MB OCI image).
 
 > **Default: shared-lib build (`-DBUILD_SHARED_LIBS=ON`).** Static builds
 > (`-DBUILD_SHARED_LIBS=OFF`) hang in the post-init phase on RTX — see
@@ -264,12 +270,17 @@ Built at `/opt/software/cuda/13.2` with GCC 14 via `CMAKE_CUDA_HOST_COMPILER`.
 
 ```bash
 CUDA_PATH=/opt/software/cuda/13.2
-cmake -B build_sm120_v3 \
-  -DCMAKE_CUDA_ARCHITECTURES="120" \
-  -DCPACK_PACKAGE_NAME="ik-llama-sm120-cuda13.2" \
+cmake -B build_sm86_sm120 \
+  -DCMAKE_CUDA_ARCHITECTURES="86;120" \
+  -DCPACK_PACKAGE_NAME="ik-llama-sm86-sm120-cuda13.2" \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_CUDA_FA=ON \
+  -DGGML_CUDA_FA_ALL_QUANTS=OFF \
+  -DGGML_CUDA_GRAPHS=ON \
+  -DGGML_CUDA_NCCL=ON \
   -DGGML_RPC=ON \
+  -DGGML_NVML=ON \
   -DGGML_NATIVE=ON \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=ON \
@@ -279,11 +290,82 @@ cmake -B build_sm120_v3 \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_BUILD_TESTS=OFF
-cmake --build build_sm120_v3 --target llama-server -j$(nproc)
+cmake --build build_sm86_sm120 --target llama-engine -j$(nproc)
 
 # Sanity check: --version must show [shared]
-build_sm120_v3/bin/llama-server --version
+build_sm86_sm120/bin/llama-engine --version
 # expected: version: <N> (<sha>) [shared]
+
+# Verify both archs are in the embedded cubins
+cuobjdump --list-elf build_sm86_sm120/bin/libggml-cuda.so | head
+# expected: alternating libggml-cuda.N.sm_86.cubin / libggml-cuda.M.sm_120a.cubin
+```
+
+The RTX 5060 Ti head and the RTX 3060 peer both bind-mount
+`build_sm86_sm120/bin/` into their containers (see
+`infra/docker-compose.hydra.yml`). No OCI pull needed on the host.
+
+> **Important:** `bin/llama-engine`, NOT `bin/llama-server`. The
+> COMBINED engine mode (--rpc-engine / --combined-ot-pattern / --ggml-rpc-port
+> flags) is only available in the `llama-engine` binary — it has the
+> `extract_hydra_capability_flags` filter that strips the flags from argv
+> before common arg parsing. `llama-server` rejects them with
+> "invalid argument" at startup.
+
+#### RTX 5060 Ti only (Blackwell sm_120, CUDA 13.2) — fallback for non-fat hosts
+
+```bash
+CUDA_PATH=/opt/software/cuda/13.2
+cmake -B build_sm120_v3 \
+  -DCMAKE_CUDA_ARCHITECTURES="120" \
+  -DCPACK_PACKAGE_NAME="ik-llama-sm120-cuda13.2" \
+  -DGGML_CUDA=ON \
+  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_CUDA_FA=ON \
+  -DGGML_CUDA_FA_ALL_QUANTS=OFF \
+  -DGGML_RPC=ON \
+  -DGGML_NVML=ON \
+  -DGGML_NATIVE=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DCMAKE_BUILD_RPATH='$ORIGIN' \
+  -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+  -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+  -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DLLAMA_BUILD_TESTS=OFF
+cmake --build build_sm120_v3 --target llama-engine -j$(nproc)
+
+# Sanity check: --version must show [shared]
+build_sm120_v3/bin/llama-engine --version
+# expected: version: <N> (<sha>) [shared]
+```
+
+On a host with only this build, the 3060 service still loads the model via
+PTX JIT (slow but functional — see PR #368). For COMBINED mode the 3060's
+`--ggml-rpc-port 9504` requires native sm_86 cubins, which requires
+`CMAKE_CUDA_ARCHITECTURES` to include `86` — i.e. the fat build above.
+
+#### RTX 3060 only (Ampere sm_86, CUDA 13.2) — small build for the 3060-only path
+
+```bash
+CUDA_PATH=/opt/software/cuda/13.2
+cmake -B build_sm86 \
+  -DCMAKE_CUDA_ARCHITECTURES="86" \
+  -DCPACK_PACKAGE_NAME="ik-llama-sm86-cuda13.2" \
+  -DGGML_CUDA=ON \
+  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_RPC=ON \
+  -DGGML_NVML=ON \
+  -DGGML_NATIVE=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DCMAKE_BUILD_RPATH='$ORIGIN' \
+  -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+  -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DLLAMA_BUILD_TESTS=OFF
+cmake --build build_sm86 --target llama-engine -j$(nproc)
 ```
 
 #### P100 (Pascal sm_60, CUDA 12.9)
@@ -319,31 +401,39 @@ build_sm60_v2/bin/llama-server --version
 
 #### Deploy via Hydra Head
 
-llama-server is now deployed via Hydra Head, not manual container/systemd management.
-Hydra Head pulls the llama-server binary from ghcr.io at startup (see OCI Registry in CLAUDE.md).
+llama-engine is now deployed via Hydra Head, not manual container/systemd management.
+Hydra Head pulls the llama-engine binary from ghcr.io at startup (see OCI Registry in CLAUDE.md).
 
 ```bash
-# Deploy Hydra Head to RTX (container with OCI pull)
+# Deploy Hydra Head to RTX 5060 Ti (container with OCI pull)
 bash scripts/deploy-hydra-head.sh rtx
+
+# Deploy Hydra Head to RTX 3060 (same image, second compose service; same pod)
+bash scripts/deploy-hydra-head.sh rtx3060
 
 # Deploy Hydra Head to P100 (systemd + config push)
 bash scripts/deploy-hydra-head.sh p100
 
-# Both nodes
+# All three nodes
 bash scripts/deploy-hydra-head.sh all
 ```
 
-The deploy script handles building the hydra-head binary, building/pushing the container image
-(RTX), copying configs and systemd unit (P100), and restarting services.
+The deploy script handles building the hydra-head binary, building/pushing the container
+image (RTX 5060 Ti and RTX 3060 share one image, `hydra-head:rtx`), copying configs and
+systemd unit (P100), and restarting services.
 
-To push updated llama-server binaries to OCI registry:
+To push updated llama-engine binaries to OCI registry:
 ```bash
-# Build sm60/sm120, then push to ghcr.io
+# Build sm60, then push to ghcr.io
 podman tag localhost/llama-server-sm60 ghcr.io/ddvnguyen/llama-server-sm60:$(git rev-parse --short HEAD)
-podman tag localhost/llama-server-sm120 ghcr.io/ddvnguyen/llama-server-sm120:$(git rev-parse --short HEAD)
 podman push ghcr.io/ddvnguyen/llama-server-sm60:$(git rev-parse --short HEAD)
-podman push ghcr.io/ddvnguyen/llama-server-sm120:$(git rev-parse --short HEAD)
-# Then update the tag in infra/hydra-head/config/node-{rtx,p100}.yaml
+# Then update the tag in infra/hydra-head/config/node-p100.yaml
+
+# Build the FAT sm_86+sm_120 (RTX 5060 Ti + RTX 3060 share this), then push
+podman build -t ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine .  # uses a FROM-scratch Dockerfile
+podman push ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
+# The tag is in infra/hydra-head/config/node-{rtx,rtx3060}.yaml (currently "sm86-sm120-engine";
+# the OCI pull is a fallback — the bind-mount in compose is the source of truth on this host).
 ```
 
 Or, for a quick P100 update that bypasses the OCI pull flow, replace the

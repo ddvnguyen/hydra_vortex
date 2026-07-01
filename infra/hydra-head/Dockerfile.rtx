@@ -52,6 +52,7 @@ COPY bin/hydra-head /usr/local/bin/hydra-head
 # Copy config files
 COPY infra/hydra-head/config/global.yaml /opt/hydra/config/global.yaml
 COPY infra/hydra-head/config/node-rtx.yaml /opt/hydra/config/node-rtx.yaml
+COPY infra/hydra-head/config/node-rtx3060.yaml /opt/hydra/config/node-rtx3060.yaml
 COPY infra/hydra-head/config/preset.ini /opt/hydra/config/preset.ini
 
 # Download the 2 monitoring sidecar binaries (baked into the image so
