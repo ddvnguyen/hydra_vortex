@@ -1,12 +1,18 @@
 name: hydra-infra
 
 # The infra-host pod — Loki, Prometheus, Grafana, Postgres, the
-# Grafana image renderer, Open WebUI, and pgAdmin. The 3 exporters
-# (node-exporter / nvidia_gpu_exporter / promtail) used to live
-# here as host-side systemd services; they were removed in
-# commit 5f2c231 — the in-container hydra-head now manages them
-# as subprocesses. The host promtail-prometheus image
+# Grafana image renderer, Open WebUI, pgAdmin, and the OTel Collector
+# gateway. The 3 exporters (node-exporter / nvidia_gpu_exporter /
+# promtail) used to live here as host-side systemd services; they were
+# removed in commit 5f2c231 — the in-container hydra-head now manages
+# them as subprocesses. The host promtail-prometheus image
 # (`grafana/promtail:3.4`) is no longer used either.
+#
+# The OTel Collector was previously deployed as a Quadlet in
+# infra-host.pod, which died during the 2026-06-30 21:03 unclean
+# shutdown (conmon died, resolv.conf lost). It was moved into this
+# compose file (2026-07-01) so it's co-located with Loki and managed
+# by the same pod lifecycle.
 
 services:
 
@@ -146,6 +152,34 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    labels:
+      component: observability
+    restart: unless-stopped
+
+  # ── OTel Collector gateway (PR #369) ────────────────────────────────────
+  # Receives OTLP/HTTP on :4318 from all Hydra services (C# Hydra.Core,
+  # Go hydra-head + child llama-engine / node_exporter / nvidia_exporter).
+  # Transforms OTel resource attributes to Loki stream labels via the
+  # `transform/log_labels` processor, batches, and forwards to Loki's
+  # native OTLP endpoint at /otlp/v1/logs.
+  #
+  # P100 services reach this collector at http://192.168.122.1:4318
+  # (the RTX host as seen from the KVM VM — the override lives in
+  # infra/hydra-head/config/node-p100.yaml).
+  #
+  # Image pinned to otel/opentelemetry-collector-contrib:0.110.0 because:
+  #   - 0.110.0 retains `service.telemetry.metrics.address` (removed in 0.111+)
+  #   - 0.110.0 still bundles the contrib receivers/processors we use
+  #   - Avoids the "non-reproducible :latest" footgun
+  # The contrib image is `FROM scratch` (no shell, no wget/curl), so a
+  # container-level health check is impossible. The health probe is done
+  # from the host side (see scripts/deploy-hydra-head.sh :13133 probe).
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    network_mode: host
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    command: --config=/etc/otelcol/config.yaml
     labels:
       component: observability
     restart: unless-stopped

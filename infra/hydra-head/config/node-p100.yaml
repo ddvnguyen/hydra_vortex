@@ -5,6 +5,14 @@ node:
   name: p100
   mode: vm
 
+# The P100 VM pushes to the RTX host's OTel Collector gateway.
+# global.yaml has otel.url = http://localhost:4318, but from the
+# VM localhost is the VM itself. 192.168.122.1 is the RTX host
+# (the default gateway / NAT bridge from the KVM VM's perspective).
+infra:
+  otel:
+    url: http://192.168.122.1:4318
+
 binaries:
   llama-server:
     source: ghcr.io/ddvnguyen/llama-server-sm60:f518cff16
