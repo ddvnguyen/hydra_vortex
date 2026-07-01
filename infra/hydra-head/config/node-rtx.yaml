@@ -10,7 +10,14 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm120:f518cff16
+    # Fat binary: sm_86 (3060) + sm_120a (5060 Ti) in one SASS image.
+    # The 5060 Ti picks sm_120a; the 3060 picks sm_86. Same OCI image
+    # used by node-rtx3060.yaml. Bind-mount from
+    # src/llama-cpp/build_sm86_sm120/bin/ in docker-compose.hydra.yml
+    # shadows the registry pull, so the source is the OCI fallback
+    # only — used by hydra-head if the bind mount isn't present
+    # (e.g. on a host that doesn't build the fat binary itself).
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
     binary: llama-server
     dest: /llama/bin/llama-server
   node_exporter:

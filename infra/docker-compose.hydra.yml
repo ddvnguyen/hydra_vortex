@@ -98,9 +98,17 @@ services:
     # so a `command: ["/bin/sh", "-c", "mkdir -m 777 …"]` would
     # never run. The shell wrapper below REPLACES the dotnet
     # entrypoint, runs the mkdir, then `exec`s into dotnet.
-    entrypoint: ["/bin/sh", "-c", "mkdir -m 777 -p \"$${HYDRA_STORE_BACKUP_DIR}/chunks\" && exec dotnet Hydra.Core.dll"]
+    #
+    # The three `/mnt/llm-ram/...` mkdirs are critical: the C# Store
+    # code expects these subdirectories to exist and fails fast
+    # otherwise. They must be mode 777 because the in-container process
+    # is a subuid (typically 100999, not 1000) on rootless podman —
+    # the default tmpfs mount-point mode 755 is not writable by a
+    # subuid. `mode=1777` makes the mount point world-writable, and
+    # the mkdir -m 777 sets the subdirs the C# code needs.
+    entrypoint: ["/bin/sh", "-c", "mkdir -m 777 -p \"$${HYDRA_STORE_BACKUP_DIR}/chunks\" \"$${HYDRA_STORE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_L1_DIR}\" && exec dotnet Hydra.Core.dll"]
     tmpfs:
-      - /mnt/llm-ram:size=30G
+      - /mnt/llm-ram:size=30G,mode=1777
     volumes:
       - ./hydra-core/config:/etc/hydra/config:ro
       - /mnt/SSD/hydra-backup:/mnt/SSD/hydra-backup:rw
@@ -120,6 +128,17 @@ services:
       - HYDRA_COORD_WARM_THRESHOLD=5120
       - HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers.json
       - HYDRA_COORD_ENABLE_CHUNKS=true
+      # ── Two-engine "work together" engine mode ────────────────────────
+      # The COMBINED engine-mode lets the head (rtx, sm_120) borrow the
+      # peer GPU (rtx3060, sm_86) as an expert-tensor peer. Both GPUs
+      # form one logical engine for very large requests (>4096 tokens).
+      # See docs/combined-reservation-design.md and the Llama-Engine
+      # milestone for the design.
+      - HYDRA_LLAMA_ENGINE=true
+      - HYDRA_COORD_PIPELINE_ENABLED=true
+      - HYDRA_COORD_COMBINED_ENABLED=true
+      - HYDRA_COORD_MULTI_ENGINE_POLICY=combined
+      - HYDRA_COORD_MULTI_ENGINE_THRESHOLD=4096
       - HYDRA_STORE_CHUNK_SIZE=8192
       # Per-service OTel log push (#363). Hydra.Core pushes
       # OTLP/HTTP to the OTel Collector on the host (port 4318
@@ -185,7 +204,14 @@ services:
       # launcher can find lib*.so next to it via $ORIGIN RUNPATH. The static
       # build (BUILD_SHARED_LIBS=OFF, e.g. build_sm120_static) hangs in the
       # post-init phase on RTX — see ddvnguyen/hydra_vortex#346.
-      - ../src/llama-cpp/build_sm120_v3/bin/:/llama/bin/:ro
+      #
+      # As of feat/add-rtx-3060-head, the FAT sm_86+sm_120 build at
+      # `build_sm86_sm120/bin/` is the canonical source. The 5060 Ti
+      # picks the sm_120a cubin; the 3060 (in `head-rtx3060` below)
+      # picks sm_86. The legacy `build_sm120_v3/bin/` is kept as a
+      # fallback only — it has only sm_120a so the 3060 would
+      # PTX-JIT from it (slow path).
+      - ../src/llama-cpp/build_sm86_sm120/bin/:/llama/bin/:ro
       # ghcr.io creds for in-container pulls
       - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
       # Host filesystem for node_exporter to read host /proc, /sys, /
@@ -213,4 +239,69 @@ services:
     labels:
       component: hydra-head
       node: rtx
+    restart: always
+
+  # ── Hydra Head (RTX 3060): second Go agent on the same host ────────
+  # Manages a second llama-server subprocess on CUDA device 1 (the
+  # RTX 3060; device 0 is the 5060 Ti owned by `head-rtx` above).
+  # The 3060 sits in the COMBINED-mode peer pool of the 5060 Ti — see
+  # `workers.json` and `node-rtx3060.yaml`. Runs as a SOLO decode
+  # worker when not peer-reserved.
+  #
+  # Image is the same `hydra-head:rtx` image built by
+  # `scripts/deploy-hydra-head.sh rtx` (or a parallel `:rtx3060` tag
+  # — see the deploy script). The compose `command:` below points the
+  # binary at the rtx3060 node config + the unique api-port :9701.
+  head-rtx3060:
+    image: localhost/hydra-head:rtx
+    network_mode: host
+    user: "1000:1000"
+    devices:
+      # Single GPU: the 3060. `nvidia.com/gpu=all` would let
+      # the container see both devices; we restrict to 1 so the
+      # 3060 doesn't accidentally pick up 5060 Ti jobs.
+      - nvidia.com/gpu=1
+    depends_on:
+      - core
+    command:
+      - -global
+      - /opt/hydra/config/global.yaml
+      - -node
+      - /opt/hydra/config/node-rtx3060.yaml
+      - -api-port
+      - "9701"
+    volumes:
+      # Model + KV slot data (shared with head-rtx via the same bind)
+      - /mnt/SSD:/models:ro
+      # Configs (rtx3060-specific, baked in by the deploy script's
+      # `podman build` step which copies node-rtx3060.yaml into the
+      # image; the host bind-mount below shadows that copy with the
+      # latest on-disk version, same as head-rtx.)
+      - ./hydra-head/config:/opt/hydra/config:ro
+      # Pre-built FAT llama-server binary (sm_86+sm_120). Same bind as
+      # head-rtx so the OCI pull from ghcr.io only needs to happen
+      # once per host. Must be the shared-lib build (BUILD_SHARED_LIBS=ON).
+      - ../src/llama-cpp/build_sm86_sm120/bin/:/llama/bin/:ro
+      # ghcr.io creds for in-container pulls
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
+      # Same host mounts head-rtx uses (for consistency, even though
+      # this container's services.*.enabled is all false).
+      - /mnt/containers/:/mnt/containers/:ro
+    environment:
+      - HYDRA_HEAD_AUTH_TOKEN=${HYDRA_HEAD_AUTH_TOKEN:?must export HYDRA_HEAD_AUTH_TOKEN}
+      - REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json
+      # Pin to GPU 1 inside the container — defence in depth on top
+      # of `nvidia.com/gpu=1` above (in case CDI/driver changes the
+      # device ordering).
+      - NVIDIA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9701/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    labels:
+      component: hydra-head
+      node: rtx3060
     restart: always

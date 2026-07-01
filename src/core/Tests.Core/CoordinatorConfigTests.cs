@@ -328,13 +328,19 @@ public sealed class CoordinatorConfigTests
             Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", null);
 
             var workers = CoordinatorConfig.LoadWorkers();
-            Assert.Equal(2, workers.Count);
+            Assert.Equal(3, workers.Count);
 
             var rtx = workers.Single(w => w.Name == "rtx");
             Assert.Equal(3, rtx.WorkerType);
             Assert.Null(rtx.RouterModelName);
             Assert.Null(rtx.PrefillModelName);
             Assert.Null(rtx.DecodeModelName);
+
+            var rtx3060 = workers.Single(w => w.Name == "rtx3060");
+            Assert.Equal(3, rtx3060.WorkerType);
+            Assert.Null(rtx3060.RouterModelName);
+            Assert.Null(rtx3060.PrefillModelName);
+            Assert.Null(rtx3060.DecodeModelName);
 
             var p100 = workers.Single(w => w.Name == "p100");
             Assert.Equal(2, p100.WorkerType);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy Hydra Head to GPU nodes
-# Usage: bash scripts/deploy-hydra-head.sh [rtx|p100|all]
+# Usage: bash scripts/deploy-hydra-head.sh [rtx|p100|rtx3060|all]
 #
 # RTX path (since #322 / PR #328):
 #   - Build Go binary + container image
@@ -10,6 +10,16 @@
 #     ctr.log directly, no socat proxy needed).
 #   - The compose file is the source of truth for mount paths,
 #     env vars, health checks, and resource limits.
+#
+# RTX 3060 path (since feat/add-rtx-3060-head):
+#   - Same Go binary and same `hydra-head:rtx` image (the compose's
+#     `head-rtx3060` service bind-mounts the rtx3060 node config and
+#     sets `CUDA_VISIBLE_DEVICES=1` + `nvidia.com/gpu=1`).
+#   - The fat sm_86+sm_120 llama-server binary at
+#     `src/llama-cpp/build_sm86_sm120/bin/` is bind-mounted into the
+#     container; the 3060 picks the sm_86 SASS path.
+#   - `deploy_rtx` already builds the image; this path only ensures
+#     the build dir exists and the image is current.
 #
 # P100 path (still uses systemd, not in compose):
 #   - rsync binary + configs to hydra-p100
@@ -98,6 +108,22 @@ check_llama_build_type_local() {
   step "Build-type gate (RTX local binary)"
   bash "$REPO_ROOT/scripts/ci/check-build-type.sh" "$bind_src" || \
     die "RTX llama-server is a static build; would hang in post-init. Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
+}
+
+# Check the FAT sm_86+sm_120 binary used by both head-rtx (5060 Ti)
+# and head-rtx3060 in the same pod. Same build-type rules: shared-lib
+# only, no static (see #346). Falls back to build_sm120_v3 (sm_120 only)
+# so a deploy still works if the fat build hasn't been done yet — the
+# 3060 will then run via PTX JIT (slow but functional, see #368).
+check_llama_build_type_local_fat() {
+  local bind_src="$REPO_ROOT/src/llama-cpp/build_sm86_sm120/bin/llama-server"
+  if [ ! -x "$bind_src" ]; then
+    warn "Fat sm_86+sm_120 build not present at $bind_src; falling back to sm_120-only at build_sm120_v3/. RTX 3060 will run via PTX JIT (slower)."
+    return 0
+  fi
+  step "Build-type gate (RTX fat binary)"
+  bash "$REPO_ROOT/scripts/ci/check-build-type.sh" "$bind_src" || \
+    die "Fat llama-server is a static build. Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
 }
 
 check_llama_build_type_p100() {
@@ -296,20 +322,75 @@ deploy_p100() {
   fi
 }
 
+# ── Deploy: RTX 3060 via compose (same pod, second service) ──────────────
+# The `head-rtx3060` service is a sibling of `head-rtx` in the same
+# `pod_hydra-system`. It reuses the `hydra-head:rtx` image; the
+# compose `command:` points it at node-rtx3060.yaml and api-port
+# 9701, and `nvidia.com/gpu=1` + `CUDA_VISIBLE_DEVICES=1` restrict
+# it to the 3060. So `deploy_rtx3060` is mostly a verification +
+# re-up step — the image was already built by `deploy_rtx`.
+deploy_rtx3060() {
+  step "Verifying RTX 3060 (same image as RTX, second compose service)"
+
+  build_go
+  generate_token
+  AUTH_TOKEN=$(get_token)
+  build_rtx_image
+  stop_host_sidecars
+  check_auth_file
+  check_llama_build_type_local_fat
+
+  # Ensure the bind mount source (the FAT sm_86+sm_120 build dir) exists.
+  if [ ! -x "$REPO_ROOT/src/llama-cpp/build_sm86_sm120/bin/llama-server" ]; then
+    warn "FAT sm_86+sm_120 build not at $REPO_ROOT/src/llama-cpp/build_sm86_sm120/bin/llama-server. The 3060 service will still start; it will PTX-JIT from the sm_120-only binary at build_sm120_v3. See feat/add-rtx-3060-head for the build command."
+  fi
+
+  # Drop a pre-compose standalone container if it exists.
+  if podman container exists hydra-system_head-rtx3060_1 2>/dev/null; then
+    podman stop hydra-system_head-rtx3060_1 2>/dev/null || true
+    podman rm hydra-system_head-rtx3060_1 2>/dev/null || true
+  fi
+
+  # Deploy. `podman compose up` is idempotent — it'll (re)create only
+  # the services whose config or image hash changed.
+  export HYDRA_HEAD_AUTH_TOKEN
+  if ! podman compose -f infra/docker-compose.hydra.yml up -d 2>&1 | tail -10; then
+    die "podman compose up failed (rtx3060 path) — check the output above. Common cause: image not built (run deploy_rtx first)."
+  fi
+  ok "Compose up: core + head-rtx + head-rtx3060 in pod hydra-system"
+
+  # Wait for the 3060 head to come up on :9701
+  step "Waiting for head-rtx3060 health on :9701"
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    sleep 3
+    if curl -sf http://localhost:9701/health >/dev/null 2>&1; then
+      ok "head-rtx3060 (:9701) is healthy"
+      break
+    fi
+    if [ "$i" = "15" ]; then
+      warn "head-rtx3060 :9701 not yet green after 45s — check `podman logs hydra-system_head-rtx3060_1`"
+    fi
+  done
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 case "$TARGET" in
   rtx)
     deploy_rtx
+    ;;
+  rtx3060)
+    deploy_rtx3060
     ;;
   p100)
     deploy_p100
     ;;
   all)
     deploy_rtx
+    deploy_rtx3060
     deploy_p100
     ;;
   *)
-    die "Unknown target: $TARGET (expected: rtx, p100, all)"
+    die "Unknown target: $TARGET (expected: rtx, rtx3060, p100, all)"
     ;;
 esac
 
@@ -318,6 +399,7 @@ echo -e "${GREEN}${BOLD}Hydra Head deployed successfully.${NC}"
 echo ""
 echo "  RTX Core API:  http://localhost:9000/health"
 echo "  RTX Head API:  http://localhost:9700/status"
+echo "  RTX 3060 Head: http://localhost:9701/status"
 echo "  P100 Head API: http://192.168.122.21:9700/status"
 echo ""
 echo "  Auth token: $TOKEN_FILE"
