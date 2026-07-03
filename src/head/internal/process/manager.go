@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -254,6 +255,41 @@ func (m *Manager) StartLlama() error {
 
 	// Set up the exec.Cmd outside any lock (exec.Command is safe to call).
 	args := m.cfg.BuildLlamaArgs()
+
+	// Hydra #383 T4: fit preflight. If --peer-only, skip (no model to check).
+	if !m.cfg.IsPeerOnly() && m.cfg.Llama.Binary != "" {
+		fitBin := filepath.Join(filepath.Dir(m.cfg.Llama.Binary), "llama-fit-params")
+		if _, err := os.Stat(fitBin); err == nil {
+			fitArgs := args
+			// Strip Hydra/RPC-specific flags that llama-fit-params doesn't understand.
+			var filtered []string
+			for _, a := range fitArgs {
+				if a == "--rpc-engine" || a == "--peer-only" || a == "--combined-split-mode" ||
+					a == "--combined-tensor-split" || a == "--ggml-rpc-port" || a == "--rpc-port" {
+					continue
+				}
+				filtered = append(filtered, a)
+			}
+			fitCmd := exec.Command(fitBin, filtered...)
+			fitCmd.Env = os.Environ()
+			for k, v := range m.cfg.Llama.Env {
+				fitCmd.Env = append(fitCmd.Env, fmt.Sprintf("%s=%s", k, v))
+			}
+			if out, err := fitCmd.CombinedOutput(); err != nil {
+				m.mu.Lock()
+				if proc, ok := m.processes["llama"]; ok {
+					proc.mu.Lock()
+					proc.state = StateStopped
+					proc.lastError = fmt.Sprintf("fit preflight failed: %s", string(out))
+					proc.mu.Unlock()
+					close(proc.done)
+				}
+				m.mu.Unlock()
+				return fmt.Errorf("fit preflight failed: %s: %s", err, string(out))
+			}
+		}
+	}
+
 	cmd := exec.Command(m.cfg.Llama.Binary, args...)
 	cmd.Dir = m.cfg.Llama.WorkingDir
 

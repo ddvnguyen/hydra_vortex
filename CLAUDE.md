@@ -73,37 +73,44 @@ goes through the Hydra Store on the host; same-host RPC is direct.
 
 ## COMBINED engine mode (2-GPU 5060 Ti + 3060)
 
-The same-host pair can act as **one logical engine** for very large requests,
-using the ik/llama.cpp-style expert split — FFN expert tensors route to the
-peer's ggml-RPC backend. The C# side is fully wired; the fork side is partially
-wired and the 2-GPU path is currently blocked by 2 fork-side bugs:
+The same-host pair can act as **one logical engine** in two modes:
+
+### COMBINED-OT (expert-split, 35B MoE profile)
+FFN expert tensors route to the peer's ggml-RPC backend using `--combined-ot-pattern`.
+Used by the MoE profile (default). Requires the 3060 to load the model with partial
+CPU offload.
 
 - C#: `MultiEngineRouter.Select` returns a Plan when `estTokens > 4096`,
   `cfg.CombinedEnabled` is on, and the head advertises combined capability.
   `workers.json` sets `rtx.role="head"`, `rtx.peer_worker="rtx3060"`,
   `rtx.combined_capable=true`, `rtx.combined_ot_split="blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"`.
-  Env vars: `HYDRA_LLAMA_ENGINE=true`, `HYDRA_COORD_COMBINED_ENABLED=true`,
+- Env vars: `HYDRA_LLAMA_ENGINE=true`, `HYDRA_COORD_COMBINED_ENABLED=true`,
   `HYDRA_COORD_PIPELINE_ENABLED=true`, `HYDRA_COORD_MULTI_ENGINE_POLICY=combined`,
   `HYDRA_COORD_MULTI_ENGINE_THRESHOLD=4096`.
-- node-rtx3060.yaml: peer exposes `ggml-rpc-port: 9504` on the 3060's llama-engine.
-  Confirmed listening (`ss -tlnp` shows `0.0.0.0:9504`).
-- node-rtx.yaml: the head's `--rpc-engine` / `--ggml-rpc-port` /
-  `--combined-ot-pattern` flags are **commented out** in the config because
-  the fork at bcfdf7755 / f1801f524 crashes at model load when both are set.
-  See issue #376.
 
-When the fork-side bugs land, uncomment the three lines in
-`infra/hydra-head/config/node-rtx.yaml` and the C# side will start driving
-COMBINED end-to-end. Until then, the 5060 Ti falls back to SOLO mode and
-the Coordinator uses the legacy P/D split path (RTX prefill → P100 decode).
+### COMBINED-static (layer-split, Dense profile)
+New in #383. Uses `--combined-split-mode layer` + `--combined-tensor-split r0/r1`
+to register the peer RPC device BEFORE model load. The stock tensor_split allocator
+places whole layers on one device, avoiding recurrent-layer state corruption across
+the RPC boundary.
 
-Two pre-existing review-findings block the end-to-end exercise:
-- #375 — fork's `INFO` RPC (0x41) does not advertise `combined` / `pipeline`
-  in its capabilities set. C# reads the head's `CombinedCapable` from this
-  set; without `combined` advertised, `MultiEngineRouter` returns null.
-- #376 — fork's `llama_hydra_load_combined_experts` → `ggml_backend_rpc_add_server`
-  asserts inside libggml-rpc.so at +0x11183 when `--rpc-engine` + `--ggml-rpc-port`
-  are both set on the head. Crash at startup, before any HTTP endpoints come up.
+- Peer (3060): `--peer-only` mode — no model, just GPU backend + HTTP health
+- Head (5060 Ti): `--combined-split-mode layer --combined-tensor-split 21/44`
+- Every request uses COMBINED (threshold=0 via `HYDRA_COORD_MULTI_ENGINE_THRESHOLD=0`)
+- Profile switching: `bash scripts/set-profile.sh {moe|dense}`
+
+### Profiles
+Two profiles can be switched via env vars or the helper script:
+
+| Profile | Model | Routing | 3060 role |
+|---------|-------|---------|-----------|
+| **moe** | Qwopus3.6-MoE-35B-A3B-v1-APEX-I-Mini | COMBINED-OT + P/D split | Peer with model (partial CPU offload) |
+| **dense** | Qwopus3.6-Dense-27B-Coder-Compat-MTP | COMBINED-static layer-split | `--peer-only` backend (no model) |
+
+Profile files:
+- `.env-moe` / `.env-dense` — environment profiles
+- `infra/hydra-head/config/node-rtx.yaml` / `node-rtx-27b.yaml` — head configs
+- `infra/hydra-core/config/workers.json` / `workers-27b.json` — worker configs
 
 ## Hydra Head (Go node agent)
 Replaces the old Agent containers + manual llama-server deployment. Single Go binary per GPU

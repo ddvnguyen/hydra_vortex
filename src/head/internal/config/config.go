@@ -355,7 +355,7 @@ func (c *Config) LogLlamaConfig(logger *slog.Logger) {
 }
 
 // Hydra #383 T3: check if peer-only mode (no model loaded).
-func (c *Config) isPeerOnly() bool {
+func (c *Config) IsPeerOnly() bool {
 	v, ok := c.Llama.Params["peer-only"]
 	if !ok {
 		return false
@@ -376,7 +376,7 @@ func (c *Config) Validate() error {
 	}
 	if c.Llama.RPCPort == 0 {
 		// Peer-only mode has no model, so no Hydra RPC for KV state.
-		if !c.isPeerOnly() {
+		if !c.IsPeerOnly() {
 			return fmt.Errorf("llama.rpc_port is required")
 		}
 	}
@@ -397,6 +397,29 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+
+	// Hydra #383 T3: reject list-param values (must be scalar).
+	for key, val := range c.Llama.Params {
+		switch val.(type) {
+		case []any, []string:
+			return fmt.Errorf("llama.params.%s: list/array values are not supported — use scalar values", key)
+		}
+	}
+
+	// Hydra #383 T3: reject incompatible param combinations.
+	splitMode, hasSplit := c.Llama.Params["combined-split-mode"]
+	if hasSplit {
+		sm, _ := splitMode.(string)
+		if sm == "layer" {
+			if _, hasOT := c.Llama.Params["combined-ot-pattern"]; hasOT {
+				return fmt.Errorf("llama.params: combined-split-mode=layer is incompatible with combined-ot-pattern (use combined-tensor-split instead)")
+			}
+			if _, hasSplit := c.Llama.Params["combined-tensor-split"]; !hasSplit {
+				return fmt.Errorf("llama.params: combined-split-mode=layer requires combined-tensor-split")
+			}
+		}
+	}
+
 	return nil
 }
 

@@ -139,3 +139,8 @@ later.
   engine-lock-coverage approach as the primary resolution for #21 (the lock work
   is retained only as a backstop). Tracked alongside the Llama-Engine — P/D split
   mix-quant milestone.
+- **COMBINED-static (Dense profile, #383):** The 3060 runs `--peer-only` (0 slots,
+  always exclusively reserved). The 5060 Ti registers the 3060's CUDA backend
+  before model load via `ggml_backend_rpc_add_server` + `tensor_split`. The stock
+  allocator places whole layers on one device, avoiding SSM-truncation corruptions
+  across the RPC boundary.
