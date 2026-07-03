@@ -354,6 +354,16 @@ func (c *Config) LogLlamaConfig(logger *slog.Logger) {
 	logger.LogAttrs(nil, slog.LevelInfo, "llama params (merged: global + node)", attrs...)
 }
 
+// Hydra #383 T3: check if peer-only mode (no model loaded).
+func (c *Config) isPeerOnly() bool {
+	v, ok := c.Llama.Params["peer-only"]
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
+}
+
 func (c *Config) Validate() error {
 	if c.Node.Name == "" {
 		return fmt.Errorf("node.name is required")
@@ -365,7 +375,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("llama.port is required")
 	}
 	if c.Llama.RPCPort == 0 {
-		return fmt.Errorf("llama.rpc_port is required")
+		// Peer-only mode has no model, so no Hydra RPC for KV state.
+		if !c.isPeerOnly() {
+			return fmt.Errorf("llama.rpc_port is required")
+		}
 	}
 	if c.Health.MaxFails < 0 {
 		return fmt.Errorf("health.max_fails must be >= 0, got %d", c.Health.MaxFails)
@@ -375,6 +388,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Health.IntervalBusySec < 0 {
 		return fmt.Errorf("health.interval_busy_sec must be >= 0, got %d", c.Health.IntervalBusySec)
+	}
+	// Hydra #383 T3: peer-only mode requires --ggml-rpc-port.
+	if v, ok := c.Llama.Params["peer-only"]; ok {
+		if isTrue, _ := v.(bool); isTrue {
+			if _, hasPort := c.Llama.Params["ggml-rpc-port"]; !hasPort {
+				return fmt.Errorf("llama.params.peer-only: --ggml-rpc-port is required")
+			}
+		}
 	}
 	return nil
 }

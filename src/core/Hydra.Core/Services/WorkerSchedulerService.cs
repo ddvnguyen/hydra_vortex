@@ -852,8 +852,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		CoordinatorMetrics.RequestsTotalAll.Inc();
 		CoordinatorMetrics.ColdSessionStarts.Inc();
 		CoordinatorMetrics.MultiEngineAttempts.WithLabels(plan.Head.Name, modeStr).Inc();
-		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} Split={Split} Est={Est}",
-			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name, plan.OtSplit, item.EstimatedTokens);
+		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} PeerRunType={PRT} Split={Split} Est={Est}",
+			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name, plan.Peer.RunType, plan.OtSplit, item.EstimatedTokens);
 		return true;
 	}
 

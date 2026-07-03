@@ -89,7 +89,6 @@ llama:
 
   env:
     # Force this process onto CUDA device 1 (the 3060). 0 is the 5060 Ti.
-    CUDA_VISIBLE_DEVICES: "1"
     NVIDIA_VISIBLE_DEVICES: "1"
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64

@@ -39,9 +39,16 @@ public sealed record WorkerConfig
 	public bool PipelineCapable { get; init; }
 	public bool CombinedCapable { get; init; }
 
+	// Hydra #383 T5: run_type for mode-specific scheduling semantics.
+	// "solo" (default) | "combined-static" | "combined-static-peer" |
+	// "combined-ot" | "pipeline" | "pd-split"
+	public string RunType { get; init; } = "solo";
+
 	public bool CanPrefill => (WorkerType & 1) != 0;
 	public bool CanDecode => (WorkerType & 2) != 0;
 	public bool IsHead => string.Equals(Role, "head", StringComparison.OrdinalIgnoreCase);
+	public bool IsCombinedStatic => string.Equals(RunType, "combined-static", StringComparison.OrdinalIgnoreCase);
+	public bool IsCombinedStaticPeer => string.Equals(RunType, "combined-static-peer", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>

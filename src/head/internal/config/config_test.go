@@ -172,6 +172,46 @@ func TestBuildLlamaArgs(t *testing.T) {
 	}
 }
 
+// Hydra #383 T3: golden-args test for the 27B peer-only config.
+func TestBuildLlamaArgs_PeerOnly27B(t *testing.T) {
+	cfg := Config{
+		Llama: LlamaConfig{
+			Binary:     "/llama/bin/llama-engine",
+			WorkingDir: "/llama",
+			Host:       "0.0.0.0",
+			Port:       8081,
+			RPCPort:    0,
+			Params: map[string]any{
+				"peer-only":     true,
+				"ggml-rpc-port": 9506,
+			},
+			Env: map[string]string{
+				"NVIDIA_VISIBLE_DEVICES":    "1",
+				"NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+			},
+		},
+	}
+	args := cfg.BuildLlamaArgs()
+
+	expected := []string{
+		"--host", "0.0.0.0",
+		"--port", "8081",
+		"--rpc-port", "0",
+		"--ggml-rpc-port", "9506",
+		"--peer-only",
+	}
+	if len(args) != len(expected) {
+		t.Errorf("args length: got %d, want %d\n  got:  %v\n  want: %v",
+			len(args), len(expected), args, expected)
+	}
+	for i := range expected {
+		if i >= len(args) || args[i] != expected[i] {
+			t.Errorf("args[%d]: got %q, want %q\n  full got:  %v\n  full want: %v",
+				i, args[i], expected[i], args, expected)
+		}
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
