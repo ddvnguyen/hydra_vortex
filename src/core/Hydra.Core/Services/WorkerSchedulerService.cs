@@ -2287,6 +2287,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status={status}"
 		);
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
+			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			item.TraceId, item.SessionId,
+			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
+			RouteLabel(item),
+			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
+			prefillModel, decodeModel,
+			item.Phases.GetValueOrDefault("prefill_ms"), saveKvMs,
+			saveKvRpcMs, saveKvStoreMs,
+			item.Phases.GetValueOrDefault("restore_kv_ms"),
+			item.Phases.GetValueOrDefault("decode_ms"),
+			item.TokensIn, item.TokensOut, item.KvBytes,
+			item.PrefixCacheHit ? "true" : "false", status);
 	}
 
 	private void EmitTimeline(WorkItem item)
@@ -2324,6 +2337,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status=done"
 		);
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status=done",
+			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			item.TraceId, item.SessionId,
+			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
+			RouteLabel(item),
+			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
+			prefillModel, decodeModel,
+			item.Phases.GetValueOrDefault("prefill_ms"), saveKvMs,
+			saveKvRpcMs, saveKvStoreMs,
+			item.Phases.GetValueOrDefault("restore_kv_ms"),
+			item.Phases.GetValueOrDefault("decode_ms"),
+			item.Phases.GetValueOrDefault("total_ms"),
+			item.TokensIn, item.TokensOut, item.KvBytes,
+			item.PrefixCacheHit ? "true" : "false");
 	}
 
 	// ── Core KV save helpers (shared by SaveKvAsync + eviction sites) ──
