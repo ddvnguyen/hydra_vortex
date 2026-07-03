@@ -25,6 +25,7 @@ public class ModelsController : ControllerBase
 }
 
 [ApiController]
+[Produces("application/json", "text/event-stream")]
 public class CompletionsController : ControllerBase
 {
 	static JsonSerializerOptions _jsonOpts = new() { PropertyNameCaseInsensitive = true };
