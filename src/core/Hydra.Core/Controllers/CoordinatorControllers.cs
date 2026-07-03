@@ -39,24 +39,16 @@ public class CompletionsController : ControllerBase
 		Dictionary<string, object>? body;
 		try
 		{
-			var contentLength = Request.ContentLength ?? 0;
-			if (contentLength is <= 0 or > 1_048_576) // max 1 MiB
+			// Read body using StreamReader which handles both Content-Length
+			// and chunked transfer encoding (used by opencode's AI SDK).
+			using var reader = new StreamReader(Request.Body, Encoding.UTF8);
+			var json = await reader.ReadToEndAsync(ct);
+			if (string.IsNullOrWhiteSpace(json) || json.Length > 1_048_576)
 			{
-				return contentLength <= 0
+				return string.IsNullOrWhiteSpace(json)
 					? BadRequest(new { error = "Empty request body" })
 					: BadRequest(new { error = "Request body too large" });
 			}
-
-			// Read exactly Content-Length bytes — ReadToEndAsync hangs on keep-alive
-			var buf = new byte[contentLength];
-			var offset = 0;
-			while (offset < contentLength)
-			{
-				var n = await Request.Body.ReadAsync(buf, offset, (int)(contentLength - offset), ct);
-				if (n == 0) break;
-				offset += n;
-			}
-			var json = Encoding.UTF8.GetString(buf, 0, offset);
 			body = JsonSerializer.Deserialize<Dictionary<string, object>>(json, _jsonOpts);
 		}
 		catch
