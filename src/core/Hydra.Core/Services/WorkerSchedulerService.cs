@@ -1278,6 +1278,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
 	{
+		// HYDRA_COORD_NO_STORE_KV_RESTORE=true: skip saving KV to Store.
+		// No point saving what we'll never restore.
+		if (_cfg.NoStoreKvRestore)
+		{
+			_log.Information("save_kv_skipped Sid={Sid} (NoStoreKvRestore=true)", item.SessionId);
+			return WorkItemState.Decode;
+		}
+
 		var w = item.PrefillWorker!;
 		var slotId = item.PrefillSlot ?? 0;
 		_log.Information("save_kv_start Sid={Sid} Slot={Slot} NPast={N} Node={Node}",
@@ -1579,6 +1587,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.DecodeSlot ?? item.PrefillSlot ?? entry?.SlotId ?? 0,
 			w.Slots - 1);
 		item.DecodeSlot = slotId; // Sync clamped slot so DecodeAsync pins the same one
+
+		// HYDRA_COORD_NO_STORE_KV_RESTORE=true: skip Store KV restore entirely.
+		// The session slot already has KV from the prefill; we go straight to
+		// the cross-model guard check. Combined with cache-prompt=true at the
+		// engine, this means prompt caching is still available inside the slot
+		// but no Hydra-level Store round-trip.
+		if (_cfg.NoStoreKvRestore)
+		{
+			_log.Information("restore_kv_skipped Sid={Sid} Node={Node} Slot={Slot} (NoStoreKvRestore=true)",
+				item.SessionId, w.Name, slotId);
+			return WorkItemState.Decode;
+		}
+
 		var storeKey = $"{item.SessionId}.kv";
 		_log.Information("restore_kv_start Sid={Sid} Key={Key} Node={Node} Slot={Slot}",
 			item.SessionId, storeKey, w.Name, slotId);

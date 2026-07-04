@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -260,32 +261,36 @@ func (m *Manager) StartLlama() error {
 	if !m.cfg.IsPeerOnly() && m.cfg.Llama.Binary != "" {
 		fitBin := filepath.Join(filepath.Dir(m.cfg.Llama.Binary), "llama-fit-params")
 		if _, err := os.Stat(fitBin); err == nil {
-			fitArgs := args
-			// Strip Hydra/RPC-specific flags that llama-fit-params doesn't understand.
-			var filtered []string
-			for _, a := range fitArgs {
-				if a == "--rpc-engine" || a == "--peer-only" || a == "--combined-split-mode" ||
-					a == "--combined-tensor-split" || a == "--ggml-rpc-port" || a == "--rpc-port" {
-					continue
-				}
-				filtered = append(filtered, a)
-			}
-			fitCmd := exec.Command(fitBin, filtered...)
+			// Build only model-fitting args — llama-fit-params only recognizes
+			// model/context/device params (LLAMA_EXAMPLE_FIT_PARAMS). Server-only
+			// flags (--host, --port, --cache-prompt, etc.) are excluded.
+			fitArgs := m.cfg.BuildFitArgs()
+			fitCmd := exec.Command(fitBin, fitArgs...)
 			fitCmd.Env = os.Environ()
 			for k, v := range m.cfg.Llama.Env {
 				fitCmd.Env = append(fitCmd.Env, fmt.Sprintf("%s=%s", k, v))
 			}
 			if out, err := fitCmd.CombinedOutput(); err != nil {
-				m.mu.Lock()
-				if proc, ok := m.processes["llama"]; ok {
-					proc.mu.Lock()
-					proc.state = StateStopped
-					proc.lastError = fmt.Sprintf("fit preflight failed: %s", string(out))
-					proc.mu.Unlock()
-					close(proc.done)
+				outStr := string(out)
+				// n_gpu_layers already set by user → non-fatal: the user
+				// explicitly configured the split/offload. Avoids the
+				// "n_gpu_layers already set to N, abort" dead-end that
+				// happens when CPU offload (n-cpu-moe / override-tensor)
+				// makes the model fit despite n_gpu_layers being "too high".
+				if strings.Contains(outStr, "n_gpu_layers already set by user") {
+					slog.Warn("fit preflight: n_gpu_layers already set by user, continuing", "output", outStr)
+				} else {
+					m.mu.Lock()
+					if proc, ok := m.processes["llama"]; ok {
+						proc.mu.Lock()
+						proc.state = StateStopped
+						proc.lastError = fmt.Sprintf("fit preflight failed: %s", outStr)
+						proc.mu.Unlock()
+						close(proc.done)
+					}
+					m.mu.Unlock()
+					return fmt.Errorf("fit preflight failed: %s: %s", err, outStr)
 				}
-				m.mu.Unlock()
-				return fmt.Errorf("fit preflight failed: %s: %s", err, string(out))
 			}
 		}
 	}

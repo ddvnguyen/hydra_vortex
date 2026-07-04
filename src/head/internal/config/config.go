@@ -257,6 +257,43 @@ func (c *Config) BuildLlamaArgs() []string {
 	args = append(args, "--port", fmt.Sprintf("%d", c.Llama.Port))
 	args = append(args, "--rpc-port", fmt.Sprintf("%d", c.Llama.RPCPort))
 
+	args = append(args, c.buildParamsArgs()...)
+
+	return args
+}
+
+// fitParamsKeys are the config keys relevant to llama-fit-params model fitting.
+// Only model/context/device parameters that affect VRAM estimation are included.
+var fitParamsKeys = map[string]bool{
+	"model":                 true,
+	"ctx-size":              true,
+	"n-gpu-layers":          true,
+	"n-cpu-moe":             true,
+	"tensor-split":          true,
+	"flash-attn":            true,
+	"cache-type-k":          true,
+	"cache-type-v":          true,
+	"no-kv-offload":         true,
+	"main-gpu":              true,
+	"rope-scaling":          true,
+	"rope-scale":            true,
+	"yarn-orig-ctx":         true,
+	"rpc-engine":            true,
+	"override-tensor":       true,
+	"tensor-buft-overrides": true,
+}
+
+func (c *Config) BuildFitArgs() []string {
+	return c.buildParamsArgsFiltered(fitParamsKeys)
+}
+
+func (c *Config) buildParamsArgs() []string {
+	return c.buildParamsArgsFiltered(nil)
+}
+
+func (c *Config) buildParamsArgsFiltered(keep map[string]bool) []string {
+	var args []string
+
 	keys := make([]string, 0, len(c.Llama.Params))
 	for key := range c.Llama.Params {
 		keys = append(keys, key)
@@ -264,6 +301,9 @@ func (c *Config) BuildLlamaArgs() []string {
 	sort.Strings(keys)
 
 	for _, key := range keys {
+		if keep != nil && !keep[key] {
+			continue
+		}
 		value := c.Llama.Params[key]
 		switch v := value.(type) {
 		case bool:

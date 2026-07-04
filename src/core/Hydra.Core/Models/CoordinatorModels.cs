@@ -90,6 +90,13 @@ public sealed record CoordinatorConfig
 	/// </summary>
 	public bool AllowCrossModelKvReuse { get; init; } =
 		EnvBool("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE", false);
+	/// <summary>
+	/// When true, skip restoring KV cache from the Store on session follow-up.
+	/// The request will do a full re-prefill instead. Useful for COMBINED mode
+	/// where cross-device KV restore may be unreliable.
+	/// Config: HYDRA_COORD_NO_STORE_KV_RESTORE=true
+	/// </summary>
+	public bool NoStoreKvRestore { get; init; } = EnvBool("HYDRA_COORD_NO_STORE_KV_RESTORE", false);
 	public bool RawSlot { get; init; } = EnvBool("HYDRA_COORD_RAW_SLOT", false);
 	public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);

@@ -27,27 +27,20 @@ llama:
   rpc_port: 9503
   params:
     model: /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
-    ctx-size: 8192
+    ctx-size: 152000
     parallel: 1
-    ubatch-size: 384
+    ubatch-size: 256
     n-gpu-layers: 66
-    flash-attn: on
-    cache-type-v: q8_0
     cache-type-k: q8_0
-    cont-batching: true
-    cache-prompt: true
-    cache-reuse: 64
-    prio: 3
-    jinja: true
-    timeout: 1800
-    metrics: true
-    slots: true
-    perf: true
-    log-prefix: false
-    log-verbosity: 4
+    cache-type-v: q5_0
     rpc-engine: "localhost:9506"
     combined-split-mode: "layer"
-    combined-tensor-split: "21/44"
+    combined-tensor-split: "26/39"
+    override-tensor: "token_embd.weight=CPU"
+    spec-type: "draft-mtp"
+    spec-draft-n-max: 3
+    spec-draft-p-min: 0.75
+    spec-draft-ngl: 0
   env:
     NVIDIA_VISIBLE_DEVICES: all
     NVIDIA_DRIVER_CAPABILITIES: compute,utility

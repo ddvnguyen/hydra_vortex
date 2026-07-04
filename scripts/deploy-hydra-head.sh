@@ -222,9 +222,17 @@ deploy_rtx() {
     fi
   done
 
+  # Load profile from .env (set by set-profile.sh) so podman-compose
+  # resolves ${VAR} substitutions (HYDRA_HEAD_RTX_NODE_CONFIG, etc.).
+  # Only export HYDRA_* vars to avoid leaking unrelated .env entries.
+  if [ -f "$REPO_ROOT/.env" ]; then
+    while IFS='=' read -r key val; do
+      [[ "$key" =~ ^HYDRA_ ]] && export "$key=$val"
+    done < <(grep -v '^#' "$REPO_ROOT/.env" | grep -v '^$')
+  fi
+
   # Export the token so podman-compose picks it up via ${HYDRA_HEAD_AUTH_TOKEN:?}
-  export HYDRA_HEAD_AUTH_TOKEN
-  export HYDRA_HEAD_AUTH_TOKEN
+  export HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN"
 
   # Deploy. Use `up` (not `up -d`) so we see errors; it returns
   # immediately when containers are detached.

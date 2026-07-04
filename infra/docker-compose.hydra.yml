@@ -140,6 +140,7 @@ services:
       - HYDRA_LLAMA_ENGINE=true
       - HYDRA_COORD_PIPELINE_ENABLED=true
       - HYDRA_COORD_COMBINED_ENABLED=true
+      - HYDRA_COORD_NO_STORE_KV_RESTORE=true
       - HYDRA_COORD_MULTI_ENGINE_POLICY=combined
       - HYDRA_COORD_MULTI_ENGINE_THRESHOLD=${HYDRA_COORD_MULTI_ENGINE_THRESHOLD:-4096}
       - HYDRA_STORE_CHUNK_SIZE=8192
@@ -198,10 +199,13 @@ services:
     # `--userns and --pod cannot be set together`.
     network_mode: host
     user: "1000:1000"
+    env_file:
+      - ../.env
     devices:
       - nvidia.com/gpu=0
     depends_on:
-      - core
+      core:
+        condition: service_started
     command:
       - -global
       - /opt/hydra/config/global.yaml
