@@ -978,7 +978,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var sw = System.Diagnostics.Stopwatch.StartNew();
 		try
 		{
-				_llamaRpcClients.TryGetValue(workerName, out var client);
+			_llamaRpcClients.TryGetValue(workerName, out var client);
 			if (client == null)
 			{
 				_log.Warning("swap_quant_no_client Worker={Worker} — no llama-rpc client wired (stub)", workerName);
