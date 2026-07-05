@@ -361,7 +361,7 @@ deploy_rtx3060() {
 
   # Deploy. `podman compose up` is idempotent — it'll (re)create only
   # the services whose config or image hash changed.
-  export HYDRA_HEAD_AUTH_TOKEN
+  export HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN"
   if ! podman compose -f infra/docker-compose.hydra.yml up -d 2>&1 | tail -10; then
     die "podman compose up failed (rtx3060 path) — check the output above. Common cause: image not built (run deploy_rtx first)."
   fi
