@@ -48,6 +48,9 @@ internal static class CoordinatorMetrics
     public static readonly Counter CrossNodeAffinityTotal = Metrics.CreateCounter(
         "hydra_cross_node_affinity_total", "Cross-node affinity dispatches");
 
+    public static readonly Counter CrossNodeAffinitySkipped = Metrics.CreateCounter(
+        "hydra_cross_node_affinity_skipped_total", "Cross-node affinity skipped — reason", "node", "reason");
+
     public static readonly Gauge MixPrecisionEnabled = Metrics.CreateGauge(
         "hydra_mix_precision_enabled", "Whether mix-precision is on");
 
