@@ -1283,6 +1283,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (_cfg.NoStoreKvRestore)
 		{
 			_log.Information("save_kv_skipped Sid={Sid} (NoStoreKvRestore=true)", item.SessionId);
+			// Release the prefill slot lease — the normal cleanup path
+			// (SaveDone → MarkEvicted) is bypassed when returning Decode.
+			if (item.PrefillLease != null)
+			{
+				await item.PrefillLease.DisposeAsync();
+				item.PrefillLease = null;
+			}
 			return WorkItemState.Decode;
 		}
 
