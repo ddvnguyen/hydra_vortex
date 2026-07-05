@@ -27,9 +27,9 @@ llama:
   rpc_port: 9503
   params:
     model: /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
-    ctx-size: 152000
+    ctx-size: 128000
     parallel: 1
-    ubatch-size: 256
+    ubatch-size: 384
     n-gpu-layers: 66
     cache-type-k: q8_0
     cache-type-v: q5_0
