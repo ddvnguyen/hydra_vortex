@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -254,6 +256,45 @@ func (m *Manager) StartLlama() error {
 
 	// Set up the exec.Cmd outside any lock (exec.Command is safe to call).
 	args := m.cfg.BuildLlamaArgs()
+
+	// Hydra #383 T4: fit preflight. If --peer-only, skip (no model to check).
+	if !m.cfg.IsPeerOnly() && m.cfg.Llama.Binary != "" {
+		fitBin := filepath.Join(filepath.Dir(m.cfg.Llama.Binary), "llama-fit-params")
+		if _, err := os.Stat(fitBin); err == nil {
+			// Build only model-fitting args — llama-fit-params only recognizes
+			// model/context/device params (LLAMA_EXAMPLE_FIT_PARAMS). Server-only
+			// flags (--host, --port, --cache-prompt, etc.) are excluded.
+			fitArgs := m.cfg.BuildFitArgs()
+			fitCmd := exec.Command(fitBin, fitArgs...)
+			fitCmd.Env = os.Environ()
+			for k, v := range m.cfg.Llama.Env {
+				fitCmd.Env = append(fitCmd.Env, fmt.Sprintf("%s=%s", k, v))
+			}
+			if out, err := fitCmd.CombinedOutput(); err != nil {
+				outStr := string(out)
+				// n_gpu_layers already set by user → non-fatal: the user
+				// explicitly configured the split/offload. Avoids the
+				// "n_gpu_layers already set to N, abort" dead-end that
+				// happens when CPU offload (n-cpu-moe / override-tensor)
+				// makes the model fit despite n_gpu_layers being "too high".
+				if strings.Contains(outStr, "n_gpu_layers already set by user") {
+					slog.Warn("fit preflight: n_gpu_layers already set by user, continuing", "output", outStr)
+				} else {
+					m.mu.Lock()
+					if proc, ok := m.processes["llama"]; ok {
+						proc.mu.Lock()
+						proc.state = StateStopped
+						proc.lastError = fmt.Sprintf("fit preflight failed: %s", outStr)
+						proc.mu.Unlock()
+						close(proc.done)
+					}
+					m.mu.Unlock()
+					return fmt.Errorf("fit preflight failed: %s: %s", err, outStr)
+				}
+			}
+		}
+	}
+
 	cmd := exec.Command(m.cfg.Llama.Binary, args...)
 	cmd.Dir = m.cfg.Llama.WorkingDir
 

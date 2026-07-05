@@ -625,6 +625,29 @@ podman-compose -f docker-compose.hydra.yml build --no-cache hydra-core
 podman-compose -f docker-compose.hydra.yml up -d
 ```
 
+### Profile Switching (MoE ↔ Dense)
+
+Two model profiles can be swapped at runtime. Each has its own config
+files and routing semantics.
+
+| Profile | Model | GPUs | Routing | Threshold |
+|---------|-------|------|---------|-----------|
+| **moe** (default) | Qwopus3.6-MoE-35B-A3B-v1-APEX-I-Mini | 5060 Ti + 3060 (COMBINED-OT) + P100 | COMBINED-OT + P/D split | 4096 |
+| **dense** | Qwopus3.6-Dense-27B-Coder-Compat-MTP | 5060 Ti + 3060 (COMBINED-static) | COMBINED-static (every req) | 0 |
+
+```bash
+bash scripts/set-profile.sh moe     # MoE (35B)
+bash scripts/set-profile.sh dense   # Dense (27B)
+podman compose -f infra/docker-compose.hydra.yml up -d
+```
+
+| Role | MoE | Dense |
+|------|-----|-------|
+| Head (5060 Ti) | `infra/hydra-head/config/node-rtx.yaml` | `infra/hydra-head/config/node-rtx-27b.yaml` |
+| Peer (3060) | `infra/hydra-head/config/node-rtx3060.yaml` | `infra/hydra-head/config/node-rtx3060-27b.yaml` |
+| Workers | `infra/hydra-core/config/workers.json` | `infra/hydra-core/config/workers-27b.json` |
+| Env file | `.env-moe` | `.env-dense` |
+
 ### Worker Configuration
 
 Workers are defined in `WorkerConfig` (C#) and configured via

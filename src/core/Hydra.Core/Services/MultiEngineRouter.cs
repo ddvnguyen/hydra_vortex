@@ -35,7 +35,13 @@ public static class MultiEngineRouter
         {
             if (string.IsNullOrWhiteSpace(head.PeerWorker)) continue;
             var peer = workers.FirstOrDefault(w => w.Name == head.PeerWorker);
-            if (peer == null || !tracker.IsFree(peer.Name) || !health.IsHealthy(peer.Name))
+            if (peer == null || !health.IsHealthy(peer.Name))
+                continue;
+            // Hydra #383 T5: combined-static peers have 0 slots — they are never
+            // "free" in the tracker (IsFree requires a free slot). Their availability
+            // is implicit: since nothing else can schedule them, TryReserveWorkerExclusive
+            // always succeeds. For all other run types, the peer must have free slots.
+            if (!head.IsCombinedStatic && !tracker.IsFree(peer.Name))
                 continue;
 
             // Resolve the mode for this head, honouring the configured preference order.

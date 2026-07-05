@@ -1,0 +1,43 @@
+# Hydra Head - RTX 3060 Node - 27B COMBINED Static Profile (Peer Only)
+# Uses llama-engine --peer-only: no model loaded, just exposes GPU 1 as
+# a ggml-RPC backend for the 5060 Ti head. Lightweight: only the RPC
+# server thread + HTTP health endpoint.
+
+node:
+  name: rtx3060
+  mode: container
+
+binaries:
+  llama-server:
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
+    binary: llama-server
+    dest: /llama/bin/llama-server
+  node_exporter:
+    source: https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+    binary: node_exporter
+    dest: /opt/hydra/bin/node_exporter
+  nvidia_gpu_exporter:
+    source: https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.2.1/nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz
+    binary: nvidia_gpu_exporter
+    dest: /opt/hydra/bin/nvidia_gpu_exporter
+
+llama:
+  binary: /llama/bin/llama-engine
+  working_dir: /llama
+  port: 8082
+  rpc_port: 0
+  params:
+    peer-only: true
+    ggml-rpc-port: 9506
+  env:
+    NVIDIA_VISIBLE_DEVICES: "1"
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
+
+services:
+  promtail:
+    enabled: false
+  node_exporter:
+    enabled: false
+  nvidia_exporter:
+    enabled: false

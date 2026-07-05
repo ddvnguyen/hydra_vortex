@@ -1,0 +1,74 @@
+# Hydra Head - RTX 5060 Ti Node - 27B COMBINED Static Profile
+# Layer-split COMBINED mode for Qwopus3.6-27B-Coder-Compat-MTP
+# Peer: RTX 3060 on localhost:9506, tensor_split 21/44
+
+node:
+  name: rtx
+  mode: container
+
+binaries:
+  llama-server:
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
+    binary: llama-server
+    dest: /llama/bin/llama-server
+  node_exporter:
+    source: https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+    binary: node_exporter
+    dest: /opt/hydra/bin/node_exporter
+  nvidia_gpu_exporter:
+    source: https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.2.1/nvidia_gpu_exporter_1.2.1_linux_x86_64.tar.gz
+    binary: nvidia_gpu_exporter
+    dest: /opt/hydra/bin/nvidia_gpu_exporter
+
+llama:
+  binary: /llama/bin/llama-engine
+  working_dir: /llama
+  port: 8080
+  rpc_port: 9503
+  params:
+    model: /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
+    ctx-size: 128000
+    parallel: 1
+    ubatch-size: 384
+    n-gpu-layers: 66
+    cache-type-k: q8_0
+    cache-type-v: q5_0
+    # RoPE scaling: 27B native 64K, yarn with ext-ctx 32K → effective 128K
+    rope-scaling: yarn
+    rope-scale: 4
+    yarn-orig-ctx: 32768
+    yarn-ext-ctx: 131072
+    rpc-engine: "localhost:9506"
+    combined-split-mode: "layer"
+    combined-tensor-split: "25/40"
+    override-tensor: "token_embd.weight=CPU"
+    spec-type: "draft-mtp"
+    spec-draft-n-max: 3
+    spec-draft-p-min: 0.75
+    spec-draft-ngl: 0
+  env:
+    NVIDIA_VISIBLE_DEVICES: "0"
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
+    LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
+
+health:
+  path: /slots
+  interval_idle_sec: 120
+  max_fails: 15
+
+services:
+  node_exporter:
+    enabled: true
+    binary: /opt/hydra/bin/node_exporter
+    port: 9100
+    args:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+  nvidia_exporter:
+    enabled: true
+    binary: /opt/hydra/bin/nvidia_gpu_exporter
+    port: 9835
+    args:
+      - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"

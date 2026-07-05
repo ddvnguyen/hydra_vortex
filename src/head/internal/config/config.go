@@ -257,6 +257,43 @@ func (c *Config) BuildLlamaArgs() []string {
 	args = append(args, "--port", fmt.Sprintf("%d", c.Llama.Port))
 	args = append(args, "--rpc-port", fmt.Sprintf("%d", c.Llama.RPCPort))
 
+	args = append(args, c.buildParamsArgs()...)
+
+	return args
+}
+
+// fitParamsKeys are the config keys relevant to llama-fit-params model fitting.
+// Only model/context/device parameters that affect VRAM estimation are included.
+var fitParamsKeys = map[string]bool{
+	"model":                 true,
+	"ctx-size":              true,
+	"n-gpu-layers":          true,
+	"n-cpu-moe":             true,
+	"tensor-split":          true,
+	"flash-attn":            true,
+	"cache-type-k":          true,
+	"cache-type-v":          true,
+	"no-kv-offload":         true,
+	"main-gpu":              true,
+	"rope-scaling":          true,
+	"rope-scale":            true,
+	"yarn-orig-ctx":         true,
+	"rpc-engine":            true,
+	"override-tensor":       true,
+	"tensor-buft-overrides": true,
+}
+
+func (c *Config) BuildFitArgs() []string {
+	return c.buildParamsArgsFiltered(fitParamsKeys)
+}
+
+func (c *Config) buildParamsArgs() []string {
+	return c.buildParamsArgsFiltered(nil)
+}
+
+func (c *Config) buildParamsArgsFiltered(keep map[string]bool) []string {
+	var args []string
+
 	keys := make([]string, 0, len(c.Llama.Params))
 	for key := range c.Llama.Params {
 		keys = append(keys, key)
@@ -264,6 +301,9 @@ func (c *Config) BuildLlamaArgs() []string {
 	sort.Strings(keys)
 
 	for _, key := range keys {
+		if keep != nil && !keep[key] {
+			continue
+		}
 		value := c.Llama.Params[key]
 		switch v := value.(type) {
 		case bool:
@@ -354,6 +394,16 @@ func (c *Config) LogLlamaConfig(logger *slog.Logger) {
 	logger.LogAttrs(nil, slog.LevelInfo, "llama params (merged: global + node)", attrs...)
 }
 
+// Hydra #383 T3: check if peer-only mode (no model loaded).
+func (c *Config) IsPeerOnly() bool {
+	v, ok := c.Llama.Params["peer-only"]
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
+}
+
 func (c *Config) Validate() error {
 	if c.Node.Name == "" {
 		return fmt.Errorf("node.name is required")
@@ -365,7 +415,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("llama.port is required")
 	}
 	if c.Llama.RPCPort == 0 {
-		return fmt.Errorf("llama.rpc_port is required")
+		// Peer-only mode has no model, so no Hydra RPC for KV state.
+		if !c.IsPeerOnly() {
+			return fmt.Errorf("llama.rpc_port is required")
+		}
 	}
 	if c.Health.MaxFails < 0 {
 		return fmt.Errorf("health.max_fails must be >= 0, got %d", c.Health.MaxFails)
@@ -376,6 +429,37 @@ func (c *Config) Validate() error {
 	if c.Health.IntervalBusySec < 0 {
 		return fmt.Errorf("health.interval_busy_sec must be >= 0, got %d", c.Health.IntervalBusySec)
 	}
+	// Hydra #383 T3: peer-only mode requires --ggml-rpc-port.
+	if v, ok := c.Llama.Params["peer-only"]; ok {
+		if isTrue, _ := v.(bool); isTrue {
+			if _, hasPort := c.Llama.Params["ggml-rpc-port"]; !hasPort {
+				return fmt.Errorf("llama.params.peer-only: --ggml-rpc-port is required")
+			}
+		}
+	}
+
+	// Hydra #383 T3: reject list-param values (must be scalar).
+	for key, val := range c.Llama.Params {
+		switch val.(type) {
+		case []any, []string:
+			return fmt.Errorf("llama.params.%s: list/array values are not supported — use scalar values", key)
+		}
+	}
+
+	// Hydra #383 T3: reject incompatible param combinations.
+	splitMode, hasSplit := c.Llama.Params["combined-split-mode"]
+	if hasSplit {
+		sm, _ := splitMode.(string)
+		if sm == "layer" {
+			if _, hasOT := c.Llama.Params["combined-ot-pattern"]; hasOT {
+				return fmt.Errorf("llama.params: combined-split-mode=layer is incompatible with combined-ot-pattern (use combined-tensor-split instead)")
+			}
+			if _, hasSplit := c.Llama.Params["combined-tensor-split"]; !hasSplit {
+				return fmt.Errorf("llama.params: combined-split-mode=layer requires combined-tensor-split")
+			}
+		}
+	}
+
 	return nil
 }
 

@@ -123,10 +123,13 @@ services:
       - HYDRA_STORE_RESTORE_TOP_N=10
       - HYDRA_COORD_PORT=9000
       - HYDRA_COORD_MIX_PRECISION_ENABLED=true
-      - HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true
+      - HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=${HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE:-true}
       - HYDRA_COORD_ATOMIC_THRESHOLD=2048
       - HYDRA_COORD_WARM_THRESHOLD=5120
-      - HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers.json
+      # Profile switching (#383 T6): set HYDRA_COORD_CONFIG_FILE to
+      # switch workers, e.g.:
+      #   HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers-27b.json
+      - HYDRA_COORD_CONFIG_FILE=${HYDRA_COORD_CONFIG_FILE:-/etc/hydra/config/workers.json}
       - HYDRA_COORD_ENABLE_CHUNKS=true
       # ── Two-engine "work together" engine mode ────────────────────────
       # The COMBINED engine-mode lets the head (rtx, sm_120) borrow the
@@ -137,8 +140,9 @@ services:
       - HYDRA_LLAMA_ENGINE=true
       - HYDRA_COORD_PIPELINE_ENABLED=true
       - HYDRA_COORD_COMBINED_ENABLED=true
+      - HYDRA_COORD_NO_STORE_KV_RESTORE=true
       - HYDRA_COORD_MULTI_ENGINE_POLICY=combined
-      - HYDRA_COORD_MULTI_ENGINE_THRESHOLD=4096
+      - HYDRA_COORD_MULTI_ENGINE_THRESHOLD=${HYDRA_COORD_MULTI_ENGINE_THRESHOLD:-4096}
       - HYDRA_STORE_CHUNK_SIZE=8192
       # Per-service OTel log push (#363). Hydra.Core pushes
       # OTLP/HTTP to the OTel Collector on the host (port 4318
@@ -185,16 +189,30 @@ services:
   # not infra/Dockerfile).
   # Restricted to CUDA device 0 (the RTX 5060 Ti) — device 1 (the RTX 3060)
   # is owned by head-rtx3060.
+  #
+  # Profile switching (#383 T6): set HYDRA_HEAD_RTX_NODE_CONFIG to switch
+  # between profiles, e.g.:
+  #   HYDRA_HEAD_RTX_NODE_CONFIG=node-rtx-27b.yaml podman compose ... up -d
   head-rtx5060ti:
     image: localhost/hydra-head:rtx
     # NO per-service userns_mode here — same reason as `core`:
     # `--userns and --pod cannot be set together`.
     network_mode: host
     user: "1000:1000"
+    env_file:
+      - ../.env
     devices:
       - nvidia.com/gpu=0
     depends_on:
-      - core
+      core:
+        condition: service_started
+    command:
+      - -global
+      - /opt/hydra/config/global.yaml
+      - -node
+      - /opt/hydra/config/${HYDRA_HEAD_RTX_NODE_CONFIG:-node-rtx.yaml}
+      - -api-port
+      - "9700"
     volumes:
       # Model + KV slot data
       - /mnt/SSD:/models:ro
@@ -251,12 +269,17 @@ services:
   # RTX 3060; device 0 is the 5060 Ti owned by `head-rtx` above).
   # The 3060 sits in the COMBINED-mode peer pool of the 5060 Ti — see
   # `workers.json` and `node-rtx3060.yaml`. Runs as a SOLO decode
-  # worker when not peer-reserved.
+  # worker when not peer-reserved (in the 35B/COMBINED-OT profile), or
+  # as a peer-only RPC backend (in the 27B/COMBINED-static profile).
   #
   # Image is the same `hydra-head:rtx` image built by
   # `scripts/deploy-hydra-head.sh rtx` (or a parallel `:rtx3060` tag
   # — see the deploy script). The compose `command:` below points the
   # binary at the rtx3060 node config + the unique api-port :9701.
+  #
+  # Profile switching (#383 T6): set HYDRA_HEAD_RTX3060_NODE_CONFIG:
+  #   default                         -> node-rtx3060.yaml (35B peer)
+  #   HYDRA_HEAD_RTX3060_NODE_CONFIG=node-rtx3060-27b.yaml -> 27B peer-only
   head-rtx3060:
     image: localhost/hydra-head:rtx
     network_mode: host
@@ -272,7 +295,7 @@ services:
       - -global
       - /opt/hydra/config/global.yaml
       - -node
-      - /opt/hydra/config/node-rtx3060.yaml
+      - /opt/hydra/config/${HYDRA_HEAD_RTX3060_NODE_CONFIG:-node-rtx3060.yaml}
       - -api-port
       - "9701"
     volumes:
@@ -299,7 +322,6 @@ services:
       # of `nvidia.com/gpu=1` above (in case CDI/driver changes the
       # device ordering).
       - NVIDIA_VISIBLE_DEVICES=1
-      - CUDA_VISIBLE_DEVICES=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9701/health"]
       interval: 30s

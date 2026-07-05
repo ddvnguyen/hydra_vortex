@@ -30,6 +30,12 @@ command -v podman    &>/dev/null && ok "podman"    || die "podman not installed"
 command -v curl      &>/dev/null && ok "curl"      || die "curl not installed"
 command -v go        &>/dev/null && ok "go"        || warn "go not found (hydra-head build needs it)"
 
+# Load profile from .env (set by set-profile.sh) so podman-compose
+# resolves ${VAR} substitutions in docker-compose.hydra.yml correctly.
+if [ -f "$REPO_ROOT/.env" ]; then
+  set -a; source "$REPO_ROOT/.env"; set +a
+fi
+
 # ── 2. Hydra core stack ───────────────────────────────────────────────────────
 step "Hydra Core (Store + Coordinator — single container)"
 

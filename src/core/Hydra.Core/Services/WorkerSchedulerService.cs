@@ -852,8 +852,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		CoordinatorMetrics.RequestsTotalAll.Inc();
 		CoordinatorMetrics.ColdSessionStarts.Inc();
 		CoordinatorMetrics.MultiEngineAttempts.WithLabels(plan.Head.Name, modeStr).Inc();
-		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} Split={Split} Est={Est}",
-			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name, plan.OtSplit, item.EstimatedTokens);
+		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} PeerRunType={PRT} Split={Split} Est={Est}",
+			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name, plan.Peer.RunType, plan.OtSplit, item.EstimatedTokens);
 		return true;
 	}
 
@@ -978,10 +978,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var sw = System.Diagnostics.Stopwatch.StartNew();
 		try
 		{
-			Hydra.Shared.RpcClient? client = null;
-			foreach (var kv in _llamaRpcClients)
-				if (string.Equals(kv.Key, workerName, StringComparison.Ordinal))
-				{ client = kv.Value; break; }
+			_llamaRpcClients.TryGetValue(workerName, out var client);
 			if (client == null)
 			{
 				_log.Warning("swap_quant_no_client Worker={Worker} — no llama-rpc client wired (stub)", workerName);
@@ -1278,6 +1275,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
 	{
+		// HYDRA_COORD_NO_STORE_KV_RESTORE=true: skip saving KV to Store.
+		// No point saving what we'll never restore.
+		if (_cfg.NoStoreKvRestore)
+		{
+			_log.Information("save_kv_skipped Sid={Sid} (NoStoreKvRestore=true)", item.SessionId);
+			// Release the prefill slot lease — the normal cleanup path
+			// (SaveDone → MarkEvicted) is bypassed when returning Decode.
+			if (item.PrefillLease != null)
+			{
+				await item.PrefillLease.DisposeAsync();
+				item.PrefillLease = null;
+			}
+			return WorkItemState.Decode;
+		}
+
 		var w = item.PrefillWorker!;
 		var slotId = item.PrefillSlot ?? 0;
 		_log.Information("save_kv_start Sid={Sid} Slot={Slot} NPast={N} Node={Node}",
@@ -1579,6 +1591,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.DecodeSlot ?? item.PrefillSlot ?? entry?.SlotId ?? 0,
 			w.Slots - 1);
 		item.DecodeSlot = slotId; // Sync clamped slot so DecodeAsync pins the same one
+
+		// HYDRA_COORD_NO_STORE_KV_RESTORE=true: skip Store KV restore entirely.
+		// The session slot already has KV from the prefill; we go straight to
+		// the cross-model guard check. Combined with cache-prompt=true at the
+		// engine, this means prompt caching is still available inside the slot
+		// but no Hydra-level Store round-trip.
+		if (_cfg.NoStoreKvRestore)
+		{
+			_log.Information("restore_kv_skipped Sid={Sid} Node={Node} Slot={Slot} (NoStoreKvRestore=true)",
+				item.SessionId, w.Name, slotId);
+			return WorkItemState.Decode;
+		}
+
 		var storeKey = $"{item.SessionId}.kv";
 		_log.Information("restore_kv_start Sid={Sid} Key={Key} Node={Node} Slot={Slot}",
 			item.SessionId, storeKey, w.Name, slotId);
@@ -2287,6 +2312,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status={status}"
 		);
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
+			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			item.TraceId, item.SessionId,
+			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
+			RouteLabel(item),
+			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
+			prefillModel, decodeModel,
+			item.Phases.GetValueOrDefault("prefill_ms"), saveKvMs,
+			saveKvRpcMs, saveKvStoreMs,
+			item.Phases.GetValueOrDefault("restore_kv_ms"),
+			item.Phases.GetValueOrDefault("decode_ms"),
+			item.TokensIn, item.TokensOut, item.KvBytes,
+			item.PrefixCacheHit ? "true" : "false", status);
 	}
 
 	private void EmitTimeline(WorkItem item)
@@ -2324,6 +2362,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status=done"
 		);
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status=done",
+			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			item.TraceId, item.SessionId,
+			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
+			RouteLabel(item),
+			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
+			prefillModel, decodeModel,
+			item.Phases.GetValueOrDefault("prefill_ms"), saveKvMs,
+			saveKvRpcMs, saveKvStoreMs,
+			item.Phases.GetValueOrDefault("restore_kv_ms"),
+			item.Phases.GetValueOrDefault("decode_ms"),
+			item.Phases.GetValueOrDefault("total_ms"),
+			item.TokensIn, item.TokensOut, item.KvBytes,
+			item.PrefixCacheHit ? "true" : "false");
 	}
 
 	// ── Core KV save helpers (shared by SaveKvAsync + eviction sites) ──

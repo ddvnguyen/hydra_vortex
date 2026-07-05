@@ -133,6 +133,56 @@ public sealed class MultiEngineRouterTests
 		Assert.Null(MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000));
 	}
 
+	// ── #383 T5: combined-static routing ──
+
+	[Fact]
+	public void Selects_CombinedStatic_Peer_With_Zero_Slots()
+	{
+		// combined-static peers have 0 slots — they are never "free" in the tracker
+		// (IsFree requires a free slot). The router must skip the IsFree check for them.
+		var cfg = new CoordinatorConfig
+		{
+			UseLlamaEngine = true,
+			CombinedEnabled = true,
+			MultiEngineThreshold = 0,
+			MultiEnginePolicy = "combined",
+			Workers = new List<WorkerConfig>
+			{
+				new()
+				{
+					Name = "rtx", Host = "localhost", RpcPort = 9601,
+					LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 1,
+					Role = "head", PeerWorker = "rtx3060",
+					CombinedCapable = true, CombinedOtSplit = "21/44",
+					RunType = "combined-static"
+				},
+				new()
+				{
+					Name = "rtx3060", Host = "localhost", RpcPort = 9603,
+					LlamaUrl = "http://localhost:8081", WorkerType = 3, Slots = 0,
+					RunType = "combined-static-peer"
+				}
+			}
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+
+		// Peer has 0 slots → IsFree returns false, but Select must still find it.
+		Assert.False(tracker.IsFree("rtx3060"),
+			"0-slot peer must not be IsFree (it has no free slots)");
+
+		// Peer must still be exclusively reservable (all-free check: 0 == 0)
+		Assert.True(tracker.TryReserveWorkerExclusive("rtx3060"),
+			"0-slot peer must be exclusively reservable");
+
+		var plan = MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 100);
+		Assert.NotNull(plan);
+		Assert.Equal(MultiEngineMode.Combined, plan!.Value.Mode);
+		Assert.Equal("rtx", plan.Value.Head.Name);
+		Assert.Equal("rtx3060", plan.Value.Peer.Name);
+		Assert.Equal("21/44", plan.Value.OtSplit);
+	}
+
 	// ── P3.0 (#366): peer must be exclusively reservable for COMBINED admission ──
 
 	[Fact]

@@ -172,6 +172,111 @@ func TestBuildLlamaArgs(t *testing.T) {
 	}
 }
 
+// Hydra #383 T3: golden-args test for the 27B peer-only config.
+func TestBuildLlamaArgs_PeerOnly27B(t *testing.T) {
+	cfg := Config{
+		Llama: LlamaConfig{
+			Binary:     "/llama/bin/llama-engine",
+			WorkingDir: "/llama",
+			Host:       "0.0.0.0",
+			Port:       8081,
+			RPCPort:    0,
+			Params: map[string]any{
+				"peer-only":     true,
+				"ggml-rpc-port": 9506,
+			},
+			Env: map[string]string{
+				"NVIDIA_VISIBLE_DEVICES":    "1",
+				"NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+			},
+		},
+	}
+	args := cfg.BuildLlamaArgs()
+
+	expected := []string{
+		"--host", "0.0.0.0",
+		"--port", "8081",
+		"--rpc-port", "0",
+		"--ggml-rpc-port", "9506",
+		"--peer-only",
+	}
+	if len(args) != len(expected) {
+		t.Errorf("args length: got %d, want %d\n  got:  %v\n  want: %v",
+			len(args), len(expected), args, expected)
+	}
+	for i := range expected {
+		if i >= len(args) || args[i] != expected[i] {
+			t.Errorf("args[%d]: got %q, want %q\n  full got:  %v\n  full want: %v",
+				i, args[i], expected[i], args, expected)
+		}
+	}
+}
+
+// Hydra #383 T3: golden-args test for the full Dense profile.
+// Verifies that BuildLlamaArgs produces the exact ordered CLI args
+// from the node-rtx-27b.yaml config.
+func TestBuildLlamaArgs_DenseProfile(t *testing.T) {
+	cfg := &Config{
+		Llama: LlamaConfig{
+			Host:    "0.0.0.0",
+			Port:    8080,
+			RPCPort: 9503,
+			Params: map[string]any{
+				"cache-type-k":        "q8_0",
+				"cache-type-v":        "q8_0",
+				"combined-split-mode": "layer",
+				"combined-tensor-split": "21/44",
+				"cont-batching":       true,
+				"ctx-size":            8192,
+				"flash-attn":          "on",
+				"metrics":             true,
+				"model":               "/models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+				"n-gpu-layers":        66,
+				"parallel":            1,
+				"perf":                true,
+				"rpc-engine":          "localhost:9506",
+				"slots":               true,
+				"ubatch-size":         384,
+			},
+		},
+	}
+
+	args := cfg.BuildLlamaArgs()
+
+	expected := []string{
+		"--host", "0.0.0.0",
+		"--port", "8080",
+		"--rpc-port", "9503",
+		"--cache-type-k", "q8_0",
+		"--cache-type-v", "q8_0",
+		"--combined-split-mode", "layer",
+		"--combined-tensor-split", "21/44",
+		"--cont-batching",
+		"--ctx-size", "8192",
+		"--flash-attn", "on",
+		"--metrics",
+		"--model", "/models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+		"--n-gpu-layers", "66",
+		"--parallel", "1",
+		"--perf",
+		"--rpc-engine", "localhost:9506",
+		"--slots",
+		"--ubatch-size", "384",
+	}
+
+	if len(args) != len(expected) {
+		t.Errorf("args length: got %d, want %d\n  got:  %v\n  want: %v",
+			len(args), len(expected), args, expected)
+		return
+	}
+	for i := range expected {
+		if args[i] != expected[i] {
+			t.Errorf("args[%d]: got %q, want %q\n  full got:  %v\n  full want: %v",
+				i, args[i], expected[i], args, expected)
+		}
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -219,6 +324,53 @@ func TestValidate(t *testing.T) {
 				Llama: LlamaConfig{
 					Binary:  "/usr/bin/llama-server",
 					RPCPort: 9503,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "combined-split-mode=layer with combined-ot-pattern rejected",
+			cfg: &Config{
+				Node: NodeConfig{Name: "test"},
+				Llama: LlamaConfig{
+					Binary:  "/usr/bin/llama-engine",
+					Port:    8080,
+					RPCPort: 9503,
+					Params: map[string]any{
+						"combined-split-mode":  "layer",
+						"combined-ot-pattern":  "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU",
+						"combined-tensor-split": "21/44",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "combined-split-mode=layer missing combined-tensor-split",
+			cfg: &Config{
+				Node: NodeConfig{Name: "test"},
+				Llama: LlamaConfig{
+					Binary:  "/usr/bin/llama-engine",
+					Port:    8080,
+					RPCPort: 9503,
+					Params: map[string]any{
+						"combined-split-mode": "layer",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "list param rejected",
+			cfg: &Config{
+				Node: NodeConfig{Name: "test"},
+				Llama: LlamaConfig{
+					Binary:  "/usr/bin/llama-engine",
+					Port:    8080,
+					RPCPort: 9503,
+					Params: map[string]any{
+						"override-tensor": []any{"a", "b"},
+					},
 				},
 			},
 			wantErr: true,
