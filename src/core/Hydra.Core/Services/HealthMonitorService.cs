@@ -77,7 +77,38 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
 		using var http = _httpFactory.CreateClient($"health-{w.Name}");
 		http.Timeout = TimeSpan.FromSeconds(_cfg.HealthPollTimeoutS);
         var llama = new LlamaClient(http, w.LlamaUrl);
-        var slots = await llama.GetSlotsAsync(ct);
+
+        // Hydra #383 T5: combined-static-peer workers (0 slots, peer-only engine)
+        // may not serve /slots. Tolerate HTTP errors and fall back to /health.
+        List<LlamaSlotInfo> slots;
+        try
+        {
+            slots = await llama.GetSlotsAsync(ct);
+        }
+        catch (Exception ex) when (w.Slots == 0)
+        {
+            _log.Information("health_poll_slots_fallback Node={N} Slots={S} Err={Msg}", w.Name, w.Slots, ex.Message);
+            var healthy = await llama.HealthAsync(ct);
+            if (healthy)
+            {
+                lock (_lock)
+                {
+                    _nodes[w.Name] = new NodeInfo
+                    {
+                        NodeName = w.Name,
+                        Healthy = true,
+                        SlotsTotal = 0,
+                        SlotsIdle = 0,
+                        ConsecutiveFailures = 0,
+                    };
+                }
+                return;
+            }
+            _log.Warning("health_poll_fallback_fail Node={N}", w.Name);
+            OnFail(w.Name);
+            return;
+        }
+
         if (slots == null || slots.Count == 0)
         {
             var healthy = await llama.HealthAsync(ct);

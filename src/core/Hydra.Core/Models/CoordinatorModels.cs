@@ -48,7 +48,6 @@ public sealed record WorkerConfig
 	public bool CanDecode => (WorkerType & 2) != 0;
 	public bool IsHead => string.Equals(Role, "head", StringComparison.OrdinalIgnoreCase);
 	public bool IsCombinedStatic => string.Equals(RunType, "combined-static", StringComparison.OrdinalIgnoreCase);
-	public bool IsCombinedStaticPeer => string.Equals(RunType, "combined-static-peer", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>

@@ -33,16 +33,21 @@ llama:
     n-gpu-layers: 66
     cache-type-k: q8_0
     cache-type-v: q5_0
+    # RoPE scaling: 27B native 64K, yarn with ext-ctx 32K → effective 128K
+    rope-scaling: yarn
+    rope-scale: 4
+    yarn-orig-ctx: 32768
+    yarn-ext-ctx: 131072
     rpc-engine: "localhost:9506"
     combined-split-mode: "layer"
-    combined-tensor-split: "26/39"
+    combined-tensor-split: "25/40"
     override-tensor: "token_embd.weight=CPU"
     spec-type: "draft-mtp"
     spec-draft-n-max: 3
     spec-draft-p-min: 0.75
     spec-draft-ngl: 0
   env:
-    NVIDIA_VISIBLE_DEVICES: all
+    NVIDIA_VISIBLE_DEVICES: "0"
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
     LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'

@@ -13,7 +13,8 @@
     "role": "head",
     "peer_worker": "rtx3060",
     "combined_capable": true,
-    "combined_ot_split": "21/44",
+    "combined_ot_split": "26/39",
+    "combined_tensor_split": "26/39",
     "run_type": "combined-static",
     "router_model_name": "balanced",
     "_comment_rtx": "RTX 5060 Ti (sm_120, 16 GB) on host. Layer-split COMBINED head for 27B. Peer always reserved."
@@ -23,7 +24,7 @@
     "host": "localhost",
     "rpc_port": 9603,
     "llama_rpc_port": 9504,
-    "llama_url": "http://localhost:8081",
+    "llama_url": "http://localhost:8082",
     "worker_type": 3,
     "slots": 0,
     "decode_speed_tps": 31,

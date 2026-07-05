@@ -35,7 +35,13 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-# Copy the profile to .env so podman compose picks it up automatically
+# Copy the profile to .env so podman compose picks it up automatically.
+# Warn if operator has customised .env (i.e. it differs from the profile).
+if [ -f "$SCRIPT_DIR/.env" ] && ! diff -q "$ENV_FILE" "$SCRIPT_DIR/.env" >/dev/null 2>&1; then
+    echo "WARNING: $SCRIPT_DIR/.env has local modifications."
+    echo "         The profile will overwrite them. Back up first if needed."
+    echo ""
+fi
 cp "$ENV_FILE" "$SCRIPT_DIR/.env"
 echo "Profile set to: $PROFILE ($ENV_FILE → .env)"
 echo ""

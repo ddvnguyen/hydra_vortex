@@ -978,10 +978,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var sw = System.Diagnostics.Stopwatch.StartNew();
 		try
 		{
-			Hydra.Shared.RpcClient? client = null;
-			foreach (var kv in _llamaRpcClients)
-				if (string.Equals(kv.Key, workerName, StringComparison.Ordinal))
-				{ client = kv.Value; break; }
+				_llamaRpcClients.TryGetValue(workerName, out var client);
 			if (client == null)
 			{
 				_log.Warning("swap_quant_no_client Worker={Worker} — no llama-rpc client wired (stub)", workerName);
