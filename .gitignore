@@ -103,6 +103,8 @@ kubeconfig
 !.env.example
 !*.env.example
 !.env.sample
+!.env-moe
+!.env-dense
 !*.tfvars.example
 
 # Test results

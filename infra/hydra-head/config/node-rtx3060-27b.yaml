@@ -25,7 +25,7 @@ llama:
   binary: /llama/bin/llama-engine
   working_dir: /llama
   port: 8082
-  rpc_port: 0
+  rpc_port: 9506
   params:
     peer-only: true
     ggml-rpc-port: 9506
