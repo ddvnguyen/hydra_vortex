@@ -284,6 +284,8 @@ services:
     image: localhost/hydra-head:rtx
     network_mode: host
     user: "1000:1000"
+    env_file:
+      - ../.env
     devices:
       # Single GPU: the 3060. `nvidia.com/gpu=all` would let
       # the container see both devices; we restrict to 1 so the

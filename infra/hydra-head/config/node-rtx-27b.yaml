@@ -44,7 +44,8 @@ llama:
     ctx-size: 65536
     parallel: 1
     ubatch-size: 512
-    n-gpu-layers: 66
+    n-gpu-layers: 65
+    fit: off
     cache-type-k: q8_0
     cache-type-v: q8_0
     # RoPE scaling: 27B native 262K, yarn scale 4x → effective 262K (no ext-ctx needed)
