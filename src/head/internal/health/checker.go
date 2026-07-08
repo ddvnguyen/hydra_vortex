@@ -27,6 +27,7 @@ type SlotStatus struct {
 type Checker struct {
 	baseURL       string
 	path          string
+	simpleMode    bool // if true, just check HTTP 200 (no []SlotStatus decode — used for peer-only nodes)
 	logger        *slog.Logger
 	client        *http.Client
 	mode          Mode
@@ -40,7 +41,7 @@ type Checker struct {
 	onUnhealthy   func()
 }
 
-func NewChecker(baseURL, path string, logger *slog.Logger, idleInterval, busyInterval time.Duration, maxFails int) *Checker {
+func NewChecker(baseURL, path string, simpleMode bool, logger *slog.Logger, idleInterval, busyInterval time.Duration, maxFails int) *Checker {
 	ctx, cancel := context.WithCancel(context.Background())
 	if path == "" {
 		path = "/slots"
@@ -48,6 +49,7 @@ func NewChecker(baseURL, path string, logger *slog.Logger, idleInterval, busyInt
 	return &Checker{
 		baseURL:      baseURL,
 		path:         path,
+		simpleMode:   simpleMode,
 		logger:       logger,
 		client:       &http.Client{Timeout: 5 * time.Second},
 		mode:         ModeIdle,
@@ -97,6 +99,14 @@ func (c *Checker) getInterval() time.Duration {
 }
 
 func (c *Checker) check() {
+	// Simple mode: just check HTTP 200 on the path. Used for peer-only
+	// nodes where /slots always returns 404 and /health returns a JSON
+	// object (not []SlotStatus). See #399.
+	if c.simpleMode {
+		c.checkSimple()
+		return
+	}
+
 	slots, err := c.getSlots()
 	if err != nil {
 		c.mu.Lock()
@@ -148,6 +158,64 @@ func (c *Checker) check() {
 	if oldMode != newMode {
 		c.logger.Info("health mode changed", "from", oldMode, "to", newMode)
 	}
+}
+
+func (c *Checker) checkSimple() {
+	resp, err := c.client.Get(c.baseURL + c.path)
+	if err != nil {
+		c.mu.Lock()
+		c.consecutiveFails++
+		fails := c.consecutiveFails
+		c.mu.Unlock()
+		c.logger.Warn("simple health check failed",
+			"fails", fails,
+			"max", c.maxFails,
+			"path", c.path,
+			"error", err)
+		if fails >= c.maxFails {
+			c.logger.Error("max failures reached, triggering restart")
+			c.mu.RLock()
+			if c.onUnhealthy != nil {
+				c.onUnhealthy()
+			}
+			c.mu.RUnlock()
+			c.mu.Lock()
+			c.consecutiveFails = 0
+			c.mu.Unlock()
+		}
+		return
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		c.mu.Lock()
+		c.consecutiveFails++
+		fails := c.consecutiveFails
+		c.mu.Unlock()
+		c.logger.Warn("simple health check failed",
+			"fails", fails,
+			"max", c.maxFails,
+			"path", c.path,
+			"status", resp.StatusCode)
+		if fails >= c.maxFails {
+			c.logger.Error("max failures reached, triggering restart")
+			c.mu.RLock()
+			if c.onUnhealthy != nil {
+				c.onUnhealthy()
+			}
+			c.mu.RUnlock()
+			c.mu.Lock()
+			c.consecutiveFails = 0
+			c.mu.Unlock()
+		}
+		return
+	}
+
+	// HTTP 200 — healthy. No slot decode needed for peer-only nodes.
+	c.mu.Lock()
+	c.consecutiveFails = 0
+	c.mode = ModeIdle
+	c.mu.Unlock()
 }
 
 func (c *Checker) getSlots() ([]SlotStatus, error) {
