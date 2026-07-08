@@ -172,7 +172,7 @@ mkdir -p src/llama-cpp/build_sm86_sm120 && cd src/llama-cpp/build_sm86_sm120 && 
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=ON \
     -DGGML_NATIVE=ON \
-    -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_CUDA_FA_ALL_QUANTS=OFF \
+    -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_CUDA_FA_ALL_QUANTS=ON \
     -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_CUDA_GRAPHS=ON -DGGML_CUDA_NCCL=ON \
     -DGGML_RPC=ON -DGGML_NVML=ON \
     -DCMAKE_CUDA_ARCHITECTURES="86;120" \
@@ -185,7 +185,7 @@ mkdir -p src/llama-cpp/build_sm86_sm120 && cd src/llama-cpp/build_sm86_sm120 && 
 mkdir -p src/llama-cpp/build_sm120_v3 && cd src/llama-cpp/build_sm120_v3 && \
   cmake .. -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-    -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CUDA_FA=ON \
+    -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_CUDA_FA_ALL_QUANTS=ON \
     -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_RPC=ON -DGGML_NVML=ON \
     -DCMAKE_CUDA_ARCHITECTURES="120" \
     -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 \
@@ -196,7 +196,7 @@ mkdir -p src/llama-cpp/build_sm120_v3 && cd src/llama-cpp/build_sm120_v3 && \
 # binary. Same cmake as the fat one but CMAKE_CUDA_ARCHITECTURES="86" alone.
 cd src/llama-cpp && mkdir -p build_sm86 && cd build_sm86 && \
   cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-    -DGGML_CUDA=ON -DGGML_RPC=ON -DGGML_NVML=ON \
+    -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_CUDA_FA_ALL_QUANTS=ON -DGGML_RPC=ON -DGGML_NVML=ON \
     -DCMAKE_CUDA_ARCHITECTURES="86" \
     -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 && \
   cmake --build . --config Release -j$(nproc) --target llama-engine
@@ -245,8 +245,12 @@ with it enabled the engine currently crashes at model load inside
   it has perf issues with some Q3_K / Q4_K dequant patterns. We want the
   consistent cuBLAS path.
 - `GGML_CUDA_FA=ON` enables flash-attn. We need it for ctx > 8K.
-- `GGML_CUDA_FA_ALL_QUANTS=OFF` keeps the Q5_K/Q6_K flash-attn kernels
-  disabled (perf is worse for those quants on Blackwell).
+- `GGML_CUDA_FA_ALL_QUANTS=ON` enables the FA kernels for **all**
+  KV-cache quant types (q4_0, q4_1, q5_0, q5_1, q8_0). Without
+  this flag the q5_0 V-cache path falls off FA at large context
+  (96K+ with 27B Q5_K_M crashes — see ddvnguyen/llama.cpp#37 live
+  test finding 1). Slight binary-size increase from the extra
+  template instantiations; no other cost.
 - `GGML_RPC=ON` is required for COMBINED engine mode (peer backend). The
   initial fat build had it OFF — re-configure + rebuild if you're on
   `build_sm86_sm120` from before 2026-07-01.
