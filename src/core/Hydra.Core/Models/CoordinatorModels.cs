@@ -22,7 +22,7 @@ public sealed record WorkerConfig
 	public string? PrefillModelName { get; init; }
 	public string? DecodeModelName { get; init; }
 
-	// ── Two-engine "work together" (prima.cpp-style PIPELINE + expert-split COMBINED) ──
+	// ── Two-engine "work together" (PIPELINE + COMBINED) ────────────────
 	// Role of this engine in a multi-engine topology: "standalone" (default), "head", "worker".
 	public string Role { get; init; } = "standalone";
 	// For a head: the Name of the worker engine it recruits as its peer (must exist in Workers).
@@ -30,24 +30,24 @@ public sealed record WorkerConfig
 	// Where the head reaches the peer engine for inter-node activations (Hydra HY RPC).
 	public string? PeerHost { get; init; }
 	public int PeerPort { get; init; }
-	// --override-tensor split strings the head pushes to the peer, per mode.
-	// PIPELINE: contiguous layer-window regex owned by the peer (loaded locally on the peer).
-	// COMBINED: expert-tensor regex routed to the peer's ggml RPC backend.
-	public string? PipelineOtSplit { get; init; }
-	public string? CombinedOtSplit { get; init; }
+	// Phase 2a (ddvnguyen/llama.cpp#36): model alias drives
+	// ModelRegistry.Resolve(WorkerConfig.ModelAlias) -> EngineConfig.
+	// The override-tensor regexes that used to live here (PipelineOtSplit /
+	// CombinedOtSplit) and the run_type label ("combined-static" etc.) are
+	// gone — they're inside the ModelRegistry now, keyed by alias.
+	public string? ModelAlias { get; init; }
 	// Capability flags, refreshed from the engine's EngineInfo health poll.
 	public bool PipelineCapable { get; init; }
 	public bool CombinedCapable { get; init; }
 
-	// Hydra #383 T5: run_type for mode-specific scheduling semantics.
-	// "solo" (default) | "combined-static" | "combined-static-peer" |
-	// "combined-ot" | "pipeline" | "pd-split"
-	public string RunType { get; init; } = "solo";
-
 	public bool CanPrefill => (WorkerType & 1) != 0;
 	public bool CanDecode => (WorkerType & 2) != 0;
 	public bool IsHead => string.Equals(Role, "head", StringComparison.OrdinalIgnoreCase);
-	public bool IsCombinedStatic => string.Equals(RunType, "combined-static", StringComparison.OrdinalIgnoreCase);
+	// Phase 2a: a "peer-only" worker is one with zero slots. It is dedicated
+	// to a head and never runs SOLO requests; MultiEngineRouter treats its
+	// availability as implicit. Replaces the old WorkerConfig.RunType ==
+	// "combined-static-peer" + IsCombinedStatic derived property.
+	public bool IsPeerOnly => Slots == 0;
 }
 
 /// <summary>

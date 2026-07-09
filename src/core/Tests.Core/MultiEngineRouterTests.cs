@@ -15,10 +15,18 @@ public sealed class MultiEngineRouterTests
 		bool pipeline = true, bool combined = false, int threshold = 8192,
 		string policy = "pipeline",
 		bool headPipelineCapable = true, bool headCombinedCapable = true,
-		string? pipelineSplit = "blk\\.(2[0-9]|3[0-9])\\..*=PEER",
-		string? combinedSplit = "ffn_.*_exps=PEER",
+		string modelAlias = "moe-35b-mini",
 		string? peerWorker = "p100")
 	{
+		// Phase 2a: tests register the model alias on the global ModelRegistry
+		// (it's static, so concurrent tests share state; we register in the
+		// helper to keep the call site simple). The "moe-35b-mini" alias is
+		// already registered by the production entry; this is the
+		// no-op-default.
+		ModelRegistry.RegisterForTest(new EngineConfig(
+			ModelAlias: modelAlias,
+			ModelPath: "/models/test-" + modelAlias + ".gguf",
+			OverrideTensors: new[] { "ffn_.*_exps=PEER" }));
 		var cfg = new CoordinatorConfig
 		{
 			UseLlamaEngine = true,
@@ -35,7 +43,7 @@ public sealed class MultiEngineRouterTests
 					Role = "head", PeerWorker = peerWorker,
 					PeerHost = "192.168.122.21", PeerPort = 9700,
 					PipelineCapable = headPipelineCapable, CombinedCapable = headCombinedCapable,
-					PipelineOtSplit = pipelineSplit, CombinedOtSplit = combinedSplit
+					ModelAlias = modelAlias
 				},
 				new()
 				{
@@ -59,7 +67,7 @@ public sealed class MultiEngineRouterTests
 		Assert.Equal(MultiEngineMode.Pipeline, plan!.Value.Mode);
 		Assert.Equal("rtx", plan.Value.Head.Name);
 		Assert.Equal("p100", plan.Value.Peer.Name);
-		Assert.Contains("PEER", plan.Value.OtSplit);
+		Assert.Equal("moe-35b-mini", plan.Value.EngineConfig.ModelAlias);
 	}
 
 	[Fact]
@@ -106,7 +114,7 @@ public sealed class MultiEngineRouterTests
 		var (cfg, tracker) = Build(pipeline: true, combined: true, policy: "combined");
 		var plan = MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000);
 		Assert.Equal(MultiEngineMode.Combined, plan!.Value.Mode);
-		Assert.Equal("ffn_.*_exps=PEER", plan.Value.OtSplit);
+		Assert.Equal("moe-35b-mini", plan.Value.EngineConfig.ModelAlias);
 	}
 
 	[Fact]
@@ -122,8 +130,22 @@ public sealed class MultiEngineRouterTests
 	[Fact]
 	public void Skips_When_No_Split_Configured()
 	{
-		var (cfg, tracker) = Build(pipelineSplit: null, combinedSplit: null, combined: true);
+		// Phase 2a: the old "no split configured" gate is gone. The router
+		// now skips a head whose ModelAlias doesn't resolve in the
+		// ModelRegistry. Use a deliberately-unregistered alias by clearing
+		// the static registry first (the production entries get re-seeded
+		// in ClearForTest; we then register a unique garbage alias and
+		// clear it to leave the registry pristine).
+		ModelRegistry.ClearForTest();
+		// Register an alias that the head's worker won't use, so the
+		// router's lookup of the head's alias throws.
+		ModelRegistry.RegisterForTest(new EngineConfig(
+			ModelAlias: "unrelated",
+			ModelPath: "/tmp/unrelated.gguf"));
+		var (cfg, tracker) = Build(modelAlias: "definitely-not-registered-9c2", combined: true);
 		Assert.Null(MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000));
+		// Restore the registry for the next test in the run.
+		ModelRegistry.ClearForTest();
 	}
 
 	[Fact]
@@ -133,13 +155,19 @@ public sealed class MultiEngineRouterTests
 		Assert.Null(MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000));
 	}
 
-	// ── #383 T5: combined-static routing ──
+	// ── #383 T5 (now: peer-only with slots=0) ──
 
 	[Fact]
 	public void Selects_CombinedStatic_Peer_With_Zero_Slots()
 	{
-		// combined-static peers have 0 slots — they are never "free" in the tracker
-		// (IsFree requires a free slot). The router must skip the IsFree check for them.
+		// Peer-only workers (slots=0) are dedicated to a head and never
+		// "free" in the tracker (IsFree requires a free slot). The router
+		// must skip the IsFree check for them.
+		ModelRegistry.RegisterForTest(new EngineConfig(
+			ModelAlias: "dense-27b-q5",
+			ModelPath: "/models/test-dense-27b-q5.gguf",
+			NGpuLayers: 65, NCtx: 96000,
+			SplitMode: "layer", TensorSplit: new[] { 25.0, 40.0 }));
 		var cfg = new CoordinatorConfig
 		{
 			UseLlamaEngine = true,
@@ -153,14 +181,12 @@ public sealed class MultiEngineRouterTests
 					Name = "rtx", Host = "localhost", RpcPort = 9601,
 					LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 1,
 					Role = "head", PeerWorker = "rtx3060",
-					CombinedCapable = true, CombinedOtSplit = "21/44",
-					RunType = "combined-static"
+					CombinedCapable = true, ModelAlias = "dense-27b-q5"
 				},
 				new()
 				{
 					Name = "rtx3060", Host = "localhost", RpcPort = 9603,
-					LlamaUrl = "http://localhost:8081", WorkerType = 3, Slots = 0,
-					RunType = "combined-static-peer"
+					LlamaUrl = "http://localhost:8081", WorkerType = 3, Slots = 0
 				}
 			}
 		};
@@ -180,7 +206,7 @@ public sealed class MultiEngineRouterTests
 		Assert.Equal(MultiEngineMode.Combined, plan!.Value.Mode);
 		Assert.Equal("rtx", plan.Value.Head.Name);
 		Assert.Equal("rtx3060", plan.Value.Peer.Name);
-		Assert.Equal("21/44", plan.Value.OtSplit);
+		Assert.Equal("dense-27b-q5", plan.Value.EngineConfig.ModelAlias);
 	}
 
 	// ── P3.0 (#366): peer must be exclusively reservable for COMBINED admission ──
@@ -216,7 +242,7 @@ public sealed class MultiEngineRouterTests
 					Name = "rtx", Host = "localhost", RpcPort = 9601,
 					LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 1,
 					Role = "head", PeerWorker = "p100",
-					PipelineCapable = true, PipelineOtSplit = "blk\\..*=PEER"
+					PipelineCapable = true, ModelAlias = "moe-35b-mini"
 				},
 				new()
 				{
