@@ -73,7 +73,7 @@ public static class MultiEngineRouter
             // Resolve the mode for this head, honouring the configured preference order.
             foreach (var mode in PreferenceOrder(cfg))
             {
-                if (!ModeUsable(cfg, head, mode)) continue;
+                if (!ModeUsable(cfg, head, mode, engineConfig)) continue;
                 return new Plan(head, peer, mode, engineConfig);
             }
         }
@@ -102,7 +102,7 @@ public static class MultiEngineRouter
     /// any config for COMBINE — the engine already has its dual-load setup
     /// from startup, so the C# only needs to send the mode toggle).
     /// </summary>
-    private static bool ModeUsable(CoordinatorConfig cfg, WorkerConfig head, MultiEngineMode mode)
+    private static bool ModeUsable(CoordinatorConfig cfg, WorkerConfig head, MultiEngineMode mode, EngineConfig engineConfig)
     {
         if (mode == MultiEngineMode.Pipeline)
         {
@@ -110,8 +110,10 @@ public static class MultiEngineRouter
             // PIPELINE mode needs a runtime override-tensor (the engine routes
             // matching tensors to the peer at runtime via 0x46). If the
             // EngineConfig has no override-tensor, the engine can't route
-            // anything — refuse the plan.
-            return true;  // override-tensor check is done at translate time
+            // anything — refuse the plan rather than silently degrading to
+            // solo after burning an exclusive peer reservation.
+            return engineConfig.OverrideTensors is { Length: > 0 } ots
+                && ots.Any(s => !string.IsNullOrWhiteSpace(s));
         }
         if (mode == MultiEngineMode.Combined)
         {

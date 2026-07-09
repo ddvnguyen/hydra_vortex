@@ -817,6 +817,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			try { engineConfig = ModelRegistry.Resolve(head.ModelAlias ?? ""); }
 			catch (InvalidOperationException) { continue; }
 
+			// PIPELINE needs a runtime override-tensor for the engine to route
+			// anything to the peer; without one the plan would silently degrade
+			// to solo after already reserving the peer. Refuse it here instead.
+			if (meMode == MultiEngineMode.Pipeline &&
+				(engineConfig.OverrideTensors is not { Length: > 0 } ots || !ots.Any(s => !string.IsNullOrWhiteSpace(s))))
+				continue;
+
 			_log.Information("force_multiengine Mode={Mode} Head={Head} Peer={Peer} Alias={Alias}",
 				mode, head.Name, peer.Name, engineConfig.ModelAlias);
 			return new MultiEngineRouter.Plan(head, peer, meMode, engineConfig);
