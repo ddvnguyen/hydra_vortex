@@ -16,17 +16,23 @@ public sealed class MultiEngineRouterTests
 		string policy = "pipeline",
 		bool headPipelineCapable = true, bool headCombinedCapable = true,
 		string modelAlias = "moe-35b-mini",
-		string? peerWorker = "p100")
+		string? peerWorker = "p100",
+		bool registerAlias = true,
+		string[]? overrideTensors = null)
 	{
 		// Phase 2a: tests register the model alias on the global ModelRegistry
 		// (it's static, so concurrent tests share state; we register in the
 		// helper to keep the call site simple). The "moe-35b-mini" alias is
 		// already registered by the production entry; this is the
-		// no-op-default.
-		ModelRegistry.RegisterForTest(new EngineConfig(
-			ModelAlias: modelAlias,
-			ModelPath: "/models/test-" + modelAlias + ".gguf",
-			OverrideTensors: new[] { "ffn_.*_exps=PEER" }));
+		// no-op-default. Pass registerAlias: false to exercise the
+		// unresolvable-alias path (Resolve() throws → Select() skips the head).
+		if (registerAlias)
+		{
+			ModelRegistry.RegisterForTest(new EngineConfig(
+				ModelAlias: modelAlias,
+				ModelPath: "/models/test-" + modelAlias + ".gguf",
+				OverrideTensors: overrideTensors ?? new[] { "ffn_.*_exps=PEER" }));
+		}
 		var cfg = new CoordinatorConfig
 		{
 			UseLlamaEngine = true,
@@ -128,24 +134,35 @@ public sealed class MultiEngineRouterTests
 	}
 
 	[Fact]
-	public void Skips_When_No_Split_Configured()
+	public void Skips_When_Model_Alias_Not_Registered()
 	{
 		// Phase 2a: the old "no split configured" gate is gone. The router
 		// now skips a head whose ModelAlias doesn't resolve in the
-		// ModelRegistry. Use a deliberately-unregistered alias by clearing
-		// the static registry first (the production entries get re-seeded
-		// in ClearForTest; we then register a unique garbage alias and
-		// clear it to leave the registry pristine).
-		ModelRegistry.ClearForTest();
-		// Register an alias that the head's worker won't use, so the
-		// router's lookup of the head's alias throws.
-		ModelRegistry.RegisterForTest(new EngineConfig(
-			ModelAlias: "unrelated",
-			ModelPath: "/tmp/unrelated.gguf"));
-		var (cfg, tracker) = Build(modelAlias: "definitely-not-registered-9c2", combined: true);
+		// ModelRegistry. registerAlias: false leaves this alias unregistered,
+		// so ModelRegistry.Resolve throws and Select skips the head.
+		var (cfg, tracker) = Build(modelAlias: "definitely-not-registered-9c2", combined: true, registerAlias: false);
 		Assert.Null(MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000));
-		// Restore the registry for the next test in the run.
-		ModelRegistry.ClearForTest();
+	}
+
+	[Fact]
+	public void Skips_Pipeline_When_No_Override_Tensor_Configured()
+	{
+		// The resolved EngineConfig can lack OverrideTensors (e.g. a layer-split
+		// DENSE-profile alias like "dense-27b-q5" has none). PIPELINE mode needs
+		// a runtime override-tensor for the engine to route anything to the peer;
+		// without one, ModeUsable must refuse the plan rather than let it through
+		// and silently degrade to solo after the peer is already reserved.
+		var (cfg, tracker) = Build(pipeline: true, combined: false, overrideTensors: Array.Empty<string>());
+		Assert.Null(MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000));
+	}
+
+	[Fact]
+	public void Falls_Back_To_Combined_When_Pipeline_Has_No_Override_Tensor()
+	{
+		var (cfg, tracker) = Build(pipeline: true, combined: true, policy: "pipeline",
+			overrideTensors: Array.Empty<string>());
+		var plan = MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000);
+		Assert.Equal(MultiEngineMode.Combined, plan!.Value.Mode);
 	}
 
 	[Fact]
