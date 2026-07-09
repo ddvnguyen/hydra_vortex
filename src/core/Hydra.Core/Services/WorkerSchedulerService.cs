@@ -612,6 +612,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				exclude: entry.NodeName);
 			if (alt != null && _tracker.TryAcquireSlot(alt.Name, out var altSlot, "decode"))
 			{
+				// NoStoreKvRestore=true: KV state cannot be transferred between
+				// nodes.  A different-node decode worker would have no KV to
+				// work with, and the cross-model guard is bypassed (the store-
+				// backed hash check never runs).  Skip the cross-node fallback
+				// — the request will retry or fail cleanly instead of getting
+				// stuck on a worker with incompatible/no KV state.
+				if (_cfg.NoStoreKvRestore && alt.Name != entry.NodeName)
+				{
+					_log.Warning("cross_node_affinity_skip_nokv Sid={Sid} From={From} To={To}",
+						item.SessionId, entry.NodeName, alt.Name);
+					_tracker.ReleaseSlot(alt.Name, altSlot);
+					CoordinatorMetrics.CrossNodeAffinitySkipped.WithLabels(alt.Name, "nokvrestore").Inc();
+					return WorkItemState.None;
+				}
+
 				item.RouteType = "cross_node";
 				CoordinatorMetrics.RequestsTotal.WithLabels(alt.Name, "cross_node").Inc();
 				CoordinatorMetrics.RequestsTotalAll.Inc();
@@ -1594,11 +1609,31 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		// HYDRA_COORD_NO_STORE_KV_RESTORE=true: skip Store KV restore entirely.
 		// The session slot already has KV from the prefill; we go straight to
-		// the cross-model guard check. Combined with cache-prompt=true at the
-		// engine, this means prompt caching is still available inside the slot
-		// but no Hydra-level Store round-trip.
+		// decode. Combined with cache-prompt=true at the engine, this means
+		// prompt caching is still available inside the slot but no Hydra-level
+		// Store round-trip.
+		//
+		// Safety: when the decode worker differs from the session's affinity
+		// node (cross-node fallback), the KV state cannot be transferred — the
+		// slot has no KV from the prefill.  Returning Decode would leave the
+		// engine trying to decode on a cold/no-KV slot, which hangs.  Release
+		// the lease and re-route so the request retries on the correct node.
 		if (_cfg.NoStoreKvRestore)
 		{
+			if (entry != null && !string.IsNullOrWhiteSpace(entry.NodeName)
+				&& entry.NodeName != w.Name)
+			{
+				_log.Warning("restore_kv_abort_cross_node_nokv Sid={Sid} From={From} To={To}",
+					item.SessionId, entry.NodeName, w.Name);
+				if (item.DecodeLease != null)
+					await item.DecodeLease.DisposeAsync();
+				item.DecodeLease = null;
+				item.DecodeWorker = null;
+				item.DecodeSlot = null;
+				item.State = WorkItemState.RouteDecision;
+				return WorkItemState.None;
+			}
+
 			_log.Information("restore_kv_skipped Sid={Sid} Node={Node} Slot={Slot} (NoStoreKvRestore=true)",
 				item.SessionId, w.Name, slotId);
 			return WorkItemState.Decode;
