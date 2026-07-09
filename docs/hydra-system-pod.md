@@ -32,7 +32,7 @@ podman pod ls                              # should show pod_hydra-system with 4
 curl -s http://localhost:9000/health      # core (should show 3 nodes: rtx, rtx3060, p100)
 curl -s http://localhost:9700/health      # head (RTX 5060 Ti, ports 8080/9503)
 curl -s http://localhost:9701/health      # head (RTX 3060, ports 8081/9504)
-ss -tlnp | grep -E '9504|9505'             # ggml-RPC backends
+ss -tlnp | grep 9504                       # rtx3060's unified RPC port (Hydra state-streaming + ggml-RPC dispatch)
 curl -s http://localhost:13133/ | head -1   # OTel Collector health
 ```
 
