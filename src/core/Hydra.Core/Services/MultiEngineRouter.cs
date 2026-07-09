@@ -8,18 +8,36 @@ namespace Hydra.Core.Services;
 /// request should recruit a second engine, which head+peer to use, and which mode.
 /// Kept side-effect free (no slot acquisition) so it is directly unit-testable — the
 /// scheduler does the lease/activation/fallback around the chosen plan.
+///
+/// Phase 2a (ddvnguyen/llama.cpp#36): the old OT-vs-static branch is gone. The router
+/// picks a (head, peer, mode) triple and the <see cref="EngineConfig"/> is derived from
+/// <see cref="ModelRegistry"/> keyed by <see cref="WorkerConfig.ModelAlias"/>. The
+/// wire opcodes (0x44 SET_EXPERT_MODE, 0x46 EnginePipelineAttach) and their payloads
+/// are unchanged — the translator layer in <c>WorkerSchedulerService</c> converts the
+/// <see cref="EngineConfig"/> to those existing wire shapes.
 /// </summary>
 public static class MultiEngineRouter
 {
-    public readonly record struct Plan(WorkerConfig Head, WorkerConfig Peer, MultiEngineMode Mode, string OtSplit);
+    /// <summary>
+    /// Selected multi-engine plan. The <see cref="EngineConfig"/> carries the
+    /// stock-params shape the engine would consume (model path, n-gpu-layers,
+    /// override-tensor, etc.); the scheduler's translator layer projects this
+    /// onto the existing 0x44/0x46 wire payloads in Phase 2a.
+    /// </summary>
+    public readonly record struct Plan(
+        WorkerConfig Head,
+        WorkerConfig Peer,
+        MultiEngineMode Mode,
+        EngineConfig EngineConfig);
 
     /// <summary>
     /// Returns a multi-engine plan when one applies, else null. A plan applies only when:
     ///   - engine mode is on and at least one of PIPELINE/COMBINED is enabled,
     ///   - the request prompt exceeds MultiEngineThreshold,
-    ///   - a head engine is free+healthy, its configured peer is free+healthy,
-    ///   - the chosen mode is enabled, the head advertises capability for it, and an
-    ///     --override-tensor split is configured for that mode.
+    ///   - a head engine is free+healthy, its configured peer is free+healthy (or
+    ///     peer-only with slots=0, which is implicitly always available),
+    ///   - the chosen mode is enabled, the head advertises capability for it, and
+    ///   - the head has a model alias that resolves via <see cref="ModelRegistry"/>.
     /// </summary>
     public static Plan? Select(
         CoordinatorConfig cfg, List<WorkerConfig> workers,
@@ -37,18 +55,26 @@ public static class MultiEngineRouter
             var peer = workers.FirstOrDefault(w => w.Name == head.PeerWorker);
             if (peer == null || !health.IsHealthy(peer.Name))
                 continue;
-            // Hydra #383 T5: combined-static peers have 0 slots — they are never
-            // "free" in the tracker (IsFree requires a free slot). Their availability
-            // is implicit: since nothing else can schedule them, TryReserveWorkerExclusive
-            // always succeeds. For all other run types, the peer must have free slots.
-            if (!head.IsCombinedStatic && !tracker.IsFree(peer.Name))
+            // Hydra #383 T5 (now: peer-only workers): a peer with slots=0 is
+            // dedicated to a head and never has its own slots rented. It is
+            // implicitly always available; TryReserveWorkerExclusive succeeds
+            // unconditionally. For all other peers, the peer must have free
+            // slots.
+            if (peer.Slots > 0 && !tracker.IsFree(peer.Name))
                 continue;
+
+            // Resolve the EngineConfig from the ModelRegistry. This is the
+            // single source of truth for per-model engine config (the old
+            // WorkerConfig.CombinedOtSplit / PipelineOtSplit fields are gone).
+            EngineConfig engineConfig;
+            try { engineConfig = ModelRegistry.Resolve(head.ModelAlias ?? ""); }
+            catch (InvalidOperationException) { continue; }  // unrecognised alias → skip this head
 
             // Resolve the mode for this head, honouring the configured preference order.
             foreach (var mode in PreferenceOrder(cfg))
             {
-                if (!ModeUsable(cfg, head, mode, out var split)) continue;
-                return new Plan(head, peer, mode, split);
+                if (!ModeUsable(cfg, head, mode, engineConfig)) continue;
+                return new Plan(head, peer, mode, engineConfig);
             }
         }
         return null;
@@ -69,21 +95,32 @@ public static class MultiEngineRouter
         }
     }
 
-    private static bool ModeUsable(CoordinatorConfig cfg, WorkerConfig head, MultiEngineMode mode, out string split)
+    /// <summary>
+    /// Phase 2a: a mode is "usable" for a head when (a) the global flag is on,
+    /// (b) the engine advertises the capability, and (c) the EngineConfig has
+    /// the runtime data the wire payload needs (override-tensor for PIPELINE;
+    /// any config for COMBINE — the engine already has its dual-load setup
+    /// from startup, so the C# only needs to send the mode toggle).
+    /// </summary>
+    private static bool ModeUsable(CoordinatorConfig cfg, WorkerConfig head, MultiEngineMode mode, EngineConfig engineConfig)
     {
-        split = "";
         if (mode == MultiEngineMode.Pipeline)
         {
             if (!cfg.PipelineEnabled || !head.PipelineCapable) return false;
-            if (string.IsNullOrWhiteSpace(head.PipelineOtSplit)) return false;
-            split = head.PipelineOtSplit!;
-            return true;
+            // PIPELINE mode needs a runtime override-tensor (the engine routes
+            // matching tensors to the peer at runtime via 0x46). If the
+            // EngineConfig has no override-tensor, the engine can't route
+            // anything — refuse the plan rather than silently degrading to
+            // solo after burning an exclusive peer reservation.
+            return engineConfig.OverrideTensors is { Length: > 0 } ots
+                && ots.Any(s => !string.IsNullOrWhiteSpace(s));
         }
         if (mode == MultiEngineMode.Combined)
         {
             if (!cfg.CombinedEnabled || !head.CombinedCapable) return false;
-            if (string.IsNullOrWhiteSpace(head.CombinedOtSplit)) return false;
-            split = head.CombinedOtSplit!;
+            // COMBINE mode: engine already has --combined-ot-pattern loaded
+            // at startup; C# only sends the 0x44 mode toggle. No additional
+            // data required from EngineConfig.
             return true;
         }
         return false;
