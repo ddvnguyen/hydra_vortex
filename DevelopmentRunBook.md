@@ -256,6 +256,30 @@ WORK=/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp
 cd $WORK
 ```
 
+#### Fast local iteration (edit → build → verify a fork change)
+
+Use this for the edit/build/test loop while developing a fork change — **not** for
+producing the binary that gets deployed. It uses the `hydra-dev` CMake preset
+(`CMakePresets.json`), which keeps the same `86;120` fat-arch pair and correctness
+flags as the deploy build below (both the 5060 Ti and 3060 stay testable, e.g. for
+COMBINED mode), but skips `CMAKE_INTERPROCEDURAL_OPTIMIZATION` (LTO) — which forces a
+slow whole-program relink on every rebuild regardless of which file changed — and
+wires in `ccache` (`conda install -c conda-forge ccache` if not already installed;
+no sudo needed). Together these cut a single-file rebuild from the usual 120-180s
+down to a few seconds once the object/link cache is warm.
+
+```bash
+cmake --preset hydra-dev -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 \
+  -DCMAKE_CUDA_COMPILER=/opt/software/cuda/13.2/bin/nvcc
+cmake --build build-hydra-dev --target llama-engine -j$(nproc)
+
+# after any subsequent edit, just re-run the build command above
+```
+
+Check ccache is actually being hit: `ccache -s` shows cache hits incrementing across
+rebuilds. Once your change is verified, do a real deploy build (below) before pushing
+— the deploy build keeps LTO on since it affects steady-state decode perf.
+
 #### RTX 5060 Ti + RTX 3060 (fat sm_86+sm_120, CUDA 13.2) — preferred
 
 One SASS image with both archs compiled in. The 5060 Ti (Blackwell, sm_120a)
@@ -270,7 +294,7 @@ per-arch build dance and is the binary that ships in
 
 ```bash
 CUDA_PATH=/opt/software/cuda/13.2
-cmake -B build_sm86_sm120 \
+cmake -B build_sm86_sm120 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES="86;120" \
   -DCPACK_PACKAGE_NAME="ik-llama-sm86-sm120-cuda13.2" \
   -DGGML_CUDA=ON \
@@ -316,7 +340,7 @@ The RTX 5060 Ti head and the RTX 3060 peer both bind-mount
 
 ```bash
 CUDA_PATH=/opt/software/cuda/13.2
-cmake -B build_sm120_v3 \
+cmake -B build_sm120_v3 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES="120" \
   -DCPACK_PACKAGE_NAME="ik-llama-sm120-cuda13.2" \
   -DGGML_CUDA=ON \
@@ -350,7 +374,7 @@ PTX JIT (slow but functional — see PR #368). For COMBINED mode the 3060's
 
 ```bash
 CUDA_PATH=/opt/software/cuda/13.2
-cmake -B build_sm86 \
+cmake -B build_sm86 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES="86" \
   -DCPACK_PACKAGE_NAME="ik-llama-sm86-cuda13.2" \
   -DGGML_CUDA=ON \
@@ -377,7 +401,7 @@ GCC 15+ fails with `error: unrecognized command-line option '-###'`).
 
 ```bash
 CUDA_PATH=/opt/software/cuda/12.9
-cmake -B build_sm60_v2 \
+cmake -B build_sm60_v2 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES="60" \
   -DCMAKE_CUDA_HOST_COMPILER="/usr/bin/g++-14" \
   -DGGML_RPC=ON \

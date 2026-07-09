@@ -142,6 +142,15 @@ The fork has **two** binaries the Hydra system uses:
   engine mode. Used by both the 5060 Ti (head) and the 3060 (peer) on the host.
   Accepts the same args as `llama-server` plus the hydra flags.
 
+### Fast local iteration
+
+For the edit/build/verify loop on a fork change, use the `hydra-dev` CMake preset
+(`src/llama-cpp/CMakePresets.json`) instead of the commands below — same `86;120`
+fat-arch + correctness flags, but LTO off + ccache wired in, cutting a single-file
+rebuild from ~120-180s down to a few seconds once warm. See "Fast local iteration"
+in `DevelopmentRunBook.md`. Use the full commands below only when producing the
+binary that actually gets deployed (LTO affects steady-state decode perf).
+
 ### Quick reference
 
 | Target | CUDA | Build dir | Output | Notes |

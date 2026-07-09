@@ -34,6 +34,14 @@ llama:
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
 
+health:
+  # #399: the health checker now supports simple mode for peer-only nodes
+  # (auto-detected via params.peer-only: true). It just checks HTTP 200
+  # on the path — no []SlotStatus decode needed. Use /health which
+  # returns {"status":"ok"} in peer-only mode. See #399.
+  path: /health
+  max_fails: 10
+
 services:
   promtail:
     enabled: false

@@ -1,6 +1,20 @@
 # Hydra Head - RTX 5060 Ti Node - 27B COMBINED Static Profile
 # Layer-split COMBINED mode for Qwopus3.6-27B-Coder-Compat-MTP
 # Peer: RTX 3060 on localhost:9506, tensor_split 21/44
+#
+# Config updated 2026-07-08: applied best-performing tested config
+# from live baseline tests (Phase 1 binary, 16b65ce7):
+#   - 21/44 split (21 layers on 3060, 44 on 5060 Ti): best prefill
+#   - ub=512 (was 384): less per-chunk overhead
+#   - ctx=64K (was 128K): 21/44 + MTP OOMs at 96K (MTP draft needs 160 MB)
+#   - q8/q8 KV cache: q5_0 crashes with FA_ALL_QUANTS=OFF
+#   - Removed pre-#30 flags (combined-split-mode, combined-tensor-split)
+#     replaced by stock tensor-split flag
+#
+# Baseline results at this config (Phase 1 binary, 16b65ce7):
+#   Prefill: 543 tok/s (2969 prompt, max_tokens=1)
+#   Decode: 23.36 tok/s with MTP (96.4% draft acceptance, 238/247)
+#   VRAM: 5060 Ti 15478 MiB, 3060 7197 MiB
 
 node:
   name: rtx
@@ -27,20 +41,19 @@ llama:
   rpc_port: 9503
   params:
     model: /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
-    ctx-size: 128000
+    ctx-size: 65536
     parallel: 1
-    ubatch-size: 384
-    n-gpu-layers: 66
+    ubatch-size: 512
+    n-gpu-layers: 65
+    fit: off
     cache-type-k: q8_0
-    cache-type-v: q5_0
-    # RoPE scaling: 27B native 64K, yarn with ext-ctx 32K → effective 128K
+    cache-type-v: q8_0
+    # RoPE scaling: 27B native 262K, yarn scale 4x → effective 262K (no ext-ctx needed)
     rope-scaling: yarn
     rope-scale: 4
     yarn-orig-ctx: 32768
-    yarn-ext-ctx: 131072
     rpc-engine: "localhost:9506"
-    combined-split-mode: "layer"
-    combined-tensor-split: "25/40"
+    tensor-split: "21/44"
     override-tensor: "token_embd.weight=CPU"
     spec-type: "draft-mtp"
     spec-draft-n-max: 3

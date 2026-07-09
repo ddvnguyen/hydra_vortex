@@ -168,6 +168,7 @@ func main() {
 	checker := health.NewChecker(
 		llamaURL,
 		cfg.Health.Path,
+		cfg.IsPeerOnly(), // simple mode: just check HTTP 200, no []SlotStatus decode (#399)
 		logger,
 		time.Duration(cfg.Health.IntervalIdleSec)*time.Second,
 		time.Duration(cfg.Health.IntervalBusySec)*time.Second,
