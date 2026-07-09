@@ -136,7 +136,7 @@ The fork has **two** binaries the Hydra system uses:
 
 - `llama-server` — the standard server (P100, fallback). Accepts all standard
   common args. Does **not** accept the COMBINED-mode flags
-  (`--rpc-engine`, `--combined-ot-pattern`, `--ggml-rpc-port`) — the
+  (`--rpc-engine`, `--combined-ot-pattern`) — the
   `extract_hydra_capability_flags` filter only lives in `llama-engine`.
 - `llama-engine` — drop-in replacement for `llama-server` PLUS the COMBINED
   engine mode. Used by both the 5060 Ti (head) and the 3060 (peer) on the host.
@@ -224,15 +224,23 @@ cuobjdump --list-elf /path/to/build_sm86_sm120/bin/libggml-cuda.so | head
 
 ### Verifying the ggml-RPC backend is exposed at runtime
 
-The peer's `node-rtx3060.yaml` has `ggml-rpc-port: 9504`. When the 3060's
+Post-v4-merge (fork `#30`/`#37`) there's a single unified `--rpc-port` per
+process — it serves both the Hydra state-streaming protocol and ggml-RPC
+compute dispatch, distinguished by a one-byte `MSG_PEEK` on the same socket.
+The old separate `--ggml-rpc-port` flag is gone (a removed no-op on the
+current binary — see `removedParamsKeys` in
+`src/head/internal/config/config.go`).
+
+The peer's `node-rtx3060.yaml` has `rpc_port: 9504`. When the 3060's
 llama-engine is up, you should see:
 ```bash
 ss -tlnp | grep 9504
 # LISTEN 0  16  0.0.0.0:9504  *  users:(("llama-engine",...))
 ```
-The head's `--ggml-rpc-port 9505` (rtx) stays commented out until #376 lands —
-with it enabled the engine currently crashes at model load inside
-`ggml_backend_rpc_add_server` (libggml-rpc.so offset +0x11183).
+The head (rtx) dials this same port via `--rpc-engine localhost:9504`
+(`node-rtx.yaml`) — it does not expose a separate RPC-compute port of its
+own; `#376`'s fail-open fix for the TCP-up/RPC-down race window is what
+made this dial reliable.
 
 ### Build-time gates
 

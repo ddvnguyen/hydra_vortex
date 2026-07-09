@@ -172,7 +172,11 @@ func TestBuildLlamaArgs(t *testing.T) {
 	}
 }
 
-// Hydra #383 T3: golden-args test for the 27B peer-only config.
+// Hydra #383 T3 / post-v4-merge fixup: golden-args test for the 27B
+// peer-only config. `--ggml-rpc-port` and `--peer-only` are removed no-ops
+// on the current llama-engine binary (see removedParamsKeys) — they must
+// never reach argv even if a stale config still sets them. The peer's
+// listen port comes solely from `--rpc-port` now.
 func TestBuildLlamaArgs_PeerOnly27B(t *testing.T) {
 	cfg := Config{
 		Llama: LlamaConfig{
@@ -180,7 +184,7 @@ func TestBuildLlamaArgs_PeerOnly27B(t *testing.T) {
 			WorkingDir: "/llama",
 			Host:       "0.0.0.0",
 			Port:       8081,
-			RPCPort:    0,
+			RPCPort:    9506,
 			Params: map[string]any{
 				"peer-only":     true,
 				"ggml-rpc-port": 9506,
@@ -196,9 +200,7 @@ func TestBuildLlamaArgs_PeerOnly27B(t *testing.T) {
 	expected := []string{
 		"--host", "0.0.0.0",
 		"--port", "8081",
-		"--rpc-port", "0",
-		"--ggml-rpc-port", "9506",
-		"--peer-only",
+		"--rpc-port", "9506",
 	}
 	if len(args) != len(expected) {
 		t.Errorf("args length: got %d, want %d\n  got:  %v\n  want: %v",
@@ -327,6 +329,38 @@ func TestValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
+		},
+		{
+			// Post-v4-merge: rpc_port is the single unified port for every
+			// process, so a peer-only node missing it is invalid too — it's
+			// no longer excused by IsPeerOnly() the way it used to be.
+			name: "peer-only missing rpc_port is rejected",
+			cfg: &Config{
+				Node: NodeConfig{Name: "test"},
+				Llama: LlamaConfig{
+					Binary: "/llama/bin/llama-engine",
+					Port:   8082,
+					Params: map[string]any{
+						"peer-only": true,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "peer-only with rpc_port set is valid",
+			cfg: &Config{
+				Node: NodeConfig{Name: "test"},
+				Llama: LlamaConfig{
+					Binary:  "/llama/bin/llama-engine",
+					Port:    8082,
+					RPCPort: 9506,
+					Params: map[string]any{
+						"peer-only": true,
+					},
+				},
+			},
+			wantErr: false,
 		},
 		{
 			name: "combined-split-mode=layer with combined-ot-pattern rejected",

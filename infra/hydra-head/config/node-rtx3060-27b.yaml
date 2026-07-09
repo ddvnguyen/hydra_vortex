@@ -1,7 +1,17 @@
 # Hydra Head - RTX 3060 Node - 27B COMBINED Static Profile (Peer Only)
-# Uses llama-engine --peer-only: no model loaded, just exposes GPU 1 as
-# a ggml-RPC backend for the 5060 Ti head. Lightweight: only the RPC
-# server thread + HTTP health endpoint.
+# Compute-only mode: no `model` param, just exposes GPU 1 as a ggml-RPC
+# backend for the 5060 Ti head. Lightweight: only the RPC server thread +
+# HTTP health endpoint.
+#
+# Post-v4-merge (fork #30/#37), there's a single unified port for the
+# whole process — `rpc_port` below IS the port the head's `rpc-engine`
+# dials (localhost:9504 in node-rtx-27b.yaml), matching Hydra.Core's
+# `llama_rpc_port` for rtx3060 in workers-27b.json. The old `--peer-only`
+# / `--ggml-rpc-port` flags are removed no-ops on the current llama-engine
+# binary (it warns and ignores them) — `peer-only: true` below is kept
+# only as a hydra-head-side marker (health-checker simple mode, T4 fit
+# preflight skip); hydra-head's config.go filters it out of the actual
+# CLI args it passes to the binary.
 
 node:
   name: rtx3060
@@ -25,10 +35,9 @@ llama:
   binary: /llama/bin/llama-engine
   working_dir: /llama
   port: 8082
-  rpc_port: 9506
+  rpc_port: 9504
   params:
     peer-only: true
-    ggml-rpc-port: 9506
   env:
     NVIDIA_VISIBLE_DEVICES: "1"
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
