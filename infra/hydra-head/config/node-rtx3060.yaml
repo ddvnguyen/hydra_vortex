@@ -40,11 +40,13 @@ binaries:
 
 llama:
   # The 3060 is the COMBINED peer. Like the head (rtx), it uses
-  # llama-engine so it can start its embedded ggml-RPC backend on
-  # :9504 (--ggml-rpc-port below). llama-server doesn't support
-  # --ggml-rpc-port. llama-engine accepts both SOLO and peer modes;
-  # the head (rtx) is the only one that needs --rpc-engine /
-  # --combined-ot-pattern.
+  # llama-engine so it can start its embedded RPC backend on :9504
+  # (this node's `rpc_port` below). Post-v4-merge there's a single
+  # unified port per process (no separate --ggml-rpc-port anymore —
+  # that flag is a removed no-op on the current binary); the head's
+  # `rpc-engine: localhost:9504` in node-rtx.yaml dials this same port.
+  # llama-engine accepts both SOLO and peer modes; the head (rtx) is the
+  # only one that needs --rpc-engine / --combined-ot-pattern.
   binary: /llama/bin/llama-engine
   working_dir: /llama
   port: 8081                 # 8080 is owned by head-rtx (5060 Ti)
@@ -77,15 +79,16 @@ llama:
     slot-prompt-similarity: 0.4
 
     # ── COMBINED engine-mode peer wiring (feat/add-rtx-3060-head) ─────
-    # --ggml-rpc-port exposes this peer's ggml RPC backend on :9504.
-    # The head's llama-server (rtx) is configured with --rpc-engine
-    # localhost:9504 in node-rtx.yaml, so when the Coordinator
-    # activates COMBINED mode for a large request, the head reaches
-    # into the 3060's backend to dispatch expert tensors. The peer
-    # itself does NOT need --rpc-engine (it's not a head) and does
-    # NOT need --combined-ot-pattern (only the head enforces the
-    # split).
-    ggml-rpc-port: 9506
+    # This node's `rpc_port: 9504` (above) is the peer's ggml RPC
+    # backend port. The head's llama-engine (rtx) is configured with
+    # --rpc-engine localhost:9504 in node-rtx.yaml, so when the
+    # Coordinator activates COMBINED mode for a large request, the head
+    # reaches into the 3060's backend to dispatch expert tensors. The
+    # peer itself does NOT need --rpc-engine (it's not a head) and does
+    # NOT need --combined-ot-pattern (only the head enforces the split).
+    # (Previously a separate `ggml-rpc-port` param exposed this on a
+    # second port — removed no-op on the current binary post-v4-merge,
+    # see node-rtx.yaml's comment.)
 
   env:
     # Force this process onto CUDA device 1 (the 3060). 0 is the 5060 Ti.

@@ -68,16 +68,23 @@ llama:
     slot-prompt-similarity: 0.4
 
     # ── COMBINED engine-mode wiring (feat/add-rtx-3060-head) ───────────
-    # The peer (rtx3060) is configured to expose its ggml RPC backend on
-    # :9504. The head reaches into the 3060's backend to dispatch expert
-    # tensors via the ggml-RPC fork at f1801f524 + the fail-open fix in
+    # The peer (rtx3060) exposes a single unified RPC port at 9504 (its
+    # `rpc_port` in node-rtx3060.yaml — matches Hydra.Core's
+    # `llama_rpc_port` for rtx3060 in workers.json). The head reaches
+    # into the 3060's backend to dispatch expert tensors via the ggml-RPC
+    # fork at f1801f524 + the fail-open fix in
     # ggml_backend_rpc_get_device_count (hydra_vortex#376) so the TCP-up
     # / RPC-down race window no longer aborts. Combined with the
     # 'combined' capability advertisement in engine_info (#375), the C#
     # side now sees a valid plan and drives SET_EXPERT_MODE("combined")
     # on every > 4K request.
-    ggml-rpc-port: 9505
-    rpc-engine: "localhost:9506"
+    #
+    # Post-v4-merge (fork #30/#37): the head no longer needs its own
+    # `ggml-rpc-port` (there's no separate ggml-RPC listen port anymore —
+    # a single `rpc_port` per process serves both the Hydra protocol and
+    # ggml-RPC compute, dispatched by a one-byte MSG_PEEK). `--ggml-rpc-port`
+    # is a removed no-op on the current llama-engine binary; dropped here.
+    rpc-engine: "localhost:9504"
     combined-ot-pattern: "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"
 
   env:

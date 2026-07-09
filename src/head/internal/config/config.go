@@ -291,6 +291,25 @@ func (c *Config) buildParamsArgs() []string {
 	return c.buildParamsArgsFiltered(nil)
 }
 
+// removedParamsKeys are Hydra flags that existed before the v4 merged-RPC-server
+// migration (fork `ddvnguyen/llama.cpp#30`/`#37`) but are no-ops on the current
+// llama-engine binary — it warns and ignores them instead of rejecting them,
+// so a stale config silently misbehaves rather than failing loudly:
+//   - "ggml-rpc-port": the separate ggml-RPC backend port is gone. There is now
+//     a single unified port (`--rpc-port` / `c.Llama.RPCPort`) that serves both
+//     the Hydra state-streaming protocol and ggml-RPC compute dispatch,
+//     distinguished by a one-byte MSG_PEEK on the same socket.
+//   - "peer-only": compute-only (no-model) mode is now entered implicitly by
+//     omitting `model` from params, not by a flag.
+//
+// These stay valid as Go-side-only config markers (see IsPeerOnly, used for
+// health-checker simple mode and fit-preflight skip) but must never reach the
+// binary's argv, so they're filtered out here regardless of the `keep` list.
+var removedParamsKeys = map[string]bool{
+	"ggml-rpc-port": true,
+	"peer-only":     true,
+}
+
 func (c *Config) buildParamsArgsFiltered(keep map[string]bool) []string {
 	var args []string
 
@@ -301,6 +320,9 @@ func (c *Config) buildParamsArgsFiltered(keep map[string]bool) []string {
 	sort.Strings(keys)
 
 	for _, key := range keys {
+		if removedParamsKeys[key] {
+			continue
+		}
 		if keep != nil && !keep[key] {
 			continue
 		}
@@ -415,10 +437,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("llama.port is required")
 	}
 	if c.Llama.RPCPort == 0 {
-		// Peer-only mode has no model, so no Hydra RPC for KV state.
-		if !c.IsPeerOnly() {
-			return fmt.Errorf("llama.rpc_port is required")
-		}
+		// Since the v4 merged-RPC-server migration there is a single unified
+		// port for every process (head or peer, model-loaded or compute-only)
+		// — it serves both the Hydra state-streaming protocol and ggml-RPC
+		// compute dispatch. Peer-only nodes need it just as much as heads do
+		// (it's the port the head's --rpc-engine dials), so it's always required.
+		return fmt.Errorf("llama.rpc_port is required")
 	}
 	if c.Health.MaxFails < 0 {
 		return fmt.Errorf("health.max_fails must be >= 0, got %d", c.Health.MaxFails)
@@ -429,15 +453,6 @@ func (c *Config) Validate() error {
 	if c.Health.IntervalBusySec < 0 {
 		return fmt.Errorf("health.interval_busy_sec must be >= 0, got %d", c.Health.IntervalBusySec)
 	}
-	// Hydra #383 T3: peer-only mode requires --ggml-rpc-port.
-	if v, ok := c.Llama.Params["peer-only"]; ok {
-		if isTrue, _ := v.(bool); isTrue {
-			if _, hasPort := c.Llama.Params["ggml-rpc-port"]; !hasPort {
-				return fmt.Errorf("llama.params.peer-only: --ggml-rpc-port is required")
-			}
-		}
-	}
-
 	// Hydra #383 T3: reject list-param values (must be scalar).
 	for key, val := range c.Llama.Params {
 		switch val.(type) {
