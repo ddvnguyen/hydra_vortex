@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Hydra.Core.Models;
 using Hydra.Shared;
 
 namespace Hydra.Core.Services;
@@ -109,10 +110,102 @@ public sealed class HydraEngineClient
         };
     }
 
-    /// <summary>Engine CONFIGURE (0x40). Apply a JSON config blob at runtime.</summary>
-    public Task<RpcResponse> EngineConfigureAsync(
+    /// <summary>Engine CONFIGURE (0x40). Apply a JSON config blob at runtime.
+    /// Returns the typed <see cref="EngineConfigureResult"/> matching the
+    /// Phase 2b wire schema (ddvnguyen/hydra_vortex#406).</summary>
+    public async Task<EngineConfigureResult> EngineConfigureAsync(
         string slotKey, string configJson, string traceId, CancellationToken ct)
-        => _rpc.EngineConfigureAsync(slotKey, configJson, traceId, ct);
+    {
+        var resp = await _rpc.EngineConfigureAsync(slotKey, configJson, traceId, ct);
+        return ParseConfigureResponse(resp);
+    }
+
+    /// <summary>Parse a 0x40 CONFIGURE wire response into the typed
+    /// <see cref="EngineConfigureResult"/>. Public for callers that
+    /// already have a <see cref="RpcResponse"/> (e.g. the
+    /// legacy <see cref="Hydra.Shared.RpcClient.EngineConfigureAsync"/>
+    /// path used by <c>WorkerSchedulerService.cs:2842</c> at startup).</summary>
+    public static EngineConfigureResult ParseConfigureResponse(RpcResponse resp)
+    {
+        if (resp.Status != (byte)StatusCode.Ok || string.IsNullOrEmpty(resp.Meta))
+        {
+            return new EngineConfigureResult(
+                Success: resp.Status == (byte)StatusCode.Ok,
+                Tier: "",
+                ParamsApplied: new Dictionary<string, JsonElement>(),
+                DeferredKeys: Array.Empty<string>(),
+                Error: resp.Status == (byte)StatusCode.Ok
+                    ? null
+                    : ExtractErrorMessage(resp.Meta),
+                StateChunkSizeApplied: 0
+            );
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(resp.Meta);
+            var root = doc.RootElement;
+            var success = root.TryGetProperty("success", out var sEl)
+                && sEl.ValueKind == JsonValueKind.True;
+            var tier = root.TryGetProperty("tier", out var tEl)
+                && tEl.ValueKind == JsonValueKind.String
+                ? tEl.GetString() ?? "" : "";
+            var dict = new Dictionary<string, JsonElement>();
+            if (root.TryGetProperty("params_applied", out var paEl)
+                && paEl.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var p in paEl.EnumerateObject())
+                    dict[p.Name] = p.Value.Clone();
+            }
+            var deferred = new List<string>();
+            if (root.TryGetProperty("deferred_keys", out var dkEl)
+                && dkEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var d in dkEl.EnumerateArray())
+                    if (d.ValueKind == JsonValueKind.String)
+                        deferred.Add(d.GetString()!);
+            }
+            var error = root.TryGetProperty("error", out var eEl)
+                && eEl.ValueKind == JsonValueKind.String
+                ? eEl.GetString() : null;
+            long chunkApplied = 0;
+            // Legacy echo (hydra#334) — keep populated for backward compat
+            if (root.TryGetProperty("state_chunk_size_applied", out var csEl)
+                && csEl.ValueKind == JsonValueKind.Number)
+                chunkApplied = csEl.GetInt64();
+            return new EngineConfigureResult(
+                Success: success,
+                Tier: tier,
+                ParamsApplied: dict,
+                DeferredKeys: deferred,
+                Error: error,
+                StateChunkSizeApplied: chunkApplied
+            );
+        }
+        catch
+        {
+            return new EngineConfigureResult(
+                Success: false,
+                Tier: "",
+                ParamsApplied: new Dictionary<string, JsonElement>(),
+                DeferredKeys: Array.Empty<string>(),
+                Error: "malformed configure response"
+            );
+        }
+    }
+
+    private static string? ExtractErrorMessage(string? meta)
+    {
+        if (string.IsNullOrEmpty(meta)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(meta);
+            if (doc.RootElement.TryGetProperty("error", out var eEl)
+                && eEl.ValueKind == JsonValueKind.String)
+                return eEl.GetString();
+        }
+        catch { }
+        return null;
+    }
 
     /// <summary>Engine DECODE (0x43) non-streaming.</summary>
     public Task<RpcResponse> EngineDecodeAsync(

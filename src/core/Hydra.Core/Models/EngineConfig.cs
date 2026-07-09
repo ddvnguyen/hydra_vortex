@@ -55,4 +55,71 @@ public sealed record EngineConfig(
     /// config for the head's <c>--rpc-engine</c> flag in Phase 1.
     /// </summary>
     string[]? RpcServers = null
-);
+)
+{
+    /// <summary>
+    /// Serialize to the wire JSON shape the engine accepts on 0x40
+    /// CONFIGURE. Skips null fields; includes only the keys the engine
+    /// knows how to apply (T1 + T2 + T3, per ddvnguyen/hydra_vortex#406).
+    /// Unknown keys are silently ignored by the engine (forward-compat).
+    /// </summary>
+    public string ToWireJson()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append('{');
+        var first = true;
+        void Emit(string k, string v)
+        {
+            if (!first) sb.Append(',');
+            first = false;
+            sb.Append('"').Append(k).Append("\":").Append(v);
+        }
+        if (NGpuLayers is int ngl) Emit("n_gpu_layers", ngl.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (NCpuMoe is int ncpu) Emit("n_cpu_moe", ncpu.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (NCtx is int nctx) Emit("n_ctx", nctx.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (CacheTypeK is string ctk) Emit("cache_type_k", JsonString(ctk));
+        if (CacheTypeV is string ctv) Emit("cache_type_v", JsonString(ctv));
+        if (SplitMode is string sm) Emit("split_mode", JsonString(sm));
+        if (TensorSplit is double[] ts)
+        {
+            sb.Append(first ? "" : ",").Append("\"tensor_split\":[");
+            for (int i = 0; i < ts.Length; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append(ts[i].ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            sb.Append(']');
+            first = false;
+        }
+        if (OverrideTensors is string[] ots && ots.Length > 0)
+        {
+            sb.Append(first ? "" : ",").Append("\"override_tensor\":");
+            // engine accepts a single pattern string (the most common case);
+            // we join multiple with a newline so the parser sees distinct lines.
+            sb.Append(JsonString(string.Join('\n', ots)));
+            first = false;
+        }
+        if (RpcServers is string[] rpcs && rpcs.Length > 0)
+        {
+            sb.Append(first ? "" : ",").Append("\"rpc_servers\":[");
+            for (int i = 0; i < rpcs.Length; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append(JsonString(rpcs[i]));
+            }
+            sb.Append(']');
+            first = false;
+        }
+        if (!string.IsNullOrEmpty(ModelPath))
+        {
+            sb.Append(first ? "" : ",").Append("\"model\":{\"path\":").Append(JsonString(ModelPath));
+            sb.Append('}');
+            first = false;
+        }
+        sb.Append('}');
+        return sb.ToString();
+    }
+
+    private static string JsonString(string s) =>
+        System.Text.Json.JsonSerializer.Serialize(s);
+}
