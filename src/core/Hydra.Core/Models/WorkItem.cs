@@ -59,8 +59,14 @@ public sealed class WorkItem
 	public IPeerReservation? PeerLease { get; set; }
 	/// <summary>Name of the peer engine recruited (for status/metrics/logging).</summary>
 	public string? MultiPeer { get; set; }
-	/// <summary>The --override-tensor split pushed to the peer (for status surfacing).</summary>
-	public string? MultiSplit { get; set; }
+	/// <summary>
+	/// Stock-params-shaped engine config the plan selected. Phase 2a
+	/// (ddvnguyen/llama.cpp#36): the C# side derives this from
+	/// <see cref="Services.ModelRegistry"/> via <see cref="WorkerConfig.ModelAlias"/>.
+	/// The translator layer in <c>WorkerSchedulerService.ApplyMultiEngineAsync</c>
+	/// projects this to the existing <c>0x44</c>/<c>0x46</c> wire payloads.
+	/// </summary>
+	public EngineConfig? MultiEngineConfig { get; set; }
 	/// <summary>True when the chosen multi-engine mode could not be activated and we ran solo.</summary>
 	public bool MultiFellBack { get; set; }
 

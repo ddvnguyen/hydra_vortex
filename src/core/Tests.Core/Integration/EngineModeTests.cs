@@ -132,7 +132,7 @@ public sealed class EngineModeTests
                         Role = multiEngine ? "head" : "standalone", PeerWorker = multiEngine ? "p100" : null,
                         PeerHost = "192.168.122.21", PeerPort = 9700,
                         PipelineCapable = multiEngine, CombinedCapable = multiEngine,
-                        PipelineOtSplit = "blk\\.(2[0-9]|3[0-9])\\..*=PEER", CombinedOtSplit = "ffn_.*_exps=PEER" },
+                        ModelAlias = multiEngine ? "moe-35b-mini" : null },
                     new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://192.168.122.21:8086", WorkerType = 2, Slots = p100Slots, PrefillPriority = 100, DecodePriority = 1, Role = multiEngine ? "worker" : "standalone" },
                 }
             };

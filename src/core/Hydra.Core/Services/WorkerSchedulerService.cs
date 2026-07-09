@@ -773,23 +773,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// - <c>ForceMode</c> is <c>"solo"</c> or empty
 	/// - no suitable head+peer pair is free+healthy for the requested mode
 	/// - the mode string is unrecognized
+	/// - the head has no <c>ModelAlias</c> resolvable in <see cref="ModelRegistry"/>
+	///
+	/// Phase 2a: uses <see cref="WorkerConfig.ModelAlias"/> + <see cref="ModelRegistry"/>
+	/// instead of the removed <c>CombinedOtSplit</c> / <c>PipelineOtSplit</c> fields.
 	/// </summary>
 	private MultiEngineRouter.Plan? ForceMultiEnginePlan(CoordinatorConfig cfg, IWorkerTracker tracker, IHealthMonitorService health, WorkItem item)
 	{
 		var mode = item.ForceMode.ToLowerInvariant();
 		if (mode == "solo" || mode == "") return null;
 		MultiEngineMode meMode;
-		string? otSplitKey;
-		if (mode == "combined")
-		{
-			meMode = MultiEngineMode.Combined;
-			otSplitKey = nameof(WorkerConfig.CombinedOtSplit);
-		}
-		else if (mode == "pipeline")
-		{
-			meMode = MultiEngineMode.Pipeline;
-			otSplitKey = nameof(WorkerConfig.PipelineOtSplit);
-		}
+		if (mode == "combined")      meMode = MultiEngineMode.Combined;
+		else if (mode == "pipeline") meMode = MultiEngineMode.Pipeline;
 		else return null;
 
 		foreach (var head in cfg.Workers
@@ -798,15 +793,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			if (string.IsNullOrWhiteSpace(head.PeerWorker)) continue;
 			var peer = cfg.Workers.FirstOrDefault(w => w.Name == head.PeerWorker);
-			if (peer == null || !tracker.IsFree(peer.Name) || !health.IsHealthy(peer.Name))
+			if (peer == null) continue;
+			// peer-only workers (slots=0) are always available; others need a free slot.
+			if (peer.Slots > 0 && (!tracker.IsFree(peer.Name) || !health.IsHealthy(peer.Name)))
 				continue;
 
-			var split = mode == "combined" ? head.CombinedOtSplit : head.PipelineOtSplit;
-			if (string.IsNullOrWhiteSpace(split)) continue;
+			EngineConfig engineConfig;
+			try { engineConfig = ModelRegistry.Resolve(head.ModelAlias ?? ""); }
+			catch (InvalidOperationException) { continue; }
 
-			_log.Information("force_multiengine Mode={Mode} Head={Head} Peer={Peer} Split={Split}",
-				mode, head.Name, peer.Name, split);
-			return new MultiEngineRouter.Plan(head, peer, meMode, split);
+			_log.Information("force_multiengine Mode={Mode} Head={Head} Peer={Peer} Alias={Alias}",
+				mode, head.Name, peer.Name, engineConfig.ModelAlias);
+			return new MultiEngineRouter.Plan(head, peer, meMode, engineConfig);
 		}
 		return null;
 	}
@@ -841,7 +839,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		item.RouteType = $"cold_{modeStr}";
 		item.MultiMode = plan.Mode;
 		item.MultiPeer = plan.Peer.Name;
-		item.MultiSplit = plan.OtSplit;
+		item.MultiEngineConfig = plan.EngineConfig;
 		item.DecodeWorker = plan.Head;
 		item.DecodeSlot = headSlot;
 		item.DecodeLease = new SlotLease(plan.Head.Name, headSlot, item.SessionId, LeaseLifetime.Long, _tracker);
@@ -852,8 +850,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		CoordinatorMetrics.RequestsTotalAll.Inc();
 		CoordinatorMetrics.ColdSessionStarts.Inc();
 		CoordinatorMetrics.MultiEngineAttempts.WithLabels(plan.Head.Name, modeStr).Inc();
-		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} PeerRunType={PRT} Split={Split} Est={Est}",
-			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name, plan.Peer.RunType, plan.OtSplit, item.EstimatedTokens);
+		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} ModelAlias={Alias} Split={Split} Est={Est}",
+			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name,
+			plan.EngineConfig.ModelAlias, plan.EngineConfig.OverrideTensors?.FirstOrDefault() ?? "",
+			item.EstimatedTokens);
 		return true;
 	}
 
@@ -862,6 +862,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// MoE expert tensors onto the peer's RPC backend (EngineSetExpertMode); PIPELINE attaches the
 	/// peer and hands it its --override-tensor split (EnginePipelineAttach). Any failure — RPC
 	/// error, or the engine reporting it stayed solo — degrades transparently to solo decode.
+	///
+	/// Phase 2a (ddvnguyen/llama.cpp#36): the wire payloads are unchanged. The C# side
+	/// translates the <see cref="EngineConfig"/> carried on the plan (item.MultiEngineConfig)
+	/// to the existing 0x44/0x46 wire shapes via <see cref="TranslateToWirePayloadAsync"/>.
 	/// </summary>
 	private async Task ApplyMultiEngineAsync(WorkItem item, WorkerConfig head, int slotId, CancellationToken ct)
 	{
@@ -870,18 +874,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var llamaRpc = GetLlamaRpcClient(head);
 		try
 		{
-			Hydra.Shared.RpcResponse resp;
-			if (item.MultiMode == MultiEngineMode.Combined)
-			{
-				resp = await llamaRpc.EngineSetExpertModeAsync(slotId.ToString(), "combined", item.TraceId, ct);
-			}
-			else
-			{
-				var addr = !string.IsNullOrWhiteSpace(head.PeerHost)
-					? $"{head.PeerHost}:{head.PeerPort}"
-					: ResolvePeerAddr(item.MultiPeer);
-				resp = await llamaRpc.EnginePipelineAttachAsync(slotId.ToString(), addr, item.MultiSplit ?? "", item.TraceId, ct);
-			}
+			Hydra.Shared.RpcResponse resp = await TranslateToWirePayloadAsync(
+				llamaRpc, head, item, slotId, ct);
 
 			if (resp.Status == (byte)StatusCode.Ok && !ReportsSolo(resp.Meta))
 			{
@@ -908,6 +902,45 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
 			_log.Warning(ex, "multiengine_activate_error Sid={Sid} Mode={Mode}", item.SessionId, modeStr);
 		}
+	}
+
+	/// <summary>
+	/// Phase 2a translator (ddvnguyen/llama.cpp#36): project the
+	/// stock-params-shaped <see cref="EngineConfig"/> from the plan onto
+	/// the existing wire opcodes. Wire payloads are unchanged in Phase 2a
+	/// (no fork change); the translator just selects which opcode to emit
+	/// and which subset of EngineConfig the wire payload consumes.
+	///
+	/// COMBINED mode: emit <c>0x44 SET_EXPERT_MODE("combined")</c>. The
+	/// engine's dual-load machinery handles the rest — its
+	/// <c>--combined-ot-pattern</c> startup config determines which tensors
+	/// route to the peer's ggml-RPC backend, so the wire payload only
+	/// carries the mode toggle.
+	///
+	/// PIPELINE mode: emit <c>0x46 EnginePipelineAttach</c> with the peer
+	/// address and the override-tensor regex (taken from
+	/// <see cref="EngineConfig.OverrideTensors"/>; empty string if not
+	/// set, in which case the engine will route nothing and the
+	/// PIPELINE activation effectively degrades to SOLO on the head).
+	///
+	/// Phase 2b will replace this translator with a direct <c>0x40
+	/// EngineConfigure</c> call carrying the full <see cref="EngineConfig"/>
+	/// payload (the fork will accept a complete <c>common_params</c> shape
+	/// and rebuild the model/context as needed).
+	/// </summary>
+	private async Task<Hydra.Shared.RpcResponse> TranslateToWirePayloadAsync(
+		Hydra.Shared.RpcClient llamaRpc, WorkerConfig head, WorkItem item, int slotId, CancellationToken ct)
+	{
+		if (item.MultiMode == MultiEngineMode.Combined)
+		{
+			return await llamaRpc.EngineSetExpertModeAsync(slotId.ToString(), "combined", item.TraceId, ct);
+		}
+		// PIPELINE
+		var addr = !string.IsNullOrWhiteSpace(head.PeerHost)
+			? $"{head.PeerHost}:{head.PeerPort}"
+			: ResolvePeerAddr(item.MultiPeer);
+		var otSplit = item.MultiEngineConfig?.OverrideTensors?.FirstOrDefault() ?? "";
+		return await llamaRpc.EnginePipelineAttachAsync(slotId.ToString(), addr, otSplit, item.TraceId, ct);
 	}
 
 	private string ResolvePeerAddr(string? peerName)
@@ -952,7 +985,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		["engine_mode"] = item.MultiFellBack ? "solo" : ModeLabel(item.MultiMode),
 		["requested_mode"] = ModeLabel(item.MultiMode),
 		["peer"] = item.MultiPeer ?? "",
-		["split"] = item.MultiSplit ?? "",
+		["model_alias"] = item.MultiEngineConfig?.ModelAlias ?? "",
+		["split"] = item.MultiEngineConfig?.OverrideTensors?.FirstOrDefault() ?? "",
 		["fell_back"] = item.MultiFellBack
 	};
 
