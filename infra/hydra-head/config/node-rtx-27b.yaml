@@ -60,6 +60,7 @@ llama:
     yarn-orig-ctx: 32768
     rpc-engine: "localhost:9504"
     tensor-split: "25/40"
+    split-mode: "layer"
     override-tensor: "token_embd.weight=CPU"
     spec-type: "draft-mtp"
     spec-draft-n-max: 3
