@@ -205,6 +205,14 @@ commands are in `DevelopmentRunBook.md`.
   (12 GB fits on the 3060); P100 loads the Q5_K-balanced quant.
   Cross-quant P/D split is gated on `HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true`.
 
+### Model Storage (do not mix up)
+- `/mnt/WorkDisk/LLM-Models` — NVMe (`/dev/nvme2n1p1`), fast. **Production
+  models go here.**
+- `/mnt/SSD` — SATA SSD (`/dev/sdb2`, ntfs3), much slower. **All other
+  (non-production: eval, scratch, experimental quant) models go here.**
+  Currently mounted `:ro` as `/models` in `infra/docker-compose.hydra.yml`
+  and referenced by `docs/llama-bench-guide.md` / `scripts/eval/run-perplexity.sh`.
+
 ## Monitoring & Observability
 Prometheus + Loki + Grafana + Promtail run as Quadlet systemd user services;
 Hydra services also run via podman compose. Grafana :3000, Prometheus :9091,
