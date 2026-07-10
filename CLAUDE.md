@@ -20,30 +20,11 @@ mode (expert-split, see "COMBINED engine mode" below).
    build/run/test. Live board: GitHub Project (`docs/GITHUB_PROJECT_SETUP.md`).
 
 ## Architecture
-```
-Client (HTTP) → Hydra.Core :9000 [C#/.NET 10]
-                    │ HTTP            │ HTTP                │ HTTP
-                    ▼                 ▼                     ▼
-              Hydra Head RTX      Hydra Head RTX 3060     Hydra Head P100 [Go]
-              (container)         (container)            (VM systemd)
-                   │                    │                     │
-                   ▼                    ▼                     ▼
-              llama RTX :8080     llama RTX 3060 :8081     llama P100 :8086
-              (RTX 5060 Ti,        (RTX 3060, sm_86)        [C++ fork]
-              sm_120)              [C++ fork]
-              [C++ fork]                │                     │
-                   │                   │                     │
-                   ├──── ggml-RPC peer ─┤                     │
-                   │  (rtx3060 exposes  │                     │
-                   │   on :9504 for     │                     │
-                   │   COMBINED mode)   │                     │
-                   │                    │                     │
-                   │ RPC               │ RPC                 │ RPC
-                   └────────┬───────────┴─────────────────────┘
-                            ▼
-                      Store RPC :9500 + tmpfs
-                      /mnt/llm-ram/store/
-```
+Client → Hydra.Core :9000 [C#] → Hydra Head [Go] (one per GPU node, RTX 5060 Ti +
+RTX 3060 in containers, P100 as VM systemd) → llama-engine [C++ fork] per node →
+Hydra Store RPC :9500 + tmpfs. The 3060 also exposes a ggml-RPC peer on `:9504`
+for COMBINED mode. Full topology diagrams: `docs/diagrams.md`; full reference
+(routing, run modes, session lifecycle, chunked dedup): `docs/architecture.md`.
 
 The 5060 Ti + 3060 are **same-host** (CUDA0 + CUDA1) and run in the same
 `pod_hydra-system`. The P100 is a **separate KVM VM**. Cross-host RPC
@@ -72,95 +53,21 @@ goes through the Hydra Store on the host; same-host RPC is direct.
 - KV state at 60-80K context: ~800 MB.
 
 ## COMBINED engine mode (2-GPU 5060 Ti + 3060)
-
-The same-host pair can act as **one logical engine** in two modes:
-
-### COMBINED-OT (expert-split, 35B MoE profile)
-FFN expert tensors route to the peer's ggml-RPC backend using `--combined-ot-pattern`.
-Used by the MoE profile (default). Requires the 3060 to load the model with partial
-CPU offload.
-
-- C#: `MultiEngineRouter.Select` returns a Plan when `estTokens > 4096`,
-  `cfg.CombinedEnabled` is on, and the head advertises combined capability.
-  `workers.json` sets `rtx.role="head"`, `rtx.peer_worker="rtx3060"`,
-  `rtx.combined_capable=true`, `rtx.combined_ot_split="blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"`.
-- Env vars: `HYDRA_LLAMA_ENGINE=true`, `HYDRA_COORD_COMBINED_ENABLED=true`,
-  `HYDRA_COORD_PIPELINE_ENABLED=true`, `HYDRA_COORD_MULTI_ENGINE_POLICY=combined`,
-  `HYDRA_COORD_MULTI_ENGINE_THRESHOLD=4096`.
-
-### COMBINED-static (layer-split, Dense profile)
-New in #383. Uses `--combined-split-mode layer` + `--combined-tensor-split r0/r1`
-to register the peer RPC device BEFORE model load. The stock tensor_split allocator
-places whole layers on one device, avoiding recurrent-layer state corruption across
-the RPC boundary.
-
-- Peer (3060): `--peer-only` mode — no model, just GPU backend + HTTP health
-- Head (5060 Ti): `--combined-split-mode layer --combined-tensor-split 21/44`
-- Every request uses COMBINED (threshold=0 via `HYDRA_COORD_MULTI_ENGINE_THRESHOLD=0`)
-- Profile switching: `bash scripts/set-profile.sh {moe|dense}`
-
-### Profiles
-Two profiles can be switched via env vars or the helper script:
-
-| Profile | Model | Routing | 3060 role |
-|---------|-------|---------|-----------|
-| **moe** | Qwopus3.6-MoE-35B-A3B-v1-APEX-I-Mini | COMBINED-OT + P/D split | Peer with model (partial CPU offload) |
-| **dense** | Qwopus3.6-Dense-27B-Coder-Compat-MTP | COMBINED-static layer-split | `--peer-only` backend (no model) |
-
-Profile files:
-- `.env-moe` / `.env-dense` — environment profiles
-- `infra/hydra-head/config/node-rtx.yaml` / `node-rtx-27b.yaml` — head configs
-- `infra/hydra-core/config/workers.json` / `workers-27b.json` — worker configs
+The same-host pair can act as **one logical engine** in two modes: **COMBINED-OT**
+(expert-split, FFN tensors routed to the peer's ggml-RPC backend, MoE profile default)
+and **COMBINED-static** (layer-split via `--combined-split-mode layer`, registers the
+peer device before model load, Dense profile — avoids recurrent-layer state corruption
+across the RPC boundary that COMBINED-OT has). Switch profiles with
+`bash scripts/set-profile.sh {moe|dense}`. Full mode details, env vars, and the
+moe/dense profile table: `docs/combined-engine-mode.md`.
 
 ## Hydra Head (Go node agent)
-Replaces the old Agent containers + manual llama-server deployment. Single Go binary per GPU
-node that manages 4 sub-services: llama-server, node_exporter, nvidia_exporter, promtail.
-
-### Source & Deploy
-| What | Where |
-|------|-------|
-| Go module | `src/head/` (module `github.com/ddvnguyen/hydra_vortex/hydra-head`) |
-| Config files | `infra/hydra-head/config/global.yaml` + per-node overrides |
-| Deploy script | `scripts/deploy-hydra-head.sh` |
-| RTX Dockerfile | `infra/hydra-head/Dockerfile.rtx` (based on CUDA base `Dockerfile_26.04_cuda13.2`) |
-| P100 systemd unit | `infra/hydra-head/hydra-head.service` |
-
-### 4-Service Management
-Hydra Head owns lifecycle (start/stop/restart/auto-restart with backoff) of:
-- llama-server
-- node_exporter (P100 only; RTX uses host-level exporter in infra-host pod)
-- nvidia_exporter (P100 only; RTX uses host-level exporter in infra-host pod)
-- promtail
-
-Each service is controlled via per-node `services:` YAML config (`enabled`, `binary`, `config`, `port`, `args`).
-
-### OCI Registry
-llama-engine (and llama-server) binary pulled from ghcr.io at startup via `crane`
-library. The same fat binary serves both the RTX 5060 Ti (sm_120a path) and the
-RTX 3060 (sm_86 path) — the 3060 + 5060-Ti in-pod pair share one image:
-
-- `ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine` (RTX 5060 Ti + RTX 3060, fat binary, 159 MB)
-- `ghcr.io/ddvnguyen/llama-server-sm60:5e2de4189-shared` (P100, sm_60, 205 MB)
-
-Built `FROM scratch` with the shared-lib build as the single file.
-The 3060 is configured (via node-rtx3060.yaml) to expose its ggml-RPC
-backend on `:9504` so the 5060 Ti (head) can reach it for COMBINED
-expert-split. No more mount-based deploys of `build_sm120/` / `build_sm60/`
-/ `build_sm86_sm120/` (the bind mount in compose is now the source of truth
-on this host; the OCI image is the fallback for other hosts).
-
-### Log Separation
-Promtail detects llama-server log patterns (`^\d+\.\d+\.\d+\.\d+\s+[A-Z]\s+`) and labels
-them `component=llama-server` vs `component=hydra-head` in Loki.
-
-### Deprecated infra (replaced by hydra-head)
-| Old file | Replacement |
-|----------|-------------|
-| `infra/quadlets/hydra-agent-rtx.container` | Agents merged into Hydra.Core |
-| `infra/quadlets/hydra-agent-p100.container` | Agents merged into Hydra.Core |
-| `infra/systemd/llama-p100-user.service` | Managed by hydra-head |
-| `infra/llama-rtx-node/docker-compose.yml` | `infra/hydra-head/Dockerfile.rtx` |
-| `scripts/deploy-llama.sh` | `scripts/deploy-hydra-head.sh` |
+Single Go binary per GPU node (`src/head/`) managing 4 sub-services: llama-server,
+node_exporter, nvidia_exporter, promtail — replaces the old Agent containers. The
+llama-engine binary is pulled from ghcr.io via `crane`; the RTX 5060 Ti + 3060 share
+one fat image (`llama-server:sm86-sm120-engine`), P100 uses a separate sm_60 image.
+Deploy: `scripts/deploy-hydra-head.sh`. Full source map, service config, OCI images,
+and deprecated-infra table: `docs/hydra-head.md`.
 
 ## llama.cpp Fork (hydra-state-streaming branch)
 Three new endpoints added to tools/server/server.cpp:
@@ -208,10 +115,13 @@ automatic — no cross-linking). Commands live in `DevelopmentRunBook.md`.
 2. **Branch & implement** — never on `main`; `fix/…` from the issue or `feat/…`;
    follow the milestone doc. → `docs/workflow/02-implement.md`
 3. **Test / verify** — unit (`dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`) + E2E
-   (`pytest tests/system`) green before PR.
-   → `docs/workflow/03-test-verify.md`
+   (`pytest tests/system`) green before PR. **"E2E verify" means deploying the
+   current working tree to the live env and confirming behavior — it is never
+   an instruction to merge the PR.** → `docs/workflow/03-test-verify.md`
 4. **Commit & PR** — conventional commits + `Co-Authored-By`; `gh pr create …
-   Closes #N` (this link auto-moves the Project item). → `docs/workflow/04-commit-pr.md`
+   Closes #N` (this link auto-moves the Project item). **Merging a PR always
+   requires the user's explicit confirmation or explicit request — never merge
+   as a side effect of a verify/test request.** → `docs/workflow/04-commit-pr.md`
 5. **Deploy** (if runtime/fork) — build sm_120/sm_60; push the fork + bump the
    `src/llama-cpp` submodule pointer. → `docs/workflow/05-deploy.md`
 6. **Check monitoring** — Grafana :3000 + alerts; no regressions.
@@ -296,133 +206,19 @@ commands are in `DevelopmentRunBook.md`.
   Cross-quant P/D split is gated on `HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true`.
 
 ## Monitoring & Observability
-Prometheus + Loki + Grafana + Promtail run as Quadlet systemd user services
-(files in `infra/quadlets/`); Hydra services (Hydra.Core) also run via
-podman compose. Grafana at :3000, Prometheus at :9091, Loki at :3100.
-
-### Start everything
-```bash
-# Install Quadlet files and start all services
-bash scripts/start-env.sh
-
-# Or start individual stacks:
-bash scripts/start-infra.sh           # infra observability only
-bash scripts/start-hydra.sh           # hydra core + hydra-head on RTX
-bash scripts/deploy-hydra-head.sh all # deploy hydra-head to both nodes
-```
-
-### Key dashboards/metrics endpoints
-- Grafana: http://localhost:3000 (anonymous admin)
-- Prometheus: http://localhost:9091
-- Core metrics: http://localhost:9501/metrics
-- Core API metrics: http://localhost:9000/metrics
-- llama RTX 5060 Ti metrics: http://localhost:8080/metrics
-- llama RTX 3060 metrics: http://localhost:8081/metrics
-- Node exporter: http://localhost:9100/metrics
-- GPU exporter: http://localhost:9835/metrics
-- Hydra Head API: http://localhost:9700/status (5060 Ti),
-  http://localhost:9701/status (RTX 3060), http://192.168.122.21:9700/status (P100)
-
-### Logs
-Container logs shipped via containerized Promtail → Loki using Docker service
-discovery (`docker_sd_configs`). Promtail discovers all containers from the
-podman socket and reads k8s-file (CRI-format) logs directly from
-`/mnt/containers/overlay-containers/<id>/userdata/ctr.log`.
-
-View in Grafana Explore (Loki datasource) or the Logs panel in the Hydra dashboard.
-Filter by `$trace_id` template variable to correlate logs across services.
-
-**Log pipeline:** `k8s-file` → `ctr.log` (CRI) → `docker_sd_configs` →
-`relabel_configs` (component/node/container/job) → `cri` parser → Loki.
-
-**P100 logs:** Promtail reads journald for `hydra-head.service` unit, then regex-splits
-llama-server lines from hydra-head lines via log pattern detection (see Log Separation above).
-
-**Prerequisite:** Podman's log driver must be `k8s-file` (set in
-`~/.config/containers/containers.conf`) — journald has no file-backed logs for
-Promtail to scrape.
-
-### Alerts
-Prometheus alerting rules in `infra/prometheus/alerts.yml` — covers service down, high latency, GPU memory/temp, migration issues.
-
-### Dashboard panels
-1. Service Metrics: request rate, sessions, store ops, bytes, cache hit rate, migrations
-2. KV Save/Restore Performance: save/restore p50/p95 duration
-3. Host & GPU: utilization, memory, temperature, power, CPU, RAM
-4. llama-server: tokens/s, requests processing, KV cache usage
-5. Service Health: up/down table, llama health per node, worker slot status
-6. Logs: all service logs with trace_id filter
+Prometheus + Loki + Grafana + Promtail run as Quadlet systemd user services;
+Hydra services also run via podman compose. Grafana :3000, Prometheus :9091,
+Loki :3100. Start everything: `bash scripts/start-env.sh` (or
+`start-infra.sh` / `start-hydra.sh` / `deploy-hydra-head.sh all` individually).
+Full metrics endpoints, log pipeline, alert rules, and dashboard panel list:
+`docs/monitoring-observability.md`.
 
 ## Coding Agent Rules
+1. **Ask for decisions** via the `question`/`AskUserQuestion` tool when there are
+   multiple viable options — don't pick silently.
+2. **Track tasks** with `todowrite`/`TaskCreate` always, one `in_progress` at a time.
+3. **Use sub-agents aggressively** (2-3 in parallel) for research or multi-file work
+   that would take >30s serially — not for trivial single-file edits.
+4. **End with a final result block** (`---` + summary) after completing work.
 
-### 1. Ask for decisions via `question` tool
-When there are multiple options, solutions, or design choices — always use the `question` tool with structured selections to get a clear decision from the user before proceeding.
-
-**Example:**
-```
-question(questions=[{
-  "header": "Storage backend",
-  "question": "Which storage backend should we use for KV cache?",
-  "options": [
-    {"label": "Redis", "description": "In-memory, fast but volatile"},
-    {"label": "tmpfs", "description": "Local RAM disk, simplest setup"},
-    {"label": "S3", "description": "Persistent, slower but durable"}
-  ]
-}])
-```
-
-### 2. Track tasks with `todowrite` always
-Always use `todowrite` to track work, even for seemingly simple tasks. Keeps progress visible and ensures nothing is skipped.
-
-**Pattern:**
-```
-todowrite(todos=[
-  {content: "Implement Store RPC server", status: "in_progress", priority: "high"},
-  {content: "Add integration tests",      status: "pending",     priority: "medium"},
-  {content: "Update docs",                status: "pending",     priority: "low"}
-])
-```
-Update status as work progresses — exactly one `in_progress` at a time. Mark `completed` only after verification (test pass, lint clean, etc.).
-
-### 3. Use sub-agents aggressively (2-3 in parallel)
-
-Always launch parallel sub-agents via the `task` tool when work can be decomposed.
-This is **not optional** for multi-file or multi-domain tasks.
-
-**When to use:**
-- Research / exploration — e.g., search codebase for patterns across services (Hydra.Core C#,
-  llama-server C++) simultaneously
-- Multi-file changes — e.g., one agent implements the Store change, another the Agent change,
-  a third updates tests
-- Decomposition — break a large feature into 2-3 parallel scouting agents, then implement
-  based on their findings
-- Anything that would take you >30s to do serially
-
-**How to use:**
-```
-task(description="Explore Store codebase", prompt="Find all ...",
-      subagent_type="explore")
-task(description="Check Coordinator tests", prompt="Read all ...",
-      subagent_type="explore")
-```
-
-- Use `explore` for quick codebase searches, `general` for complex multi-step work.
-- Launch them in a single message (parallel tool calls).
-- Each agent returns its findings in one message — consolidate and proceed.
-
-**Don't use sub-agents for:** trivial single-file edits, reading a file you already know
-the path of, running a single command.
-
-### 4. End with a final result block
-After completing work, output a clear summary block prefixed with `---` or a code-free section that highlights what was done, changed, or needs attention. Make the result stand out so the user can quickly understand the outcome.
-
-**Example:**
-```
----
-
-**Summary:**
-- Implemented `SlotService` in `src/core/Hydra.Store/Services/SlotService.cs`
-- Added `GET /slots/{id}/state` endpoint to llama.cpp fork
-- Fixed: n_tokens guard in Coordinator (must be > n_past)
-- Pending: integration test for cross-GPU migration
-```
+Full rationale, examples, and tool-name mapping: `docs/agent-coding-rules.md`.
