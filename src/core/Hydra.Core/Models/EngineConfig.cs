@@ -25,34 +25,68 @@ public sealed record EngineConfig(
     int? NGpuLayers = null,
     /// <summary>CPU-side MoE expert count (Qwen35MoE / DeepSeek-style MoE).</summary>
     int? NCpuMoe = null,
-    /// <summary>Context size in tokens.</summary>
     int? NCtx = null,
-    /// <summary>KV-cache key quant (e.g. "q8_0", "q4_0").</summary>
     string? CacheTypeK = null,
-    /// <summary>KV-cache value quant.</summary>
     string? CacheTypeV = null,
-    /// <summary>
-    /// Split mode for COMBINE: "none" (SOLO), "layer" (DENSE layer-split),
-    /// or "row" (DENSE row-split). Engine-startup config in Phase 2a;
-    /// runtime via <c>0x40</c> in Phase 2b.
-    /// </summary>
+    string? RopeScaling = null,
+    float? RopeScale = null,
+    int? YarnOrigCtx = null,
+    string? SpecType = null,
+    int? SpecDraftNMax = null,
+    float? SpecDraftPMin = null,
+    int? SpecDraftNgl = null,
+    bool? ContBatching = null,
+    bool? Fit = null,
+    int? UbatchSize = null,
     string? SplitMode = null,
-    /// <summary>
-    /// Per-device layer counts for layer-split. e.g. <c>{25, 40}</c>
-    /// = 25 layers on CUDA0 (head), 40 layers on the peer.
-    /// </summary>
     double[]? TensorSplit = null,
-    /// <summary>
-    /// --override-tensor patterns routed to the peer's RPC backend for
-    /// MoE COMBINE. Engine-startup config (the <c>--combined-ot-pattern</c>
-    /// CLI flag in Phase 1; will become stock <c>--override-tensor</c> in
-    /// Phase 2b). Used by the C# translator to validate the plan, not
-    /// sent on the wire for COMBINE mode (the engine already has it).
-    /// </summary>
     string[]? OverrideTensors = null,
-    /// <summary>
-    /// Peer RPC endpoints (e.g. <c>["localhost:9506"]</c>). Engine-startup
-    /// config for the head's <c>--rpc-engine</c> flag in Phase 1.
-    /// </summary>
     string[]? RpcServers = null
-);
+)
+{
+    public Dictionary<string, object> ToHydraConfigDict()
+    {
+        var config = new Dictionary<string, object>();
+        if (!string.IsNullOrEmpty(ModelPath))
+            config["model_path"] = ModelPath;
+        if (SplitMode is string sm)
+            config["split_mode"] = sm;
+        if (TensorSplit is double[] ts)
+            config["tensor_split"] = ts;
+        if (NGpuLayers is int ngl)
+            config["n_gpu_layers"] = ngl;
+        if (NCpuMoe is int ncm)
+            config["n_cpu_moe"] = ncm;
+        if (NCtx is int nctx)
+            config["n_ctx"] = nctx;
+        if (CacheTypeK is string ctk)
+            config["cache_type_k"] = ctk;
+        if (CacheTypeV is string ctv)
+            config["cache_type_v"] = ctv;
+        if (RopeScaling is string rs)
+            config["rope_scaling"] = rs;
+        if (RopeScale is float rsc)
+            config["rope_scale"] = rsc;
+        if (YarnOrigCtx is int yoc)
+            config["yarn_orig_ctx"] = yoc;
+        if (SpecType is string st)
+            config["spec_type"] = st;
+        if (SpecDraftNMax is int sdm)
+            config["spec_draft_n_max"] = sdm;
+        if (SpecDraftPMin is float sdp)
+            config["spec_draft_p_min"] = sdp;
+        if (SpecDraftNgl is int sngl)
+            config["spec_draft_ngl"] = sngl;
+        if (ContBatching is bool cb)
+            config["cont_batching"] = cb;
+        if (Fit is bool f)
+            config["fit"] = f;
+        if (UbatchSize is int ubs)
+            config["ubatch_size"] = ubs;
+        if (OverrideTensors is string[] ots && ots.Length > 0)
+            config["override_tensor"] = string.Join("\n", ots);
+        if (RpcServers is string[] rpcs && rpcs.Length > 0)
+            config["rpc_servers"] = rpcs;
+        return config;
+    }
+}

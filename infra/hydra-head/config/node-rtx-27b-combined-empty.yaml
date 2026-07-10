@@ -1,0 +1,64 @@
+# Hydra Head - RTX 5060 Ti Node - 27B COMBINED Static Profile (Empty Start)
+# Engine starts without a model. Coordinator sends hydra_config on first
+# request to load the model. Node-level params only (hardware defaults).
+# Model-specific params come from Hydra.Core ModelRegistry presets.
+
+node:
+  name: rtx
+  mode: container
+
+binaries:
+  llama-server:
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
+    binary: llama-server
+    dest: /llama/bin/llama-server
+  node_exporter:
+    source: https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+    binary: node_exporter
+    dest: /opt/hydra/bin/node_exporter
+  nvidia_gpu_exporter:
+    source: https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.2.1/nvidia_gpu_exporter_1.2.1_linux-amd64_64.tar.gz
+    binary: nvidia_gpu_exporter
+    dest: /opt/hydra/bin/nvidia_gpu_exporter
+
+llama:
+  binary: /llama/bin/llama-engine
+  working_dir: /llama
+  port: 8080
+  rpc_port: 9503
+  params:
+    parallel: 1
+    ubatch-size: 512
+    fit: off
+    cache-type-k: q8_0
+    cache-type-v: q8_0
+    rope-scaling: yarn
+    rope-scale: 4
+    yarn-orig-ctx: 32768
+    rpc-engine: "localhost:9504"
+  env:
+    NVIDIA_VISIBLE_DEVICES: "0"
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
+    LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
+
+health:
+  path: /slots
+  interval_idle_sec: 120
+  max_fails: 15
+
+services:
+  node_exporter:
+    enabled: true
+    binary: /opt/hydra/bin/node_exporter
+    port: 9100
+    args:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+  nvidia_exporter:
+    enabled: true
+    binary: /opt/hydra/bin/nvidia_gpu_exporter
+    port: 9835
+    args:
+      - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"

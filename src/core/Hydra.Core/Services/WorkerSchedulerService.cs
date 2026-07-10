@@ -313,7 +313,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			if (next == WorkItemState.None)
 			{
-				_log.Error("classifier_no_worker Sid={Sid} — cannot route, no worker available",
+				if (item.NoWorkerRetries < 30)
+				{
+					item.NoWorkerRetries++;
+					_log.Warning("classifier_no_worker Sid={Sid} Retry={Retry}/30 — re-enqueueing in 1s",
+						item.SessionId, item.NoWorkerRetries);
+					await Task.Delay(1000, ct);
+					await _mainQueue.Writer.WriteAsync(item, ct);
+					return;
+				}
+				_log.Error("classifier_no_worker Sid={Sid} — cannot route, no worker available after 30 retries",
 					item.SessionId);
 				item.Error = new InvalidOperationException("No worker available for classification");
 				await FinalizeAsync(item, WorkItemState.Failed);
@@ -1894,6 +1903,28 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (item.DecodeSlot.HasValue)
 			item.Request["id_slot"] = item.DecodeSlot.Value;
 
+		if (!string.IsNullOrEmpty(w.ModelAlias))
+		{
+			try
+			{
+				var engineConfig = ModelRegistry.Resolve(w.ModelAlias);
+				if (engineConfig is not null)
+				{
+					var hydraConfig = engineConfig.ToHydraConfigDict();
+					if (hydraConfig.Count > 0)
+						item.Request["hydra_config"] = hydraConfig;
+				}
+			}
+			catch (Exception ex)
+			{
+				_log.Warning("hydra_config injection failed Alias={Alias}: {Error}", w.ModelAlias, ex.Message);
+			}
+		}
+		else
+		{
+			_log.Warning("hydra_config skipped: ModelAlias is null/empty for Node={Node}", w.Name);
+		}
+
 		Console.Error.WriteLine($"event=decode_body Sid={item.SessionId} " +
 			System.Text.Json.JsonSerializer.Serialize(item.Request));
 		_log.Information("decode_start Sid={Sid} Node={Node} Msgs={Msgs} LastMsg={Last} Streaming={Stream} NPast={N} MaxTokens={Mt} Slot={Slot}",
@@ -1963,6 +1994,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.Response = resp;
 			item.TokensIn = ExtractUsageInt(resp, "prompt_tokens");
 			item.TokensOut = ExtractUsageInt(resp, "completion_tokens");
+
+			if (resp.TryGetValue("hydra_metrics", out var hm) && hm is JsonElement hmEl && hmEl.ValueKind == JsonValueKind.Object)
+			{
+				_log.Information("hydra_metrics Sid={Sid} Head={Head} Reloaded={Reloaded} ReloadMs={Ms}",
+					item.SessionId, w.Name,
+					hmEl.TryGetProperty("t3_reloaded", out var tr) && tr.GetBoolean(),
+					hmEl.TryGetProperty("t3_reload_ms", out var rm) ? rm.GetDouble() : 0);
+			}
 
 			// Register in ledger so /status can find the session. The cold_atomic HTTP
 			// path skips RestoreKvAsync (which would have registered in the P/D split
@@ -2112,7 +2151,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// trip that returns a fresh byte[] in our memory.
 			Hydra.Shared.RpcResponse? stateResp = null;
 			string? bgTraceId = null;
-			if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
+			if (_cfg.NoStoreKvRestore)
+			{
+				// NoStoreKvRestore: skip StateGet entirely — no KV to persist.
+				// Release slot immediately without the 8-10s StateGet RPC.
+				if (_pendingBgSaves.TryRemove(sessionId, out var bgInfoSkip))
+				{
+					var wSkip = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfoSkip.WorkerName);
+					if (wSkip != null) releaseNode = wSkip.Name;
+					bgTraceId = bgInfoSkip.TraceId;
+				}
+			}
+			else if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
 			{
 				var w = _cfg.Workers.FirstOrDefault(x => x.Name == bgInfo2.WorkerName);
 				if (w != null)
