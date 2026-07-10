@@ -13,4 +13,12 @@
 4. Builds must be clean (`dotnet build src/Hydra.sln -c Release`); treat new warnings as
    review items.
 
+> **When the user asks for "E2E verify" specifically:** deploy the current
+> working-tree/branch code to the live environment (not a merged copy) and
+> confirm the change behaves correctly — see `05-deploy.md` for the deploy
+> commands and `06-monitoring.md` for what to check afterward. This is a
+> verification step, not a merge step: do not run `gh pr merge` (or otherwise
+> land the PR) as part of it. PR merges always need the user's explicit
+> confirmation or request — see `04-commit-pr.md`.
+
 → Next: `04-commit-pr.md`

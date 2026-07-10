@@ -1,7 +1,7 @@
 # 6. Check monitoring (after deploy)
 
 **Goal:** confirm the change didn't regress the running system. Details:
-`CLAUDE.md` `## Monitoring & Observability`.
+`docs/monitoring-observability.md`.
 
 1. **Grafana** (http://localhost:3000) — Hydra dashboard. Check, around your change:
    request rate / sessions, store ops & bytes, **save/restore & migration latency**,

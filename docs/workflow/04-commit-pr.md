@@ -14,6 +14,10 @@
 3. **CI / merge:** ensure CI green — `build-test` + `integration` + `system`
    (`gh pr checks`). Merge only when green and reviewed. CI failures auto-file
    `ci-failure` issues (auto-added to the board) — investigate, don't ignore.
+   **For a coding agent: never run `gh pr merge` (or otherwise land the PR)
+   unless the user explicitly confirms or requests the merge in that turn** —
+   a prior "verify"/"test this" request is not implicit merge approval
+   (see the E2E-verify note in `03-test-verify.md`).
 
 > ### ⚠️ If your PR bumps a submodule pointer (e.g. `src/llama-cpp`)
 >
