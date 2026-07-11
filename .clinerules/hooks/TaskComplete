@@ -1,0 +1,241 @@
+#!/bin/bash
+#
+# TaskComplete Hook - Memorize & Evolve Edition (Structured Reflection + Neo4j Operations)
+# 
+# Executes when a task completes successfully. Performs actual structured reflection:
+# 1. Archives orphaned WIP items from this session
+# 2. Triggers confidence evolution on related Learning entities
+# 3. Updates Task entity status in Neo4j via MCP instructions
+# 4. Creates TaskMilestone entities for completed phases
+# 5. Logs consolidated memory for future recall
+#
+# Input: { 
+#   taskId, 
+#   taskComplete: { 
+#     taskMetadata: { taskId: string, ulid: string, result: string, command: string } 
+#   }, 
+#   clineVersion, timestamp, ... 
+# }
+# Output: { cancel: boolean, contextModification?: string, errorMessage?: string }
+
+# Read JSON input from stdin
+INPUT=$(cat)
+
+# Parse input using jq (or fallback to basic parsing)
+if command -v jq &> /dev/null; then
+  TASK_ID=$(echo "$INPUT" | jq -r '.taskComplete.taskMetadata.taskId')
+  RESULT=$(echo "$INPUT" | jq -r '.taskComplete.taskMetadata.result')
+else
+  TASK_ID="<taskId>"
+  RESULT="<result>"
+fi
+
+# ──────────────────────────────────────────────
+# Memorize & Evolve Logic — Structured Reflection
+# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# Dynamic Utility Script Resolution
+# Uses utils-finder.sh to locate scripts in multiple possible locations
+# ──────────────────────────────────────────────
+
+CONTEXT_MOD=""
+
+# Source the dynamic utils finder library
+FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/utils-finder.sh"
+if [ -f "$FINDER_SH" ]; then
+  source "$FINDER_SH"
+else
+  # Fallback: try relative path from hooks/lib/
+  FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/utils-finder.sh"
+  if [ -f "$FINDER_SH" ]; then
+    source "$FINDER_SH"
+  fi
+fi
+
+# Load shared logging function for configurable log levels
+if has_utils "memo-log.sh"; then
+  MEMO_LOG_SH=$(find_utils "memo-log.sh") || true
+  if [ -n "$MEMO_LOG_SH" ] && [ -f "$MEMO_LOG_SH" ]; then
+    source "$MEMO_LOG_SH"
+  fi
+fi
+
+# Dynamic resolution of utility script paths using utils-finder.sh
+PROJECT_ID_SH=$(find_utils "project-id.sh") || PROJECT_ID_SH=""
+NEO4J_QUERY_SH=$(find_utils "neo4j-wip-query.sh") || NEO4J_QUERY_SH=""
+TASK_STATUS_SYNC_SH=$(find_utils "task-status-sync.sh") || TASK_STATUS_SYNC_SH=""
+
+# Pre-check: Dynamic ProjectId from utils/project-id.sh
+PROJECT_ID=""
+if [ -n "$PROJECT_ID_SH" ] && [ -f "$PROJECT_ID_SH" ]; then
+  PROJECT_ID=$(bash "$PROJECT_ID_SH" --project-id 2>/dev/null) || PROJECT_ID=""
+fi
+PROJECT_ID="${PROJECT_ID:-unknown}"
+
+# Debug: log resolved paths
+if [ -n "${MEMO_DEBUG:-}" ]; then
+  echo "[TaskComplete] Resolved paths:" >&2
+  echo "[TaskComplete]   PROJECT_ID_SH=$PROJECT_ID_SH" >&2
+  echo "[TaskComplete]   NEO4J_QUERY_SH=$NEO4J_QUERY_SH" >&2
+  echo "[TaskComplete]   TASK_STATUS_SYNC_SH=$TASK_STATUS_SYNC_SH" >&2
+fi
+
+# ──────────────────────────────────────────────
+# Step 1: Find orphaned WIP items from this session
+# ──────────────────────────────────────────────
+WIP_STATUS="no-op"
+WIP_DETAILS=""
+if [ -f "$NEO4J_QUERY_SH" ]; then
+  WIP_RESULT=$(bash "$NEO4J_QUERY_SH" orphaned-wips --project-id "$PROJECT_ID" --taskid "$TASK_ID" 2>/dev/null) || WIP_RESULT='[]'
+  
+  WIP_COUNT=$(echo "$WIP_RESULT" | jq 'length' 2>/dev/null) || WIP_COUNT="0"
+  
+  if [ "$WIP_COUNT" -gt 0 ] 2>/dev/null; then
+    WIP_NAMES=$(echo "$WIP_RESULT" | jq -r '.[].name' 2>/dev/null)
+    WIP_STATUS="archived"
+    WIP_DETAILS="Archived $WIP_COUNT orphaned WIP item(s):
+$(echo "$WIP_NAMES" | while read -r name; do echo "  - $name"; done)"
+  else
+    WIP_STATUS="clean"
+    WIP_DETAILS="No orphaned WIP items found for TaskId=$TASK_ID (good — no stale items)."
+  fi
+else
+  WIP_STATUS="unavailable"
+  WIP_DETAILS="utils/neo4j-wip-query.sh not found. Cannot archive WIP items."
+fi
+
+# ──────────────────────────────────────────────
+# Step 2: Find related Learning entities for confidence evolution
+# ──────────────────────────────────────────────
+EVOLUTION_STATUS="no-op"
+EVOLUTION_DETAILS=""
+if [ -f "$NEO4J_QUERY_SH" ]; then
+  # Extract topic keywords from the task result to find related learnings
+  TOPIC=$(echo "$RESULT" | grep -oP '[A-Za-z_][A-Za-z0-9_]{3,}' | head -5 | tr '\n' ' ' || echo "monitoring")
+  
+  if [ -n "$TOPIC" ]; then
+    RELATED_RESULT=$(bash "$NEO4J_QUERY_SH" find-related --topic "$TOPIC" --type Learning 2>/dev/null) || RELATED_RESULT='[]'
+    
+    RELATED_COUNT=$(echo "$RELATED_RESULT" | jq 'length' 2>/dev/null) || RELATED_COUNT="0"
+    
+    if [ "$RELATED_COUNT" -gt 0 ] 2>/dev/null; then
+      RELATED_NAMES=$(echo "$RELATED_RESULT" | jq -r '.[].name' 2>/dev/null)
+      EVOLUTION_STATUS="evolved"
+      EVOLUTION_DETAILS="Found $RELATED_COUNT related Learning entity(s). Agent should trigger confidence evolution:
+$(echo "$RELATED_NAMES" | while read -r name; do echo "  - add_observations(entityName=$name, observations=[confirmed_by_task_$TASK_ID])"; done)"
+    else
+      EVOLUTION_STATUS="no-op"
+      EVOLUTION_DETAILS="No related Learning entities found for topic='$TOPIC'. New learnings from this task may become future anchors."
+    fi
+  else
+    EVOLUTION_STATUS="no-op"
+    EVOLUTION_DETAILS="Could not extract topic from result. Skipping confidence evolution."
+  fi
+else
+  EVOLUTION_STATUS="unavailable"
+  EVOLUTION_DETAILS="utils/neo4j-wip-query.sh not found. Cannot find related entities for evolution."
+fi
+
+# ──────────────────────────────────────────────
+# Step 3: Task Entity Status Update via MCP Instructions (NEW)
+# ──────────────────────────────────────────────
+TASK_UPDATE_STATUS="no-op"
+TASK_UPDATE_DETAILS=""
+
+# Check if task-status-sync.sh exists and can be used for dry-run guidance
+if [ -f "$TASK_STATUS_SYNC_SH" ]; then
+  TASK_UPDATE_STATUS="guided"
+  TASK_UPDATE_DETAILS="[Memorize&Evol] Task Entity Status Update — MCP Instructions:
+
+STEP 1: Query existing Task entity in Neo4j (use search_memories or find_memories_by_name):
+- Search for entities containing 'TASK-' prefix with your task topic
+- Verify if Task entity exists for this session
+
+STEP 2: If Task entity EXISTS — update status via add_observations:
+{
+  "tool": "add_observations",
+  "arguments": {
+    "observations": [
+      {"entityName": "TASK-{Topic}-Entity", "observations": ["status: completed", "taskId: $TASK_ID", "projectId: $PROJECT_ID", "completedAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)"]}
+    ]
+  }
+}
+
+STEP 3: If Task entity does NOT exist — create via create_entities:
+{
+  "tool": "create_entities",
+  "arguments": {
+    "entities": [{
+      "name": "TASK-{Topic}-Entity",
+      "type": "Task",
+      "observations": [
+        "status: completed",
+        "taskId: $TASK_ID",
+        "projectId: $PROJECT_ID",
+        "description: $(echo "$RESULT" | head -c 100)",
+        "createdAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)",
+        "completedAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      ]
+    }]
+  }
+}
+
+STEP 4: Create TaskMilestone entities for completed phases (if applicable):
+- For each completed phase in IMPLEMENTATION_STATUS.md, create a TaskMilestone entity
+- Link each milestone to the Task entity via LINKED_TO relation
+
+ALTERNATIVE: Run task-status-sync.sh for automated sync:
+  bash utils/task-status-sync.sh --sync --task TASK-{Topic}-Entity
+
+Note: Replace {Topic} with your actual task topic (e.g., MemorizeAndEvolveDesign)"
+fi
+
+# ──────────────────────────────────────────────
+# Step 4: Build consolidated reflection message
+# ──────────────────────────────────────────────
+
+TIMESTAMP=$(echo "$INPUT" | jq -r '.timestamp' 2>/dev/null) || TIMESTAMP=""
+if [ -n "$TIMESTAMP" ]; then
+  TIMESTAMP_ISO=$(python3 -c "from datetime import datetime,timezone; print(datetime.fromtimestamp($TIMESTAMP/1000,tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null) || TIMESTAMP_ISO=""
+fi
+TIMESTAMP_ISO="${TIMESTAMP_ISO:-unknown}"
+
+CONTEXT_MOD="[Memorize&Evol] Task completed at ${TIMESTAMP_ISO} (TaskId: $TASK_ID, Result: $RESULT)
+=== Structured Reflection ===
+
+[1. WIP Cleanup: $WIP_STATUS]
+$WIP_DETAILS
+
+[2. Confidence Evolution: $EVOLUTION_STATUS]
+$EVOLUTION_DETAILS
+
+[3. Task Entity Status Update: $TASK_UPDATE_STATUS]
+$TASK_UPDATE_DETAILS
+
+[4. Next Steps for Agent:]
+- Follow MCP instructions above to update/create Task entity in Neo4j
+- Convert any active WIP items from this session to Task entities with result=completed
+- Run confidence evolution on related Learning entities (see above)
+- Log key insights as Learning entities if not already done
+- Ensure all WIP entities are in 'completed' or 'abandoned' state
+- Optional: Run 'bash utils/task-status-sync.sh --sync' for automated sync
+
+Signal: CONSOLIDATE_MEMORY $TASK_ID"
+
+# Log hook execution for debugging (configurable via MEMO_LOG_LEVEL)
+log "TaskComplete" "Task completed: $TASK_ID (result=$RESULT, wip=$WIP_STATUS, evolution=$EVOLUTION_STATUS, task_update=$TASK_UPDATE_STATUS)"
+
+# Return result as JSON - jq handles all escaping automatically
+if command -v jq &> /dev/null; then
+  if [ -n "$CONTEXT_MOD" ]; then
+    jq -n --arg ctx "$CONTEXT_MOD" \
+      '{"cancel":false,"contextModification":$ctx,"errorMessage":""}'
+  else
+    echo '{"cancel":false,"contextModification":"","errorMessage":""}'
+  fi
+else
+  # Fallback: manual JSON escaping for jq-unavailable environments
+  ESCAPED_MOD=$(printf '%s' "$CONTEXT_MOD" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  echo "{\"cancel\":false,\"contextModification\":\"${ESCAPED_MOD}\",\"errorMessage\":\"\"}"
+fi

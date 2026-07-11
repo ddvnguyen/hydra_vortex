@@ -1,0 +1,63 @@
+# bifrost.yaml
+version: "1"
+
+# Define your 5 existing local MCP servers
+servers:
+  fetch:
+    type: stdio
+    command: node
+    args:
+      - /home/ddv/Documents/Cline/MCP/fetch-mcp/dist/index.js
+    timeout_seconds: 60
+
+  browser-tools-mcp:
+    type: stdio
+    command: node
+    args:
+      - /home/ddv/Documents/Cline/MCP/browser-tools-mcp/browser-tools-mcp/dist/mcp-server.js
+    timeout_seconds: 60
+
+  gemini-grounding:
+    type: stdio
+    command: npx
+    args:
+      - -y
+      - gemini-grounding
+    env:
+      GEMINI_API_KEY: "AIzaSyAKNI6UQv_u1VZJ4x2WA3AmRbSWjD8MMi4"
+    timeout_seconds: 180
+
+  mcp-searxng:
+    type: stdio
+    command: podman
+    args:
+      - exec
+      - -i
+      - mcp-searxng
+      - mcp-searxng
+    timeout_seconds: 60
+
+  mcp-neo4j-memory:
+    type: stdio
+    command: /home/ddv/anaconda3/envs/neo4j-mcp/bin/mcp-neo4j-memory
+    args:
+      - --db-url
+      - bolt://localhost:7687
+      - --username
+      - neo4j
+      - --password
+      - password
+    timeout_seconds: 60
+
+# Expose them collectively as a single SSE/HTTP gateway endpoint
+gateways:
+  mcp-server:
+    type: sse
+    port: 8089
+    # Combine all five servers into this single access point
+    servers:
+      - fetch
+      - browser-tools-mcp
+      - gemini-grounding
+      - mcp-searxng
+      - mcp-neo4j-memory

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/config.db"
+    }
+  },
+  "load_balancer_config": {
+    "enabled": true
+  },
+  "providers": {
+  },
+  "plugins": 
+  [
+    {
+      "enabled": true,
+      "name": "telemetry",
+      "config": {
+        "prometheus_path": "/metrics"
+      }
+    },
+    {
+      "enabled": true,
+      "name": "logging",
+      "config": {
+        "log_level": "info",
+        "log_request_body": false,
+        "log_response_body": false
+      }
+    }
+  ],
+  "client": {
+    "enable_logging": true
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "filesystem",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@anthropic/mcp-filesystem"
+          ]
+        }
+      },
+      {
+        "name": "fetch",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "ssh",
+          "args": [
+            "host-gateway",
+            "node",
+            "/home/ddv/Documents/Cline/MCP/fetch-mcp/dist/index.js"
+          ]
+        }
+      },
+
+    {
+        "name": "browser-tools-mcp",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "node",
+          "args": ["/home/ddv/Documents/Cline/MCP/browser-tools-mcp/browser-tools-mcp/dist/mcp-server.js"]
+        },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "gemini-grounding",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "npx",
+          "args": ["-y", "gemini-grounding"],
+          "envs": ["GEMINI_API_KEY"]
+        },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "mcp-searxng",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "podman",
+          "args": ["exec", "-i", "mcp-searxng", "mcp-searxng"]
+        },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "mcp-neo4j-memory",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "/home/ddv/anaconda3/envs/neo4j-mcp/bin/mcp-neo4j-memory",
+          "args": ["--db-url", "bolt://localhost:7687", "--username", "neo4j", "--password", "password"]
+        },
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}

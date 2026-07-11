@@ -1,0 +1,340 @@
+#!/bin/bash
+#
+# UserPromptSubmit Hook - Memorize & Evolve Edition
+# 
+# Executes when the user submits a prompt to Cline. Detects memory-relevant
+# queries AND corrective feedback, providing contextual hints about available
+# graph operations.
+#
+# Input: { taskId, userPromptSubmit: { prompt: string, attachments: string[] }, clineVersion, timestamp, ... }
+# Output: { cancel: boolean, contextModification?: string, errorMessage?: string }
+
+# Read JSON input from stdin
+INPUT=$(cat)
+
+# Parse input using jq (or fallback to basic parsing)
+if command -v jq &> /dev/null; then
+  PROMPT=$(echo "$INPUT" | jq -r '.userPromptSubmit.prompt // ""')
+else
+  PROMPT=""
+fi
+
+# ──────────────────────────────────────────────
+# Dynamic Utility Script Resolution
+# Uses utils-finder.sh to locate scripts in multiple possible locations
+# ──────────────────────────────────────────────
+
+CONTEXT_MOD=""
+
+# Source the dynamic utils finder library
+FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/utils-finder.sh"
+if [ -f "$FINDER_SH" ]; then
+  source "$FINDER_SH"
+else
+  # Fallback: try relative path from hooks/lib/
+  FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/utils-finder.sh"
+  if [ -f "$FINDER_SH" ]; then
+    source "$FINDER_SH"
+  fi
+fi
+
+# Dynamic resolution of utility script paths using utils-finder.sh
+NEO4J_QUERY_SH=$(find_utils "neo4j-wip-query.sh") || NEO4J_QUERY_SH=""
+PROJECT_ID_SH=$(find_utils "project-id.sh") || PROJECT_ID_SH=""
+NEO4J_SYSTEM_STATE_SH=$(find_utils "neo4j-system-state.sh") || NEO4J_SYSTEM_STATE_SH=""
+NEO4J_RULE_EVOLUTION_SH=$(find_utils "neo4j-rule-evolution.sh") || NEO4J_RULE_EVOLUTION_SH=""
+
+# Debug: log resolved paths
+if [ -n "${MEMO_DEBUG:-}" ]; then
+  echo "[UserPromptSubmit] Resolved paths:" >&2
+  echo "[UserPromptSubmit]   NEO4J_QUERY_SH=$NEO4J_QUERY_SH" >&2
+  echo "[UserPromptSubmit]   PROJECT_ID_SH=$PROJECT_ID_SH" >&2
+  echo "[UserPromptSubmit]   NEO4J_SYSTEM_STATE_SH=$NEO4J_SYSTEM_STATE_SH" >&2
+  echo "[UserPromptSubmit]   NEO4J_RULE_EVOLUTION_SH=$NEO4J_RULE_EVOLUTION_SH" >&2
+fi
+
+# ──────────────────────────────────────────────
+# MEMO_USER_LOOP Flag Check
+# Check if the feedback loop is enabled before any detection logic
+# The flag is stored as a SystemState entity in Neo4j:
+#   name: "MEMO_USER_LOOP"
+#   type: "SystemState"
+#   observations: ["enabled": true/false]
+# ──────────────────────────────────────────────
+
+# Query the SystemState entity via CLI utility (enforced at hook level)
+MEMO_LOOP_ENABLED=true
+if [ -f "$NEO4J_SYSTEM_STATE_SH" ]; then
+  LOOP_STATUS=$(bash "$NEO4J_SYSTEM_STATE_SH" status 2>/dev/null || echo '{"enabled":null}')
+  # Extract "true"/"false" from JSON — null defaults to true (safe to capture)
+  MEMO_LOOP_ENABLED=$(echo "$LOOP_STATUS" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    enabled = data.get('enabled')
+    # null or True → enabled (safe default for capturing)
+    # False → explicitly disabled
+    print('true' if enabled is not False else 'false')
+except:
+    # No connection — default to enabled (safe to capture)
+    print('true')
+" 2>/dev/null || echo "true")
+fi
+
+# If MEMO_USER_LOOP is disabled, skip all feedback detection and memory injection below
+if [ "$MEMO_LOOP_ENABLED" = "false" ]; then
+  # Skip detection logic entirely — just return empty contextModification
+  PROMPT_LENGTH=${#PROMPT}
+  echo "[UserPromptSubmit] User submitted prompt (length: $PROMPT_LENGTH, memo=disabled)" >&2
+  if command -v jq &> /dev/null; then
+    echo '{"cancel":false,"contextModification":"","errorMessage":""}'
+  else
+    echo "{\"cancel\":false,\"contextModification\":\"\",\"errorMessage\":\"\"}"
+  fi
+  exit 0
+fi
+
+# MEMO_USER_LOOP is enabled — proceed with normal feedback detection and memory injection
+
+# ──────────────────────────────────────────────
+# Memorize & Evolve Detection Logic
+# ──────────────────────────────────────────────
+
+CONTEXT_MOD=""
+
+# Detect corrective feedback keywords in user prompt
+CORRECTIVE_KEYWORDS=(
+  "wrong" "incorrect" "don't do this" "don't" "stop doing"
+  "fix this" "that's not right" "not that" "no, it should be"
+  "you got it wrong" "that's wrong" "that was incorrect"
+  "improve this" "better way is" "should be" "not like this"
+  "don't use" "avoid" "never" "never do" "don't ever" "feedback"
+)
+
+FEEDBACK_FOUND=""
+for keyword in "${CORRECTIVE_KEYWORDS[@]}"; do
+  if echo "$PROMPT" | grep -qi "$keyword" 2>/dev/null; then
+    FEEDBACK_FOUND="$keyword"
+    break
+  fi
+done
+
+# ──────────────────────────────────────────────
+# MEMO_USER_LOOP Toggle Detection
+# User can explicitly enable/disable the feedback loop via natural language
+# ──────────────────────────────────────────────
+
+MEMO_LOOP_TOGGLE=""
+MEMO_LOOP_ACTION=""
+
+# Detect enable commands
+if echo "$PROMPT" | grep -qi "enable memorize\|turn on memorize\|activate memorize\|memorize on\|feedback loop on\|start memorize\|enable feedback\|turn on feedback\|loop on\|enable loop\|activate loop" 2>/dev/null; then
+  MEMO_LOOP_TOGGLE="enabled"
+  MEMO_LOOP_ACTION="activate"
+fi
+
+# Detect disable commands
+if echo "$PROMPT" | grep -qi "disable memorize\|turn off memorize\|deactivate memorize\|memorize off\|feedback loop off\|stop memorize\|disable feedback\|turn off feedback\|loop off\|disable loop\|deactivate loop" 2>/dev/null; then
+  MEMO_LOOP_TOGGLE="disabled"
+  MEMO_LOOP_ACTION="deactivate"
+fi
+
+# ──────────────────────────────────────────────
+# Phase 3: RuleEvolution Approval Detection
+# Detect user approval/denial signals for pending RuleEvolution proposals
+# ──────────────────────────────────────────────
+
+APPROVAL_DETECTED=false
+APPROVAL_TYPE=""
+RULE_EVOLUTION_TOPIC=""
+
+# Detect approval keywords
+if echo "$PROMPT" | grep -qi "yes approve\|yes do it\|go ahead\|approved\|approve this\|sounds good\|do it\|makes sense" 2>/dev/null; then
+  APPROVAL_DETECTED=true
+  APPROVAL_TYPE="approved"
+fi
+
+# Detect denial keywords (higher priority — if user says no, override approval)
+if echo "$PROMPT" | grep -qi "no don't\|no that's wrong\|no don't do this\|reject\|deny\|no not yet\|wait no\|don't proceed\|cancel" 2>/dev/null; then
+  APPROVAL_DETECTED=true
+  APPROVAL_TYPE="denied"
+fi
+
+# Try to extract the topic from the prompt (for creating EVOLVE-{Hook/Scope}-{Topic} entity)
+if command -v jq &> /dev/null; then
+  # Look for mentions of specific hook names in the prompt
+  HOOK_NAMES=("PostToolUse" "PreToolUse" "PreCompact" "TaskComplete" "RuleEvolution")
+  for hook_name in "${HOOK_NAMES[@]}"; do
+    if echo "$PROMPT" | grep -qi "$hook_name" 2>/dev/null; then
+      RULE_EVOLUTION_TOPIC="$hook_name"
+      break
+    fi
+  done
+fi
+
+# Detect memory-relevant keywords in user prompt
+MEMORY_KEYWORDS=(
+  "past" "previous" "last session" "before" "earlier"
+  "what did we learn" "remember" "recalled" "memorize"
+  "configuration" "config" "setting" "parameter"
+  "monitoring" "metrics" "dashboard" "alert"
+  "architecture" "design" "decision" "rationale"
+  "bug" "error" "issue" "problem" "fix"
+  "progress" "status" "work" "wip" "task"
+)
+
+KEYWORD_FOUND=""
+for keyword in "${MEMORY_KEYWORDS[@]}"; do
+  if echo "$PROMPT" | grep -qi "$keyword" 2>/dev/null; then
+    KEYWORD_FOUND="$keyword"
+    break
+  fi
+done
+
+# ──────────────────────────────────────────────
+# MEMO_USER_LOOP: Toggle Feedback Loop On/Off
+# ──────────────────────────────────────────────
+
+if [ -n "$MEMO_LOOP_TOGGLE" ]; then
+  CONTEXT_MOD="[Memorize&Evol] ${MEMO_LOOP_ACTION^^} FEEDBACK LOOP (${MEMO_LOOP_TOGGLE})
+
+ACTION: Update the MEMO_USER_LOOP SystemState entity in Neo4j.
+
+1. Use Neo4j MCP to check current state:
+   - Call search_memories(\"MEMO_USER_LOOP\") to get current enabled/disabled status
+
+2. Create or update the SystemState entity:
+   - name: \"MEMO_USER_LOOP\"
+   - type: \"SystemState\"
+   - observations: [\"enabled\": ${MEMO_LOOP_TOGGLE^^}, \"action\": \"${MEMO_LOOP_ACTION}\", \"reason\": \"{extract from user prompt}\"]
+
+3. Acknowledge to user:
+   \"${MEMO_LOOP_ACTION^^}: Feedback loop is now ${MEMO_LOOP_TOGGLE}. All future ${MEMO_LOOP_TOGGLE} interactions will be monitored for corrective feedback and memory capture.\"
+
+4. If enabling, optionally trigger a system state report:
+   - Run the feedback workflow \`/feedback.md\` to present all pending items for review"
+fi
+
+# ──────────────────────────────────────────────
+# RuleEvolution Approval/Denial Signal (Phase 3 — AUTO-TRIGGERED via workflow)
+# ──────────────────────────────────────────────
+
+if [ "$APPROVAL_DETECTED" = true ]; then
+  # Extract entity name from prompt if present (e.g., "approve EVOLVE-PostToolUse-VerboseLogging")
+  EXTRACTED_ENTITY=""
+  if command -v jq &> /dev/null; then
+    # Look for EVOLVE-{Hook}-{Topic} pattern in the prompt
+    EXTRACTED_ENTITY=$(echo "$PROMPT" | grep -oiE 'EVOLVE-[A-Za-z]+-[A-Za-z]+' | head -1 || echo "")
+  else
+    EXTRACTED_ENTITY=$(echo "$PROMPT" | grep -oiE 'EVOLVE-[A-Za-z]+-[A-Za-z]+' | head -1 || echo "")
+  fi
+  
+  if [ -n "$EXTRACTED_ENTITY" ]; then
+    CONTEXT_MOD="[Memorize&Evol] RULE EVOLUTION DECISION DETECTED (${APPROVAL_TYPE}) — AUTO-TRIGGER
+
+ACTION: Run the RuleEvolution approval workflow to automatically process this decision.
+
+1. Invoke the feedback workflow: \`/feedback.md\`
+   - The workflow will discover all pending proposals, present them for review,
+     and execute the appropriate Neo4j operations (approve/deny/create links)
+
+2. If you only want to approve/deny a specific proposal without reviewing all of them:
+   - Run: \`bash memorize-and-evolve/utils/neo4j-rule-evolution.sh ${APPROVAL_TYPE} --name \"${EXTRACTED_ENTITY}\"\`
+   - This directly updates the entity status without the workflow discovery step
+
+3. After workflow completion, acknowledge to user:
+   \"${APPROVAL_TYPE^^}: RuleEvolution proposal has been ${APPROVAL_TYPE}. Shall I compact the conversation to apply the changes?\""
+  else
+    CONTEXT_MOD="[Memorize&Evol] RULE EVOLUTION DECISION DETECTED (${APPROVAL_TYPE})
+
+ACTION: Run the feedback workflow \`/feedback.md\` to automatically discover, present, and process all pending RuleEvolution proposals. The workflow will execute Neo4j operations (approve/deny/create LED_TO relationships) based on your decisions.
+
+Alternatively, to directly update a specific proposal without the workflow:
+ - Approve: \`bash memorize-and-evolve/utils/neo4j-rule-evolution.sh approve --name \"EVOLVE-{HookName}-{Topic}\"\`
+ - Deny: \`bash memorize-and-evolve/utils/neo4j-rule-evolution.sh deny --name \"EVOLVE-{HookName}-{Topic}\"\`
+
+After workflow completion, acknowledge to user:
+\"${APPROVAL_TYPE^^}: RuleEvolution proposal has been ${APPROVAL_TYPE}. Shall I compact the conversation to apply the changes?\""
+  fi
+fi
+
+# ──────────────────────────────────────────────
+# Feedback Signal (secondary priority — AUTO-TRIGGER via workflow)
+# ──────────────────────────────────────────────
+
+if [ -n "$FEEDBACK_FOUND" ]; then
+  # Extract scope from prompt if present (e.g., "PreCompact feedback", "PostToolUse issue")
+  FEEDBACK_SCOPE="General"
+  SCOPE_KEYWORDS=("PostToolUse" "PreToolUse" "PreCompact" "TaskComplete" "RuleEvolution")
+  for scope in "${SCOPE_KEYWORDS[@]}"; do
+    if echo "$PROMPT" | grep -qi "$scope" 2>/dev/null; then
+      FEEDBACK_SCOPE="$scope"
+      break
+    fi
+  done
+  
+  # Extract topic from prompt (first meaningful word after scope)
+  FEEDBACK_TOPIC=""
+  TOPIC_WORDS=$(echo "$PROMPT" | grep -oiE "${FEEDBACK_SCOPE}[[:space:]]+[A-Za-z]+" | head -1 | awk '{print $2}' || echo "")
+  if [ -n "$TOPIC_WORDS" ]; then
+    FEEDBACK_TOPIC="$TOPIC_WORDS"
+  fi
+  
+  CONTEXT_MOD="[Memorize&Evol] CORRECTIVE FEEDBACK DETECTED (keyword: '$FEEDBACK_FOUND', scope: '$FEEDBACK_SCOPE')
+
+ACTION: Capture feedback as UserFeedback entity and optionally trigger RuleEvolution if this suggests a system improvement.
+
+**Option A — Direct capture (quick):**
+Run: \`bash memorize-and-evolve/utils/neo4j-rule-evolution.sh search --query \"UserFeedback\"\` to check existing feedback, then create the entity via Neo4j MCP:
+   - name: \"FEEDBACK-${FEEDBACK_SCOPE}-${FEEDBACK_TOPIC:-Correction}\"
+   - type: \"UserFeedback\"
+   - observations: [\"domain\": \"GLOBAL\", \"feedbackType\": \"correction\", \"content\": \"{extract user's exact correction}\", \"acknowledged\": false, \"confidence\": 0.8]
+
+**Option B — Full workflow (recommended for system-level feedback):**
+Run the feedback workflow \`/feedback.md\` which will:
+   - Capture UserFeedback entity with LED_TO relationship to RuleEvolution if applicable
+   - Create corresponding RuleEvolution proposal if this feedback suggests a system improvement
+   - Execute implementation approval if user wants the change applied
+
+4. Acknowledge to user: \"I've recorded your feedback about ${FEEDBACK_SCOPE}${FEEDBACK_TOPIC:- correction}. Shall I compact the conversation to apply improvements?\""
+fi
+
+# ──────────────────────────────────────────────
+# Memory Signal (secondary priority)
+# ──────────────────────────────────────────────
+
+if [ -n "$KEYWORD_FOUND" ]; then
+  CONTEXT_MOD="[Memorize&Evol] Memory-relevant query detected (keyword: '$KEYWORD_FOUND').
+
+Available Neo4j graph operations:
+- search_memories(\"query\") — Find entities by name/type/observations
+- find_memories_by_name([\"names\"]) — Find specific entities by exact names
+- read_graph() — Read the entire knowledge graph
+- create_entities([...]) — Add new entity nodes to the graph
+- add_observations([{entityName, observations}]) — Append facts to existing entities
+- create_relations([...]) — Add relationship edges between entities
+
+Tip: Graph traversal via search_memories is often more effective than searching for exact terms. Use semantic patterns like \"(?i).*$KEYWORD_FOUND.*\" for flexible matching."
+fi
+
+# Log prompt length for analytics (stderr only, no output)
+PROMPT_LENGTH=${#PROMPT}
+echo "[UserPromptSubmit] User submitted prompt (length: $PROMPT_LENGTH, feedback=$FEEDBACK_FOUND, memory=$KEYWORD_FOUND)" >&2
+
+# Return result as JSON - jq handles all escaping (newlines, quotes, backslashes) automatically via --arg ctx
+if command -v jq &> /dev/null; then
+  if [ -n "$CONTEXT_MOD" ]; then
+    jq -n --arg ctx "$CONTEXT_MOD" \
+      '{"cancel":false,"contextModification":$ctx,"errorMessage":""}'
+  else
+    echo '{"cancel":false,"contextModification":"","errorMessage":""}'
+  fi
+else
+  # Fallback: manual JSON escaping for jq-unavailable environments
+  if [ -n "$CONTEXT_MOD" ]; then
+    ESCAPED_MOD=$(printf '%s' "$CONTEXT_MOD" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    echo "{\"cancel\":false,\"contextModification\":\"${ESCAPED_MOD}\",\"errorMessage\":\"\"}"
+  else
+    echo '{"cancel":false,"contextModification":"","errorMessage":""}'
+  fi
+fi

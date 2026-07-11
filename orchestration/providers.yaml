@@ -1,0 +1,54 @@
+# Provider tiers and routing for hydra_vortex orchestration.
+# The team lead reads this file; it never improvises provider choice.
+# Provider strings match `paseo run --provider <provider>/<model>` on this daemon
+# (verified via `paseo list models`). Edit to match your quota/availability.
+
+tiers:
+  t0:
+    name: "Observer — Instrumentor probe (never does main work)"
+    providers:
+      - "pi/p100-ik-llama/minicpm5-1b-agentic-tooluse   # MiniCPM5 canary, via pi (no separate llama-server needed)"
+    use_for: [pipeline-canaries, vitals-reports]
+    rules:
+      - "Whitelisted tools only; scheduled by system cron, independent of Paseo"
+      - "Canaries run on t3 providers; FAIL sweeps file issues labeled source:instrumentor"
+
+  t1:
+    name: "Cloud, highest quality — quota-limited (5h rolling windows)"
+    providers:
+      - claude/claude-opus-4-8      # planning, architecture, hard problems
+      - claude/claude-sonnet-5      # review, merges, medium implementation
+    use_for: [planning, architecture, complex-implementation, code-review, merge-decisions, big-change-proposals]
+    on_rate_limit: quota-protocol   # see QUOTA.md
+
+  t2:
+    name: "Cloud alternates — separate quota pools"
+    providers:
+      - opencode/claude-sonnet-5    # OpenCode Zen serving Sonnet (implementation)
+      - opencode/gpt-5.4            # alternate implementation / refactors
+      - opencode/kimi-k2.7-code     # code-specialist alternate
+    use_for: [implementation, refactors, pr-descriptions, test-writing]
+    on_rate_limit: quota-protocol
+
+  t3:
+    name: "Local / free — unlimited tokens, draft quality"
+    providers:
+      - opencode/mimo-v2.5-free        # free tier-3 draft
+      - opencode/deepseek-v4-flash-free # free tier-3 draft
+      - opencode/north-mini-code-free   # free tier-3 draft
+    use_for: [tests, docs, lint-fixes, scaffolding, mechanical-refactors, monitoring-digestion, draft-implementations]
+    rules:
+      - "All output is draft quality: label issue draft:needs-review"
+      - "Commits prefixed 'draft:'; never opens PRs; never merges"
+      - "Never touches: migrations, public APIs, security code, CI/CD, deploys"
+      - "Every draft gets a t1/t2 review pass before it counts as done"
+
+routing:
+  default_lead: claude/claude-sonnet-5     # heartbeats & triage (upgrade to opus for PLAN if needed)
+  default_implementer: t2
+  default_reviewer: "t1, and never the same provider as the implementer"
+  monitoring_agent: t3                     # log digestion is cheap, perfect for free tier
+  on_rate_limit: "checkpoint -> paseo schedule run-once at reset -> optional t3 draft (QUOTA.md)"
+  concurrency:
+    max_issues_in_flight: 3
+    max_workers_total: 6

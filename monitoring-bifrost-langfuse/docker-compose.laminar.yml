@@ -1,0 +1,139 @@
+---
+# ============================================================
+# Phase 2 — Add Laminar to the stack
+#
+# Usage (from llm-stack/ directory):
+#   podman-compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.laminar.yml \
+#     up -d
+#
+# Or alias it in your shell:
+#   alias stack-up="podman-compose -f docker-compose.yml -f docker-compose.laminar.yml up -d"
+#
+# Services added:
+#   lmnr-postgres    :5433  — Laminar's own Postgres (separate from Langfuse's)
+#   lmnr-app-server  :8000  — Laminar backend (gRPC+HTTP)
+#   lmnr-frontend    :5667  — Laminar UI
+#   lmnr-qdrant      :6333  — Vector DB for Laminar evals
+#
+# Laminar UI: http://localhost:5667
+# Laminar OTLP gRPC: host:8000  (for SDK)
+# Laminar HTTP API:  host:8000
+#
+# After boot:
+#   1. Open http://localhost:5667 and create a project
+#   2. Copy the project API key
+#   3. In your app: Laminar.initialize(project_api_key="...", base_url="http://localhost")
+# ============================================================
+
+networks:
+  llm-net:
+    external: true
+
+volumes:
+  lmnr-postgres-data:
+  lmnr-qdrant-data:
+
+services:
+
+  # ══════════════════════════════════════════════════════════
+  # LAMINAR Postgres — separate from Langfuse's postgres
+  # Exposed on 5433 to avoid collision with Langfuse's 5432
+  # ══════════════════════════════════════════════════════════
+  lmnr-postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: lmnr-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: laminar
+      POSTGRES_PASSWORD: ${LMNR_POSTGRES_PASSWORD:-laminarpass123}
+      POSTGRES_DB: ${LMNR_POSTGRES_DB:-laminar}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - lmnr-postgres-data:/var/lib/postgresql/data
+    networks:
+      - llm-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U laminar -d laminar"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ══════════════════════════════════════════════════════════
+  # LAMINAR Qdrant — vector store for evals & search
+  # REST: http://localhost:6333
+  # ══════════════════════════════════════════════════════════
+  lmnr-qdrant:
+    image: docker.io/qdrant/qdrant:latest
+    container_name: lmnr-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"   # gRPC
+    volumes:
+      - lmnr-qdrant-data:/qdrant/storage
+    networks:
+      - llm-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6333/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ══════════════════════════════════════════════════════════
+  # LAMINAR App Server — core backend (Rust)
+  # SDK connects here for traces (OTLP gRPC on port 8000)
+  # Python SDK: base_url="http://localhost", http_port=8000
+  # ══════════════════════════════════════════════════════════
+  lmnr-app-server:
+    image: docker.io/lmnrai/lmnr:latest
+    container_name: lmnr-app-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # HTTP + gRPC (OTLP)
+    environment:
+      PORT: 8000
+      DATABASE_URL: postgresql://laminar:${LMNR_POSTGRES_PASSWORD:-laminarpass123}@lmnr-postgres:5432/${LMNR_POSTGRES_DB:-laminar}
+      QDRANT_URL: http://lmnr-qdrant:6333
+      # Laminar Signals: needs a Gemini key for AI monitoring feature
+      GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
+      ENVIRONMENT: production
+    depends_on:
+      lmnr-postgres:
+        condition: service_healthy
+      lmnr-qdrant:
+        condition: service_healthy
+    networks:
+      - llm-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ══════════════════════════════════════════════════════════
+  # LAMINAR Frontend — UI
+  # http://localhost:5667
+  # ══════════════════════════════════════════════════════════
+  lmnr-frontend:
+    image: docker.io/lmnrai/lmnr-frontend:latest
+    container_name: lmnr-frontend
+    restart: unless-stopped
+    ports:
+      - "5667:5667"
+    environment:
+      PORT: 5667
+      BACKEND_URL: http://lmnr-app-server:8000
+      # If you want Laminar to also proxy traces to Langfuse OTel:
+      # NEXTAUTH_URL: http://localhost:5667
+    depends_on:
+      lmnr-app-server:
+        condition: service_healthy
+    networks:
+      - llm-net

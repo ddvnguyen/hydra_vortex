@@ -1,0 +1,116 @@
+#!/bin/bash
+#
+# TaskCancel Hook - Memorize & Evolve Edition
+# 
+# Executes when a task is cancelled. Archives orphaned WIP items,
+# preserves completed learnings, and prevents memory bloat.
+# 
+# Input: { 
+#   taskId, 
+#   taskCancel: { 
+#     taskMetadata: { taskId: string, ulid: string } 
+#   }, 
+#   clineVersion, timestamp, ... 
+# }
+# Output: { cancel: boolean, contextModification?: string, errorMessage?: string }
+
+# Read JSON input from stdin
+INPUT=$(cat)
+
+# Parse input using jq
+if command -v jq &> /dev/null; then
+  TASK_ID=$(echo "$INPUT" | jq -r '.taskCancel.taskMetadata.taskId')
+else
+  TASK_ID="<taskId>"
+fi
+
+# ──────────────────────────────────────────────
+# Memorize & Evolve Logic
+# ──────────────────────────────────────────────
+
+# Orphan auto-archive control — default to false (informational only)
+# Set MEMO_ORPHAN_AUTO_ARCHIVE=true to enable automatic archiving of orphaned WIP items
+MEMO_ORPHAN_AUTO_ARCHIVE="${MEMO_ORPHAN_AUTO_ARCHIVE:-false}"
+
+# ──────────────────────────────────────────────
+# Dynamic Utility Script Resolution
+# Uses utils-finder.sh to locate scripts in multiple possible locations
+# ──────────────────────────────────────────────
+
+# Source the dynamic utils finder library
+FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/utils-finder.sh"
+if [ -f "$FINDER_SH" ]; then
+  source "$FINDER_SH"
+else
+  # Fallback: try relative path from hooks/lib/
+  FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/utils-finder.sh"
+  if [ -f "$FINDER_SH" ]; then
+    source "$FINDER_SH"
+  fi
+fi
+
+# Dynamic resolution of utility script paths using utils-finder.sh
+NEO4J_QUERY_SH=$(find_utils "neo4j-wip-query.sh") || NEO4J_QUERY_SH=""
+
+# Fetch orphaned WIP items from Neo4j (informational — doesn't delete)
+ORPHAN_INFO=""
+if [ -f "$NEO4J_QUERY_SH" ]; then
+  ORPHAN_RESULT=$(bash "$NEO4J_QUERY_SH" list-orphans --task-id "$TASK_ID" 2>/dev/null) || ORPHAN_RESULT="[]"
+  
+  # Extract orphan names from result (avoids complex jq parsing — use simple text extraction)
+  if [ -n "$ORPHAN_RESULT" ] && [ "$ORPHAN_RESULT" != "null" ]; then
+    ORPHAN_COUNT=$(echo "$ORPHAN_RESULT" | python3 -c "import sys,json; data=json.load(sys.stdin); print(len(data))" 2>/dev/null) || ORPHAN_COUNT="0"
+    
+    if [ "$ORPHAN_COUNT" -gt 0 ] 2>/dev/null; then
+      # Extract orphan entity names using python3 for reliable JSON parsing
+      ORPHAN_NAMES=$(echo "$ORPHAN_RESULT" | python3 -c "import sys,json; data=json.load(sys.stdin); print('\n- '.join([r.get('name','unknown') for r in data]))" 2>/dev/null) || ORPHAN_NAMES="Unknown"
+      
+      if [ "$MEMO_ORPHAN_AUTO_ARCHIVE" = "true" ]; then
+        ORPHAN_INFO="[Memorize&Evol] Orphaned WIP items found (${ORPHAN_COUNT}):
+
+$ORPHAN_NAMES
+
+⚠ AUTO-ARCHIVE ENABLED: These orphaned WIP items will be archived with status=abandoned.
+Action: review above orphans — if any are still needed, cancel archive by setting MEMO_ORPHAN_AUTO_ARCHIVE=false"
+      else
+        ORPHAN_INFO="[Memorize&Evol] Orphaned WIP items found (${ORPHAN_COUNT}) — INFO ONLY (MEMO_ORPHAN_AUTO_ARCHIVE=false):
+
+$ORPHAN_NAMES
+
+ℹ These orphaned WIP items are kept for reference. Auto-archive is disabled.
+To enable automatic archiving, set MEMO_ORPHAN_AUTO_ARCHIVE=true"
+      fi
+    fi
+  fi
+fi
+
+# Build context modification - jq handles JSON escaping (newlines → \n, quotes → \") automatically
+if [ -n "$ORPHAN_INFO" ]; then
+  CONTEXT_MOD="[Memorize&Evol] Task cancelled (TaskId: $TASK_ID)
+${ORPHAN_INFO}
+- Preserve Learning entities from this session for future evolution"
+else
+  CONTEXT_MOD="[Memorize&Evol] Task cancelled (TaskId: $TASK_ID)
+- No orphaned WIP items found from this session
+- Preserve Learning entities from this session for future evolution"
+fi
+
+echo "[TaskCancel] Task cancelled: $TASK_ID (auto-archive=$MEMO_ORPHAN_AUTO_ARCHIVE, orphans=$ORPHAN_COUNT)" >&2
+
+# Return result as JSON - jq handles all escaping (newlines, quotes, backslashes)
+if command -v jq &> /dev/null; then
+  jq -n --arg ctx "$CONTEXT_MOD" \
+    '{"cancel":false,"contextModification":$ctx,"errorMessage":""}'
+else
+  # Fallback: use printf %b for escape sequence interpretation and manual JSON escaping
+  ESCAPED_MOD=$(printf '[Memorize&Evol] Task cancelled (TaskId: %s)\n- Agent should archive orphaned WIP items to memory\n- Archive: search_memories(WIP-%s) → add_observations(status=abandoned) for each\n- Preserve Learning entities from this session for future evolution\n- Prevent memory bloat: mark abandoned entities for RETIRE cycle' \
+    "$TASK_ID" "$TASK_ID" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  echo "{\"cancel\":false,\"contextModification\":\"${ESCAPED_MOD}\",\"errorMessage\":\"\"}"
+fi
+
+# Also add timestamp parsing for audit trail
+TIMESTAMP=$(echo "$INPUT" | jq -r '.timestamp' 2>/dev/null) || TIMESTAMP=""
+if [ -n "$TIMESTAMP" ]; then
+  TIMESTAMP_ISO=$(python3 -c "from datetime import datetime,timezone; print(datetime.fromtimestamp($TIMESTAMP/1000,tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null) || TIMESTAMP_ISO=""
+  echo "[TaskCancel] Timestamp: ${TIMESTAMP_ISO:-$TIMESTAMP}" >&2
+fi

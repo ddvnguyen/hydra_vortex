@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<!-- ClickHouse custom config for Langfuse self-hosted     -->
+<!-- IMPORTANT: Langfuse requires UTC timezone             -->
+<clickhouse>
+    <timezone>UTC</timezone>
+
+    <!-- Allow larger max_memory_usage for analytical queries -->
+    <profiles>
+        <default>
+            <max_memory_usage>4000000000</max_memory_usage>
+            <use_uncompressed_cache>0</use_uncompressed_cache>
+            <load_balancing>random</load_balancing>
+        </default>
+    </profiles>
+
+    <!-- Disable telemetry to ClickHouse Inc -->
+    <send_crash_reports>
+        <enabled>false</enabled>
+    </send_crash_reports>
+</clickhouse>

@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: hydra_vortex
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      refresh: 10s

@@ -1,0 +1,118 @@
+version: '3.9'
+
+networks:
+  monitoring-net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  prometheus-data:
+    driver: local
+  grafana-storage:
+    driver: local
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: llm-prometheus
+    user: "1000:1000"
+    networks:
+      - monitoring-net
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    environment:
+      - GOGC=80
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: llm-grafana
+    user: "1000:1000"
+    networks:
+      - monitoring-net
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_LOG_LEVEL: warn
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1'
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
+    depends_on:
+      - prometheus
+
+  litellm:
+    image: litellm:latest
+    container_name: llm-litellm
+    user: "1000:1000"
+    networks:
+      - monitoring-net
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    environment:
+      MODEL: llama-2-7b
+      LITELLM_LOG: INFO
+      LITELLM_OLLAMA_API_BASE: "http://host.containers.internal:8080"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"

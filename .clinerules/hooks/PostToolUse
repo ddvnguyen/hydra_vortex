@@ -1,0 +1,232 @@
+#!/bin/bash
+#
+# PostToolUse Hook - Memorize & Evolve Edition (Actual Evolution)
+# 
+# Executes after any Neo4j MCP tool is used. Triggers memory evolution by:
+# 1. Verifying operation integrity via neo4j-wip-query.sh
+# 2. Detecting related entities that need confidence evolution
+# 3. Logging graph state changes for audit trail
+#
+# Input: { 
+#   taskId, 
+#   postToolUse: { 
+#     toolName: string, 
+#     parameters: object,
+#     result: string,
+#     success: boolean,
+#     executionTimeMs: number
+#   }, 
+#   ... 
+# }
+# Output: { cancel: boolean, contextModification?: string, errorMessage?: string }
+
+# Read JSON input from stdin
+INPUT=$(cat)
+
+# ──────────────────────────────────────────────
+# DEBUG: Print tool name and command at start
+# ──────────────────────────────────────────────
+TOOL_NAME_DEBUG=$(echo "$INPUT" | grep -oP '"toolName"\s*:\s*"[^"]+"' | head -1 || echo "unknown")
+COMMAND_DEBUG=$(echo "$INPUT" | grep -oP '"command"\s*:\s*"[^"]+"' | head -1 || echo "N/A")
+MCP_TOOL_DEBUG=$(echo "$INPUT" | grep -oP '"tool_name"\s*:\s*"[^"]+"' | head -1 || echo "N/A")
+echo "[PostToolUse] DEBUG: Tool=$TOOL_NAME_DEBUG Cmd=$COMMAND_DEBUG MCP=$MCP_TOOL_DEBUG" >&2
+
+if command -v jq &> /dev/null; then
+  TOOL=$(echo "$INPUT" | jq -r '.postToolUse.toolName')
+  SUCCESS=$(echo "$INPUT" | jq -r '.postToolUse.success')
+  DURATION=$(echo "$INPUT" | jq -r '.postToolUse.executionTimeMs')
+  TASK_ID=$(echo "$INPUT" | jq -r '.taskId')
+  
+  # Extract entity names for evolution checks
+  CREATE_NAME=$(echo "$INPUT" | jq -r '.postToolUse.parameters.entities[0].name // empty' 2>/dev/null)
+  ADD_OBS_NAME=$(echo "$INPUT" | jq -r '.postToolUse.parameters.observations[0].entityName // empty' 2>/dev/null)
+  SEARCH_QUERY=$(echo "$INPUT" | jq -r '.postToolUse.parameters.query // empty' 2>/dev/null)
+else
+  TOOL="<tool>"
+  SUCCESS="true"
+  DURATION="0"
+  TASK_ID="<taskId>"
+  CREATE_NAME=""
+  ADD_OBS_NAME=""
+  SEARCH_QUERY=""
+fi
+
+# ──────────────────────────────────────────────
+# Memorize & Evolve Logic — Actual Evolution
+# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# Dynamic Utility Script Resolution
+# Uses utils-finder.sh to locate scripts in multiple possible locations
+# ──────────────────────────────────────────────
+
+CONTEXT_MOD=""
+
+# Source the dynamic utils finder library
+FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/utils-finder.sh"
+if [ -f "$FINDER_SH" ]; then
+  source "$FINDER_SH"
+else
+  # Fallback: try relative path from hooks/lib/
+  FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/utils-finder.sh"
+  if [ -f "$FINDER_SH" ]; then
+    source "$FINDER_SH"
+  fi
+fi
+
+# Load shared logging function for configurable log levels
+if has_utils "memo-log.sh"; then
+  MEMO_LOG_SH=$(find_utils "memo-log.sh") || true
+  if [ -n "$MEMO_LOG_SH" ] && [ -f "$MEMO_LOG_SH" ]; then
+    source "$MEMO_LOG_SH"
+  fi
+fi
+
+# Helper: extract topic from entity name (safe regex — no parens in double quotes)
+extract_topic() {
+  echo "$1" | grep -oP '(?<=[A-Z]-)[A-Za-z0-9]+' 2>/dev/null || echo ""
+}
+
+# Dynamic resolution of utility script paths using utils-finder.sh
+PROJECT_ID_SH=$(find_utils "project-id.sh") || PROJECT_ID_SH=""
+NEO4J_QUERY_SH=$(find_utils "neo4j-wip-query.sh") || NEO4J_QUERY_SH=""
+
+# Pre-check: Dynamic ProjectId from utils/project-id.sh
+PROJECT_ID=""
+if [ -n "$PROJECT_ID_SH" ] && [ -f "$PROJECT_ID_SH" ]; then
+  PROJECT_ID=$(bash "$PROJECT_ID_SH" --project-id 2>/dev/null) || PROJECT_ID=""
+fi
+PROJECT_ID="${PROJECT_ID:-unknown}"
+
+# Debug: log resolved paths
+if [ -n "${MEMO_DEBUG:-}" ]; then
+  echo "[PostToolUse] Resolved paths:" >&2
+  echo "[PostToolUse]   PROJECT_ID_SH=$PROJECT_ID_SH" >&2
+  echo "[PostToolUse]   NEO4J_QUERY_SH=$NEO4J_QUERY_SH" >&2
+fi
+
+# Only process Neo4j MCP tool calls
+if [[ "$TOOL" == "create_entities" ]] && [ -n "$CREATE_NAME" ]; then
+  # After create_entities: verify entity was created correctly and find related entities for evolution
+  if [ -f "$NEO4J_QUERY_SH" ]; then
+    VERIFY_RESULT=$(bash "$NEO4J_QUERY_SH" check-collision --name "$CREATE_NAME" 2>/dev/null) || VERIFY_RESULT='{"exists":false}'
+    
+    EXISTS_FLAG=$(echo "$VERIFY_RESULT" | jq -r '.exists // false' 2>/dev/null) || EXISTS_FLAG="false"
+    
+    if [ "$EXISTS_FLAG" = "true" ]; then
+      CONTEXT_MOD="[Memorize&Evol] Entity '$CREATE_NAME' created. Note: collision check shows this entity name exists — verify you didn't accidentally create a duplicate. If it's the same entity, consider using add_observations instead."
+    else
+      # Find related Learning entities that might need confidence evolution from this new entity
+      TOPIC=$(extract_topic "$CREATE_NAME")
+      if [ -n "$TOPIC" ]; then
+        RELATED_RESULT=$(bash "$NEO4J_QUERY_SH" find-related --topic "$TOPIC" --type Learning 2>/dev/null) || RELATED_RESULT='[]'
+        RELATED_COUNT=$(echo "$RELATED_RESULT" | jq 'length' 2>/dev/null) || RELATED_COUNT="0"
+        
+        if [ "$RELATED_COUNT" -gt 0 ] 2>/dev/null; then
+          CONTEXT_MOD="[Memorize&Evol] Entity '$CREATE_NAME' created successfully. Related Learning entities ($RELATED_COUNT): Agent should trigger confidence evolution on these via add_observations(entityName=<name>, observations=[confirmed_by_$CREATE_NAME])."
+        else
+          CONTEXT_MOD="[Memorize&Evol] Entity '$CREATE_NAME' created successfully (no related Learning entities found for evolution)."
+        fi
+      else
+        CONTEXT_MOD="[Memorize&Evol] Entity '$CREATE_NAME' created successfully."
+      fi
+    fi
+  else
+    CONTEXT_MOD="[Memorize&Evol] Entity '$CREATE_NAME' created. Note: neo4j-wip-query.sh unavailable — cannot verify collision or find related entities for evolution."
+  fi
+
+elif [[ "$TOOL" == "add_observations" ]] && [ -n "$ADD_OBS_NAME" ]; then
+   # After add_observations: trigger confidence evolution on related entities
+   if [ -f "$NEO4J_QUERY_SH" ]; then
+    # Find related Learning entities for evolution
+    TOPIC=$(extract_topic "$ADD_OBS_NAME")
+    if [ -n "$TOPIC" ]; then
+      RELATED_RESULT=$(bash "$NEO4J_QUERY_SH" find-related --topic "$TOPIC" --type Learning 2>/dev/null) || RELATED_RESULT='[]'
+      RELATED_COUNT=$(echo "$RELATED_RESULT" | jq 'length' 2>/dev/null) || RELATED_COUNT="0"
+      
+      if [ "$RELATED_COUNT" -gt 0 ] 2>/dev/null; then
+        RELATED_NAMES=$(echo "$RELATED_RESULT" | jq -r '.[].name' 2>/dev/null)
+        CONTEXT_MOD="[Memorize&Evol] Observations added to '$ADD_OBS_NAME'. Related Learning entities ($RELATED_COUNT) may need confidence evolution:
+$(echo "$RELATED_NAMES" | while read -r name; do echo "  - add_observations(entityName=$name, observations=[confirmed_by_$ADD_OBS_NAME])"; done)"
+      else
+        CONTEXT_MOD="[Memorize&Evol] Observations added to '$ADD_OBS_NAME'. No related Learning entities found for confidence evolution."
+      fi
+    else
+      CONTEXT_MOD="[Memorize&Evol] Observations added to '$ADD_OBS_NAME' (no topic extracted for evolution)."
+    fi
+   else
+    CONTEXT_MOD="[Memorize&Evol] Observations added to '$ADD_OBS_NAME'. Note: neo4j-wip-query.sh unavailable — cannot check for related entities needing evolution."
+   fi
+
+elif [[ "$TOOL" == "search_memories" ]]; then
+  # After search_memories: evaluate if results indicate entity evolution needed
+  if [ -f "$NEO4J_QUERY_SH" ]; then
+    SEARCH_COUNT=$(echo "$INPUT" | jq -r '.postToolUse.result | fromjson | length // 0' 2>/dev/null) || SEARCH_COUNT="0"
+    
+    # Check for duplicate entities in results (indicates evolution opportunity)
+    DUPS_RESULT=$(bash "$NEO4J_QUERY_SH" find-duplicates --type Learning 2>/dev/null) || DUPS_RESULT='[]'
+    DUPS_COUNT=$(echo "$DUPS_RESULT" | jq 'length' 2>/dev/null) || DUPS_COUNT="0"
+    
+    if [ "$DUPS_COUNT" -gt 0 ] 2>/dev/null; then
+      CONTEXT_MOD="[Memorize&Evol] Search complete (query: '$(echo "$INPUT" | jq -r '.postToolUse.parameters.query // "*")'). Found $SEARCH_COUNT results, $DUPS_COUNT potential duplicate Learning entities. Agent should consider merging duplicates via add_observations."
+    else
+      CONTEXT_MOD="[Memorize&Evol] Search complete (query: '$(echo "$INPUT" | jq -r '.postToolUse.parameters.query // "*")', $SEARCH_COUNT results). No duplicate Learning entities found (no evolution needed)."
+    fi
+  else
+    CONTEXT_MOD="[Memorize&Evol] Memory search complete (query: '$(echo "$INPUT" | jq -r '.postToolUse.parameters.query // "*")'). Note: neo4j-wip-query.sh unavailable — cannot check for duplicates."
+  fi
+
+elif [[ "$TOOL" == "create_relations" ]]; then
+  # After create_relations: verify relationship integrity
+  if [ -f "$NEO4J_QUERY_SH" ]; then
+    SOURCE=$(echo "$INPUT" | jq -r '.postToolUse.parameters.relations[0].source // "unknown"' 2>/dev/null) || SOURCE="unknown"
+    TARGET=$(echo "$INPUT" | jq -r '.postToolUse.parameters.relations[0].target // "unknown"' 2>/dev/null) || TARGET="unknown"
+    REL_TYPE=$(echo "$INPUT" | jq -r '.postToolUse.parameters.relations[0].relationType // "unknown"' 2>/dev/null) || REL_TYPE="unknown"
+    
+    # Verify both source and target exist
+    SRC_CHECK=$(bash "$NEO4J_QUERY_SH" check-collision --name "$SOURCE" 2>/dev/null) || SRC_CHECK='{"exists":false}'
+    TGT_CHECK=$(bash "$NEO4J_QUERY_SH" check-collision --name "$TARGET" 2>/dev/null) || TGT_CHECK='{"exists":false}'
+    
+    SRC_EXISTS=$(echo "$SRC_CHECK" | jq -r '.exists // false' 2>/dev/null) || SRC_EXISTS="false"
+    TGT_EXISTS=$(echo "$TGT_CHECK" | jq -r '.exists // false' 2>/dev/null) || TGT_EXISTS="false"
+    
+    if [ "$SRC_EXISTS" = "true" ] && [ "$TGT_EXISTS" = "true" ]; then
+      CONTEXT_MOD="[Memorize&Evol] Relation created: $SOURCE → $TARGET ($REL_TYPE). Both entities verified as existing — relationship integrity confirmed."
+    else
+      CONTEXT_MOD="[Memorize&Evol] WARNING: Relation $SOURCE → $TARGET ($REL_TYPE) — source exists=$SRC_EXISTS, target exists=$TGT_EXISTS. Verify both entities exist before creating relations."
+    fi
+  else
+    SOURCE=$(echo "$INPUT" | jq -r '.postToolUse.parameters.relations[0].source // "unknown"' 2>/dev/null) || SOURCE="unknown"
+    TARGET=$(echo "$INPUT" | jq -r '.postToolUse.parameters.relations[0].target // "unknown"' 2>/dev/null) || TARGET="unknown"
+    REL_TYPE=$(echo "$INPUT" | jq -r '.postToolUse.parameters.relations[0].relationType // "unknown"' 2>/dev/null) || REL_TYPE="unknown"
+    
+    CONTEXT_MOD="[Memorize&Evol] Relation created: $SOURCE → $TARGET ($REL_TYPE). Note: neo4j-wip-query.sh unavailable — cannot verify relationship integrity."
+  fi
+
+fi
+
+# Log hook execution for debugging (configurable via MEMO_LOG_LEVEL)
+log "PostToolUse" "Tool: $TOOL (success=$SUCCESS, ${DURATION}ms, projectId=$PROJECT_ID)"
+
+# Parse timestamp from input for audit trail (verbose only)
+if [ "$MEMO_LOG_LEVEL" = "verbose" ]; then
+  TIMESTAMP=$(echo "$INPUT" | jq -r '.timestamp' 2>/dev/null) || TIMESTAMP=""
+  if [ -n "$TIMESTAMP" ]; then
+    TIMESTAMP_ISO=$(python3 -c "from datetime import datetime,timezone; print(datetime.fromtimestamp($TIMESTAMP/1000,tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null) || TIMESTAMP_ISO=""
+    echo "[PostToolUse] Timestamp: ${TIMESTAMP_ISO:-$TIMESTAMP}" >&2
+  fi
+fi
+
+# Return result as JSON
+if command -v jq &> /dev/null; then
+  if [ -n "$CONTEXT_MOD" ]; then
+    jq -n --arg ctx "$CONTEXT_MOD" \
+      '{"cancel":false,"contextModification":$ctx,"errorMessage":""}'
+  else
+    echo '{"cancel":false,"contextModification":"","errorMessage":""}'
+  fi
+else
+  # Fallback: manual JSON escaping for jq-unavailable environments
+  ESCAPED_MOD=$(printf '%s' "$CONTEXT_MOD" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  echo "{\"cancel\":false,\"contextModification\":\"${ESCAPED_MOD}\",\"errorMessage\":\"\"}"
+fi

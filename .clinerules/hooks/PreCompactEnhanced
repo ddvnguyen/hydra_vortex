@@ -1,0 +1,81 @@
+#!/bin/bash
+#
+# PreCompactEnhanced — Auto-save checkpoint before context compression
+# 
+# This hook implements the P0-CRITICAL gap: GAP-PreCompact-Hook
+# It auto-saves observations before context window is compressed, ensuring
+# the agent can restore critical state after compaction.
+#
+# Based on implementation_plan.md Phase 1 implementation.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+CHECKPOINT_DIR="${PROJECT_ROOT}/memorize-and-evolve/checkpoints"
+
+# ──────────────────────────────────────────────
+# Extract task context from Cline hook payload
+# ──────────────────────────────────────────────
+HOOK_INPUT="${1:-}"
+
+if [ -z "$HOOK_INPUT" ]; then
+  echo "[Memorize&Evol] PreCompactEnhanced: No input provided, skipping." >&2
+  exit 0
+fi
+
+TASK_ID=$(echo "$HOOK_INPUT" | jq -r '.taskId // "unknown"' 2>/dev/null || echo "unknown")
+TASK_NAME=$(echo "$HOOK_INPUT" | jq -r '.name // "unknown"' 2>/dev/null || echo "unknown")
+TIMESTAMP=$(date -Iseconds 2>/dev/null || echo "now")
+
+# ──────────────────────────────────────────────
+# Step 1: Query Neo4j for active WIP items
+# ──────────────────────────────────────────────
+echo "[Memorize&Evol] PreCompactEnhanced: Querying Neo4j for active WIP items..." >&2
+
+WIP_ITEMS=$(cd "$SCRIPT_DIR/../../utils" && bash neo4j-wip-query.sh list-all-wip 2>/dev/null || echo "Query failed")
+
+# ──────────────────────────────────────────────
+# Step 2: Create checkpoint file with critical state
+# ──────────────────────────────────────────────
+mkdir -p "$CHECKPOINT_DIR"
+CHECKPOINT_FILE="${CHECKPOINT_DIR}/checkpoint_${TASK_ID}_$(date +%Y%m%d_%H%M%S).json"
+
+cat > "$CHECKPOINT_FILE" << CHECKPOINT_EOF
+{
+  "taskId": "${TASK_ID}",
+  "taskName": "${TASK_NAME}",
+  "timestamp": "${TIMESTAMP}",
+  "checkpointType": "precompact",
+  "wipItems": "$(echo "$WIP_ITEMS" | head -c 1000)",
+  "status": "saved"
+}
+CHECKPOINT_EOF
+
+# ──────────────────────────────────────────────
+# Step 3: Emit contextModification with checkpoint info
+# ──────────────────────────────────────────────
+echo "" >&2
+echo "[Memorize&Evol] PRECOMPACT CHECKPOINT SAVED" >&2
+echo "Checkpoint file: ${CHECKPOINT_FILE}" >&2
+echo "" >&2
+
+# Output the checkpoint path in a format the agent can use to restore after compaction
+cat << EOF
+{
+  "text": "[Memorize&Evol] PreCompact checkpoint saved before context compression.",
+  "contextModification": {
+    "instruction": "A checkpoint has been saved at ${CHECKPOINT_FILE}. After context is compressed, you can restore the WIP state by reading this file and updating Neo4j entities via neo4j-wip-query.sh --restore-checkpoint",
+    "checkpointFile": "${CHECKPOINT_FILE}",
+    "taskIdsActive": ["${TASK_ID}"]
+  }
+}
+EOF
+
+# ──────────────────────────────────────────────
+# Step 4: Emit MCP instructions for cache warming
+# ──────────────────────────────────────────────
+echo "" >&2
+echo "[Memorize&Evol] PreCompactEnhanced: Emitting cache warmup instructions..." >&2
+
+echo "MCP_INSTRUCTION:server=mcp-neo4j-memory|tool=add_observations|key=warmup_before_compact|value={\"observations\":[{\"entityName\":\"TASK-${TASK_NAME}\",\"observations\":[\"checkpointPreCompact: ${CHECKPOINT_FILE}\", \"compactionTime: ${TIMESTAMP}\", \"wipItemsSaved: true\"]}]}"

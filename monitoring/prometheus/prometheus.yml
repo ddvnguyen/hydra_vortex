@@ -1,0 +1,79 @@
+# ============================================================
+# LLM Monitoring Stack - Prometheus Configuration
+# New Stack: Bifrost (AI Gateway) + Langfuse + Grafana
+#
+# Scrapes metrics from:
+#   - llama.cpp server (port 8080)          -> Inference metrics
+#   - Bifrost gateway (port 8088)           -> Gateway metrics
+#   - nvidia_gpu_exporter (port 9835)       -> GPU hardware metrics
+#   - node_exporter (port 9100)             -> Host system metrics
+# ============================================================
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+
+  # ── LLM Inference Metrics ──────────────────────────────
+
+  - job_name: llamacpp
+    static_configs:
+      - targets: ['host-gateway:8080']
+    metrics_path: /metrics
+    labels:
+      source: llama-server
+      location: host
+
+  - job_name: bifrost
+    static_configs:
+      - targets: ['host-gateway:8088']
+    metrics_path: /metrics
+    labels:
+      source: bifrost-gateway
+      location: host
+
+  # ── GPU Hardware Metrics ───────────────────────────────
+
+  - job_name: gpu_nvidia
+    static_configs:
+      - targets: ['host-gateway:9835']
+    labels:
+      node: rtx5060ti
+      location: host
+
+  # ── Host System Metrics ────────────────────────────────
+
+  - job_name: node_exporter
+    static_configs:
+      - targets: ['host-gateway:9100']
+    labels:
+      node: ubuntu_host
+      location: host
+
+  # ── Langfuse Metrics (if available) ────────────────────
+  # Langfuse exposes Prometheus metrics at /api/public/metrics
+  # Enable when Bifrost OTel -> Langfuse is configured
+
+  - job_name: langfuse-metrics
+    static_configs:
+      - targets: ['host-gateway:3000']
+    metrics_path: /api/public/metrics
+    scrape_interval: 15s
+    labels:
+      source: langfuse
+      location: host
+
+  # ── hydra_vortex orchestration dashboard (:8098) ──
+  - job_name: hydra_orchestration
+    static_configs:
+      - targets: ['host-gateway:8098']
+    metrics_path: /metrics
+    scrape_interval: 15s
+    labels:
+      source: hydra-orchestration
+      location: host
+
+# ── Alert Rules ──────────────────────────────────────────
+rule_files:
+  - "alert_rules/*.yml"

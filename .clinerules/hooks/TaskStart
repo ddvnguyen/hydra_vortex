@@ -1,0 +1,309 @@
+#!/bin/bash
+#
+# TaskStart Hook - Memorize & Evolve Edition (Session Initialization)
+# 
+# Executes at the start of every task session. Performs session initialization:
+# 1. Loads Project entity context from Neo4j on session start
+# 2. Checks for orphaned WIP items from previous sessions
+# 3. Initializes MEMO_USER_LOOP flag from SystemState entity
+#
+# Input: { taskId: string, projectId: string (optional), ... }
+# Output: { cancel: boolean, contextModification?: string, errorMessage?: string }
+
+set -euo pipefail
+
+# Read JSON input from stdin
+INPUT=$(cat)
+
+# Parse input using jq (or fallback to basic parsing)
+if command -v jq &> /dev/null; then
+  TASK_ID=$(echo "$INPUT" | jq -r '.taskId // ""' 2>/dev/null || echo "")
+  PROJECT_ID_FROM_INPUT=$(echo "$INPUT" | jq -r '.projectId // ""' 2>/dev/null || echo "")
+else
+  TASK_ID=""
+  PROJECT_ID_FROM_INPUT=""
+fi
+
+# ──────────────────────────────────────────────
+# Memorize & Evolve Session Initialization Logic
+# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# Dynamic Utility Script Resolution
+# Uses utils-finder.sh to locate scripts in multiple possible locations
+# ──────────────────────────────────────────────
+
+CONTEXT_MOD=""
+CANCEL=false
+INIT_STATUS=""
+
+# Source the dynamic utils finder library
+FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/utils-finder.sh"
+if [ -f "$FINDER_SH" ]; then
+  source "$FINDER_SH"
+else
+  # Fallback: try relative path from hooks/lib/
+  FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/utils-finder.sh"
+  if [ -f "$FINDER_SH" ]; then
+    source "$FINDER_SH"
+  fi
+fi
+
+# Load shared logging function for configurable log levels
+if has_utils "memo-log.sh"; then
+  MEMO_LOG_SH=$(find_utils "memo-log.sh") || true
+  if [ -n "$MEMO_LOG_SH" ] && [ -f "$MEMO_LOG_SH" ]; then
+    source "$MEMO_LOG_SH"
+  fi
+fi
+
+# Dynamic resolution of utility script paths using utils-finder.sh
+PROJECT_ID_SH=$(find_utils "project-id.sh") || PROJECT_ID_SH=""
+NEO4J_QUERY_SH=$(find_utils "neo4j-wip-query.sh") || NEO4J_QUERY_SH=""
+NEO4J_SYSTEM_STATE_SH=$(find_utils "neo4j-system-state.sh") || NEO4J_SYSTEM_STATE_SH=""
+NEO4J_MEMORY_INIT_SH=$(find_utils "neo4j-memory-init.sh") || NEO4J_MEMORY_INIT_SH=""
+
+# Debug: log resolved paths
+if [ -n "${MEMO_DEBUG:-}" ]; then
+  echo "[TaskStart] Resolved paths:" >&2
+  echo "[TaskStart]   PROJECT_ID_SH=$PROJECT_ID_SH" >&2
+  echo "[TaskStart]   NEO4J_QUERY_SH=$NEO4J_QUERY_SH" >&2
+  echo "[TaskStart]   NEO4J_SYSTEM_STATE_SH=$NEO4J_SYSTEM_STATE_SH" >&2
+  echo "[TaskStart]   NEO4J_MEMORY_INIT_SH=$NEO4J_MEMORY_INIT_SH" >&2
+fi
+
+# ──────────────────────────────────────────────
+# Step 1: Resolve ProjectId
+# ──────────────────────────────────────────────
+PROJECT_ID=""
+if [ -n "$PROJECT_ID_FROM_INPUT" ]; then
+  PROJECT_ID="$PROJECT_ID_FROM_INPUT"
+elif [ -f "$PROJECT_ID_SH" ]; then
+  PROJECT_ID=$(bash "$PROJECT_ID_SH" --project-id 2>/dev/null) || PROJECT_ID=""
+fi
+PROJECT_ID="${PROJECT_ID:-unknown}"
+
+# ──────────────────────────────────────────────
+# Step 2: Load Project Entity Context from Neo4j
+# ──────────────────────────────────────────────
+load_project_context() {
+  local project_name="PROJECT-${PROJECT_ID}"
+  
+  # Try to load project context via neo4j-memory-init.sh utility
+  if [ -f "$NEO4J_MEMORY_INIT_SH" ]; then
+    local PROJECT_CONTEXT
+    PROJECT_CONTEXT=$(bash "$NEO4J_MEMORY_INIT_SH" get-project-context 2>/dev/null || echo '{"error":"No connection available"}')
+    
+    if echo "$PROJECT_CONTEXT" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if 'name' in d and not d.get('error') else 1)" 2>/dev/null; then
+      INIT_STATUS="project_loaded"
+      CONTEXT_MOD=$(echo "$PROJECT_CONTEXT" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(json.dumps({
+        'add': f'[TaskStart] Project context loaded: {data.get(\"name\", \"unknown\")} (type: {data.get(\"type\", \"Project\")})'
+    }))
+except:
+    print('{}')
+" 2>/dev/null || echo "{}")
+    fi
+  fi
+  
+  # Fallback: if utility not available, try direct query via neo4j-wip-query.sh
+  if [ "$INIT_STATUS" != "project_loaded" ] && [ -f "$NEO4J_QUERY_SH" ]; then
+    local PROJECT_INFO
+    PROJECT_INFO=$(bash "$NEO4J_QUERY_SH" load-project-context 2>/dev/null || echo '{"error":"No connection available"}')
+    
+    if echo "$PROJECT_INFO" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if 'name' in d and not d.get('error') else 1)" 2>/dev/null; then
+      INIT_STATUS="project_loaded"
+      CONTEXT_MOD=$(echo "$PROJECT_INFO" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(json.dumps({
+        'add': f'[TaskStart] Project context loaded: {data.get(\"name\", \"unknown\")} (type: {data.get(\"type\", \"Project\")})'
+    }))
+except:
+    print('{}')
+" 2>/dev/null || echo "{}")
+    fi
+  fi
+  
+  # If no Neo4j connection, log fallback
+  if [ "$INIT_STATUS" != "project_loaded" ]; then
+    INIT_STATUS="project_fallback"
+    CONTEXT_MOD=$(echo '{"add": "[TaskStart] No Neo4j connection — using local project config"}')
+  fi
+}
+
+# ──────────────────────────────────────────────
+# Step 3: Check for Orphaned WIP Items
+# ──────────────────────────────────────────────
+check_orphaned_wip() {
+  local orphaned_count=0
+  local orphaned_list=""
+  
+  # Use neo4j-memory-init.sh to check for orphaned WIP items
+  if [ -f "$NEO4J_MEMORY_INIT_SH" ]; then
+    local ORPHANED_RESULT
+    ORPHANED_RESULT=$(bash "$NEO4J_MEMORY_INIT_SH" check-orphaned-wip 2>/dev/null || echo '[]')
+    
+    orphaned_count=$(echo "$ORPHANED_RESULT" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(len(data) if isinstance(data, list) else 0)
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+    
+    orphaned_list="$ORPHANED_RESULT"
+  elif [ -f "$NEO4J_QUERY_SH" ]; then
+    # Fallback to neo4j-wip-query.sh list-all-wip for orphan detection
+    local ALL_WIP
+    ALL_WIP=$(bash "$NEO4J_QUERY_SH" list-all-wip 2>/dev/null || echo '[]')
+    
+    orphaned_count=$(echo "$ALL_WIP" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    # Filter out WIP items belonging to current task (if taskId provided)
+    filtered = [w for w in data if w.get('taskId') != '$TASK_ID']
+    print(len(filtered))
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+    
+    orphaned_list="$ALL_WIP"
+  fi
+  
+  if [ "$orphaned_count" -gt 0 ] 2>/dev/null; then
+    log "TaskStart" "Found $orphaned_count orphaned WIP item(s) from previous session" >&2
+    INIT_STATUS="${INIT_STATUS:+$INIT_STATUS,}orphaned_wip_found($orphaned_count items)"
+    
+    # Add warning to context modification
+    if [ -n "$CONTEXT_MOD" ] && [ "$CONTEXT_MOD" != "{}" ]; then
+      CONTEXT_MOD=$(echo "$CONTEXT_MOD" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    data['add'] += f' — WARNING: $orphaned_count orphaned WIP item(s) detected from previous session'
+    print(json.dumps(data))
+except:
+    print('{}')
+" 2>/dev/null || echo "$CONTEXT_MOD")
+    fi
+  else
+    log "TaskStart" "No orphaned WIP items found from interrupted session" >&2
+    INIT_STATUS="${INIT_STATUS:+$INIT_STATUS,}no_orphaned_wip"
+  fi
+}
+
+# ──────────────────────────────────────────────
+# Step 4: Initialize MEMO_USER_LOOP Flag
+# ──────────────────────────────────────────────
+init_memo_user_loop() {
+  if [ -f "$NEO4J_SYSTEM_STATE_SH" ]; then
+    local LOOP_STATUS
+    LOOP_STATUS=$(bash "$NEO4J_SYSTEM_STATE_SH" status 2>/dev/null || echo '{"enabled":null}')
+    
+    local ENABLED
+    ENABLED=$(echo "$LOOP_STATUS" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    enabled = data.get('enabled')
+    # null or True → enabled (safe default for capturing)
+    # False → explicitly disabled
+    print('true' if enabled is not False else 'false')
+except:
+    # No connection — default to enabled (safe to capture)
+    print('true')
+" 2>/dev/null || echo "true")
+    
+    log "TaskStart" "MEMO_USER_LOOP flag: $ENABLED" >&2
+    
+    if [ "$INIT_STATUS" != "${INIT_STATUS//,}" ]; then
+      INIT_STATUS="$INIT_STATUS,memo_loop_initialized($ENABLED)"
+    else
+      INIT_STATUS="memo_loop_initialized($ENABLED)"
+    fi
+  else
+    log "TaskStart" "neo4j-system-state.sh not found — using default (MEMO_USER_LOOP=true)" >&2
+    INIT_STATUS="${INIT_STATUS:+$INIT_STATUS,}memo_loop_default(true)"
+  fi
+}
+
+# ──────────────────────────────────────────────
+# Execute Session Initialization Steps
+# ──────────────────────────────────────────────
+
+log "TaskStart" "Initializing session (taskId=$TASK_ID, projectId=$PROJECT_ID)" >&2
+
+# Step 1: Load project context
+load_project_context
+
+# Step 2: Check for orphaned WIP items
+check_orphaned_wip
+
+# Step 3: Initialize MEMO_USER_LOOP flag
+init_memo_user_loop
+
+# ──────────────────────────────────────────────
+# Emit Final Context Modification
+# ──────────────────────────────────────────────
+
+if [ -n "$CONTEXT_MOD" ] && [ "$CONTEXT_MOD" != "{}" ]; then
+  # Append initialization summary
+  CONTEXT_MOD=$(echo "$CONTEXT_MOD" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    current_add = data.get('add', '')
+    data['add'] = f'{current_add} [TaskStart] Session init complete. Status: {INIT_STATUS}'
+    print(json.dumps(data))
+except:
+    print('{}')
+" 2>/dev/null || echo "$CONTEXT_MOD")
+fi
+
+# ──────────────────────────────────────────────
+# Output Result (JSON)
+# ──────────────────────────────────────────────
+python3 -c "
+import json, sys
+
+context_mod = '''$CONTEXT_MOD''' if '$CONTEXT_MOD' else '{}'
+try:
+    context_mod_data = json.loads(context_mod)
+except:
+    context_mod_data = {}
+
+result = {
+    'cancel': $([ "$CANCEL" = "true" ] && echo "True" || echo "False"),
+    'contextModification': context_mod_data if context_mod_data else None,
+    'taskStartInit': {
+        'taskId': '$TASK_ID',
+        'projectId': '$PROJECT_ID',
+        'initStatus': '''$INIT_STATUS''' if '$INIT_STATUS' else 'unknown',
+        'projectContextLoaded': True if 'project_loaded' in '''$INIT_STATUS''' else False,
+        'orphanedWipFound': True if 'orphaned_wip_found' in '''$INIT_STATUS''' else False,
+        'memoLoopInitialized': True if 'memo_loop_initialized' in '''$INIT_STATUS''' or 'memo_loop_default' in '''$INIT_STATUS''' else False
+    }
+}
+
+print(json.dumps(result, indent=2))
+" 2>/dev/null || cat <<EOF
+{
+  "cancel": false,
+  "contextModification": null,
+  "taskStartInit": {
+    "taskId": "$TASK_ID",
+    "projectId": "$PROJECT_ID",
+    "initStatus": "${INIT_STATUS:-unknown}",
+    "projectContextLoaded": false,
+    "orphanedWipFound": false,
+    "memoLoopInitialized": false
+  }
+}
+EOF

@@ -1,0 +1,14 @@
+**/langfuse
+**/memorize-and-evolve/memoryos
+**/memorize-and-evolve/contextstream-mcp
+**/node_modules/**
+
+# ── Secrets: never commit (hydra_vortex orchestration) ──
+.env
+**/.env
+*.env
+*.env.*
+**/__pycache__/
+orchestration/state/*.report.md
+orchestration/state/*.log
+orchestration/state/*.cron.log

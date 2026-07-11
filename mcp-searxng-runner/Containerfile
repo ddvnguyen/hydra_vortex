@@ -1,0 +1,14 @@
+FROM node:20-slim
+
+# Install mcp-searxng globally
+RUN npm install -g mcp-searxng@1.0.3
+
+# Install curl for health checks
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+# Set default SearXNG URL (overridden at runtime)
+ENV SEARXNG_URL=http://localhost:8088
+
+# Wrap entrypoint with timeout to prevent long-running process hangs
+# Restarts process after 24h; SIGKILL if it doesn't respond to SIGTERM within 30s
+ENTRYPOINT ["timeout", "--kill-after=30s", "24h", "mcp-searxng"]

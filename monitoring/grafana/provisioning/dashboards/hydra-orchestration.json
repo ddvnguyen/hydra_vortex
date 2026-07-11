@@ -1,0 +1,91 @@
+{
+  "title": "hydra_vortex · orchestration",
+  "uid": "hydra-vortex-orchestration",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active agents",
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "hydra_agents_active" } ],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] } } }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Schedules",
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "hydra_schedules_total" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Paused schedules",
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "hydra_schedules_paused" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Daemon up",
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "hydra_daemon_up" } ],
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ] } }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Open issues (status:*)",
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "sum(hydra_issues_total{status=~\".*status:.*\"})" } ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Agents by status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "hydra_agents_total" } ],
+      "legend": { "displayMode": "table", "placement": "bottom" }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Issues by status",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "hydra_issues_total" } ],
+      "legend": { "displayMode": "table", "placement": "bottom" }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Instrumentor verdict",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "hydra_instrumentor_verdict" } ],
+      "legend": { "displayMode": "table", "placement": "bottom" }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Daemon reachability",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "hydra_daemon_up" } ]
+    }
+  ]
+}

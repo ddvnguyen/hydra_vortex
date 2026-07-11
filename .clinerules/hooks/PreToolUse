@@ -1,0 +1,178 @@
+#!/bin/bash
+#
+# PreToolUse Hook - Memorize & Evolve Edition (Actual Enforcement)
+# 
+# Executes before Neo4j MCP tool calls. Performs ACTUAL enforcement by running
+# neo4j-wip-query.sh checks — not just hints. Blocks dangerous operations and
+# provides concrete results to guide agent behavior.
+# 
+# Input: { taskId, preToolUse: { toolName: string, parameters: object }, ... }
+# Output: { cancel: boolean, contextModification?: string, errorMessage?: string }
+
+# Read JSON input from stdin
+INPUT=$(cat)
+
+# Parse input using jq (or fallback to basic parsing)
+if command -v jq &> /dev/null; then
+  TOOL=$(echo "$INPUT" | jq -r '.preToolUse.toolName')
+  # Extract entity names from parameters for collision/exists checks
+  CREATE_NAME=$(echo "$INPUT" | jq -r '.preToolUse.parameters.entities[0].name // empty' 2>/dev/null)
+  ADD_OBS_NAME=$(echo "$INPUT" | jq -r '.preToolUse.parameters.observations[0].entityName // empty' 2>/dev/null)
+  DELETE_NAME=$(echo "$INPUT" | jq -r '.preToolUse.parameters.entities[0].name // empty' 2>/dev/null)
+else
+  TOOL="<tool>"
+  CREATE_NAME=""
+  ADD_OBS_NAME=""
+  DELETE_NAME=""
+fi
+
+# ──────────────────────────────────────────────
+# Memorize & Evolve Logic — Actual Enforcement
+# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# Dynamic Utility Script Resolution
+# Uses utils-finder.sh to locate scripts in multiple possible locations
+# ──────────────────────────────────────────────
+
+CONTEXT_MOD=""
+CANCEL=false
+
+# Source the dynamic utils finder library
+FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/utils-finder.sh"
+if [ -f "$FINDER_SH" ]; then
+  source "$FINDER_SH"
+else
+  # Fallback: try relative path from hooks/lib/
+  FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/utils-finder.sh"
+  if [ -f "$FINDER_SH" ]; then
+    source "$FINDER_SH"
+  fi
+fi
+
+# Load shared logging function for configurable log levels
+if has_utils "memo-log.sh"; then
+  MEMO_LOG_SH=$(find_utils "memo-log.sh") || true
+  if [ -n "$MEMO_LOG_SH" ] && [ -f "$MEMO_LOG_SH" ]; then
+    source "$MEMO_LOG_SH"
+  fi
+fi
+
+# Dynamic resolution of utility script paths using utils-finder.sh
+PROJECT_ID_SH=$(find_utils "project-id.sh") || PROJECT_ID_SH=""
+NEO4J_QUERY_SH=$(find_utils "neo4j-wip-query.sh") || NEO4J_QUERY_SH=""
+
+# Pre-check: Dynamic ProjectId from utils/project-id.sh
+PROJECT_ID=""
+if [ -n "$PROJECT_ID_SH" ] && [ -f "$PROJECT_ID_SH" ]; then
+  PROJECT_ID=$(bash "$PROJECT_ID_SH" --project-id 2>/dev/null) || PROJECT_ID=""
+fi
+PROJECT_ID="${PROJECT_ID:-unknown}"
+
+# Debug: log resolved paths
+if [ -n "${MEMO_DEBUG:-}" ]; then
+  echo "[PreToolUse] Resolved paths:" >&2
+  echo "[PreToolUse]   PROJECT_ID_SH=$PROJECT_ID_SH" >&2
+  echo "[PreToolUse]   NEO4J_QUERY_SH=$NEO4J_QUERY_SH" >&2
+fi
+
+# ──────────────────────────────────────────────
+# Action: search_memories — inject projectId filter
+# ──────────────────────────────────────────────
+if [[ "$TOOL" == "search_memories" ]]; then
+  # Extract query safely — avoid nested $() with quotes inside double quotes (bash parsing bug)
+  SEARCH_QUERY=$(echo "$INPUT" | jq -r '.preToolUse.parameters.query // "*"' 2>/dev/null) || SEARCH_QUERY="*"
+  CONTEXT_MOD="[Memorize&Evol] ENFORCEMENT: Your search must include project context. Use query: '$SEARCH_QUERY' AND projectId=$PROJECT_ID. Without projectId filter, you risk cross-project contamination."
+
+# ──────────────────────────────────────────────
+# Action: add_observations — entity must exist
+# ──────────────────────────────────────────────
+elif [[ "$TOOL" == "add_observations" ]] && [ -n "$ADD_OBS_NAME" ]; then
+  if [ -f "$NEO4J_QUERY_SH" ]; then
+    # Actually check if entity exists
+    EXIST_RESULT=$(bash "$NEO4J_QUERY_SH" check-exists --name "$ADD_OBS_NAME" 2>/dev/null) || EXIST_RESULT='{"exists":false}'
+    
+    EXISTS_FLAG=$(echo "$EXIST_RESULT" | jq -r '.exists // false' 2>/dev/null) || EXISTS_FLAG="false"
+    
+    if [ "$EXISTS_FLAG" = "false" ]; then
+      CANCEL=true
+      CONTEXT_MOD="[Memorize&Evol] BLOCKED: Entity '$ADD_OBS_NAME' does NOT exist in Neo4j. Cannot add observations to non-existent entity. You MUST create it first with create_entities, or use search_memories to find the correct entity name."
+    else
+      # Extract topic from entity name using bash string manipulation (avoids grep -oP lookbehind)
+      # Entity name format: DOMAIN-Category-Topic → extract last segment after hyphen
+      TOPIC="${ADD_OBS_NAME##*[A-Z]-}"
+      TOPIC="${TOPIC%%-*}"  # Take only first segment after last Category-Topic boundary
+      if [ -n "$TOPIC" ]; then
+        CONTEXT_MOD="[Memorize&Evol] Verified: Entity '$ADD_OBS_NAME' exists. Safe to add observations. Also check for related Learning entities via find-related --topic $TOPIC to trigger confidence evolution."
+      else
+        CONTEXT_MOD="[Memorize&Evol] Verified: Entity '$ADD_OBS_NAME' exists. Safe to add observations."
+      fi
+    fi
+  else
+    CONTEXT_MOD="[Memorize&Evol] WARNING: utils/neo4j-wip-query.sh not found. Cannot verify entity '$ADD_OBS_NAME' exists. Please ensure the script is available and executable."
+  fi
+
+# ──────────────────────────────────────────────
+# Action: delete_entities — check for references
+# ──────────────────────────────────────────────
+elif [[ "$TOOL" == "delete_entities" ]] && [ -n "$DELETE_NAME" ]; then
+  if [ -f "$NEO4J_QUERY_SH" ]; then
+    # Actually check for incoming relationships
+    REF_RESULT=$(bash "$NEO4J_QUERY_SH" check-references --name "$DELETE_NAME" 2>/dev/null) || REF_RESULT='{"has_references":false}'
+    
+    HAS_REFS=$(echo "$REF_RESULT" | jq -r '.has_references // false' 2>/dev/null) || HAS_REFS="false"
+    
+    if [ "$HAS_REFS" = "true" ]; then
+      CANCEL=true
+      REFS=$(echo "$REF_RESULT" | jq -r '.references[]? | "\(.source) → \(.target): \(.relationType)"' 2>/dev/null)
+      CONTEXT_MOD="[Memorize&Evol] BLOCKED: Entity '$DELETE_NAME' has incoming relationships and cannot be deleted. References:\n$REFS\n\nInstead, mark as retired by adding observations with status=retired and reason='deleted_by_agent'. Use add_observations with status=retired to update its state."
+    else
+      CONTEXT_MOD="[Memorize&Evol] Verified: Entity '$DELETE_NAME' has no incoming relationships. Safe to delete. Consider soft-retirement instead of hard-delete: add_observations with status=retired and reason='archived'"
+    fi
+  else
+    CONTEXT_MOD="[Memorize&Evol] WARNING: utils/neo4j-wip-query.sh not found. Cannot verify references for '$DELETE_NAME'. Please ensure the script is available and executable."
+  fi
+
+# ──────────────────────────────────────────────
+# Action: create_entities — check for collision
+# ──────────────────────────────────────────────
+elif [[ "$TOOL" == "create_entities" ]] && [ -n "$CREATE_NAME" ]; then
+  if [ -f "$NEO4J_QUERY_SH" ]; then
+    # Actually check for entity name collision
+    COLLISION_RESULT=$(bash "$NEO4J_QUERY_SH" check-collision --name "$CREATE_NAME" 2>/dev/null) || COLLISION_RESULT='{"exists":false}'
+    
+    EXISTS_FLAG=$(echo "$COLLISION_RESULT" | jq -r '.exists // false' 2>/dev/null) || EXISTS_FLAG="false"
+    
+    if [ "$EXISTS_FLAG" = "true" ]; then
+      CANCEL=true
+      COUNT=$(echo "$COLLISION_RESULT" | jq -r '.count // 0' 2>/dev/null)
+      CONTEXT_MOD="[Memorize&Evol] BLOCKED: Entity '$CREATE_NAME' already exists (${COUNT} matches). Do NOT use create_entities — this will cause data duplication. Use add_observations instead to append to the existing entity."
+    else
+      CONTEXT_MOD="[Memorize&Evol] Verified: Entity '$CREATE_NAME' does not exist. Safe to create with create_entities. Ensure domain prefix matches scope — GLOBAL/PROJECT/TASK — and naming convention is {DOMAIN}-{Category}-{Topic}."
+    fi
+  else
+    CONTEXT_MOD="[Memorize&Evol] WARNING: utils/neo4j-wip-query.sh not found. Cannot check collision for '$CREATE_NAME'. Please ensure the script is available and executable."
+  fi
+
+fi
+
+# Log hook execution for debugging (configurable via MEMO_LOG_LEVEL)
+log "PreToolUse" "Tool: $TOOL (projectId=$PROJECT_ID, cancel=$CANCEL)"
+
+# Return result as JSON — jq handles all escaping automatically
+if command -v jq &> /dev/null; then
+  if [ -n "$CONTEXT_MOD" ]; then
+    jq -n --arg ctx "$CONTEXT_MOD" \
+      --argjson cancel "$CANCEL" \
+      '{"cancel":$cancel,"contextModification":$ctx,"errorMessage":""}'
+  else
+    echo "{\"cancel\":false,\"contextModification\":\"\",\"errorMessage\":\"\"}"
+  fi
+else
+  ESCAPED_MOD=$(printf '%s' "$CONTEXT_MOD" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  if [ "$CANCEL" = "true" ]; then
+    echo "{\"cancel\":true,\"contextModification\":\"${ESCAPED_MOD}\",\"errorMessage\":\"\"}"
+  else
+    echo "{\"cancel\":false,\"contextModification\":\"${ESCAPED_MOD}\",\"errorMessage\":\"\"}"
+  fi
+fi

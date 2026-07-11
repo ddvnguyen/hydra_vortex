@@ -1,0 +1,22 @@
+[Unit]
+Description=hydra_vortex orchestration dashboard
+After=network.target paseo.service
+Wants=paseo.service
+
+[Service]
+Type=simple
+User=ddv
+WorkingDirectory=/mnt/WorkDisk/Workplace/llm-server-monitoring/orchestration/dashboard
+Environment=REPO_DIR=/mnt/WorkDisk/Workplace/llm-server-monitoring
+Environment=STATE_DIR=/mnt/WorkDisk/Workplace/llm-server-monitoring/orchestration/state
+Environment=GH_REPO=ddvnguyen/hydra_vortex
+Environment=DASHBOARD_HOST=127.0.0.1
+Environment=DASHBOARD_PORT=8098
+Environment=REFRESH_SEC=10
+ExecStartPre=/usr/bin/python3 -m pip install -q -r requirements.txt
+ExecStart=/usr/bin/python3 -m uvicorn app:app --host 127.0.0.1 --port 8098
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

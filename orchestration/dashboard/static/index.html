@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>hydra_vortex · orchestration</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --txt:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950;
+    --yellow:#d29922; --red:#f85149; --purple:#bc8cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--border);
+    padding:10px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;z-index:5}
+  header h1{font-size:16px;margin:0;color:var(--accent)}
+  .pill{padding:2px 10px;border:1px solid var(--border);border-radius:999px;font-size:12px;color:var(--muted)}
+  .pill.up{color:var(--green);border-color:var(--green)}
+  .pill.down{color:var(--red);border-color:var(--red)}
+  main{padding:16px;display:grid;gap:16px;grid-template-columns:repeat(2,minmax(320px,1fr))}
+  .full{grid-column:1/-1}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px}
+  .panel h2{margin:0 0 10px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--panel2)}
+  th{color:var(--muted);font-weight:600}
+  .board{display:flex;gap:10px;overflow-x:auto}
+  .col{flex:1;min-width:180px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px}
+  .col h3{margin:0 0 8px;font-size:12px;color:var(--accent)}
+  .col .cnt{color:var(--muted);font-weight:400}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:6px;margin-bottom:6px;font-size:12px}
+  .card a{color:var(--txt);text-decoration:none}
+  .card .meta{color:var(--muted);font-size:11px}
+  .badge{padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700}
+  .badge.PASS{background:rgba(63,185,80,.15);color:var(--green)}
+  .badge.WARN{background:rgba(210,153,34,.15);color:var(--yellow)}
+  .badge.FAIL{background:rgba(248,81,73,.15);color:var(--red)}
+  .badge.unknown{background:var(--panel2);color:var(--muted)}
+  .err{color:var(--red);font-size:12px}
+  .muted{color:var(--muted)}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .tag{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 6px}
+  .hist{list-style:none;padding:0;margin:0;font-size:12px}
+  .hist li{padding:2px 0;border-bottom:1px solid var(--panel2)}
+</style>
+</head>
+<body>
+<header>
+  <h1>hydra_vortex</h1>
+  <span id="daemon" class="pill">daemon: …</span>
+  <span id="refresh" class="pill">updated: …</span>
+  <span id="repo" class="pill"></span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Agents <span id="agentCount" class="muted"></span></h2>
+    <table id="agents"><thead><tr><th>id</th><th>name</th><th>provider</th><th>status</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>Schedules <span id="schedCount" class="muted"></span></h2>
+    <table id="schedules"><thead><tr><th>name</th><th>cadence</th><th>state</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="panel full">
+    <h2>Issue board (GitHub)</h2>
+    <div id="board" class="board"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Instrumentor</h2>
+    <div style="margin-bottom:8px">verdict: <span id="verdict" class="badge unknown">unknown</span></div>
+    <pre id="report" class="muted" style="white-space:pre-wrap;font-size:12px"></pre>
+    <h2 style="margin-top:12px">History</h2>
+    <ul id="hist" class="hist"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>State checkpoints</h2>
+    <ul id="checkpoints" class="hist"></ul>
+    <h2 style="margin-top:12px">Monitor cursor</h2>
+    <pre id="cursor" class="muted" style="white-space:pre-wrap;font-size:12px"></pre>
+  </section>
+</main>
+
+<script>
+const STATUSES = ["status:ready","status:planning","status:in-progress",
+  "status:review","status:deployed","status:monitoring","status:none"];
+
+function el(id){return document.getElementById(id);}
+function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function fmtTime(ts){
+  if(!ts)return "…";
+  const d=new Date(ts*1000);
+  return d.toLocaleTimeString();
+}
+
+async function load(){
+  try{
+    const r=await fetch("/api/snapshot");
+    const s=await r.json();
+    render(s);
+  }catch(e){
+    el("refresh").textContent="fetch error";
+  }
+}
+
+function render(s){
+  el("repo").textContent=s.repo||"";
+  const p=s.paseo||{};
+  const up=p.daemon_up===1;
+  el("daemon").textContent="daemon: "+(up?"up":"down");
+  el("daemon").className="pill "+(up?"up":"down");
+  el("refresh").textContent="updated: "+fmtTime(s.generated_at);
+
+  if(p.error){el("agentCount").innerHTML='<span class="err">'+esc(p.error)+'</span>';}
+  const agents=p.agents||[];
+  el("agentCount").textContent="("+agents.length+")";
+  el("agents").querySelector("tbody").innerHTML=agents.map(a=>
+    `<tr><td>${esc(a.id)}</td><td>${esc(a.name)}</td><td>${esc(a.provider)}</td><td>${esc(a.status)}</td></tr>`).join("");
+
+  const sch=p.schedules||[];
+  el("schedCount").textContent="("+sch.length+")";
+  el("schedules").querySelector("tbody").innerHTML=sch.map(x=>{
+    const cad=x.cron||x.every||"?";
+    const st=(x.paused||x.status==="paused")?"paused":"running";
+    return `<tr><td>${esc(x.name)}</td><td>${esc(cad)}</td><td>${esc(st)}</td></tr>`;
+  }).join("")||`<tr><td colspan="3" class="muted">no schedules</td></tr>`;
+
+  // board
+  const g=s.github||{};
+  const board=g.board||{};
+  if(g.error){el("board").innerHTML='<span class="err">'+esc(g.error)+'</span>';}
+  else{
+    el("board").innerHTML=STATUSES.map(st=>{
+      const items=board[st]||[];
+      const cards=items.map(it=>
+        `<div class="card"><a href="https://github.com/${esc(s.repo)}/issues/${esc(it.number)}" target="_blank" rel="noopener">#${esc(it.number)} ${esc(it.title)}</a>`+
+        `<div class="meta">${esc(it.updatedAt||"")}</div></div>`).join("")||`<div class="muted">—</div>`;
+      return `<div class="col"><h3>${esc(st.replace("status:",""))} <span class="cnt">${items.length}</span></h3>${cards}</div>`;
+    }).join("");
+  }
+
+  // instrumentor
+  const st=s.state||{};
+  const ins=(st.instrumentor)||{};
+  el("verdict").textContent=ins.verdict||"unknown";
+  el("verdict").className="badge "+(ins.verdict||"unknown");
+  el("report").textContent=ins.report||"";
+  el("hist").innerHTML=(ins.history||[]).map(l=>`<li>${esc(l)}</li>`).join("");
+
+  // checkpoints + cursor
+  const cps=st.checkpoints||[];
+  el("checkpoints").innerHTML=cps.map(c=>
+    `<li><b>${esc(c.file)}</b> ${c.heading?esc(c.heading):""} <span class="meta">(${c.bytes}b)</span></li>`).join("")||`<li class="muted">none</li>`;
+  el("cursor").textContent=st.monitor_cursor||"(unset)";
+}
+
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

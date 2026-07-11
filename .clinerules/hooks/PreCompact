@@ -1,0 +1,476 @@
+#!/bin/bash
+#
+# PreCompact Hook - Memorize & Evolve Edition (Phase 2b + Context Analysis v1.0)
+# 
+# Executes before conversation context is compacted (to free up token space).
+# Acts as a safety net — warns about pending Neo4j operations and provides
+# a checkpoint context so the agent can resume memory operations after compaction.
+# Checks for active WIP items in Neo4j before allowing compaction to proceed.
+# NEW (v1.0): Context analysis — reads contextJsonPath to analyze what will be 
+#   deleted, warns about critical content (code, decisions, configs), and provides
+#   strategy-specific guidance based on compactionStrategy.
+# 
+# Input: { 
+#   taskId, 
+#   preCompact: { 
+#     taskId: string,
+#     ulid: string,
+#     contextSize: number,
+#     compactionStrategy: string,
+#     previousApiReqIndex: number,
+#     tokensIn: number,
+#     tokensOut: number,
+#     tokensInCache: number,
+#     tokensOutCache: number,
+#     deletedRangeStart: number,
+#     deletedRangeEnd: number,
+#     contextJsonPath: string,
+#     contextRawPath: string
+#   }, 
+#   ... 
+# }
+# Output: { cancel: boolean, contextModification?: string, errorMessage?: string }
+# 
+# Use cases:
+# - Warn about active WIP items before compaction
+# - Provide checkpoint context for post-compaction recovery
+# - Log compaction events
+# - Agent self-assessment: what feedback was applied/ignored, what rule evolutions are pending
+# - NEW: Analyze deleted message range for critical content (code snippets, decisions, configs)
+# - NEW: Strategy-specific guidance based on compaction strategy
+# - NEW: Save checkpoint file with key context before compaction
+
+set -euo pipefail
+
+# ──────────────────────────────────────────────
+# Configuration & Constants
+# ──────────────────────────────────────────────
+
+# Dynamic Utility Script Resolution
+# Uses utils-finder.sh to locate scripts in multiple possible locations
+
+# Source the dynamic utils finder library
+FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/utils-finder.sh"
+if [ -f "$FINDER_SH" ]; then
+  source "$FINDER_SH"
+else
+  # Fallback: try relative path from hooks/lib/
+  FINDER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/utils-finder.sh"
+  if [ -f "$FINDER_SH" ]; then
+    source "$FINDER_SH"
+  fi
+fi
+
+# Dynamic resolution of utility script paths using utils-finder.sh
+NEO4J_QUERY_SH=$(find_utils "neo4j-wip-query.sh") || NEO4J_QUERY_SH=""
+
+# Checkpoint directory for pre-compaction context snapshots
+CHECKPOINT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../checkpoints"
+
+# Critical content patterns to warn about in deleted range
+CRITICAL_PATTERNS=(
+  "------- SEARCH"    # Code changes (replace_in_file)
+  "+++++++ REPLACE"   # Code changes (replace_in_file)
+  "write_to_file"     # File creation
+  "create_entities"   # Neo4j operations
+  "add_observations"  # Neo4j operations
+  "delete_entities"   # Neo4j operations
+  "TENSORZERO_"       # Configuration values
+  "neo4j"             # Database config
+  "podman"            # Container config
+  "docker-compose"    # Container config
+  "prometheus"        # Monitoring config
+  "grafana"           # Dashboard config
+  "JWT_SECRET\|API_KEY\|PASSWORD"  # Secrets (warn if exposed)
+  "TASK-.*-Completed" # Completed task references
+  "EVOLVE-"           # Rule evolution references
+  "FEEDBACK-"         # User feedback references
+)
+
+# ──────────────────────────────────────────────
+# Read JSON input from stdin
+# ──────────────────────────────────────────────
+
+INPUT=$(cat)
+
+# Parse input using jq (or fallback to basic parsing)
+if command -v jq &> /dev/null; then
+  CONTEXT_SIZE=$(echo "$INPUT" | jq -r '.preCompact.contextSize')
+  STRATEGY=$(echo "$INPUT" | jq -r '.preCompact.compactionStrategy // "unknown"')
+  TOKENS_IN=$(echo "$INPUT" | jq -r '.preCompact.tokensIn')
+  TOKENS_OUT=$(echo "$INPUT" | jq -r '.preCompact.tokensOut')
+  TASK_ID=$(echo "$INPUT" | jq -r '.taskId // ""')
+  DELETED_START=$(echo "$INPUT" | jq -r '.preCompact.deletedRangeStart // -1')
+  DELETED_END=$(echo "$INPUT" | jq -r '.preCompact.deletedRangeEnd // -1')
+  CONTEXT_JSON_PATH=$(echo "$INPUT" | jq -r '.preCompact.contextJsonPath // ""')
+  CONTEXT_RAW_PATH=$(echo "$INPUT" | jq -r '.preCompact.contextRawPath // ""')
+else
+  CONTEXT_SIZE="<size>"
+  STRATEGY="unknown"
+  TOKENS_IN="<tokens>"
+  TOKENS_OUT="<tokens>"
+  TASK_ID=""
+  DELETED_START=-1
+  DELETED_END=-1
+  CONTEXT_JSON_PATH=""
+  CONTEXT_RAW_PATH=""
+fi
+
+# ──────────────────────────────────────────────
+# Logging
+# ──────────────────────────────────────────────
+
+# Load shared logging function for configurable log levels
+if has_utils "memo-log.sh"; then
+  MEMO_LOG_SH=$(find_utils "memo-log.sh") || true
+  if [ -n "$MEMO_LOG_SH" ] && [ -f "$MEMO_LOG_SH" ]; then
+    source "$MEMO_LOG_SH"
+  fi
+fi
+
+log() {
+  local level="$1"
+  shift
+  echo "[PreCompact][${level}] $*" >&2
+}
+
+log "INFO" "Pre-Compact analysis started (contextSize=$CONTEXT_SIZE, strategy=$STRATEGY)"
+log "INFO" "Deleted range: [$DELETED_START, $DELETED_END], contextJsonPath=$CONTEXT_JSON_PATH"
+
+# Debug: log resolved paths
+if [ -n "${MEMO_DEBUG:-}" ]; then
+  echo "[PreCompact] Resolved paths:" >&2
+  echo "[PreCompact]   NEO4J_QUERY_SH=$NEO4J_QUERY_SH" >&2
+fi
+
+# ──────────────────────────────────────────────
+# Phase 1: Context Analysis (v1.0 NEW)
+# ──────────────────────────────────────────────
+
+analyze_deleted_context() {
+  local warnings=""
+  local critical_items=0
+  
+  if [ -z "$CONTEXT_JSON_PATH" ] || [ ! -f "$CONTEXT_JSON_PATH" ]; then
+    log "WARN" "Context JSON path not available: $CONTEXT_JSON_PATH"
+    return 1
+  fi
+  
+  if ! command -v jq &> /dev/null; then
+    log "WARN" "jq not available for context analysis"
+    return 1
+  fi
+  
+  # Count messages in deleted range
+  local total_messages=0
+  local deleted_count=0
+  
+  total_messages=$(jq 'length' "$CONTEXT_JSON_PATH" 2>/dev/null || echo "0")
+  
+  if [ "$DELETED_START" -ge 0 ] && [ "$DELETED_END" -ge 0 ]; then
+    deleted_count=$((DELETED_END - DELETED_START))
+    
+    # Analyze each message in the deleted range for critical content
+    local i=$DELETED_START
+    while [ $i -lt $DELETED_END ] && [ $i -lt $total_messages ]; do
+      local role content
+      
+      role=$(jq -r ".[$i].role // \"unknown\"" "$CONTEXT_JSON_PATH" 2>/dev/null || echo "unknown")
+      content=$(jq -r ".[$i].content // \"\"" "$CONTEXT_JSON_PATH" 2>/dev/null || echo "")
+      
+      # Skip assistant messages without tool calls (usually less critical)
+      if [ "$role" = "assistant" ]; then
+        local has_tool_call
+        has_tool_call=$(jq -r ".[$i].tool_calls // [] | length" "$CONTEXT_JSON_PATH" 2>/dev/null || echo "0")
+        if [ "$has_tool_call" -eq 0 ]; then
+          i=$((i + 1))
+          continue
+        fi
+      fi
+      
+      # Check for critical patterns in user/assistant content
+      if [ -n "$content" ] && [ "$content" != "null" ]; then
+        for pattern in "${CRITICAL_PATTERNS[@]}"; do
+          if echo "$content" | grep -qi "$pattern" 2>/dev/null; then
+            critical_items=$((critical_items + 1))
+            warnings="${warnings}  ⚠️ [${i}] Critical content detected: '$pattern' in $role message\n"
+            break  # One match per message is enough
+          fi
+        done
+      fi
+      
+      i=$((i + 1))
+    done
+  fi
+  
+  log "INFO" "Context analysis complete: $total_messages total, $deleted_count deleted, $critical_items critical items"
+  
+  if [ $critical_items -gt 0 ]; then
+    echo "$warnings"
+    return 0
+  fi
+  
+  return 1
+}
+
+# ──────────────────────────────────────────────
+# Phase 2: Strategy-Specific Guidance (v1.0 NEW)
+# ──────────────────────────────────────────────
+
+get_strategy_guidance() {
+  case "$STRATEGY" in
+    "auto-condense")
+      echo "AI-powered compression will summarize conversation. 
+⚠️ WARNING: Summaries may lose precision on code snippets and exact values.
+→ After compaction, verify all tool parameters (file paths, config values) are correct."
+      ;;
+    "standard-truncation-firstpair")
+      echo "Only the original task prompt will be preserved.
+⚠️ WARNING: ALL conversation history including decisions, code changes, and progress will be lost.
+→ After compaction, you must rely on Neo4j memory or checkpoint files for context."
+      ;;
+    "standard-truncation-lasthalf")
+      echo "First pair + most recent 50% of conversation preserved.
+⚠️ WARNING: Older decisions and initial requirements may be lost.
+→ Check Neo4j for any TaskMilestone entities referencing old conversation context."
+      ;;
+    "standard-truncation-lastquarter")
+      echo "First pair + most recent 25% of conversation (AGGRESSIVE).
+⚠️ WARNING: Most conversation history will be deleted. Only the very latest messages remain.
+→ After compaction, you MUST check checkpoint files and Neo4j for context recovery."
+      ;;
+    *)
+      echo "Unknown strategy '$STRATEGY'. Proceed with caution."
+      ;;
+  esac
+}
+
+# ──────────────────────────────────────────────
+# Phase 3: Save Checkpoint File (v1.0 NEW)
+# ──────────────────────────────────────────────
+
+save_checkpoint() {
+  local checkpoint_file=""
+  
+  mkdir -p "$CHECKPOINT_DIR" 2>/dev/null || true
+  
+  if [ -z "$TASK_ID" ] || [ "$TASK_ID" = "" ]; then
+    TASK_ID="session-$(date +%s)"
+  fi
+  
+  # Create checkpoint filename with timestamp and ULID
+  local timestamp
+  timestamp=$(date +%Y%m%d-%H%M%S)
+  checkpoint_file="$CHECKPOINT_DIR/precompact-${TASK_ID}-${timestamp}.json"
+  
+  if [ -n "$CONTEXT_JSON_PATH" ] && [ -f "$CONTEXT_JSON_PATH" ]; then
+    # Save a copy of the context before compaction
+    cp "$CONTEXT_JSON_PATH" "$checkpoint_file" 2>/dev/null || true
+    
+    # Also save just the deleted range for quick reference
+    if [ "$DELETED_START" -ge 0 ] && [ "$DELETED_END" -ge 0 ]; then
+      local deleted_range_file="${checkpoint_file%.json}-deleted.json"
+      jq "[to_entries[] | select(.key >= $DELETED_START and .key < $DELETED_END) | .value]" "$CONTEXT_JSON_PATH" > "$deleted_range_file" 2>/dev/null || true
+    fi
+  fi
+  
+  echo "$checkpoint_file"
+}
+
+# ──────────────────────────────────────────────
+# Phase 4: Neo4j Self-Assessment
+# ──────────────────────────────────────────────
+
+SELF_ASSESSMENT=""
+WIP_COUNT=0
+WIP_LIST=""
+NEO4J_AVAILABLE=false
+
+if [ -f "$NEO4J_QUERY_SH" ]; then
+  NEO4J_AVAILABLE=true
+  
+  # Check for active WIP items in Neo4j
+  ACTIVE_RESULT=$(bash "$NEO4J_QUERY_SH" list-all-wip 2>/dev/null) || ACTIVE_RESULT="[]"
+  
+  if command -v jq &> /dev/null; then
+    WIP_COUNT=$(echo "$ACTIVE_RESULT" | jq 'length')
+  fi
+
+  # Search for UserFeedback entities
+  USER_FEEDBACK_RESULT=""
+  if command -v jq &> /dev/null; then
+    USER_FEEDBACK_RESULT=$(bash "$NEO4J_QUERY_SH" search --query "UserFeedback" 2>/dev/null) || USER_FEEDBACK_RESULT="[]"
+  fi
+
+  # Search for RuleEvolution entities by status
+  RULE_EVOLUTION_PROPOSED_RESULT=""
+  RULE_EVOLUTION_APPROVED_RESULT=""
+  if command -v jq &> /dev/null; then
+    RULE_EVOLUTION_PROPOSED_RESULT=$(bash "$NEO4J_QUERY_SH" search --query "RuleEvolution proposed" 2>/dev/null) || RULE_EVOLUTION_PROPOSED_RESULT="[]"
+    RULE_EVOLUTION_APPROVED_RESULT=$(bash "$NEO4J_QUERY_SH" search --query "RuleEvolution approved" 2>/dev/null) || RULE_EVOLUTION_APPROVED_RESULT="[]"
+  fi
+
+  # Count entities
+  FEEDBACK_COUNT=0
+  EVOLVE_PROPOSED_COUNT=0
+  EVOLVE_APPROVED_COUNT=0
+  
+  if command -v jq &> /dev/null; then
+    FEEDBACK_COUNT=$(echo "$USER_FEEDBACK_RESULT" | jq 'length')
+    EVOLVE_PROPOSED_COUNT=$(echo "$RULE_EVOLUTION_PROPOSED_RESULT" | jq 'length')
+    EVOLVE_APPROVED_COUNT=$(echo "$RULE_EVOLUTION_APPROVED_RESULT" | jq 'length')
+  fi
+
+  # Build WIP list
+  if [ "${WIP_COUNT:-0}" -gt 0 ] && command -v jq &> /dev/null; then
+    for i in $(seq 0 $((WIP_COUNT - 1))); do
+      NAME=$(echo "$ACTIVE_RESULT" | jq -r ".[$i].name // \"unknown\"")
+      TASK_ID_VAL=$(echo "$ACTIVE_RESULT" | jq -r ".[$i].taskId // \"unknown\"")
+      STATUS=$(echo "$ACTIVE_RESULT" | jq -r ".[$i].status // \"unknown\"")
+      if [ -n "$WIP_LIST" ]; then
+        WIP_LIST="${WIP_LIST}\n- ${NAME} (taskId: ${TASK_ID_VAL}, status: ${STATUS})"
+      else
+        WIP_LIST="- ${NAME} (taskId: ${TASK_ID_VAL}, status: ${STATUS})"
+      fi
+    done
+  fi
+
+  # Build self-assessment report
+  if [ "${FEEDBACK_COUNT:-0}" -gt 0 ] || [ "${EVOLVE_PROPOSED_COUNT:-0}" -gt 0 ] || [ "${EVOLVE_APPROVED_COUNT:-0}" -gt 0 ]; then
+    SELF_ASSESSMENT="[Memorize&Evol] Agent Self-Assessment:
+
+## UserFeedback Entities Found (${FEEDBACK_COUNT})
+"
+    
+    if command -v jq &> /dev/null && [ "${FEEDBACK_COUNT:-0}" -gt 0 ]; then
+      for i in $(seq 0 $((FEEDBACK_COUNT - 1))); do
+        NAME=$(echo "$USER_FEEDBACK_RESULT" | jq -r ".[$i].name // \"unknown\"")
+        OBSERVATIONS=$(echo "$USER_FEEDBACK_RESULT" | jq -r ".[$i].observations // [] | .[0:2] | join(\" | \")" 2>/dev/null)
+        SELF_ASSESSMENT="${SELF_ASSESSMENT}  - ${NAME}: ${OBSERVATIONS}"
+      done
+    fi
+    
+    SELF_ASSESSMENT="${SELF_ASSESSMENT}\n\n## RuleEvolution Pending Approval (${EVOLVE_PROPOSED_COUNT})\n"
+    
+    if command -v jq &> /dev/null && [ "${EVOLVE_PROPOSED_COUNT:-0}" -gt 0 ]; then
+      for i in $(seq 0 $((EVOLVE_PROPOSED_COUNT - 1))); do
+        NAME=$(echo "$RULE_EVOLUTION_PROPOSED_RESULT" | jq -r ".[$i].name // \"unknown\"")
+        OBSERVATIONS=$(echo "$RULE_EVOLUTION_PROPOSED_RESULT" | jq -r ".[$i].observations // [] | .[0:2] | join(\" | \")" 2>/dev/null)
+        SELF_ASSESSMENT="${SELF_ASSESSMENT}  - ${NAME}: ${OBSERVATIONS}"
+      done
+    fi
+    
+    SELF_ASSESSMENT="${SELF_ASSESSMENT}\n## RuleEvolution Approved (Need Implementation) (${EVOLVE_APPROVED_COUNT})\n"
+    
+    if command -v jq &> /dev/null && [ "${EVOLVE_APPROVED_COUNT:-0}" -gt 0 ]; then
+      for i in $(seq 0 $((EVOLVE_APPROVED_COUNT - 1))); do
+        NAME=$(echo "$RULE_EVOLUTION_APPROVED_RESULT" | jq -r ".[$i].name // \"unknown\"")
+        OBSERVATIONS=$(echo "$RULE_EVOLUTION_APPROVED_RESULT" | jq -r ".[$i].observations // [] | .[0:2] | join(\" | \")" 2>/dev/null)
+        SELF_ASSESSMENT="${SELF_ASSESSMENT}  - ${NAME}: ${OBSERVATIONS}"
+      done
+    fi
+    
+    SELF_ASSESSMENT="${SELF_ASSESSMENT}\n## Action Required Before Compaction:
+
+1. For each FEEDBACK entity — evaluate whether to create a corresponding RuleEvolution entity
+2. For each RULE_EVOLUTION APPROVED entity — implement the proposed change before compaction
+3. For each RULE_EVOLUTION PROPOSED entity — decide whether to approve, reject, or revise the proposal"
+  fi
+fi
+
+# ──────────────────────────────────────────────
+# Build Final Context Modification
+# ──────────────────────────────────────────────
+
+CONTEXT_MOD=""
+CHECKPOINT_FILE=""
+
+# Phase 1: Context Analysis (NEW)
+CRITICAL_WARNINGS=""
+if critical_items=$(analyze_deleted_context); then
+  CRITICAL_WARNINGS="[Memorize&Evol] Context Analysis — Critical Content in Deleted Range:\n${critical_items}"
+fi
+
+# Phase 2: Strategy Guidance (NEW)
+STRATEGY_GUIDANCE=$(get_strategy_guidance)
+
+# Build main context modification
+if [ "$NEO4J_AVAILABLE" = true ] && [ "${WIP_COUNT:-0}" -gt 0 ]; then
+  CONTEXT_MOD="[Memorize&Evol] Pre-Compact Safety Net: ${WIP_COUNT} active WIP item(s) detected in Neo4j\n\nActive WIP items before compaction:\n$(echo -e "$WIP_LIST")\n\n⚠ WARNING: Compaction will delete conversation context. Before continuing:\n  1. Verify all pending Neo4j operations are completed (create_entities, add_observations, etc.)\n  2. If any WIP item needs further work, consider completing it before compaction\n  3. After compaction, the agent should verify WIP status via search_memories"
+  
+  # Append critical content warnings if found
+  if [ -n "$CRITICAL_WARNINGS" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\n\n${CRITICAL_WARNINGS}"
+  fi
+  
+  # Append strategy guidance
+  CONTEXT_MOD="${CONTEXT_MOD}\n\n## Compaction Strategy: ${STRATEGY}\n${STRATEGY_GUIDANCE}"
+  
+  # Append self-assessment if available
+  if [ -n "$SELF_ASSESSMENT" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\n\n${SELF_ASSESSMENT}"
+  fi
+  
+  CONTEXT_MOD="${CONTEXT_MOD}\n\nCompaction details: strategy=${STRATEGY}, contextSize=${CONTEXT_SIZE}, tokensIn=${TOKENS_IN}, tokensOut=${TOKENS_OUT}, deletedRange=[$DELETED_START,$DELETED_END]"
+elif [ "$NEO4J_AVAILABLE" = true ]; then
+  CONTEXT_MOD="[Memorize&Evol] Pre-Compact Safety Net: No active WIP items in Neo4j. Safe to proceed with compaction."
+  
+  # Always add strategy guidance
+  if [ -n "$STRATEGY_GUIDANCE" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\n\n## Compaction Strategy: ${STRATEGY}\n${STRATEGY_GUIDANCE}"
+  fi
+  
+  # Append critical content warnings if found
+  if [ -n "$CRITICAL_WARNINGS" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\n\n${CRITICAL_WARNINGS}"
+  fi
+  
+  if [ -n "$SELF_ASSESSMENT" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\n\n${SELF_ASSESSMENT}"
+  fi
+  
+  CONTEXT_MOD="${CONTEXT_MOD}\n\nCompaction details: strategy=${STRATEGY}, contextSize=${CONTEXT_SIZE}, tokensIn=${TOKENS_IN}, tokensOut=${TOKENS_OUT}, deletedRange=[$DELETED_START,$DELETED_END]"
+else
+  CONTEXT_MOD="[Memorize&Evol] Pre-Compact Safety Net: Neo4j query tool not found at $NEO4J_QUERY_SH. Cannot verify WIP status.\n\n⚠ WARNING: Compaction will delete conversation context. Before continuing:\n  1. Verify all pending Neo4j operations are completed (create_entities, add_observations, etc.)\n  2. After compaction, the agent should verify WIP status via search_memories"
+  
+  if [ -n "$STRATEGY_GUIDANCE" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\n\n## Compaction Strategy: ${STRATEGY}\n${STRATEGY_GUIDANCE}"
+  fi
+  
+  if [ -n "$CRITICAL_WARNINGS" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\n\n${CRITICAL_WARNINGS}"
+  fi
+  
+  if [ -n "$SELF_ASSESSMENT" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\n\n${SELF_ASSESSMENT}"
+  fi
+  
+  CONTEXT_MOD="${CONTEXT_MOD}\n\nCompaction details: strategy=${STRATEGY}, contextSize=${CONTEXT_SIZE}, tokensIn=${TOKENS_IN}, tokensOut=${TOKENS_OUT}, deletedRange=[$DELETED_START,$DELETED_END]"
+fi
+
+# Phase 3: Save Checkpoint (NEW)
+CHECKPOINT_FILE=$(save_checkpoint 2>/dev/null || echo "")
+
+# Append checkpoint information if saved
+if [ -n "$CHECKPOINT_FILE" ] && [ -f "$CHECKPOINT_FILE" ]; then
+  CONTEXT_MOD="${CONTEXT_MOD}\n\n## Pre-Compact Checkpoint Saved\nCheckpoint file: ${CHECKPOINT_FILE}\n→ Use this file to recover deleted context after compaction if needed"
+  
+  # Also mention deleted range checkpoint if it exists
+  DELETED_CHECKPOINT="${CHECKPOINT_FILE%.json}-deleted.json"
+  if [ -f "$DELETED_CHECKPOINT" ]; then
+    CONTEXT_MOD="${CONTEXT_MOD}\nDeleted range snapshot: ${DELETED_CHECKPOINT}"
+  fi
+fi
+
+# ──────────────────────────────────────────────
+# Return result as JSON
+# ──────────────────────────────────────────────
+
+if command -v jq &> /dev/null; then
+  ESCAPED_MOD=$(printf '%b' "$CONTEXT_MOD")
+  jq -n --arg ctx "$ESCAPED_MOD" \
+    '{"cancel":false,"contextModification":$ctx,"errorMessage":""}'
+else
+  ESCAPED_MOD=$(printf '%s' "$CONTEXT_MOD" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  echo "{\"cancel\":false,\"contextModification\":\"${ESCAPED_MOD}\",\"errorMessage\":\"\"}"
+fi

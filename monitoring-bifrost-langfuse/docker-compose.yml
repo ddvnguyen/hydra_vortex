@@ -1,0 +1,297 @@
+---
+# ============================================================
+# LLM Stack - Phase 1: Bifrost + Langfuse v3
+# Podman-compatible (rootless) compose
+#
+# Services:
+#   bifrost     :8088  — AI gateway (OpenAI-compat, MCP, OTel)
+#   langfuse    :3000  — LLM observability UI + API
+#   lf-worker   :3030  — Langfuse background worker
+#   postgres    :5432  — Transactional DB (Langfuse)
+#   clickhouse  :8123  — OLAP DB (traces/observations)
+#   redis       :6379  — Cache + queue
+#   minio       :9000  — S3-compatible blob store (events)
+#   minio-ui    :9001  — MinIO admin console
+#
+# Run: podman-compose up -d
+# ============================================================
+
+networks:
+  llm-net:
+    external: true
+
+volumes:
+  lf-postgres-data:
+  lf-clickhouse-data:
+  lf-redis-data:
+  lf-minio-data:
+  bifrost-data:
+  prometheus-data:
+  grafana-data:
+
+# ── Shared anchor for Langfuse health dependencies ───────────
+x-langfuse-depends: &langfuse-depends
+  postgres:
+    condition: service_healthy
+  clickhouse:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  minio:
+    condition: service_healthy
+
+services:
+
+  # ══════════════════════════════════════════════════════════
+  # BIFROST — AI Gateway
+  # OpenAI-compat endpoint: http://localhost:8088/v1
+  # Admin UI:               http://localhost:8088/
+  # ══════════════════════════════════════════════════════════
+  bifrost:
+    image: docker.io/maximhq/bifrost:latest
+    container_name: bifrost
+    restart: always
+    ports:
+      - "8088:8080"
+      - "8089:8089"
+    volumes:
+      - bifrost-data:/app/data
+      - ./bifrost/config.json:/app/data/config.json:ro
+    environment:
+      GEMINI_API_KEY: "AIzaSyAKNI6UQv_u1VZJ4x2WA3AmRbSWjD8MMi4"
+      LANGFUSE_AUTH: ${LANGFUSE_AUTH}
+    networks:
+      - llm-net
+    extra_hosts:
+      # Lets Bifrost reach your llama-server on the host machine
+      - "host-gateway:host-gateway"
+
+  # ══════════════════════════════════════════════════════════
+  # LANGFUSE WEB — UI + ingestion API
+  # UI: http://localhost:3002  (host port changed from 3000)
+  # OTLP endpoint: http://localhost:3002/api/public/otel/v1/traces
+  # ══════════════════════════════════════════════════════════
+  langfuse-web:
+    image: docker.io/langfuse/langfuse:3
+    container_name: langfuse-web
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL to use internal container hostname
+      DATABASE_URL: ${DATABASE_URL}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL}
+      CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_AUTH: ${REDIS_AUTH}
+    depends_on:
+      <<: *langfuse-depends
+    networks:
+      - llm-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/public/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ══════════════════════════════════════════════════════════
+  # LANGFUSE WORKER — async event processing
+  # ══════════════════════════════════════════════════════════
+  langfuse-worker:
+    image: docker.io/langfuse/langfuse-worker:3
+    container_name: langfuse-worker
+    restart: unless-stopped
+    ports:
+      - "3032:3030"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL}
+      CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_AUTH: ${REDIS_AUTH}
+    depends_on:
+      <<: *langfuse-depends
+    networks:
+      - llm-net
+
+  # ══════════════════════════════════════════════════════════
+  # POSTGRES — transactional DB (Langfuse)
+  # Host port changed to 5433 to avoid conflict with existing stack
+  # ══════════════════════════════════════════════════════════
+  postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: lf-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - lf-postgres-data:/var/lib/postgresql/data
+    networks:
+      - llm-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ══════════════════════════════════════════════════════════
+  # CLICKHOUSE — OLAP DB for traces & observations
+  # HTTP: http://localhost:8124   (avoid conflict with existing :8123)
+  # TCP:  localhost:9005          (avoid conflict with rootlessport :9001)
+  # Timezone MUST be UTC for Langfuse
+  # ══════════════════════════════════════════════════════════
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:24.8
+    container_name: lf-clickhouse
+    restart: unless-stopped
+    ports:
+      - "8124:8123"   # HTTP interface (host:container)
+      - "9005:9000"   # Native TCP interface (host:container, avoid rootlessport :9001)
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      TZ: UTC
+    volumes:
+      - lf-clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+    networks:
+      - llm-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # ══════════════════════════════════════════════════════════
+  # REDIS — cache + queue for Langfuse (host port changed from 6379)
+  # ══════════════════════════════════════════════════════════
+  redis:
+    image: docker.io/redis:7-alpine
+    container_name: lf-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    ports:
+      - "6380:6379"   # host:container (changed from 6379)
+    volumes:
+      - lf-redis-data:/data
+    networks:
+      - llm-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ══════════════════════════════════════════════════════════
+  # MINIO — S3-compatible blob store for Langfuse events (host ports changed)
+  # API:      http://localhost:9002
+  # Console:  http://localhost:9003
+  # ══════════════════════════════════════════════════════════
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: lf-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9002:9000"   # host:container API (changed from 9000)
+      - "9003:9001"   # host:container Console (changed from 9001)
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - lf-minio-data:/data
+    networks:
+      - llm-net
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── MinIO bucket init (runs once, then exits) ─────────────
+  minio-init:
+    image: docker.io/minio/mc:latest
+    container_name: lf-minio-init
+    restart: on-failure
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - llm-net
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+        mc mb --ignore-existing local/${MINIO_BUCKET} &&
+        echo 'Bucket ready.'
+      "
+
+  # ══════════════════════════════════════════════════════════
+  # PROMETHEUS — Metrics collection for Bifrost + GPU exporters
+  # Internal: :9090 → Host: :9190 (9090 taken by rootlessport)
+  # Scrapes: Bifrost /metrics, nvidia_gpu_exporter, node_exporter
+  # ══════════════════════════════════════════════════════════
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lf-prometheus
+    restart: unless-stopped
+    ports:
+      - "9190:9090"   # host:container (prometheus on port 9190, 9090 taken by rootlessport)
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    networks:
+      - llm-net
+    extra_hosts:
+      - "host-gateway:host-gateway"
+
+  # ══════════════════════════════════════════════════════════
+  # GRAFANA — Visualization for Bifrost + infrastructure metrics
+  # Internal: :3000 → Host: :3001
+  # ══════════════════════════════════════════════════════════
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lf-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"   # host:container (Grafana UI on port 3001)
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    depends_on:
+      - prometheus
+    networks:
+      - llm-net
+

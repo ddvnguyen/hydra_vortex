@@ -1,0 +1,23 @@
+# Prometheus configuration for Bifrost + Langfuse monitoring stack
+# Scrape targets: Bifrost metrics, llama.cpp server, GPU exporters
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Bifrost gateway metrics (Prometheus plugin at :8080/metrics)
+  - job_name: bifrost
+    static_configs:
+      - targets: ['bifrost:8080']
+
+  # llama.cpp server metrics (via host-gateway)
+  - job_name: llamacpp
+    static_configs:
+      - targets: ['host-gateway:8080']
+    metrics_path: /metrics
+
+  # Grafana itself (optional, for infra monitoring)
+  - job_name: grafana
+    static_configs:
+      - targets: ['grafana:3000']

@@ -1,0 +1,30 @@
+use_default_settings: true
+
+server:
+  secret_key: "dev-secret-key-change-in-production"
+  image_proxy: true
+  port: 8088
+  bind_address: "0.0.0.0"
+
+search:
+  formats:
+    - html
+    - json
+
+engines:
+  - name: google
+    engine: google
+    disabled: false
+  - name: bing
+    engine: bing
+    disabled: false
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: false
+
+general:
+  safe_search: 0
+  locale: en-US
+
+ui:
+  default_theme: simple
