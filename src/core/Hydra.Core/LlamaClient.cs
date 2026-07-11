@@ -267,6 +267,25 @@ public sealed class LlamaClient : IDisposable
         _http.Dispose();
     }
 
+    private static int ParseNRemain(JsonElement slot)
+    {
+        // Try top-level first (upstream llama.cpp schema)
+        if (slot.TryGetProperty("n_remain", out var nr))
+            return nr.GetInt32();
+
+        // Hydra fork puts n_remain inside next_token[0] (#342)
+        if (slot.TryGetProperty("next_token", out var nt) &&
+            nt.ValueKind == JsonValueKind.Array &&
+            nt.GetArrayLength() > 0)
+        {
+            var first = nt[0];
+            if (first.TryGetProperty("n_remain", out var nestedNr))
+                return nestedNr.GetInt32();
+        }
+
+        return 0;
+    }
+
     private static List<LlamaSlotInfo> ParseSlots(string json)
     {
         using var doc = JsonDocument.Parse(json);
@@ -279,7 +298,7 @@ public sealed class LlamaClient : IDisposable
                 Id = e.GetProperty("id").GetInt32(),
                 NPast = e.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0,
                 IsProcessing = e.TryGetProperty("is_processing", out var ip) && ip.GetBoolean(),
-                NRemain = e.TryGetProperty("n_remain", out var nr) ? nr.GetInt32() : 0,
+                NRemain = ParseNRemain(e),
             }).ToList();
         }
 
@@ -290,7 +309,7 @@ public sealed class LlamaClient : IDisposable
                 Id = e.GetProperty("id").GetInt32(),
                 NPast = e.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0,
                 IsProcessing = e.TryGetProperty("is_processing", out var ip) && ip.GetBoolean(),
-                NRemain = e.TryGetProperty("n_remain", out var nr) ? nr.GetInt32() : 0,
+                NRemain = ParseNRemain(e),
             }).ToList();
         }
 
