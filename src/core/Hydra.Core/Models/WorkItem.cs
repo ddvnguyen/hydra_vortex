@@ -44,6 +44,7 @@ public sealed class WorkItem
 	public bool IsCancelled => _cancelled || Completion.Task.IsCanceled;
 
 	public Exception? Error { get; set; }
+	public int NoWorkerRetries { get; set; }
 	public object? Response { get; set; }
 	public WorkerConfig? PrefillWorker { get; set; }
 	public WorkerConfig? DecodeWorker { get; set; }

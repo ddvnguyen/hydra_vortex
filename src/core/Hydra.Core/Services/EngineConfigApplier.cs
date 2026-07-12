@@ -50,7 +50,7 @@ public sealed class EngineConfigApplier
     public async Task<EngineConfigureResult> ApplyAsync(
         WorkerConfig head, EngineConfig config, string traceId, CancellationToken ct)
     {
-        var json = config.ToWireJson();
+        var json = System.Text.Json.JsonSerializer.Serialize(config.ToHydraConfigDict());
         _log.Information(
             "engine_config_apply Start={Start} Head={Head} Alias={Alias} Wire={Wire}",
             head.Name, head.Name, config.ModelAlias, json);

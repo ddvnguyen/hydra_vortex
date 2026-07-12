@@ -30,7 +30,14 @@ public static class ModelRegistry
             NGpuLayers: 99,
             NCpuMoe: 8,
             NCtx: 320000,
-            OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" }
+            OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" },
+            ContBatching: true,
+            Fit: false,
+            UbatchSize: 512,
+            SpecType: "draft-mtp",
+            SpecDraftNMax: 3,
+            SpecDraftPMin: 0.75f,
+            SpecDraftNgl: 0
         ),
 
         // ── Production DENSE 27B (Q5_K_M, MTP spec-decode) ──────────────
@@ -45,7 +52,18 @@ public static class ModelRegistry
             CacheTypeK: "q8_0",
             CacheTypeV: "q8_0",
             SplitMode: "layer",
-            TensorSplit: new[] { 25.0, 40.0 }
+            TensorSplit: new[] { 25.0, 40.0 },
+            OverrideTensors: new[] { "token_embd.weight=CPU" },
+            RopeScaling: "yarn",
+            RopeScale: 4f,
+            YarnOrigCtx: 32768,
+            ContBatching: true,
+            Fit: false,
+            UbatchSize: 512,
+            SpecType: "draft-mtp",
+            SpecDraftNMax: 3,
+            SpecDraftPMin: 0.75f,
+            SpecDraftNgl: 0
         ),
     };
 
@@ -77,12 +95,18 @@ public static class ModelRegistry
             ModelAlias: "moe-35b-mini",
             ModelPath: "/models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
             NGpuLayers: 99, NCpuMoe: 8, NCtx: 320000,
-            OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" });
+            OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" },
+            ContBatching: true, Fit: false, UbatchSize: 512,
+            SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0);
         _entries["dense-27b-q5"] = new EngineConfig(
             ModelAlias: "dense-27b-q5",
             ModelPath: "/models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
             NGpuLayers: 65, NCtx: 96000, CacheTypeK: "q8_0", CacheTypeV: "q8_0",
-            SplitMode: "layer", TensorSplit: new[] { 25.0, 40.0 });
+            SplitMode: "layer", TensorSplit: new[] { 25.0, 40.0 },
+            OverrideTensors: new[] { "token_embd.weight=CPU" },
+            RopeScaling: "yarn", RopeScale: 4f, YarnOrigCtx: 32768,
+            ContBatching: true, Fit: false, UbatchSize: 512,
+            SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0);
     }
 
     /// <summary>List all registered aliases (for diagnostics and tests).</summary>

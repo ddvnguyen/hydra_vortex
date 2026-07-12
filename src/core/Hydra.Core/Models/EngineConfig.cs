@@ -25,101 +25,68 @@ public sealed record EngineConfig(
     int? NGpuLayers = null,
     /// <summary>CPU-side MoE expert count (Qwen35MoE / DeepSeek-style MoE).</summary>
     int? NCpuMoe = null,
-    /// <summary>Context size in tokens.</summary>
     int? NCtx = null,
-    /// <summary>KV-cache key quant (e.g. "q8_0", "q4_0").</summary>
     string? CacheTypeK = null,
-    /// <summary>KV-cache value quant.</summary>
     string? CacheTypeV = null,
-    /// <summary>
-    /// Split mode for COMBINE: "none" (SOLO), "layer" (DENSE layer-split),
-    /// or "row" (DENSE row-split). Engine-startup config in Phase 2a;
-    /// runtime via <c>0x40</c> in Phase 2b.
-    /// </summary>
+    string? RopeScaling = null,
+    float? RopeScale = null,
+    int? YarnOrigCtx = null,
+    string? SpecType = null,
+    int? SpecDraftNMax = null,
+    float? SpecDraftPMin = null,
+    int? SpecDraftNgl = null,
+    bool? ContBatching = null,
+    bool? Fit = null,
+    int? UbatchSize = null,
     string? SplitMode = null,
-    /// <summary>
-    /// Per-device layer counts for layer-split. e.g. <c>{25, 40}</c>
-    /// = 25 layers on CUDA0 (head), 40 layers on the peer.
-    /// </summary>
     double[]? TensorSplit = null,
-    /// <summary>
-    /// --override-tensor patterns routed to the peer's RPC backend for
-    /// MoE COMBINE. Engine-startup config (the <c>--combined-ot-pattern</c>
-    /// CLI flag in Phase 1; will become stock <c>--override-tensor</c> in
-    /// Phase 2b). Used by the C# translator to validate the plan, not
-    /// sent on the wire for COMBINE mode (the engine already has it).
-    /// </summary>
     string[]? OverrideTensors = null,
-    /// <summary>
-    /// Peer RPC endpoints (e.g. <c>["localhost:9506"]</c>). Engine-startup
-    /// config for the head's <c>--rpc-engine</c> flag in Phase 1.
-    /// </summary>
     string[]? RpcServers = null
 )
 {
-    /// <summary>
-    /// Serialize to the wire JSON shape the engine accepts on 0x40
-    /// CONFIGURE. Skips null fields; includes only the keys the engine
-    /// knows how to apply (T1 + T2 + T3, per ddvnguyen/hydra_vortex#406).
-    /// Unknown keys are silently ignored by the engine (forward-compat).
-    /// </summary>
-    public string ToWireJson()
+    public Dictionary<string, object> ToHydraConfigDict()
     {
-        var sb = new System.Text.StringBuilder();
-        sb.Append('{');
-        var first = true;
-        void Emit(string k, string v)
-        {
-            if (!first) sb.Append(',');
-            first = false;
-            sb.Append('"').Append(k).Append("\":").Append(v);
-        }
-        if (NGpuLayers is int ngl) Emit("n_gpu_layers", ngl.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        if (NCpuMoe is int ncpu) Emit("n_cpu_moe", ncpu.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        if (NCtx is int nctx) Emit("n_ctx", nctx.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        if (CacheTypeK is string ctk) Emit("cache_type_k", JsonString(ctk));
-        if (CacheTypeV is string ctv) Emit("cache_type_v", JsonString(ctv));
-        if (SplitMode is string sm) Emit("split_mode", JsonString(sm));
-        if (TensorSplit is double[] ts)
-        {
-            sb.Append(first ? "" : ",").Append("\"tensor_split\":[");
-            for (int i = 0; i < ts.Length; i++)
-            {
-                if (i > 0) sb.Append(',');
-                sb.Append(ts[i].ToString(System.Globalization.CultureInfo.InvariantCulture));
-            }
-            sb.Append(']');
-            first = false;
-        }
-        if (OverrideTensors is string[] ots && ots.Length > 0)
-        {
-            sb.Append(first ? "" : ",").Append("\"override_tensor\":");
-            // engine accepts a single pattern string (the most common case);
-            // we join multiple with a newline so the parser sees distinct lines.
-            sb.Append(JsonString(string.Join('\n', ots)));
-            first = false;
-        }
-        if (RpcServers is string[] rpcs && rpcs.Length > 0)
-        {
-            sb.Append(first ? "" : ",").Append("\"rpc_servers\":[");
-            for (int i = 0; i < rpcs.Length; i++)
-            {
-                if (i > 0) sb.Append(',');
-                sb.Append(JsonString(rpcs[i]));
-            }
-            sb.Append(']');
-            first = false;
-        }
+        var config = new Dictionary<string, object>();
         if (!string.IsNullOrEmpty(ModelPath))
-        {
-            sb.Append(first ? "" : ",").Append("\"model\":{\"path\":").Append(JsonString(ModelPath));
-            sb.Append('}');
-            first = false;
-        }
-        sb.Append('}');
-        return sb.ToString();
+            config["model_path"] = ModelPath;
+        if (SplitMode is string sm)
+            config["split_mode"] = sm;
+        if (TensorSplit is double[] ts)
+            config["tensor_split"] = ts;
+        if (NGpuLayers is int ngl)
+            config["n_gpu_layers"] = ngl;
+        if (NCpuMoe is int ncm)
+            config["n_cpu_moe"] = ncm;
+        if (NCtx is int nctx)
+            config["n_ctx"] = nctx;
+        if (CacheTypeK is string ctk)
+            config["cache_type_k"] = ctk;
+        if (CacheTypeV is string ctv)
+            config["cache_type_v"] = ctv;
+        if (RopeScaling is string rs)
+            config["rope_scaling"] = rs;
+        if (RopeScale is float rsc)
+            config["rope_scale"] = rsc;
+        if (YarnOrigCtx is int yoc)
+            config["yarn_orig_ctx"] = yoc;
+        if (SpecType is string st)
+            config["spec_type"] = st;
+        if (SpecDraftNMax is int sdm)
+            config["spec_draft_n_max"] = sdm;
+        if (SpecDraftPMin is float sdp)
+            config["spec_draft_p_min"] = sdp;
+        if (SpecDraftNgl is int sngl)
+            config["spec_draft_ngl"] = sngl;
+        if (ContBatching is bool cb)
+            config["cont_batching"] = cb;
+        if (Fit is bool f)
+            config["fit"] = f;
+        if (UbatchSize is int ubs)
+            config["ubatch_size"] = ubs;
+        if (OverrideTensors is string[] ots && ots.Length > 0)
+            config["override_tensor"] = string.Join("\n", ots);
+        if (RpcServers is string[] rpcs && rpcs.Length > 0)
+            config["rpc_servers"] = rpcs;
+        return config;
     }
-
-    private static string JsonString(string s) =>
-        System.Text.Json.JsonSerializer.Serialize(s);
 }
