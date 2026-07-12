@@ -79,13 +79,14 @@ llama:
     slot-prompt-similarity: 0.4
 
     # ── COMBINED engine-mode peer wiring (feat/add-rtx-3060-head) ─────
-    # This node's `rpc_port: 9504` (above) is the peer's ggml RPC
-    # backend port. The head's llama-engine (rtx) is configured with
-    # --rpc-engine localhost:9504 in node-rtx.yaml, so when the
-    # Coordinator activates COMBINED mode for a large request, the head
-    # reaches into the 3060's backend to dispatch expert tensors. The
-    # peer itself does NOT need --rpc-engine (it's not a head) and does
-    # NOT need --combined-ot-pattern (only the head enforces the split).
+    # This node's `rpc_port: 9504` (above) is the unified Hydra RPC port
+    # that also serves as the ggml-RPC backend. The head's llama-engine
+    # (rtx) is configured with --rpc-engine localhost:9504 in
+    # node-rtx.yaml, so when the Coordinator activates COMBINED mode for
+    # a large request, the head reaches into the 3060's backend to
+    # dispatch expert tensors. The peer itself does NOT need
+    # --rpc-engine (it's not a head) and does NOT need
+    # --combined-ot-pattern (only the head enforces the split).
     # (Previously a separate `ggml-rpc-port` param exposed this on a
     # second port — removed no-op on the current binary post-v4-merge,
     # see node-rtx.yaml's comment.)

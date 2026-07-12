@@ -34,12 +34,12 @@ llama:
   # engine mode is implemented in the llama-engine binary only (fork
   # ddvnguyen/llama.cpp hydra-state-streaming branch). llama-engine
   # accepts the same args as llama-server PLUS the hydra flags
-  # (--rpc-engine, --combined-ot-pattern, --ggml-rpc-port) that the
-  # filter function strips out of argv before common arg parsing
-  # (the llama-server binary doesn't have this filter, so it
-  # rejects the flags as "invalid argument"). llama-engine is a
-  # drop-in replacement for SOLO mode too — same /v1/chat/completions,
-  # /slots, /health, /metrics endpoints.
+  # (--rpc-engine, --combined-ot-pattern) that the filter function
+  # strips out of argv before common arg parsing (the llama-server
+  # binary doesn't have this filter, so it rejects the flags as
+  # "invalid argument"). llama-engine is a drop-in replacement for
+  # SOLO mode too — same /v1/chat/completions, /slots, /health,
+  # /metrics endpoints.
   binary: /llama/bin/llama-engine
   working_dir: /llama
   port: 8080
