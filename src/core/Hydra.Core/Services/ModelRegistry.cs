@@ -48,7 +48,7 @@ public static class ModelRegistry
             ModelAlias: "dense-27b-q5",
             ModelPath: "/models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
             NGpuLayers: 65,
-            NCtx: 60000,
+            NCtx: 96000,
             CacheTypeK: "q8_0",
             CacheTypeV: "q8_0",
             SplitMode: "layer",
@@ -101,7 +101,7 @@ public static class ModelRegistry
         _entries["dense-27b-q5"] = new EngineConfig(
             ModelAlias: "dense-27b-q5",
             ModelPath: "/models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
-            NGpuLayers: 65, NCtx: 65536, CacheTypeK: "q8_0", CacheTypeV: "q8_0",
+            NGpuLayers: 65, NCtx: 96000, CacheTypeK: "q8_0", CacheTypeV: "q8_0",
             SplitMode: "layer", TensorSplit: new[] { 25.0, 40.0 },
             OverrideTensors: new[] { "token_embd.weight=CPU" },
             RopeScaling: "yarn", RopeScale: 4f, YarnOrigCtx: 32768,
