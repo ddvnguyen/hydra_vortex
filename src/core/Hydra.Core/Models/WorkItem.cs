@@ -71,6 +71,17 @@ public sealed class WorkItem
 	/// <summary>True when the chosen multi-engine mode could not be activated and we ran solo.</summary>
 	public bool MultiFellBack { get; set; }
 
+	/// <summary>
+	/// Per-request engine overrides (T1 keys: sampling, n_predict, seed,
+	/// stop). Phase 2b (ddvnguyen/llama.cpp#36). Populated by
+	/// <c>WorkerSchedulerService.SubmitAsync</c> from the request body
+	/// (mirror of the <c>force_mode</c> extraction); emitted as a 0x40
+	/// EngineConfigure in <c>DecodeAsync</c> before
+	/// <c>ApplyMultiEngineAsync</c>. <c>null</c> or
+	/// <see cref="EngineRequestOverrides.IsEmpty"/> → no 0x40 call.
+	/// </summary>
+	public EngineRequestOverrides? RequestOverrides { get; set; }
+
 	/// <summary>Debug: force a specific engine mode for this single request, bypassing
 	/// MultiEngineRouter.Select. Set via <c>force_mode</c> in the request body (auto|solo|combined|pipeline).</summary>
 	public string ForceMode { get; set; } = "";

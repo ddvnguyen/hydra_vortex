@@ -370,6 +370,18 @@ PTX JIT (slow but functional — see PR #368). For COMBINED mode the 3060's
 `--ggml-rpc-port 9504` requires native sm_86 cubins, which requires
 `CMAKE_CUDA_ARCHITECTURES` to include `86` — i.e. the fat build above.
 
+> **Dual-GPU local testing caveat:** On a host with both RTX 5060 Ti (CUDA0) and
+> RTX 3060 (CUDA1) running the fat `build_sm86_sm120` binary, the qwen35 model
+> crashes during the `common_context_can_seq_rm` warmup on CUDA1 with
+> `CUDA error: no kernel image is available for execution on the device`.
+> This is a pre-existing warmup-path issue — not a build problem.
+> **Workaround:** restrict to the target GPU for standalone testing:
+> ```bash
+> CUDA_VISIBLE_DEVICES=0 ./llama-engine -m <model> --rpc-port 9505 ...
+> ```
+> Production is unaffected: the 3060 runs in `--peer-only` mode (no model load,
+> no warmup) so this code path is never hit.
+
 #### RTX 3060 only (Ampere sm_86, CUDA 13.2) — small build for the 3060-only path
 
 ```bash
@@ -604,6 +616,7 @@ curl -s :9501/metrics | head
 | `PUT_CHUNKED` returns error | Manifest already exists with different session_id | Session IDs must be unique. Delete manifest first or use different ID |
 | `dotnet test src/Hydra.sln` hangs | Parallel project execution → PG port/connection contention | Use `--settings src/Hydra.runsettings` (serializes assemblies) or run per-project |
 | GC removed in-use chunks | GC ran while session active | GC only removes chunks NOT referenced by any manifest. Active sessions have manifests. Run GC only during idle periods. |
+| `CUDA error: no kernel image is available for execution on the device` during warmup on CUDA1 (RTX 3060) | Dual-GPU host: fat sm_86+sm_120 build + qwen35 arch hits a missing kernel path on CUDA1 during `common_context_can_seq_rm` warmup. **Pre-existing issue, unrelated to RPC changes.** | Restrict to single GPU: `CUDA_VISIBLE_DEVICES=0 ./llama-engine ...`. Production is unaffected (3060 runs `--peer-only`, no model load/warmup). |
 | Logs not appearing in Grafana | Promtail container not running | `cd infra && podman-compose -f docker-compose.infra.yml restart promtail` — see **Monitoring** |
 | Promtail scrape errors in promtail logs | Docker SD config pointing at wrong socket | Check socket path in `infra/promtail/promtail-config.yml` and volume mount |
 

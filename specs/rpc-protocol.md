@@ -154,11 +154,109 @@ Coordinator↔Store extensions (currently `GET_MANIFEST = 0x33`).
 key = slot_id as ASCII decimal string (e.g. `"0"`).
 
 ```
-0x40  CONFIGURE         Set engine params (n_predict, sampler, batch size, ctx, …)
-                        Request:  key="<slot_id>", payload=JSON {"n_predict":N,"temperature":F,
-                                       "top_p":F,"top_k":N,"seed":N,"batch":N,"ctx":N,...}
-                        Response: meta={"applied":true,"params":{...echo...}}
+0x40  CONFIGURE         Apply a `common_params` delta at runtime. Tier model:
+                        T1 (cheap, no rebuild — sampling + n_predict + seed +
+                        stop + state_chunk_size), T2 (context rebuild — n_ctx,
+                        cache_type_k/v, RoPE), T3 (model rebuild — n_gpu_layers,
+                        split_mode, tensor_split, model). T1 keys apply
+                        immediately; T2/T3 keys are deferred to the next
+                        slot-free moment (see "Deferred semantics for T2/T3"
+                        below). Phase 2b (ddvnguyen/llama.cpp#40,
+                        ddvnguyen/hydra_vortex#397).
+
+                        Request:  key="<slot_id>", payload=JSON with any subset
+                                  of the keys below. Unknown keys are silently
+                                  ignored (forward-compat). Empty payload or
+                                  a legacy {"state_chunk_size":N}-only payload
+                                  is treated as T1.
+
+                                  T1 keys (apply immediately — no rebuild):
+                                  - "sampling": { "temp", "top_p", "top_k",
+                                                  "min_p", "penalty_repeat",
+                                                  "xtc_*", "mirostat*",
+                                                  "dry_*", "grammar",
+                                                  "logit_bias" } (each as their
+                                                  common_params_sampling
+                                                  equivalents; field names
+                                                  match the C++ struct for
+                                                  direct json::get<>() lookups)
+                                  - "n_predict":   int
+                                  - "n_keep":      int
+                                  - "seed":        uint32
+                                  - "antiprompt":  [string]  (OpenAI "stop")
+                                  - "state_chunk_size": int (bytes, [64KiB, 64MiB])
+
+                                  T2 keys (deferred until context rebuild):
+                                  - "n_ctx":            int
+                                  - "cache_type_k":     ggml_type (string name)
+                                  - "cache_type_v":     ggml_type (string name)
+                                  - "rope_freq_base":   float
+                                  - "yarn_*":           RoPE/YARN knobs
+                                  - "rope_scaling_type": enum
+
+                                  T3 keys (deferred until model rebuild):
+                                  - "n_gpu_layers":     int
+                                  - "n_cpu_moe":        int
+                                  - "override_tensor":  string
+                                                       (--override-tensor style
+                                                       pattern; can be set per
+                                                       request for COMBINED
+                                                       mode without restart)
+                                  - "split_mode":       "none" | "layer" | "row"
+                                  - "tensor_split":     [float, ...]
+                                  - "model":            { "path": str,
+                                                          "alias": str (optional) }
+
+                        Response: meta=JSON
+                                  {
+                                    "success": <bool>,
+                                    "tier": "T1" | "T2" | "T3",
+                                    "params_applied": { "<key>": <value>, ... }
+                                                       // the actual values after
+                                                       // any clamping (e.g.
+                                                       // state_chunk_size clamped
+                                                       // to [64KiB, 64MiB]).
+                                                       // The Coordinator diffs
+                                                       // requested vs applied to
+                                                       // detect silent clamps —
+                                                       // same pattern as the
+                                                       // legacy
+                                                       // state_chunk_size_applied
+                                                       // (hydra#334).
+                                    "deferred_keys": [ "<key>", ... ]
+                                                       // empty for T1; lists the
+                                                       // T2/T3 keys that will be
+                                                       // applied on the next
+                                                       // slot-free moment.
+                                    "error": "<msg>"   // only on success=false
+                                  }
                                   payload_len=0
+
+                        Backward compat: a payload containing ONLY
+                        {"state_chunk_size":N} (the legacy single-key form
+                        sent at startup by
+                        `WorkerSchedulerService.cs:2842`) is accepted
+                        unchanged. Response has `tier="T1"` and
+                        `params_applied={"state_chunk_size":<post-clamp>}`.
+
+                        Deferred semantics for T2/T3 (see "Deferred semantics
+                        for T2/T3" below): the response returns immediately
+                        with `success=true` and the `deferred_keys` list
+                        populated. The next slot-free moment triggers the
+                        rebuild. The request that issued the CONFIGURE is
+                        served with the OLD config; subsequent requests
+                        use the NEW config. The Coordinator logs a warning
+                        that the change is pending. There is no callback or
+                        polling — the next request sees the change as part
+                        of the new tier's default state.
+
+                        T3 deferred trigger (open design question Q1): the
+                        default is "all slots fully released". Operators can
+                        bound the wait with
+                        `HYDRA_COORD_PROFILE_SWITCH_DRAIN_TIMEOUT` (default
+                        300s). Beyond the timeout, the engine reports
+                        `success=false` and the C# scheduler retries or falls
+                        back (configurable per-call).
 
 0x41  INFO              Report engine capabilities + two-engine status
                         Request:  key="<slot_id>", payload_len=0
@@ -242,6 +340,77 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                                   caller falls back to single-engine)
                                   payload_len=0
 ```
+
+**Deferred semantics for T2/T3 (0x40 CONFIGURE):**
+
+T1 keys are cheap — the engine applies them in-place on receipt. The cost is
+a `common_sampler` re-init (for the `sampling.*` keys) + a `cparams` field
+write (for `n_predict`, `seed`, `n_keep`) + a graph-cache invalidation. The
+response is `success=true, tier="T1", deferred_keys=[]`.
+
+T2 and T3 keys are deferred because the engine can't apply them while a
+slot is in-flight:
+
+- **T2 (context rebuild)**: the engine unloads the live `llama_context` (KV
+  cache) and re-creates it with the new `n_ctx` / `cache_type_k` / RoPE
+  knobs. In-flight slots would lose their KV state, so the rebuild waits
+  for **all slots to be fully released**. The `n_ctx` *increase* is
+  always safe (a slot can be re-bound to a larger context); the `n_ctx`
+  *decrease* may need to drain sessions whose n_past exceeds the new
+  size (the engine returns `success=false` with a `{"error":"n_ctx
+  decrease would invalidate <N> sessions"}` body in that case).
+- **T3 (model rebuild)**: the engine unloads the live `llama_model` and
+  re-loads with the new `n_gpu_layers` / `split_mode` / `tensor_split` /
+  `model.path`. The COMBINED expert bindings (if active) must be torn
+  down and re-bound after the new model is loaded. Rebuild time is
+  20-30s for the 35B Q3_K-mini. Same wait-for-all-slots-released
+  trigger.
+
+When the engine receives a T2/T3 CONFIGURE, it:
+
+1. Classifies the keys (T1/T2/T3).
+2. Applies the T1 keys immediately. Records the T2/T3 keys in a
+   `pending_config` struct on the `llama_context`.
+3. Returns the response: `success=true, tier=<highest tier in request>,
+   params_applied={<T1 echoes>}, deferred_keys=<T2/T3 keys>`.
+
+When the last slot is released, the engine checks the `pending_config`,
+applies the deferred rebuild, and clears the struct. The next request
+sees the new state.
+
+**The T3 deferred trigger is open design question Q1.** The current
+recommendation is "all slots fully released" (safest). Operators can
+bound the wait with `HYDRA_COORD_PROFILE_SWITCH_DRAIN_TIMEOUT` (default
+300s). Beyond the timeout, the engine reports `success=false` and the
+C# scheduler retries or falls back. The alternatives (Q1.b — any slot
+in idle state, Q1.c — operator-triggered drain) are documented in
+`ddvnguyen/llama.cpp#40`.
+
+**The T3 race-during-decode semantics are open design question Q2.**
+The current recommendation is "old config wins" — the request that
+issued the CONFIGURE is served with the prior profile; the next
+request sees the new profile. The C# scheduler carries
+`item.EngineConfigTier` (the tier the request actually used) on the
+response trace so the operator can see which profile served which
+request during a transition.
+
+**Open design questions** (tracked in `ddvnguyen/llama.cpp#40`,
+`ddvnguyen/hydra_vortex#397`):
+
+- **Q1**: T3 deferred trigger (a — all-slots-released, b — any-slot-idle,
+  c — operator-triggered drain). Default to (a) for the first cut.
+- **Q2**: T3 race during decode (a — old config wins, b — block at
+  scheduler, c — HTTP 503). Default to (a) for the first cut.
+- **Q3**: Backward-compat strategy for the legacy
+  `{"state_chunk_size":N}` startup call. The recommendation is to keep
+  it working as a degenerate T1 request (no `tier` field in the
+  payload, response has `tier="T1"` and
+  `params_applied={"state_chunk_size":<post-clamp>}`).
+- **Q4**: `EngineConfigApplier` (parent-side, PR 4 in the Phase 2b
+  stack) timing — startup-only, profile-switch-only, or both. The
+  recommendation is **startup + profile switch**: startup is the safety
+  net (ensures the engine is in the expected state), profile switch is
+  the explicit trigger (e.g. `bash scripts/set-profile.sh {moe|dense}`).
 
 **Two-engine run modes (composable flags, always-on dual role — issue #348):** there is
 no more `--role` flag. Every engine process always loads its model and serves SOLO
