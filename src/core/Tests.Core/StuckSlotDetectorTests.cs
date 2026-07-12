@@ -6,8 +6,8 @@ namespace Tests.Core;
 
 public sealed class StuckSlotDetectorTests
 {
-    private static SlotInfo Slot(int id, bool processing, int nRemain, int stuckCount = 0) =>
-        new() { Id = id, IsProcessing = processing, NRemain = nRemain, StuckPollCount = stuckCount };
+    private static SlotInfo Slot(int id, bool processing, int nRemain, int nPast = 0, int stuckCount = 0) =>
+        new() { Id = id, IsProcessing = processing, NRemain = nRemain, NPast = nPast, StuckPollCount = stuckCount };
 
     [Fact]
     public void LooksStuck_OnlyWhenProcessingAndNoRemaining()
@@ -85,5 +85,47 @@ public sealed class StuckSlotDetectorTests
         Assert.Equal(2, StuckSlotDetector.Apply(previous: null, current, threshold: 1));
         Assert.Equal(1, current[0].StuckPollCount);
         Assert.Equal(1, current[1].StuckPollCount);
+    }
+
+    [Fact]
+    public void LooksStuck_ProcessingNRemainZeroNpastStalled_CountsAsStuck()
+    {
+        // Slot is processing, n_remain=0, and n_past has not advanced → stuck
+        var prev = new List<SlotInfo> { Slot(0, true, 0, nPast: 100, stuckCount: 2) };
+        var current = new List<SlotInfo> { Slot(0, true, 0, nPast: 100) };
+        Assert.Equal(1, StuckSlotDetector.Apply(prev, current, threshold: 3));
+        Assert.Equal(3, current[0].StuckPollCount);
+    }
+
+    [Fact]
+    public void LooksStuck_ProcessingNRemainZeroNpastAdvancing_NotStuck()
+    {
+        // Slot is processing and n_remain=0, but n_past advanced (100→105) → NOT stuck (#342 regression)
+        var prev = new List<SlotInfo> { Slot(0, true, 0, nPast: 100, stuckCount: 2) };
+        var current = new List<SlotInfo> { Slot(0, true, 0, nPast: 105) };
+        Assert.Equal(0, StuckSlotDetector.Apply(prev, current, threshold: 3));
+        Assert.Equal(0, current[0].StuckPollCount);
+    }
+
+    [Fact]
+    public void NpastStalled_NoPrevious_ReturnsTrue()
+    {
+        Assert.True(StuckSlotDetector.NpastStalled(Slot(0, true, 0, nPast: 100), previous: null));
+    }
+
+    [Fact]
+    public void NpastStalled_SameValue_ReturnsTrue()
+    {
+        var prev = Slot(0, true, 0, nPast: 100);
+        var cur = Slot(0, true, 0, nPast: 100);
+        Assert.True(StuckSlotDetector.NpastStalled(cur, prev));
+    }
+
+    [Fact]
+    public void NpastStalled_Advanced_ReturnsFalse()
+    {
+        var prev = Slot(0, true, 0, nPast: 100);
+        var cur = Slot(0, true, 0, nPast: 105);
+        Assert.False(StuckSlotDetector.NpastStalled(cur, prev));
     }
 }
