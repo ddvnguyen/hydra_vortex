@@ -119,6 +119,24 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 		}
 
+		// Phase 2b: extract T1 per-request engine overrides from the request
+		// body. Mirrors the force_mode extraction above. The C# side has been
+		// silently forwarding these to llama-server's HTTP API; the 0x40
+		// path is the engine-mode equivalent. Skip when the engine mode is
+		// not in use (the legacy HTTP path still handles them).
+		if (_cfg.UseLlamaEngine)
+		{
+			var overrides = EngineRequestOverrides.FromRequest(request);
+			if (!overrides.IsEmpty)
+			{
+				item.RequestOverrides = overrides;
+				_log.Information(
+					"request_overrides_applied Sid={Sid} Temp={Temp} TopP={TopP} TopK={TopK} NPredict={NP} Seed={Seed}",
+					sessionId, overrides.Temperature, overrides.TopP, overrides.TopK,
+					overrides.NPredict, overrides.Seed);
+			}
+		}
+
 		_log.Information("request_received Sid={Sid} Stream={Stream}", sessionId, item.IsStreaming);
 
 		await _mainQueue.Writer.WriteAsync(item, ct);
@@ -963,6 +981,56 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			: ResolvePeerAddr(item.MultiPeer);
 		var otSplit = item.MultiEngineConfig?.OverrideTensors?.FirstOrDefault() ?? "";
 		return await llamaRpc.EnginePipelineAttachAsync(slotId.ToString(), addr, otSplit, item.TraceId, ct);
+	}
+
+	/// <summary>
+	/// Phase 2b: push per-request T1 overrides (sampling, n_predict,
+	/// seed, stop) to the engine via 0x40 EngineConfigure. T1 keys
+	/// apply immediately; T2/T3 keys (if any sneak in) are deferred
+	/// to the engine's next slot-free moment. Best-effort: any
+	/// failure is logged + countered, the request continues with the
+	/// engine's current config (same fall-back pattern as
+	/// SET_EXPERT_MODE).
+	/// </summary>
+	private async Task ApplyRequestOverridesAsync(WorkItem item, WorkerConfig head, int slotId, CancellationToken ct)
+	{
+		if (item.RequestOverrides is not { } overrides || overrides.IsEmpty) return;
+		var llamaRpc = GetLlamaRpcClient(head);
+		try
+		{
+			var json = overrides.ToWireJson();
+			var resp = await llamaRpc.EngineConfigureAsync(slotId.ToString(), json, item.TraceId, ct);
+			var result = HydraEngineClient.ParseConfigureResponse(resp);
+			if (result.Success)
+			{
+				if (result.HasDeferredChanges)
+				{
+					_log.Information(
+						"request_overrides_deferred Sid={Sid} Head={Head} Tier={Tier} Deferred={Deferred}",
+						item.SessionId, head.Name, result.Tier,
+						string.Join(",", result.DeferredKeys));
+				}
+				else
+				{
+					_log.Information(
+						"request_overrides_applied Sid={Sid} Head={Head} Tier={Tier} Applied={Applied}",
+						item.SessionId, head.Name, result.Tier,
+						string.Join(",", result.ParamsApplied.Keys));
+				}
+			}
+			else
+			{
+				_log.Warning(
+					"request_overrides_failed Sid={Sid} Head={Head} Error={Error}",
+					item.SessionId, head.Name, result.Error ?? "(no error message)");
+			}
+		}
+		catch (Exception ex)
+		{
+			_log.Warning(ex,
+				"request_overrides_exception Sid={Sid} Head={Head}",
+				item.SessionId, head.Name);
+		}
 	}
 
 	private string ResolvePeerAddr(string? peerName)
@@ -1907,6 +1975,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
 			_pipelineCts[item.SessionId] = cts;
 
+			// Phase 2b: emit 0x40 EngineConfigure with per-request T1 overrides
+			// (sampling, n_predict, seed) before activating the peer. T1 keys
+			// apply immediately; the call is best-effort (a failure here is
+			// logged + countered, the request continues with the engine's
+			// current config — same fall-back pattern as SET_EXPERT_MODE).
+			if (_cfg.UseLlamaEngine && item.RequestOverrides is { IsEmpty: false })
+				await ApplyRequestOverridesAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
+
 			// Two-engine "work together": activate the peer before decode (no-op when solo).
 			if (_cfg.UseLlamaEngine)
 				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
@@ -1941,6 +2017,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		else
 		{
+			// Phase 2b: emit 0x40 EngineConfigure with per-request T1 overrides
+			// before activating the peer. T1 keys apply immediately; best-effort
+			// (failure is logged, request continues with engine's current config).
+			if (_cfg.UseLlamaEngine && item.RequestOverrides is { IsEmpty: false })
+				await ApplyRequestOverridesAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, ct);
+
 			// Two-engine "work together": activate the peer before decode (no-op when solo).
 			if (_cfg.UseLlamaEngine)
 				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, ct);

@@ -140,7 +140,9 @@ The fork has **two** binaries the Hydra system uses:
   `extract_hydra_capability_flags` filter only lives in `llama-engine`.
 - `llama-engine` — drop-in replacement for `llama-server` PLUS the COMBINED
   engine mode. Used by both the 5060 Ti (head) and the 3060 (peer) on the host.
-  Accepts the same args as `llama-server` plus the hydra flags.
+  Accepts the same args as `llama-server` plus the hydra flags. The
+  `--ggml-rpc-port` flag is a removed no-op (logs a warning, ignored) —
+  the RPC port is auto-derived from `--rpc-port`.
 
 ### Fast local iteration
 
@@ -240,7 +242,10 @@ ss -tlnp | grep 9504
 The head (rtx) dials this same port via `--rpc-engine localhost:9504`
 (`node-rtx.yaml`) — it does not expose a separate RPC-compute port of its
 own; `#376`'s fail-open fix for the TCP-up/RPC-down race window is what
-made this dial reliable.
+made this dial reliable. The `--ggml-rpc-port` flag is a removed no-op on
+the current binary (see `removedParamsKeys` in
+`src/head/internal/config/config.go`) — it is filtered out and never
+reaches the binary.
 
 ### Build-time gates
 
