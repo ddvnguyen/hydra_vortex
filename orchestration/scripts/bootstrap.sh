@@ -5,12 +5,15 @@
 set -euo pipefail
 
 # ─── EDIT THESE ──────────────────────────────────────────────────────────────
-REPO_DIR="${REPO_DIR:-/mnt/WorkDisk/Workplace/llm-server-monitoring}"   # repo working copy
+REPO_DIR="${REPO_DIR:-/mnt/WorkDisk/Workplace/hydra_vortex}"   # repo working copy
 TZ_NAME="${TZ_NAME:-Asia/Ho_Chi_Minh}"               # IANA timezone for cron
 LEAD_PROVIDER="${LEAD_PROVIDER:-claude/claude-sonnet-5}"   # heartbeat + triage (tier-1)
 MONITOR_PROVIDER="${MONITOR_PROVIDER:-opencode/mimo-v2.5-free}"  # tier-3 free local model
-HEARTBEAT_EVERY="${HEARTBEAT_EVERY:-20m}"
+# Supervision is now event-driven (workers wake the lead via emit-event.sh); this
+# is only a slow steering check-in / lead-alive watchdog, not the primary trigger.
+HEARTBEAT_EVERY="${HEARTBEAT_EVERY:-10m}"
 MONITOR_EVERY="${MONITOR_EVERY:-30m}"
+EVENTS_ROOM="${EVENTS_ROOM:-hydra-events}"     # durable worker->lead event bus
 TRIAGE_CRON="${TRIAGE_CRON:-0 8 * * 1-5}"            # weekdays 08:00 local
 # Create schedules paused so a human approves before any autonomous run spends
 # quota. Set START_PAUSED=false to create them already running.
@@ -41,22 +44,48 @@ recreate() {  # recreate <name> <args...>
   fi
 }
 
-# 1) Team-lead heartbeat — background supervision of all workers
+# 0) Durable event bus for worker->lead notifications (idempotent — a second
+#    create fails on an existing room, which is fine).
+if paseo chat create "$EVENTS_ROOM" \
+     --purpose "hydra_vortex worker lifecycle events (DONE/BLOCKED/FAILED); the lead drains via 'paseo chat read --since <cursor>'" \
+     >/dev/null 2>&1; then
+  echo "✓ chat room created: $EVENTS_ROOM"
+else
+  echo "• chat room exists (or create skipped): $EVENTS_ROOM"
+fi
+
+# 1) Lead steering check-in + watchdog — NOT the primary completion trigger.
+#    Workers wake the lead directly on finish (emit-event.sh: paseo send +
+#    hydra-events bus). This schedule (a) pings the live role=lead agent for a
+#    cheap steering scan of active workers, and (b) re-spawns the lead if none is
+#    alive (self-heal), draining any events missed while it was down.
 recreate lead-heartbeat \
   --every "$HEARTBEAT_EVERY" \
   --provider "$LEAD_PROVIDER" \
   --cwd "$REPO_DIR" \
-  "HEARTBEAT RUN. You are the team lead; your charter is orchestration/LEAD_CHARTER.md (re-read the DEVELOP and CLOSE sections). Idempotent sweep, cheap tokens, no code exploration: (1) paseo ls; for each active worker: paseo logs <id> --tail 10. (2) Handle per charter: nudge stalled workers, verify finished ones with their VERIFY command, execute orchestration/QUOTA.md for any rate-limited agent, summarize permission requests for the user. (3) Advance issue labels for any completed stage (PR, review, deploy, soak-close). (4) Worktree + state-file hygiene for closed issues. (5) If nothing needs action, end the run immediately."
+  "LEAD CHECK-IN + WATCHDOG. First: lead=\$(paseo ls --label role=lead --json | python3 -c 'import sys,json;d=json.load(sys.stdin) or [];print((d[0].get(\"shortId\") or d[0].get(\"id\",\"\")) if d else \"\")'). If a lead is alive, run: paseo send \"\$lead\" --no-wait 'CHECK-IN: run /lead-supervise — drain hydra-events since the cursor, then steering-scan active workers (paseo ls + logs --tail 10) and nudge any that lost track. Then go idle.' and end this run. If NO lead is alive, spawn one: paseo run --provider $LEAD_PROVIDER --cwd $REPO_DIR --label role=lead --detach 'You are the hydra_vortex team lead; charter orchestration/LEAD_CHARTER.md. A supervision wake fired. Run /lead-supervise (event-drain-first: read orchestration/state/events-cursor.md, paseo chat read hydra-events --since <cursor> --json, act on that batch, advance the cursor), then handle any in-flight workers, then GO IDLE. Do not loop or block.' — then end this run."
 
-# 2) Morning triage — pull new work into the cycle
+# 2) Morning triage — pull new work into the cycle. Routed THROUGH the durable
+#    lead so every worker it spawns is owned by the live role=lead agent (whose
+#    id workers notify on finish). Wakes the lead if alive; spawns it otherwise.
 recreate issue-triage \
   --cron "$TRIAGE_CRON" \
   --timezone "$TZ_NAME" \
   --provider "$LEAD_PROVIDER" \
   --cwd "$REPO_DIR" \
-  "TRIAGE RUN. You are the team lead; charter: orchestration/LEAD_CHARTER.md. First check capacity: gh issue list --label status:planning --label status:in-progress; respect max_issues_in_flight in orchestration/providers.yaml — if at capacity, end the run. Otherwise: gh issue list --label status:ready, rank against orchestration/GOALS.md, pick the top item(s) up to capacity, and execute the dev-cycle protocol from PICKUP. Big-change gate applies: propose and WAIT for user approval where required."
+  "TRIAGE DISPATCH. lead=\$(paseo ls --label role=lead --json | python3 -c 'import sys,json;d=json.load(sys.stdin) or [];print((d[0].get(\"shortId\") or d[0].get(\"id\",\"\")) if d else \"\")'). TRIAGE INSTRUCTION = 'MORNING TRIAGE per orchestration/LEAD_CHARTER.md: check capacity (gh issue list --label status:planning --label status:in-progress vs max_issues_in_flight in orchestration/providers.yaml) — if at capacity, go idle. Else gh issue list --label status:ready, rank against orchestration/GOALS.md, pick the top item(s) up to capacity, run the dev-cycle from PICKUP. Spawn each worker with --env LEAD_ID=\$PASEO_AGENT_ID --label role=lead-child and the emit-event.sh final step. Big-change gate applies — propose and WAIT for user approval where required. Then go idle.'. If a lead is alive: paseo send \"\$lead\" --no-wait \"\$TRIAGE_INSTRUCTION\". Else: paseo run --provider $LEAD_PROVIDER --cwd $REPO_DIR --label role=lead --detach \"You are the hydra_vortex team lead; charter orchestration/LEAD_CHARTER.md. \$TRIAGE_INSTRUCTION\". End this run."
 
-# 3) Monitoring — closes the loop by filing issues from production signals
+# 3) Comment watcher — polls hydra_vortex AND llama.cpp for @hydra commands
+#    Every 2 minutes, detects new @hydra /X mentions and posts HUMAN_CMD events.
+COMMENT_WATCHER_EVERY="${COMMENT_WATCHER_EVERY:-2m}"
+COMMENT_WATCHER_REPOS="${COMMENT_WATCHER_REPOS:-ddvnguyen/hydra_vortex,ddvnguyen/llama.cpp}"
+recreate comment-watcher \
+  --every "$COMMENT_WATCHER_EVERY" \
+  --provider "$MONITOR_PROVIDER" \
+  --cwd "$REPO_DIR" \
+  "COMMENT WATCHER RUN. Poll GitHub for new @hydra commands across repos: $COMMENT_WATCHER_REPOS. For each repo, run: gh issue list --repo <repo> --state open --json number,title,comments --paginate. Search the latest comment on each issue for patterns: @hydra /plan, @hydra /skip-pm, @hydra /approve, @hydra /implement, @hydra /merge. For each match found that hasn't been processed yet (check orchestration/state/comment-watcher-cursor.md for last processed timestamp), post a HUMAN_CMD event to the hydra-events bus via: paseo chat send hydra-events 'HUMAN_CMD issue=<N> repo=<repo> command=<cmd> ts=<timestamp>'. Update the cursor file with the latest processed timestamp. If no new commands found, end immediately. Never edit code or take action on issues directly — only relay commands to the event bus."
+
+# 4) Monitoring — closes the loop by filing issues from production signals
 recreate monitor \
   --every "$MONITOR_EVERY" \
   --provider "$MONITOR_PROVIDER" \
@@ -65,6 +94,7 @@ recreate monitor \
 
 echo
 echo "All schedules created. Verify with: paseo schedule ls"
+echo "Event bus '$EVENTS_ROOM': paseo chat read $EVENTS_ROOM --json"
 if [ "$START_PAUSED" = "true" ]; then
   echo "Schedules are PAUSED. Resume individually with: paseo schedule resume <name>"
 fi

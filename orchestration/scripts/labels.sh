@@ -19,4 +19,11 @@ mk "source:monitoring"   "B60205" "Filed automatically by the monitoring agent"
 mk "source:instrumentor" "E4E669" "Filed by the instrumentor probe when a pipeline sweep FAILs"
 mk "gate:approved"       "C2E0C6" "User approved the big-change proposal on this issue"
 
+# Complexity / PM (orchestration v0)
+mk "complexity:low"      "C2E0C6" "Small fix, no PM needed"
+mk "complexity:medium"   "FBCA04" "PM should run"
+mk "complexity:high"     "D93F0B" "Full PM + tech planning"
+mk "pm:planning"         "1D76DB" "PM is writing the plan"
+mk "pm:done"             "0E8A16" "PM finished the plan; awaiting OA approval"
+
 echo "Labels ready."
