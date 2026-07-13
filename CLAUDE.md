@@ -62,8 +62,9 @@ across the RPC boundary that COMBINED-OT has). Switch profiles with
 moe/dense profile table: `docs/combined-engine-mode.md`.
 
 ## Hydra Head (Go node agent)
-Single Go binary per GPU node (`src/head/`) managing 4 sub-services: llama-server,
-node_exporter, nvidia_exporter, promtail — replaces the old Agent containers. The
+Single Go binary per GPU node (`src/head/`) managing llama-server and exporter
+sidecars (node_exporter, nvidia_gpu_exporter where needed) — replaces the old
+Agent containers. Logs ship via OTLP/HTTP to the OTel Collector (no Promtail). The
 llama-engine binary is pulled from ghcr.io via `crane`; the RTX 5060 Ti + 3060 share
 one fat image (`llama-server:sm86-sm120-engine`), P100 uses a separate sm_60 image.
 Deploy: `scripts/deploy-hydra-head.sh`. Full source map, service config, OCI images,
@@ -186,7 +187,7 @@ commands are in `DevelopmentRunBook.md`.
 - Content-addressed chunking at Store level, not llama.cpp level (M2)
 - No shared filesystem between nodes (Hydra Store RPC replaces NFS/virtiofs)
 - llama.cpp fork minimal: only 3 endpoints in server.cpp, no core changes
-- Hydra Head in Go: single binary per GPU node, 4-service management (llama + exporters + promtail)
+- Hydra Head in Go: single binary per GPU node, llama-server + exporter sidecars, OTLP/HTTP log push
 - llama-server distributed via OCI registry (ghcr.io), pulled at startup — no shared mounts
 - 2-layer YAML config for hydra-head: global.yaml + per-node overrides
 

@@ -4,7 +4,8 @@
 > `CLAUDE.md` `## Hydra Head`.
 
 Replaces the old Agent containers + manual llama-server deployment. Single Go binary per GPU
-node that manages 4 sub-services: llama-server, node_exporter, nvidia_exporter, promtail.
+node that manages llama-server and exporter sidecars (node_exporter, nvidia_gpu_exporter where needed).
+Logs ship directly from each service via OTLP/HTTP to the OTel Collector (no Promtail).
 
 ## Source & Deploy
 | What | Where |
@@ -15,14 +16,17 @@ node that manages 4 sub-services: llama-server, node_exporter, nvidia_exporter, 
 | RTX Dockerfile | `infra/hydra-head/Dockerfile.rtx` (based on CUDA base `Dockerfile_26.04_cuda13.2`) |
 | P100 systemd unit | `infra/hydra-head/hydra-head.service` |
 
-## 4-Service Management
+## Service Management
 Hydra Head owns lifecycle (start/stop/restart/auto-restart with backoff) of:
 - llama-server
 - node_exporter (P100 only; RTX uses host-level exporter in infra-host pod)
 - nvidia_exporter (P100 only; RTX uses host-level exporter in infra-host pod)
-- promtail
 
 Each service is controlled via per-node `services:` YAML config (`enabled`, `binary`, `config`, `port`, `args`).
+
+Logs ship via OTLP/HTTP push directly from each service to the OTel Collector
+(Quadlet `infra-otel-collector`, port 4318). The collector fans out to Loki.
+Promtail was removed in #363 — it is no longer a managed sub-service.
 
 ## OCI Registry
 llama-engine (and llama-server) binary pulled from ghcr.io at startup via `crane`
@@ -39,9 +43,12 @@ expert-split. No more mount-based deploys of `build_sm120/` / `build_sm60/`
 / `build_sm86_sm120/` (the bind mount in compose is now the source of truth
 on this host; the OCI image is the fallback for other hosts).
 
-## Log Separation
-Promtail detects llama-server log patterns (`^\d+\.\d+\.\d+\.\d+\s+[A-Z]\s+`) and labels
-them `component=llama-server` vs `component=hydra-head` in Loki.
+## Log Pipeline
+Each service (llama-server, hydra-head, hydra-core, store) pushes logs via
+OTLP/HTTP to the OTel Collector on `localhost:4318` (or `192.168.122.1:4318`
+for P100). The collector parses, labels by `component` and `node`, and
+forwards to Loki. Promtail (and its docker_sd + CRI-parser pipeline) was
+removed in #363 — it no longer manages log shipping.
 
 ## Deprecated infra (replaced by hydra-head)
 | Old file | Replacement |

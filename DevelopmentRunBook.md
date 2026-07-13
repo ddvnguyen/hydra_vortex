@@ -12,7 +12,6 @@ Client (HTTP) → Hydra.Core :9000             [C#/.NET 10 — HTTP API + Store 
             │  hydra RPC :9503                │  hydra RPC :9502
             │  node_exporter :9100            │  node_exporter :9100
             │  nvidia_exporter :9835          │  nvidia_exporter :9835
-            │  promtail :9080                 │  promtail :9081
             ▼                                 ▼
 
             /mnt/llm-ram/store/ (tmpfs, managed by Hydra.Core)
@@ -101,8 +100,9 @@ curl -s http://localhost:9700/status       # RTX Hydra Head
 curl -s http://192.168.122.21:9700/status  # P100 Hydra Head
 ```
 
-> **Note:** Hydra Head manages llama-server + node_exporter + nvidia_exporter + promtail
-> on each node. The old `infra/llama-rtx-node/` container and `llama-p100` systemd
+> **Note:** Hydra Head manages llama-server + node_exporter + nvidia_exporter
+> on each node. Logs ship via OTLP/HTTP to the OTel Collector (Promtail removed in #363).
+> The old `infra/llama-rtx-node/` container and `llama-p100` systemd
 > service are [DEPRECATED]. Hydra.Core contacts llama-server directly via HTTP.
 
 ---
@@ -520,25 +520,22 @@ curl -s -X POST http://localhost:8080/v1/chat/completions \
 
 ## Monitoring
 
-### Container log shipping (Promtail in Docker)
+### Log shipping (OTel Collector)
 
-Promtail runs in the Infra stack (`docker-compose.infra.yml`). It discovers containers
-via the podman socket (`docker_sd_configs`) and reads CRI-format log files directly.
+Logs ship via OTLP/HTTP push from each service (llama-server, hydra-head,
+hydra-core, store) to the OTel Collector on `localhost:4318` (or
+`192.168.122.1:4318` for P100). The collector fans out to Loki.
 
 ```bash
-# Status (check the container)
-podman ps --filter name=promtail
+# OTel Collector status
+systemctl --user is-active infra-otel-collector
 
-# Restart (after deploy or if logs stop appearing)
-cd infra && podman-compose -f docker-compose.infra.yml restart promtail
+# Health endpoint
+curl -so/dev/null -w'%{http_code}\n' http://localhost:13133/
 
-# Configs
-cat infra/promtail/promtail-config.yml                  # label mapping + targets
+# Restart if needed
+systemctl --user restart infra-otel-collector
 ```
-
-**Prerequisite:** Podman's log driver must be `k8s-file` (set in
-`~/.config/containers/containers.conf`) — journald has no file-backed logs for
-Promtail to scrape.
 
 ### Metrics endpoints
 
@@ -617,8 +614,7 @@ curl -s :9501/metrics | head
 | `dotnet test src/Hydra.sln` hangs | Parallel project execution → PG port/connection contention | Use `--settings src/Hydra.runsettings` (serializes assemblies) or run per-project |
 | GC removed in-use chunks | GC ran while session active | GC only removes chunks NOT referenced by any manifest. Active sessions have manifests. Run GC only during idle periods. |
 | `CUDA error: no kernel image is available for execution on the device` during warmup on CUDA1 (RTX 3060) | Dual-GPU host: fat sm_86+sm_120 build + qwen35 arch hits a missing kernel path on CUDA1 during `common_context_can_seq_rm` warmup. **Pre-existing issue, unrelated to RPC changes.** | Restrict to single GPU: `CUDA_VISIBLE_DEVICES=0 ./llama-engine ...`. Production is unaffected (3060 runs `--peer-only`, no model load/warmup). |
-| Logs not appearing in Grafana | Promtail container not running | `cd infra && podman-compose -f docker-compose.infra.yml restart promtail` — see **Monitoring** |
-| Promtail scrape errors in promtail logs | Docker SD config pointing at wrong socket | Check socket path in `infra/promtail/promtail-config.yml` and volume mount |
+| Logs not appearing in Grafana | OTel Collector not running | `systemctl --user restart infra-otel-collector` — check health at `http://localhost:13133/` |
 
 ---
 

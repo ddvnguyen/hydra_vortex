@@ -26,6 +26,14 @@ scrape_configs:
           component: llama-server
           node: rtx
 
+  - job_name: hydra-llama-rtx3060
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:8081"]
+        labels:
+          component: llama-server
+          node: rtx3060
+
   - job_name: hydra-llama-p100
     metrics_path: /metrics
     static_configs:

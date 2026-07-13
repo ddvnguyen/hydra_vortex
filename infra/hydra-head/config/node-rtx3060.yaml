@@ -103,8 +103,6 @@ services:
   # and nvidia_gpu_exporter on :9100/:9835 on the host's network. A
   # second copy per host would just scrape the same hardware and
   # shadow the canonical Prometheus target.
-  promtail:
-    enabled: false
   node_exporter:
     enabled: false
   nvidia_exporter:
