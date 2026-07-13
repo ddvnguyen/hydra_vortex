@@ -22,6 +22,10 @@ public sealed class EngineModeTests
         // binary (or any future engine RPC regression).
         public bool MakeEnginePrefillFail { get; set; } = false;
 
+        // When set, the engine returns NotImplemented — the old binary path
+        // (#279) that should still trigger HTTP fallback.
+        public bool MakeEnginePrefillNotImplemented { get; set; } = false;
+
         // When set, the engine prefill throws OperationCanceledException as if
         // the caller's CancellationToken was cancelled. Review note: the catch
         // in PrefillAsync must filter this out so it doesn't masquerade as a
@@ -47,8 +51,13 @@ public sealed class EngineModeTests
                 OpCode.EnginePrefill when MakeEnginePrefillThrowCancellation => throw
                     new OperationCanceledException("simulated caller cancellation during engine prefill"),
 
+                OpCode.EnginePrefill when MakeEnginePrefillNotImplemented => new RpcResponse(
+                    (byte)StatusCode.NotImplemented,
+                    Meta: null,
+                    Payload: Array.Empty<byte>()),
+
                 OpCode.EnginePrefill when MakeEnginePrefillFail => new RpcResponse(
-                    (byte)StatusCode.Error, // non-OK → triggers #279 fallback
+                    (byte)StatusCode.Error, // real error — should NOT fall back
                     Meta: null,
                     Payload: Array.Empty<byte>()),
 
@@ -671,65 +680,53 @@ public sealed class EngineModeTests
     // ─────────────────────────────────────────────────────────────────────
     // Issue #279 regression: EnginePrefill RPC fallback to HTTP
     //
-    // Background: the deployed llama-server binary may be older than the
-    // source it was built from. In that case, the RPC dispatch at the C++
-    // side doesn't recognize opcode 0x42 (HYDRA_OP_PREFILL) and returns
-    // HYDRA_STATUS_ERROR with no meta. The C# side throws an
-    // InvalidOperationException and the controller returns 503 to the
-    // client. To avoid a full 503 on every prompt > 2048 tokens, the
-    // PrefillAsync worker falls back to the HTTP chat-completion path
-    // when the engine RPC throws. The HTTP path uses the same slot and
-    // the same OAI body, so the user-visible behaviour is identical
-    // except for slightly higher prefill latency.
-    //
-    // This test simulates the regression by making the test RPC client
-    // return non-OK for EnginePrefill, then asserts that:
-    //   1. The engine RPC was called (proves the test setup worked)
-    //   2. The HTTP proxy was called as the fallback
-    //   3. The request completed successfully (no 503)
+    // After the fix, only NotImplemented (old binary) triggers HTTP fallback.
+    // Real errors (BUSY, NotFound, Error) propagate so the routing layer can
+    // retry/evict instead of silently masking the issue.
     // ─────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task ColdConcurrency_EnginePrefillFails_FallsBackToHttp()
+    public async Task ColdConcurrency_EnginePrefillFails_RetriesThenFails()
     {
         await using var f = new EngineFixture(runMode: "concurrency");
-        f.Rpc.MakeEnginePrefillFail = true;   // simulate #279 (out-of-date binary)
+        f.Rpc.MakeEnginePrefillFail = true;   // simulates real engine error (BUSY/Error)
+        var proxy = (TestCompletionProxy)f.Proxy;
+
+        // > 2048 estimated tokens → routes as cold_concurrency → triggers EnginePrefill
+        // Real error should retry, then fail after MaxRetries.
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => f.SubmitAsync("sess_real_error", 5000, 100));
+
+        Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
+            "Test setup failure: engine RPC was never called for cold_concurrency");
+
+        // Verify HTTP fallback did NOT fire — real errors retry, not HTTP fallback.
+        Assert.Empty(proxy.NonStreamingCalls);
+    }
+
+    [Fact]
+    public async Task ColdConcurrency_EnginePrefillNotImplemented_FallsBackToHttp()
+    {
+        await using var f = new EngineFixture(runMode: "concurrency");
+        f.Rpc.MakeEnginePrefillNotImplemented = true;   // simulates old binary (#279)
         var proxy = (TestCompletionProxy)f.Proxy;
 
         // > 2048 estimated tokens → routes as cold_concurrency → triggers EnginePrefill
         var result = await f.SubmitAsync("sess_279_fallback", 5000, 100);
 
         Assert.NotNull(result);
-
-        // 1. The engine RPC was called (and failed, recording the call). Without
-        //    this, the test setup is wrong (routing didn't reach the engine path).
         Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
             "Test setup failure: engine RPC was never called for cold_concurrency");
 
-        // 2. The HTTP proxy was called as the fallback. The prefill HTTP body
-        //    uses n_predict=0 (target localhost:8080 = RTX, the prefill worker);
-        //    the decode HTTP body uses the original max_tokens (target
-        //    192.168.122.21:8086 = P100, the decode worker). At least one of
-        //    them is the prefill fallback, and the total is >= 1.
+        // NotImplemented should trigger HTTP fallback.
         Assert.True(proxy.NonStreamingCalls.Count >= 1,
-            "HTTP fallback did not fire — engine prefill failed and no HTTP request was made");
+            "HTTP fallback did not fire — NotImplemented should trigger fallback");
 
-        // 3. Verify the prefill fallback was made. The fallback body is built
-        //    in PrefillAsync as a Dictionary<string, object> with n_predict=0
-        //    (an int), then passed to ProxyCompletionAsync. The test proxy
-        //    stores the body as-is. Check that the call to the prefill
-        //    worker (RTX = localhost:8080) has n_predict=0.
         var prefillFallback = proxy.NonStreamingCalls.FirstOrDefault(c =>
             c.NodeUrl == "http://localhost:8080" &&
             c.Body.ContainsKey("n_predict"));
         Assert.NotNull(prefillFallback);
         Assert.Equal(0, Convert.ToInt32(prefillFallback.Body["n_predict"]));
-
-        // 4. The request completed without throwing (no 503 from the
-        //    engine RPC failure). The test proxy returns a minimal response
-        //    (id_slot, usage) — full OAI shape validation is done by the
-        //    other tests. The key invariant here is "no exception thrown".
-        Assert.NotNull(result);
     }
 
     [Fact]

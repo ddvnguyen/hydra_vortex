@@ -21,7 +21,8 @@ public enum WorkItemState
 	BgSave = 24,
 	Done = 26,
 	Failed = 28,
-	Cancelled = 30
+	Cancelled = 30,
+	Retry = 32
 }
 
 public sealed class WorkItem
@@ -45,6 +46,8 @@ public sealed class WorkItem
 
 	public Exception? Error { get; set; }
 	public int NoWorkerRetries { get; set; }
+	public int RetryCount { get; set; }
+	public const int MaxRetries = 3;
 	public object? Response { get; set; }
 	public WorkerConfig? PrefillWorker { get; set; }
 	public WorkerConfig? DecodeWorker { get; set; }
