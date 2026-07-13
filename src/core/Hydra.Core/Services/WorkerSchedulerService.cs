@@ -25,9 +25,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly IServiceProvider _serviceProvider;
 	private readonly ILogger _log;
 	private readonly LocalChunkCache? _chunkCache;
-	private readonly Channel<WorkItem> _mainQueue;
-	private readonly Channel<WorkItem> _prefillQueue;
-	private readonly Channel<WorkItem> _decodeQueue;
 	private readonly CancellationTokenSource _cts = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _agentClients = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _llamaRpcClients = new();
@@ -39,42 +36,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
-	// Two-engine "work together": peer-engine leases held for the request's duration,
-	// and the active mode per session (for the active-sessions gauge on release).
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
-	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new(); // traceIds whose streaming has finished
+	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new();
 	internal readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
 	private readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
-	// Streaming requests whose request_timeline emit is deferred until the stream
-	// finishes — decode_ms/total_ms must cover the full stream, not just dispatch.
-	// Keyed by TraceId so concurrent streaming requests for the same session
-	// don't overwrite each other's deferred timelines.
 	internal readonly ConcurrentDictionary<string, WorkItem> _pendingTimelines = new();
-	private readonly SemaphoreSlim _decodeSlotSignal = new(0, int.MaxValue);
 
-	// Retry queue: requests that failed due to slot contention (BUSY) are placed
-	// here instead of failing the client. When the active request finishes, items
-	// from the retry queue are drained back to the main queue.
-	private readonly Channel<WorkItem> _retryQueue = Channel.CreateBounded<WorkItem>(new BoundedChannelOptions(50)
+	// ── Unified GPU-aware request queue ──
+	// All requests enter here. The evaluator checks GPU availability and
+	// dispatches when enough workers are free. Priority ordering ensures
+	// post-prefill decode gets the GPU first.
+	private readonly SortedSet<QueueItem> _requestQueue = new(Comparer<QueueItem>.Create((a, b) =>
 	{
-		FullMode = BoundedChannelFullMode.Wait,
-		SingleWriter = false,
-		SingleReader = true
-	});
-
-	private static BoundedChannelOptions ChannelOpts(int capacity) => new(capacity)
+		var cmp = a.Priority.CompareTo(b.Priority);
+		return cmp != 0 ? cmp : a.EnqueuedAt.CompareTo(b.EnqueuedAt);
+	}));
+	private readonly object _queueLock = new();
+	private readonly SemaphoreSlim _evaluatorSignal = new(0, int.MaxValue);
+	/// <summary>Signal the evaluator when a GPU finishes a request or a new item enters the queue.</summary>
+	internal void SignalEvaluator()
 	{
-		FullMode = BoundedChannelFullMode.Wait,
-		SingleWriter = false,
-		SingleReader = true
-	};
-
-	public string? LastDispatchedNode { get; private set; }
-	/// <summary>Alias of the model that built the most recent prefill (M-Perf.9 #289).</summary>
-	public string? LastDispatchedModel { get; private set; }
-	/// <summary>SHA-256 hex of the model that built the most recent prefill (M-Perf.9 #289).</summary>
-	public string? LastDispatchedModelHash { get; private set; }
+		try { _evaluatorSignal.Release(); } catch (SemaphoreFullException) { }
+	}
 
 	public WorkerSchedulerService(
 		CoordinatorConfig config,
@@ -96,16 +80,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			ChunkEngine.CHUNK_SIZE = config.ChunkSize;
 			ChunkConstants.ChunkSize = config.ChunkSize;
 		}
-		_mainQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(500));
-		_prefillQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(50));
-		_decodeQueue = Channel.CreateBounded<WorkItem>(ChannelOpts(100));
 
-		log.Information("Scheduler init: workers={Workers} prefiller={Prefill} decoders={Decode} mix={Mix}",
+		log.Information("Scheduler init: workers={Workers} prefiller={Prefill} decoders={Decode} mix={Mix} evaluator=unified",
 			string.Join(",", config.Workers.Select(w => w.Name)),
 			config.Workers.Count(w => w.CanPrefill),
 			config.Workers.Count(w => w.CanDecode),
 			config.MixPrecisionEnabled);
 	}
+
+	public string? LastDispatchedNode { get; private set; }
+	public string? LastDispatchedModel { get; private set; }
+	public string? LastDispatchedModelHash { get; private set; }
 
 	public async Task<object> SubmitAsync(
 		Dictionary<string, object> request,
@@ -151,7 +136,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		_log.Information("request_received Sid={Sid} Stream={Stream}", sessionId, item.IsStreaming);
 
-		await _mainQueue.Writer.WriteAsync(item, ct);
+		// Classify the request type based on estimated tokens and session state.
+		item.RequestType = ClassifyRequestType(item, estimatedTokens);
+		var priority = GetRequestPriority(item.RequestType);
+		var queueItem = new QueueItem(item, item.RequestType, priority);
+		lock (_queueLock)
+		{
+			_requestQueue.Add(queueItem);
+		}
+		SignalEvaluator();
 
 		using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
 		try
@@ -238,27 +231,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	public async Task RunAsync(CancellationToken ct)
 	{
-		var prefillslots = Math.Max(1, _cfg.Workers.Count(w => w.CanPrefill));
-		var decodeSlots = Math.Max(1, _cfg.Workers.Count(w => w.CanDecode));
-
 		_ = ReportQueueDepthAsync(ct);
 
-		var tasks = new[]
-		{
-			RunClassifierAsync(_cfg.Workers.Count, ct),
-			RunPrefillConsumerAsync(prefillslots, ct),
-			RunDecodeConsumerAsync(decodeSlots, ct),
-		};
-		await Task.WhenAll(tasks);
+		// Single evaluator loop replaces the old classifier + prefill consumer + decode consumer.
+		// Event-driven: woken by SignalEvaluator() when a GPU finishes or new request arrives.
+		await RunEvaluatorAsync(ct);
 	}
 
 	private async Task ReportQueueDepthAsync(CancellationToken ct)
 	{
 		while (!ct.IsCancellationRequested)
 		{
-			CoordinatorMetrics.MainQueueDepth.Set(_mainQueue.Reader.Count);
-			CoordinatorMetrics.PrefillQueueDepth.Set(_prefillQueue.Reader.Count);
-			CoordinatorMetrics.DecodeQueueDepth.Set(_decodeQueue.Reader.Count);
+			int queueDepth;
+			lock (_queueLock) { queueDepth = _requestQueue.Count; }
+			CoordinatorMetrics.MainQueueDepth.Set(queueDepth);
 			// Issue #306: surface warm-lease age for the bench suite's S10
 			// watchdog validation. The age of the oldest lease is the
 			// canary — a value that grows unbounded while the warm-hit
@@ -284,9 +270,112 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 	}
 
-	// ── State helpers for queue routing ──
+	// ── Request type classification ──
 
-	private static bool IsPrefillPipeline(WorkItemState s) => s switch
+	private RequestType ClassifyRequestType(WorkItem item, int estimatedTokens)
+	{
+		if (!string.IsNullOrWhiteSpace(item.ForceMode))
+		{
+			return item.ForceMode.ToLowerInvariant() switch
+			{
+				"combined" => RequestType.Combined,
+				_ => RequestType.Atomic,
+			};
+		}
+
+		var entry = _ledger.Lookup(item.SessionId);
+		if (entry != null && entry.HasStoreState && !entry.SlotFreed)
+			return RequestType.Solo;
+
+		if (estimatedTokens > _cfg.AtomicThreshold && _cfg.UseLlamaEngine)
+			return RequestType.Prefill;
+
+		return RequestType.Atomic;
+	}
+
+	private static int GetRequestPriority(RequestType type) => type switch
+	{
+		RequestType.Decode => 0,
+		RequestType.Solo => 10,
+		RequestType.Combined => 20,
+		RequestType.Atomic => 30,
+		RequestType.Prefill => 40,
+		_ => 50,
+	};
+
+	private void EnqueueRequest(WorkItem item, RequestType type)
+	{
+		var priority = GetRequestPriority(type);
+		var qi = new QueueItem(item, type, priority);
+		lock (_queueLock) { _requestQueue.Add(qi); }
+		SignalEvaluator();
+	}
+
+	// ── Unified evaluator ──
+
+	private async Task RunEvaluatorAsync(CancellationToken ct)
+	{
+		var sem = new SemaphoreSlim(_cfg.Workers.Count, _cfg.Workers.Count);
+		SignalEvaluator();
+
+		while (!ct.IsCancellationRequested)
+		{
+			await _evaluatorSignal.WaitAsync(ct).ConfigureAwait(false);
+			while (_evaluatorSignal.CurrentCount > 0)
+				_evaluatorSignal.WaitAsync(TimeSpan.Zero);
+
+			QueueItem[] snapshot;
+			lock (_queueLock) { snapshot = _requestQueue.ToArray(); }
+
+			foreach (var qi in snapshot)
+			{
+				if (ct.IsCancellationRequested) break;
+				if (!CanServeRequest(qi)) continue;
+
+				lock (_queueLock) { _requestQueue.Remove(qi); }
+
+				_log.Information("evaluator_dispatch Sid={Sid} Type={Type} Priority={P}",
+					qi.WorkItem.SessionId, qi.Type, qi.Priority);
+
+				await sem.WaitAsync(ct);
+				var scope = _serviceProvider.CreateScope();
+				_ = Task.Run(async () =>
+				{
+					try
+					{
+						await RunItemPipeline(qi.WorkItem, qi.Type, ct);
+					}
+					finally
+					{
+						scope.Dispose();
+						sem.Release();
+						SignalEvaluator();
+					}
+				}, ct);
+			}
+		}
+	}
+
+	private bool CanServeRequest(QueueItem qi)
+	{
+		return qi.Type switch
+		{
+			RequestType.Decode or RequestType.Solo =>
+				_cfg.Workers.Any(w => w.CanDecode && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)),
+			RequestType.Atomic =>
+				_cfg.Workers.Any(w => w.CanPrefill && w.CanDecode && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name))
+				|| _cfg.Workers.Any(w => w.CanDecode && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)),
+			RequestType.Prefill =>
+				_cfg.Workers.Any(w => w.CanPrefill && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)),
+			RequestType.Combined =>
+				MultiEngineRouter.Select(_cfg, _cfg.Workers, _tracker, _health, qi.WorkItem.EstimatedTokens) != null,
+			_ => false,
+		};
+	}
+
+	// ── Pipeline runner ──
+
+	private static bool IsPrefillState(WorkItemState s) => s switch
 	{
 		WorkItemState.ModelLoadPrefill or
 		WorkItemState.PrefixRestore or
@@ -297,154 +386,58 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		_ => false,
 	};
 
-	// ── Classifier: reads from main queue, runs RouteAsync, routes to role queue ──
-
-	private async Task RunClassifierAsync(int concurrency, CancellationToken ct)
-	{
-		var sem = new SemaphoreSlim(concurrency, concurrency);
-
-		await foreach (var item in _mainQueue.Reader.ReadAllAsync(ct))
-		{
-			await sem.WaitAsync(ct);
-
-			var scope = _serviceProvider.CreateScope();
-			_ = Task.Run(async () =>
-			{
-				try
-				{
-					await ClassifyItemAsync(item, ct);
-				}
-				finally
-				{
-					scope.Dispose();
-					sem.Release();
-				}
-			}, ct);
-		}
-	}
-
-	private async Task ClassifyItemAsync(WorkItem item, CancellationToken ct)
+	private async Task RunItemPipeline(WorkItem item, RequestType initialType, CancellationToken ct)
 	{
 		try
 		{
-			item.RecordPhase("queue_wait_ms");
-			CoordinatorMetrics.QueueWaitDuration.Observe(item.Phases["queue_wait_ms"] / 1000.0);
-			// Issue #306: surface the dequeued head's age as a gauge so the
-			// bench suite can detect head-of-line blocking. The histogram
-			// above captures the distribution; this gauge gives a current
-			// reading for Grafana single-stat panels.
-			CoordinatorMetrics.QueueHeadAge.Set(item.Phases["queue_wait_ms"] / 1000.0);
-			var next = await DispatchAsync(item, ct);
-			if (next is WorkItemState.Done or WorkItemState.Failed or WorkItemState.Cancelled)
+			if (item.State == WorkItemState.None)
 			{
-				await FinalizeAsync(item, next);
-				return;
+				item.RecordPhase("queue_wait_ms");
+				CoordinatorMetrics.QueueWaitDuration.Observe(item.Phases["queue_wait_ms"] / 1000.0);
+				CoordinatorMetrics.QueueHeadAge.Set(item.Phases["queue_wait_ms"] / 1000.0);
 			}
 
-			if (next == WorkItemState.None)
-			{
-				if (item.NoWorkerRetries < 30)
-				{
-					item.NoWorkerRetries++;
-					_log.Warning("classifier_no_worker Sid={Sid} Retry={Retry}/30 — re-enqueueing in 1s",
-						item.SessionId, item.NoWorkerRetries);
-					await Task.Delay(1000, ct);
-					await _mainQueue.Writer.WriteAsync(item, ct);
-					return;
-				}
-				_log.Error("classifier_no_worker Sid={Sid} — cannot route, no worker available after 30 retries",
-					item.SessionId);
-				item.Error = new InvalidOperationException("No worker available for classification");
-				await FinalizeAsync(item, WorkItemState.Failed);
-				return;
-			}
-
-			item.State = next;
-			EmitPartialTimeline(item, next is WorkItemState.Decode or WorkItemState.ModelLoadDecode ? "decoding" : next is WorkItemState.Prefill or WorkItemState.ModelLoadPrefill ? "prefilling" : "routed");
-			_log.Information("state_transition Sid={Sid} None->{Next} ms={Ms}", item.SessionId, next, item.ElapsedMs);
-
-			if (IsPrefillPipeline(next))
-				await _prefillQueue.Writer.WriteAsync(item, ct);
-			else
-				await _decodeQueue.Writer.WriteAsync(item, ct);
-		}
-		catch (OperationCanceledException)
-		{
-			await FinalizeAsync(item, WorkItemState.Cancelled);
-		}
-		catch (Exception ex)
-		{
-			_log.Error(ex, "classifier_crashed Sid={Sid}", item.SessionId);
-			item.Error = ex;
-			await FinalizeAsync(item, WorkItemState.Failed);
-		}
-	}
-
-	// ── Prefill consumer: processes prefill states until handoff to decode queue ──
-
-	private async Task RunPrefillConsumerAsync(int concurrency, CancellationToken ct)
-	{
-		var sem = new SemaphoreSlim(concurrency, concurrency);
-
-		await foreach (var item in _prefillQueue.Reader.ReadAllAsync(ct))
-		{
-			await sem.WaitAsync(ct);
-
-			var scope = _serviceProvider.CreateScope();
-			_ = Task.Run(async () =>
-			{
-				try
-				{
-					await RunPrefillPipeline(item, ct);
-				}
-				finally
-				{
-					scope.Dispose();
-					sem.Release();
-				}
-			}, ct);
-		}
-	}
-
-	private async Task RunPrefillPipeline(WorkItem item, CancellationToken ct)
-	{
-		try
-		{
 			while (!item.IsCancelled)
 			{
 				var next = await DispatchAsync(item, ct);
+
 				if (next is WorkItemState.Done or WorkItemState.Failed or WorkItemState.Cancelled)
 				{
 					await FinalizeAsync(item, next);
 					return;
 				}
+
+				if (next == WorkItemState.None)
+				{
+					if (item.NoWorkerRetries < 30)
+					{
+						item.NoWorkerRetries++;
+						_log.Warning("pipeline_no_worker Sid={Sid} Retry={Retry}/30", item.SessionId, item.NoWorkerRetries);
+						EnqueueRequest(item, item.RequestType);
+						return;
+					}
+					item.Error = new InvalidOperationException("No worker available");
+					await FinalizeAsync(item, WorkItemState.Failed);
+					return;
+				}
+
+				var prev = item.State;
+				item.State = next;
+				_log.Information("state_transition Sid={Sid} {Prev}->{Next} ms={Ms}",
+					item.SessionId, prev, next, item.ElapsedMs);
 
 				if (next == WorkItemState.Retry)
 				{
-					// Item already enqueued to _retryQueue by PrefillAsync.
-					// Drain retry → main immediately so the classifier can
-					// re-dispatch it without waiting for another request to finish.
-					_log.Information("prefill_retryqueued Sid={Sid}", item.SessionId);
-					await DrainRetryQueueAsync();
+					EnqueueRequest(item, item.RequestType);
 					return;
 				}
 
-				if (next == WorkItemState.None)
+				// Prefill→Decode handoff: SaveDone/MarkEvicted → PickDecode
+				if (prev is WorkItemState.SaveDone or WorkItemState.MarkEvicted
+					&& next == WorkItemState.PickDecode)
 				{
-					// Prefill done — hand off to decode queue. Decode consumer will retry.
-					await _decodeQueue.Writer.WriteAsync(item, ct);
-					return;
-				}
-
-				var prev = item.State;
-				item.State = next;
-				_log.Information("state_transition Sid={Sid} {Prev}->{Next} ms={Ms}",
-					item.SessionId, prev, next, item.ElapsedMs);
-
-				// Handoff boundary: next state is decode-side → hand to decode queue
-				if (!IsPrefillPipeline(next))
-				{
-					await _decodeQueue.Writer.WriteAsync(item, ct);
+					item.RequestType = RequestType.Decode;
+					EnqueueRequest(item, RequestType.Decode);
 					return;
 				}
 			}
@@ -455,71 +448,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		catch (Exception ex)
 		{
-			_log.Error(ex, "prefill_crashed State={State}", item.State);
-			item.Error = ex;
-			await FinalizeAsync(item, WorkItemState.Failed);
-		}
-	}
-
-	// ── Decode consumer: processes decode states until terminal ──
-
-	private async Task RunDecodeConsumerAsync(int concurrency, CancellationToken ct)
-	{
-		var sem = new SemaphoreSlim(concurrency, concurrency);
-
-		await foreach (var item in _decodeQueue.Reader.ReadAllAsync(ct))
-		{
-			await sem.WaitAsync(ct);
-
-			var scope = _serviceProvider.CreateScope();
-			_ = Task.Run(async () =>
-			{
-				try
-				{
-					await RunDecodePipeline(item, ct);
-				}
-				finally
-				{
-					scope.Dispose();
-					sem.Release();
-				}
-			}, ct);
-		}
-	}
-
-	private async Task RunDecodePipeline(WorkItem item, CancellationToken ct)
-	{
-		try
-		{
-			while (!item.IsCancelled)
-			{
-				var next = await DispatchAsync(item, ct);
-
-				if (next is WorkItemState.Done or WorkItemState.Failed or WorkItemState.Cancelled)
-				{
-					await FinalizeAsync(item, next);
-					return;
-				}
-
-				if (next == WorkItemState.None)
-				{
-					await _decodeQueue.Writer.WriteAsync(item, ct);
-					return;
-				}
-
-				var prev = item.State;
-				item.State = next;
-				_log.Information("state_transition Sid={Sid} {Prev}->{Next} ms={Ms}",
-					item.SessionId, prev, next, item.ElapsedMs);
-			}
-		}
-		catch (OperationCanceledException)
-		{
-			await FinalizeAsync(item, WorkItemState.Cancelled);
-		}
-		catch (Exception ex)
-		{
-			_log.Error(ex, "decode_crashed State={State}", item.State);
+			_log.Error(ex, "pipeline_crashed Sid={Sid} State={State}", item.SessionId, item.State);
 			item.Error = ex;
 			await FinalizeAsync(item, WorkItemState.Failed);
 		}
@@ -726,7 +655,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			await SaveSlotStateBeforeEvictAsync(item.SessionId, warmLease.WorkerName, warmLease.SlotId, item.TraceId, default);
 			await warmLease.DisposeAsync();
-			_decodeSlotSignal.Release();
+			SignalEvaluator();
 		}
 		_ledger.MarkEvicted(item.SessionId);
 		item.State = WorkItemState.RouteDecision;
@@ -792,7 +721,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			await SaveSlotStateBeforeEvictAsync(oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId, item.TraceId, default);
 			await oldest.Value.DisposeAsync();
 			_warmLeases.TryRemove(oldest.Key, out _);
-			_decodeSlotSignal.Release();
+			SignalEvaluator();
 			_ledger.MarkEvicted(oldest.Key);
 			pfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
 		}
@@ -1332,7 +1261,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					item.PrefillSlot = null;
 					item.State = WorkItemState.None;
 					item.RetryCount++;
-					await _retryQueue.Writer.WriteAsync(item, ct);
 					return WorkItemState.Retry;
 				}
 				else
@@ -1392,7 +1320,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.PrefillSlot = null;
 				item.State = WorkItemState.None;
 				item.RetryCount++;
-				await _retryQueue.Writer.WriteAsync(item, ct);
 				return WorkItemState.Retry;
 			}
 		}
@@ -1635,7 +1562,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			_log.Warning(ex, "save_failed_fallback Sid={Sid} — falling back to same-node decode", item.SessionId);
 			if (item.Entry != null) { lock (item.Entry) { item.Entry.HasStoreState = false; } }
-			if (item.DecodeLease != null) { await item.DecodeLease.DisposeAsync(); item.DecodeLease = null; _decodeSlotSignal.Release(); }
+			if (item.DecodeLease != null) { await item.DecodeLease.DisposeAsync(); item.DecodeLease = null; SignalEvaluator(); }
 			if (item.PrefillWorker?.CanDecode == true
 				&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot, "decode-fallback"))
 			{
@@ -1941,7 +1868,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						{
 							await item.DecodeLease.DisposeAsync();
 							item.DecodeLease = null;
-							_decodeSlotSignal.Release();
+							SignalEvaluator();
 						}
 						if (item.PrefillWorker?.CanDecode == true
 							&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot2, "decode-fallback"))
@@ -2001,7 +1928,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					await item.DecodeLease.DisposeAsync();
 					item.DecodeLease = null;
-					_decodeSlotSignal.Release();
+					SignalEvaluator();
 				}
 				item.DecodeWorker = item.PrefillWorker;
 				item.DecodeSlot = fbSlot;
@@ -2354,7 +2281,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (releaseNode is null) releaseNode = lease.WorkerName;
 				try { await lease.DisposeAsync(); }
 				catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
-				_decodeSlotSignal.Release();
+				SignalEvaluator();
 			}
 			else
 			{
@@ -2406,7 +2333,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (releaseNode is null) releaseNode = lease.WorkerName;
 				try { await lease.DisposeAsync(); }
 				catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
-				_decodeSlotSignal.Release();
+				SignalEvaluator();
 			}
 
 			// Issue #284: record the time the slot was held after the request ended.
@@ -2481,7 +2408,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					streamFinishedEarly = true;
 					await item.DecodeLease.DisposeAsync();
-					_decodeSlotSignal.Release();
+					SignalEvaluator();
 				}
 				else
 				{
@@ -2491,7 +2418,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					if (_warmLeases.TryRemove(item.SessionId, out var staleLease))
 					{
 						await staleLease.DisposeAsync();
-						_decodeSlotSignal.Release();
+						SignalEvaluator();
 					}
 					_warmLeases[item.SessionId] = item.DecodeLease;
 				}
@@ -2499,7 +2426,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			else
 			{
 				await item.DecodeLease.DisposeAsync();
-				_decodeSlotSignal.Release();
+				SignalEvaluator();
 			}
 
 			item.DecodeLease = null;
@@ -2552,31 +2479,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		else
 			item.Completion.TrySetException(
 				item.Error ?? new InvalidOperationException("Failed"));
-
-		// Drain retry queue: when any request finishes, retry items get
-		// another chance by going back through the main queue classifier.
-		await DrainRetryQueueAsync();
 	}
 
 	// ── Timeline helpers ──
-
-	/// <summary>
-	/// Move all items from the retry queue back to the main queue for
-	/// re-classification. Called when any request finishes so that items
-	/// that hit slot-busy get another routing attempt.
-	/// </summary>
-	private async Task DrainRetryQueueAsync()
-	{
-		var drained = 0;
-		while (_retryQueue.Reader.TryRead(out var retryItem))
-		{
-			_log.Information("retry_drain Sid={Sid} → main queue", retryItem.SessionId);
-			await _mainQueue.Writer.WriteAsync(retryItem);
-			drained++;
-		}
-		if (drained > 0)
-			_log.Information("retry_drained Count={Count}", drained);
-	}
 
 	private static string RouteLabel(WorkItem item) =>
 		string.IsNullOrEmpty(item.RouteType) ? "unknown" : item.RouteType;
