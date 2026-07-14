@@ -1186,13 +1186,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// already covers ≥ 85% of the new request's estimated tokens.
 			// Restoring a stale/large prefix wastes the StatePut RPC and
 			// pollutes the slot with KV that will be overwritten by the
-			// prefill anyway. Read the prefix blob's n_past from the Store
-			// manifest (chunked mode) or from the blob header (PR #244 wire
-			// format — 4-byte LE int at offset 0 of the StateGet payload).
+			// prefill anyway.
+			//
+			// n_past is read from the Store manifest (GET_MANIFEST 0x33),
+			// which is only available in chunked mode (EnableChunks=true).
+			// In non-chunked mode the prefix blob is stored as raw KV bytes
+			// with no associated metadata — we cannot determine its n_past
+			// without restoring it, so the guard does not apply. The warm
+			// slot guard in RouteAsync (entry.NPast-based) covers the
+			// non-chunked case at the routing layer instead.
 			int prefixNPast = 0;
 			if (_cfg.EnableChunks)
 			{
-				// Chunked: prefix was saved via PutManifest with n_past
 				var manifestResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.GetManifest,
 					prefixKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
 				if (manifestResp.Status == (byte)Hydra.Shared.StatusCode.Ok
@@ -1206,12 +1211,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					}
 					catch { /* non-fatal: guard will be skipped */ }
 				}
-			}
-			else if (storeResp.Payload is { Length: >= 4 })
-			{
-				// Non-chunked: PR #244 wire format — first 4 bytes are LE n_past
-				prefixNPast = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(
-					storeResp.Payload.AsSpan(0, 4));
 			}
 			item.PrefixNPast = prefixNPast;
 
