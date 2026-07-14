@@ -1,4 +1,30 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "instructions": ["CLAUDE.md", "docs/workflow/*.md"]
+  "instructions": ["CLAUDE.md", "docs/workflow/*.md"],
+  "provider": {
+    "hydra": {
+      "name": "Hydra Coordinator (local)",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://localhost:9000/v1",
+        "apiKey": "hydra-local"
+      },
+      "models": {
+        "dense-27b-q5": {
+          "name": "Qwopus3.6-27B Dense (COMBINED RTX 5060 Ti + 3060)",
+          "limit": {
+            "context": 96000,
+            "output": 32000
+          }
+        }
+      }
+    }
+  },
+  "agent": {
+    "hydra-dense": {
+      "description": "Dense 27B model served by Hydra COMBINED mode",
+      "model": "hydra/dense-27b-q5",
+      "temperature": 0
+    }
+  }
 }

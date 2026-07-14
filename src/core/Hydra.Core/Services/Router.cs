@@ -91,25 +91,29 @@ public static class Router
 	public static WorkerConfig? PickBestDecodeWorker(
 		List<WorkerConfig> workers, IWorkerTracker tracker,
 		IHealthMonitorService health,
-		string? exclude = null)
+		string? exclude = null,
+		List<string>? allowedModels = null)
 	{
 		return workers
 			.Where(w => w.CanDecode && tracker.IsFree(w.Name)
 				&& health.IsHealthy(w.Name)
-				&& w.Name != exclude)
+				&& w.Name != exclude
+				&& IsModelAllowed(health, w.Name, allowedModels))
 			.OrderBy(w => w.DecodePriority)
 			.FirstOrDefault();
 	}
 
 	public static WorkerConfig? PickBestAtomicWorker(
 		List<WorkerConfig> workers, IWorkerTracker tracker,
-		IHealthMonitorService health)
+		IHealthMonitorService health,
+		List<string>? allowedModels = null)
 	{
 		return workers
-			.Where(w => w.CanPrefill && w.CanDecode && tracker.IsFree(w.Name) && health.IsHealthy(w.Name))
+			.Where(w => w.CanPrefill && w.CanDecode && tracker.IsFree(w.Name) && health.IsHealthy(w.Name)
+				&& IsModelAllowed(health, w.Name, allowedModels))
 			.OrderBy(w => w.PrefillPriority)
 			.FirstOrDefault()
-			?? PickBestDecodeWorker(workers, tracker, health);
+			?? PickBestDecodeWorker(workers, tracker, health, allowedModels: allowedModels);
 	}
 
 	public static string? PrefillModel(WorkerConfig w)
@@ -120,6 +124,24 @@ public static class Router
 	public static string? DecodeModel(WorkerConfig w)
 	{
 		return w.DecodeModelName ?? w.RouterModelName;
+	}
+
+	/// <summary>
+	/// Returns true when the worker's loaded model is compatible with the
+	/// request. When <paramref name="allowedModels"/> is empty, all workers
+	/// pass. Otherwise the worker's CurrentModel (from health poll /v1/models)
+	/// must match one of the allowed file names (substring match on the GGUF
+	/// file name portion).
+	/// </summary>
+	public static bool IsModelAllowed(IHealthMonitorService health, string nodeName, List<string>? allowedModels)
+	{
+		if (allowedModels == null || allowedModels.Count == 0) return true;
+		var nodeInfo = health.GetNodeInfo(nodeName);
+		var currentModel = nodeInfo?.CurrentModel;
+		if (string.IsNullOrEmpty(currentModel)) return true; // no info → allow (back-compat)
+		// Match against any allowed model (the GGUF file name, e.g. "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf")
+		return allowedModels.Any(a => currentModel.Contains(a, StringComparison.OrdinalIgnoreCase)
+			|| a.Contains(currentModel, StringComparison.OrdinalIgnoreCase));
 	}
 
 	public static async Task<int?> PickIdleSlot(
