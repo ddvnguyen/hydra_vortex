@@ -1188,15 +1188,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// pollutes the slot with KV that will be overwritten by the
 			// prefill anyway.
 			//
-			// n_past is read from the Store manifest (GET_MANIFEST 0x33),
-			// which is only available in chunked mode (EnableChunks=true).
-			// In non-chunked mode the prefix blob is stored as raw KV bytes
-			// with no associated metadata — we cannot determine its n_past
-			// without restoring it, so the guard does not apply. The warm
-			// slot guard in RouteAsync (entry.NPast-based) covers the
-			// non-chunked case at the routing layer instead.
+			// The raw prefix blob (Store PUT payload) carries no n_past —
+			// Store PUT (0x01) stores the raw llama.cpp KV state bytes,
+			// which begin with a magic / version header, not a token count.
+			// The n_past is stored separately in the Store's `sessions` PG
+			// table by PUT_META (0x14) at save time (non-chunked) or
+			// PUT_MANIFEST (0x15, chunked) — both write to the same table.
+			// GET_MANIFEST (0x33) reads it back; its response payload is
+			// JSON `{"n_past":N, "chunks":[…], …}` — populated in both
+			// modes. Pre-#245 prefixes (no sessions row) return NotFound
+			// and the guard is silently skipped — back-compat preserved.
 			int prefixNPast = 0;
-			if (_cfg.EnableChunks)
 			{
 				var manifestResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.GetManifest,
 					prefixKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
@@ -1641,6 +1643,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					var kvPayload = payload;
 					var traceId = item.TraceId;
 					var sysTokens = item.SystemPromptTokens;
+					var prefixNPast = item.NPastAfter;
 					_ = Task.Run(async () =>
 					{
 						try
@@ -1649,11 +1652,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								prefixKey, ReadOnlyMemory<byte>.Empty, traceId, CancellationToken.None);
 							if (stat.Status != (byte)Hydra.Shared.StatusCode.Ok)
 							{
+								// ── #245 fix: persist the prefix's n_past so the
+								// restore-time guard in PrefixRestoreAsync can read
+								// it back via GET_MANIFEST. The raw blob has no
+								// n_past header — Store PUT (0x01) stores the raw
+								// llama.cpp KV state bytes. PUT_META (0x14) writes
+								// n_past to the Store's `sessions` PG table, which
+								// GET_MANIFEST returns. Chunked saves get the same
+								// effect from PUT_MANIFEST (0x15) — the two
+								// opcodes write to the same table.
+								var metaPayload = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+									new { n_past = prefixNPast });
+								await StoreClient.RequestAsync(Hydra.Shared.OpCode.PutMeta,
+									prefixKey, metaPayload, traceId, CancellationToken.None);
+
 								await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
 									prefixKey, kvPayload, traceId, CancellationToken.None);
 								CoordinatorMetrics.PrefixSaves.Inc();
-								_log.Information("prefix_saved Hash={Hash} SizeMB={Size} SysTokens={Sys}",
-									item.PrefixHash, kvPayload.Length / 1024 / 1024, sysTokens);
+								_log.Information("prefix_saved Hash={Hash} SizeMB={Size} SysTokens={Sys} NPast={NPast}",
+									item.PrefixHash, kvPayload.Length / 1024 / 1024, sysTokens, prefixNPast);
 							}
 						}
 						catch (Exception ex)
