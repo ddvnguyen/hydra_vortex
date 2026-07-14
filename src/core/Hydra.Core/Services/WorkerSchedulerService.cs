@@ -1112,11 +1112,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				if (_cfg.UseLlamaEngine)
 				{
-					// Engine mode: the engine already supports per-request
-					// model switching via the "model" field in EnginePrefill
-					// (0x42) metadata. For Decode path (RestoreKv → Decode),
-					// stage the model via EngineConfigure (0x40) so it's
-					// loaded at the next slot-free moment.
 					var llamaRpc = GetLlamaRpcClient(w);
 					var configJson = JsonSerializer.Serialize(new Dictionary<string, object>
 					{
@@ -1126,12 +1121,47 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					{
 						var resp = await llamaRpc.EngineConfigureAsync(
 							(item.DecodeSlot ?? 0).ToString(), configJson, item.TraceId, CancellationToken.None);
-						_log.Information("model_configure_rpc Model={M} Worker={W} Status={S}",
-							m, w.Name, resp.Status);
+						var result = HydraEngineClient.ParseConfigureResponse(resp);
+						if (result.Success)
+						{
+							_log.Information("model_configure_rpc Model={M} Worker={W} Tier={T}",
+								m, w.Name, result.Tier);
+						}
+						else
+						{
+							_log.Warning("model_configure_failed Model={M} Worker={W} Error={E}",
+								m, w.Name, result.Error);
+					if (item.State == WorkItemState.ModelLoadPrefill && item.PrefillLease != null)
+					{
+						await item.PrefillLease.DisposeAsync();
+						item.PrefillLease = null;
+						SignalEvaluator();
+					}
+					else if (item.DecodeLease != null)
+					{
+						await item.DecodeLease.DisposeAsync();
+						item.DecodeLease = null;
+						SignalEvaluator();
+					}
+					item.DecodeWorker = null;
+					item.DecodeSlot = null;
+					item.State = WorkItemState.None;
+					return WorkItemState.None;
+						}
 					}
 					catch (Exception ex)
 					{
 						_log.Warning(ex, "model_configure_rpc_failed Model={M} Worker={W}", m, w.Name);
+						if (item.DecodeLease != null)
+						{
+							await item.DecodeLease.DisposeAsync();
+							item.DecodeLease = null;
+							SignalEvaluator();
+						}
+						item.DecodeWorker = null;
+						item.DecodeSlot = null;
+						item.State = WorkItemState.None;
+						return WorkItemState.None;
 					}
 				}
 				else
@@ -2004,6 +2034,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.DecodeSlot = null;
 			item.NPastAfter = 0;
 			item.KvRestoredForDecode = false;
+			item.State = WorkItemState.RouteDecision;
 			CoordinatorMetrics.RestoreKvDuration.WithLabels(w.Name, RouteLabel(item))
 				.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
 			return WorkItemState.None;

@@ -32,6 +32,9 @@ public sealed class EngineModeTests
         // binary-mismatch RPC error and pollute the fallback counter.
         public bool MakeEnginePrefillThrowCancellation { get; set; } = false;
 
+        /// <summary>When set, StatePut returns Error status (simulates restore failure).</summary>
+        public bool MakeStatePutFail { get; set; } = false;
+
         public EngineTestRpcClient() : base("test", 0) { }
 
         public override Task<RpcResponse> RequestAsync(
@@ -75,6 +78,11 @@ public sealed class EngineModeTests
                     (byte)StatusCode.Ok,
                     JsonSerializer.Serialize(new { n_past = 2000 }),
                     new byte[2048]),
+
+                OpCode.StatePut when MakeStatePutFail => new RpcResponse(
+                    (byte)StatusCode.Error,
+                    Meta: null,
+                    Payload: Array.Empty<byte>()),
 
                 _ => new RpcResponse(
                     (byte)StatusCode.Ok,
@@ -537,6 +545,28 @@ public sealed class EngineModeTests
         Assert.True(prefillIdx < statePutIdx,
             "EnginePrefill must precede StatePut (P/D ordering)");
         Assert.Single(proxy.NonStreamingCalls);
+    }
+
+    [Fact]
+    public async Task Concurrency_RestoreFails_NoFallback_ReRoutesWithoutCrash()
+    {
+        // Regression: RestoreKvAsync catch block must set item.State=RouteDecision
+        // before returning None, otherwise RunItemPipeline re-dispatches with
+        // State=RestoreKv and hits NullReferenceException on item.DecodeWorker.
+        await using var f = new EngineFixture(rtxSlots: 2, p100Slots: 1);
+        ((EngineTestRpcClient)f.Rpc).MakeStatePutFail = true;
+
+        // Submit should NOT throw NullReferenceException — it must re-route
+        // or exhaust retries gracefully.
+        var ex = await Record.ExceptionAsync(async () =>
+            await f.SubmitAsync("sess_restore_fail", 3000, 100));
+
+        // The request may fail (MaxRetries) but must NOT crash with NRE.
+        Assert.Null(ex);
+
+        // StatePut was attempted (restore tried and failed)
+        Assert.True(f.Rpc.HasCall(OpCode.StatePut),
+            "StatePut should have been attempted before the failure");
     }
 
     [Fact]
