@@ -187,8 +187,14 @@ services:
   # Image is built separately by `bash scripts/deploy-hydra-head.sh rtx`
   # (not by this compose — the Dockerfile is infra/hydra-head/Dockerfile.rtx,
   # not infra/Dockerfile).
-  # Restricted to CUDA device 0 (the RTX 5060 Ti) — device 1 (the RTX 3060)
-  # is owned by head-rtx3060.
+  # llama-server compute is restricted to CUDA device 0 (the RTX 5060 Ti,
+  # via CUDA_VISIBLE_DEVICES below) — device 1 (the RTX 3060) is owned by
+  # head-rtx3060 for compute. Both devices are passed through so this
+  # container's nvidia_gpu_exporter sidecar (which covers the whole shared
+  # host, since head-rtx3060 disables its own exporter to avoid duplicate
+  # scrape targets) can see and report both GPUs for monitoring. This does
+  # NOT affect compute isolation: CUDA_VISIBLE_DEVICES still pins the
+  # llama-server process to GPU 0 only.
   #
   # Profile switching (#383 T6): set HYDRA_HEAD_RTX_NODE_CONFIG to switch
   # between profiles, e.g.:
@@ -203,6 +209,7 @@ services:
       - ../.env
     devices:
       - nvidia.com/gpu=0
+      - nvidia.com/gpu=1
     depends_on:
       core:
         condition: service_started
@@ -250,8 +257,11 @@ services:
       #   export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
       - HYDRA_HEAD_AUTH_TOKEN=${HYDRA_HEAD_AUTH_TOKEN:?must export HYDRA_HEAD_AUTH_TOKEN}
       - REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json
-      # Pin to GPU 0 (5060 Ti) — device 1 (3060) belongs to head-rtx3060.
-      - NVIDIA_VISIBLE_DEVICES=0
+      # Both devices visible so the nvidia_gpu_exporter sidecar (covering
+      # the whole shared host) can report the 3060 too. Compute is still
+      # pinned to GPU 0 (5060 Ti) via CUDA_VISIBLE_DEVICES below — device 1
+      # (3060) belongs to head-rtx3060 for compute.
+      - NVIDIA_VISIBLE_DEVICES=0,1
       - CUDA_VISIBLE_DEVICES=0
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9700/health"]
