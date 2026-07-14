@@ -225,19 +225,4 @@ internal static class CoordinatorMetrics
         "hydra_stuck_warm_leases_total",
         "Warm leases reclaimed by the eviction watchdog since process start.");
 
-    // ── Prefix-checkpoint guards (issues #245, #201 Bug 2) ──
-    // Prefix restore skipped because the cached blob's n_past was too large
-    // for the incoming request (would nuke the cache). Incremented in
-    // PrefixRestoreAsync when the n_past guard fires.
-    public static readonly Counter PrefixRestoreSkipped = Metrics.CreateCounter(
-        "hydra_prefix_restore_skipped_total",
-        "Prefix restore skipped (cached n_past too large for incoming request)",
-        new CounterConfiguration { LabelNames = new[] { "reason" } });
-
-    // Prefix checkpoint save skipped because the system-prompt boundary could
-    // not be determined (no system message found or token count unknown).
-    // Incremented in SaveKvAsync when the prefix-save truncation guard fires.
-    public static readonly Counter PrefixSavePayloadTruncated = Metrics.CreateCounter(
-        "hydra_prefix_save_payload_truncated_total",
-        "Prefix save skipped or payload restricted (system-prompt boundary unknown)");
 }

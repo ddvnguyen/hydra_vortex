@@ -53,6 +53,7 @@ public sealed class PrefixCheckpointSaveTests
 			],
 			$"sess_{prefixHash}", "trace_1", prefixHash, 10, 50);
 		item.KvBlob = new byte[1024];
+		item.SystemPromptTokens = 50;
 		item.PrefillWorker = new WorkerConfig
 		{
 			Name = "rtx", Host = "localhost", RpcPort = 9601,
