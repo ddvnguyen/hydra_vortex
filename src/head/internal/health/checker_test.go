@@ -106,3 +106,75 @@ func TestCheckerHealthy(t *testing.T) {
 		t.Error("expected checker to be healthy")
 	}
 }
+
+func TestCheckerSimpleModeHealthy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"ok"}`))
+		}
+	}))
+	defer server.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	checker := NewChecker(server.URL, "/health", true, logger, 50*time.Millisecond, 100*time.Millisecond, 3)
+	defer checker.Stop()
+
+	checker.Start()
+	time.Sleep(150 * time.Millisecond)
+
+	if !checker.IsHealthy() {
+		t.Error("expected checker to be healthy in simple mode")
+	}
+	if checker.GetMode() != ModeIdle {
+		t.Errorf("expected mode=idle in simple mode, got %s", checker.GetMode())
+	}
+}
+
+func TestCheckerSimpleModeUnhealthy(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount <= 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"ok"}`))
+		}
+	}))
+	defer server.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	checker := NewChecker(server.URL, "/health", true, logger, 50*time.Millisecond, 100*time.Millisecond, 3)
+	defer checker.Stop()
+
+	var restartCalled atomic.Bool
+	checker.SetOnUnhealthy(func() {
+		restartCalled.Store(true)
+	})
+
+	checker.Start()
+	time.Sleep(300 * time.Millisecond)
+
+	if !restartCalled.Load() {
+		t.Error("expected onUnhealthy to be called in simple mode after max failures")
+	}
+}
+
+func TestCheckerSimpleModeConnectionError(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	checker := NewChecker("http://127.0.0.1:1", "/health", true, logger, 50*time.Millisecond, 100*time.Millisecond, 3)
+	defer checker.Stop()
+
+	var restartCalled atomic.Bool
+	checker.SetOnUnhealthy(func() {
+		restartCalled.Store(true)
+	})
+
+	checker.Start()
+	time.Sleep(300 * time.Millisecond)
+
+	if !restartCalled.Load() {
+		t.Error("expected onUnhealthy to be called in simple mode on connection error")
+	}
+}
