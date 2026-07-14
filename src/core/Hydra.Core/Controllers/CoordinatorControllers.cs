@@ -93,7 +93,7 @@ public class CompletionsController : ControllerBase
 
 		try
 		{
-			var result = await _scheduler.SubmitAsync(body, messages, sessionId, summary.EstimatedTokens, maxTokens, summary.PrefixHash, ct);
+			var result = await _scheduler.SubmitAsync(body, messages, sessionId, summary.EstimatedTokens, maxTokens, summary.PrefixHash, ct, summary.SystemPromptTokens);
 			if (result is IAsyncEnumerable<byte[]> stream)
 			{
 				Response.ContentType = "text/event-stream";

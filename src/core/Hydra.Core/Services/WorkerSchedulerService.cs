@@ -98,10 +98,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	public async Task<object> SubmitAsync(
 		Dictionary<string, object> request,
 		List<Dictionary<string, object>> messages,
-		string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct)
+		string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0)
 	{
 		var traceId = Router.NewTraceId();
 		var item = new WorkItem(request, messages, sessionId, traceId, prefixHash, estimatedTokens, maxTokens);
+		item.SystemPromptTokens = systemPromptTokens;
 		item.HttpCancellationToken = ct;
 		if (request.TryGetValue("force_mode", out var fmRaw))
 		{
@@ -1181,6 +1182,50 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			CoordinatorMetrics.CacheHits.Inc();
 
+			// ── Part B: n_past guard — skip restore when the cached prefix KV
+			// already covers ≥ 85% of the new request's estimated tokens.
+			// Restoring a stale/large prefix wastes the StatePut RPC and
+			// pollutes the slot with KV that will be overwritten by the
+			// prefill anyway.
+			//
+			// The raw prefix blob (Store PUT payload) carries no n_past —
+			// Store PUT (0x01) stores the raw llama.cpp KV state bytes,
+			// which begin with a magic / version header, not a token count.
+			// The n_past is stored separately in the Store's `sessions` PG
+			// table by PUT_META (0x14) at save time (non-chunked) or
+			// PUT_MANIFEST (0x15, chunked) — both write to the same table.
+			// GET_MANIFEST (0x33) reads it back; its response payload is
+			// JSON `{"n_past":N, "chunks":[…], …}` — populated in both
+			// modes. Pre-#245 prefixes (no sessions row) return NotFound
+			// and the guard is silently skipped — back-compat preserved.
+			int prefixNPast = 0;
+			{
+				var manifestResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.GetManifest,
+					prefixKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
+				if (manifestResp.Status == (byte)Hydra.Shared.StatusCode.Ok
+					&& manifestResp.Payload is { Length: > 0 })
+				{
+					try
+					{
+						var manifestDoc = System.Text.Json.JsonDocument.Parse(manifestResp.Payload);
+						if (manifestDoc.RootElement.TryGetProperty("n_past", out var np))
+							prefixNPast = np.GetInt32();
+					}
+					catch { /* non-fatal: guard will be skipped */ }
+				}
+			}
+			item.PrefixNPast = prefixNPast;
+
+			if (prefixNPast > 0 && item.EstimatedTokens > 0
+				&& prefixNPast >= item.EstimatedTokens * 0.85)
+			{
+				_log.Warning("prefix_restore_skipped_n_past Sid={Sid} PrefixNPast={Pnp} EstTokens={Est} Hash={Hash}",
+					item.SessionId, prefixNPast, item.EstimatedTokens, item.PrefixHash);
+				CoordinatorMetrics.PrefixRestoreSkipped.WithLabels("restore_n_past_guard").Inc();
+				item.PrefixCacheHit = false;
+				return WorkItemState.Prefill;
+			}
+
 			var slotId = item.PrefillSlot ?? 0;
 			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
@@ -1570,29 +1615,70 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			if (item.PrefixHash != null && _cfg.PrefixCheckpointEnabled)
 			{
-				var prefixKey = $"prefix/{item.PrefixHash}.kv";
-				var kvPayload = payload;
-				var traceId = item.TraceId;
-				_ = Task.Run(async () =>
+				// ── Part C: prefix-save truncation guard (#245) ──
+				// The prefix checkpoint should only contain KV state for the system
+				// prompt tokens — not the full request. Saving the full request blob
+				// under the system-prompt key is the "live poisoning" bug: every
+				// subsequent request with the same system prompt restores a KV blob
+				// that is much larger than needed, wasting the StatePut RPC and
+				// polluting the slot with stale KV.
+				//
+				// When SystemPromptTokens is available (> 0), the restore guard in
+				// PrefixRestoreAsync will skip the restore if the prefix blob's
+				// n_past already covers the new request — so saving a larger blob
+				// is wasteful but not catastrophic.
+				//
+				// When SystemPromptTokens is 0 (cannot determine the system-prompt
+				// boundary), saving the full request blob under the system-prompt
+				// key IS the live poisoning bug. Skip the save entirely.
+				if (item.SystemPromptTokens <= 0)
 				{
-					try
+					_log.Information("prefix_save_skipped_no_boundary Sid={Sid} Hash={Hash} — system-prompt token boundary unknown",
+						item.SessionId, item.PrefixHash);
+					CoordinatorMetrics.PrefixSavePayloadTruncated.WithLabels("no_system_prompt_boundary").Inc();
+				}
+				else
+				{
+					var prefixKey = $"prefix/{item.PrefixHash}.kv";
+					var kvPayload = payload;
+					var traceId = item.TraceId;
+					var sysTokens = item.SystemPromptTokens;
+					var prefixNPast = item.NPastAfter;
+					_ = Task.Run(async () =>
 					{
-						var stat = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Stat,
-							prefixKey, ReadOnlyMemory<byte>.Empty, traceId, CancellationToken.None);
-						if (stat.Status != (byte)Hydra.Shared.StatusCode.Ok)
+						try
 						{
-							await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-								prefixKey, kvPayload, traceId, CancellationToken.None);
-							CoordinatorMetrics.PrefixSaves.Inc();
-							_log.Information("prefix_saved Hash={Hash} SizeMB={Size}",
-								item.PrefixHash, kvPayload.Length / 1024 / 1024);
+							var stat = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Stat,
+								prefixKey, ReadOnlyMemory<byte>.Empty, traceId, CancellationToken.None);
+							if (stat.Status != (byte)Hydra.Shared.StatusCode.Ok)
+							{
+								// ── #245 fix: persist the prefix's n_past so the
+								// restore-time guard in PrefixRestoreAsync can read
+								// it back via GET_MANIFEST. The raw blob has no
+								// n_past header — Store PUT (0x01) stores the raw
+								// llama.cpp KV state bytes. PUT_META (0x14) writes
+								// n_past to the Store's `sessions` PG table, which
+								// GET_MANIFEST returns. Chunked saves get the same
+								// effect from PUT_MANIFEST (0x15) — the two
+								// opcodes write to the same table.
+								var metaPayload = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+									new { n_past = prefixNPast });
+								await StoreClient.RequestAsync(Hydra.Shared.OpCode.PutMeta,
+									prefixKey, metaPayload, traceId, CancellationToken.None);
+
+								await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
+									prefixKey, kvPayload, traceId, CancellationToken.None);
+								CoordinatorMetrics.PrefixSaves.Inc();
+								_log.Information("prefix_saved Hash={Hash} SizeMB={Size} SysTokens={Sys} NPast={NPast}",
+									item.PrefixHash, kvPayload.Length / 1024 / 1024, sysTokens, prefixNPast);
+							}
 						}
-					}
-					catch (Exception ex)
-					{
-						_log.Warning(ex, "prefix_save_failed Hash={Hash}", item.PrefixHash);
-					}
-				});
+						catch (Exception ex)
+						{
+							_log.Warning(ex, "prefix_save_failed Hash={Hash}", item.PrefixHash);
+						}
+					});
+				}
 			}
 		}
 		catch (Exception ex)

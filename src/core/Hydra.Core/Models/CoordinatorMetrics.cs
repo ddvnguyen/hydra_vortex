@@ -218,4 +218,15 @@ internal static class CoordinatorMetrics
     public static readonly Counter StuckWarmLeases = Metrics.CreateCounter(
         "hydra_stuck_warm_leases_total",
         "Warm leases reclaimed by the eviction watchdog since process start.");
+
+    // ── Issue #245 / #201: prefix-checkpoint guard metrics ──
+    public static readonly Counter PrefixRestoreSkipped = Metrics.CreateCounter(
+        "hydra_prefix_restore_skipped_total",
+        "Prefix restore skipped due to n_past guard (stale or oversized checkpoint)",
+        new CounterConfiguration { LabelNames = new[] { "reason" } });
+
+    public static readonly Counter PrefixSavePayloadTruncated = Metrics.CreateCounter(
+        "hydra_prefix_save_payload_truncated_total",
+        "Prefix save truncated to system-prompt boundary (or skipped when boundary undeterminable)",
+        new CounterConfiguration { LabelNames = new[] { "reason" } });
 }
