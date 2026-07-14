@@ -75,6 +75,10 @@ public sealed class WorkItem
 	public string? PrefixHash { get; }
 	public int EstimatedTokens { get; }
 	public int EstimatedNewTokens { get; }
+	/// <summary>Token count of the system prompt portion of the messages (used for prefix-save truncation guard, #245).</summary>
+	public int SystemPromptTokens { get; set; }
+	/// <summary>n_past of the prefix checkpoint blob read from Store (used for prefix-restore n_past guard, #245).</summary>
+	public int PrefixNPast { get; set; }
 	public TaskCompletionSource<object?> Completion { get; }
 	public TaskCompletionSource<IAsyncEnumerable<byte[]>> StreamCompletion { get; }
 	/// <summary>Signalled by the controller when streaming response completes — the decode slot can be released.</summary>

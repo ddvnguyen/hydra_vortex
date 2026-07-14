@@ -19,7 +19,8 @@ public static class Router
 	public readonly record struct MessageSummary(
 		string SessionId,
 		int EstimatedTokens,
-		string? PrefixHash
+		string? PrefixHash,
+		int SystemPromptTokens
 	);
 
 	public static MessageSummary SummarizeMessages(
@@ -28,6 +29,7 @@ public static class Router
 		StringBuilder sb = new();
 		int tokenCount = 0;
 		string? prefixHash = null;
+		int systemPromptTokens = 0;
 
 		foreach (var m in messages)
 		{
@@ -39,18 +41,23 @@ public static class Router
 			sb.Append(content);
 			sb.Append('\n');
 
-			tokenCount += Tokenizer.CountTokens(content);
+			var tokens = Tokenizer.CountTokens(content);
+			tokenCount += tokens;
 
-			if (prefixHash == null && role == "system" && content.Length > 0)
+			if (role == "system" && content.Length > 0)
 			{
-				prefixHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)))[..16];
+				systemPromptTokens += tokens;
+				if (prefixHash == null)
+				{
+					prefixHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)))[..16];
+				}
 			}
 		}
 
 		var sessionId = $"sess_{Convert.ToHexStringLower(
 			SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..24]}";
 
-		return new MessageSummary(sessionId, Math.Max(1, tokenCount), prefixHash);
+		return new MessageSummary(sessionId, Math.Max(1, tokenCount), prefixHash, systemPromptTokens);
 	}
 
 	public static string DeriveSessionId(
