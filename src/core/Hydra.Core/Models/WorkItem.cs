@@ -162,6 +162,9 @@ public sealed class WorkItem
 	private long _lastCheckpointMs;
 	/// <summary>Cumulative ms at decode dispatch — lets streaming finalize compute true decode duration.</summary>
 	public long DecodeStartMs { get; set; }
+	/// <summary>Engine-reported prefill ms (from timings.prompt_ms). When set, FinalizeStreamPhases
+	/// splits decode_ms into prefill + pure-decode so the Grafana timeline bars don't double-count.</summary>
+	public long EnginePrefillMs { get; set; }
 
 	/// <summary>
 	/// Record the duration of a phase as the time since the previous checkpoint

@@ -96,6 +96,13 @@ public sealed record CoordinatorConfig
 	/// Config: HYDRA_COORD_NO_STORE_KV_RESTORE=true
 	/// </summary>
 	public bool NoStoreKvRestore { get; init; } = EnvBool("HYDRA_COORD_NO_STORE_KV_RESTORE", false);
+	/// <summary>
+	/// Comma-separated list of GGUF model file names that Hydra may route to.
+	/// When non-empty, any worker whose loaded model (via /v1/models) does not
+	/// match an entry is excluded from routing. Empty = allow all (back-compat).
+	/// Config: HYDRA_COORD_ALLOWED_MODELS=Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
+	/// </summary>
+	public List<string> AllowedModels { get; init; } = EnvList("HYDRA_COORD_ALLOWED_MODELS");
 	public bool RawSlot { get; init; } = EnvBool("HYDRA_COORD_RAW_SLOT", false);
 	public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
@@ -205,6 +212,12 @@ public sealed record CoordinatorConfig
 	private static string Env(string k, string fb) => Environment.GetEnvironmentVariable(k) ?? fb;
 	private static int EnvInt(string k, int fb) => int.TryParse(Environment.GetEnvironmentVariable(k), out var v) ? v : fb;
 	private static bool EnvBool(string k, bool fb) => bool.TryParse(Environment.GetEnvironmentVariable(k), out var v) ? v : fb;
+	private static List<string> EnvList(string k)
+	{
+		var raw = Environment.GetEnvironmentVariable(k);
+		if (string.IsNullOrWhiteSpace(raw)) return [];
+		return [.. raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+	}
 }
 
 /// <summary>

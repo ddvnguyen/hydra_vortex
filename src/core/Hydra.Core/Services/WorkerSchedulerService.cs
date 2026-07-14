@@ -593,7 +593,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			// Affinity worker busy — try cross-node (Gap 6)
 			var alt = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
-				exclude: entry.NodeName);
+				exclude: entry.NodeName, allowedModels: _cfg.AllowedModels);
 			if (alt != null && _tracker.TryAcquireSlot(alt.Name, out var altSlot, "decode"))
 			{
 				// NoStoreKvRestore=true: KV state cannot be transferred between
@@ -694,7 +694,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		if (atomic)
 		{
-			var aw = Router.PickBestAtomicWorker(_cfg.Workers, _tracker, _health);
+			var aw = Router.PickBestAtomicWorker(_cfg.Workers, _tracker, _health, _cfg.AllowedModels);
 			_log.Information("cold_atomic_try Est={Est} Worker={W} Free={Free} Healthy={Healthy}",
 				item.EstimatedTokens, aw?.Name ?? "none",
 				aw != null ? _tracker.IsFree(aw.Name) : false,
@@ -1110,14 +1110,47 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var m = item.State == WorkItemState.ModelLoadPrefill ? Router.PrefillModel(w) : Router.DecodeModel(w);
 			if (m != null)
 			{
-				var sw = System.Diagnostics.Stopwatch.StartNew();
-				var ok = await _proxy.LoadModelAsync(w.LlamaUrl, m, item.TraceId, CancellationToken.None);
-				sw.Stop();
-				if (ok)
-					_log.Information("model_loaded Model={M} Worker={W} DurationMs={Ms}", m, w.Name, sw.ElapsedMilliseconds);
+			if (_cfg.UseLlamaEngine)
+				{
+					// Engine mode: the model is loaded at startup via --model
+					// flag. Model switching per-request is handled by the
+					// "model" field in EnginePrefill (0x42) metadata — no
+					// need to call EngineConfigure (0x40) which would
+					// interpret the alias as a GGUF file path and crash.
+					_log.Information("model_load_skip_engine Mode={M} Worker={W} (handled by EnginePrefill)",
+						m, w.Name);
+				}
 				else
-					_log.Warning("model_load_failed Model={M} Worker={W} DurationMs={Ms}", m, w.Name, sw.ElapsedMilliseconds);
-				CoordinatorMetrics.ModelLoadDuration.Observe(sw.Elapsed.TotalSeconds);
+				{
+					// Legacy HTTP path (llama-server, not engine)
+					var sw = System.Diagnostics.Stopwatch.StartNew();
+					var ok = await _proxy.LoadModelAsync(w.LlamaUrl, m, item.TraceId, CancellationToken.None);
+					sw.Stop();
+					if (ok)
+						_log.Information("model_loaded Model={M} Worker={W} DurationMs={Ms}", m, w.Name, sw.ElapsedMilliseconds);
+					else
+					{
+						_log.Warning("model_load_failed Model={M} Worker={W} DurationMs={Ms}", m, w.Name, sw.ElapsedMilliseconds);
+						CoordinatorMetrics.ModelLoadDuration.Observe(sw.Elapsed.TotalSeconds);
+						if (item.State == WorkItemState.ModelLoadPrefill && item.PrefillLease != null)
+						{
+							await item.PrefillLease.DisposeAsync();
+							item.PrefillLease = null;
+							SignalEvaluator();
+						}
+						else if (item.DecodeLease != null)
+						{
+							await item.DecodeLease.DisposeAsync();
+							item.DecodeLease = null;
+							SignalEvaluator();
+						}
+						item.DecodeWorker = null;
+						item.DecodeSlot = null;
+						item.State = WorkItemState.None;
+						return WorkItemState.None;
+					}
+					CoordinatorMetrics.ModelLoadDuration.Observe(sw.Elapsed.TotalSeconds);
+				}
 			}
 		}
 		return item.State == WorkItemState.ModelLoadPrefill
@@ -1428,18 +1461,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.SessionId, slotId, item.NPastAfter, w.Name);
 		try
 		{
-			// M-Perf.10: split the save into the engine→core RPC phase
-			// (measured around SaveKvStateCoreAsync / the engine-mode
-			// payload receipt) and the core→Store phase (measured around
-			// the chunked Put + manifest). The dashboard shows RPC in the
-			// main timeline and Store as a background indicator. The
-			// chunk-cache writes (below) are intentionally not part of
-			// either phase — they're local tmpfs and now fire-and-forget.
-			//
-			// Engine mode: the KV blob is already in item.KvBlob from
-			// EnginePrefill, so the "RPC" is essentially zero (the blob
-			// is already in our process). We still record it for the
-			// dashboard so the row layout is consistent across modes.
+			// ── Phase 1: Engine RPC — pull KV blob + model identity ──
+			// Only this phase needs the GPU slot.
 			byte[]? payload;
 			if (_cfg.UseLlamaEngine && item.KvBlob != null)
 			{
@@ -1447,7 +1470,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				CoordinatorMetrics.SaveKvRpcDuration.WithLabels(w.Name, RouteLabel(item))
 					.Observe(rpcMs / 1000.0);
 				payload = item.KvBlob;
-				item.KvBlob = null; // Free memory early
+				item.KvBlob = null;
 			}
 			else
 			{
@@ -1462,18 +1485,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			item.KvBytes = payload.Length;
 
-			// Save to store (core→Store phase). The chunked Put + manifest
-			// stays synchronous because P/D split's RestoreKvAsync needs
-			// the manifest to find chunks. The chunk-cache writes (below)
-			// are async because they're local tmpfs and only used for
-			// future prefix-cache / chunk-cache hits.
+			// ── Release GPU slot immediately ──────────────────────────
+			// KV blob is in Coordinator memory — GPU no longer needed.
+			// Store writes below run in parallel but don't need the GPU.
+			if (item.PrefillLease != null)
+			{
+				await item.PrefillLease.DisposeAsync();
+				item.PrefillLease = null;
+				SignalEvaluator();
+				_log.Information("save_kv_gpu_released Sid={Sid} Node={Node} Slot={Slot} — GPU free, Store writes next",
+					item.SessionId, w.Name, slotId);
+			}
+
+			// ── Phase 2: Store writes (parallel, no GPU needed) ───────
 			var storeKey = $"{item.SessionId}.kv";
 			if (_cfg.EnableChunks)
 			{
 				var chunks = ChunkEngine.ChunkAndHash(payload);
 				var orderedHashes = chunks.Select(c => c.Hash).ToList();
 				var missing = await SyncMissingAsync(storeKey, orderedHashes, item.TraceId, ct);
-				await PushMissingChunksAsync(storeKey, item.SessionId, missing, chunks, payload, item.TraceId, ct);
+				await PushMissingChunksParallelAsync(storeKey, item.SessionId, missing, chunks, payload, item.TraceId, ct);
 				// M-Perf.9 #289: persist model identity alongside the KV so
 				// the cross-model guard in RestoreKvAsync can detect a model
 				// swap between prefill and decode (e.g. Mini prefill → Balanced
@@ -1620,7 +1651,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private async Task<WorkItemState> PickDecodeAsync(WorkItem item)
 	{
 		var dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
-			item.PrefillWorker?.Name)
+			item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels)
 			?? (item.PrefillWorker?.CanDecode == true
 				? item.PrefillWorker : null);
 
@@ -1761,14 +1792,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.SessionId, storeKey, w.Name, slotId);
 		try
 		{
+			var restoreSw = System.Diagnostics.Stopwatch.StartNew();
 			byte[] restoreBlob;
 			if (_cfg.EnableChunks)
 			{
-				// Chunked restore: get manifest, assemble from local cache + store, StatePut
+				// ── Restore Phase 1: GetManifest ──────────────────────
+				var manifestSw = System.Diagnostics.Stopwatch.StartNew();
 				var manifestResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.GetManifest,
 					storeKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
 				if (manifestResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 					throw new InvalidOperationException($"GetManifest failed: status={manifestResp.Status} meta={manifestResp.Meta}");
+				manifestSw.Stop();
 
 				var manifestDoc = JsonDocument.Parse(manifestResp.Payload);
 				var manifestRoot = manifestDoc.RootElement;
@@ -1785,13 +1819,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						manifestChunks.Add(new ChunkRef(idx, hash, size));
 					}
 				}
-				// M-Perf.9 #289: read the model identity of the slot that built
-				// this KV. Pre-#289 manifests (saved before this field existed)
-				// don't carry the keys — TryGetProperty returns false and the
-				// fields stay "", which the cross-model guard treats as "skip"
-				// (back-compat with old data). The model identity is needed
-				// across a Coordinator restart when the prefill is no longer
-				// in memory but the manifest in PG still carries it.
 				if (manifestRoot.TryGetProperty("model_alias", out var ma))
 					item.KvModelAlias = ma.GetString();
 				if (manifestRoot.TryGetProperty("model_hash", out var mh))
@@ -1801,10 +1828,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (item.NPastAfter > 0) nPast = item.NPastAfter;
 				else item.NPastAfter = nPast;
 
+				// ── Restore Phase 2: Assemble chunks ─────────────────
+				var assembleSw = System.Diagnostics.Stopwatch.StartNew();
 				restoreBlob = await AssembleFromChunksAsync(null, storeKey, manifestChunks, item.TraceId, ct);
+				assembleSw.Stop();
 				item.KvBytes = restoreBlob.Length;
-				_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count}",
-					item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count);
+				_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count} manifest_ms={ManifestMs} assemble_ms={AssembleMs}",
+					item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count,
+					manifestSw.ElapsedMilliseconds, assembleSw.ElapsedMilliseconds);
 			}
 			else
 			{
@@ -1819,12 +1850,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				restoreBlob = storeResp.Payload;
 			}
 
+			// ── Restore Phase 3: StatePut RPC (push KV to engine) ─────
+			var putSw = System.Diagnostics.Stopwatch.StartNew();
 			var llamaRpc = GetLlamaRpcClient(w);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), restoreBlob, item.TraceId, ct);
+			putSw.Stop();
 
 			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 				throw new InvalidOperationException($"StatePut RPC failed: status={putResp.Status} meta={putResp.Meta}");
+
+			_log.Information("restore_kv_timing Sid={Sid} total_ms={TotalMs} put_ms={PutMs}",
+				item.SessionId, restoreSw.ElapsedMilliseconds, putSw.ElapsedMilliseconds);
 
 			if (putResp.Meta != null)
 			{
@@ -1944,9 +1981,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
 				return WorkItemState.Decode;
 			}
-			_log.Warning(ex, "restore_skipped Sid={Sid} — continuing without KV restore", item.SessionId);
+			// No fallback available: decoding with NPast=0 on a potentially
+			// cross-model node would either hang or produce garbage. Abort
+			// and re-route so the request retries on a compatible node.
+			_log.Warning(ex, "restore_skipped_abort Sid={Sid} Node={Node} — no fallback, re-routing",
+				item.SessionId, w.Name);
+			if (item.DecodeLease != null)
+			{
+				await item.DecodeLease.DisposeAsync();
+				item.DecodeLease = null;
+				SignalEvaluator();
+			}
+			item.DecodeWorker = null;
+			item.DecodeSlot = null;
 			item.NPastAfter = 0;
 			item.KvRestoredForDecode = false;
+			item.State = WorkItemState.RouteDecision;
+			CoordinatorMetrics.RestoreKvDuration.WithLabels(w.Name, RouteLabel(item))
+				.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
+			return WorkItemState.None;
 		}
 		if (item.NPastAfter > 0)
 			_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -2248,6 +2301,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// trip that returns a fresh byte[] in our memory.
 			Hydra.Shared.RpcResponse? stateResp = null;
 			string? bgTraceId = null;
+			var bgRpcSw = System.Diagnostics.Stopwatch.StartNew();
 			if (_cfg.NoStoreKvRestore)
 			{
 				// NoStoreKvRestore: skip StateGet entirely — no KV to persist.
@@ -2313,7 +2367,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// slot held the whole time). Failures are logged, not raised.
 			if (stateResp is { Status: (byte)Hydra.Shared.StatusCode.Ok })
 			{
-				_ = WriteStateToStoreAsync(stateResp.Payload, sessionId, bgTraceId ?? "");
+				_ = WriteStateToStoreAsync(stateResp.Payload, sessionId, bgTraceId ?? "",
+					timelineItem, bgRpcSw.ElapsedMilliseconds);
 			}
 			else if (stateResp is { Status: not (byte)Hydra.Shared.StatusCode.Ok })
 			{
@@ -2352,7 +2407,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	// Fire-and-forget disk write. Runs in a separate task so NotifyStreamComplete
 	// can return as soon as the slot is released. Failures are logged.
-	private async Task WriteStateToStoreAsync(byte[] stateBlob, string sessionId, string traceId)
+	private async Task WriteStateToStoreAsync(byte[] stateBlob, string sessionId, string traceId,
+		WorkItem? timelineItem, long bgRpcMs)
 	{
 		var saveStart = System.Diagnostics.Stopwatch.StartNew();
 		try
@@ -2360,8 +2416,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
 				$"{sessionId}.kv", stateBlob, traceId, CancellationToken.None);
 			_ledger.MarkStoreState(sessionId);
-			_log.Information("bg_saved Sid={Sid} bytes={Bytes} ms={Ms}",
-				sessionId, stateBlob.Length, saveStart.ElapsedMilliseconds);
+			var storeMs = saveStart.ElapsedMilliseconds;
+			_log.Information("bg_saved Sid={Sid} bytes={Bytes} rpc_ms={RpcMs} store_ms={StoreMs} total_ms={Total}",
+				sessionId, stateBlob.Length, bgRpcMs, storeMs, bgRpcMs + storeMs);
+			// Emit an updated timeline with save_kv_rpc_ms and save_kv_store_ms
+			// so Grafana shows the KV save phase after the response was sent.
+			if (timelineItem != null)
+			{
+				timelineItem.Phases["save_kv_rpc_ms"] = bgRpcMs;
+				timelineItem.Phases["save_kv_store_ms"] = storeMs;
+				EmitTimeline(timelineItem, "bg_saved");
+			}
 		}
 		catch (Exception ex)
 		{
@@ -2495,8 +2560,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <summary>Set decode_ms/total_ms for a streaming item once the stream has finished.</summary>
 	private static void FinalizeStreamPhases(WorkItem item)
 	{
-		item.Phases["decode_ms"] = item.ElapsedMs - item.DecodeStartMs;
+		var rawDecodeMs = item.ElapsedMs - item.DecodeStartMs;
+		item.Phases["decode_ms"] = rawDecodeMs;
 		item.Phases["total_ms"] = item.ElapsedMs;
+		// Engine mode: when PrefillAsync was skipped (RouteDecision→Decode),
+		// decode_ms includes the engine's inline prefill. Subtract it so the
+		// Grafana stacked bars (prefill + decode) sum to ≈ total_ms.
+		if (item.EnginePrefillMs > 0 && rawDecodeMs > item.EnginePrefillMs)
+		{
+			item.Phases["decode_ms"] = rawDecodeMs - item.EnginePrefillMs;
+			item.Phases["prefill_ms"] = item.EnginePrefillMs;
+		}
 	}
 
 	/// <summary>
@@ -2552,7 +2626,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.PrefixCacheHit ? "true" : "false", status);
 	}
 
-	private void EmitTimeline(WorkItem item)
+	private void EmitTimeline(WorkItem item, string status = "done")
 	{
 		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
 		CoordinatorMetrics.RequestLatency.WithLabels(node, RouteLabel(item))
@@ -2585,9 +2659,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"total_ms={item.Phases.GetValueOrDefault("total_ms")} " +
 			$"tokens_in={item.TokensIn} tokens_out={item.TokensOut} kv_bytes={item.KvBytes} " +
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
-			$"status=done"
+			$"status={status}"
 		);
-		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status=done",
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
 			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
@@ -2600,7 +2674,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.Phases.GetValueOrDefault("decode_ms"),
 			item.Phases.GetValueOrDefault("total_ms"),
 			item.TokensIn, item.TokensOut, item.KvBytes,
-			item.PrefixCacheHit ? "true" : "false");
+			item.PrefixCacheHit ? "true" : "false",
+			status);
 	}
 
 	// ── Core KV save helpers (shared by SaveKvAsync + eviction sites) ──
@@ -2767,6 +2842,89 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return pushedOk;
 	}
 
+	/// <summary>
+	/// Parallel version: splits missing chunks into N groups and pushes them
+	/// concurrently via up to <see cref="MaxParallelStoreWrites"/> Store RPCs.
+	/// Cuts the ~20s sequential PushChunks for a 2 GB blob down to ~3-5s.
+	/// </summary>
+	private const int MaxParallelStoreWrites = 4;
+
+	internal async Task<int> PushMissingChunksParallelAsync(string storeKey, string sessionId,
+		List<string> missing, List<ChunkRef> allChunks, byte[] stateData,
+		string traceId, CancellationToken ct)
+	{
+		if (missing.Count == 0) return 0;
+
+		// Pre-slice all chunk data so parallel workers read without contention
+		var chunkSlices = new List<(int Index, int Size, byte[] Data)>();
+		foreach (var hash in missing)
+		{
+			var chunkRef = allChunks.FirstOrDefault(c => c.Hash == hash);
+			if (chunkRef == null) continue;
+			var offset = chunkRef.Index * _cfg.ChunkSize;
+			var size = Math.Min(_cfg.ChunkSize, stateData.Length - offset);
+			if (size <= 0) continue;
+			chunkSlices.Add((chunkRef.Index, size, stateData[offset..(offset + size)]));
+		}
+		if (chunkSlices.Count == 0) return 0;
+
+		// Round-robin partition into N groups
+		var groups = new List<List<(int Index, int Size, byte[] Data)>>();
+		for (var i = 0; i < MaxParallelStoreWrites; i++) groups.Add([]);
+		for (var i = 0; i < chunkSlices.Count; i++)
+			groups[i % MaxParallelStoreWrites].Add(chunkSlices[i]);
+
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		var pushedTotal = 0;
+		var exceptions = new List<Exception>();
+
+		await Task.WhenAll(groups.Where(g => g.Count > 0).Select(async group =>
+		{
+			const int BatchBytes = 32 * 1024 * 1024;
+			using var batch = new MemoryStream();
+			int pending = 0;
+			try
+			{
+				foreach (var (idx, sz, data) in group)
+				{
+					var hdr = new byte[4];
+					BinaryPrimitives.WriteInt32LittleEndian(hdr, sz);
+					batch.Write(hdr);
+					batch.Write(data);
+					pending++;
+					if (batch.Length >= BatchBytes)
+					{
+						var resp = await StoreClient.RequestAsync(OpCode.PushChunks,
+							storeKey, batch.ToArray(), traceId, ct);
+						if (resp.Status != (byte)StatusCode.Ok)
+							throw new InvalidDataException($"PUSH_CHUNKS failed: 0x{resp.Status:X2}");
+						Interlocked.Add(ref pushedTotal, pending);
+						pending = 0;
+						batch.SetLength(0);
+					}
+				}
+				if (batch.Length > 0)
+				{
+					var resp = await StoreClient.RequestAsync(OpCode.PushChunks,
+						storeKey, batch.ToArray(), traceId, ct);
+					if (resp.Status != (byte)StatusCode.Ok)
+						throw new InvalidDataException($"PUSH_CHUNKS failed: 0x{resp.Status:X2}");
+					Interlocked.Add(ref pushedTotal, pending);
+				}
+			}
+			catch (Exception ex) { lock (exceptions) exceptions.Add(ex); }
+		}));
+
+		sw.Stop();
+		_log.Information("push_chunks_parallel Sid={Sid} chunks={Chunks} groups={Groups} ms={Ms} pushed={Pushed}",
+			sessionId, chunkSlices.Count, groups.Count(g => g.Count > 0), sw.ElapsedMilliseconds, pushedTotal);
+
+		if (exceptions.Count > 0)
+			throw new AggregateException(exceptions);
+
+		return pushedTotal;
+	}
+
 	private static string StatusReason(byte status) => status switch
 	{
 		(byte)StatusCode.NotFound       => "not_found",
@@ -2814,61 +2972,93 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var knownHashes = new HashSet<string>();
 		if (prevState != null && prevState.Length > 0)
 		{
-			foreach (var c in chunks)
+			// Parallel hash-check + copy for previous state data
+			var prevCopyTasks = chunks.Select(c =>
 			{
-				var offset = c.Index * _cfg.ChunkSize;
-				if (offset + c.Size <= prevState.Length)
+				return Task.Run(() =>
 				{
-					var prevHash = ChunkEngine.ComputeHash(prevState.AsSpan(offset, c.Size));
-					if (prevHash == c.Hash)
+					var offset = c.Index * _cfg.ChunkSize;
+					if (offset + c.Size <= prevState.Length)
 					{
-						knownHashes.Add(c.Hash);
-						Array.Copy(prevState, offset, blob, offset, c.Size);
+						var prevHash = ChunkEngine.ComputeHash(prevState.AsSpan(offset, c.Size));
+						if (prevHash == c.Hash)
+						{
+							Array.Copy(prevState, offset, blob, offset, c.Size);
+							return (c.Hash, true);
+						}
+					}
+					return (c.Hash, false);
+				});
+			}).ToList();
+			await Task.WhenAll(prevCopyTasks);
+			foreach (var (hash, ok) in prevCopyTasks.Select(t => t.Result))
+				if (ok) knownHashes.Add(hash);
+		}
+		// Also check local chunk cache — parallel lookups
+		if (_chunkCache != null)
+		{
+			var remainingChunks = chunks.Where(c => !knownHashes.Contains(c.Hash)).ToList();
+			if (remainingChunks.Count > 0)
+			{
+				var cacheTasks = remainingChunks.Select(c =>
+				{
+					return Task.Run(async () =>
+					{
+						var data = await _chunkCache.GetChunkDataAsync(storeKey, c.Hash, ct);
+						return (c.Hash, c.Index, data);
+					});
+				}).ToList();
+				await Task.WhenAll(cacheTasks);
+				foreach (var (hash, idx, data) in cacheTasks.Select(t => t.Result))
+				{
+					if (data != null)
+					{
+						knownHashes.Add(hash);
+						var offset = idx * _cfg.ChunkSize;
+						Array.Copy(data, 0, blob, offset, data.Length);
 					}
 				}
 			}
 		}
-		// Also check local chunk cache
-		if (_chunkCache != null)
+		// Fetch remaining missing chunks from Store — parallel groups
+		var missingChunks = chunks.Where(c => !knownHashes.Contains(c.Hash)).ToList();
+		if (missingChunks.Count > 0)
 		{
-			foreach (var c in chunks.Where(c => !knownHashes.Contains(c.Hash)))
+			// Split missing chunks into parallel groups (up to 4) for concurrent GET_CHUNKED RPCs.
+			// Each group sends its OWN known-hash set (everything NOT in this group) so the Store
+			// returns exactly that group's chunks.
+			const int maxGroups = 4;
+			var groups = new List<List<ChunkRef>>();
+			for (var i = 0; i < maxGroups; i++) groups.Add([]);
+			for (var i = 0; i < missingChunks.Count; i++)
+				groups[i % maxGroups].Add(missingChunks[i]);
+
+			var fetchTasks = groups.Where(g => g.Count > 0).Select(async group =>
 			{
-				var data = await _chunkCache.GetChunkDataAsync(storeKey, c.Hash, ct);
-				if (data != null)
+				// Known = everything EXCEPT this group's chunks
+				var groupHashes = new HashSet<string>(group.Select(c => c.Hash));
+				var knownForGroup = chunks.Where(c => !groupHashes.Contains(c.Hash)).Select(c => c.Hash).ToList();
+				var knownList = JsonSerializer.SerializeToUtf8Bytes(knownForGroup);
+				var storeResp = await StoreClient.RequestAsync(OpCode.GetChunked, storeKey, knownList, traceId, ct);
+				if (storeResp.Status != (byte)StatusCode.Ok)
+					throw new InvalidDataException($"GET_CHUNKED failed (status=0x{storeResp.Status:X2}): {storeResp.Meta}");
+				if (storeResp.Payload is { Length: > 0 })
 				{
-					knownHashes.Add(c.Hash);
-					var offset = c.Index * _cfg.ChunkSize;
-					Array.Copy(data, 0, blob, offset, data.Length);
+					var off = 0;
+					while (off + 8 <= storeResp.Payload.Length)
+					{
+						var idx = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off));
+						var size = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off + 4));
+						off += 8;
+						if (off + size > storeResp.Payload.Length) break;
+						var dstOff = idx * _cfg.ChunkSize;
+						if (dstOff + size <= blob.Length)
+							Array.Copy(storeResp.Payload, off, blob, dstOff, size);
+						off += size;
+					}
 				}
-			}
-		}
-		// Fetch remaining missing chunks from Store
-		var missingHashes = chunks.Where(c => !knownHashes.Contains(c.Hash)).Select(c => c.Hash).ToList();
-		if (missingHashes.Count > 0)
-		{
-			// Send only the hashes the client ALREADY has (from prevState + local cache).
-			// The Store diffs them against the manifest and returns the missing chunks.
-			// Sending all manifest hashes would cause the Store to return nothing,
-			// leaving the assembled blob as all zeros.
-			var knownList = JsonSerializer.SerializeToUtf8Bytes(knownHashes.ToList());
-			var storeResp = await StoreClient.RequestAsync(OpCode.GetChunked, storeKey, knownList, traceId, ct);
-			if (storeResp.Status != (byte)StatusCode.Ok)
-				throw new InvalidDataException($"GET_CHUNKED failed (status=0x{storeResp.Status:X2}): {storeResp.Meta}");
-			if (storeResp.Payload is { Length: > 0 })
-			{
-				var off = 0;
-				while (off + 8 <= storeResp.Payload.Length)
-				{
-					var idx = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off));
-					var size = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off + 4));
-					off += 8;
-					if (off + size > storeResp.Payload.Length) break;
-					var dstOff = idx * _cfg.ChunkSize;
-					if (dstOff + size <= blob.Length)
-						Array.Copy(storeResp.Payload, off, blob, dstOff, size);
-					off += size;
-				}
-			}
+			}).ToList();
+			await Task.WhenAll(fetchTasks);
 		}
 		return blob;
 	}
@@ -2968,6 +3158,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								item.TokensIn = pn.GetInt32();
 							if (item.TokensOut == 0 && t.TryGetProperty("predicted_n", out var dn) && dn.ValueKind == JsonValueKind.Number)
 								item.TokensOut = dn.GetInt32();
+						// Engine mode: PrefillAsync was skipped (RouteDecision→Decode),
+						// so prefill_ms was never recorded. Backfill from the engine's
+						// prompt_ms timing so the Grafana timeline shows the prefill bar.
+						// Store on the item so FinalizeStreamPhases can split decode_ms.
+						if (!item.Phases.ContainsKey("prefill_ms") || item.Phases["prefill_ms"] == 0)
+						{
+							if (t.TryGetProperty("prompt_ms", out var pm) && pm.ValueKind == JsonValueKind.Number)
+							{
+								item.EnginePrefillMs = (long)pm.GetDouble();
+								item.Phases["prefill_ms"] = item.EnginePrefillMs;
+								_log.Information("prefill_backfill_from_timings Sid={Sid} prompt_ms={Ms}",
+									item.SessionId, item.EnginePrefillMs);
+							}
+						}
 						}
 					}
 				}
