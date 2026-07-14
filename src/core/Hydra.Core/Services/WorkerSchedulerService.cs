@@ -1152,7 +1152,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					catch (Exception ex)
 					{
 						_log.Warning(ex, "model_configure_rpc_failed Model={M} Worker={W}", m, w.Name);
-						if (item.DecodeLease != null)
+						if (item.State == WorkItemState.ModelLoadPrefill && item.PrefillLease != null)
+						{
+							await item.PrefillLease.DisposeAsync();
+							item.PrefillLease = null;
+							SignalEvaluator();
+						}
+						else if (item.DecodeLease != null)
 						{
 							await item.DecodeLease.DisposeAsync();
 							item.DecodeLease = null;
@@ -1176,7 +1182,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					{
 						_log.Warning("model_load_failed Model={M} Worker={W} DurationMs={Ms}", m, w.Name, sw.ElapsedMilliseconds);
 						CoordinatorMetrics.ModelLoadDuration.Observe(sw.Elapsed.TotalSeconds);
-						if (item.DecodeLease != null)
+						if (item.State == WorkItemState.ModelLoadPrefill && item.PrefillLease != null)
+						{
+							await item.PrefillLease.DisposeAsync();
+							item.PrefillLease = null;
+							SignalEvaluator();
+						}
+						else if (item.DecodeLease != null)
 						{
 							await item.DecodeLease.DisposeAsync();
 							item.DecodeLease = null;
