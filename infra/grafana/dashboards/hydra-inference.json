@@ -85,11 +85,11 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "rate(llamacpp_tokens_predicted_total[1m])",
+          "expr": "rate(llamacpp_tokens_predicted_total{node=~\"$node\"}[1m])",
           "legendFormat": "decode {{node}}"
         },
         {
-          "expr": "rate(llamacpp_prompt_tokens_total[1m])",
+          "expr": "rate(llamacpp_prompt_tokens_total{node=~\"$node\"}[1m])",
           "legendFormat": "prompt {{node}}"
         }
       ],
@@ -104,7 +104,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "llamacpp_requests_processing",
+          "expr": "llamacpp_requests_processing{node=~\"$node\"}",
           "legendFormat": "{{node}}"
         }
       ],
@@ -119,7 +119,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "llamacpp_kv_cache_usage_ratio * 100",
+          "expr": "llamacpp_kv_cache_usage_ratio{node=~\"$node\"} * 100",
           "legendFormat": "{{node}}"
         }
       ],
@@ -131,7 +131,20 @@
     }
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "label": "Node",
+        "datasource": { "type": "prometheus", "uid": "Prometheus" },
+        "query": { "query": "label_values(up, node)", "refId": "StandardVariableQuery" },
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
   },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},

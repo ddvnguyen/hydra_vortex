@@ -84,7 +84,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "up{component=\"llama-server\"}",
+          "expr": "up{component=\"llama-server\", node=~\"$node\"}",
           "legendFormat": "{{node}}"
         }
       ],
@@ -119,7 +119,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "hydra_agent_slots_idle",
+          "expr": "hydra_agent_slots_idle{node=~\"$node\"}",
           "legendFormat": "{{node}}"
         }
       ],
@@ -151,7 +151,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "rate(hydra_requests_total[1m])",
+          "expr": "rate(hydra_requests_total{node=~\"$node\"}[1m])",
           "legendFormat": "{{node}}"
         }
       ],
@@ -236,7 +236,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "max by(gpu, modelName, node) (DCGM_FI_DEV_GPU_UTIL{job=~\"hydra-gpu.*\"})\nor max by(modelName, node) (label_replace(nvidia_smi_utilization_gpu_ratio{job=~\"hydra-gpu.*\"} * 100, \"modelName\", \"$1\", \"name\", \"(.+)\"))",
+          "expr": "max by(gpu, modelName, node) (DCGM_FI_DEV_GPU_UTIL{job=~\"hydra-gpu.*\", node=~\"$node\"})\nor max by(uuid, modelName, node) (label_replace(nvidia_smi_utilization_gpu_ratio{job=~\"hydra-gpu.*\", node=~\"$node\"} * 100 * on(uuid) group_left(name) nvidia_smi_gpu_info{job=~\"hydra-gpu.*\"}, \"modelName\", \"$1\", \"name\", \"(.+)\"))",
           "legendFormat": "{{modelName}} GPU{{gpu}} ({{node}})"
         }
       ],
@@ -259,7 +259,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "(max by(gpu, modelName, node) (DCGM_FI_DEV_FB_USED{job=~\"hydra-gpu.*\"}) / (max by(gpu, modelName, node) (DCGM_FI_DEV_FB_USED{job=~\"hydra-gpu.*\"}) + max by(gpu, modelName, node) (DCGM_FI_DEV_FB_FREE{job=~\"hydra-gpu.*\"})) * 100)\nor max by(modelName, node) (label_replace(nvidia_smi_memory_used_bytes{job=~\"hydra-gpu.*\"} / nvidia_smi_memory_total_bytes{job=~\"hydra-gpu.*\"} * 100, \"modelName\", \"$1\", \"name\", \"(.+)\"))",
+          "expr": "(max by(gpu, modelName, node) (DCGM_FI_DEV_FB_USED{job=~\"hydra-gpu.*\", node=~\"$node\"}) / (max by(gpu, modelName, node) (DCGM_FI_DEV_FB_USED{job=~\"hydra-gpu.*\", node=~\"$node\"}) + max by(gpu, modelName, node) (DCGM_FI_DEV_FB_FREE{job=~\"hydra-gpu.*\", node=~\"$node\"})) * 100)\nor max by(uuid, modelName, node) (label_replace((nvidia_smi_memory_used_bytes{job=~\"hydra-gpu.*\", node=~\"$node\"} / nvidia_smi_memory_total_bytes{job=~\"hydra-gpu.*\", node=~\"$node\"} * 100) * on(uuid) group_left(name) nvidia_smi_gpu_info{job=~\"hydra-gpu.*\"}, \"modelName\", \"$1\", \"name\", \"(.+)\"))",
           "legendFormat": "{{modelName}} GPU{{gpu}} ({{node}})"
         }
       ],
@@ -282,7 +282,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "max by(gpu, modelName, node) (DCGM_FI_DEV_GPU_TEMP{job=~\"hydra-gpu.*\"})\nor max by(modelName, node) (label_replace(nvidia_smi_temperature_gpu{job=~\"hydra-gpu.*\"}, \"modelName\", \"$1\", \"name\", \"(.+)\"))",
+          "expr": "max by(gpu, modelName, node) (DCGM_FI_DEV_GPU_TEMP{job=~\"hydra-gpu.*\", node=~\"$node\"})\nor max by(uuid, modelName, node) (label_replace(nvidia_smi_temperature_gpu{job=~\"hydra-gpu.*\", node=~\"$node\"} * on(uuid) group_left(name) nvidia_smi_gpu_info{job=~\"hydra-gpu.*\"}, \"modelName\", \"$1\", \"name\", \"(.+)\"))",
           "legendFormat": "{{modelName}} GPU{{gpu}} ({{node}})"
         }
       ],
@@ -296,7 +296,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "max by(gpu, modelName, node) (DCGM_FI_DEV_POWER_USAGE{job=~\"hydra-gpu.*\"})\nor max by(modelName, node) (label_replace(nvidia_smi_power_draw_watts{job=~\"hydra-gpu.*\"}, \"modelName\", \"$1\", \"name\", \"(.+)\"))",
+          "expr": "max by(gpu, modelName, node) (DCGM_FI_DEV_POWER_USAGE{job=~\"hydra-gpu.*\", node=~\"$node\"})\nor max by(uuid, modelName, node) (label_replace(nvidia_smi_power_draw_watts{job=~\"hydra-gpu.*\", node=~\"$node\"} * on(uuid) group_left(name) nvidia_smi_gpu_info{job=~\"hydra-gpu.*\"}, \"modelName\", \"$1\", \"name\", \"(.+)\"))",
           "legendFormat": "{{modelName}} GPU{{gpu}} ({{node}})"
         }
       ],
@@ -334,7 +334,20 @@
     }
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "label": "Node",
+        "datasource": { "type": "prometheus", "uid": "Prometheus" },
+        "query": { "query": "label_values(up, node)", "refId": "StandardVariableQuery" },
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
   },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
