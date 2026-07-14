@@ -11,8 +11,8 @@
   "id": null,
   "links": [
     {
-      "title": "Full Dashboard",
-      "url": "/d/hydra-dashboard",
+      "title": "Overview",
+      "url": "/d/hydra-overview",
       "type": "link",
       "icon": "external link",
       "targetBlank": false

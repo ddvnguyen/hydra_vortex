@@ -52,8 +52,6 @@ health:
   max_fails: 10
 
 services:
-  promtail:
-    enabled: false
   node_exporter:
     enabled: false
   nvidia_exporter:

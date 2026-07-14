@@ -21,7 +21,49 @@ public enum WorkItemState
 	BgSave = 24,
 	Done = 26,
 	Failed = 28,
-	Cancelled = 30
+	Cancelled = 30,
+	Retry = 32
+}
+
+/// <summary>
+/// How many GPUs this request needs. The evaluator uses this to check
+/// availability before dispatching, avoiding slot contention entirely.
+/// </summary>
+public enum RequestType
+{
+	/// <summary>1 GPU: prefill + decode together (small prompt, below AtomicThreshold).</summary>
+	Atomic,
+	/// <summary>1 GPU: decode only (warm affinity, migration, KV restore).</summary>
+	Solo,
+	/// <summary>1 GPU: prefill only; will re-enqueue as Decode after prefill completes.</summary>
+	Prefill,
+	/// <summary>1 GPU: decode only (post-prefill handoff — highest priority).</summary>
+	Decode,
+	/// <summary>2 GPUs: head slot + peer exclusive (COMBINED/PIPELINE mode).</summary>
+	Combined,
+}
+
+/// <summary>Wraps a WorkItem with queue metadata for priority ordering.</summary>
+public sealed class QueueItem
+{
+	private static long _sequence;
+
+	public WorkItem WorkItem { get; }
+	public RequestType Type { get; set; }
+	/// <summary>Lower = higher priority. Post-prefill decode gets 0; prefill gets 40.</summary>
+	public int Priority { get; }
+	public DateTime EnqueuedAt { get; }
+	/// <summary>Monotonic tiebreaker — ensures SortedSet never treats two items as equal.</summary>
+	public long Sequence { get; }
+
+	public QueueItem(WorkItem workItem, RequestType type, int priority)
+	{
+		WorkItem = workItem;
+		Type = type;
+		Priority = priority;
+		EnqueuedAt = DateTime.UtcNow;
+		Sequence = Interlocked.Increment(ref _sequence);
+	}
 }
 
 public sealed class WorkItem
@@ -40,11 +82,15 @@ public sealed class WorkItem
 	private readonly ChannelWriter<bool> _streamDoneWriter;
 
 	public WorkItemState State { get; set; } = WorkItemState.None;
+	/// <summary>Request type for the unified queue evaluator — how many GPUs does this request need?</summary>
+	public RequestType RequestType { get; set; } = RequestType.Atomic;
 	private volatile bool _cancelled;
 	public bool IsCancelled => _cancelled || Completion.Task.IsCanceled;
 
 	public Exception? Error { get; set; }
 	public int NoWorkerRetries { get; set; }
+	public int RetryCount { get; set; }
+	public const int MaxRetries = 3;
 	public object? Response { get; set; }
 	public WorkerConfig? PrefillWorker { get; set; }
 	public WorkerConfig? DecodeWorker { get; set; }

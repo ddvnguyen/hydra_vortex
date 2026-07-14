@@ -1,0 +1,139 @@
+{
+  "title": "Hydra — Inference",
+  "uid": "hydra-inference",
+  "version": 1,
+  "timezone": "browser",
+  "editable": true,
+  "tags": ["hydra", "inference", "llama-server"],
+  "schemaVersion": 39,
+  "description": "llama-server inference metrics (tokens/s, requests, KV cache) and agent performance (save/restore durations). Parameterized by $node.",
+  "links": [
+    {
+      "title": "Overview",
+      "url": "/d/hydra-overview",
+      "type": "link",
+      "icon": "external link",
+      "targetBlank": false
+    },
+    {
+      "title": "Coordinator",
+      "url": "/d/hydra-coordinator",
+      "type": "link",
+      "icon": "external link",
+      "targetBlank": false
+    },
+    {
+      "title": "Logs",
+      "url": "/d/hydra-logs",
+      "type": "link",
+      "icon": "external link",
+      "targetBlank": false
+    }
+  ],
+  "panels": [
+    {
+      "type": "row",
+      "title": "Agent Performance",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Save Duration (p50/p95)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(hydra_agent_save_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(hydra_agent_save_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
+          "legendFormat": "p95"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "options": {
+        "legend": { "calcs": ["mean"] }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Restore Duration (p50/p95)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(hydra_agent_restore_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(hydra_agent_restore_duration_seconds_bucket{job=~\"hydra-agent.*\"}[1m]))",
+          "legendFormat": "p95"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "options": {
+        "legend": { "calcs": ["mean"] }
+      }
+    },
+    {
+      "type": "row",
+      "title": "llama-server Inference",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens per Second",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "rate(llamacpp_tokens_predicted_total[1m])",
+          "legendFormat": "decode {{node}}"
+        },
+        {
+          "expr": "rate(llamacpp_prompt_tokens_total[1m])",
+          "legendFormat": "prompt {{node}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "options": {
+        "legend": { "calcs": ["mean"] }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests Processing",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "llamacpp_requests_processing",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 10 },
+      "options": {
+        "legend": { "calcs": ["mean"] }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "KV Cache Usage",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "llamacpp_kv_cache_usage_ratio * 100",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "unit": "percent",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 10 },
+      "options": {
+        "legend": { "calcs": ["mean"] }
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "refresh": "30s"
+}

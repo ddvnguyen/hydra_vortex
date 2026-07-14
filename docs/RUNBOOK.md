@@ -875,9 +875,10 @@ infra/docker-compose.hydra.yml                     ← Hydra.Core service (host 
 infra/docker-compose.infra.yml                     ← Observability stack + exporters
 infra/prometheus/prometheus.yml                   ← scrape target config (network_mode: host)
 infra/loki/loki-config.yml                        ← log storage config
-infra/promtail/promtail-rtx.yml                   ← in-container promtail config (used by hydra-head-rtx + P100)
 infra/grafana/datasources/datasources.yml          ← datasource provisioning
-infra/grafana/dashboards/hydra-dashboard.json      ← metrics + logs + trace_id filter panel
+infra/grafana/dashboards/hydra-overview.json       ← at-a-glance ops view ($node-parameterized)
+infra/grafana/dashboards/hydra-inference.json      ← llama-server inference + agent perf
+infra/grafana/dashboards/hydra-bench.json          ← P/D bench view (debug)
 infra/grafana/dashboards/dashboard-providers.yml   ← auto-load dashboards
 
 # Node exporter + nvidia_gpu_exporter are NOT in the repo —
@@ -885,11 +886,9 @@ infra/grafana/dashboards/dashboard-providers.yml   ← auto-load dashboards
 # src/head/internal/config/{global,node-p100}.yaml). They run as
 # children of hydra-head, NOT as host-side systemd services.
 
-# The host-side promtail systemd service (infra-promtail) was
-# removed in commit 5f2c231. promtail-rtx.yml is the only
-# promtail config; the in-container promtail (port 9080) ships
-# logs from all host containers via the directly-mounted podman
-# socket (userns=host, no socat proxy).
+# Logs ship via OTLP/HTTP push from each service to the OTel Collector
+# (Quadlet infra-otel-collector, port 4318). The collector fans out to
+# Loki. Promtail was removed in #363.
 
 src/core/Hydra.Core/StoreMetrics.cs                   ← Hydra.Core Store Prometheus metrics
 src/core/Hydra.Core/HydraMetrics.cs                   ← Hydra.Core API metrics

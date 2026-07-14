@@ -201,15 +201,23 @@ public sealed class WorkerSchedulerTests
         );
         item.DecodeStartMs = item.ElapsedMs;
 
+        // Simulate the decode path populating _pendingBgSaves (required for
+        // NotifyStreamComplete to resolve traceId for the timeline lookup).
+        scheduler._pendingBgSaves.TryAdd("sess_stream", ("rtx", 0, "trace_stream"));
+
         await scheduler.FinalizeAsync(item, WorkItemState.Done);
 
         // Stream still in flight — timeline (decode_ms/total_ms) must not be final yet
-        Assert.True(scheduler._pendingTimelines.ContainsKey("sess_stream"));
+        Assert.True(scheduler._pendingTimelines.ContainsKey("trace_stream"));
         Assert.False(item.Phases.ContainsKey("total_ms"));
+
+        // Simulate stream completion — StreamCompletion must be set so
+        // NotifyStreamComplete's IsCompleted check passes.
+        item.StreamCompletion.TrySetResult(AsyncEnumerable.Empty<byte[]>());
 
         await scheduler.NotifyStreamComplete("sess_stream");
 
-        Assert.False(scheduler._pendingTimelines.ContainsKey("sess_stream"));
+        Assert.False(scheduler._pendingTimelines.ContainsKey("trace_stream"));
         Assert.True(item.Phases.ContainsKey("decode_ms"));
         Assert.True(item.Phases.ContainsKey("total_ms"));
         Assert.True(item.Phases["decode_ms"] <= item.Phases["total_ms"]);
