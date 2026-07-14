@@ -149,6 +149,114 @@ Check the agent's response for:
 | All nodes healthy | All health endpoints return `healthy` | Any node unhealthy |
 | Output quality | Correct, complete, non-truncated | Garbled or incomplete |
 
+## Multi-Turn Eval Testing
+
+Tests the full KV cache lifecycle across multiple turns on the **same session**.
+Each turn adds to the conversation context, triggering warm_threshold_exceeded →
+re-prefill → BgSave → cache reuse.
+
+### How It Works
+
+1. Create agent with `initialPrompt` (turn 1)
+2. Wait for `<paseo-system>` notification that agent finished
+3. Send turn 2 via `paseo_send_agent_prompt` to the **same agent ID**
+4. Wait for notification again
+5. Repeat for turns 3-5
+
+**Critical:** You MUST wait for each turn's `<paseo-system>` notification before
+sending the next prompt. Sending prompts while the agent is still processing
+causes them to be silently dropped.
+
+### KV Lifecycle Per Turn
+
+| Turn | What Happens | Expected |
+|------|-------------|----------|
+| 1 | Cold combined — fresh session | prefill_ms ~3-4s, BgSave ~400 MB |
+| 2 | warm_threshold_exceeded (NewPrompt > 5120) | Full re-prefill ~96s, BgSave ~2 GB |
+| 3+ | Engine cache-prompt hit (engine reuses KV internally) | prefill_ms ~1.3s, BgSave ~2 GB |
+
+### Example: 5-Turn Palindrome Conversation
+
+```python
+# Turn 1 — create agent
+paseo_create_agent(
+    provider="opencode/hydra/balanced",
+    relationship={"kind": "subagent"},
+    workspace={"kind": "current"},
+    title="mt-eval-turn1",
+    initialPrompt="You are a Python tutor. Answer briefly."
+)
+# Wait for <paseo-system> notification
+
+# Turn 2 — send to same agent
+paseo_send_agent_prompt(
+    agentId="<same agent ID>",
+    prompt="What is a palindrome? One sentence."
+)
+# Wait for notification
+
+# Turn 3 — context grows, may trigger warm_threshold
+paseo_send_agent_prompt(
+    agentId="<same agent ID>",
+    prompt="Write a Python function called is_palindrome."
+)
+# Wait for notification
+
+# Turn 4
+paseo_send_agent_prompt(
+    agentId="<same agent ID>",
+    prompt="Add edge case handling for empty strings."
+)
+# Wait for notification
+
+# Turn 5
+paseo_send_agent_prompt(
+    agentId="<same agent ID>",
+    prompt="What is the time complexity of your function?"
+)
+# Wait for notification
+```
+
+### What to Verify
+
+```bash
+# 1. warm_threshold_exceeded fires (turn 2+)
+podman logs hydra-system_core_1 2>&1 | grep "warm_threshold"
+
+# 2. BgSave runs after each turn
+podman logs hydra-system_core_1 2>&1 | grep "bg_saved.*bytes"
+
+# 3. Prefill backfill shows cache hits on turn 3+
+podman logs hydra-system_core_1 2>&1 | grep "prefill_backfill"
+# Turn 1: prompt_ms ~3500, Turn 2: ~96000, Turn 3+: ~1300 (cache hit)
+
+# 4. Engine stays alive (no crashes)
+curl -s http://localhost:8080/health | head -1
+
+# 5. No model_load_failed, no migration to P100
+podman logs hydra-system_core_1 2>&1 | grep -c "model_load_failed"
+podman logs hydra-system_core_1 2>&1 | grep -c "route_type=migration"
+```
+
+### Expected Results (Verified 2026-07-14)
+
+| Turn | Tokens In | Prefill | Decode | BgSave | Notes |
+|------|-----------|---------|--------|--------|-------|
+| 1 | 1,508 | 3,459ms | 26,748ms | 395 MB (461ms) | Cold combined |
+| 2 | 44,894 | 96,366ms | 1,297ms | 2 GB (3,015ms) | warm_threshold → full re-prefill |
+| 3 | 44,932 | 1,257ms | 2,713ms | 2 GB (3,012ms) | Cache hit (engine reuses KV) |
+| 4 | 44,999 | 1,331ms | 3,545ms | 2 GB (2,214ms) | Cache hit |
+| 5 | 45,174 | 1,340ms | 8,312ms | 2 GB (2,286ms) | Cache hit |
+
+### Known Behavior
+
+- **restore_skipped_abort** may fire when BgSave from turn N is still writing
+  when turn N+1 tries to restore from Store. This is correct — the engine's
+  `--cache-prompt` handles KV reuse internally; the abort prevents serving
+  stale KV from a partially-written manifest.
+- **send_agent_prompt** returns `status: "idle"` even when the prompt is
+  delivered and processed. This is a Paseo UI artifact — the prompt works.
+
 ## Quick Reference: Full Test Sequence
 
 ```bash
