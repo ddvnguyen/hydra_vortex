@@ -46,11 +46,15 @@ public enum RequestType
 /// <summary>Wraps a WorkItem with queue metadata for priority ordering.</summary>
 public sealed class QueueItem
 {
+	private static long _sequence;
+
 	public WorkItem WorkItem { get; }
 	public RequestType Type { get; set; }
 	/// <summary>Lower = higher priority. Post-prefill decode gets 0; prefill gets 40.</summary>
 	public int Priority { get; }
 	public DateTime EnqueuedAt { get; }
+	/// <summary>Monotonic tiebreaker — ensures SortedSet never treats two items as equal.</summary>
+	public long Sequence { get; }
 
 	public QueueItem(WorkItem workItem, RequestType type, int priority)
 	{
@@ -58,6 +62,7 @@ public sealed class QueueItem
 		Type = type;
 		Priority = priority;
 		EnqueuedAt = DateTime.UtcNow;
+		Sequence = Interlocked.Increment(ref _sequence);
 	}
 }
 

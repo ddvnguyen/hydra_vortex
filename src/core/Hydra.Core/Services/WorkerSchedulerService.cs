@@ -50,7 +50,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly SortedSet<QueueItem> _requestQueue = new(Comparer<QueueItem>.Create((a, b) =>
 	{
 		var cmp = a.Priority.CompareTo(b.Priority);
-		return cmp != 0 ? cmp : a.EnqueuedAt.CompareTo(b.EnqueuedAt);
+		if (cmp != 0) return cmp;
+		cmp = a.EnqueuedAt.CompareTo(b.EnqueuedAt);
+		if (cmp != 0) return cmp;
+		return a.Sequence.CompareTo(b.Sequence);
 	}));
 	private readonly object _queueLock = new();
 	private readonly SemaphoreSlim _evaluatorSignal = new(0, int.MaxValue);
@@ -421,16 +424,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					return;
 				}
 
+				// Handle Retry BEFORE overwriting item.State — PrefillAsync already
+				// reset State to None for re-dispatch; writing Retry would break that.
+				if (next == WorkItemState.Retry)
+				{
+					_log.Information("pipeline_retry Sid={Sid} Retries={R}", item.SessionId, item.RetryCount);
+					EnqueueRequest(item, item.RequestType);
+					return;
+				}
+
 				var prev = item.State;
 				item.State = next;
 				_log.Information("state_transition Sid={Sid} {Prev}->{Next} ms={Ms}",
 					item.SessionId, prev, next, item.ElapsedMs);
-
-				if (next == WorkItemState.Retry)
-				{
-					EnqueueRequest(item, item.RequestType);
-					return;
-				}
 
 				// Prefill→Decode handoff: SaveDone/MarkEvicted → PickDecode
 				if (prev is WorkItemState.SaveDone or WorkItemState.MarkEvicted
