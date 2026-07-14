@@ -1110,65 +1110,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var m = item.State == WorkItemState.ModelLoadPrefill ? Router.PrefillModel(w) : Router.DecodeModel(w);
 			if (m != null)
 			{
-				if (_cfg.UseLlamaEngine)
+			if (_cfg.UseLlamaEngine)
 				{
-					var llamaRpc = GetLlamaRpcClient(w);
-					var configJson = JsonSerializer.Serialize(new Dictionary<string, object>
-					{
-						["model"] = m
-					});
-					try
-					{
-						var resp = await llamaRpc.EngineConfigureAsync(
-							(item.DecodeSlot ?? 0).ToString(), configJson, item.TraceId, CancellationToken.None);
-						var result = HydraEngineClient.ParseConfigureResponse(resp);
-						if (result.Success)
-						{
-							_log.Information("model_configure_rpc Model={M} Worker={W} Tier={T}",
-								m, w.Name, result.Tier);
-						}
-						else
-						{
-							_log.Warning("model_configure_failed Model={M} Worker={W} Error={E}",
-								m, w.Name, result.Error);
-					if (item.State == WorkItemState.ModelLoadPrefill && item.PrefillLease != null)
-					{
-						await item.PrefillLease.DisposeAsync();
-						item.PrefillLease = null;
-						SignalEvaluator();
-					}
-					else if (item.DecodeLease != null)
-					{
-						await item.DecodeLease.DisposeAsync();
-						item.DecodeLease = null;
-						SignalEvaluator();
-					}
-					item.DecodeWorker = null;
-					item.DecodeSlot = null;
-					item.State = WorkItemState.None;
-					return WorkItemState.None;
-						}
-					}
-					catch (Exception ex)
-					{
-						_log.Warning(ex, "model_configure_rpc_failed Model={M} Worker={W}", m, w.Name);
-						if (item.State == WorkItemState.ModelLoadPrefill && item.PrefillLease != null)
-						{
-							await item.PrefillLease.DisposeAsync();
-							item.PrefillLease = null;
-							SignalEvaluator();
-						}
-						else if (item.DecodeLease != null)
-						{
-							await item.DecodeLease.DisposeAsync();
-							item.DecodeLease = null;
-							SignalEvaluator();
-						}
-						item.DecodeWorker = null;
-						item.DecodeSlot = null;
-						item.State = WorkItemState.None;
-						return WorkItemState.None;
-					}
+					// Engine mode: the model is loaded at startup via --model
+					// flag. Model switching per-request is handled by the
+					// "model" field in EnginePrefill (0x42) metadata — no
+					// need to call EngineConfigure (0x40) which would
+					// interpret the alias as a GGUF file path and crash.
+					_log.Information("model_load_skip_engine Mode={M} Worker={W} (handled by EnginePrefill)",
+						m, w.Name);
 				}
 				else
 				{
