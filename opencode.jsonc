@@ -10,10 +10,24 @@
         "apiKey": "hydra-local"
       },
       "models": {
-        "dense-27b-q5": {
-          "name": "Qwopus3.6-27B Dense (COMBINED RTX 5060 Ti + 3060)",
+        "dense-27b-combined": {
+          "name": "Qwen 3.6 27B Dense (COMBINED RTX 5060 Ti + 3060)",
           "limit": {
             "context": 96000,
+            "output": 32000
+          }
+        },
+        "moe-35b-solo": {
+          "name": "Qwen 3.6 35B-A3B MoE (SOLO RTX 5060 Ti)",
+          "limit": {
+            "context": 320000,
+            "output": 32000
+          }
+        },
+        "hydra-auto": {
+          "name": "Hydra Auto (picks best model per prompt)",
+          "limit": {
+            "context": 320000,
             "output": 32000
           }
         }
@@ -23,7 +37,12 @@
   "agent": {
     "hydra-dense": {
       "description": "Dense 27B model served by Hydra COMBINED mode",
-      "model": "hydra/dense-27b-q5",
+      "model": "hydra/dense-27b-combined",
+      "temperature": 0
+    },
+    "hydra-auto": {
+      "description": "Hydra auto-routed model",
+      "model": "hydra/hydra-auto",
       "temperature": 0
     }
   }
