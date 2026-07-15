@@ -90,6 +90,51 @@ build_rtx_image() {
   ok "Built container image hydra-head:rtx"
 }
 
+# ── C# Coordinator Image Build ───────────────────────────────────────────────
+# The Coordinator C# binary is the only part of the system whose
+# source changes don't get picked up by `podman compose up -d`'s
+# normal cache invalidation (the Dockerfile layers may all be
+# unchanged even when the C# source has). This function computes
+# a fast hash over the C# source tree and only rebuilds the
+# `hydra-core` image when the hash differs from the last build.
+#
+# Stamps the hash in bin/.hydra-core-source-hash; deletes the
+# stamp file (or use FORCE_REBUILD_CORE=1) to force a rebuild.
+build_core_image() {
+  step "Building hydra-core image (C# Coordinator)"
+
+  if ! command -v podman &>/dev/null; then
+    die "podman not found"
+  fi
+
+  local stamp_file="$REPO_ROOT/bin/.hydra-core-source-hash"
+  local source_hash
+  source_hash=$( \
+    find "$REPO_ROOT/src/core" -type f \( -name "*.cs" -o -name "*.csproj" -o -name "*.props" -o -name "*.sln" \) \
+      2>/dev/null | sort \
+      | xargs sha256sum 2>/dev/null \
+      | sha256sum | cut -c1-16)
+  local cached_hash=""
+  [ -f "$stamp_file" ] && cached_hash=$(cat "$stamp_file")
+
+  if [ "${FORCE_REBUILD_CORE:-0}" = "1" ]; then
+    cached_hash=""
+    warn "FORCE_REBUILD_CORE=1 — forcing hydra-core image rebuild"
+  fi
+
+  if [ -n "$cached_hash" ] \
+     && [ "$cached_hash" = "$source_hash" ] \
+     && podman image exists localhost/hydra-core:latest 2>/dev/null; then
+    ok "hydra-core image is up to date (source hash $source_hash matches $stamp_file)"
+    return 0
+  fi
+
+  podman build -f "$REPO_ROOT/infra/Dockerfile" --target core -t hydra-core:latest "$REPO_ROOT" 2>&1 | tail -5
+  mkdir -p "$(dirname "$stamp_file")"
+  echo "$source_hash" > "$stamp_file"
+  ok "Built hydra-core:latest (source hash $source_hash, stamp at $stamp_file)"
+}
+
 # ── Build-Type Gate (smoke test) ──────────────────────────────────────────────
 # Fail fast if the llama-server binary we'd bind-mount (RTX) or scp
 # (P100) is a static build. Static builds hang in the post-init phase
@@ -193,6 +238,7 @@ deploy_rtx() {
 
   # Build prerequisites
   build_go
+  build_core_image
   generate_token
   AUTH_TOKEN=$(get_token)
   build_rtx_image
@@ -341,6 +387,7 @@ deploy_rtx3060() {
   step "Verifying RTX 3060 (same image as RTX, second compose service)"
 
   build_go
+  build_core_image
   generate_token
   AUTH_TOKEN=$(get_token)
   build_rtx_image
