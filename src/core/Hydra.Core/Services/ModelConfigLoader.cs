@@ -75,8 +75,9 @@ public sealed class ModelConfigLoader
             _instance = new ModelConfigLoader(config, gpuSpecs, modelsDir);
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            Serilog.Log.Error(ex, "model_config_load_failed File={File}", modelsFile);
             return false;
         }
     }
@@ -155,7 +156,16 @@ public sealed class ModelConfigLoader
             SplitMode: GetString(merged, "split_mode"),
             TensorSplit: GetDoubleArray(merged, "tensor_split"),
             OverrideTensors: GetStringArray(merged, "override_tensors"),
-            RpcServers: GetStringArray(merged, "rpc_servers")
+            RpcServers: GetStringArray(merged, "rpc_servers"),
+            // engine_defaults fields
+            FlashAttn: GetBool(merged, "flash_attn"),
+            KvUnified: GetBool(merged, "kv_unified"),
+            CachePrompt: GetBool(merged, "cache_prompt"),
+            CacheReuse: GetInt(merged, "cache_reuse"),
+            Reasoning: GetBool(merged, "reasoning"),
+            Jinja: GetBool(merged, "jinja"),
+            ContextShift: GetBool(merged, "context_shift"),
+            ChatTemplateKwargs: GetString(merged, "chat_template_kwargs")
         );
     }
 

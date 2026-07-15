@@ -4,6 +4,36 @@
 node:
   mode: vm  # default mode, can be overridden per node
 
+# NOTE: model/engine params are now in models.json engine_defaults (D4).
+# The llama.params block below is kept temporarily for hydra-head (Go) launch
+# compatibility until the Go side reads models.json directly.
+llama:
+  binary: /usr/local/bin/llama-server
+  host: 0.0.0.0
+  params:
+    flash-attn: on
+    cache-type-v: q8_0
+    cache-type-k: q8_0
+    kv-unified: true
+    cont-batching: true
+    cache-prompt: true
+    cache-reuse: 64
+    prio: 3
+    prio-batch: 1
+    rope-scaling: yarn
+    rope-scale: 5
+    yarn-orig-ctx: 32768
+    reasoning: on
+    jinja: true
+    timeout: 1800
+    chat-template-kwargs: '{"preserve_thinking": true}'
+    log-prefix: false
+    metrics: true
+    slots: true
+    perf: true
+    log-verbosity: 4
+    context-shift: true
+
 infra:
   prometheus:
     host: localhost

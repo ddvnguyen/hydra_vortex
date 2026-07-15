@@ -13,11 +13,12 @@ public static class AutoRouter
 {
     private static readonly ILogger _log = Log.ForContext(typeof(AutoRouter));
 
-    /// <summary>Result of model resolution: the chosen model alias, head worker, optional peer, and merged EngineConfig.</summary>
+    /// <summary>Result of model resolution: the chosen model alias, head worker, optional peer/decode, and merged EngineConfig.</summary>
     public readonly record struct Result(
         string ModelAlias,
         WorkerConfig Head,
         WorkerConfig? Peer,
+        WorkerConfig? DecodeWorker,
         EngineConfig EngineConfig,
         string? Mode);
 
@@ -105,7 +106,7 @@ public static class AutoRouter
             sessionId, entry.BoundModel, worker.Name);
 
         var engineConfig = loader.ResolveEngineConfig(entry.BoundModel);
-        return new Result(entry.BoundModel, worker, null, engineConfig, "warm");
+        return new Result(entry.BoundModel, worker, null, null, engineConfig, "warm");
     }
 
     // ── STEP 1: Candidate Filtering ────────────────────────────────
@@ -136,12 +137,12 @@ public static class AutoRouter
 
     // ── STEP 2: Hardware Feasibility ───────────────────────────────
 
-    private static List<(string Alias, ModelTemplate Template, WorkerConfig Head, WorkerConfig? Peer)> GetFeasible(
+    private static List<(string Alias, ModelTemplate Template, WorkerConfig Head, WorkerConfig? Peer, WorkerConfig? DecodeWorker)> GetFeasible(
         CoordinatorConfig cfg, ModelConfigLoader loader,
         IWorkerTracker tracker, IHealthMonitorService health,
         List<KeyValuePair<string, ModelTemplate>> candidates)
     {
-        var result = new List<(string Alias, ModelTemplate Template, WorkerConfig Head, WorkerConfig? Peer)>();
+        var result = new List<(string Alias, ModelTemplate Template, WorkerConfig Head, WorkerConfig? Peer, WorkerConfig? DecodeWorker)>();
 
         foreach (var (alias, template) in candidates)
         {
@@ -165,16 +166,17 @@ public static class AutoRouter
                 }
 
                 // For P/D mode, need a decode worker
+                WorkerConfig? decodeWorker = null;
                 if (reqs.DecodeRequirements != null)
                 {
                     var decodeReqs = reqs.DecodeRequirements;
-                    var decodeWorker = cfg.Workers.FirstOrDefault(w => w.Name != head.Name
+                    decodeWorker = cfg.Workers.FirstOrDefault(w => w.Name != head.Name
                         && tracker.IsFree(w.Name) && health.IsHealthy(w.Name)
                         && MeetsRequirements(w, decodeReqs, loader));
                     if (decodeWorker == null) continue;
                 }
 
-                result.Add((alias, template, head, peer));
+                result.Add((alias, template, head, peer, decodeWorker));
             }
         }
         return result;
@@ -195,7 +197,7 @@ public static class AutoRouter
     // ── STEP 3: Swap-Cost Preference ───────────────────────────────
 
     private static (string Alias, ModelTemplate Template) ChooseBySwapCost(
-        List<(string Alias, ModelTemplate Template, WorkerConfig Head, WorkerConfig? Peer)> feasible,
+        List<(string Alias, ModelTemplate Template, WorkerConfig Head, WorkerConfig? Peer, WorkerConfig? DecodeWorker)> feasible,
         IHealthMonitorService health,
         ModelConfigLoader loader)
     {
@@ -250,13 +252,13 @@ public static class AutoRouter
         var plan = feasible.FirstOrDefault();
         if (plan.Template == null) return null;
 
-        var mode = plan.Peer != null ? "combined" : "solo";
+        var mode = plan.Peer != null ? "combined" : plan.DecodeWorker != null ? "pd" : "solo";
         var engineConfig = loader.ResolveEngineConfig(chosen.Alias);
 
-        _log.Information("auto_route_resolved Model={Model} Head={Head} Peer={Peer} Mode={Mode}",
-            chosen.Alias, plan.Head.Name, plan.Peer?.Name ?? "-", mode);
+        _log.Information("auto_route_resolved Model={Model} Head={Head} Peer={Peer} Decode={Decode} Mode={Mode}",
+            chosen.Alias, plan.Head.Name, plan.Peer?.Name ?? "-", plan.DecodeWorker?.Name ?? "-", mode);
 
-        return new Result(chosen.Alias, plan.Head, plan.Peer, engineConfig, mode);
+        return new Result(chosen.Alias, plan.Head, plan.Peer, plan.DecodeWorker, engineConfig, mode);
     }
 
     // ── Explicit Model Request ─────────────────────────────────────
@@ -281,9 +283,9 @@ public static class AutoRouter
         var plan = feasible.FirstOrDefault();
         if (plan.Template == null) return null;
 
-        var mode = plan.Peer != null ? "combined" : "solo";
+        var mode = plan.Peer != null ? "combined" : plan.DecodeWorker != null ? "pd" : "solo";
         var engineConfig = loader.ResolveEngineConfig(requestedModel);
 
-        return new Result(requestedModel, plan.Head, plan.Peer, engineConfig, mode);
+        return new Result(requestedModel, plan.Head, plan.Peer, plan.DecodeWorker, engineConfig, mode);
     }
 }
