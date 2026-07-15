@@ -13,7 +13,7 @@
     "role": "head",
     "peer_worker": "rtx3060",
     "combined_capable": true,
-    "model_alias": "dense-27b-q5",
+    "model_alias": "dense-27b-combined",
     "router_model_name": "balanced",
     "_comment_rtx": "RTX 5060 Ti (sm_120, 16 GB) on host. Layer-split COMBINED head for 27B. Peer always reserved. The per-model config (split-mode=layer, tensor-split=25/40) is in ModelRegistry keyed by `model_alias: dense-27b-q5` (Phase 2a, ddvnguyen/llama.cpp#36)."
   },
@@ -27,7 +27,7 @@
     "slots": 0,
     "decode_speed_tps": 31,
     "role": "worker",
-    "model_alias": "dense-27b-q5",
+    "model_alias": "dense-27b-combined",
     "router_model_name": "balanced",
     "_comment_rtx3060": "RTX 3060 (sm_86, 12 GB) on host. Peer-only engine, 0 slots (MultiEngineRouter treats slots=0 as 'implicitly available' for COMBINED). Dedicated RPC backend for head.",
     "_design_gap_dual_role": "The 3060 is locked as a dedicated COMBINED peer (slots=0). Future dual-role: let it solo-run small models (vision, audio, embeddings) when the 27B is idle, then switch to COMBINED peer when the dense model is active. Current MultiEngineRouter.Select skips IsFree for peer-only workers (Slots == 0), which is correct today but has no priority/preemption — a solo task on the 3060 would starve an incoming COMBINED request rather than draining the solo queue. P100 is a separate pool (p99 priority for fallback only), so no cross-contamination with 3060."

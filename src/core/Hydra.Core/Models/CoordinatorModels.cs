@@ -36,6 +36,11 @@ public sealed record WorkerConfig
 	// CombinedOtSplit) and the run_type label ("combined-static" etc.) are
 	// gone — they're inside the ModelRegistry now, keyed by alias.
 	public string? ModelAlias { get; init; }
+	// ── GPU spec (loaded from gpu-specs.json, joined via GpuRef → GpuSpec map) ──
+	/// <summary>Static hardware properties for this worker's GPU (populated at load time).</summary>
+	public GpuSpec? Gpu { get; init; }
+	/// <summary>Key into gpu-specs.json; defaults to Name when null.</summary>
+	public string? GpuRef { get; init; }
 	// Capability flags, refreshed from the engine's EngineInfo health poll.
 	public bool PipelineCapable { get; init; }
 	public bool CombinedCapable { get; init; }
@@ -116,6 +121,10 @@ public sealed record CoordinatorConfig
 	public int MultiEngineThreshold { get; init; } = EnvInt("HYDRA_COORD_MULTI_ENGINE_THRESHOLD", 8192);
 	// When both modes are enabled and a request qualifies, which to prefer: "pipeline" | "combined".
 	public string MultiEnginePolicy { get; init; } = Env("HYDRA_COORD_MULTI_ENGINE_POLICY", "pipeline");
+	/// <summary>Path to the models.json file (HYDRA_COORD_MODELS_FILE). When set, AutoRouter reads model definitions from it.</summary>
+	public string? ModelsFile { get; init; } = Environment.GetEnvironmentVariable("HYDRA_COORD_MODELS_FILE");
+	/// <summary>Directory containing model GGUF files (HYDRA_COORD_MODELS_DIR). Used by AutoRouter for local path resolution.</summary>
+	public string ModelsDir { get; init; } = Env("HYDRA_COORD_MODELS_DIR", "/models");
 	public int ChunkSize { get; init; } = EnvInt("HYDRA_STORE_CHUNK_SIZE", 8192) * 1024;
 	// hydra#334: chunk size for the engine's STATE_GET socket-stream (CONFIGURE/0x40
 	// "state_chunk_size"), sent once per worker connection. The engine itself defaults
@@ -233,6 +242,8 @@ public sealed class SessionEntry
 	public bool HasStoreState { get; set; }
 	public bool SlotFreed { get; set; }
 	public string? PrefixHash { get; set; }
+	/// <summary>Model alias this session was routed to (warm-session affinity for STEP 0 of AutoRouter).</summary>
+	public string? BoundModel { get; set; }
 	public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 	public DateTime LastUsed { get; set; } = DateTime.UtcNow;
 }
