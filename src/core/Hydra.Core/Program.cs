@@ -129,6 +129,7 @@ if (coordEnabled)
             else
             {
                 ModelRegistry.InitializeFallback();
+                ModelConfigLoader.InitializeFallback();
                 Log.Information("model_config_fallback Using hardcoded registry (HYDRA_COORD_MODELS_FILE not set)");
             }
         coordCfg.Validate();

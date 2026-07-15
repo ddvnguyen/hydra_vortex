@@ -161,4 +161,7 @@ public static class ModelRegistry
 
     /// <summary>List all registered aliases (for diagnostics and tests).</summary>
     public static IReadOnlyCollection<string> RegisteredAliases => _entries.Keys;
+
+    /// <summary>All registered model entries (alias → EngineConfig). Used by ModelConfigLoader fallback init.</summary>
+    internal static IReadOnlyDictionary<string, EngineConfig> AllEntries => _entries;
 }

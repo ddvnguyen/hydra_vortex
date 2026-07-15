@@ -186,11 +186,18 @@ public static class AutoRouter
     {
         // Look up the GPU spec from the loader (worker.Gpu may not be populated at startup)
         var gpu = worker.Gpu ?? loader.GetGpuSpec(worker.GpuRef ?? worker.Name);
-        if (gpu == null) return false;
-        if (gpu.VramMb < reqs.MinVramMb) return false;
-        if (reqs.MinComputeTflops.HasValue && gpu.ComputeTflops < reqs.MinComputeTflops.Value) return false;
-        if (reqs.MinBandwidthGbps.HasValue && gpu.BandwidthGbps < reqs.MinBandwidthGbps.Value) return false;
-        if (!gpu.HasCapability(reqs.RequiredCapabilities)) return false;
+        if (gpu != null)
+        {
+            if (gpu.VramMb < reqs.MinVramMb) return false;
+            if (reqs.MinComputeTflops.HasValue && gpu.ComputeTflops < reqs.MinComputeTflops.Value) return false;
+            if (reqs.MinBandwidthGbps.HasValue && gpu.BandwidthGbps < reqs.MinBandwidthGbps.Value) return false;
+            if (!gpu.HasCapability(reqs.RequiredCapabilities)) return false;
+            return true;
+        }
+        // Fallback: no GPU spec available (HYDRA_COORD_MODELS_FILE not set).
+        // Use WorkerConfig capability flags as proxy.
+        if (reqs.RequiredCapabilities == GpuCapabilities.Combined && !worker.CombinedCapable) return false;
+        if (reqs.RequiredCapabilities == GpuCapabilities.Rpc && !worker.CombinedCapable) return false;
         return true;
     }
 

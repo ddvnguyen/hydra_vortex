@@ -146,24 +146,51 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var modelStr = modelRaw is string ms ? ms
 				: modelRaw is System.Text.Json.JsonElement mje && mje.ValueKind == System.Text.Json.JsonValueKind.String ? mje.GetString()
 				: null;
+			_log.Information("model_routing_check Sid={Sid} ModelStr={Str}", sessionId, modelStr);
 			if (!string.IsNullOrWhiteSpace(modelStr))
 			{
-				if (modelStr == "hydra-auto" || ModelRegistry.RegisteredAliases.Contains(modelStr))
+				var isAuto = modelStr == "hydra-auto";
+				var isReg = ModelRegistry.RegisteredAliases.Contains(modelStr);
+				_log.Information("model_routing_decision Sid={Sid} IsAuto={A} IsRegistered={R} Count={C}",
+					sessionId, isAuto, isReg, ModelRegistry.RegisteredAliases.Count);
+				if (isAuto || isReg)
 				{
 					try
 					{
-						var loader = ModelConfigLoader.Instance;
+						var loader = ModelConfigLoader.InstanceOrNull;
+						if (loader == null)
+						{
+							_log.Debug("autoroute_skipped_no_loader Sid={Sid}", sessionId);
+							// No models.json loaded — fall through to old routing
+						}
+						else
+						{
 						var autoResult = AutoRouter.Resolve(_cfg, loader, _tracker, _health, _ledger,
 							sessionId, estimatedTokens, estimatedTokens + maxTokens, modelStr);
 						if (autoResult is { } result)
 						{
-							_log.Information("autoroute_resolved Sid={Sid} Model={Model} Head={Head} Peer={Peer} Mode={Mode}",
+							_log.Information("autoroute_resolved Sid={Sid} Model={Model} Head={Head} Peer={Peer} Decode={Decode} Mode={Mode}",
 								sessionId, result.ModelAlias, result.Head.Name,
-								result.Peer?.Name ?? "none", result.Mode ?? "solo");
+								result.Peer?.Name ?? "none", result.DecodeWorker?.Name ?? "none",
+								result.Mode ?? "solo");
 							// Stamp the resolved alias onto the item so downstream
 							// paths (hydra_config injection, decode) use the correct model.
 							item.Request["model"] = result.ModelAlias;
 							item.Request["__auto_model_alias"] = result.ModelAlias;
+
+							// Wire AutoRouter's worker plan directly into the item,
+							// bypassing the old threshold-based ClassifyRequestType/ColdRouteAsync.
+							// This ensures P/D split (Mode="pd") and COMBINED (Mode="combined")
+							// actually use the workers AutoRouter selected.
+							if (result.Mode is "pd" or "combined")
+							{
+								item.ForceMode = result.Mode;
+							}
+						}
+						else
+						{
+							_log.Information("autoroute_returned_null Sid={Sid} Model={Model}", sessionId, modelStr);
+						}
 						}
 					}
 					catch (Exception ex)
@@ -326,6 +353,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			return item.ForceMode.ToLowerInvariant() switch
 			{
 				"combined" => RequestType.Combined,
+				"pd" => RequestType.Prefill,
 				_ => RequestType.Atomic,
 			};
 		}
@@ -724,6 +752,45 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// without adjusting the system's threshold/capability config.
 		if (!string.IsNullOrWhiteSpace(item.ForceMode))
 		{
+			var mode = item.ForceMode.ToLowerInvariant();
+
+			// P/D split: prefill on head (RTX), decode on P100.
+			// This is cross-host routing — not a same-host combined mode.
+			if (mode == "pd")
+			{
+				var pdPfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
+				if (pdPfWorker != null && _tracker.TryAcquireSlot(pdPfWorker.Name, out var pdPfSlot, "prefill"))
+				{
+					// Find a decode worker that matches the decode requirements
+					var pdDecWorker = _cfg.Workers.FirstOrDefault(w => w.Name != pdPfWorker.Name
+						&& _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)
+						&& w.CanDecode);
+					if (pdDecWorker != null && _tracker.TryAcquireSlot(pdDecWorker.Name, out var pdDecSlot, "decode"))
+					{
+						item.RouteType = "cold_pd";
+						item.PrefillWorker = pdPfWorker;
+						item.PrefillSlot = pdPfSlot;
+						item.PrefillLease = new SlotLease(pdPfWorker.Name, pdPfSlot, item.SessionId,
+							LeaseLifetime.Short, _tracker);
+						item.DecodeWorker = pdDecWorker;
+						item.DecodeSlot = pdDecSlot;
+						item.DecodeLease = new SlotLease(pdDecWorker.Name, pdDecSlot, item.SessionId,
+							LeaseLifetime.Long, _tracker);
+						LastDispatchedNode = pdPfWorker.Name;
+						CoordinatorMetrics.RequestsTotal.WithLabels(pdPfWorker.Name, item.RouteType).Inc();
+						CoordinatorMetrics.RequestsTotalAll.Inc();
+						CoordinatorMetrics.ColdSessionStarts.Inc();
+						_log.Information("cold_pd_route Prefill={Pf} Decode={Dec} Est={Est}",
+							pdPfWorker.Name, pdDecWorker.Name, item.EstimatedTokens);
+						return _cfg.UseLlamaEngine ? WorkItemState.PrefixRestore : WorkItemState.ModelLoadPrefill;
+					}
+					// Decode worker not available — release prefill slot and fall through
+					_tracker.ReleaseSlot(pdPfWorker.Name, pdPfSlot);
+				}
+				_log.Warning("cold_pd_route_failed Est={Est}", item.EstimatedTokens);
+				// Fall through to normal routing
+			}
+
 			var forcePlan = ForceMultiEnginePlan(_cfg, _tracker, _health, item);
 			if (forcePlan is { } plan && TryAcquireMultiEngine(item, plan))
 				return WorkItemState.Decode;
@@ -833,6 +900,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		MultiEngineMode meMode;
 		if (mode == "combined")      meMode = MultiEngineMode.Combined;
 		else if (mode == "pipeline") meMode = MultiEngineMode.Pipeline;
+		else if (mode == "pd")       meMode = MultiEngineMode.Pipeline; // P/D split uses Pipeline routing
 		else return null;
 
 		foreach (var head in cfg.Workers

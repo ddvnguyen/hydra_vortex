@@ -161,6 +161,24 @@ public sealed class EngineModeTests
                 sp, Serilog.Log.Logger);
             Scheduler.AgentClientFactory = (_, _) => Rpc;
 
+            // Register test model so the "nano" alias used by these tests
+            // passes the unknown-model validation in SubmitAsync.
+            ModelRegistry.ClearForTest();
+            ModelRegistry.RegisterForTest(new EngineConfig(
+                ModelAlias: "nano",
+                ModelPath: "/dev/null",
+                NGpuLayers: 0, NCtx: 2048,
+                ContBatching: true, Fit: false, UbatchSize: 512,
+                SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
+            // Also register "moe-35b-solo" which is used as ModelAlias on the head worker.
+            ModelRegistry.RegisterForTest(new EngineConfig(
+                ModelAlias: "moe-35b-solo",
+                ModelPath: "/dev/null",
+                NGpuLayers: 99, NCpuMoe: 8, NCtx: 320000,
+                OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" },
+                ContBatching: true, Fit: false, UbatchSize: 512,
+                SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
+
             _runTask = Scheduler.RunAsync(_runCts.Token);
         }
 

@@ -39,6 +39,8 @@ public sealed class ModelConfigLoader
     }
 
     /// <summary>Singleton access. Throws if not initialized — call <see cref="TryLoad"/> first.</summary>
+    public static ModelConfigLoader? InstanceOrNull => _instance;
+
     public static ModelConfigLoader Instance =>
         _instance ?? throw new InvalidOperationException(
             "ModelConfigLoader not initialized. Call ModelConfigLoader.TryLoad() at startup.");
@@ -89,6 +91,61 @@ public sealed class ModelConfigLoader
 
     /// <summary>Reset the singleton (test cleanup).</summary>
     internal static void Reset() => _instance = null;
+
+    /// <summary>
+    /// Create a minimal in-memory ModelConfigLoader from hardcoded ModelRegistry
+    /// entries. Used when HYDRA_COORD_MODELS_FILE is not set, so AutoRouter
+    /// still has access to model templates for routing decisions.
+    /// </summary>
+    internal static void InitializeFallback()
+    {
+        if (_instance != null) return; // already loaded from file
+        // Build model-specific templates for the fallback path.
+        // moe-35b-pd needs decode_requirements to trigger P/D split routing.
+        var models = new Dictionary<string, ModelTemplate>();
+        foreach (var (alias, engineCfg) in ModelRegistry.AllEntries)
+        {
+            var isPd = alias == "moe-35b-pd";
+            var isCombined = alias == "dense-27b-combined";
+            models[alias] = new ModelTemplate
+            {
+                Description = alias,
+                PrefillModelFileName = System.IO.Path.GetFileName(engineCfg.ModelPath),
+                DecodeModelFileName = System.IO.Path.GetFileName(engineCfg.ModelPath),
+                LoadTimeS = 40,
+                QualityTier = isCombined ? 3 : isPd ? 2 : 1,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = isCombined ? GpuCapabilities.Combined : GpuCapabilities.FlashAttn,
+                    DecodeRequirements = isPd ? new ModelRequirements
+                    {
+                        MinVramMb = 12000,
+                        RequiredCapabilities = GpuCapabilities.FlashAttn,
+                    } : null,
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 0,
+                    MaxPromptTokens = 999999,
+                    MaxContextTokens = isCombined ? 96000 : 320000,
+                    RequiresWorkers = isCombined ? ["rtx3060"] : isPd ? ["p100"] : [],
+                },
+                EngineConfig = null,
+                NodeConfig = null,
+                WorkersFile = null,
+            };
+        }
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 2,
+            EngineDefaults = null,
+            AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
+            Models = models,
+        };
+        _instance = new ModelConfigLoader(config, new Dictionary<string, GpuSpec>(), "/models");
+    }
 
     // ── Public query methods ─────────────────────────────────────────────
 
