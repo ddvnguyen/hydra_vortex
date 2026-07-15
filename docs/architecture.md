@@ -170,6 +170,54 @@ if estimated_tokens < stored_n_past * 0.85:
 This prevents cache corruption when the client sends a shorter message than the
 previously cached context (e.g., a new conversation that reuses an old session_id).
 
+### Routing decision tree (where the n_past guard lives)
+
+A new request walks four branches in order. The n_past guard only fires in
+branch 3 — the cold prefix-restore path that the in-memory cache *can't* serve:
+
+```
+1. session_id in _warmLeases AND lease not yet evicted?
+   → route to that slot (warm affinity — in-memory cache "always wins" here)
+
+2. ELSE: pick a free prefill slot; if none, LRU-evict oldest from _warmLeases
+   (capacity pressure: oldest warm session is saved to Store then evicted)
+
+3. ELSE: try prefix-restore from Store     ← n_past guard lives here
+   (session was evicted, KV may still be in Store; the guard skips
+    restore when the cached n_past is much larger than the new request)
+
+4. ELSE: cold prefill (no cache anywhere — full recompute)
+```
+
+**Why the guard "rarely" fires.** In a low-load scenario, branch 1 wins almost
+always — the in-memory `_warmLeases` table holds every recent session, and
+the routing decision is a single dictionary lookup with zero RPC. The guard
+only gets a chance to run when:
+
+- A warm lease was LRU-evicted from `_warmLeases` (branch 2's overflow path),
+  *or* the worker was restarted and the in-memory table was lost on startup.
+
+Both are *high-load* or *restart* conditions. In a freshly-deployed, idle
+test environment (e.g. the verify-201-moe agent), `_warmLeases` accumulates
+entries without ever hitting the LRU cap — and the guard looks like a no-op
+even though the production path exercises it routinely. Issue #435 (#428
+follow-up) added observability for this.
+
+**Two guards, two counters.** There are two n_past guards in the request path,
+each with its own metric so operators can tell which fired:
+
+| Location | Counter | Reason label | Trigger |
+|---|---|---|---|
+| `RouteAsync` (in-memory warm-slot path) | `hydra_warm_slot_evicted_for_short_prompt_total` | `warm_slot_n_past_guard` | `NPast > AtomicThreshold*4` ∧ `EstimatedTokens < NPast * NPastGuardThreshold` |
+| `PrefixRestoreAsync` (Store prefix path) | `hydra_prefix_restore_skipped_total` | `restore_n_past_guard` | `prefixNPast ≥ EstimatedTokens * 0.85` |
+
+The first guard's predicate fires on the *warm slot*: the in-memory table
+*did* have the session, but the cached n_past is so much larger than the new
+request's prompt that a fresh prefill is cheaper than reusing a stale context.
+The second guard's predicate fires on the *prefix blob*: Store has a
+checkpoint but its n_past would already cover most of the new request, so
+restoring it is wasted work.
+
 ---
 
 ## 7. Prefix Checkpoint Mechanism
