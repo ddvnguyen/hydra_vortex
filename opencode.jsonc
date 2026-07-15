@@ -24,6 +24,13 @@
             "output": 32000
           }
         },
+        "moe-35b-pd": {
+          "name": "Qwen 3.6 35B-A3B MoE (P/D Split: RTX prefill + P100 decode)",
+          "limit": {
+            "context": 320000,
+            "output": 32000
+          }
+        },
         "hydra-auto": {
           "name": "Hydra Auto (picks best model per prompt)",
           "limit": {

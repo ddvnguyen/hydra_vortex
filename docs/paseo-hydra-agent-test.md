@@ -14,8 +14,48 @@ test — no curl-based test scripts are needed.
 ## Prerequisites
 
 - Hydra system running (Coordinator `:9000`, RTX Head `:9700`, P100 Head `192.168.122.21:9700`)
-- DENSE profile active (`scripts/set-profile.sh dense`)
+- Profile active (`scripts/set-profile.sh moe` or `dense`)
 - Paseo daemon running (`paseo daemon status`)
+
+### Model Config Matching (CRITICAL)
+
+**The opencode provider config must match the Hydra Core model registry.**
+These are two separate config files that must stay in sync:
+
+| Config file | Location | Controls |
+|---|---|---|
+| `~/.config/opencode/opencode.jsonc` | Global (Paseo daemon reads) | What models Paseo agents can use |
+| `~/.paseo/worktrees/<wt>/opencode.jsonc` | Worktree (opencode reads) | What models this workspace uses |
+| `infra/hydra-core/config/models.json` | Code (Hydra Core reads via `HYDRA_COORD_MODELS_FILE`) | Model templates + engine config |
+| `ModelRegistry.cs` hardcoded fallback | Code (used when env var not set) | Fallback model list |
+
+**If these don't match, requests fail.** Examples:
+- opencode sends `model: "moe-35b-pd"` → Hydra doesn't have it → `model_not_found` error
+- opencode sends `model: "balanced"` → Hydra only has `moe-35b-solo` → 503 error
+- opencode doesn't have `hydra-auto` → user can't select auto-routing
+
+**Sync checklist after adding/removing models:**
+
+1. Add model to `infra/hydra-core/config/models.json`
+2. Add model to `ModelRegistry.cs` hardcoded fallback (same entry as #1)
+3. Add model to `~/.config/opencode/opencode.jsonc` (global — Paseo reads this)
+4. Add model to worktree `opencode.jsonc` (local — opencode reads this)
+5. Verify: `curl http://localhost:9000/v1/models` returns all expected aliases
+6. Verify: `paseo list-models --provider opencode | grep hydra` shows all models
+
+**Current model map (as of 2026-07-15):**
+
+| Model ID | Type | Opencode display name | Hydra Core |
+|---|---|---|---|
+| `balanced` | Back-compat alias | Hydra MoE 35B (back-compat) | ✅ |
+| `moe-35b-solo` | SOLO mode | Qwen 3.6 35B-A3B MoE (SOLO RTX 5060 Ti) | ✅ |
+| `moe-35b-pd` | P/D Split mode | Qwen 3.6 35B-A3B MoE (P/D Split: RTX prefill + P100 decode) | ✅ |
+| `dense-27b-combined` | COMBINED mode | Qwen 3.6 27B Dense (COMBINED RTX 5060 Ti + 3060) | ✅ |
+| `hydra-auto` | Auto routing | Hydra Auto (picks best model per prompt) | ✅ |
+
+**Note:** The Paseo daemon caches the model list at startup. After editing
+`~/.config/opencode/opencode.jsonc`, you must restart the daemon for changes
+to take effect: `paseo daemon restart`.
 
 ## Step 1: Deploy (if needed)
 

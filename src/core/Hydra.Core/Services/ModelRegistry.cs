@@ -78,6 +78,24 @@ public static class ModelRegistry
             SpecDraftNgl: 0
         );
 
+        // P/D split: RTX prefill (Q3_K-mini) + P100 decode (Q5_K-balanced).
+        // ModelPath is the prefill model; decode model is loaded on the P100 worker.
+        _entries["moe-35b-pd"] = new EngineConfig(
+            ModelAlias: "moe-35b-pd",
+            ModelPath: "/models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+            NGpuLayers: 99,
+            NCpuMoe: 8,
+            NCtx: 320000,
+            OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" },
+            ContBatching: true,
+            Fit: false,
+            UbatchSize: 512,
+            SpecType: "draft-mtp",
+            SpecDraftNMax: 3,
+            SpecDraftPMin: 0.75f,
+            SpecDraftNgl: 0
+        );
+
         _entries["dense-27b-combined"] = new EngineConfig(
             ModelAlias: "dense-27b-combined",
             ModelPath: "/models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
