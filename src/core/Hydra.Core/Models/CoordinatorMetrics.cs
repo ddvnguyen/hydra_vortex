@@ -229,6 +229,19 @@ internal static class CoordinatorMetrics
         "Prefix restore skipped due to n_past guard (stale or oversized checkpoint)",
         new CounterConfiguration { LabelNames = new[] { "reason" } });
 
+    // ── Issue #435: n_past guard observability ──
+    // Fires in RouteAsync when the warm-slot n_past guard's predicate evaluates
+    // true: a warm slot exists for the session but its cached n_past is so much
+    // larger than the new request's estimated tokens that reusing it would
+    // require a fresh prefill anyway. Distinct from PrefixRestoreSkipped
+    // (which fires on the prefix-restore path in PrefixRestoreAsync).
+    // The {reason} label separates "warm_slot_n_past_guard" (the in-RouteAsync
+    // check) from any future reasons.
+    public static readonly Counter WarmSlotEvictedForShortPrompt = Metrics.CreateCounter(
+        "hydra_warm_slot_evicted_for_short_prompt_total",
+        "Warm slot's n_past was much larger than the new request's prompt — n_past guard fired (or would have fired) and the warm slot was/is re-routed",
+        new CounterConfiguration { LabelNames = new[] { "reason" } });
+
     public static readonly Counter PrefixSavePayloadTruncated = Metrics.CreateCounter(
         "hydra_prefix_save_payload_truncated_total",
         "Prefix save truncated to system-prompt boundary (or skipped when boundary undeterminable)",
