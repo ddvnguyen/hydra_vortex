@@ -191,6 +191,7 @@ public sealed class PrefixCheckpointSaveTests
 		fake.SetException(OpCode.Stat, new IOException("Connection refused"));
 		var scheduler = MakeScheduler(fake);
 		var item = MakeItem("throw1");
+		var before = CoordinatorMetrics.PrefixSaveFailures.Value;
 
 		// Must not throw — the prefix save is fire-and-forget with its own catch.
 		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
@@ -212,9 +213,7 @@ public sealed class PrefixCheckpointSaveTests
 			c.Op == OpCode.Put && c.Key.StartsWith("prefix/")).ToList();
 		Assert.Empty(prefixPuts);
 
-		// NOTE: PrefixSaveFailures counter (CoordinatorMetrics.cs:113) is defined
-		// but not yet incremented in the catch block — that wiring is tracked by
-		// the impl worker (issue #245). When the impl adds PrefixSaveFailures.Inc(),
-		// this test should assert the delta is exactly 1.
+		var after = CoordinatorMetrics.PrefixSaveFailures.Value;
+		Assert.Equal(1, after - before);
 	}
 }

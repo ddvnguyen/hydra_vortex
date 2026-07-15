@@ -1675,6 +1675,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						}
 						catch (Exception ex)
 						{
+							CoordinatorMetrics.PrefixSaveFailures.Inc();
 							_log.Warning(ex, "prefix_save_failed Hash={Hash}", item.PrefixHash);
 						}
 					});
