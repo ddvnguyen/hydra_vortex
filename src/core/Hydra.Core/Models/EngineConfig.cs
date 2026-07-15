@@ -17,7 +17,7 @@ namespace Hydra.Core.Models;
 /// wire opcodes. The on-the-wire JSON does not change in Phase 2a.
 /// </summary>
 public sealed record EngineConfig(
-    /// <summary>Model alias (e.g. "moe-35b-mini", "dense-27b-q5"). Matches WorkerConfig.ModelAlias.</summary>
+    /// <summary>Model alias (e.g. "moe-35b-solo", "dense-27b-combined"). Matches WorkerConfig.ModelAlias.</summary>
     string ModelAlias,
     /// <summary>Absolute path to the GGUF file on the engine host.</summary>
     string ModelPath,

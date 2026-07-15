@@ -13,14 +13,18 @@ public class ModelsController : ControllerBase
 	[HttpGet("/v1/models")]
 	public IActionResult Models()
 	{
-		return new JsonResult(new
+		var models = new List<object>();
+
+		// Add all registered model aliases from ModelRegistry
+		foreach (var alias in Hydra.Core.Services.ModelRegistry.RegisteredAliases)
 		{
-			@object = "list",
-			data = new[]
-			{
-				new { id = "balanced", @object = "model", owned_by = "hydra" },
-			}
-		});
+			models.Add(new { id = alias, @object = "model", owned_by = "hydra" });
+		}
+
+		// Add hydra-auto as a virtual alias for automatic routing
+		models.Add(new { id = "hydra-auto", @object = "model", owned_by = "hydra" });
+
+		return new JsonResult(new { @object = "list", data = models });
 	}
 }
 

@@ -166,6 +166,12 @@ public sealed class ModelConfigLoader
     /// <summary>List all registered model aliases.</summary>
     public IReadOnlyCollection<string> GetAllAliases() => _templates.Keys;
 
+    /// <summary>All registered model templates keyed by alias.</summary>
+    public IReadOnlyDictionary<string, ModelTemplate> GetAllModels() => _templates;
+
+    /// <summary>The auto-routing policy from models.json, or null if not configured.</summary>
+    public AutoRoutingPolicy? GetAutoRoutingPolicy() => Config?.AutoRouting;
+
     /// <summary>Look up GPU hardware specs by worker name (e.g. "rtx", "p100").</summary>
     public GpuSpec? GetGpuSpec(string workerName) =>
         GpuSpecs.TryGetValue(workerName, out var spec) ? spec : null;

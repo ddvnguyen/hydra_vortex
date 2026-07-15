@@ -15,14 +15,14 @@ public sealed class MultiEngineRouterTests
 		bool pipeline = true, bool combined = false, int threshold = 8192,
 		string policy = "pipeline",
 		bool headPipelineCapable = true, bool headCombinedCapable = true,
-		string modelAlias = "moe-35b-mini",
+		string modelAlias = "moe-35b-solo",
 		string? peerWorker = "p100",
 		bool registerAlias = true,
 		string[]? overrideTensors = null)
 	{
 		// Phase 2a: tests register the model alias on the global ModelRegistry
 		// (it's static, so concurrent tests share state; we register in the
-		// helper to keep the call site simple). The "moe-35b-mini" alias is
+		// helper to keep the call site simple). The "moe-35b-solo" alias is
 		// already registered by the production entry; this is the
 		// no-op-default. Pass registerAlias: false to exercise the
 		// unresolvable-alias path (Resolve() throws → Select() skips the head).
@@ -73,7 +73,7 @@ public sealed class MultiEngineRouterTests
 		Assert.Equal(MultiEngineMode.Pipeline, plan!.Value.Mode);
 		Assert.Equal("rtx", plan.Value.Head.Name);
 		Assert.Equal("p100", plan.Value.Peer.Name);
-		Assert.Equal("moe-35b-mini", plan.Value.EngineConfig.ModelAlias);
+		Assert.Equal("moe-35b-solo", plan.Value.EngineConfig.ModelAlias);
 	}
 
 	[Fact]
@@ -120,7 +120,7 @@ public sealed class MultiEngineRouterTests
 		var (cfg, tracker) = Build(pipeline: true, combined: true, policy: "combined");
 		var plan = MultiEngineRouter.Select(cfg, cfg.Workers, tracker, Health, estTokens: 20000);
 		Assert.Equal(MultiEngineMode.Combined, plan!.Value.Mode);
-		Assert.Equal("moe-35b-mini", plan.Value.EngineConfig.ModelAlias);
+		Assert.Equal("moe-35b-solo", plan.Value.EngineConfig.ModelAlias);
 	}
 
 	[Fact]
@@ -148,7 +148,7 @@ public sealed class MultiEngineRouterTests
 	public void Skips_Pipeline_When_No_Override_Tensor_Configured()
 	{
 		// The resolved EngineConfig can lack OverrideTensors (e.g. a layer-split
-		// DENSE-profile alias like "dense-27b-q5" has none). PIPELINE mode needs
+		// DENSE-profile alias like "dense-27b-combined" has none). PIPELINE mode needs
 		// a runtime override-tensor for the engine to route anything to the peer;
 		// without one, ModeUsable must refuse the plan rather than let it through
 		// and silently degrade to solo after the peer is already reserved.
@@ -181,8 +181,8 @@ public sealed class MultiEngineRouterTests
 		// "free" in the tracker (IsFree requires a free slot). The router
 		// must skip the IsFree check for them.
 		ModelRegistry.RegisterForTest(new EngineConfig(
-			ModelAlias: "dense-27b-q5",
-			ModelPath: "/models/test-dense-27b-q5.gguf",
+			ModelAlias: "dense-27b-combined",
+			ModelPath: "/models/test-dense-27b-combined.gguf",
 			NGpuLayers: 65, NCtx: 96000,
 			SplitMode: "layer", TensorSplit: new[] { 25.0, 40.0 }));
 		var cfg = new CoordinatorConfig
@@ -198,7 +198,7 @@ public sealed class MultiEngineRouterTests
 					Name = "rtx", Host = "localhost", RpcPort = 9601,
 					LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 1,
 					Role = "head", PeerWorker = "rtx3060",
-					CombinedCapable = true, ModelAlias = "dense-27b-q5"
+					CombinedCapable = true, ModelAlias = "dense-27b-combined"
 				},
 				new()
 				{
@@ -223,7 +223,7 @@ public sealed class MultiEngineRouterTests
 		Assert.Equal(MultiEngineMode.Combined, plan!.Value.Mode);
 		Assert.Equal("rtx", plan.Value.Head.Name);
 		Assert.Equal("rtx3060", plan.Value.Peer.Name);
-		Assert.Equal("dense-27b-q5", plan.Value.EngineConfig.ModelAlias);
+		Assert.Equal("dense-27b-combined", plan.Value.EngineConfig.ModelAlias);
 	}
 
 	// ── P3.0 (#366): peer must be exclusively reservable for COMBINED admission ──
@@ -259,7 +259,7 @@ public sealed class MultiEngineRouterTests
 					Name = "rtx", Host = "localhost", RpcPort = 9601,
 					LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 1,
 					Role = "head", PeerWorker = "p100",
-					PipelineCapable = true, ModelAlias = "moe-35b-mini"
+					PipelineCapable = true, ModelAlias = "moe-35b-solo"
 				},
 				new()
 				{

@@ -138,6 +138,39 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 		}
 
+		// Model config routing: when the client sends "hydra-auto" or a known
+		// model alias, route through AutoRouter to select the best worker plan.
+		if (request.TryGetValue("model", out var modelRaw))
+		{
+			var modelStr = modelRaw is string ms ? ms
+				: modelRaw is System.Text.Json.JsonElement mje && mje.ValueKind == System.Text.Json.JsonValueKind.String ? mje.GetString()
+				: null;
+			if (!string.IsNullOrWhiteSpace(modelStr)
+				&& (modelStr == "hydra-auto" || ModelRegistry.RegisteredAliases.Contains(modelStr)))
+			{
+				try
+				{
+					var loader = ModelConfigLoader.Instance;
+					var autoResult = AutoRouter.Resolve(_cfg, loader, _tracker, _health, _ledger,
+						sessionId, estimatedTokens, estimatedTokens + maxTokens, modelStr);
+					if (autoResult is { } result)
+					{
+						_log.Information("autoroute_resolved Sid={Sid} Model={Model} Head={Head} Peer={Peer} Mode={Mode}",
+							sessionId, result.ModelAlias, result.Head.Name,
+							result.Peer?.Name ?? "none", result.Mode ?? "solo");
+						// Stamp the resolved alias onto the item so downstream
+						// paths (hydra_config injection, decode) use the correct model.
+						item.Request["model"] = result.ModelAlias;
+						item.Request["__auto_model_alias"] = result.ModelAlias;
+					}
+				}
+				catch (Exception ex)
+				{
+					_log.Warning(ex, "autoroute_failed Sid={Sid} Model={Model}", sessionId, modelStr);
+				}
+			}
+		}
+
 		_log.Information("request_received Sid={Sid} Stream={Stream}", sessionId, item.IsStreaming);
 
 		// Classify the request type based on estimated tokens and session state.
@@ -2119,7 +2152,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			try
 			{
-				var engineConfig = ModelRegistry.Resolve(w.ModelAlias);
+				// Prefer ModelConfigLoader when available (data-driven config);
+				// fall back to ModelRegistry (hardcoded entries) otherwise.
+				EngineConfig? engineConfig = null;
+				try
+				{
+					engineConfig = ModelConfigLoader.Instance.ResolveEngineConfig(w.ModelAlias);
+				}
+				catch (InvalidOperationException)
+				{
+					// ModelConfigLoader not initialized or alias not found —
+					// fall back to the static ModelRegistry.
+					engineConfig = ModelRegistry.Resolve(w.ModelAlias);
+				}
 				if (engineConfig is not null)
 				{
 					var hydraConfig = engineConfig.ToHydraConfigDict();

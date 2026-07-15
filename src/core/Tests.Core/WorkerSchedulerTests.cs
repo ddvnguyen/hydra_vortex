@@ -273,7 +273,7 @@ public sealed class WorkerSchedulerTests
                 new() { Name = "rtx", Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 2,
                     Role = "head", PeerWorker = "p100",
                     PeerHost = "192.168.122.21", PeerPort = 9700,
-                    PipelineCapable = true, ModelAlias = "moe-35b-mini" },
+                    PipelineCapable = true, ModelAlias = "moe-35b-solo" },
                 new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://p100:8086", WorkerType = 2, Slots = 1, Role = "worker" }
             }
         };

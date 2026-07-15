@@ -89,7 +89,7 @@ public class EngineRequestOverridesTests
         // without affecting IsEmpty.
         var o = EngineRequestOverrides.FromRequest(new Dictionary<string, object>
         {
-            ["model"] = "moe-35b-mini",
+            ["model"] = "moe-35b-solo",
             ["messages"] = new[] { new Dictionary<string, object> { ["role"] = "user" } }
         });
         Assert.True(o.IsEmpty);
