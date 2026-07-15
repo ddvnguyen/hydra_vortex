@@ -55,7 +55,7 @@ llama:
     override-tensor: "token_embd\\.weight=CPU,output\\.weight=CPU,output_norm\\.weight=CPU"
 
     # Context and parallelism
-    ctx-size: 320000
+    ctx-size: 128000
     parallel: 2
 
     # Sampling

@@ -129,7 +129,7 @@ public sealed class ModelConfigLoader
                     AutoEligible = true,
                     MinPromptTokens = 0,
                     MaxPromptTokens = 999999,
-                    MaxContextTokens = isCombined ? 96000 : 320000,
+                    MaxContextTokens = 128000,
                     RequiresWorkers = isCombined ? ["rtx3060"] : isPd ? ["p100"] : [],
                 },
                 EngineConfig = null,

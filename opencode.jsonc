@@ -13,28 +13,28 @@
         "dense-27b-combined": {
           "name": "Qwen 3.6 27B Dense (COMBINED RTX 5060 Ti + 3060)",
           "limit": {
-            "context": 96000,
+            "context": 128000,
             "output": 32000
           }
         },
         "moe-35b-solo": {
           "name": "Qwen 3.6 35B-A3B MoE (SOLO RTX 5060 Ti)",
           "limit": {
-            "context": 320000,
+            "context": 128000,
             "output": 32000
           }
         },
         "moe-35b-pd": {
           "name": "Qwen 3.6 35B-A3B MoE (P/D Split: RTX prefill + P100 decode)",
           "limit": {
-            "context": 320000,
+            "context": 128000,
             "output": 32000
           }
         },
         "hydra-auto": {
           "name": "Hydra Auto (picks best model per prompt)",
           "limit": {
-            "context": 320000,
+            "context": 128000,
             "output": 32000
           }
         }
