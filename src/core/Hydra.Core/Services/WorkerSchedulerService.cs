@@ -140,33 +140,43 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		// Model config routing: when the client sends "hydra-auto" or a known
 		// model alias, route through AutoRouter to select the best worker plan.
+		// Unknown models are rejected with 400.
 		if (request.TryGetValue("model", out var modelRaw))
 		{
 			var modelStr = modelRaw is string ms ? ms
 				: modelRaw is System.Text.Json.JsonElement mje && mje.ValueKind == System.Text.Json.JsonValueKind.String ? mje.GetString()
 				: null;
-			if (!string.IsNullOrWhiteSpace(modelStr)
-				&& (modelStr == "hydra-auto" || ModelRegistry.RegisteredAliases.Contains(modelStr)))
+			if (!string.IsNullOrWhiteSpace(modelStr))
 			{
-				try
+				if (modelStr == "hydra-auto" || ModelRegistry.RegisteredAliases.Contains(modelStr))
 				{
-					var loader = ModelConfigLoader.Instance;
-					var autoResult = AutoRouter.Resolve(_cfg, loader, _tracker, _health, _ledger,
-						sessionId, estimatedTokens, estimatedTokens + maxTokens, modelStr);
-					if (autoResult is { } result)
+					try
 					{
-						_log.Information("autoroute_resolved Sid={Sid} Model={Model} Head={Head} Peer={Peer} Mode={Mode}",
-							sessionId, result.ModelAlias, result.Head.Name,
-							result.Peer?.Name ?? "none", result.Mode ?? "solo");
-						// Stamp the resolved alias onto the item so downstream
-						// paths (hydra_config injection, decode) use the correct model.
-						item.Request["model"] = result.ModelAlias;
-						item.Request["__auto_model_alias"] = result.ModelAlias;
+						var loader = ModelConfigLoader.Instance;
+						var autoResult = AutoRouter.Resolve(_cfg, loader, _tracker, _health, _ledger,
+							sessionId, estimatedTokens, estimatedTokens + maxTokens, modelStr);
+						if (autoResult is { } result)
+						{
+							_log.Information("autoroute_resolved Sid={Sid} Model={Model} Head={Head} Peer={Peer} Mode={Mode}",
+								sessionId, result.ModelAlias, result.Head.Name,
+								result.Peer?.Name ?? "none", result.Mode ?? "solo");
+							// Stamp the resolved alias onto the item so downstream
+							// paths (hydra_config injection, decode) use the correct model.
+							item.Request["model"] = result.ModelAlias;
+							item.Request["__auto_model_alias"] = result.ModelAlias;
+						}
+					}
+					catch (Exception ex)
+					{
+						_log.Warning(ex, "autoroute_failed Sid={Sid} Model={Model}", sessionId, modelStr);
 					}
 				}
-				catch (Exception ex)
+				else
 				{
-					_log.Warning(ex, "autoroute_failed Sid={Sid} Model={Model}", sessionId, modelStr);
+					// Unknown model — reject with OpenAI-compatible error
+					_log.Warning("unknown_model Sid={Sid} Model={Model}", sessionId, modelStr);
+					throw new InvalidOperationException(
+						$"model_not_found: '{modelStr}'. Registered models: [{string.Join(", ", ModelRegistry.RegisteredAliases)}], hydra-auto");
 				}
 			}
 		}
