@@ -18,6 +18,8 @@ mode (expert-split, see "COMBINED engine mode" below).
 5. Active milestone: **Llama-Engine — P/D split mix-quant** (M-Perf done); see
    `docs/milestone-perf.md` for the completed perf track + `DevelopmentRunBook.md` for
    build/run/test. Live board: GitHub Project (`docs/GITHUB_PROJECT_SETUP.md`).
+6. **`docs/PORTS_AND_ENV.md`** — every service, port, env var, and deploy-flow gotcha
+   (10 min, read this before touching any port or Quadlet)
 
 ## Architecture
 Client → Hydra.Core :9000 [C#] → Hydra Head [Go] (one per GPU node, RTX 5060 Ti +
