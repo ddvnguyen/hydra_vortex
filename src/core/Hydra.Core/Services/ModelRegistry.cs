@@ -45,6 +45,23 @@ public static class ModelRegistry
     {
         _entries.Clear();
 
+        // Backward-compat: "balanced" maps to moe-35b-solo (used by hydra/balanced in opencode global config)
+        _entries["balanced"] = new EngineConfig(
+            ModelAlias: "balanced",
+            ModelPath: "/models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+            NGpuLayers: 99,
+            NCpuMoe: 8,
+            NCtx: 320000,
+            OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" },
+            ContBatching: true,
+            Fit: false,
+            UbatchSize: 512,
+            SpecType: "draft-mtp",
+            SpecDraftNMax: 3,
+            SpecDraftPMin: 0.75f,
+            SpecDraftNgl: 0
+        );
+
         _entries["moe-35b-solo"] = new EngineConfig(
             ModelAlias: "moe-35b-solo",
             ModelPath: "/models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
