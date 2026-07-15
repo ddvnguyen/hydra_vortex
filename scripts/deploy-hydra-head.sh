@@ -109,8 +109,14 @@ build_core_image() {
 
   local stamp_file="$REPO_ROOT/bin/.hydra-core-source-hash"
   local source_hash
+  # Exclude obj/ and bin/ — those are dotnet build outputs that change
+  # on every local build even when no source file changed, which would
+  # make the hash unstable and force spurious rebuilds. Only hash files
+  # under the source tree (cs/csproj/props/sln).
   source_hash=$( \
-    find "$REPO_ROOT/src/core" -type f \( -name "*.cs" -o -name "*.csproj" -o -name "*.props" -o -name "*.sln" \) \
+    find "$REPO_ROOT/src/core" \
+      -type d \( -name obj -o -name bin \) -prune -o \
+      -type f \( -name "*.cs" -o -name "*.csproj" -o -name "*.props" -o -name "*.sln" \) -print \
       2>/dev/null | sort \
       | xargs sha256sum 2>/dev/null \
       | sha256sum | cut -c1-16)
