@@ -34,7 +34,12 @@ curl -s http://localhost:9700/health      # head (RTX 5060 Ti, ports 8080/9503)
 curl -s http://localhost:9701/health      # head (RTX 3060, ports 8081/9504)
 ss -tlnp | grep 9504                       # rtx3060's unified RPC port (Hydra state-streaming + ggml-RPC dispatch)
 curl -s http://localhost:13133/ | head -1   # OTel Collector health
+curl -s http://localhost:28081/ 2>/dev/null | head -1   # Grafana image renderer (was :8081 until 2026-07-15 — see #440)
 ```
+
+> For a full table of every service, port, env var, and deploy-flow gotcha,
+> see [`docs/PORTS_AND_ENV.md`](./PORTS_AND_ENV.md). The new doc is the
+> canonical reference; this file just covers the hydra pod.
 
 ## The pod
 
@@ -45,6 +50,14 @@ pod_hydra-system
   ├── hydra-system_head-rtx_1     (Go agent, port 9700, llama :8080, sidecars :9100/:9835)
   └── hydra-system_head-rtx3060_1 (Go agent, port 9701, llama :8081, sidecars, ggml-RPC :9504)
 ```
+
+**Port-8081 collision warning:** the rtx3060's llama-server needs host
+port 8081 free. The Grafana image renderer used to squat on 8081, which
+crash-looped the rtx3060 head (91+ restart cycles). Moved to 28081 in
+PR #440. If you ever change `infra-renderer`'s port, also update
+`GF_RENDERING_SERVER_URL` in the grafana Quadlet/compose and verify
+`workers.json`'s `rtx3060.llama_url` still points at the new rtx3060
+llama port. See [`docs/PORTS_AND_ENV.md` §4](./PORTS_AND_ENV.md#4-hardcoded-port-references).
 
 **Why one pod, not two separate containers:**
 - core + heads need to talk over `127.0.0.1` (core's `Store` API
