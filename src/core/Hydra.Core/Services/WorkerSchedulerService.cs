@@ -567,6 +567,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (entry.NPast > 0 && entry.NPast > _cfg.AtomicThreshold * 4
 					&& item.EstimatedTokens < entry.NPast * _cfg.NPastGuardThreshold)
 				{
+					// Issue #435: surface how often this predicate evaluates true,
+					// even when downstream eviction/save may fail. The {reason}
+					// label distinguishes this in-RouteAsync check from any
+					// future guards in the same hot path.
+					CoordinatorMetrics.WarmSlotEvictedForShortPrompt.WithLabels("warm_slot_n_past_guard").Inc();
 					_log.Warning("n_past_guard Sid={Sid} NPast={N} Est={E}",
 						item.SessionId, entry.NPast, item.EstimatedTokens);
 					// A1: same leak window — detach + dispose in finally around the save RPC.
