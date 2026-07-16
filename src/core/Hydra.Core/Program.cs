@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Runtime.InteropServices;
 
 Log.Logger = HydraLogging.CreateLogger("store");
 Log.Information("Starting Hydra.Store at {BootTime}", DateTime.UtcNow);
@@ -21,6 +22,15 @@ Console.CancelKeyPress += (_, e) =>
     e.Cancel = true;
     mainCts.Cancel();
 };
+// Console.CancelKeyPress only fires on SIGINT (Ctrl+C); container stop/recreate
+// sends SIGTERM. The store RPC/GC/write-behind tasks below only observe mainCts,
+// so without this the process survives SIGTERM in a non-listening zombie state
+// instead of exiting for `restart: always` to kick in.
+using var sigtermReg = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx =>
+{
+    ctx.Cancel = true;
+    mainCts.Cancel();
+});
 var ct = mainCts.Token;
 
 await using var metadata = new StoreMetadata(cfg.PgConn);
