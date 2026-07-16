@@ -1470,6 +1470,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// Time-based guard: fail if stuck for more than 60 seconds
 					// (configurable: prevents infinite queueing when all slots
 					// are permanently occupied by other processes).
+					// NOTE: ElapsedMs starts at WorkItem construction (includes
+					// queue-wait time), so under heavy load this guard may fire
+					// sooner than 60s of actual BUSY time.
 					if (item.ElapsedMs > 60_000)
 					{
 						item.Error = new InvalidOperationException(

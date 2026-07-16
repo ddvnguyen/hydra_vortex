@@ -7,6 +7,11 @@ namespace Tests.Core.Services;
 
 public class AutoRouterTests
 {
+    // Fake slot verification — always returns true (slot is warm and valid).
+    private static readonly Func<WorkerConfig, SessionEntry, string, Task<bool>> FakeVerifyWarm = (_, _, _) => Task.FromResult(true);
+
+    // Fake slot verification — returns false (slot probe failed).
+    private static readonly Func<WorkerConfig, SessionEntry, string, Task<bool>> FakeVerifyFailed = (_, _, _) => Task.FromResult(false);
     private static CoordinatorConfig MakeConfig() => new()
     {
         WarmSlotVerificationEnabled = false,
@@ -103,10 +108,39 @@ public class AutoRouterTests
 
         // Simulate a turn with prompt tokens > 2048 (past solo's routing window)
         var result = AutoRouter.Resolve(cfg, loader, tracker, health, ledger, sid,
-            promptTokens: 4096, estTotalContext: 6000, requestedModel: "hydra-auto");
+            promptTokens: 4096, estTotalContext: 6000, requestedModel: "hydra-auto",
+            verifySlot: FakeVerifyWarm);
 
         Assert.NotNull(result);
         Assert.Equal("moe-35b-solo", result!.Value.ModelAlias);
+        Assert.Equal("warm", result!.Value.Mode);
+    }
+
+    [Fact]
+    public void Step0_WarmSession_ProbeFailed_StillPinsBoundModel()
+    {
+        // Slot probe fails (engine down, timeout, etc.) but BoundModel
+        // is set — must return cold_bound fallback on same model, never
+        // flip to a different model.
+        var cfg = MakeConfig();
+        var loader = MakeLoader();
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("rtx", 2);
+        tracker.InitWorker("p100", 1);
+        var health = new TestHealthMonitor();
+        var ledger = new SessionLedger();
+        const string sid = "test-session-probe-fail";
+        ledger.Register(sid, "rtx", slotId: 0, nPast: 1000);
+        ledger.UpdateBoundModel(sid, "moe-35b-solo");
+
+        // Slot probe fails
+        var result = AutoRouter.Resolve(cfg, loader, tracker, health, ledger, sid,
+            promptTokens: 4096, estTotalContext: 6000, requestedModel: "hydra-auto",
+            verifySlot: FakeVerifyFailed);
+
+        Assert.NotNull(result);
+        Assert.Equal("moe-35b-solo", result!.Value.ModelAlias);
+        Assert.Equal("cold_bound", result!.Value.Mode);
     }
 
     [Fact]

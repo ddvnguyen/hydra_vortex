@@ -34,6 +34,7 @@ public static class AutoRouter
     /// <param name="promptTokens">Estimated prompt token count.</param>
     /// <param name="estTotalContext">Estimated total context (prompt + history + output).</param>
     /// <param name="requestedModel">Model from request body (alias or "hydra-auto").</param>
+    /// <param name="verifySlot">Optional seam for slot verification (tests inject fakes; null = use Router.VerifyWarmSlotAsync).</param>
     /// <returns>Result with model + workers, or null if nothing serviceable.</returns>
     public static Result? Resolve(
         CoordinatorConfig cfg,
@@ -44,7 +45,8 @@ public static class AutoRouter
         string sessionId,
         int promptTokens,
         int estTotalContext,
-        string? requestedModel)
+        string? requestedModel,
+        Func<WorkerConfig, SessionEntry, string, Task<bool>>? verifySlot = null)
     {
         // If a specific model was requested (not auto), skip auto-routing logic
         // but still build the worker plan for that model.
@@ -54,7 +56,7 @@ public static class AutoRouter
         }
 
         // STEP 0: Warm session affinity (highest priority, D7)
-        var warmResult = TryWarmAffinity(cfg, loader, tracker, health, ledger, sessionId);
+        var warmResult = TryWarmAffinity(cfg, loader, tracker, health, ledger, sessionId, verifySlot);
         if (warmResult != null)
             return warmResult.Value;
 
@@ -86,7 +88,8 @@ public static class AutoRouter
     private static Result? TryWarmAffinity(
         CoordinatorConfig cfg, ModelConfigLoader loader,
         IWorkerTracker tracker, IHealthMonitorService health,
-        ISessionLedger ledger, string sessionId)
+        ISessionLedger ledger, string sessionId,
+        Func<WorkerConfig, SessionEntry, string, Task<bool>>? verifySlot = null)
     {
         if (string.IsNullOrEmpty(sessionId)) return null;
         var entry = ledger.Lookup(sessionId);
@@ -94,19 +97,38 @@ public static class AutoRouter
 
         // Find the worker this session is warm on
         var worker = cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
-        if (worker == null || !tracker.IsFree(worker.Name) || !health.IsHealthy(worker.Name))
-            return null;
+        if (worker == null) return null;
 
-        // Verify the warm slot is still valid (sync call to async helper)
-        var slotOk = Router.VerifyWarmSlotAsync(worker, entry, traceId: "")
-            .GetAwaiter().GetResult();
-        if (!slotOk) return null;
+        // PROBE: verify the warm slot is still valid.
+        // Two decisions here that must be separated:
+        //   1) Which model — MUST stay pinned to BoundModel (mismatch = KV corruption)
+        //   2) Which slot / warm-vs-cold — may safely fall back to cold re-prefill on same model
+        var probeOk = false;
+        if (tracker.IsFree(worker.Name) && health.IsHealthy(worker.Name))
+        {
+            var verifyFn = verifySlot ?? ((w, e, t) => Router.VerifyWarmSlotAsync(w, e, t));
+            probeOk = verifyFn(worker, entry, "")
+                .GetAwaiter().GetResult();
+        }
 
-        _log.Information("auto_route_warm_affinity Session={Session} Model={Model} Node={Node}",
-            sessionId, entry.BoundModel, worker.Name);
+        if (probeOk)
+        {
+            // Happy path: warm slot is live, use it directly
+            _log.Information("auto_route_warm_affinity Session={Session} Model={Model} Node={Node}",
+                sessionId, entry.BoundModel, worker.Name);
+        }
+        else
+        {
+            // Probe failed (slot busy, engine down, network blip, etc.)
+            // but we MUST still honor BoundModel. Route a cold re-prefill
+            // on the same model — never fall through to a different model
+            // which would cause cross-model KV reuse → corruption.
+            _log.Information("auto_route_bound_cold_fallback Session={Session} Model={Model} Node={Node}",
+                sessionId, entry.BoundModel, worker.Name);
+        }
 
         var engineConfig = loader.ResolveEngineConfig(entry.BoundModel);
-        return new Result(entry.BoundModel, worker, null, null, engineConfig, "warm");
+        return new Result(entry.BoundModel, worker, null, null, engineConfig, probeOk ? "warm" : "cold_bound");
     }
 
     // ── STEP 1: Candidate Filtering ────────────────────────────────
