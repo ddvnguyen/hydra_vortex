@@ -28,6 +28,7 @@ public sealed class SessionLedger : ISessionLedger
     public void UpdateLastUsed(string sid) { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.LastUsed = DateTime.UtcNow; } }
     public void UpdateNPast(string sid, int nPast) { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.NPast = nPast; } }
     public void UpdateNPromptTokens(string sid, int n) { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.NPromptTokens = n; } }
+    public void UpdateBoundModel(string sid, string boundModel) { if (_sessions.TryGetValue(sid, out var e)) lock (e) { if (string.IsNullOrEmpty(e.BoundModel)) e.BoundModel = boundModel; } }
 
     public void MarkEvicted(string sid)
     { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.SlotFreed = true; e.HasStoreState = true; } }
