@@ -173,10 +173,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								sessionId, result.ModelAlias, result.Head.Name,
 								result.Peer?.Name ?? "none", result.DecodeWorker?.Name ?? "none",
 								result.Mode ?? "solo");
-							// Stamp the resolved alias onto the item so downstream
-							// paths (hydra_config injection, decode) use the correct model.
-							item.Request["model"] = result.ModelAlias;
-							item.Request["__auto_model_alias"] = result.ModelAlias;
+						// Stamp the resolved alias onto the item so downstream
+						// paths (hydra_config injection, decode) use the correct model.
+						item.Request["model"] = result.ModelAlias;
+						item.Request["__auto_model_alias"] = result.ModelAlias;
+
+						// FIX #443 P0: persist BoundModel on the session ledger so
+						// STEP 0 (TryWarmAffinity) pins future turns to this model.
+						_ledger.UpdateBoundModel(sessionId, result.ModelAlias);
 
 							// Wire AutoRouter's worker plan directly into the item,
 							// bypassing the old threshold-based ClassifyRequestType/ColdRouteAsync.
@@ -2268,7 +2272,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				EngineConfig? engineConfig = null;
 				try
 				{
-					engineConfig = ModelConfigLoader.Instance.ResolveEngineConfig(w.ModelAlias);
+					// FIX #443 P1: decode role uses DecodeModelFileName for mix-quant
+					// P/D split (P100 loads Q5_K-balanced, not Q3_K-mini).
+					var isDecodeRole = item.RouteType == "cold_pd";
+					engineConfig = ModelConfigLoader.Instance.ResolveEngineConfig(w.ModelAlias, isDecodeRole);
 				}
 				catch (InvalidOperationException)
 				{
