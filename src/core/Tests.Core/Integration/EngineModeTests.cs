@@ -282,7 +282,7 @@ public sealed class EngineModeTests
             "Large request should attach the pipeline peer");
         var attach = f.Rpc.PayloadAsUtf8(OpCode.EnginePipelineAttach);
         Assert.Contains("ot_split", attach);
-        Assert.Contains("PEER", attach);
+        Assert.Contains("peer", attach);
         // Decode itself always goes through the HTTP proxy (issue #273 hotfix);
         // PIPELINE only changes which tensors the head/peer own underneath.
         Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
