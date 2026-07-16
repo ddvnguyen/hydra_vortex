@@ -1456,7 +1456,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else if (prefillResult == null)
 				{
-					// Slot is busy (BUSY) or engine error — release the current slot.
+					// Slot is busy (BUSY) — release the current slot lease and
+					// re-enqueue. The evaluator loop (woken by SignalEvaluator()
+					// when any GPU releases a slot) will re-dispatch this item
+					// when a slot becomes available.
 					if (item.PrefillLease != null)
 					{
 						await item.PrefillLease.DisposeAsync();
@@ -1464,37 +1467,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					}
 					item.RetryCount++;
 
-					if (item.RetryCount >= WorkItem.MaxRetries)
+					// Time-based guard: fail if stuck for more than 60 seconds
+					// (configurable: prevents infinite queueing when all slots
+					// are permanently occupied by other processes).
+					if (item.ElapsedMs > 60_000)
 					{
-						// All retries exhausted — this is a configuration error:
-						// HydraCore expects the engine RPC (0x42) to accept prefill,
-						// but every slot is permanently BUSY. Either the engine binary
-						// doesn't support EnginePrefill, the slot count is misconfigured,
-						// or another process is holding all slots.
 						item.Error = new InvalidOperationException(
-							$"EnginePrefill RPC returned BUSY after {item.RetryCount} retries on {w.Name} " +
-							$"(slot={slotId}). Check: (1) llama-engine binary supports opcode 0x42, " +
+							$"EnginePrefill RPC returned BUSY for {item.ElapsedMs}ms on {w.Name} " +
+							$"(slot={slotId}, retries={item.RetryCount}). " +
+							$"Check: (1) llama-engine binary supports opcode 0x42, " +
 							$"(2) slot count matches HydraCore config, " +
 							$"(3) no other process holds all slots.");
-						_log.Error("prefill_engine_busy_exhausted Sid={Sid} Worker={W} Slot={Slot} Retries={R}",
-							item.SessionId, w.Name, slotId, item.RetryCount);
+						_log.Error("prefill_engine_busy_timed_out Sid={Sid} Worker={W} Slot={Slot} Retries={R} ElapsedMs={Ms}",
+							item.SessionId, w.Name, slotId, item.RetryCount, item.ElapsedMs);
 						return WorkItemState.Failed;
 					}
 
-					// Try a different slot on the same worker
-					if (_tracker.TryAcquireSlot(w.Name, out var newSlot, "prefill-retry"))
-					{
-						item.PrefillSlot = newSlot;
-						item.PrefillLease = new SlotLease(w.Name, newSlot, item.SessionId,
-							LeaseLifetime.Short, _tracker);
-						_log.Information("prefill_slot_retry Sid={Sid} Worker={W} Old={Old} New={New} Retry={R}",
-							item.SessionId, w.Name, slotId, newSlot, item.RetryCount);
-						return WorkItemState.Prefill;
-					}
-
-					// No free slots — re-enqueue
-					_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R}/{Max} — re-enqueuing",
-						item.SessionId, w.Name, item.RetryCount, WorkItem.MaxRetries);
+					// Re-enqueue — the evaluator will re-dispatch when
+					// SignalEvaluator() fires on slot release.
+					_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R} ElapsedMs={Ms} — re-enqueuing",
+						item.SessionId, w.Name, item.RetryCount, item.ElapsedMs);
 					item.PrefillWorker = null;
 					item.PrefillSlot = null;
 					item.State = WorkItemState.None;
@@ -2803,8 +2795,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		else if (end == WorkItemState.Cancelled)
 			item.Completion.TrySetCanceled();
 		else
-			item.Completion.TrySetException(
-				item.Error ?? new InvalidOperationException("Failed"));
+		{
+			var ex = item.Error ?? new InvalidOperationException("Failed");
+			item.Completion.TrySetException(ex);
+			// Unblock the streaming path: SubmitAsync waits on StreamCompletion
+			// with a 600s timeout. Without this, a failed streaming request
+			// hangs the HTTP connection for the full 10 minutes.
+			if (item.IsStreaming)
+				item.StreamCompletion.TrySetException(ex);
+		}
 	}
 
 	// ── Timeline helpers ──
