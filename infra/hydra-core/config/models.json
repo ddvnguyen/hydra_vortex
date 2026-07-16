@@ -53,7 +53,7 @@
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 16000, "required_capabilities": 1 } },
       "routing": { "auto_eligible": true, "min_prompt_tokens": 2048, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["p100"] },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0, "allow_cross_model_kv_reuse": true },
+      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
       "node_config": { "rtx": "node-rtx.yaml", "p100": "node-p100.yaml" },
       "workers_file": "workers.json"
     },
