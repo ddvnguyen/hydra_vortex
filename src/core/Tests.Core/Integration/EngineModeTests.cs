@@ -734,22 +734,21 @@ public sealed class EngineModeTests
     // ─────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task ColdConcurrency_EnginePrefillFails_RetriesThenFails()
+    public async Task ColdConcurrency_EnginePrefillFails_FallsBackToHttp()
     {
         await using var f = new EngineFixture(runMode: "concurrency");
         f.Rpc.MakeEnginePrefillFail = true;   // simulates real engine error (BUSY/Error)
         var proxy = (TestCompletionProxy)f.Proxy;
 
         // > 2048 estimated tokens → routes as cold_concurrency → triggers EnginePrefill
-        // Real error should retry, then fail after MaxRetries.
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => f.SubmitAsync("sess_real_error", 5000, 100));
+        // After MaxRetries, falls back to HTTP prefill instead of failing.
+        await f.SubmitAsync("sess_real_error", 5000, 100);
 
         Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
             "Test setup failure: engine RPC was never called for cold_concurrency");
 
-        // Verify HTTP fallback did NOT fire — real errors retry, not HTTP fallback.
-        Assert.Empty(proxy.NonStreamingCalls);
+        // HTTP fallback SHOULD fire — engine failures fall back to HTTP prefill
+        Assert.NotEmpty(proxy.NonStreamingCalls);
     }
 
     [Fact]

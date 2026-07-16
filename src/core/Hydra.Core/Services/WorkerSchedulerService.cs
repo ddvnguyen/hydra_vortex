@@ -405,6 +405,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			foreach (var qi in snapshot)
 			{
 				if (ct.IsCancellationRequested) break;
+
+				// Skip requests whose client has disconnected — don't waste
+				// a GPU slot on a dead connection.
+				if (qi.WorkItem.IsCancelled)
+				{
+					_log.Information("evaluator_skip_cancelled Sid={Sid}", qi.WorkItem.SessionId);
+					lock (_queueLock) { _requestQueue.Remove(qi); }
+					continue;
+				}
+
 				if (!CanServeRequest(qi)) continue;
 
 				lock (_queueLock) { _requestQueue.Remove(qi); }
@@ -1382,6 +1392,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	// ── Gap 4: n_past tracking in prefill ──
 	private async Task<WorkItemState> PrefillAsync(WorkItem item, CancellationToken ct)
 	{
+		// Fast path: if the client disconnected while this item was queued/retrying,
+		// abort immediately instead of acquiring a slot for a dead request.
+		if (item.IsCancelled)
+		{
+			_log.Information("prefill_cancelled_early Sid={Sid}", item.SessionId);
+			return WorkItemState.Cancelled;
+		}
+
 		var w = item.PrefillWorker!;
 		var engineFailed = false;
 		string? engineFailReason = null;
@@ -1434,34 +1452,43 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else if (prefillResult == null)
 				{
-					// Slot is busy (BUSY) or engine error — release the
-					// prefill slot and enqueue for retry. The retry queue
-					// drains back to main when the active request finishes.
-					if (item.RetryCount >= WorkItem.MaxRetries)
-					{
-						_log.Error("prefill_retry_exhausted Sid={Sid} Worker={W} Slot={Slot} Retries={R}",
-							item.SessionId, w.Name, item.PrefillSlot, item.RetryCount);
-						if (item.PrefillLease != null)
-						{
-							await item.PrefillLease.DisposeAsync();
-							item.PrefillLease = null;
-						}
-						item.Error = new InvalidOperationException(
-							$"EnginePrefill RPC failed after {item.RetryCount} retries — slot permanently busy");
-						return WorkItemState.Failed;
-					}
-					_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Slot={Slot} Retry={R}/{Max} — enqueuing retry",
-						item.SessionId, w.Name, item.PrefillSlot, item.RetryCount, WorkItem.MaxRetries);
+					// Slot is busy (BUSY) or engine error — release the current slot.
 					if (item.PrefillLease != null)
 					{
 						await item.PrefillLease.DisposeAsync();
 						item.PrefillLease = null;
 					}
-					item.PrefillWorker = null;
-					item.PrefillSlot = null;
-					item.State = WorkItemState.None;
 					item.RetryCount++;
-					return WorkItemState.Retry;
+
+					// After MaxRetries, fall back to HTTP prefill instead of failing
+					if (item.RetryCount >= WorkItem.MaxRetries)
+					{
+						_log.Warning("prefill_engine_fallback Sid={Sid} Worker={W} Retries={R} — falling back to HTTP",
+							item.SessionId, w.Name, item.RetryCount);
+						engineFailed = true;
+						engineFailReason = $"EnginePrefill BUSY after {item.RetryCount} retries";
+						// Fall through to the HTTP prefill path below
+					}
+					// Try a different slot on the same worker
+					else if (_tracker.TryAcquireSlot(w.Name, out var newSlot, "prefill-retry"))
+					{
+						item.PrefillSlot = newSlot;
+						item.PrefillLease = new SlotLease(w.Name, newSlot, item.SessionId,
+							LeaseLifetime.Short, _tracker);
+						_log.Information("prefill_slot_retry Sid={Sid} Worker={W} Old={Old} New={New} Retry={R}",
+							item.SessionId, w.Name, slotId, newSlot, item.RetryCount);
+						return WorkItemState.Prefill;
+					}
+					else
+					{
+						// No free slots on this worker — re-enqueue
+						_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R}/{Max} — re-enqueuing",
+							item.SessionId, w.Name, item.RetryCount, WorkItem.MaxRetries);
+						item.PrefillWorker = null;
+						item.PrefillSlot = null;
+						item.State = WorkItemState.None;
+						return WorkItemState.Retry;
+					}
 				}
 				else
 				{
