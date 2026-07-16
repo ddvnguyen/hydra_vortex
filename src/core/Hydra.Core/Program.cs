@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Runtime.InteropServices;
 
 Log.Logger = HydraLogging.CreateLogger("store");
 Log.Information("Starting Hydra.Store at {BootTime}", DateTime.UtcNow);
@@ -16,12 +17,20 @@ Log.Information("Starting Hydra.Store at {BootTime}", DateTime.UtcNow);
 var cfg = new StoreConfig();
 cfg.Validate();
 
+// These raw store RPC/GC/write-behind tasks run outside IHost, so unlike the
+// embedded coordinator WebApplication below they get no automatic signal
+// handling — PosixSignalRegistration covers both Ctrl+C (SIGINT) and container
+// stop/recreate (SIGTERM). Without SIGTERM here, the process used to survive
+// it in a non-listening zombie state instead of exiting for `restart: always`
+// to kick in.
 using var mainCts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) =>
+void HandleShutdownSignal(PosixSignalContext ctx)
 {
-    e.Cancel = true;
+    ctx.Cancel = true;
     mainCts.Cancel();
-};
+}
+using var sigintReg = PosixSignalRegistration.Create(PosixSignal.SIGINT, HandleShutdownSignal);
+using var sigtermReg = PosixSignalRegistration.Create(PosixSignal.SIGTERM, HandleShutdownSignal);
 var ct = mainCts.Token;
 
 await using var metadata = new StoreMetadata(cfg.PgConn);
