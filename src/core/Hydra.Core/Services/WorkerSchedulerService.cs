@@ -1460,17 +1460,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					}
 					item.RetryCount++;
 
-					// After MaxRetries, fall back to HTTP prefill instead of failing
 					if (item.RetryCount >= WorkItem.MaxRetries)
 					{
-						_log.Warning("prefill_engine_fallback Sid={Sid} Worker={W} Retries={R} — falling back to HTTP",
-							item.SessionId, w.Name, item.RetryCount);
-						engineFailed = true;
-						engineFailReason = $"EnginePrefill BUSY after {item.RetryCount} retries";
-						// Fall through to the HTTP prefill path below
+						// All retries exhausted — this is a configuration error:
+						// HydraCore expects the engine RPC (0x42) to accept prefill,
+						// but every slot is permanently BUSY. Either the engine binary
+						// doesn't support EnginePrefill, the slot count is misconfigured,
+						// or another process is holding all slots.
+						item.Error = new InvalidOperationException(
+							$"EnginePrefill RPC returned BUSY after {item.RetryCount} retries on {w.Name} " +
+							$"(slot={slotId}). Check: (1) llama-engine binary supports opcode 0x42, " +
+							$"(2) slot count matches HydraCore config, " +
+							$"(3) no other process holds all slots.");
+						_log.Error("prefill_engine_busy_exhausted Sid={Sid} Worker={W} Slot={Slot} Retries={R}",
+							item.SessionId, w.Name, slotId, item.RetryCount);
+						return WorkItemState.Failed;
 					}
+
 					// Try a different slot on the same worker
-					else if (_tracker.TryAcquireSlot(w.Name, out var newSlot, "prefill-retry"))
+					if (_tracker.TryAcquireSlot(w.Name, out var newSlot, "prefill-retry"))
 					{
 						item.PrefillSlot = newSlot;
 						item.PrefillLease = new SlotLease(w.Name, newSlot, item.SessionId,
@@ -1479,16 +1487,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							item.SessionId, w.Name, slotId, newSlot, item.RetryCount);
 						return WorkItemState.Prefill;
 					}
-					else
-					{
-						// No free slots on this worker — re-enqueue
-						_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R}/{Max} — re-enqueuing",
-							item.SessionId, w.Name, item.RetryCount, WorkItem.MaxRetries);
-						item.PrefillWorker = null;
-						item.PrefillSlot = null;
-						item.State = WorkItemState.None;
-						return WorkItemState.Retry;
-					}
+
+					// No free slots — re-enqueue
+					_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R}/{Max} — re-enqueuing",
+						item.SessionId, w.Name, item.RetryCount, WorkItem.MaxRetries);
+					item.PrefillWorker = null;
+					item.PrefillSlot = null;
+					item.State = WorkItemState.None;
+					return WorkItemState.Retry;
 				}
 				else
 				{

@@ -141,6 +141,16 @@ internal sealed class StreamingFixture : IAsyncDisposable
 			sp, Serilog.Log.Logger);
 		Scheduler.AgentClientFactory = (_, _) => Rpc;
 
+		// Register test model so the "nano" alias used by these tests
+		// passes the unknown-model validation in SubmitAsync.
+		ModelRegistry.ClearForTest();
+		ModelRegistry.RegisterForTest(new EngineConfig(
+			ModelAlias: "nano",
+			ModelPath: "/dev/null",
+			NGpuLayers: 0, NCtx: 2048,
+			ContBatching: true, Fit: false, UbatchSize: 512,
+			SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
+
 		_runTask = Scheduler.RunAsync(_runCts.Token);
 	}
 
