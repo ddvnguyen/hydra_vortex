@@ -79,6 +79,7 @@ public static class Router
 		return SummarizeMessages(messages).PrefixHash;
 	}
 
+	[Obsolete("Use AutoRouter.Resolve instead")]
 	public static WorkerConfig? PickBestPrefillWorker(
 		List<WorkerConfig> workers, IWorkerTracker tracker,
 		IHealthMonitorService health,
@@ -95,6 +96,7 @@ public static class Router
 			.FirstOrDefault();
 	}
 
+	[Obsolete("Use AutoRouter.Resolve instead")]
 	public static WorkerConfig? PickBestDecodeWorker(
 		List<WorkerConfig> workers, IWorkerTracker tracker,
 		IHealthMonitorService health,
@@ -110,6 +112,7 @@ public static class Router
 			.FirstOrDefault();
 	}
 
+	[Obsolete("Use AutoRouter.Resolve instead")]
 	public static WorkerConfig? PickBestAtomicWorker(
 		List<WorkerConfig> workers, IWorkerTracker tracker,
 		IHealthMonitorService health,
@@ -171,6 +174,7 @@ public static class Router
 		return null;
 	}
 
+	[Obsolete("Use AutoRouter.Resolve instead")]
 	public static WorkerConfig? PickBestMixedWorker(
 		List<WorkerConfig> workers, IWorkerTracker tracker,
 		IHealthMonitorService health,

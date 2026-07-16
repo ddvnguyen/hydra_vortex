@@ -130,6 +130,7 @@ services:
       # switch workers, e.g.:
       #   HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers-27b.json
       - HYDRA_COORD_CONFIG_FILE=${HYDRA_COORD_CONFIG_FILE:-/etc/hydra/config/workers.json}
+      - HYDRA_COORD_MODELS_FILE=/etc/hydra/config/models.json
       - HYDRA_COORD_ENABLE_CHUNKS=true
       # ── Two-engine "work together" engine mode ────────────────────────
       # The COMBINED engine-mode lets the head (rtx, sm_120) borrow the

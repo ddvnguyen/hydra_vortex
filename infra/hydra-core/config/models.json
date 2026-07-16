@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "engine_defaults": {
+    "flash_attn": true,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "kv_unified": true,
+    "cont_batching": true,
+    "cache_prompt": true,
+    "cache_reuse": 64,
+    "reasoning": true,
+    "jinja": true,
+    "context_shift": true,
+    "chat_template_kwargs": "{\"preserve_thinking\": true}",
+    "ubatch_size": 512,
+    "fit": false
+  },
+  "auto_routing": {
+    "enabled": true,
+    "default_model": "moe-35b-solo",
+    "swap_cost_budget_s": 30
+  },
+  "models": {
+    "balanced": {
+      "description": "Backward-compat alias for hydra/balanced → moe-35b-solo (direct lookup only, not auto-routed)",
+      "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+      "decode_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+      "load_time_s": 40,
+      "quality_tier": 1,
+      "requirements": { "min_vram_mb": 8000, "required_capabilities": 1 },
+      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0, "cont_batching": true, "fit": false, "ubatch_size": 512, "cache_prompt": true, "cache_reuse": 64, "reasoning": true, "jinja": true, "context_shift": true, "chat_template_kwargs": "{\"preserve_thinking\": true}" },
+      "routing": { "auto_eligible": false, "min_prompt_tokens": 0, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": [] }
+    },
+    "moe-35b-solo": {
+      "description": "Qwen 3.6 35B-A3B MoE, SOLO on RTX 5060 Ti",
+      "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+      "decode_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+      "load_time_s": 40,
+      "quality_tier": 1,
+      "requirements": { "min_vram_mb": 12000, "required_capabilities": 1 },
+      "routing": { "auto_eligible": true, "min_prompt_tokens": 0, "max_prompt_tokens": 2048, "max_context_tokens": 128000, "requires_workers": [] },
+      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
+      "node_config": { "rtx": "node-rtx.yaml" },
+      "workers_file": "workers.json"
+    },
+    "moe-35b-pd": {
+      "description": "Qwen 3.6 35B-A3B MoE, P/D split (RTX prefill Q3_K-mini + P100 decode Q5_K-balanced)",
+      "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+      "decode_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+      "load_time_s": 40,
+      "quality_tier": 2,
+      "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 16000, "required_capabilities": 1 } },
+      "routing": { "auto_eligible": true, "min_prompt_tokens": 2048, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["p100"] },
+      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
+      "node_config": { "rtx": "node-rtx.yaml", "p100": "node-p100.yaml" },
+      "workers_file": "workers.json"
+    },
+    "dense-27b-combined": {
+      "description": "Qwen 3.6 27B Dense, COMBINED layer-split (RTX 5060 Ti + RTX 3060)",
+      "prefill_model_file_name": "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+      "decode_model_file_name": "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+      "load_time_s": 45,
+      "quality_tier": 3,
+      "requirements": { "min_vram_mb": 12000, "required_capabilities": 7, "peer_requirements": { "min_vram_mb": 12000, "required_capabilities": 7 } },
+      "routing": { "auto_eligible": true, "min_prompt_tokens": 0, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["rtx3060"] },
+      "engine_config": { "n_gpu_layers": 65, "n_ctx": 128000, "split_mode": "layer", "tensor_split": [25.0, 40.0], "override_tensors": ["token_embd.weight=CPU"], "rope_scaling": "yarn", "rope_scale": 4.0, "yarn_orig_ctx": 32768, "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
+      "node_config": { "rtx": "node-rtx-27b-combined.yaml", "rtx3060": "node-rtx3060-27b.yaml" },
+      "workers_file": "workers-27b.json"
+    }
+  }
+}

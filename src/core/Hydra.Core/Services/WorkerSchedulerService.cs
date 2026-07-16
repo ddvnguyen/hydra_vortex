@@ -138,6 +138,80 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 		}
 
+		// Model config routing: when the client sends "hydra-auto" or a known
+		// model alias, route through AutoRouter to select the best worker plan.
+		// Unknown models are rejected with 400.
+		if (request.TryGetValue("model", out var modelRaw))
+		{
+			var modelStr = modelRaw is string ms ? ms
+				: modelRaw is System.Text.Json.JsonElement mje && mje.ValueKind == System.Text.Json.JsonValueKind.String ? mje.GetString()
+				: null;
+			_log.Information("model_routing_check Sid={Sid} ModelStr={Str}", sessionId, modelStr);
+			if (!string.IsNullOrWhiteSpace(modelStr))
+			{
+				var isAuto = modelStr == "hydra-auto";
+				var isReg = ModelRegistry.RegisteredAliases.Contains(modelStr);
+				_log.Information("model_routing_decision Sid={Sid} IsAuto={A} IsRegistered={R} Count={C}",
+					sessionId, isAuto, isReg, ModelRegistry.RegisteredAliases.Count);
+				if (isAuto || isReg)
+				{
+					try
+					{
+						var loader = ModelConfigLoader.InstanceOrNull;
+						if (loader == null)
+						{
+							_log.Debug("autoroute_skipped_no_loader Sid={Sid}", sessionId);
+							// No models.json loaded — fall through to old routing
+						}
+						else
+						{
+						var autoResult = AutoRouter.Resolve(_cfg, loader, _tracker, _health, _ledger,
+							sessionId, estimatedTokens, estimatedTokens + maxTokens, modelStr);
+						if (autoResult is { } result)
+						{
+							_log.Information("autoroute_resolved Sid={Sid} Model={Model} Head={Head} Peer={Peer} Decode={Decode} Mode={Mode}",
+								sessionId, result.ModelAlias, result.Head.Name,
+								result.Peer?.Name ?? "none", result.DecodeWorker?.Name ?? "none",
+								result.Mode ?? "solo");
+						// Stamp the resolved alias onto the item so downstream
+						// paths (hydra_config injection, decode) use the correct model.
+						item.Request["model"] = result.ModelAlias;
+						item.Request["__auto_model_alias"] = result.ModelAlias;
+
+						// FIX #443 P0: persist BoundModel on the session ledger so
+						// STEP 0 (TryWarmAffinity) pins future turns to this model.
+						_ledger.UpdateBoundModel(sessionId, result.ModelAlias);
+
+							// Wire AutoRouter's worker plan directly into the item,
+							// bypassing the old threshold-based ClassifyRequestType/ColdRouteAsync.
+							// This ensures P/D split (Mode="pd") and COMBINED (Mode="combined")
+							// actually use the workers AutoRouter selected.
+							if (result.Mode is "pd" or "combined")
+							{
+								item.ForceMode = result.Mode;
+							}
+						}
+						else
+						{
+							_log.Information("autoroute_returned_null Sid={Sid} Model={Model}", sessionId, modelStr);
+						}
+						}
+					}
+					catch (Exception ex)
+					{
+						_log.Warning(ex, "autoroute_failed Sid={Sid} Model={Model}", sessionId, modelStr);
+					}
+				}
+				else
+				{
+					// Unknown model — reject with OpenAI-compatible error
+					_log.Warning("unknown_model Sid={Sid} Model={Model}", sessionId, modelStr);
+					throw new InvalidOperationException(
+						$"model_not_found: '{modelStr}'. Registered models: [{string.Join(", ", ModelRegistry.RegisteredAliases)}], hydra-auto");
+				}
+			}
+		}
+
 		_log.Information("request_received Sid={Sid} Stream={Stream}", sessionId, item.IsStreaming);
 
 		// Classify the request type based on estimated tokens and session state.
@@ -283,6 +357,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			return item.ForceMode.ToLowerInvariant() switch
 			{
 				"combined" => RequestType.Combined,
+				"pd" => RequestType.Prefill,
 				_ => RequestType.Atomic,
 			};
 		}
@@ -334,6 +409,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			foreach (var qi in snapshot)
 			{
 				if (ct.IsCancellationRequested) break;
+
+				// Skip requests whose client has disconnected — don't waste
+				// a GPU slot on a dead connection.
+				if (qi.WorkItem.IsCancelled)
+				{
+					_log.Information("evaluator_skip_cancelled Sid={Sid}", qi.WorkItem.SessionId);
+					lock (_queueLock) { _requestQueue.Remove(qi); }
+					continue;
+				}
+
 				if (!CanServeRequest(qi)) continue;
 
 				lock (_queueLock) { _requestQueue.Remove(qi); }
@@ -681,6 +766,45 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// without adjusting the system's threshold/capability config.
 		if (!string.IsNullOrWhiteSpace(item.ForceMode))
 		{
+			var mode = item.ForceMode.ToLowerInvariant();
+
+			// P/D split: prefill on head (RTX), decode on P100.
+			// This is cross-host routing — not a same-host combined mode.
+			if (mode == "pd")
+			{
+				var pdPfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
+				if (pdPfWorker != null && _tracker.TryAcquireSlot(pdPfWorker.Name, out var pdPfSlot, "prefill"))
+				{
+					// Find a decode worker that matches the decode requirements
+					var pdDecWorker = _cfg.Workers.FirstOrDefault(w => w.Name != pdPfWorker.Name
+						&& _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)
+						&& w.CanDecode);
+					if (pdDecWorker != null && _tracker.TryAcquireSlot(pdDecWorker.Name, out var pdDecSlot, "decode"))
+					{
+						item.RouteType = "cold_pd";
+						item.PrefillWorker = pdPfWorker;
+						item.PrefillSlot = pdPfSlot;
+						item.PrefillLease = new SlotLease(pdPfWorker.Name, pdPfSlot, item.SessionId,
+							LeaseLifetime.Short, _tracker);
+						item.DecodeWorker = pdDecWorker;
+						item.DecodeSlot = pdDecSlot;
+						item.DecodeLease = new SlotLease(pdDecWorker.Name, pdDecSlot, item.SessionId,
+							LeaseLifetime.Long, _tracker);
+						LastDispatchedNode = pdPfWorker.Name;
+						CoordinatorMetrics.RequestsTotal.WithLabels(pdPfWorker.Name, item.RouteType).Inc();
+						CoordinatorMetrics.RequestsTotalAll.Inc();
+						CoordinatorMetrics.ColdSessionStarts.Inc();
+						_log.Information("cold_pd_route Prefill={Pf} Decode={Dec} Est={Est}",
+							pdPfWorker.Name, pdDecWorker.Name, item.EstimatedTokens);
+						return _cfg.UseLlamaEngine ? WorkItemState.PrefixRestore : WorkItemState.ModelLoadPrefill;
+					}
+					// Decode worker not available — release prefill slot and fall through
+					_tracker.ReleaseSlot(pdPfWorker.Name, pdPfSlot);
+				}
+				_log.Warning("cold_pd_route_failed Est={Est}", item.EstimatedTokens);
+				// Fall through to normal routing
+			}
+
 			var forcePlan = ForceMultiEnginePlan(_cfg, _tracker, _health, item);
 			if (forcePlan is { } plan && TryAcquireMultiEngine(item, plan))
 				return WorkItemState.Decode;
@@ -790,6 +914,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		MultiEngineMode meMode;
 		if (mode == "combined")      meMode = MultiEngineMode.Combined;
 		else if (mode == "pipeline") meMode = MultiEngineMode.Pipeline;
+		else if (mode == "pd")       meMode = MultiEngineMode.Pipeline; // P/D split uses Pipeline routing
 		else return null;
 
 		foreach (var head in cfg.Workers
@@ -1271,6 +1396,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	// ── Gap 4: n_past tracking in prefill ──
 	private async Task<WorkItemState> PrefillAsync(WorkItem item, CancellationToken ct)
 	{
+		// Fast path: if the client disconnected while this item was queued/retrying,
+		// abort immediately instead of acquiring a slot for a dead request.
+		if (item.IsCancelled)
+		{
+			_log.Information("prefill_cancelled_early Sid={Sid}", item.SessionId);
+			return WorkItemState.Cancelled;
+		}
+
 		var w = item.PrefillWorker!;
 		var engineFailed = false;
 		string? engineFailReason = null;
@@ -1323,33 +1456,43 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else if (prefillResult == null)
 				{
-					// Slot is busy (BUSY) or engine error — release the
-					// prefill slot and enqueue for retry. The retry queue
-					// drains back to main when the active request finishes.
-					if (item.RetryCount >= WorkItem.MaxRetries)
-					{
-						_log.Error("prefill_retry_exhausted Sid={Sid} Worker={W} Slot={Slot} Retries={R}",
-							item.SessionId, w.Name, item.PrefillSlot, item.RetryCount);
-						if (item.PrefillLease != null)
-						{
-							await item.PrefillLease.DisposeAsync();
-							item.PrefillLease = null;
-						}
-						item.Error = new InvalidOperationException(
-							$"EnginePrefill RPC failed after {item.RetryCount} retries — slot permanently busy");
-						return WorkItemState.Failed;
-					}
-					_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Slot={Slot} Retry={R}/{Max} — enqueuing retry",
-						item.SessionId, w.Name, item.PrefillSlot, item.RetryCount, WorkItem.MaxRetries);
+					// Slot is busy (BUSY) — release the current slot lease and
+					// re-enqueue. The evaluator loop (woken by SignalEvaluator()
+					// when any GPU releases a slot) will re-dispatch this item
+					// when a slot becomes available.
 					if (item.PrefillLease != null)
 					{
 						await item.PrefillLease.DisposeAsync();
 						item.PrefillLease = null;
 					}
+					item.RetryCount++;
+
+					// Time-based guard: fail if stuck for more than 60 seconds
+					// (configurable: prevents infinite queueing when all slots
+					// are permanently occupied by other processes).
+					// NOTE: ElapsedMs starts at WorkItem construction (includes
+					// queue-wait time), so under heavy load this guard may fire
+					// sooner than 60s of actual BUSY time.
+					if (item.ElapsedMs > 60_000)
+					{
+						item.Error = new InvalidOperationException(
+							$"EnginePrefill RPC returned BUSY for {item.ElapsedMs}ms on {w.Name} " +
+							$"(slot={slotId}, retries={item.RetryCount}). " +
+							$"Check: (1) llama-engine binary supports opcode 0x42, " +
+							$"(2) slot count matches HydraCore config, " +
+							$"(3) no other process holds all slots.");
+						_log.Error("prefill_engine_busy_timed_out Sid={Sid} Worker={W} Slot={Slot} Retries={R} ElapsedMs={Ms}",
+							item.SessionId, w.Name, slotId, item.RetryCount, item.ElapsedMs);
+						return WorkItemState.Failed;
+					}
+
+					// Re-enqueue — the evaluator will re-dispatch when
+					// SignalEvaluator() fires on slot release.
+					_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R} ElapsedMs={Ms} — re-enqueuing",
+						item.SessionId, w.Name, item.RetryCount, item.ElapsedMs);
 					item.PrefillWorker = null;
 					item.PrefillSlot = null;
 					item.State = WorkItemState.None;
-					item.RetryCount++;
 					return WorkItemState.Retry;
 				}
 				else
@@ -2119,7 +2262,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			try
 			{
-				var engineConfig = ModelRegistry.Resolve(w.ModelAlias);
+				// Prefer ModelConfigLoader when available (data-driven config);
+				// fall back to ModelRegistry (hardcoded entries) otherwise.
+				EngineConfig? engineConfig = null;
+				try
+				{
+					// FIX #443 P1: decode role uses DecodeModelFileName for mix-quant
+					// P/D split (P100 loads Q5_K-balanced, not Q3_K-mini).
+					var isDecodeRole = item.RouteType == "cold_pd";
+					engineConfig = ModelConfigLoader.Instance.ResolveEngineConfig(w.ModelAlias, isDecodeRole);
+				}
+				catch (InvalidOperationException)
+				{
+					// ModelConfigLoader not initialized or alias not found —
+					// fall back to the static ModelRegistry.
+					engineConfig = ModelRegistry.Resolve(w.ModelAlias);
+				}
 				if (engineConfig is not null)
 				{
 					var hydraConfig = engineConfig.ToHydraConfigDict();
@@ -2640,8 +2798,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		else if (end == WorkItemState.Cancelled)
 			item.Completion.TrySetCanceled();
 		else
-			item.Completion.TrySetException(
-				item.Error ?? new InvalidOperationException("Failed"));
+		{
+			var ex = item.Error ?? new InvalidOperationException("Failed");
+			item.Completion.TrySetException(ex);
+			// Unblock the streaming path: SubmitAsync waits on StreamCompletion
+			// with a 600s timeout. Without this, a failed streaming request
+			// hangs the HTTP connection for the full 10 minutes.
+			if (item.IsStreaming)
+				item.StreamCompletion.TrySetException(ex);
+		}
 	}
 
 	// ── Timeline helpers ──

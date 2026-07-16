@@ -39,6 +39,7 @@ public static class MultiEngineRouter
     ///   - the chosen mode is enabled, the head advertises capability for it, and
     ///   - the head has a model alias that resolves via <see cref="ModelRegistry"/>.
     /// </summary>
+    [Obsolete("Use AutoRouter.Resolve instead")]
     public static Plan? Select(
         CoordinatorConfig cfg, List<WorkerConfig> workers,
         IWorkerTracker tracker, IHealthMonitorService health, int estTokens)

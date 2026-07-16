@@ -1,6 +1,7 @@
 using Hydra.Core;
 using Hydra.Core.Extensions;
 using Hydra.Core.Models;
+using Hydra.Core.Services;
 using Hydra.Shared;
 using Serilog;
 using Prometheus;
@@ -113,9 +114,24 @@ Console.Error.Flush();
 if (coordEnabled)
 {
     var coordCfg = new CoordinatorConfig();
-    coordCfg.Workers.AddRange(CoordinatorConfig.LoadWorkers());
-    if (coordCfg.Workers.Count > 0)
-    {
+        coordCfg.Workers.AddRange(CoordinatorConfig.LoadWorkers());
+        if (coordCfg.Workers.Count > 0)
+        {
+            // ── Initialize model config loader + registry (P0-1 fix) ──────
+            // Must happen before any service resolves ModelRegistry or ModelConfigLoader.
+            if (ModelConfigLoader.TryLoad())
+            {
+                ModelRegistry.Initialize(ModelConfigLoader.Instance);
+                Log.Information("model_config_loaded From={File} Aliases={Aliases}",
+                    coordCfg.ModelsFile ?? "(env)",
+                    string.Join(",", ModelRegistry.RegisteredAliases));
+            }
+            else
+            {
+                ModelRegistry.InitializeFallback();
+                ModelConfigLoader.InitializeFallback();
+                Log.Information("model_config_fallback Using hardcoded registry (HYDRA_COORD_MODELS_FILE not set)");
+            }
         coordCfg.Validate();
         Log.Information("coordinator_init Workers={Count} Mix={Mix}", coordCfg.Workers.Count, coordCfg.MixPrecisionEnabled);
         CoordinatorMetrics.MixPrecisionEnabled.Set(coordCfg.MixPrecisionEnabled ? 1 : 0);

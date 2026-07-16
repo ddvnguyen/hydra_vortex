@@ -17,7 +17,7 @@ namespace Hydra.Core.Models;
 /// wire opcodes. The on-the-wire JSON does not change in Phase 2a.
 /// </summary>
 public sealed record EngineConfig(
-    /// <summary>Model alias (e.g. "moe-35b-mini", "dense-27b-q5"). Matches WorkerConfig.ModelAlias.</summary>
+    /// <summary>Model alias (e.g. "moe-35b-solo", "dense-27b-combined"). Matches WorkerConfig.ModelAlias.</summary>
     string ModelAlias,
     /// <summary>Absolute path to the GGUF file on the engine host.</summary>
     string ModelPath,
@@ -41,7 +41,16 @@ public sealed record EngineConfig(
     string? SplitMode = null,
     double[]? TensorSplit = null,
     string[]? OverrideTensors = null,
-    string[]? RpcServers = null
+    string[]? RpcServers = null,
+    // ── engine_defaults fields (carried from models.json, emitted via hydra_config) ──
+    bool? FlashAttn = null,
+    bool? KvUnified = null,
+    bool? CachePrompt = null,
+    int? CacheReuse = null,
+    bool? Reasoning = null,
+    bool? Jinja = null,
+    bool? ContextShift = null,
+    string? ChatTemplateKwargs = null
 )
 {
     public Dictionary<string, object> ToHydraConfigDict()
@@ -87,6 +96,23 @@ public sealed record EngineConfig(
             config["override_tensor"] = string.Join("\n", ots);
         if (RpcServers is string[] rpcs && rpcs.Length > 0)
             config["rpc_servers"] = rpcs;
+        // engine_defaults fields
+        if (FlashAttn is bool fa)
+            config["flash_attn"] = fa;
+        if (KvUnified is bool ku)
+            config["kv_unified"] = ku;
+        if (CachePrompt is bool cp)
+            config["cache_prompt"] = cp;
+        if (CacheReuse is int cr)
+            config["cache_reuse"] = cr;
+        if (Reasoning is bool r)
+            config["reasoning"] = r;
+        if (Jinja is bool j)
+            config["jinja"] = j;
+        if (ContextShift is bool cs)
+            config["context_shift"] = cs;
+        if (ChatTemplateKwargs is string ctkw)
+            config["chat_template_kwargs"] = ctkw;
         return config;
     }
 }

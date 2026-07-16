@@ -149,7 +149,7 @@ public sealed class EngineModeTests
                         Role = multiEngine ? "head" : "standalone", PeerWorker = multiEngine ? "p100" : null,
                         PeerHost = "192.168.122.21", PeerPort = 9700,
                         PipelineCapable = multiEngine, CombinedCapable = multiEngine,
-                        ModelAlias = multiEngine ? "moe-35b-mini" : null },
+                        ModelAlias = multiEngine ? "moe-35b-solo" : null },
                     new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://192.168.122.21:8086", WorkerType = 2, Slots = p100Slots, PrefillPriority = 100, DecodePriority = 1, Role = multiEngine ? "worker" : "standalone" },
                 }
             };
@@ -160,6 +160,24 @@ public sealed class EngineModeTests
             Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, Rpc,
                 sp, Serilog.Log.Logger);
             Scheduler.AgentClientFactory = (_, _) => Rpc;
+
+            // Register test model so the "nano" alias used by these tests
+            // passes the unknown-model validation in SubmitAsync.
+            ModelRegistry.ClearForTest();
+            ModelRegistry.RegisterForTest(new EngineConfig(
+                ModelAlias: "nano",
+                ModelPath: "/dev/null",
+                NGpuLayers: 0, NCtx: 2048,
+                ContBatching: true, Fit: false, UbatchSize: 512,
+                SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
+            // Also register "moe-35b-solo" which is used as ModelAlias on the head worker.
+            ModelRegistry.RegisterForTest(new EngineConfig(
+                ModelAlias: "moe-35b-solo",
+                ModelPath: "/dev/null",
+                NGpuLayers: 99, NCpuMoe: 8, NCtx: 320000,
+                OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" },
+                ContBatching: true, Fit: false, UbatchSize: 512,
+                SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
 
             _runTask = Scheduler.RunAsync(_runCts.Token);
         }
@@ -264,7 +282,7 @@ public sealed class EngineModeTests
             "Large request should attach the pipeline peer");
         var attach = f.Rpc.PayloadAsUtf8(OpCode.EnginePipelineAttach);
         Assert.Contains("ot_split", attach);
-        Assert.Contains("PEER", attach);
+        Assert.Contains("peer", attach);
         // Decode itself always goes through the HTTP proxy (issue #273 hotfix);
         // PIPELINE only changes which tensors the head/peer own underneath.
         Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
@@ -723,14 +741,14 @@ public sealed class EngineModeTests
         var proxy = (TestCompletionProxy)f.Proxy;
 
         // > 2048 estimated tokens → routes as cold_concurrency → triggers EnginePrefill
-        // Real error should retry, then fail after MaxRetries.
+        // Real error should retry, then fail after MaxRetries with clear error message.
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => f.SubmitAsync("sess_real_error", 5000, 100));
 
         Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
             "Test setup failure: engine RPC was never called for cold_concurrency");
 
-        // Verify HTTP fallback did NOT fire — real errors retry, not HTTP fallback.
+        // No HTTP fallback — errors throw directly.
         Assert.Empty(proxy.NonStreamingCalls);
     }
 
