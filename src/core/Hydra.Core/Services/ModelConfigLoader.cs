@@ -92,6 +92,10 @@ public sealed class ModelConfigLoader
     /// <summary>Reset the singleton (test cleanup).</summary>
     internal static void Reset() => _instance = null;
 
+    /// <summary>Create a standalone loader for tests (bypasses file I/O and the singleton).</summary>
+    internal static ModelConfigLoader Create(ModelsConfig config, Dictionary<string, GpuSpec>? gpuSpecs = null, string modelsDir = "/models")
+        => new(config, gpuSpecs ?? new Dictionary<string, GpuSpec>(), modelsDir);
+
     /// <summary>
     /// Create a minimal in-memory ModelConfigLoader from hardcoded ModelRegistry
     /// entries. Used when HYDRA_COORD_MODELS_FILE is not set, so AutoRouter
@@ -155,7 +159,7 @@ public sealed class ModelConfigLoader
     /// Model file paths are resolved relative to <c>HYDRA_COORD_MODELS_DIR</c>.
     /// Throws if the alias is not registered.
     /// </summary>
-    public EngineConfig ResolveEngineConfig(string alias)
+    public EngineConfig ResolveEngineConfig(string alias, bool decodeRole = false)
     {
         if (string.IsNullOrWhiteSpace(alias))
             throw new InvalidOperationException("Model alias is required");
@@ -190,7 +194,11 @@ public sealed class ModelConfigLoader
         }
 
         // Resolve model file paths to absolute paths.
-        var modelPath = ResolveModelPath(alias, template.PrefillModelFileName);
+        // Decode role uses DecodeModelFileName when present, else PrefillModelFileName.
+        var modelFile = decodeRole && !string.IsNullOrWhiteSpace(template.DecodeModelFileName)
+            ? template.DecodeModelFileName
+            : template.PrefillModelFileName;
+        var modelPath = ResolveModelPath(alias, modelFile);
 
         return new EngineConfig(
             ModelAlias: alias,
