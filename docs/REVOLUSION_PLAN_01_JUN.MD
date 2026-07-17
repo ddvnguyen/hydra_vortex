@@ -26,7 +26,7 @@ exists* rather than rebuilding it.
 | **M5** | LLM Obs & Agentic | Langfuse tracing; A/B testing; agentic system. |
 
 Old M3.3/M3.4 (Langfuse, model-dist, systemd) are re-homed into M3/M4/M5 above.
-Action: update `PROJECT_PLAN.md` milestone table + `CLAUDE.md`; add
+Action: update `PROJECT_STATUS.md` milestone table + `CLAUDE.md`; add
 `docs/milestone-perf.md`, refresh `docs/milestone-3-production.md` (C# persistence),
 add `docs/milestone-4-models.md`, `docs/milestone-5-agentic.md`.
 

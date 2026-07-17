@@ -120,7 +120,7 @@ $PERP -m "$MODEL" -ngl 99 -ncmoe 0 \
 
 **Creating a test corpus:**
 ```bash
-cat docs/*.md PROJECT_PLAN.md > /tmp/corpus.txt
+cat docs/*.md PROJECT_STATUS.md > /tmp/corpus.txt
 ```
 
 For standard benchmarks, download WikiText-2:

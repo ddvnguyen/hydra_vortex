@@ -99,8 +99,17 @@ Full reference: `docs/monitoring-observability.md`.
 3. Use sub-agents (2-3 parallel) for research/multi-file work >30s.
 4. End with a `---` + summary block.
 
+## Project Status File (MANDATORY)
+`PROJECT_STATUS.md` is the single source of truth for milestones, implementation
+status, and verified facts. **Every agent must update it when code changes land:**
+- New feature merged → update "Current Implementation Status" table
+- Milestone completed → update status column
+- New verified fact → add to "Verified Facts" table
+- Architecture changed → update diagrams and component tables
+**Never let PROJECT_STATUS.md drift from the actual codebase.**
+
 ## References
-- `PROJECT_PLAN.md` — vision, structure, milestones
+- `PROJECT_STATUS.md` — vision, structure, milestones, implementation status
 - `docs/architecture.md` — routing, run modes, session lifecycle
 - `specs/rpc-protocol.md` — binary wire format + opcodes
 - `docs/PORTS_AND_ENV.md` — every service, port, env var
