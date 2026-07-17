@@ -39,6 +39,21 @@ public sealed class SlotMeta
     /// <summary>Full path of the GGUF file the KV was built with.</summary>
     [JsonPropertyName("model_path")]
     public string ModelPath { get; init; } = "";
+    /// <summary>Current operation: "prefill", "decode", "save", "restore", "idle".</summary>
+    [JsonPropertyName("operation")]
+    public string Operation { get; init; } = "";
+    /// <summary>Progress 0.0-1.0 for the current operation.</summary>
+    [JsonPropertyName("progress")]
+    public float Progress { get; init; }
+    /// <summary>Tokens processed so far in the current operation.</summary>
+    [JsonPropertyName("tokens_processed")]
+    public int TokensProcessed { get; init; }
+    /// <summary>Total tokens expected for the current operation.</summary>
+    [JsonPropertyName("tokens_total")]
+    public int TokensTotal { get; init; }
+    /// <summary>Elapsed time in milliseconds for the current operation.</summary>
+    [JsonPropertyName("elapsed_ms")]
+    public long ElapsedMs { get; init; }
 }
 
 public sealed class RestoreResult

@@ -168,6 +168,13 @@ public sealed class WorkItem
 	/// BUSY guard to measure actual stuck-in-BUSY time, not total time-in-system.</summary>
 	public long PrefillFirstAttemptMs { get; set; }
 
+	/// <summary>Last known progress from the busy slot (0.0-1.0). Used by the
+	/// progress-aware BUSY guard to distinguish stuck from slow.</summary>
+	public float LastBusyProgress { get; set; }
+	/// <summary>ElapsedMs when LastBusyProgress was last updated. Used to detect
+	/// whether the slot is making progress or stuck.</summary>
+	public long LastBusyProgressMs { get; set; }
+
 	private long _lastCheckpointMs;
 	/// <summary>Cumulative ms at decode dispatch — lets streaming finalize compute true decode duration.</summary>
 	public long DecodeStartMs { get; set; }
