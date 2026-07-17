@@ -4,6 +4,31 @@
 
 High-throughput multi-GPU LLM inference system with KV cache state management.
 
+## Features
+
+- **Cross-GPU session migration** — KV cache state (~800 MB at 60-80K context)
+  moves between heterogeneous GPUs without re-prefill.
+- **Heterogeneous GPU pooling** — routes a single inference pool across an
+  RTX 5060 Ti, RTX 3060, and Tesla P100 (sm_120 / sm_86 / sm_60), not just
+  matched hardware.
+- **COMBINED engine mode** — the same-host RTX 5060 Ti + RTX 3060 pair can act
+  as one logical engine: expert-split (MoE) or layer-split (Dense).
+- **P/D split (prefill/decode disaggregation)** — precise prefill on RTX,
+  quantized decode on P100, streamed KV state directly over binary RPC
+  (no disk round-trip).
+- **Prompt-cache reuse** — recurrent/hybrid context checkpoints let follow-up
+  turns reuse cached KV instead of a full re-prefill.
+- **Content-addressed chunked dedup** — KV chunks are hashed and deduped at
+  the Store level, with prefix checkpoints for shared system prompts.
+- **Auto-routing** — a 4-step algorithm (warm affinity → candidate filtering
+  → hardware feasibility → swap-cost preference) picks the best model/worker
+  plan per request.
+- **OpenAI-compatible API** — drop-in `/v1/chat/completions`.
+- **Zero-copy I/O** — tmpfs-backed Store with `Socket.SendFileAsync`, no
+  S3/MinIO round-trip.
+- **Full observability** — Prometheus + Loki + Grafana + OpenTelemetry
+  tracing out of the box.
+
 ## Architecture
 
 ```
