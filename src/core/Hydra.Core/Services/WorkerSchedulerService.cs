@@ -1505,36 +1505,42 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.SessionId, w.Name, item.RetryCount, busyMs, item.ElapsedMs,
 						operation, progressPct, tokensProcessed, tokensTotal, elapsedMs);
 
-					// Progress-aware timeout logic:
-					// 1. 60s + no progress → fail (stuck)
-					// 2. 120s + any progress → fail (too slow)
-					// 3. Otherwise → re-enqueue with progress logged
-					if (busyMs > 60_000 && item.LastBusyProgress == 0)
+					// Workload-aware timeout logic:
+					// Calculate expected timeout based on estimated tokens and hardware capabilities.
+					// Conservative prefill rate: 50 tok/s (accounts for slower GPUs like P100 at 28 tok/s decode,
+					// but prefill is typically faster). Safety multiplier: 3x to account for variability.
+					var estimatedTokens = item.EstimatedTokens;
+					if (estimatedTokens <= 0) estimatedTokens = 10_000; // fallback for unknown size
+					var expectedPrefillMs = (long)(estimatedTokens / 50.0 * 3.0); // 3x safety margin
+					var stuckTimeoutMs = Math.Max(60_000, expectedPrefillMs / 2); // at least 60s
+					var slowTimeoutMs = expectedPrefillMs;
+
+					if (busyMs > stuckTimeoutMs && item.LastBusyProgress == 0)
 					{
-						// No progress detected for 60s — likely stuck
+						// No progress detected for expected time — likely stuck
 						item.Error = new InvalidOperationException(
 							$"EnginePrefill RPC returned BUSY for {busyMs}ms on {w.Name} " +
 							$"(slot={slotId}, retries={item.RetryCount}, operation={operation}). " +
-							$"No progress detected. " +
+							$"No progress detected (expected timeout: {stuckTimeoutMs}ms for {estimatedTokens} tokens). " +
 							$"Check: (1) llama-engine binary supports opcode 0x42, " +
 							$"(2) slot count matches HydraCore config, " +
 							$"(3) no other process holds all slots.");
-						_log.Error("prefill_engine_busy_stuck Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
-							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, operation, progressPct, item.ElapsedMs);
+						_log.Error("prefill_engine_busy_stuck Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} ExpectedMs={Expected} Tokens={Tokens} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
+							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, stuckTimeoutMs, estimatedTokens, operation, progressPct, item.ElapsedMs);
 						return WorkItemState.Failed;
 					}
-					else if (busyMs > 120_000)
+					else if (busyMs > slowTimeoutMs)
 					{
-						// Has progress but too slow (120s+)
+						// Has progress but exceeded expected time
 						item.Error = new InvalidOperationException(
 							$"EnginePrefill RPC returned BUSY for {busyMs}ms on {w.Name} " +
 							$"(slot={slotId}, retries={item.RetryCount}, operation={operation}). " +
-							$"Progress detected ({progressPct}) but too slow. " +
+							$"Progress detected ({progressPct}) but exceeded expected time ({slowTimeoutMs}ms for {estimatedTokens} tokens). " +
 							$"Check: (1) llama-engine binary supports opcode 0x42, " +
 							$"(2) slot count matches HydraCore config, " +
 							$"(3) no other process holds all slots.");
-						_log.Error("prefill_engine_busy_too_slow Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
-							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, operation, progressPct, item.ElapsedMs);
+						_log.Error("prefill_engine_busy_too_slow Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} ExpectedMs={Expected} Tokens={Tokens} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
+							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, slowTimeoutMs, estimatedTokens, operation, progressPct, item.ElapsedMs);
 						return WorkItemState.Failed;
 					}
 
