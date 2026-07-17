@@ -1,5 +1,0 @@
-{
-  "rtx": { "vram_mb": 16384, "compute_tflops": 22.0, "bandwidth_gbps": 288.0, "cuda_arch": "sm_120", "capabilities": 7 },
-  "rtx3060": { "vram_mb": 12288, "compute_tflops": 17.0, "bandwidth_gbps": 360.0, "cuda_arch": "sm_86", "capabilities": 7 },
-  "p100": { "vram_mb": 16384, "compute_tflops": 19.0, "bandwidth_gbps": 732.0, "cuda_arch": "sm_60", "capabilities": 1 }
-}

@@ -36,11 +36,9 @@ public sealed record WorkerConfig
 	// CombinedOtSplit) and the run_type label ("combined-static" etc.) are
 	// gone — they're inside the ModelRegistry now, keyed by alias.
 	public string? ModelAlias { get; init; }
-	// ── GPU spec (loaded from gpu-specs.json, joined via GpuRef → GpuSpec map) ──
-	/// <summary>Static hardware properties for this worker's GPU (populated at load time).</summary>
+	// ── GPU spec (inline "gpu" object in workers.json) ──
+	/// <summary>Static hardware properties for this worker's GPU, loaded inline from the worker's "gpu" object in workers.json.</summary>
 	public GpuSpec? Gpu { get; init; }
-	/// <summary>Key into gpu-specs.json; defaults to Name when null.</summary>
-	public string? GpuRef { get; init; }
 	// Capability flags, refreshed from the engine's EngineInfo health poll.
 	public bool PipelineCapable { get; init; }
 	public bool CombinedCapable { get; init; }

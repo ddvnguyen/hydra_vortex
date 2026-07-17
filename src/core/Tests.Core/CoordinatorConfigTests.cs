@@ -258,6 +258,39 @@ public sealed class CoordinatorConfigTests
     }
 
     [Fact]
+    public void LoadWorkers_FileWithGpuBlock_PopulatesWorkerConfigGpu()
+    {
+        var tmpFile = Path.GetTempFileName();
+        File.WriteAllText(tmpFile, """
+            [{"name": "rtx", "host": "h", "rpc_port": 1, "llama_url": "http://x", "worker_type": 3,
+              "gpu": {"vram_mb": 16384, "compute_tflops": 22.0, "bandwidth_gbps": 288.0, "cuda_arch": "sm_120", "capabilities": 7}}]
+            """);
+
+        var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");
+        var prevJson = Environment.GetEnvironmentVariable("HYDRA_COORD_WORKERS");
+        try
+        {
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", tmpFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", null);
+
+            var workers = CoordinatorConfig.LoadWorkers();
+            var gpu = Assert.Single(workers).Gpu;
+            Assert.NotNull(gpu);
+            Assert.Equal(16384, gpu!.VramMb);
+            Assert.Equal(22.0, gpu.ComputeTflops);
+            Assert.Equal(288.0, gpu.BandwidthGbps);
+            Assert.Equal("sm_120", gpu.CudaArch);
+            Assert.Equal(7, gpu.Capabilities);
+        }
+        finally
+        {
+            File.Delete(tmpFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE", prevFile);
+            Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", prevJson);
+        }
+    }
+
+    [Fact]
     public void LoadWorkers_InlineJsonEnv_StillWorks_WhenNoFile()
     {
         var prevFile = Environment.GetEnvironmentVariable("HYDRA_COORD_CONFIG_FILE");

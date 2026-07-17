@@ -4,10 +4,9 @@ using Hydra.Core.Models;
 namespace Hydra.Core.Services;
 
 /// <summary>
-/// Loads model definitions and GPU hardware specs from JSON config files at startup.
-/// Replaces the hardcoded entries in <see cref="ModelRegistry"/> with a data-driven
-/// config loaded from <c>HYDRA_COORD_MODELS_FILE</c> (models.json) and the co-located
-/// <c>gpu-specs.json</c>.
+/// Loads model definitions from JSON config files at startup. Replaces the
+/// hardcoded entries in <see cref="ModelRegistry"/> with a data-driven config
+/// loaded from <c>HYDRA_COORD_MODELS_FILE</c> (models.json).
 ///
 /// Singleton pattern: call <see cref="TryLoad"/> once at startup; callers use the
 /// <see cref="Instance"/> property.
@@ -22,18 +21,14 @@ public sealed class ModelConfigLoader
     /// </summary>
     public ModelsConfig? Config { get; }
 
-    /// <summary>GPU hardware specs keyed by worker name (e.g. "rtx", "p100").</summary>
-    public IReadOnlyDictionary<string, GpuSpec> GpuSpecs { get; }
-
     /// <summary>Directory prefix for resolving model file paths (from HYDRA_COORD_MODELS_DIR).</summary>
     public string ModelsDir { get; }
 
     private readonly Dictionary<string, ModelTemplate> _templates;
 
-    private ModelConfigLoader(ModelsConfig config, Dictionary<string, GpuSpec> gpuSpecs, string modelsDir)
+    private ModelConfigLoader(ModelsConfig config, string modelsDir)
     {
         Config = config;
-        GpuSpecs = gpuSpecs;
         ModelsDir = modelsDir;
         _templates = config.Models ?? new Dictionary<string, ModelTemplate>();
     }
@@ -71,10 +66,7 @@ public sealed class ModelConfigLoader
             if (config is null)
                 return false;
 
-            // Load co-located gpu-specs.json (same directory as models.json).
-            var gpuSpecs = LoadGpuSpecs(Path.GetDirectoryName(modelsFile)!);
-
-            _instance = new ModelConfigLoader(config, gpuSpecs, modelsDir);
+            _instance = new ModelConfigLoader(config, modelsDir);
             return true;
         }
         catch (Exception ex)
@@ -93,8 +85,8 @@ public sealed class ModelConfigLoader
     internal static void Reset() => _instance = null;
 
     /// <summary>Create a standalone loader for tests (bypasses file I/O and the singleton).</summary>
-    internal static ModelConfigLoader Create(ModelsConfig config, Dictionary<string, GpuSpec>? gpuSpecs = null, string modelsDir = "/models")
-        => new(config, gpuSpecs ?? new Dictionary<string, GpuSpec>(), modelsDir);
+    internal static ModelConfigLoader Create(ModelsConfig config, string modelsDir = "/models")
+        => new(config, modelsDir);
 
     /// <summary>
     /// Create a minimal in-memory ModelConfigLoader from hardcoded ModelRegistry
@@ -148,7 +140,7 @@ public sealed class ModelConfigLoader
             AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
             Models = models,
         };
-        _instance = new ModelConfigLoader(config, new Dictionary<string, GpuSpec>(), "/models");
+        _instance = new ModelConfigLoader(config, "/models");
     }
 
     // ── Public query methods ─────────────────────────────────────────────
@@ -247,10 +239,6 @@ public sealed class ModelConfigLoader
     /// <summary>The auto-routing policy from models.json, or null if not configured.</summary>
     public AutoRoutingPolicy? GetAutoRoutingPolicy() => Config?.AutoRouting;
 
-    /// <summary>Look up GPU hardware specs by worker name (e.g. "rtx", "p100").</summary>
-    public GpuSpec? GetGpuSpec(string workerName) =>
-        GpuSpecs.TryGetValue(workerName, out var spec) ? spec : null;
-
     // ── Internal helpers ─────────────────────────────────────────────────
 
     /// <summary>
@@ -267,21 +255,6 @@ public sealed class ModelConfigLoader
             return modelFileName;
 
         return Path.Combine(ModelsDir, modelFileName);
-    }
-
-    private static Dictionary<string, GpuSpec> LoadGpuSpecs(string configDir)
-    {
-        var path = Path.Combine(configDir, "gpu-specs.json");
-        if (!File.Exists(path))
-            return new Dictionary<string, GpuSpec>(StringComparer.OrdinalIgnoreCase);
-
-        var json = File.ReadAllText(path);
-        var raw = JsonSerializer.Deserialize<Dictionary<string, GpuSpec>>(json, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-        });
-
-        return raw ?? new Dictionary<string, GpuSpec>(StringComparer.OrdinalIgnoreCase);
     }
 
     // ── Value extraction helpers ─────────────────────────────────────────

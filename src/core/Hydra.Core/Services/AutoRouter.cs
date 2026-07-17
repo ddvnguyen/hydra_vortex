@@ -26,7 +26,7 @@ public static class AutoRouter
     /// Resolve the best model and worker plan for a request.
     /// </summary>
     /// <param name="cfg">Coordinator config with workers list.</param>
-    /// <param name="loader">Model config loader (provides model templates + GPU specs).</param>
+    /// <param name="loader">Model config loader (provides model templates).</param>
     /// <param name="tracker">Worker slot tracker.</param>
     /// <param name="health">Health monitor.</param>
     /// <param name="ledger">Session ledger for warm affinity.</param>
@@ -174,7 +174,7 @@ public static class AutoRouter
             // Find a head worker that meets requirements
             foreach (var head in cfg.Workers.Where(w => w.IsHead && tracker.IsFree(w.Name) && health.IsHealthy(w.Name)))
             {
-                if (!MeetsRequirements(head, reqs, loader)) continue;
+                if (!MeetsRequirements(head, reqs)) continue;
 
                 // For COMBINED mode, need a peer
                 WorkerConfig? peer = null;
@@ -183,7 +183,7 @@ public static class AutoRouter
                     var peerReqs = reqs.PeerRequirements;
                     peer = cfg.Workers.FirstOrDefault(w => w.Name != head.Name
                         && tracker.IsFree(w.Name) && health.IsHealthy(w.Name)
-                        && MeetsRequirements(w, peerReqs, loader));
+                        && MeetsRequirements(w, peerReqs));
                     if (peer == null) continue;
                 }
 
@@ -194,7 +194,7 @@ public static class AutoRouter
                     var decodeReqs = reqs.DecodeRequirements;
                     decodeWorker = cfg.Workers.FirstOrDefault(w => w.Name != head.Name
                         && tracker.IsFree(w.Name) && health.IsHealthy(w.Name)
-                        && MeetsRequirements(w, decodeReqs, loader));
+                        && MeetsRequirements(w, decodeReqs));
                     if (decodeWorker == null) continue;
                 }
 
@@ -204,10 +204,9 @@ public static class AutoRouter
         return result;
     }
 
-    private static bool MeetsRequirements(WorkerConfig worker, ModelRequirements reqs, ModelConfigLoader loader)
+    private static bool MeetsRequirements(WorkerConfig worker, ModelRequirements reqs)
     {
-        // Look up the GPU spec from the loader (worker.Gpu may not be populated at startup)
-        var gpu = worker.Gpu ?? loader.GetGpuSpec(worker.GpuRef ?? worker.Name);
+        var gpu = worker.Gpu;
         if (gpu != null)
         {
             if (gpu.VramMb < reqs.MinVramMb) return false;
@@ -216,7 +215,7 @@ public static class AutoRouter
             if (!gpu.HasCapability(reqs.RequiredCapabilities)) return false;
             return true;
         }
-        // Fallback: no GPU spec available (HYDRA_COORD_MODELS_FILE not set).
+        // Fallback: worker has no "gpu" block in workers.json.
         // Use WorkerConfig capability flags as proxy.
         if (reqs.RequiredCapabilities == GpuCapabilities.Combined && !worker.CombinedCapable) return false;
         if (reqs.RequiredCapabilities == GpuCapabilities.Rpc && !worker.CombinedCapable) return false;
