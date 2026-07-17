@@ -1437,6 +1437,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					item.PrefillSlot = slotId;
 				var requestJson = JsonSerializer.Serialize(body);
 				var llamaRpc = GetLlamaRpcClient(w);
+				// Record the elapsed time at the first prefill attempt (once per item).
+				if (item.PrefillFirstAttemptMs == 0)
+					item.PrefillFirstAttemptMs = item.ElapsedMs;
 				var engine = new HydraEngineClient(llamaRpc);
 				var prefillResult = await engine.EnginePrefillAsync(slotId, prefillModel, requestJson, item.TraceId, ct);
 
@@ -1470,26 +1473,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// Time-based guard: fail if stuck for more than 60 seconds
 					// (configurable: prevents infinite queueing when all slots
 					// are permanently occupied by other processes).
-					// NOTE: ElapsedMs starts at WorkItem construction (includes
-					// queue-wait time), so under heavy load this guard may fire
-					// sooner than 60s of actual BUSY time.
-					if (item.ElapsedMs > 60_000)
-					{
-						item.Error = new InvalidOperationException(
-							$"EnginePrefill RPC returned BUSY for {item.ElapsedMs}ms on {w.Name} " +
-							$"(slot={slotId}, retries={item.RetryCount}). " +
-							$"Check: (1) llama-engine binary supports opcode 0x42, " +
-							$"(2) slot count matches HydraCore config, " +
-							$"(3) no other process holds all slots.");
-						_log.Error("prefill_engine_busy_timed_out Sid={Sid} Worker={W} Slot={Slot} Retries={R} ElapsedMs={Ms}",
-							item.SessionId, w.Name, slotId, item.RetryCount, item.ElapsedMs);
+				// NOTE: PrefillFirstAttemptMs records the timestamp of the first
+				// prefill attempt, so busyMs measures actual stuck-in-BUSY time
+				// (not total time-in-system which includes queue-wait).
+				var busyMs = item.ElapsedMs - item.PrefillFirstAttemptMs;
+				if (busyMs > 60_000)
+				{
+					item.Error = new InvalidOperationException(
+						$"EnginePrefill RPC returned BUSY for {busyMs}ms on {w.Name} " +
+						$"(slot={slotId}, retries={item.RetryCount}). " +
+						$"Check: (1) llama-engine binary supports opcode 0x42, " +
+						$"(2) slot count matches HydraCore config, " +
+						$"(3) no other process holds all slots.");
+					_log.Error("prefill_engine_busy_timed_out Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} TotalElapsedMs={Ms}",
+						item.SessionId, w.Name, slotId, item.RetryCount, busyMs, item.ElapsedMs);
 						return WorkItemState.Failed;
 					}
 
-					// Re-enqueue — the evaluator will re-dispatch when
-					// SignalEvaluator() fires on slot release.
-					_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R} ElapsedMs={Ms} — re-enqueuing",
-						item.SessionId, w.Name, item.RetryCount, item.ElapsedMs);
+				// Re-enqueue — the evaluator will re-dispatch when
+				// SignalEvaluator() fires on slot release.
+				_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R} BusyMs={BusyMs} TotalMs={TotalMs} — re-enqueuing",
+					item.SessionId, w.Name, item.RetryCount, busyMs, item.ElapsedMs);
 					item.PrefillWorker = null;
 					item.PrefillSlot = null;
 					item.State = WorkItemState.None;

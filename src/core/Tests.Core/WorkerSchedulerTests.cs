@@ -26,6 +26,13 @@ public sealed class WorkItemTests
     }
 
     [Fact]
+    public void PrefillFirstAttemptMs_Defaults_To_Zero()
+    {
+        var item = MakeItem("sess_test");
+        Assert.Equal(0, item.PrefillFirstAttemptMs);
+    }
+
+    [Fact]
     public void ElapsedMs_Grows()
     {
         var item = MakeItem("sess_test");

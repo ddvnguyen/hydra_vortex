@@ -163,6 +163,11 @@ public sealed class WorkItem
 	public Dictionary<string, long> Phases { get; } = new();
 	private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 	public long ElapsedMs => (Stopwatch.GetTimestamp() - _startTimestamp) * 1000 / Stopwatch.Frequency;
+
+	/// <summary>ElapsedMs at the moment of the first prefill attempt. Used by the
+	/// BUSY guard to measure actual stuck-in-BUSY time, not total time-in-system.</summary>
+	public long PrefillFirstAttemptMs { get; set; }
+
 	private long _lastCheckpointMs;
 	/// <summary>Cumulative ms at decode dispatch — lets streaming finalize compute true decode duration.</summary>
 	public long DecodeStartMs { get; set; }
