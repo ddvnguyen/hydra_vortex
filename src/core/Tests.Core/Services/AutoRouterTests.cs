@@ -88,6 +88,110 @@ public class AutoRouterTests
         return ModelConfigLoader.Instance;
     }
 
+    // ── Config/Loader helpers for default_eligible tests ──────────────
+
+    private static CoordinatorConfig MakeConfigWithCombined()
+    {
+        var cfg = MakeConfig();
+        cfg.Workers = new List<WorkerConfig>(cfg.Workers)
+        {
+            new() { Name = "rtx3060", Host = "localhost", RpcPort = 9603,
+                LlamaUrl = "http://localhost:9504", WorkerType = 3, Slots = 1,
+                Role = "head", PrefillPriority = 2, DecodePriority = 3,
+                CombinedCapable = true },
+        };
+        return cfg;
+    }
+
+    private static ModelConfigLoader MakeLoaderWithCombined()
+    {
+        var models = new Dictionary<string, ModelTemplate>
+        {
+            ["moe-35b-solo"] = new ModelTemplate
+            {
+                Description = "solo",
+                PrefillModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                DecodeModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                LoadTimeS = 40,
+                QualityTier = 1,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = GpuCapabilities.FlashAttn,
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 0,
+                    MaxPromptTokens = 2048,
+                    MaxContextTokens = 128000,
+                },
+            },
+            ["moe-35b-pd"] = new ModelTemplate
+            {
+                Description = "pd",
+                PrefillModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                DecodeModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+                LoadTimeS = 40,
+                QualityTier = 2,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = GpuCapabilities.FlashAttn,
+                    DecodeRequirements = new ModelRequirements
+                    {
+                        MinVramMb = 16000,
+                        RequiredCapabilities = GpuCapabilities.FlashAttn,
+                    },
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 2048,
+                    MaxPromptTokens = 999999,
+                    MaxContextTokens = 128000,
+                    RequiresWorkers = ["p100"],
+                },
+            },
+            ["dense-27b-combined"] = new ModelTemplate
+            {
+                Description = "combined",
+                PrefillModelFileName = "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+                DecodeModelFileName = "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+                LoadTimeS = 45,
+                QualityTier = 3,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 12000,
+                    RequiredCapabilities = GpuCapabilities.Combined,
+                    PeerRequirements = new ModelRequirements
+                    {
+                        MinVramMb = 12000,
+                        RequiredCapabilities = GpuCapabilities.Combined,
+                    },
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    DefaultEligible = false,
+                    MinPromptTokens = 0,
+                    MaxPromptTokens = 999999,
+                    MaxContextTokens = 128000,
+                    RequiresWorkers = ["rtx3060"],
+                },
+            },
+        };
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 2,
+            AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
+            Models = models,
+        };
+        ModelConfigLoader.Reset();
+        ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
+        return ModelConfigLoader.Instance;
+    }
+
     [Fact]
     public void Step0_WarmSession_StayOnBoundModel()
     {
@@ -188,5 +292,77 @@ public class AutoRouterTests
         var prefillConfig = loader.ResolveEngineConfig("moe-35b-solo", decodeRole: false);
         var decodeConfig = loader.ResolveEngineConfig("moe-35b-solo", decodeRole: true);
         Assert.Equal(prefillConfig.ModelPath, decodeConfig.ModelPath);
+    }
+
+    [Fact]
+    public void FreshSession_DefaultEligibleFalse_SkipsDenseCombined()
+    {
+        // Issue #446: Fresh hydra-auto session with prompt > solo window (2048)
+        // where moe-35b-pd (tier 2) and dense-27b-combined (tier 3, default_eligible=false)
+        // are both feasible. Must route to moe-35b-pd, NOT dense-27b-combined.
+        var cfg = MakeConfigWithCombined();
+        var loader = MakeLoaderWithCombined();
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("rtx", 2);
+        tracker.InitWorker("p100", 1);
+        tracker.InitWorker("rtx3060", 1);
+        var health = new TestHealthMonitor();
+        var ledger = new SessionLedger();
+        const string sid = "test-fresh-default-eligible";
+
+        var result = AutoRouter.Resolve(cfg, loader, tracker, health, ledger, sid,
+            promptTokens: 4096, estTotalContext: 6000, requestedModel: "hydra-auto");
+
+        Assert.NotNull(result);
+        Assert.Equal("moe-35b-pd", result!.Value.ModelAlias);
+    }
+
+    [Fact]
+    public void WarmSession_BoundToDenseCombined_StillServed()
+    {
+        // Regression: warm session whose BoundModel is dense-27b-combined
+        // continues to be served normally (warm affinity pins the model).
+        var cfg = MakeConfigWithCombined();
+        var loader = MakeLoaderWithCombined();
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("rtx", 2);
+        tracker.InitWorker("p100", 1);
+        tracker.InitWorker("rtx3060", 1);
+        var health = new TestHealthMonitor();
+        var ledger = new SessionLedger();
+        const string sid = "test-warm-dense-combined";
+        ledger.Register(sid, "rtx", slotId: 0, nPast: 1000);
+        ledger.UpdateBoundModel(sid, "dense-27b-combined");
+
+        var result = AutoRouter.Resolve(cfg, loader, tracker, health, ledger, sid,
+            promptTokens: 1024, estTotalContext: 2000, requestedModel: "hydra-auto",
+            verifySlot: FakeVerifyWarm);
+
+        Assert.NotNull(result);
+        Assert.Equal("dense-27b-combined", result!.Value.ModelAlias);
+        Assert.Equal("warm", result!.Value.Mode);
+    }
+
+    [Fact]
+    public void FreshSession_DefaultEligibleFalse_Moe35bPdPickedOverDenseCombined()
+    {
+        // Variant of the core fix test: with prompt=3000 (above solo's 2048 max),
+        // moe-35b-solo is infeasible. Only moe-35b-pd (tier 2) and dense-27b-combined
+        // (tier 3, default_eligible=false) are candidates. Must pick moe-35b-pd.
+        var cfg = MakeConfigWithCombined();
+        var loader = MakeLoaderWithCombined();
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("rtx", 2);
+        tracker.InitWorker("p100", 1);
+        tracker.InitWorker("rtx3060", 1);
+        var health = new TestHealthMonitor();
+        var ledger = new SessionLedger();
+        const string sid = "test-fresh-alt-prompt";
+
+        var result = AutoRouter.Resolve(cfg, loader, tracker, health, ledger, sid,
+            promptTokens: 3000, estTotalContext: 5000, requestedModel: "hydra-auto");
+
+        Assert.NotNull(result);
+        Assert.Equal("moe-35b-pd", result!.Value.ModelAlias);
     }
 }

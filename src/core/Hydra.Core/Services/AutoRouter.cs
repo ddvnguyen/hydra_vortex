@@ -8,6 +8,14 @@ namespace Hydra.Core.Services;
 /// Single routing path for model selection. Replaces Router.PickBest* and MultiEngineRouter.Select.
 /// Algorithm: STEP 0 warm affinity → STEP 1 candidate window → STEP 2 hardware feasibility →
 /// STEP 3 swap-cost preference → STEP 4 worker plan.
+///
+/// Two-path behavior for default_eligible:
+///   FRESH session (no BoundModel): GetFeasible filters out default_eligible=false models
+///   so that opt-in models like dense-27b-combined don't win by tier when a lower-tier
+///   model (e.g. moe-35b-pd) is the intended auto-routing target.
+///   WARM session (existing BoundModel): TryWarmAffinity handles routing; BuildPlan
+///   uses default GetFeasible (requireDefaultEligible=false) so swap-cost migration
+///   can still upgrade/downgrade.
 /// </summary>
 public static class AutoRouter
 {
@@ -69,7 +77,12 @@ public static class AutoRouter
         }
 
         // STEP 2: Hardware feasibility
-        var feasible = GetFeasible(cfg, loader, tracker, health, candidates);
+        // Fresh session (no BoundModel): filter out default_eligible=false models
+        // so that models like dense-27b-combined (tier 3, opt-in only) don't win
+        // by default when a lower-tier model (e.g. moe-35b-pd) is the intended
+        // auto-routing target. Warm sessions (existing BoundModel) keep full
+        // feasibility so swap-cost migration can still upgrade/downgrade.
+        var feasible = GetFeasible(cfg, loader, tracker, health, candidates, requireDefaultEligible: true);
         if (feasible.Count == 0)
         {
             _log.Warning("auto_route_no_feasible Candidates={Count}", candidates.Count);
@@ -162,12 +175,19 @@ public static class AutoRouter
     private static List<(string Alias, ModelTemplate Template, WorkerConfig Head, WorkerConfig? Peer, WorkerConfig? DecodeWorker)> GetFeasible(
         CoordinatorConfig cfg, ModelConfigLoader loader,
         IWorkerTracker tracker, IHealthMonitorService health,
-        List<KeyValuePair<string, ModelTemplate>> candidates)
+        List<KeyValuePair<string, ModelTemplate>> candidates,
+        bool requireDefaultEligible = false)
     {
         var result = new List<(string Alias, ModelTemplate Template, WorkerConfig Head, WorkerConfig? Peer, WorkerConfig? DecodeWorker)>();
 
         foreach (var (alias, template) in candidates)
         {
+            // When requireDefaultEligible is set (fresh session), skip models
+            // that are opt-in only (default_eligible=false) — these should not
+            // be auto-selected but can still be used by warm session migration.
+            if (requireDefaultEligible && template.Routing is { DefaultEligible: false })
+                continue;
+
             var reqs = template.Requirements;
             if (reqs == null) continue;
 
