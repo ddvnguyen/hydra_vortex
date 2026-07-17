@@ -113,4 +113,6 @@ public sealed record RoutingRule
     public int MaxContextTokens { get; init; }
     [JsonPropertyName("requires_workers")]
     public List<string>? RequiresWorkers { get; init; }
+    [JsonPropertyName("default_eligible")]
+    public bool DefaultEligible { get; init; } = true;
 }
