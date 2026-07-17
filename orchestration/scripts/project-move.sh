@@ -84,7 +84,7 @@ else
 fi
 
 # ─── GraphQL mutation ────────────────────────────────────────────────────────
-mutation='mutation($project: ID!, $item: ID!, $field: ID!, $option: ID!) {
+mutation='mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
   updateProjectV2ItemFieldValue(input: {
     projectId: $project,
     itemId: $item,
