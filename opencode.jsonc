@@ -1,6 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "instructions": ["CLAUDE.md", "docs/workflow/*.md"],
+  "instructions": [
+    "CLAUDE.md"
+  ],
   "provider": {
     "hydra": {
       "name": "Hydra Coordinator (local)",
@@ -39,18 +41,6 @@
           }
         }
       }
-    }
-  },
-  "agent": {
-    "hydra-dense": {
-      "description": "Dense 27B model served by Hydra COMBINED mode",
-      "model": "hydra/dense-27b-combined",
-      "temperature": 0
-    },
-    "hydra-auto": {
-      "description": "Hydra auto-routed model",
-      "model": "hydra/hydra-auto",
-      "temperature": 0
     }
   }
 }

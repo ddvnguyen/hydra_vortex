@@ -42,7 +42,7 @@ curl localhost:9000/v1/chat/completions -d '{"messages":[...]}'
 ```
 
 ## Docs
-- `PROJECT_PLAN.md` — architecture, tech stack, project structure
+- `PROJECT_STATUS.md` — architecture, milestones, current implementation status
 - `docs/milestone-{0,1,2}.md` — detailed task breakdowns
 - `specs/` — protocol, service contracts, data models, OpenAPI
 

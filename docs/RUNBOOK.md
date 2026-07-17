@@ -52,7 +52,7 @@ Hydra.Core — there is no separate Store container.
 ```
 hydra_vortex/
 ├── CLAUDE.md                    ← read first (AI handoff context)
-├── PROJECT_PLAN.md              ← architecture + milestones
+├── PROJECT_STATUS.md            ← architecture + milestones + implementation status
 ├── specs/rpc-protocol.md        ← binary wire format spec (authoritative)
 ├── docs/
 │   ├── RUNBOOK.md               ← this file
