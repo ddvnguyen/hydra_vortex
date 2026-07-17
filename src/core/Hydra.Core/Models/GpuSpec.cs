@@ -15,7 +15,7 @@ public static class GpuCapabilities
 
 /// <summary>
 /// Hardware properties of a GPU worker. Profile-independent physical facts loaded
-/// from gpu-specs.json. Joined to WorkerConfig via gpu_ref or name.
+/// inline from the worker's "gpu" object in workers.json.
 /// </summary>
 public sealed record GpuSpec
 {

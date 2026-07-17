@@ -15,6 +15,7 @@
     "pipeline_capable": false,
     "combined_capable": true,
     "model_alias": "moe-35b-solo",
+    "gpu": { "vram_mb": 16384, "compute_tflops": 22.0, "bandwidth_gbps": 288.0, "cuda_arch": "sm_120", "capabilities": 7 },
     "_comment_rtx": "RTX 5060 Ti (sm_120, 16 GB) on host. Mixed (prefill+decode) primary. COMBINED-mode head: when MultiEngineRouter picks a 2-GPU plan, it borrows rtx3060 as the expert-peer. The per-model config (override-tensor regex for MoE expert routing, etc.) is in ModelRegistry keyed by `model_alias: moe-35b-mini` (Phase 2a, ddvnguyen/llama.cpp#36). The engine-side wiring for COMBINED-mode expert routing is in ddvnguyen/llama.cpp#19/#20 + #30/#37 (fork side). For SOLO requests, rtx runs the Q3_K-mini 35B-A3B on its own (the SOLO path no longer recruits the 3060 unless it's an explicit COMBINED request)."
   },
   {
@@ -32,6 +33,7 @@
     "pipeline_capable": false,
     "combined_capable": true,
     "model_alias": "moe-35b-solo",
+    "gpu": { "vram_mb": 12288, "compute_tflops": 17.0, "bandwidth_gbps": 360.0, "cuda_arch": "sm_86", "capabilities": 7 },
     "_comment_rtx3060": "RTX 3060 (sm_86, 12 GB) on host. Mixed (prefill+decode) but lower priority than rtx. Two roles: (a) SOLO — runs its own Q3_K-mini 35B-A3B instance, slower than rtx (~60 tok/s vs ~200 tok/s decode). (b) COMBINED peer — rtx.peer_worker points here, so when a request exceeds MultiEngineThreshold and the engine advertises expert-mode support, this GPU is reserved exclusively for that request. VRAM budget (12 GB) is the limiter; the Q5_K-balanced model does not fit — only the Q3_K-mini can land here."
   },
   {
@@ -45,6 +47,7 @@
     "prefill_priority": 2,
     "decode_priority": 1,
     "decode_speed_tps": 28,
+    "gpu": { "vram_mb": 16384, "compute_tflops": 19.0, "bandwidth_gbps": 732.0, "cuda_arch": "sm_60", "capabilities": 1 },
     "_comment_p100": "P100 llama-server runs in single-model mode (--model /mnt/readonly_data/...gguf), not router mode — /models/load returns 404. Leave prefill_model_name / decode_model_name / router_model_name UNSET so CoordinatorConfig.LoadWorkers and Router.PrefillModel/DecodeModel return null and the model_load call is skipped (Router.PrefillModel is gated by `if (m != null)` in WorkerSchedulerService.ModelLoadAsync). The cross-model guard checks the P100's slot model_hash against the stored KV's model_hash on restore (since the P100 runs the same model as the RTX, the hashes match → Proceed). When a Coordinator restart loses the in-memory manifest, the model identity is read from the chunked manifest in the Store (PutManifestAsync writes it alongside n_past / total_size / chunks)."
   }
 ]
