@@ -1553,25 +1553,34 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
-					// Success — use the engine prefill result.
-					item.NPastAfter = prefillResult.NPast;
-					item.KvBlob = prefillResult.KvBlob;
+				// Success — use the engine prefill result.
+				item.NPastAfter = prefillResult.NPast;
+				item.KvBlob = prefillResult.KvBlob;
 
-					item.KvModelAlias    = prefillResult.ModelAlias;
-					item.KvModelHash     = prefillResult.ModelHash;
-					item.KvModelPath     = prefillResult.ModelPath;
-					item.KvModelFallback = prefillResult.ModelFallback;
-					LastDispatchedModel     = item.KvModelAlias;
-					LastDispatchedModelHash = item.KvModelHash;
-					if (item.KvModelFallback && prefillModel != null)
-					{
-						CoordinatorMetrics.ModelFallbackTotal
-							.WithLabels(w.Name, prefillModel).Inc();
-					}
+				item.KvModelAlias    = prefillResult.ModelAlias;
+				item.KvModelHash     = prefillResult.ModelHash;
+				item.KvModelPath     = prefillResult.ModelPath;
+				item.KvModelFallback = prefillResult.ModelFallback;
+				LastDispatchedModel     = item.KvModelAlias;
+				LastDispatchedModelHash = item.KvModelHash;
+				if (item.KvModelFallback && prefillModel != null)
+				{
+					CoordinatorMetrics.ModelFallbackTotal
+						.WithLabels(w.Name, prefillModel).Inc();
+				}
 
-					_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est} Model={Model} Fallback={Fb}",
-						item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens,
-						item.KvModelAlias ?? "?", item.KvModelFallback);
+				// #451: store engine-reported timing metrics into Phases for timeline
+				if (prefillResult.PrefillMs > 0)
+					item.Phases["prefill_ms"] = (long)prefillResult.PrefillMs;
+				if (prefillResult.ModelLoadMs > 0)
+					item.Phases["model_load_ms"] = (long)prefillResult.ModelLoadMs;
+				if (prefillResult.TokensPerSecond > 0)
+					item.Phases["tokens_per_second"] = (long)prefillResult.TokensPerSecond;
+
+				_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est} Model={Model} Fallback={Fb} PrefillMs={PfMs} ModelLoadMs={MlMs} TokPerSec={Tps}",
+					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens,
+					item.KvModelAlias ?? "?", item.KvModelFallback,
+					prefillResult.PrefillMs, prefillResult.ModelLoadMs, prefillResult.TokensPerSecond);
 					if (item.NPastAfter > 0)
 					{
 						_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -2906,6 +2915,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var saveKvRpcMs = item.Phases.GetValueOrDefault("save_kv_rpc_ms");
 		var saveKvStoreMs = item.Phases.GetValueOrDefault("save_kv_store_ms");
 		var saveKvMs = saveKvRpcMs + saveKvStoreMs;
+		var modelLoadMs = item.Phases.GetValueOrDefault("model_load_ms");
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -2915,6 +2925,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
 			$"prefill_model={prefillModel} decode_model={decodeModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
+			$"model_load_ms={modelLoadMs} " +
 			$"save_kv_ms={saveKvMs} " +
 			$"save_kv_rpc_ms={saveKvRpcMs} " +
 			$"save_kv_store_ms={saveKvStoreMs} " +
@@ -2924,14 +2935,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status={status}"
 		);
-		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} model_load_ms={ModelLoadMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
 			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
 			RouteLabel(item),
 			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
 			prefillModel, decodeModel,
-			item.Phases.GetValueOrDefault("prefill_ms"), saveKvMs,
+			item.Phases.GetValueOrDefault("prefill_ms"), modelLoadMs, saveKvMs,
 			saveKvRpcMs, saveKvStoreMs,
 			item.Phases.GetValueOrDefault("restore_kv_ms"),
 			item.Phases.GetValueOrDefault("decode_ms"),
@@ -2955,6 +2966,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var saveKvRpcMs = item.Phases.GetValueOrDefault("save_kv_rpc_ms");
 		var saveKvStoreMs = item.Phases.GetValueOrDefault("save_kv_store_ms");
 		var saveKvMs = saveKvRpcMs + saveKvStoreMs;
+		var modelLoadMs = item.Phases.GetValueOrDefault("model_load_ms");
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -2964,6 +2976,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
 			$"prefill_model={prefillModel} decode_model={decodeModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
+			$"model_load_ms={modelLoadMs} " +
 			$"save_kv_ms={saveKvMs} " +
 			$"save_kv_rpc_ms={saveKvRpcMs} " +
 			$"save_kv_store_ms={saveKvStoreMs} " +
@@ -2974,14 +2987,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status={status}"
 		);
-		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} model_load_ms={ModelLoadMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
 			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
 			RouteLabel(item),
 			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
 			prefillModel, decodeModel,
-			item.Phases.GetValueOrDefault("prefill_ms"), saveKvMs,
+			item.Phases.GetValueOrDefault("prefill_ms"), modelLoadMs, saveKvMs,
 			saveKvRpcMs, saveKvStoreMs,
 			item.Phases.GetValueOrDefault("restore_kv_ms"),
 			item.Phases.GetValueOrDefault("decode_ms"),
