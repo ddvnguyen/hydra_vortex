@@ -1470,56 +1470,126 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					}
 					item.RetryCount++;
 
-					// Time-based guard: fail if stuck for more than 60 seconds
-					// (configurable: prevents infinite queueing when all slots
-					// are permanently occupied by other processes).
+				// Progress-aware guard: get slot progress info and apply
+				// smarter timeout logic based on progress.
+				//
+				// KNOWN LIMITATION: server_queue is single-threaded — the META
+				// query goes through the same queue as the running PREFILL/DECODE
+				// task. During real busy periods the META request will queue behind
+				// the blocking generation call and time out (5s default) before
+				// being serviced. This means progressMeta will be null for most
+				// genuinely busy slots, and the code degrades to the workload-aware
+				// EstimatedTokens-based timeout (which is still better than the
+				// old flat 60s). Fix requires an architecture change in the fork:
+				// e.g. an atomic/lock-free progress counter readable without going
+				// through server_queue. See https://github.com/ddvnguyen/hydra_vortex/issues/451#issuecomment-XXXXX
+				//
+				// When progressMeta IS available (rare, or during slot idle
+				// windows between tasks), it provides real-time insight.
 				// NOTE: PrefillFirstAttemptMs records the timestamp of the first
 				// prefill attempt, so busyMs measures actual stuck-in-BUSY time
 				// (not total time-in-system which includes queue-wait).
 				var busyMs = item.ElapsedMs - item.PrefillFirstAttemptMs;
-				if (busyMs > 60_000)
+				SlotMeta? progressMeta = null;
+				try
 				{
-					item.Error = new InvalidOperationException(
-						$"EnginePrefill RPC returned BUSY for {busyMs}ms on {w.Name} " +
-						$"(slot={slotId}, retries={item.RetryCount}). " +
-						$"Check: (1) llama-engine binary supports opcode 0x42, " +
-						$"(2) slot count matches HydraCore config, " +
-						$"(3) no other process holds all slots.");
-					_log.Error("prefill_engine_busy_timed_out Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} TotalElapsedMs={Ms}",
-						item.SessionId, w.Name, slotId, item.RetryCount, busyMs, item.ElapsedMs);
+					progressMeta = await GetLlamaClient(w).GetStateMetaAsync(slotId, ct);
+				}
+				catch (Exception ex)
+				{
+					_log.Warning(ex, "prefill_slot_busy_progress_query_failed Sid={Sid} Worker={W} Slot={Slot}",
+						item.SessionId, w.Name, slotId);
+				}
+
+				// Update progress tracking
+				if (progressMeta != null && progressMeta.Progress > 0)
+				{
+					item.LastBusyProgress = progressMeta.Progress;
+				}
+
+					// Log progress info with the busy warning
+					var progressPct = progressMeta != null ? $"{progressMeta.Progress:P0}" : "unknown";
+					var operation = progressMeta?.Operation ?? "unknown";
+					var tokensProcessed = progressMeta?.TokensProcessed ?? 0;
+					var tokensTotal = progressMeta?.TokensTotal ?? 0;
+					var elapsedMs = progressMeta?.ElapsedMs ?? 0;
+
+					_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R} BusyMs={BusyMs} TotalMs={TotalMs} Operation={Op} Progress={Progress} TokensProcessed={Tp}/{Tt} ElapsedMs={Em} — re-enqueuing",
+						item.SessionId, w.Name, item.RetryCount, busyMs, item.ElapsedMs,
+						operation, progressPct, tokensProcessed, tokensTotal, elapsedMs);
+
+					// Workload-aware timeout logic:
+					// Calculate expected timeout based on estimated tokens and hardware capabilities.
+					// See CalculateBusyTimeouts for formula and testability.
+					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens);
+
+					if (busyMs > stuckTimeoutMs && item.LastBusyProgress == 0)
+					{
+						// No progress detected for expected time — likely stuck
+						item.Error = new InvalidOperationException(
+							$"EnginePrefill RPC returned BUSY for {busyMs}ms on {w.Name} " +
+							$"(slot={slotId}, retries={item.RetryCount}, operation={operation}). " +
+							$"No progress detected (stuck timeout: {stuckTimeoutMs}ms). " +
+							$"Check: (1) llama-engine binary supports opcode 0x42, " +
+							$"(2) slot count matches HydraCore config, " +
+							$"(3) no other process holds all slots.");
+						_log.Error("prefill_engine_busy_stuck Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} StuckMs={StuckMs} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
+							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, stuckTimeoutMs, operation, progressPct, item.ElapsedMs);
+						return WorkItemState.Failed;
+					}
+					else if (busyMs > slowTimeoutMs)
+					{
+						// Has progress but exceeded expected time
+						item.Error = new InvalidOperationException(
+							$"EnginePrefill RPC returned BUSY for {busyMs}ms on {w.Name} " +
+							$"(slot={slotId}, retries={item.RetryCount}, operation={operation}). " +
+							$"Progress detected ({progressPct}) but exceeded slow timeout ({slowTimeoutMs}ms). " +
+							$"Check: (1) llama-engine binary supports opcode 0x42, " +
+							$"(2) slot count matches HydraCore config, " +
+							$"(3) no other process holds all slots.");
+						_log.Error("prefill_engine_busy_too_slow Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} SlowMs={SlowMs} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
+							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, slowTimeoutMs, operation, progressPct, item.ElapsedMs);
 						return WorkItemState.Failed;
 					}
 
 				// Re-enqueue — the evaluator will re-dispatch when
 				// SignalEvaluator() fires on slot release.
-				_log.Warning("prefill_slot_busy Sid={Sid} Worker={W} Retry={R} BusyMs={BusyMs} TotalMs={TotalMs} — re-enqueuing",
-					item.SessionId, w.Name, item.RetryCount, busyMs, item.ElapsedMs);
-					item.PrefillWorker = null;
-					item.PrefillSlot = null;
-					item.State = WorkItemState.None;
-					return WorkItemState.Retry;
+				item.PrefillWorker = null;
+				item.PrefillSlot = null;
+				item.LastBusyProgress = 0;
+				item.State = WorkItemState.None;
+				return WorkItemState.Retry;
 				}
 				else
 				{
-					// Success — use the engine prefill result.
-					item.NPastAfter = prefillResult.NPast;
-					item.KvBlob = prefillResult.KvBlob;
+				// Success — use the engine prefill result.
+				item.NPastAfter = prefillResult.NPast;
+				item.KvBlob = prefillResult.KvBlob;
 
-					item.KvModelAlias    = prefillResult.ModelAlias;
-					item.KvModelHash     = prefillResult.ModelHash;
-					item.KvModelPath     = prefillResult.ModelPath;
-					item.KvModelFallback = prefillResult.ModelFallback;
-					LastDispatchedModel     = item.KvModelAlias;
-					LastDispatchedModelHash = item.KvModelHash;
-					if (item.KvModelFallback && prefillModel != null)
-					{
-						CoordinatorMetrics.ModelFallbackTotal
-							.WithLabels(w.Name, prefillModel).Inc();
-					}
+				item.KvModelAlias    = prefillResult.ModelAlias;
+				item.KvModelHash     = prefillResult.ModelHash;
+				item.KvModelPath     = prefillResult.ModelPath;
+				item.KvModelFallback = prefillResult.ModelFallback;
+				LastDispatchedModel     = item.KvModelAlias;
+				LastDispatchedModelHash = item.KvModelHash;
+				if (item.KvModelFallback && prefillModel != null)
+				{
+					CoordinatorMetrics.ModelFallbackTotal
+						.WithLabels(w.Name, prefillModel).Inc();
+				}
 
-					_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est} Model={Model} Fallback={Fb}",
-						item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens,
-						item.KvModelAlias ?? "?", item.KvModelFallback);
+				// #451: store engine-reported timing metrics into Phases for timeline
+				if (prefillResult.PrefillMs > 0)
+					item.Phases["prefill_ms"] = (long)prefillResult.PrefillMs;
+				if (prefillResult.ModelLoadMs > 0)
+					item.Phases["model_load_ms"] = (long)prefillResult.ModelLoadMs;
+				if (prefillResult.TokensPerSecond > 0)
+					item.Phases["tokens_per_second"] = (long)prefillResult.TokensPerSecond;
+
+				_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromEngine={N} EstTokens={Est} Model={Model} Fallback={Fb} PrefillMs={PfMs} ModelLoadMs={MlMs} TokPerSec={Tps}",
+					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens,
+					item.KvModelAlias ?? "?", item.KvModelFallback,
+					prefillResult.PrefillMs, prefillResult.ModelLoadMs, prefillResult.TokensPerSecond);
 					if (item.NPastAfter > 0)
 					{
 						_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -1554,6 +1624,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				item.PrefillWorker = null;
 				item.PrefillSlot = null;
+				item.LastBusyProgress = 0;
 				item.State = WorkItemState.None;
 				item.RetryCount++;
 				return WorkItemState.Retry;
@@ -2854,6 +2925,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var saveKvRpcMs = item.Phases.GetValueOrDefault("save_kv_rpc_ms");
 		var saveKvStoreMs = item.Phases.GetValueOrDefault("save_kv_store_ms");
 		var saveKvMs = saveKvRpcMs + saveKvStoreMs;
+		var modelLoadMs = item.Phases.GetValueOrDefault("model_load_ms");
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -2863,6 +2935,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
 			$"prefill_model={prefillModel} decode_model={decodeModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
+			$"model_load_ms={modelLoadMs} " +
 			$"save_kv_ms={saveKvMs} " +
 			$"save_kv_rpc_ms={saveKvRpcMs} " +
 			$"save_kv_store_ms={saveKvStoreMs} " +
@@ -2872,19 +2945,33 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status={status}"
 		);
-		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} model_load_ms={ModelLoadMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
 			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
 			RouteLabel(item),
 			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
 			prefillModel, decodeModel,
-			item.Phases.GetValueOrDefault("prefill_ms"), saveKvMs,
+			item.Phases.GetValueOrDefault("prefill_ms"), modelLoadMs, saveKvMs,
 			saveKvRpcMs, saveKvStoreMs,
 			item.Phases.GetValueOrDefault("restore_kv_ms"),
 			item.Phases.GetValueOrDefault("decode_ms"),
 			item.TokensIn, item.TokensOut, item.KvBytes,
 			item.PrefixCacheHit ? "true" : "false", status);
+	}
+
+	/// <summary>Calculate workload-aware BUSY timeouts based on estimated token count.</summary>
+	/// <param name="estimatedTokens">Prompt token count from the request. Falls back to 10K if 0.</param>
+	/// <returns>(stuckTimeout, slowTimeout) in milliseconds.</returns>
+	internal static (long stuckMs, long slowMs) CalculateBusyTimeouts(long estimatedTokens)
+	{
+		// Conservative prefill rate: 50 tok/s (accounts for slower GPUs like P100 at 28 tok/s decode,
+		// but prefill is typically faster). Safety multiplier: 3x to account for variability.
+		if (estimatedTokens <= 0) estimatedTokens = 10_000;
+		var expectedPrefillMs = (long)(estimatedTokens / 50.0 * 3.0 * 1000.0); // convert seconds to ms
+		var stuckMs = Math.Max(60_000, expectedPrefillMs / 2); // at least 60s
+		var slowMs = expectedPrefillMs;
+		return (stuckMs, slowMs);
 	}
 
 	private void EmitTimeline(WorkItem item, string status = "done")
@@ -2903,6 +2990,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var saveKvRpcMs = item.Phases.GetValueOrDefault("save_kv_rpc_ms");
 		var saveKvStoreMs = item.Phases.GetValueOrDefault("save_kv_store_ms");
 		var saveKvMs = saveKvRpcMs + saveKvStoreMs;
+		var modelLoadMs = item.Phases.GetValueOrDefault("model_load_ms");
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -2912,6 +3000,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
 			$"prefill_model={prefillModel} decode_model={decodeModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
+			$"model_load_ms={modelLoadMs} " +
 			$"save_kv_ms={saveKvMs} " +
 			$"save_kv_rpc_ms={saveKvRpcMs} " +
 			$"save_kv_store_ms={saveKvStoreMs} " +
@@ -2922,14 +3011,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status={status}"
 		);
-		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} model_load_ms={ModelLoadMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
 			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
 			RouteLabel(item),
 			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
 			prefillModel, decodeModel,
-			item.Phases.GetValueOrDefault("prefill_ms"), saveKvMs,
+			item.Phases.GetValueOrDefault("prefill_ms"), modelLoadMs, saveKvMs,
 			saveKvRpcMs, saveKvStoreMs,
 			item.Phases.GetValueOrDefault("restore_kv_ms"),
 			item.Phases.GetValueOrDefault("decode_ms"),

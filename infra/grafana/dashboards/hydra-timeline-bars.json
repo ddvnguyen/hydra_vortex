@@ -28,6 +28,7 @@
             "conversions": [
               { "targetField": "queue_wait_ms", "destinationType": "number" },
               { "targetField": "prefill_ms", "destinationType": "number" },
+              { "targetField": "model_load_ms", "destinationType": "number" },
               { "targetField": "save_kv_ms", "destinationType": "number" },
               { "targetField": "restore_kv_ms", "destinationType": "number" },
               { "targetField": "decode_ms", "destinationType": "number" },
@@ -50,7 +51,12 @@
               "caller": true,
               "id": true,
               "node": true,
-              "tsNs": true
+              "tsNs": true,
+              "status": true,
+              "prefill_model": true,
+              "decode_model": true,
+              "save_kv_rpc_ms": true,
+              "save_kv_store_ms": true
             },
             "indexByName": {
               "Time": 0,
@@ -61,16 +67,18 @@
               "decode_node": 5,
               "queue_wait_ms": 6,
               "prefill_ms": 7,
-              "save_kv_ms": 8,
-              "restore_kv_ms": 9,
-              "decode_ms": 10,
-              "total_ms": 11
+              "model_load_ms": 8,
+              "save_kv_ms": 9,
+              "restore_kv_ms": 10,
+              "decode_ms": 11,
+              "total_ms": 12
             },
             "renameByName": {
               "prefill_node": "prefill node",
               "decode_node": "decode node",
               "queue_wait_ms": "queue",
               "prefill_ms": "prefill",
+              "model_load_ms": "model switch",
               "save_kv_ms": "save kv",
               "restore_kv_ms": "restore kv",
               "decode_ms": "decode",
@@ -85,7 +93,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "displayMode": "auto", "minWidth": 70 },
+          "custom": { "align": "auto", "displayMode": "auto", "minWidth": 50 },
           "thresholds": {
             "mode": "absolute",
             "steps": [{ "color": "green", "value": null }]
@@ -99,7 +107,7 @@
               { "id": "unit", "value": "dtdurationms" },
               { "id": "min", "value": 0 },
               { "id": "max", "value": 30000 },
-              { "id": "custom.minWidth", "value": 90 }
+              { "id": "custom.minWidth", "value": 60 }
             ]
           },
           {
@@ -109,7 +117,17 @@
               { "id": "unit", "value": "dtdurationms" },
               { "id": "min", "value": 0 },
               { "id": "max", "value": 120000 },
-              { "id": "custom.minWidth", "value": 90 }
+              { "id": "custom.minWidth", "value": 60 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "model switch" },
+            "properties": [
+              { "id": "custom.displayMode", "value": "gradient-gauge" },
+              { "id": "unit", "value": "dtdurationms" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 30000 },
+              { "id": "custom.minWidth", "value": 55 }
             ]
           },
           {
@@ -119,7 +137,7 @@
               { "id": "unit", "value": "dtdurationms" },
               { "id": "min", "value": 0 },
               { "id": "max", "value": 30000 },
-              { "id": "custom.minWidth", "value": 90 }
+              { "id": "custom.minWidth", "value": 55 }
             ]
           },
           {
@@ -129,7 +147,7 @@
               { "id": "unit", "value": "dtdurationms" },
               { "id": "min", "value": 0 },
               { "id": "max", "value": 60000 },
-              { "id": "custom.minWidth", "value": 90 }
+              { "id": "custom.minWidth", "value": 55 }
             ]
           },
           {
@@ -139,7 +157,7 @@
               { "id": "unit", "value": "dtdurationms" },
               { "id": "min", "value": 0 },
               { "id": "max", "value": 300000 },
-              { "id": "custom.minWidth", "value": 90 }
+              { "id": "custom.minWidth", "value": 60 }
             ]
           },
           {
@@ -149,27 +167,27 @@
               { "id": "unit", "value": "dtdurationms" },
               { "id": "min", "value": 0 },
               { "id": "max", "value": 300000 },
-              { "id": "custom.minWidth", "value": 90 }
+              { "id": "custom.minWidth", "value": 55 }
             ]
           },
           {
             "matcher": { "id": "byName", "options": "Time" },
-            "properties": [{ "id": "custom.minWidth", "value": 150 }]
+            "properties": [{ "id": "custom.minWidth", "value": 100 }]
           },
           {
             "matcher": { "id": "byName", "options": "trace_id" },
             "properties": [
-              { "id": "custom.minWidth", "value": 140 },
+              { "id": "custom.minWidth", "value": 80 },
               { "id": "custom.displayMode", "value": "color-text" }
             ]
           },
           {
             "matcher": { "id": "byName", "options": "prefill node" },
-            "properties": [{ "id": "custom.minWidth", "value": 90 }]
+            "properties": [{ "id": "custom.minWidth", "value": 60 }]
           },
           {
             "matcher": { "id": "byName", "options": "decode node" },
-            "properties": [{ "id": "custom.minWidth", "value": 90 }]
+            "properties": [{ "id": "custom.minWidth", "value": 60 }]
           }
         ]
       },
@@ -202,6 +220,7 @@
             "conversions": [
               { "targetField": "queue_wait_ms", "destinationType": "number" },
               { "targetField": "prefill_ms", "destinationType": "number" },
+              { "targetField": "model_load_ms", "destinationType": "number" },
               { "targetField": "save_kv_ms", "destinationType": "number" },
               { "targetField": "restore_kv_ms", "destinationType": "number" },
               { "targetField": "decode_ms", "destinationType": "number" }
@@ -233,19 +252,30 @@
               "route_type": true,
               "prefill_node": true,
               "decode_node": true,
-              "total_ms": true
+              "total_ms": true,
+              "status": true,
+              "prefill_model": true,
+              "decode_model": true,
+              "save_kv_rpc_ms": true,
+              "save_kv_store_ms": true,
+              "tokens_in": true,
+              "tokens_out": true,
+              "kv_bytes": true,
+              "prefix_hit": true
             },
             "indexByName": {
               "trace_id": 0,
               "queue_wait_ms": 1,
               "prefill_ms": 2,
-              "save_kv_ms": 3,
-              "restore_kv_ms": 4,
-              "decode_ms": 5
+              "model_load_ms": 3,
+              "save_kv_ms": 4,
+              "restore_kv_ms": 5,
+              "decode_ms": 6
             },
             "renameByName": {
               "queue_wait_ms": "Queue",
               "prefill_ms": "Prefill",
+              "model_load_ms": "Model Switch",
               "save_kv_ms": "Save KV",
               "restore_kv_ms": "Restore KV",
               "decode_ms": "Decode"
@@ -273,6 +303,10 @@
           {
             "matcher": { "id": "byName", "options": "Prefill" },
             "properties": [{ "id": "color", "value": { "fixedColor": "#E24D42", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Model Switch" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#FA6400", "mode": "fixed" } }]
           },
           {
             "matcher": { "id": "byName", "options": "Save KV" },
