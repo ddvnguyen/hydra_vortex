@@ -28,6 +28,7 @@
             "conversions": [
               { "targetField": "queue_wait_ms", "destinationType": "number" },
               { "targetField": "prefill_ms", "destinationType": "number" },
+              { "targetField": "model_load_ms", "destinationType": "number" },
               { "targetField": "save_kv_ms", "destinationType": "number" },
               { "targetField": "restore_kv_ms", "destinationType": "number" },
               { "targetField": "decode_ms", "destinationType": "number" },
@@ -61,16 +62,18 @@
               "decode_node": 5,
               "queue_wait_ms": 6,
               "prefill_ms": 7,
-              "save_kv_ms": 8,
-              "restore_kv_ms": 9,
-              "decode_ms": 10,
-              "total_ms": 11
+              "model_load_ms": 8,
+              "save_kv_ms": 9,
+              "restore_kv_ms": 10,
+              "decode_ms": 11,
+              "total_ms": 12
             },
             "renameByName": {
               "prefill_node": "prefill node",
               "decode_node": "decode node",
               "queue_wait_ms": "queue",
               "prefill_ms": "prefill",
+              "model_load_ms": "model switch",
               "save_kv_ms": "save kv",
               "restore_kv_ms": "restore kv",
               "decode_ms": "decode",
@@ -202,6 +205,7 @@
             "conversions": [
               { "targetField": "queue_wait_ms", "destinationType": "number" },
               { "targetField": "prefill_ms", "destinationType": "number" },
+              { "targetField": "model_load_ms", "destinationType": "number" },
               { "targetField": "save_kv_ms", "destinationType": "number" },
               { "targetField": "restore_kv_ms", "destinationType": "number" },
               { "targetField": "decode_ms", "destinationType": "number" }
@@ -239,13 +243,15 @@
               "trace_id": 0,
               "queue_wait_ms": 1,
               "prefill_ms": 2,
-              "save_kv_ms": 3,
-              "restore_kv_ms": 4,
-              "decode_ms": 5
+              "model_load_ms": 3,
+              "save_kv_ms": 4,
+              "restore_kv_ms": 5,
+              "decode_ms": 6
             },
             "renameByName": {
               "queue_wait_ms": "Queue",
               "prefill_ms": "Prefill",
+              "model_load_ms": "Model Switch",
               "save_kv_ms": "Save KV",
               "restore_kv_ms": "Restore KV",
               "decode_ms": "Decode"
@@ -273,6 +279,10 @@
           {
             "matcher": { "id": "byName", "options": "Prefill" },
             "properties": [{ "id": "color", "value": { "fixedColor": "#E24D42", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Model Switch" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#FA6400", "mode": "fixed" } }]
           },
           {
             "matcher": { "id": "byName", "options": "Save KV" },
