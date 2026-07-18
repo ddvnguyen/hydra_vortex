@@ -1470,29 +1470,42 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					}
 					item.RetryCount++;
 
-					// Progress-aware guard: get slot progress info and apply
-					// smarter timeout logic based on progress.
-					// NOTE: PrefillFirstAttemptMs records the timestamp of the first
-					// prefill attempt, so busyMs measures actual stuck-in-BUSY time
-					// (not total time-in-system which includes queue-wait).
-					var busyMs = item.ElapsedMs - item.PrefillFirstAttemptMs;
-					SlotMeta? progressMeta = null;
-					try
-					{
-						progressMeta = await GetLlamaClient(w).GetStateMetaAsync(slotId, ct);
-					}
-					catch (Exception ex)
-					{
-						_log.Warning(ex, "prefill_slot_busy_progress_query_failed Sid={Sid} Worker={W} Slot={Slot}",
-							item.SessionId, w.Name, slotId);
-					}
+				// Progress-aware guard: get slot progress info and apply
+				// smarter timeout logic based on progress.
+				//
+				// KNOWN LIMITATION: server_queue is single-threaded — the META
+				// query goes through the same queue as the running PREFILL/DECODE
+				// task. During real busy periods the META request will queue behind
+				// the blocking generation call and time out (5s default) before
+				// being serviced. This means progressMeta will be null for most
+				// genuinely busy slots, and the code degrades to the workload-aware
+				// EstimatedTokens-based timeout (which is still better than the
+				// old flat 60s). Fix requires an architecture change in the fork:
+				// e.g. an atomic/lock-free progress counter readable without going
+				// through server_queue. See https://github.com/ddvnguyen/hydra_vortex/issues/451#issuecomment-XXXXX
+				//
+				// When progressMeta IS available (rare, or during slot idle
+				// windows between tasks), it provides real-time insight.
+				// NOTE: PrefillFirstAttemptMs records the timestamp of the first
+				// prefill attempt, so busyMs measures actual stuck-in-BUSY time
+				// (not total time-in-system which includes queue-wait).
+				var busyMs = item.ElapsedMs - item.PrefillFirstAttemptMs;
+				SlotMeta? progressMeta = null;
+				try
+				{
+					progressMeta = await GetLlamaClient(w).GetStateMetaAsync(slotId, ct);
+				}
+				catch (Exception ex)
+				{
+					_log.Warning(ex, "prefill_slot_busy_progress_query_failed Sid={Sid} Worker={W} Slot={Slot}",
+						item.SessionId, w.Name, slotId);
+				}
 
-					// Update progress tracking
-					if (progressMeta != null && progressMeta.Progress > 0)
-					{
-						item.LastBusyProgress = progressMeta.Progress;
-						item.LastBusyProgressMs = item.ElapsedMs;
-					}
+				// Update progress tracking
+				if (progressMeta != null && progressMeta.Progress > 0)
+				{
+					item.LastBusyProgress = progressMeta.Progress;
+				}
 
 					// Log progress info with the busy warning
 					var progressPct = progressMeta != null ? $"{progressMeta.Progress:P0}" : "unknown";
@@ -1507,13 +1520,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 					// Workload-aware timeout logic:
 					// Calculate expected timeout based on estimated tokens and hardware capabilities.
-					// Conservative prefill rate: 50 tok/s (accounts for slower GPUs like P100 at 28 tok/s decode,
-					// but prefill is typically faster). Safety multiplier: 3x to account for variability.
-					var estimatedTokens = item.EstimatedTokens;
-					if (estimatedTokens <= 0) estimatedTokens = 10_000; // fallback for unknown size
-					var expectedPrefillMs = (long)(estimatedTokens / 50.0 * 3.0); // 3x safety margin
-					var stuckTimeoutMs = Math.Max(60_000, expectedPrefillMs / 2); // at least 60s
-					var slowTimeoutMs = expectedPrefillMs;
+					// See CalculateBusyTimeouts for formula and testability.
+					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens);
 
 					if (busyMs > stuckTimeoutMs && item.LastBusyProgress == 0)
 					{
@@ -1521,12 +1529,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.Error = new InvalidOperationException(
 							$"EnginePrefill RPC returned BUSY for {busyMs}ms on {w.Name} " +
 							$"(slot={slotId}, retries={item.RetryCount}, operation={operation}). " +
-							$"No progress detected (expected timeout: {stuckTimeoutMs}ms for {estimatedTokens} tokens). " +
+							$"No progress detected (stuck timeout: {stuckTimeoutMs}ms). " +
 							$"Check: (1) llama-engine binary supports opcode 0x42, " +
 							$"(2) slot count matches HydraCore config, " +
 							$"(3) no other process holds all slots.");
-						_log.Error("prefill_engine_busy_stuck Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} ExpectedMs={Expected} Tokens={Tokens} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
-							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, stuckTimeoutMs, estimatedTokens, operation, progressPct, item.ElapsedMs);
+						_log.Error("prefill_engine_busy_stuck Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} StuckMs={StuckMs} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
+							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, stuckTimeoutMs, operation, progressPct, item.ElapsedMs);
 						return WorkItemState.Failed;
 					}
 					else if (busyMs > slowTimeoutMs)
@@ -1535,12 +1543,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.Error = new InvalidOperationException(
 							$"EnginePrefill RPC returned BUSY for {busyMs}ms on {w.Name} " +
 							$"(slot={slotId}, retries={item.RetryCount}, operation={operation}). " +
-							$"Progress detected ({progressPct}) but exceeded expected time ({slowTimeoutMs}ms for {estimatedTokens} tokens). " +
+							$"Progress detected ({progressPct}) but exceeded slow timeout ({slowTimeoutMs}ms). " +
 							$"Check: (1) llama-engine binary supports opcode 0x42, " +
 							$"(2) slot count matches HydraCore config, " +
 							$"(3) no other process holds all slots.");
-						_log.Error("prefill_engine_busy_too_slow Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} ExpectedMs={Expected} Tokens={Tokens} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
-							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, slowTimeoutMs, estimatedTokens, operation, progressPct, item.ElapsedMs);
+						_log.Error("prefill_engine_busy_too_slow Sid={Sid} Worker={W} Slot={Slot} Retries={R} BusyMs={Busy} SlowMs={SlowMs} Operation={Op} Progress={Progress} TotalElapsedMs={Ms}",
+							item.SessionId, w.Name, slotId, item.RetryCount, busyMs, slowTimeoutMs, operation, progressPct, item.ElapsedMs);
 						return WorkItemState.Failed;
 					}
 
@@ -2948,6 +2956,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.Phases.GetValueOrDefault("decode_ms"),
 			item.TokensIn, item.TokensOut, item.KvBytes,
 			item.PrefixCacheHit ? "true" : "false", status);
+	}
+
+	/// <summary>Calculate workload-aware BUSY timeouts based on estimated token count.</summary>
+	/// <param name="estimatedTokens">Prompt token count from the request. Falls back to 10K if 0.</param>
+	/// <returns>(stuckTimeout, slowTimeout) in milliseconds.</returns>
+	internal static (long stuckMs, long slowMs) CalculateBusyTimeouts(long estimatedTokens)
+	{
+		// Conservative prefill rate: 50 tok/s (accounts for slower GPUs like P100 at 28 tok/s decode,
+		// but prefill is typically faster). Safety multiplier: 3x to account for variability.
+		if (estimatedTokens <= 0) estimatedTokens = 10_000;
+		var expectedPrefillMs = (long)(estimatedTokens / 50.0 * 3.0 * 1000.0); // convert seconds to ms
+		var stuckMs = Math.Max(60_000, expectedPrefillMs / 2); // at least 60s
+		var slowMs = expectedPrefillMs;
+		return (stuckMs, slowMs);
 	}
 
 	private void EmitTimeline(WorkItem item, string status = "done")

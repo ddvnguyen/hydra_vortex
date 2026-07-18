@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Hydra.Core;
+using Hydra.Core.Services;
 
 namespace Tests.Core;
 
@@ -297,5 +298,18 @@ public sealed class SlotMetaTests
         Assert.Equal(100000, meta.TokensProcessed);
         Assert.Equal(100001, meta.TokensTotal);
         Assert.Equal(1000000, meta.ElapsedMs);
+    }
+
+    [Theory]
+    [InlineData(0, 300_000, 600_000)]       // fallback: 10K tokens → 600s expected, stuck=max(60s,300s)=300s, slow=600s
+    [InlineData(1_000, 60_000, 60_000)]     // 1K: expected=60s, stuck=max(60s,30s)=60s, slow=60s
+    [InlineData(10_000, 300_000, 600_000)]  // 10K: expected=600s, stuck=max(60s,300s)=300s, slow=600s
+    [InlineData(50_000, 1_500_000, 3_000_000)] // 50K: expected=3000s, stuck=max(60s,1500s)=1500s, slow=3000s
+    [InlineData(100_000, 3_000_000, 6_000_000)] // 100K: expected=6000s, stuck=max(60s,3000s)=3000s, slow=6000s
+    public void CalculateBusyTimeouts_Returns_Correct_Thresholds(long tokens, long expectedStuck, long expectedSlow)
+    {
+        var (stuck, slow) = WorkerSchedulerService.CalculateBusyTimeouts(tokens);
+        Assert.Equal(expectedStuck, stuck);
+        Assert.Equal(expectedSlow, slow);
     }
 }
