@@ -10,16 +10,30 @@ node:
 
 binaries:
   llama-server:
-    # Fat binary: sm_86 (3060) + sm_120a (5060 Ti) in one SASS image.
-    # The 5060 Ti picks sm_120a; the 3060 picks sm_86. Same OCI image
-    # used by node-rtx3060.yaml. Bind-mount from
+    # Fat binary: sm_86 (RTX 3060) + sm_120a (RTX 5060 Ti) in one SASS
+    # image. The RTX 5060 Ti picks sm_120a; the RTX 3060 picks sm_86.
+    # Same OCI image used by node-rtx3060.yaml. Bind-mount from
     # src/llama-cpp/build_sm86_sm120/bin/ in docker-compose.hydra.yml
     # shadows the registry pull, so the source is the OCI fallback
     # only — used by hydra-head if the bind mount isn't present
     # (e.g. on a host that doesn't build the fat binary itself).
+    #
+    # `binary`/`dest` MUST match `llama.binary` below (llama-engine,
+    # not llama-server — see that comment for why). The map key stays
+    # `llama-server` (matches the OCI image/repo name), but the actual
+    # on-disk filename it pulls-or-skips is llama-engine. This name
+    # mismatch was the root cause of the RTX heads crash-looping on
+    # 2026-07-18 (issue #453/#460): the skip-check in main.go looks
+    # for `dest` on disk before pulling — with the wrong filename it
+    # never found the already-built binary, fell through to a real
+    # OCI pull, and that pull fatally failed against this directory's
+    # intentional :ro mount (the mount is read-only on purpose, so a
+    # config bug like this fails loudly instead of silently
+    # overwriting a local dev build — do not "fix" this by making the
+    # mount :rw).
     source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
-    binary: llama-server
-    dest: /llama/bin/llama-server
+    binary: llama-engine
+    dest: /llama/bin/llama-engine
   node_exporter:
     source: https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
     binary: node_exporter
