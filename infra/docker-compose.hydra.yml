@@ -4,50 +4,41 @@ name: hydra-system
 # "hydra system" stack on the RTX host. P100 is a separate VM and is
 # NOT in this compose.
 #
-# The pod runs as `userns_mode: host` (set at the pod level here, NOT
-# on individual services — podman rejects `--userns` and `--pod`
-# together). With host userns, container uids match host uids
-# directly, so the in-container promtail can read host files
-# (`/mnt/containers/*/ctr.log`, `/mnt/SSD/hydra-backup`, the host
-# podman auth.json) without chmod 644. Both services also set
-# `user: 1000:1000` to run as the host ddv user.
+# x-podman.in_pod: false — each service below runs as an INDEPENDENT
+# container, not as members of a shared `pod_hydra-system` pod. This
+# was a deliberate fix (2026-07-18): all three services already use
+# `network_mode: host` (true host networking, no pod-shared net
+# namespace needed), so pod grouping bought nothing functionally,
+# while costing real reliability — recreating any ONE service
+# (`podman-compose up -d --force-recreate <service>`) cascaded a
+# teardown of the pod's shared network namespace, silently orphaning
+# the OTHER still-"Up" containers from it (ports stopped listening
+# host-wide, `podman ps` correctly showed them unhealthy, but nothing
+# repaired them short of recreating everything together). With
+# `in_pod: false`, each container owns its own lifecycle: recreating
+# `core` alone (e.g. to ship a new build) cannot affect `head-rtx5060ti`
+# or `head-rtx3060`, and vice versa.
 #
 # Deploy with:
 #   export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
 #   podman compose -f infra/docker-compose.hydra.yml up -d
 # (note: podman-compose is not used; podman 5.x has native compose support)
+x-podman:
+  in_pod: false
 
-# Pod-level userns_mode. We set it to "host" with the intent of
-# getting host userns in the containers, but on rootless podman
-# (this host runs `podman` as ddv, not root) this is **silently
-# downgraded** to the default subuid mapping. The in-container
-# uid 1000 (set via `user: 1000:1000` per service) ends up mapped
-# to a host subuid (typically 100999), not the actual host uid
-# 1000 (ddv). That has a real consequence for bind mounts:
-# files written by the container end up owned by the subuid
-# (e.g. 100999:100999), not by ddv. Host ddv can read them (mode
-# 644) but cannot `chown` them back to 1000:1000 — the host's
-# NTFS partition (`/mnt/SSD` is `ntfs3`) doesn't store POSIX
-# ownership semantics either, which makes recovery a `chmod
-# 777` + delete-by-content job, not a `chown`.
-#
-# The fix in this compose is NOT to set per-service userns_mode
-# (that breaks with the well-known podman error `--userns and
-# --pod cannot be set together`). Instead, the `core` service
-# wraps its ENTRYPOINT with a one-line shell that ensures
-# `$HYDRA_STORE_BACKUP_DIR/chunks` exists and is mode 777 before
-# the C# binary starts. With mode 777, the subuid-mapped user
-# can create new files in there, and the chunks-dir regression
-# we saw in 2026-06-22 (chunks dir created at 755 by an earlier
-# root-owned run, then `UnauthorizedAccessException` every 10s
-# on every write-behind cycle) cannot recur.
-#
-# The `userns_mode: "host"` line below is kept as documentation
-# of intent. It applies to the POD ONLY (compose generates
-# `--userns=host` on `podman pod create`), but as noted, rootless
-# podman downgrades this — see the comment on each service for
-# the real-world consequences.
-userns_mode: "host"
+# NOTE: this compose used to set a pod-level `userns_mode: "host"`,
+# intended to get host userns in the containers so the in-container
+# subuid-mapped user could write bind-mounted host files without
+# chmod 644. On this rootless podman host (`podman` runs as ddv, not
+# root) that setting was **silently downgraded** to the default
+# subuid mapping anyway — it never actually worked. The real fix
+# lives on the `core` service's `command:` below: wrap the ENTRYPOINT
+# with a one-line shell that chmod 777s the write-behind chunks dir
+# before the C# binary starts, so the subuid-mapped user can write to
+# it regardless of userns mode. Since the pod-level setting was both
+# non-functional and now gone (no pod to attach it to — see
+# `x-podman.in_pod: false` above), it has been removed rather than
+# kept as inert config.
 
 # ── Named volumes ─────────────────────────────────────────────────────────
 # (hydra-head-promtail-positions removed in #363 — Promtail gone.)
