@@ -1552,12 +1552,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						return WorkItemState.Failed;
 					}
 
-					// Re-enqueue — the evaluator will re-dispatch when
-					// SignalEvaluator() fires on slot release.
-					item.PrefillWorker = null;
-					item.PrefillSlot = null;
-					item.State = WorkItemState.None;
-					return WorkItemState.Retry;
+				// Re-enqueue — the evaluator will re-dispatch when
+				// SignalEvaluator() fires on slot release.
+				item.PrefillWorker = null;
+				item.PrefillSlot = null;
+				item.LastBusyProgress = 0;
+				item.State = WorkItemState.None;
+				return WorkItemState.Retry;
 				}
 				else
 				{
@@ -1623,6 +1624,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				item.PrefillWorker = null;
 				item.PrefillSlot = null;
+				item.LastBusyProgress = 0;
 				item.State = WorkItemState.None;
 				item.RetryCount++;
 				return WorkItemState.Retry;
