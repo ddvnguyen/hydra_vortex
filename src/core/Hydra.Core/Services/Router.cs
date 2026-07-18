@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Microsoft.ML.Tokenizers;
+using Serilog;
 
 namespace Hydra.Core.Services;
 
@@ -26,13 +28,15 @@ public static class Router
 	public static MessageSummary SummarizeMessages(
 		List<Dictionary<string, object>> messages)
 	{
+		var sw = Stopwatch.StartNew();
 		StringBuilder sb = new();
 		int tokenCount = 0;
 		string? prefixHash = null;
 		int systemPromptTokens = 0;
 
-		foreach (var m in messages)
+		for (int i = 0; i < messages.Count; i++)
 		{
+			var m = messages[i];
 			var role = m.GetValueOrDefault("role")?.ToString() ?? "";
 			var content = m.GetValueOrDefault("content")?.ToString() ?? "";
 
@@ -41,7 +45,14 @@ public static class Router
 			sb.Append(content);
 			sb.Append('\n');
 
+			var msgSw = Stopwatch.StartNew();
 			var tokens = Tokenizer.CountTokens(content);
+			msgSw.Stop();
+			if (msgSw.ElapsedMilliseconds > 200)
+			{
+				Log.Warning("event=summarize_slow_tokenize index={Index} role={Role} content_chars={ContentChars} elapsed_ms={ElapsedMs}",
+					i, role, content.Length, msgSw.ElapsedMilliseconds);
+			}
 			tokenCount += tokens;
 
 			if (role == "system" && content.Length > 0)
@@ -56,6 +67,12 @@ public static class Router
 
 		var sessionId = $"sess_{Convert.ToHexStringLower(
 			SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..24]}";
+
+		if (sw.ElapsedMilliseconds > 200)
+		{
+			Log.Warning("event=summarize_messages_slow elapsed_ms={ElapsedMs} message_count={MessageCount} total_tokens={TotalTokens}",
+				sw.ElapsedMilliseconds, messages.Count, tokenCount);
+		}
 
 		return new MessageSummary(sessionId, Math.Max(1, tokenCount), prefixHash, systemPromptTokens);
 	}
