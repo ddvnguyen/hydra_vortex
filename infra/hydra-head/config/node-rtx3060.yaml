@@ -65,8 +65,8 @@ llama:
     n-gpu-layers: 99
     override-tensor: "token_embd\\.weight=CPU,output\\.weight=CPU,output_norm\\.weight=CPU"
 
-    # Context and parallelism — one slot only (12 GB).
-    ctx-size: 320000
+    # Context and parallelism — one slot only (12 GB VRAM).
+    ctx-size: 128000
     parallel: 1
 
     # Sampling — same as rtx
