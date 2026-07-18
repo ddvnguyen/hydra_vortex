@@ -106,6 +106,13 @@ public sealed class HydraEngineClient
             ModelHash     = meta?.ModelHash     ?? "",
             ModelPath     = meta?.ModelPath     ?? "",
             ModelFallback = meta?.ModelFallback ?? false,
+            PrefillMs     = meta?.PrefillMs     ?? 0,
+            ModelLoadMs   = meta?.ModelLoadMs   ?? 0,
+            PromptTokens  = meta?.PromptTokens  ?? 0,
+            TokensPerSecond = meta?.TokensPerSecond ?? 0,
+            CacheTokens   = meta?.CacheTokens   ?? 0,
+            KvSize        = meta?.KvSize        ?? 0,
+            LogitsSize    = meta?.LogitsSize    ?? 0,
             KvBlob        = resp.Payload
         };
     }
@@ -275,6 +282,22 @@ public sealed class EnginePrefillResult
     public string ModelPath { get; init; } = "";
     [JsonPropertyName("model_fallback")]
     public bool ModelFallback { get; init; }
+
+    // #451: PREFILL metrics for Hydra Core statistics
+    [JsonPropertyName("prefill_ms")]
+    public double PrefillMs { get; init; }
+    [JsonPropertyName("model_load_ms")]
+    public double ModelLoadMs { get; init; }
+    [JsonPropertyName("prompt_tokens")]
+    public int PromptTokens { get; init; }
+    [JsonPropertyName("tokens_per_second")]
+    public double TokensPerSecond { get; init; }
+    [JsonPropertyName("cache_tokens")]
+    public int CacheTokens { get; init; }
+    [JsonPropertyName("kv_size")]
+    public long KvSize { get; init; }
+    [JsonPropertyName("logits_size")]
+    public long LogitsSize { get; init; }
 
     /// <summary>Raw KV state blob returned by the engine (caller takes ownership).</summary>
     [JsonIgnore]
