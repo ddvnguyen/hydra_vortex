@@ -1,0 +1,74 @@
+# Hydra Head - P100 Node Configuration (Mini quant variant)
+# Tesla P100 in KVM VM at 192.168.122.21
+#
+# Same-quant P/D isolation test (issue #469): loads the SAME
+# Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf that RTX prefills with,
+# instead of P100's normal Balanced decode quant. Used to test whether
+# the RTX->P100 cross-node KV handoff works when the quant matches on
+# both ends, isolating "cross-node transfer" from "cross-quant" as
+# separate variables. See node-p100.yaml for the normal (Balanced)
+# deploy — this file is not used by default.
+
+node:
+  name: p100
+  mode: vm
+
+infra:
+  otel:
+    url: http://192.168.122.1:4318
+
+binaries:
+  llama-server:
+    source: ghcr.io/ddvnguyen/llama-server-sm60:f518cff16
+    binary: llama-server
+    dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+
+llama:
+  binary: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+  working_dir: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin
+  port: 8086
+  rpc_port: 9502
+  env:
+    OTEL_SERVICE_NAME: llama-server
+    OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://192.168.122.1:4318
+  params:
+    # Mini quant — matches RTX's prefill model for this isolation test.
+    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
+    chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
+
+    # Context and parallelism
+    ctx-size: 128000
+    parallel: 1
+
+    # GPU layers — unchanged from node-p100.yaml on purpose: this test
+    # isolates the quant/file variable only, not compute placement.
+    n-gpu-layers: all
+    n-cpu-moe: 26
+
+    # Sampling
+    temp: 0.86
+    repeat-penalty: 1.06
+    top-k: 20
+    top-p: 0.95
+
+    # Tensor overrides
+    override-tensor: "token_embd.weight=CPU"
+
+    # Chat template
+    chat-template-kwargs: '{"preserve_thinking": true}'
+
+services:
+  node_exporter:
+    enabled: true
+    binary: /home/vm1/.local/bin/node_exporter
+    port: 9100
+  nvidia_exporter:
+    enabled: true
+    binary: /home/vm1/.local/bin/nvidia_gpu_exporter
+    port: 9835
+    args:
+      - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
+
+health:
+  max_fails: 30
