@@ -21,7 +21,7 @@ llama:
     prio: 3
     prio-batch: 1
     rope-scaling: yarn
-    rope-scale: 5
+    rope-scale: 4
     yarn-orig-ctx: 32768
     reasoning: on
     jinja: true
