@@ -16,14 +16,21 @@ node:
 binaries:
   llama-server:
     # Fat binary: sm_86 (Ampere, this card) + sm_120a (Blackwell, the
-    # 5060 Ti sitting next door on the same host). Same OCI image as
-    # node-rtx.yaml. Bind-mount from
+    # RTX 5060 Ti sitting next door on the same host). Same OCI image
+    # as node-rtx.yaml. Bind-mount from
     # src/llama-cpp/build_sm86_sm120/bin/ in docker-compose.hydra.yml
     # shadows the registry pull on this host. OCI source is the
     # fallback for hosts that don't build the fat binary themselves.
+    #
+    # `binary`/`dest` MUST match `llama.binary` below (llama-engine,
+    # not llama-server). See the matching comment in node-rtx.yaml —
+    # this filename mismatch caused both host GPU heads to
+    # crash-loop on 2026-07-18 (#453/#460). Do not fix a mismatch
+    # like this by making the bind mount :rw; the mount is
+    # intentionally read-only.
     source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
-    binary: llama-server
-    dest: /llama/bin/llama-server
+    binary: llama-engine
+    dest: /llama/bin/llama-engine
   node_exporter:
     # Exporter sidecars moved off the host and into the in-container
     # hydra-head per PR #363. We bind the host's exporter at the
@@ -65,8 +72,8 @@ llama:
     n-gpu-layers: 99
     override-tensor: "token_embd\\.weight=CPU,output\\.weight=CPU,output_norm\\.weight=CPU"
 
-    # Context and parallelism — one slot only (12 GB).
-    ctx-size: 320000
+    # Context and parallelism — one slot only (12 GB VRAM).
+    ctx-size: 128000
     parallel: 1
 
     # Sampling — same as rtx

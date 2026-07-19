@@ -1,14 +1,18 @@
-# Hydra Head - P100 Node Configuration
+# Hydra Head - P100 Node Configuration (Mini quant variant)
 # Tesla P100 in KVM VM at 192.168.122.21
+#
+# Same-quant P/D isolation test (issue #469): loads the SAME
+# Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf that RTX prefills with,
+# instead of P100's normal Balanced decode quant. Used to test whether
+# the RTX->P100 cross-node KV handoff works when the quant matches on
+# both ends, isolating "cross-node transfer" from "cross-quant" as
+# separate variables. See node-p100.yaml for the normal (Balanced)
+# deploy — this file is not used by default.
 
 node:
   name: p100
   mode: vm
 
-# The P100 VM pushes to the RTX host's OTel Collector gateway.
-# global.yaml has otel.url = http://localhost:4318, but from the
-# VM localhost is the VM itself. 192.168.122.1 is the RTX host
-# (the default gateway / NAT bridge from the KVM VM's perspective).
 infra:
   otel:
     url: http://192.168.122.1:4318
@@ -25,24 +29,20 @@ llama:
   port: 8086
   rpc_port: 9502
   env:
-    # Per-service OTel log push (#363). llama-server on P100
-    # is supervised by hydra-head and its stdout is captured
-    # by a per-child childWriter (commit 6). The child's OTel
-    # resource has service.name=llama-server; the writer
-    # pushes OTLP to the OTel Collector on the RTX host.
     OTEL_SERVICE_NAME: llama-server
     OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://192.168.122.1:4318
   params:
-    # Model
-    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
+    # Mini quant — matches RTX's prefill model for this isolation test.
+    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
     chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
 
     # Context and parallelism
     ctx-size: 128000
     parallel: 1
 
-    # GPU layers
+    # GPU layers — unchanged from node-p100.yaml on purpose: this test
+    # isolates the quant/file variable only, not compute placement.
     n-gpu-layers: all
     n-cpu-moe: 26
 
@@ -59,9 +59,6 @@ llama:
     chat-template-kwargs: '{"preserve_thinking": true}'
 
 services:
-  # hydra-head manages these as subprocesses (no systemd services
-  # for them — the old infra-promtail / node-exporter / nvidia-exporter
-  # host services were removed in commit 5f2c231 + this follow-up).
   node_exporter:
     enabled: true
     binary: /home/vm1/.local/bin/node_exporter
@@ -73,11 +70,5 @@ services:
     args:
       - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
 
-# P100 lives in a KVM VM with a slow virtio disk. Model load
-# (mmap'ing 16GB of GGUF) takes 235-300s on this hardware, so the
-# default max_fails=3 (3 min kill budget) is too aggressive — the
-# hydra-head health checker would kill the llama-server 5-60s
-# before the model finishes loading. Bump to 30 (≈30 min budget).
-# Closes #326.
 health:
   max_fails: 30

@@ -12,7 +12,7 @@
 # from live baseline tests (Phase 1 binary, 16b65ce7):
 #   - 21/44 split (21 layers on 3060, 44 on 5060 Ti): best prefill
 #   - ub=512 (was 384): less per-chunk overhead
-#   - ctx=96K (was 128K): 21/44 split fits within GPU memory
+#   - ctx=128K: 21/44 split fits within GPU memory
 #   - q8/q8 KV cache: q5_0 crashes with FA_ALL_QUANTS=OFF
 #   - Removed pre-#30 flags (combined-split-mode, combined-tensor-split)
 #     replaced by stock tensor-split flag
@@ -47,7 +47,7 @@ llama:
   rpc_port: 9503
   params:
     model: /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
-    ctx-size: 96000
+    ctx-size: 128000
     parallel: 1
     ubatch-size: 512
     fit: off

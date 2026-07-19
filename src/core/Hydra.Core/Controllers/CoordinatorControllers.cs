@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Services;
+using Serilog;
 
 namespace Hydra.Core.Controllers;
 
@@ -40,6 +42,8 @@ public class CompletionsController : ControllerBase
 	[HttpPost("/v1/chat/completions")]
 	public async Task<IActionResult> ChatCompletions(CancellationToken ct)
 	{
+		var traceId = Router.NewTraceId();
+		var sw = Stopwatch.StartNew();
 		Dictionary<string, object>? body;
 		try
 		{
@@ -47,6 +51,8 @@ public class CompletionsController : ControllerBase
 			// and chunked transfer encoding (used by opencode's AI SDK).
 			using var reader = new StreamReader(Request.Body, Encoding.UTF8);
 			var json = await reader.ReadToEndAsync(ct);
+			Log.Information("event=chat_completions_body_read trace_id={TraceId} elapsed_ms={ElapsedMs} body_bytes={BodyBytes}",
+				traceId, sw.ElapsedMilliseconds, json.Length);
 			if (string.IsNullOrWhiteSpace(json) || json.Length > 1_048_576)
 			{
 				return string.IsNullOrWhiteSpace(json)
@@ -54,6 +60,7 @@ public class CompletionsController : ControllerBase
 					: BadRequest(new { error = "Request body too large" });
 			}
 			body = JsonSerializer.Deserialize<Dictionary<string, object>>(json, _jsonOpts);
+			Log.Information("event=chat_completions_body_parsed trace_id={TraceId} elapsed_ms={ElapsedMs}", traceId, sw.ElapsedMilliseconds);
 		}
 		catch
 		{
@@ -66,6 +73,8 @@ public class CompletionsController : ControllerBase
 		}
 
 		var messages = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(msgsEl.GetRawText(), _jsonOpts) ?? [];
+		Log.Information("event=chat_completions_messages_deserialized trace_id={TraceId} elapsed_ms={ElapsedMs} message_count={MessageCount} tools_present={ToolsPresent}",
+			traceId, sw.ElapsedMilliseconds, messages.Count, body.ContainsKey("tools"));
 
 		int maxTokens = body.TryGetValue("max_tokens", out var mt)
 			&& mt is JsonElement mte ? mte.GetInt32() : 1024;
@@ -94,10 +103,15 @@ public class CompletionsController : ControllerBase
 		// Single pass: derive session ID, token estimate, and prefix hash
 		var summary = Router.SummarizeMessages(messages);
 		sessionId ??= summary.SessionId;
+		Log.Information("event=chat_completions_summarized trace_id={TraceId} elapsed_ms={ElapsedMs} estimated_tokens={EstimatedTokens} system_prompt_tokens={SystemPromptTokens} session_id={SessionId}",
+			traceId, sw.ElapsedMilliseconds, summary.EstimatedTokens, summary.SystemPromptTokens, sessionId);
 
 		try
 		{
+			Log.Information("event=chat_completions_submit_start trace_id={TraceId} elapsed_ms={ElapsedMs}", traceId, sw.ElapsedMilliseconds);
 			var result = await _scheduler.SubmitAsync(body, messages, sessionId, summary.EstimatedTokens, maxTokens, summary.PrefixHash, ct, summary.SystemPromptTokens);
+			Log.Information("event=chat_completions_submit_returned trace_id={TraceId} elapsed_ms={ElapsedMs} is_stream={IsStream}",
+				traceId, sw.ElapsedMilliseconds, result is IAsyncEnumerable<byte[]>);
 			if (result is IAsyncEnumerable<byte[]> stream)
 			{
 				Response.ContentType = "text/event-stream";
