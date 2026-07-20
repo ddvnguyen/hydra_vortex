@@ -351,3 +351,63 @@ public sealed class RouterTests
 		Assert.Null(Router.PickBestAtomicWorker(workers, tracker, Health));
 	}
 }
+
+// #479/S3: IsModelAllowed now matches against engine-advertised preset aliases
+// (can-host) and the resident model, not the removed /v1/models CurrentModel poll.
+public sealed class IsModelAllowedTests
+{
+	private sealed class PresetHealthMonitor : IHealthMonitorService
+	{
+		private readonly Dictionary<string, NodeInfo> _nodes;
+		public PresetHealthMonitor(Dictionary<string, NodeInfo> nodes) => _nodes = nodes;
+		public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+		public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+		public bool IsHealthy(string nodeName) => true;
+		public bool IsStoreHealthy => true;
+		public int? GetIdleSlot(string nodeName) => null;
+		public NodeInfo? GetNodeInfo(string nodeName) => _nodes.TryGetValue(nodeName, out var n) ? n : null;
+		public Dictionary<string, object> GetHealthSummary() => new();
+	}
+
+	[Fact]
+	public void IsModelAllowed_Allows_WhenPresetAliasMatches()
+	{
+		var health = new PresetHealthMonitor(new()
+		{
+			["rtx"] = new NodeInfo
+			{
+				NodeName = "rtx",
+				PresetAliases = new HashSet<string> { "qwen3.6-27B-coder" },
+			},
+		});
+		// Dense profile allowed_models is the engine's GGUF-file alias (#479/S3).
+		Assert.True(Router.IsModelAllowed(health, "rtx",
+			new List<string> { "qwen3.6-27B-coder" }));
+	}
+
+	[Fact]
+	public void IsModelAllowed_Rejects_WhenNoPresetMatch()
+	{
+		var health = new PresetHealthMonitor(new()
+		{
+			["rtx"] = new NodeInfo
+			{
+				NodeName = "rtx",
+				PresetAliases = new HashSet<string> { "qwen3.6-35B-mini" },
+			},
+		});
+		Assert.False(Router.IsModelAllowed(health, "rtx",
+			new List<string> { "qwen3.6-27B-coder" }));
+	}
+
+	[Fact]
+	public void IsModelAllowed_Allows_All_WhenNoAllowedList()
+	{
+		var health = new PresetHealthMonitor(new()
+		{
+			["rtx"] = new NodeInfo { NodeName = "rtx" },
+		});
+		Assert.True(Router.IsModelAllowed(health, "rtx", null));
+		Assert.True(Router.IsModelAllowed(health, "rtx", new List<string>()));
+	}
+}

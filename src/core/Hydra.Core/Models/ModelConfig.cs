@@ -19,6 +19,32 @@ public sealed record ModelsConfig
 
     [JsonPropertyName("models")]
     public Dictionary<string, ModelTemplate>? Models { get; init; }
+
+    /// <summary>
+    /// #479/S3: maps a Hydra routing identity (e.g. <c>moe-35b-pd</c>,
+    /// <c>dense-27b-combined</c>) to the GGUF-file alias the engine's
+    /// <c>--models-preset</c> uses (<c>qwen3.6-35B-mini</c>,
+    /// <c>qwen3.6-27B-coder</c>). Role-aware: P/D-split identities map
+    /// prefill and decode to different quants. Core translates the
+    /// resolved routing identity to the GGUF-file alias and sends that
+    /// on the PREFILL/decode <c>model</c> field so the engine's inline
+    /// reload (server-context.cpp) fires. These are Hydra concepts, NOT
+    /// GGUF file names — the preset maps GGUF-file alias → .gguf path.
+    /// </summary>
+    [JsonPropertyName("model_file_aliases")]
+    public Dictionary<string, GgufAliasMapping>? ModelFileAliases { get; init; }
+}
+
+/// <summary>
+/// #479/S3: role-aware routing-identity → GGUF-file alias mapping.
+/// </summary>
+public sealed record GgufAliasMapping
+{
+    [JsonPropertyName("prefill")]
+    public string? Prefill { get; init; }
+
+    [JsonPropertyName("decode")]
+    public string? Decode { get; init; }
 }
 
 public sealed record EngineDefaults

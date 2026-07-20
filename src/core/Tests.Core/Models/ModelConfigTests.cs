@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Hydra.Core.Models;
+using Hydra.Core.Services;
 using Xunit;
 
 namespace Tests.Core.Models;
@@ -82,5 +83,81 @@ public class ModelConfigTests
         Assert.True(policy!.Enabled);
         Assert.Equal("moe-35b-solo", policy.DefaultModel);
         Assert.Equal(30, policy.SwapCostBudgetS);
+    }
+
+    // #479/S3: routing identity → GGUF-file alias translation.
+    private static ModelConfigLoader LoaderWithAliases()
+    {
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 2,
+            AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
+            Models = new Dictionary<string, ModelTemplate>(),
+            ModelFileAliases = new Dictionary<string, GgufAliasMapping>
+            {
+                ["moe-35b-pd"] = new GgufAliasMapping { Prefill = "qwen3.6-35B-mini", Decode = "qwen3.6-35B-balanced" },
+                ["dense-27b-combined"] = new GgufAliasMapping { Prefill = "qwen3.6-27B-coder", Decode = "qwen3.6-27B-coder" },
+            },
+        };
+        return ModelConfigLoader.Create(config);
+    }
+
+    [Fact]
+    public void TranslateToGgufAlias_PrefillRole_ReturnsPrefillAlias()
+    {
+        var loader = LoaderWithAliases();
+        Assert.Equal("qwen3.6-35B-mini", loader.TranslateToGgufAlias("moe-35b-pd"));
+    }
+
+    [Fact]
+    public void TranslateToGgufAlias_DecodeRole_ReturnsDecodeAlias()
+    {
+        var loader = LoaderWithAliases();
+        Assert.Equal("qwen3.6-35B-balanced", loader.TranslateToGgufAlias("moe-35b-pd", decodeRole: true));
+    }
+
+    [Fact]
+    public void TranslateToGgufAlias_SameQuant_ReturnsSameAliasBothRoles()
+    {
+        var loader = LoaderWithAliases();
+        Assert.Equal("qwen3.6-27B-coder", loader.TranslateToGgufAlias("dense-27b-combined"));
+        Assert.Equal("qwen3.6-27B-coder", loader.TranslateToGgufAlias("dense-27b-combined", decodeRole: true));
+    }
+
+    [Fact]
+    public void TranslateToGgufAlias_UnknownAlias_ReturnsNull()
+    {
+        var loader = LoaderWithAliases();
+        Assert.Null(loader.TranslateToGgufAlias("does-not-exist"));
+    }
+
+    [Fact]
+    public void TranslateToGgufAlias_NoMapConfigured_ReturnsNull()
+    {
+        var loader = ModelConfigLoader.Create(new ModelsConfig
+        {
+            SchemaVersion = 2,
+            AutoRouting = new AutoRoutingPolicy { Enabled = true },
+            Models = new Dictionary<string, ModelTemplate>(),
+        });
+        Assert.Null(loader.TranslateToGgufAlias("moe-35b-pd"));
+    }
+
+    [Fact]
+    public void Deserialize_ModelFileAliases_MapsRoutingIdentityToGgufAlias()
+    {
+        var json = """
+        {
+            "schema_version": 2,
+            "model_file_aliases": {
+                "moe-35b-pd": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-balanced" }
+            }
+        }
+        """;
+        var config = JsonSerializer.Deserialize<ModelsConfig>(json,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true, ReadCommentHandling = JsonCommentHandling.Skip });
+        Assert.NotNull(config?.ModelFileAliases);
+        Assert.Equal("qwen3.6-35B-mini", config!.ModelFileAliases!["moe-35b-pd"].Prefill);
+        Assert.Equal("qwen3.6-35B-balanced", config.ModelFileAliases["moe-35b-pd"].Decode);
     }
 }

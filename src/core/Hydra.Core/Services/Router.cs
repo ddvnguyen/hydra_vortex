@@ -156,19 +156,32 @@ public static class Router
 	/// <summary>
 	/// Returns true when the worker's loaded model is compatible with the
 	/// request. When <paramref name="allowedModels"/> is empty, all workers
-	/// pass. Otherwise the worker's CurrentModel (from health poll /v1/models)
-	/// must match one of the allowed file names (substring match on the GGUF
-	/// file name portion).
+	/// pass. Otherwise the worker must advertise or currently host one of the
+	/// allowed model identities. Match is by GGUF-file alias (engine preset) or
+	/// by GGUF file name substring (#479/S3: the /v1/models CurrentModel poll is
+	/// removed; residency is now the engine's own report).
 	/// </summary>
 	public static bool IsModelAllowed(IHealthMonitorService health, string nodeName, List<string>? allowedModels)
 	{
 		if (allowedModels == null || allowedModels.Count == 0) return true;
 		var nodeInfo = health.GetNodeInfo(nodeName);
-		var currentModel = nodeInfo?.CurrentModel;
-		if (string.IsNullOrEmpty(currentModel)) return true; // no info → allow (back-compat)
-		// Match against any allowed model (the GGUF file name, e.g. "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf")
-		return allowedModels.Any(a => currentModel.Contains(a, StringComparison.OrdinalIgnoreCase)
-			|| a.Contains(currentModel, StringComparison.OrdinalIgnoreCase));
+		if (nodeInfo == null) return true; // no info → allow (back-compat)
+
+		// A worker passes if any allowed identity is one of its advertised
+		// preset aliases (can-host) or is its current resident model.
+		var resident = nodeInfo.CurrentModel;
+		foreach (var allowed in allowedModels)
+		{
+			if (nodeInfo.PresetAliases.Count > 0
+				&& nodeInfo.PresetAliases.Any(pa => pa.Contains(allowed, StringComparison.OrdinalIgnoreCase)
+					|| allowed.Contains(pa, StringComparison.OrdinalIgnoreCase)))
+				return true;
+			if (!string.IsNullOrEmpty(resident)
+				&& (resident.Contains(allowed, StringComparison.OrdinalIgnoreCase)
+					|| allowed.Contains(resident, StringComparison.OrdinalIgnoreCase)))
+				return true;
+		}
+		return false;
 	}
 
 	public static async Task<int?> PickIdleSlot(
