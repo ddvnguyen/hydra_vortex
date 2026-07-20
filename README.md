@@ -53,20 +53,20 @@ single unified inference pool.
      │   Hydra Head    │         │   Hydra Head    │         │   Hydra Head    │
      │   (Go) per GPU  │         │   (Go) per GPU  │         │   (Go) per GPU  │
      └────────┬────────┘         └────────┬────────┘         └────────┬────────┘
-              │                            │                            │
+              │                           │                            │
      ┌────────▼────────┐         ┌────────▼────────┐         ┌────────▼────────┐
      │ llama-engine    │         │ llama-engine    │         │ llama-engine    │
      │ RTX 5060 Ti     │         │ RTX 3060        │         │ Tesla P100      │
      │ sm_120 (CUDA13) │         │ sm_86  (CUDA13) │         │ sm_60  (CUDA12) │
      │ :8080 :9503     │         │ :8081 :9504     │         │ :8086 :9502     │
      └────────┬────────┘         └────────┬────────┘         └────────┬────────┘
-              │                            │                            │
-              └────────────────────────────┼────────────────────────────┘
-                                           │
-                            ┌──────────────▼───────────────────────────┐
-                            │      Hydra Store (tmpfs-backed)          │
-                            │      Content-addressed chunked KV        │
-                            └──────────────────────────────────────────┘
+              │                           │                           │
+              └───────────────────────────┼───────────────────────────┘
+                                          │
+	                        ┌──────────────▼───────────────────────────┐
+                           │      Hydra Store (tmpfs-backed)          │
+                           │      Content-addressed chunked KV        │
+                           └──────────────────────────────────────────┘
 ```
 
 **llama-engine** is a distributed C++ fork of [llama.cpp](https://github.com/ggerganov/llama.cpp)
@@ -87,17 +87,17 @@ diagram and `docs/architecture.md` for routing/session-lifecycle detail.
 
 ## Components
 
-| Service      | Role                                            | Transport           |
-|--------------|------------------------------------------------|---------------------|
-| Hydra.Core   | KV storage + request routing + session mgmt    | HTTP + Binary RPC   |
-| Hydra Head   | Per-GPU node agent (process mgmt, OCI pull)    | HTTP                |
+| Service      | Role                                                | Transport           |
+|--------------|-----------------------------------------------------|---------------------|
+| Hydra.Core   | KV storage + request routing + session mgmt         | HTTP + Binary RPC   |
+| Hydra Head   | Per-GPU node agent (process mgmt, OCI pull)         | HTTP                |
 | llama-engine | GPU inference (llama.cpp fork, +streaming KV state) | HTTP + Binary RPC   |
 
 **llama-engine CUDA arch per node:**
 
 | GPU            | Arch   | CUDA Toolkit | Role                          |
 |----------------|--------|--------------|-------------------------------|
-| RTX 5060 Ti    | sm_120 | 13.2         | Primary prefill + decode       |
+| RTX 5060 Ti    | sm_120 | 13.2         | Primary prefill + decode      |
 | RTX 3060       | sm_86  | 13.2         | COMBINED peer (expert-split)  |
 | Tesla P100     | sm_60  | 12.9         | Quantized decode (P100 VM)    |
 
@@ -106,12 +106,12 @@ Q3_K-mini on host, Q5_K-balanced on P100.
 
 ## Milestones
 
-| MS           | Scope                                                       | Status   |
-|--------------|--------------------------------------------------------------|----------|
-| M0–M2        | llama.cpp fork + Store + Coordinator + routing + chunked dedup | ✅ done   |
-| M-Perf       | Heterogeneous perf: spec-decode → P/D streaming → pipeline   | ✅ done   |
-| Llama-Engine | **P/D split mix-quant** (RTX precise prefill / P100 quant decode) | ▶ now |
-| M3–M5        | Persistence, model mgmt & multi-modal, LLM obs & agentic      | Production (later) |
+| MS           | Scope                                                          | Status  |
+|--------------|----------------------------------------------------------------|---------|
+| M0–M2        | llama.cpp fork + Store + Coordinator + routing + chunked dedup | ✅     |
+| M-Perf       | Heterogeneous perf: spec-decode → P/D streaming → pipeline     | ✅     |
+| Llama-Engine | **P/D split mix-quant** (RTX precise prefill / P100 decode)    | ▶ now  |
+| M3–M5        | Persistence, model mgmt & multi-modal, LLM obs & agentic       | next    |
 
 See `PROJECT_STATUS.md` for the full milestone table, sub-phase breakdown, and
 current implementation status — it's the single source of truth for project
