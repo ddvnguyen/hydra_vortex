@@ -53,7 +53,7 @@ single unified inference pool.
      │   Hydra Head    │         │   Hydra Head    │         │   Hydra Head    │
      │   (Go) per GPU  │         │   (Go) per GPU  │         │   (Go) per GPU  │
      └────────┬────────┘         └────────┬────────┘         └────────┬────────┘
-              │                           │                            │
+              │                           │                           │
      ┌────────▼────────┐         ┌────────▼────────┐         ┌────────▼────────┐
      │ llama-engine    │         │ llama-engine    │         │ llama-engine    │
      │ RTX 5060 Ti     │         │ RTX 3060        │         │ Tesla P100      │
