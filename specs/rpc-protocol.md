@@ -115,28 +115,43 @@ llama-server knows nothing about Store or sessions — it only manages its own s
                   Request:  key="<slot_id>", payload_len=0
                   Response: meta={"n_past":<N>,"state_size":<N>,
                                   "model_alias":"<alias or filename>",
-                                  "model_hash":"<64-char hex SHA-256 of GGUF>",
+                                  "model_hash":"<reserved for SHA-256, currently empty>",
                                   "model_path":"<absolute path to GGUF>"}
                             payload=<raw KV bytes, ~800 MB>
                   M-Perf.9 #289: model identity is included in the response so
                   the Coordinator can record which model built the KV.
+                  Model identity is populated from the resident model. model_hash
+                  is reserved for future SHA-256 of the GGUF file (currently
+                  empty string). model_alias and model_path are always populated.
 
 0x31  STATE_PUT   Restore KV state from request payload
                   Request:  key="<slot_id>", payload=<raw KV bytes>
-                  Response: meta={"restored":true,"bytes":<N>}
+                  Response: meta={"restored":true,"bytes":<N>,"n_past":<M>,
+                                  "model_alias":"<alias or filename>",
+                                  "model_hash":"<reserved for SHA-256, currently empty>",
+                                  "model_path":"<absolute path to GGUF>",
+                                  "model_match":<bool>}
                             payload_len=0
+                  model_match indicates whether the restored KV is compatible with
+                  the resident model. Currently always true (validation
+                  infrastructure in place; KV header identity check is future work).
+                  When false, the caller should abort and re-prefill on the
+                  correct model.
 
 0x32  STATE_META  Slot metadata only — no KV serialization (cheap)
                   Request:  key="<slot_id>", payload_len=0
                   Response: meta={"slot_id":<N>,"n_past":<N>,
                                   "state_size":<N>,"is_processing":<bool>,
                                   "model_alias":"<alias or filename>",
-                                  "model_hash":"<64-char hex SHA-256 of GGUF>",
+                                  "model_hash":"<reserved for SHA-256, currently empty>",
                                   "model_path":"<absolute path to GGUF>"}
                             payload_len=0
                   M-Perf.9 #289: model_alias / model_hash / model_path are
                   added in #289. Pre-feature servers return the response
                   without these fields (back-compat).
+                  These fields are now populated from the resident model. model_hash
+                  is reserved for future SHA-256 (currently empty string). model_alias
+                  and model_path are always populated.
 ```
 
 **n_past definition:** `n_prompt_tokens_cache + n_decoded` (prompt tokens in KV cache
@@ -577,6 +592,16 @@ Operational implications:
   `src/core/Tests.Core/CrossModelGuardTests.cs` for the test matrix. The
   `hydra_cross_model_kv_proceeded_total` / `_skipped_total` / `_warned_total` /
   `_aborted_total` Prometheus counters expose the decision distribution.
+
+## Cross-Model KV Safety Validation (Issue #470)
+
+The STATE_PUT RPC now returns model identity and a validation flag (`model_match`) in the response metadata. The Coordinator checks `model_match` before proceeding to the HTTP decode call. This closes the gap where KV state was blindly written without confirming compatibility with the resident model.
+
+**Current behavior**: `model_match` is always `true` (validation infrastructure in place; actual KV identity check requires model identity in the KV blob header, which is future work).
+
+**Future enhancement**: Add model identity to the KV blob header (after the token ID header), then compare with resident model in STATE_PUT. When mismatch detected, return `model_match: false` and Coordinator will abort and re-prefill.
+
+**Metrics**: The Coordinator increments `hydra_cross_model_kv_aborted_total` when `model_match` is false.
 
 ## Streaming Behavior
 - Payloads > 1 MB MUST be streamed in chunks (default 256 KB read/write buffer)
