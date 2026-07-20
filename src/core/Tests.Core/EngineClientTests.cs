@@ -6,12 +6,11 @@ using Hydra.Shared;
 namespace Tests.Core;
 
 /// <summary>
-/// M-Perf.9 / #289: tests for the HydraEngineClient wrapper around the
-/// engine control-plane RPCs (opcodes 0x40-0x46). The wire format is
-/// verified by Tests.Shared.EngineOpcodeTests; these tests verify the
-/// C# wrapper shapes the payloads correctly (model field, messages
-/// field, etc.) and parses responses correctly (model_alias, model_hash,
-/// model_path, model_fallback).
+/// M-Perf.9 / #289 + #481 Phase 2b: tests for the HydraEngineClient wrapper
+/// around the engine control-plane RPCs (opcodes 0x40-0x46). The wire format
+/// is verified by Tests.Shared.EngineOpcodeTests; these tests verify the
+/// C# wrapper shapes the payloads correctly (model field, messages field,
+/// hydra_config injection) and parses responses correctly.
 /// </summary>
 public sealed class EngineClientTests
 {
@@ -205,6 +204,158 @@ public sealed class EngineClientTests
         Assert.Equal("", result.ModelHash);
         Assert.Equal("", result.ModelPath);
         Assert.False(result.ModelFallback);
+    }
+
+    // ── Phase 2b (#481): hydra_config injection tests ──
+
+    [Fact]
+    public async Task EnginePrefillAsync_PassesHydraConfigPayload()
+    {
+        // Wire JSON must contain hydra_config with split_mode, tensor_split, model_path
+        var rpc = new CapturingRpcClient();
+        rpc.NextResponse = MakeRpcResponse(
+            """{"n_past":42,"state_size":1234567,"model_alias":"dense-27b-combined","model_hash":"ab","model_path":"/models/Dense27B.gguf","model_fallback":false}""");
+        var client = new HydraEngineClient(rpc);
+
+        var hydraConfig = new Dictionary<string, object>
+        {
+            ["split_mode"] = "layer",
+            ["tensor_split"] = new double[] { 25, 40 },
+            ["model_path"] = "/models/Dense27B.gguf"
+        };
+
+        var messages = """[{"role":"user","content":"hi"}]""";
+        var result = await client.EnginePrefillAsync(
+            slotId: 0, model: null, requestJson: $$"""{"messages":{{messages}}}""",
+            traceId: "trace-prefill", ct: CancellationToken.None,
+            hydraConfig: hydraConfig);
+
+        Assert.NotNull(result);
+        Assert.Equal(42, result!.NPast);
+
+        var sent = Encoding.UTF8.GetString(rpc.LastRequest!.Value.Payload.Span);
+        var doc = JsonDocument.Parse(sent);
+        Assert.True(doc.RootElement.TryGetProperty("hydra_config", out var hc));
+        Assert.Equal("layer", hc.GetProperty("split_mode").GetString());
+        var ts = hc.GetProperty("tensor_split");
+        Assert.Equal(2, ts.GetArrayLength());
+        Assert.Equal(25.0, ts[0].GetDouble());
+        Assert.Equal(40.0, ts[1].GetDouble());
+        Assert.Equal("/models/Dense27B.gguf", hc.GetProperty("model_path").GetString());
+    }
+
+    [Fact]
+    public async Task EnginePrefillAsync_InjectsRpcServersAsArray()
+    {
+        // For dense-27b-combined config, wire JSON has hydra_config.rpc_servers as a JSON array
+        var rpc = new CapturingRpcClient();
+        rpc.NextResponse = MakeRpcResponse("""{"n_past":1,"state_size":0,"model_fallback":false}""");
+        var client = new HydraEngineClient(rpc);
+
+        var hydraConfig = new Dictionary<string, object>
+        {
+            ["split_mode"] = "layer",
+            ["rpc_servers"] = new[] { "192.168.122.21:9504" }
+        };
+
+        var result = await client.EnginePrefillAsync(
+            slotId: 0, model: null, requestJson: """{"messages":[]}""",
+            traceId: "trace", ct: CancellationToken.None,
+            hydraConfig: hydraConfig);
+
+        Assert.NotNull(result);
+        var sent = Encoding.UTF8.GetString(rpc.LastRequest!.Value.Payload.Span);
+        var doc = JsonDocument.Parse(sent);
+        Assert.True(doc.RootElement.TryGetProperty("hydra_config", out var hc));
+        Assert.True(hc.TryGetProperty("rpc_servers", out var rpcs));
+        Assert.Equal(JsonValueKind.Array, rpcs.ValueKind);
+        Assert.Equal(1, rpcs.GetArrayLength());
+        Assert.Equal("192.168.122.21:9504", rpcs[0].GetString());
+    }
+
+    [Fact]
+    public async Task EnginePrefillAsync_AcceptsMultiplePeers()
+    {
+        // RpcServers=['a:9504','b:9505'] produces both entries, in order
+        var rpc = new CapturingRpcClient();
+        rpc.NextResponse = MakeRpcResponse("""{"n_past":1,"state_size":0,"model_fallback":false}""");
+        var client = new HydraEngineClient(rpc);
+
+        var hydraConfig = new Dictionary<string, object>
+        {
+            ["split_mode"] = "layer",
+            ["rpc_servers"] = new[] { "a:9504", "b:9505" }
+        };
+
+        var result = await client.EnginePrefillAsync(
+            slotId: 0, model: null, requestJson: """{"messages":[]}""",
+            traceId: "trace", ct: CancellationToken.None,
+            hydraConfig: hydraConfig);
+
+        Assert.NotNull(result);
+        var sent = Encoding.UTF8.GetString(rpc.LastRequest!.Value.Payload.Span);
+        var doc = JsonDocument.Parse(sent);
+        Assert.True(doc.RootElement.TryGetProperty("hydra_config", out var hc));
+        Assert.True(hc.TryGetProperty("rpc_servers", out var rpcs));
+        Assert.Equal(JsonValueKind.Array, rpcs.ValueKind);
+        Assert.Equal(2, rpcs.GetArrayLength());
+        Assert.Equal("a:9504", rpcs[0].GetString());
+        Assert.Equal("b:9505", rpcs[1].GetString());
+    }
+
+    [Fact]
+    public async Task EnginePrefillAsync_BackCompatNullHydraConfig()
+    {
+        // Old 3-arg call still works (no hydra_config key in wire JSON)
+        var rpc = new CapturingRpcClient();
+        rpc.NextResponse = MakeRpcResponse("""{"n_past":1,"state_size":0,"model_fallback":false}""");
+        var client = new HydraEngineClient(rpc);
+
+        var messages = """[{"role":"user","content":"hi"}]""";
+        var result = await client.EnginePrefillAsync(slotId: 0, model: "balanced",
+            requestJson: $$"""{"messages":{{messages}}}""",
+            traceId: "trace-prefill", ct: CancellationToken.None);
+
+        Assert.NotNull(result);
+        var sent = Encoding.UTF8.GetString(rpc.LastRequest!.Value.Payload.Span);
+        Assert.Contains("\"model\":\"balanced\"", sent);
+        Assert.DoesNotContain("hydra_config", sent);
+    }
+
+    [Fact]
+    public async Task EnginePrefillAsync_NullHydraConfig_SkipsInjection()
+    {
+        // Explicitly passing hydraConfig: null produces no hydra_config key
+        var rpc = new CapturingRpcClient();
+        rpc.NextResponse = MakeRpcResponse("""{"n_past":1,"state_size":0,"model_fallback":false}""");
+        var client = new HydraEngineClient(rpc);
+
+        var result = await client.EnginePrefillAsync(
+            slotId: 0, model: null, requestJson: """{"messages":[]}""",
+            traceId: "trace", ct: CancellationToken.None,
+            hydraConfig: null);
+
+        Assert.NotNull(result);
+        var sent = Encoding.UTF8.GetString(rpc.LastRequest!.Value.Payload.Span);
+        Assert.DoesNotContain("hydra_config", sent);
+    }
+
+    [Fact]
+    public async Task EnginePrefillAsync_EmptyHydraConfig_SkipsInjection()
+    {
+        // Empty dictionary produces no hydra_config key
+        var rpc = new CapturingRpcClient();
+        rpc.NextResponse = MakeRpcResponse("""{"n_past":1,"state_size":0,"model_fallback":false}""");
+        var client = new HydraEngineClient(rpc);
+
+        var result = await client.EnginePrefillAsync(
+            slotId: 0, model: null, requestJson: """{"messages":[]}""",
+            traceId: "trace", ct: CancellationToken.None,
+            hydraConfig: new Dictionary<string, object>());
+
+        Assert.NotNull(result);
+        var sent = Encoding.UTF8.GetString(rpc.LastRequest!.Value.Payload.Span);
+        Assert.DoesNotContain("hydra_config", sent);
     }
 }
 

@@ -118,6 +118,7 @@ public sealed record ModelTemplate
     public RoutingRule? Routing { get; init; }
     [JsonPropertyName("engine_config")]
     public Dictionary<string, object>? EngineConfig { get; init; }
+    [Obsolete("Moved to engine_config in models.json. NodeConfig is no longer read by Hydra.Core — kept for one deserialization cycle to avoid breaking stale configs.")]
     [JsonPropertyName("node_config")]
     public Dictionary<string, string>? NodeConfig { get; init; }
     [JsonPropertyName("workers_file")]

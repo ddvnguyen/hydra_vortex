@@ -64,6 +64,18 @@ public sealed class HydraEngineClient
     /// </summary>
     public async Task<EnginePrefillResult?> EnginePrefillAsync(
         int slotId, string? model, string requestJson, string traceId, CancellationToken ct)
+        => await EnginePrefillAsync(slotId, model, requestJson, traceId, ct, hydraConfig: null);
+
+    /// <summary>
+    /// Engine PREFILL (0x42) with optional hydra_config injection. When
+    /// <paramref name="hydraConfig"/> is non-null, it is serialised as a
+    /// top-level <c>hydra_config</c> key in the wire JSON sent to the engine.
+    /// The engine uses this to apply per-request split/tensor/rpc overrides
+    /// (COMBINED mode Phase 2b payload, issue #481).
+    /// </summary>
+    public async Task<EnginePrefillResult?> EnginePrefillAsync(
+        int slotId, string? model, string requestJson, string traceId,
+        CancellationToken ct, Dictionary<string, object>? hydraConfig)
     {
         var node = JsonNode.Parse(requestJson) as JsonObject
             ?? throw new ArgumentException("requestJson must be a JSON object", nameof(requestJson));
@@ -75,6 +87,13 @@ public sealed class HydraEngineClient
         // treats absent as "use current resident model".
         if (!string.IsNullOrEmpty(model) && !node.ContainsKey("model"))
             node["model"] = model;
+
+        // Phase 2b (#481): inject the hydra_config payload when provided.
+        // The engine reads this top-level key to apply split_mode,
+        // tensor_split, rpc_servers, etc. — per-request overrides that
+        // replace the static --combined-ot-pattern startup config.
+        if (hydraConfig is { Count: > 0 })
+            node["hydra_config"] = JsonSerializer.SerializeToNode(hydraConfig);
 
         var payloadJson = node.ToJsonString();
         var resp = await _rpc.EnginePrefillAsync(
