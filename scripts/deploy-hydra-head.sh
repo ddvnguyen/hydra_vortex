@@ -330,8 +330,10 @@ deploy_rtx() {
 }
 
 # ── Deploy: P100 via systemd (not in compose) ────────────────────────────────
+# P100 runs as user vm1 with user-level systemd. No sudo required.
+# Paths: /home/vm1/hydra/{bin,config}
 deploy_p100() {
-  step "Deploying to P100 (VM, systemd)"
+  step "Deploying to P100 (VM, user-level systemd)"
 
   if ! ssh -o ConnectTimeout=5 -o BatchMode=yes hydra-p100 true 2>/dev/null; then
     die "Cannot reach hydra-p100 via SSH (check ~/.ssh/config)"
@@ -339,40 +341,34 @@ deploy_p100() {
 
   check_llama_build_type_p100
 
-  # Create directories
-  ssh hydra-p100 "sudo mkdir -p /opt/hydra/bin /opt/hydra/config /etc/hydra-head"
+  # Create directories (user-level, no sudo needed)
+  ssh hydra-p100 "mkdir -p /home/vm1/hydra/bin /home/vm1/hydra/config /home/vm1/.config/hydra-head"
 
   # Copy binary
-  rsync -avz bin/hydra-head hydra-p100:/opt/hydra/bin/hydra-head
+  rsync -avz bin/hydra-head hydra-p100:/home/vm1/hydra/bin/hydra-head
   ok "Copied hydra-head binary"
 
   # Copy config files (incl. the new health: section from PR #328 —
   # node-p100.yaml overrides max_fails: 30 so the slow-VM-disk
   # model load doesn't get killed).
-  rsync -avz infra/hydra-head/config/global.yaml hydra-p100:/opt/hydra/config/global.yaml
-  rsync -avz infra/hydra-head/config/node-p100.yaml hydra-p100:/opt/hydra/config/node-p100.yaml
-  rsync -avz infra/hydra-head/config/preset-p100.ini hydra-p100:/opt/hydra/config/preset-p100.ini
+  rsync -avz infra/hydra-head/config/global.yaml hydra-p100:/home/vm1/hydra/config/global.yaml
+  rsync -avz infra/hydra-head/config/node-p100.yaml hydra-p100:/home/vm1/hydra/config/node-p100.yaml
+  rsync -avz infra/hydra-head/config/preset-p100.ini hydra-p100:/home/vm1/hydra/config/preset-p100.ini
   ok "Copied config files"
 
   # Create environment file with auth token
-  ssh hydra-p100 "echo 'HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN' | sudo tee /etc/hydra-head/env > /dev/null"
-  ssh hydra-p100 "sudo chmod 600 /etc/hydra-head/env"
+  ssh hydra-p100 "echo 'HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN' > /home/vm1/.config/hydra-head/env"
+  ssh hydra-p100 "chmod 600 /home/vm1/.config/hydra-head/env"
   ok "Created auth token environment file"
 
-  # Copy systemd service
-  scp infra/hydra-head/hydra-head.service hydra-p100:/tmp/hydra-head.service
-  ssh hydra-p100 "
-    sudo cp /tmp/hydra-head.service /etc/systemd/system/hydra-head.service
-    sudo systemctl daemon-reload
-  "
-  ok "Installed systemd service"
+  # Copy user-level systemd service
+  scp infra/hydra-head/hydra-head.user.service hydra-p100:/home/vm1/.config/systemd/user/hydra-head.service
+  ssh hydra-p100 "systemctl --user daemon-reload"
+  ok "Installed user-level systemd service"
 
-  # Stop existing service
-  ssh hydra-p100 "sudo systemctl stop hydra-head 2>/dev/null || true"
-
-  # Start service
-  ssh hydra-p100 "sudo systemctl enable --now hydra-head"
-  ok "Started hydra-head service"
+  # Restart service
+  ssh hydra-p100 "systemctl --user restart hydra-head"
+  ok "Restarted hydra-head service"
 
   # Wait for health
   sleep 3

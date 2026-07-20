@@ -1,0 +1,19 @@
+[Unit]
+Description=Hydra Head - Node Agent for llama-server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vm1/hydra
+ExecStart=/home/vm1/hydra/bin/hydra-head \
+  -global /home/vm1/hydra/config/global.yaml \
+  -node /home/vm1/hydra/config/node-p100.yaml \
+  -api-port 9700
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hydra-head
+
+[Install]
+WantedBy=default.target
