@@ -175,8 +175,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								result.Mode ?? "solo");
 						// Stamp the resolved alias onto the item so downstream
 						// paths (hydra_config injection, decode) use the correct model.
-						item.Request["model"] = result.ModelAlias;
-						item.Request["__auto_model_alias"] = result.ModelAlias;
+						// #479/S3: translate the routing identity to the engine's
+						// GGUF-file alias here (single source of truth) so every
+						// downstream path — PREFILL, cold_atomic decode, cold_route —
+						// carries the alias the engine's preset reload expects.
+						var ggufAlias = TranslateModelAlias(result.ModelAlias);
+						item.Request["model"] = ggufAlias ?? result.ModelAlias;
+						item.Request["__auto_model_alias"] = ggufAlias ?? result.ModelAlias;
 
 						// FIX #443 P0: persist BoundModel on the session ledger so
 						// STEP 0 (TryWarmAffinity) pins future turns to this model.
@@ -1462,18 +1467,24 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					["n_predict"] = 0,
 					["messages"] = item.Messages
 				};
-				// M-Perf.9 #289: include the prefill model alias so the engine
-				// can swap to it (or fall back to the resident model if the
-				// alias is unknown / no preset is configured). When null, the
-				// engine uses the current resident model — pre-feature behavior.
-				// Priority: AutoRouter result (__auto_model_alias) > worker config
-				// (Router.PrefillModel). The AutoRouter alias is the actual requested
-				// model; the worker config is a fallback for legacy paths.
-				var prefillModel = item.Request.TryGetValue("__auto_model_alias", out var aliasRaw) && aliasRaw is string alias
-					? alias
-					: Router.PrefillModel(w);
-				if (prefillModel != null)
-					body["model"] = prefillModel;
+			// M-Perf.9 #289 + #479/S3: include the prefill model alias so the
+			// engine can swap to it (or fall back to the resident model if the
+			// alias is unknown / no preset is configured). When null, the
+			// engine uses the current resident model — pre-feature behavior.
+			// Priority: AutoRouter result (__auto_model_alias) > worker config
+			// (Router.PrefillModel). The AutoRouter alias is the actual requested
+			// model; the worker config is a fallback for legacy paths.
+			// #479/S3: translate the Hydra routing identity (e.g. moe-35b-pd,
+			// dense-27b-combined) to the GGUF-file alias the engine's preset
+			// expects (e.g. qwen3.6-35B-mini, qwen3.6-27B-coder) so the inline
+			// reload fires. If no mapping exists, fall back to the routing
+			// identity as-is (pre-feature behavior / no preset configured).
+			var routingAlias = item.Request.TryGetValue("__auto_model_alias", out var aliasRaw) && aliasRaw is string alias
+				? alias
+				: Router.PrefillModel(w);
+			var prefillModel = TranslateModelAlias(routingAlias);
+			if (prefillModel != null)
+				body["model"] = prefillModel;
 				if (item.PrefillSlot == null)
 					item.PrefillSlot = slotId;
 				var requestJson = JsonSerializer.Serialize(body);
@@ -1757,6 +1768,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		CoordinatorMetrics.PrefillDuration.WithLabels(w.Name, RouteLabel(item))
 			.Observe(item.RecordPhase("prefill_ms") / 1000.0);
 		return WorkItemState.SaveKv;
+	}
+
+	/// <summary>
+	/// #479/S3: translate a Hydra routing identity (<c>moe-35b-pd</c>,
+	/// <c>dense-27b-combined</c>, …) to the GGUF-file alias the engine's
+	/// <c>--models-preset</c> expects, so the inline PREFILL/decode reload
+	/// fires. Role-aware (prefill vs decode quant for P/D split). Returns the
+	/// routing identity unchanged when no mapping exists (no models.json, or
+	/// legacy alias), preserving pre-feature behavior.
+	/// </summary>
+	private static string? TranslateModelAlias(string? routingAlias, bool decodeRole = false)
+	{
+		if (string.IsNullOrWhiteSpace(routingAlias))
+			return routingAlias;
+		var loader = ModelConfigLoader.InstanceOrNull;
+		if (loader is null)
+			return routingAlias;
+		var mapped = loader.TranslateToGgufAlias(routingAlias, decodeRole);
+		return mapped ?? routingAlias;
 	}
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
@@ -2514,10 +2544,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var decodeMsgCount = decodeMsgEl.GetArrayLength();
 				var decodeFirstMsg = decodeMsgCount > 0 ? decodeMsgEl[0].ToString()[..Math.Min(80, decodeMsgEl[0].ToString().Length)] : "?";
 				var decodeLastMsg = decodeMsgCount > 0 ? decodeMsgEl[decodeMsgCount - 1].ToString()[..Math.Min(80, decodeMsgEl[decodeMsgCount - 1].ToString().Length)] : "?";
-				_log.Debug("#PD-TRACE DECODE_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Slot={Slot} NPast={NPast}",
-					item.SessionId, decodeMsgCount, decodeFirstMsg, decodeLastMsg, item.DecodeSlot, item.NPastAfter);
-			}
-			var resp = await _proxy.ProxyCompletionAsync(
+			_log.Debug("#PD-TRACE DECODE_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Slot={Slot} NPast={NPast}",
+				item.SessionId, decodeMsgCount, decodeFirstMsg, decodeLastMsg, item.DecodeSlot, item.NPastAfter);
+		}
+		// #479/S3: when driving the engine, translate the routing-identity
+		// model on the decode request to the GGUF-file alias (decode role,
+		// e.g. moe-35b-pd → qwen3.6-35B-balanced for mix-quant P/D split)
+		// so the decode worker's inline reload fires instead of silently
+		// falling back to its resident model.
+		if (_cfg.UseLlamaEngine && !string.IsNullOrEmpty(w.ModelAlias))
+			item.Request["model"] = TranslateModelAlias(w.ModelAlias, decodeRole: true);
+		var resp = await _proxy.ProxyCompletionAsync(
 				w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
 			if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
 				item.LastIdSlot = se.GetInt32();

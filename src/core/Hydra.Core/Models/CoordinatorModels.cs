@@ -259,7 +259,19 @@ public sealed class NodeInfo
 	public DateTime LastCheck { get; set; }
 	public int StuckSlots { get; set; }
 	public List<SlotInfo> Slots { get; set; } = [];
-	/// <summary>Alias of the model currently loaded on this node (from llama /v1/models). Empty = unknown.</summary>
+	/// <summary>
+	/// GGUF-file aliases this node's engine preset advertises it can host
+	/// (from engine INFO preset_aliases). Empty = unknown / legacy engine.
+	/// Used by AutoRouter residency + Router.IsModelAllowed in place of the
+	/// removed /v1/models poll (#479/S3).
+	/// </summary>
+	public HashSet<string> PresetAliases { get; set; } = [];
+	/// <summary>
+	/// GGUF-file alias of the model currently resident on this node. Best-effort:
+	/// learned from the engine's PREFILL response model_alias and stamped onto
+	/// the node by the worker scheduler. Empty = unknown (no request seen yet).
+	/// Replaces the removed /v1/models CurrentModel poll (#479/S3).
+	/// </summary>
 	public string CurrentModel { get; set; } = "";
 }
 

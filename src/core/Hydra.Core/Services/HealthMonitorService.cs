@@ -146,7 +146,29 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
             ConsecutiveFailures = 0
         };
         info.SlotsIdle = info.Slots.Count(s => !s.IsProcessing);
-        info.CurrentModel = await llama.GetLoadedModelAsync(ct);
+
+        // #479/S3: drop the legacy /v1/models poll. The resident model is now
+        // learned per-request from the engine's PREFILL model_alias (stamped by
+        // the worker scheduler) and the set of GGUF-file aliases this worker can
+        // host comes from engine INFO preset_aliases, queried below.
+        info.CurrentModel = "";
+
+        // #479/S3: query engine INFO (0x41) for preset_aliases — the set of
+        // GGUF-file aliases this node's --models-preset can host. Replaces the
+        // /v1/models residency signal for AutoRouter + Router.IsModelAllowed.
+        // Best-effort: a pre-#289 engine returns NotImplemented → empty set.
+        try
+        {
+            await using var rpc = new Hydra.Shared.RpcClient(w.Host, w.LlamaRpcPort > 0 ? w.LlamaRpcPort : w.RpcPort);
+            var engine = new HydraEngineClient(rpc);
+            var engineInfo = await engine.EngineInfoAsync($"health-{w.Name}", ct);
+            if (engineInfo?.PresetAliases is { } aliases && aliases.Count > 0)
+                info.PresetAliases = new HashSet<string>(aliases, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            _log.Debug(ex, "health_poll_engine_info_failed Node={N}", w.Name);
+        }
 
         // Stuck-slot watchdog (#299/C7): carry the per-slot stuck counter across
         // poll cycles. A slot still processing with nothing left to generate
@@ -162,8 +184,9 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
                         w.Name, slot.Id, slot.StuckPollCount, slot.NPast);
             _nodes[w.Name] = info;
         }
-        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I} Stuck={K} Model={M}",
-            w.Name, slots.Count, info.SlotsIdle, info.StuckSlots, info.CurrentModel);
+        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I} Stuck={K} Presets={P}",
+            w.Name, slots.Count, info.SlotsIdle, info.StuckSlots,
+            info.PresetAliases.Count);
     }
 
     private void OnFail(string name)
@@ -187,6 +210,7 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         SlotsIdle = src.SlotsIdle,
         StuckSlots = src.StuckSlots,
         ConsecutiveFailures = src.ConsecutiveFailures,
+        PresetAliases = new HashSet<string>(src.PresetAliases, StringComparer.OrdinalIgnoreCase),
         CurrentModel = src.CurrentModel,
         Slots = src.Slots.Select(s => new Models.SlotInfo
         {

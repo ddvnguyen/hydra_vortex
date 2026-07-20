@@ -25,12 +25,23 @@ public sealed class ModelConfigLoader
     public string ModelsDir { get; }
 
     private readonly Dictionary<string, ModelTemplate> _templates;
+    private readonly Dictionary<string, GgufAliasMapping> _ggufAliases;
 
     private ModelConfigLoader(ModelsConfig config, string modelsDir)
     {
         Config = config;
         ModelsDir = modelsDir;
         _templates = config.Models ?? new Dictionary<string, ModelTemplate>();
+        // #479/S3: build the routing-identity → GGUF-alias map defensively so a
+        // stray non-object key (e.g. a _comment convention) can't fail load.
+        _ggufAliases = new Dictionary<string, GgufAliasMapping>(StringComparer.OrdinalIgnoreCase);
+        if (config.ModelFileAliases is { } raw)
+            foreach (var (key, el) in raw)
+            {
+                var mapping = GgufAliasMapping.FromJsonElement(el);
+                if (mapping is not null)
+                    _ggufAliases[key] = mapping;
+            }
     }
 
     /// <summary>Singleton access. Throws if not initialized — call <see cref="TryLoad"/> first.</summary>
@@ -229,6 +240,26 @@ public sealed class ModelConfigLoader
     /// <summary>Get the raw <see cref="ModelTemplate"/> for an alias, or null if not found.</summary>
     public ModelTemplate? GetModelTemplate(string alias) =>
         _templates.TryGetValue(alias, out var t) ? t : null;
+
+    /// <summary>
+    /// #479/S3: translate a Hydra routing identity (<c>moe-35b-pd</c>,
+    /// <c>dense-27b-combined</c>, …) to the GGUF-file alias the engine's
+    /// <c>--models-preset</c> expects on the PREFILL/decode <c>model</c>
+    /// field, so the inline reload path fires. Role-aware: P/D-split
+    /// identities map prefill and decode to different quants.
+    ///
+    /// Returns <c>null</c> when no mapping exists for the alias (e.g.
+    /// legacy/back-compat routing identities), signalling the caller to
+    /// fall back to passing the routing identity unchanged.
+    /// </summary>
+    public string? TranslateToGgufAlias(string routingAlias, bool decodeRole = false)
+    {
+        if (string.IsNullOrWhiteSpace(routingAlias))
+            return null;
+        if (!_ggufAliases.TryGetValue(routingAlias, out var mapping) || mapping is null)
+            return null;
+        return decodeRole ? mapping.Decode : mapping.Prefill;
+    }
 
     /// <summary>List all registered model aliases.</summary>
     public IReadOnlyCollection<string> GetAllAliases() => _templates.Keys;

@@ -282,7 +282,7 @@ public static class AutoRouter
         foreach (var tierGroup in byTier)
         {
             // Check if any model in this tier is already resident
-            var resident = tierGroup.FirstOrDefault(f => IsResident(f.Head, f.Template, health));
+            var resident = tierGroup.FirstOrDefault(f => IsResident(f.Alias, f.Head, f.Template, health));
             if (resident.Template != null)
                 return (resident.Alias, resident.Template);
 
@@ -297,13 +297,32 @@ public static class AutoRouter
         return (fallback.Alias, fallback.Template);
     }
 
-    private static bool IsResident(WorkerConfig head, ModelTemplate template, IHealthMonitorService health)
+    private static bool IsResident(string routingAlias, WorkerConfig head, ModelTemplate template, IHealthMonitorService health)
     {
         var nodeInfo = health.GetNodeInfo(head.Name);
-        if (nodeInfo == null || string.IsNullOrEmpty(nodeInfo.CurrentModel)) return false;
-        // Check if the loaded model matches either prefill or decode file name
-        return nodeInfo.CurrentModel.Contains(template.PrefillModelFileName ?? "", StringComparison.OrdinalIgnoreCase)
-            || nodeInfo.CurrentModel.Contains(template.DecodeModelFileName ?? "", StringComparison.OrdinalIgnoreCase);
+        if (nodeInfo == null) return false;
+        // #479/S3: residency now sourced from the engine's own report instead of
+        // the removed /v1/models poll. A node is "resident" for a routing alias if
+        // it advertises the alias's GGUF-file preset (can-host) OR already has it
+        // loaded. Translate the routing identity to its GGUF-file alias so the
+        // comparison uses the engine's preset vocabulary.
+        var loader = ModelConfigLoader.InstanceOrNull;
+        var ggufAlias = loader?.TranslateToGgufAlias(routingAlias) ?? routingAlias;
+
+        if (!string.IsNullOrEmpty(ggufAlias))
+        {
+            if (nodeInfo.PresetAliases.Count > 0 && nodeInfo.PresetAliases.Contains(ggufAlias))
+                return true;
+            if (!string.IsNullOrEmpty(nodeInfo.CurrentModel)
+                && nodeInfo.CurrentModel.Contains(ggufAlias, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        // Fallback: match against the raw GGUF file names (pre-feature behavior).
+        return !string.IsNullOrEmpty(nodeInfo.CurrentModel)
+            && ((!string.IsNullOrEmpty(template.PrefillModelFileName)
+                    && nodeInfo.CurrentModel.Contains(template.PrefillModelFileName, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(template.DecodeModelFileName)
+                    && nodeInfo.CurrentModel.Contains(template.DecodeModelFileName, StringComparison.OrdinalIgnoreCase)));
     }
 
     // ── STEP 4: Build Worker Plan ──────────────────────────────────
