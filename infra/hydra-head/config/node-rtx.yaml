@@ -1,8 +1,6 @@
-# Hydra Head - RTX Node Configuration
+# Hydra Head - RTX Node Configuration (model-agnostic)
 # RTX 5060 Ti on host machine
-# QUICK-TEST MODE: load mini directly, no router/preset.
-# Used for ablation: RTX prefill on Q3_K-mini, decode on P100 (Q5_K-balanced) = cross-quant.
-# To revert to router mode: re-add models-preset / models-max, drop the model: line.
+# All model-specific config lives in models.json; this file is pure process/infra.
 
 node:
   name: rtx
@@ -59,18 +57,8 @@ llama:
   port: 8080
   rpc_port: 9503
   params:
-    # Direct single-model mode (resident model at startup). The preset
-    # below lets Core swap to another alias inline on PREFILL via the
-    # already-implemented --models-preset reload path (#479) — no router
-    # mode, no container restart.
-    model: /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
     models-preset: /opt/hydra/config/preset-rtx5060ti.ini
     chat-template-file: /models/qwen3.6_merged_template.jinja
-
-    # Per-model tuning for mini (Q3_K, 35B-A3B)
-    n-cpu-moe: 8
-    n-gpu-layers: all
-    override-tensor: "token_embd\\.weight=CPU,output\\.weight=CPU,output_norm\\.weight=CPU"
 
     # Context and parallelism
     ctx-size: 128000
@@ -103,7 +91,6 @@ llama:
     # ggml-RPC compute, dispatched by a one-byte MSG_PEEK). `--ggml-rpc-port`
     # is a removed no-op on the current llama-engine binary; dropped here.
     rpc-engine: "localhost:9504"
-    combined-ot-pattern: "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU"
 
   env:
     NVIDIA_VISIBLE_DEVICES: all

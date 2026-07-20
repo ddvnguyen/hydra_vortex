@@ -47,9 +47,7 @@
       "quality_tier": 1,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1 },
       "routing": { "auto_eligible": true, "min_prompt_tokens": 0, "max_prompt_tokens": 2048, "max_context_tokens": 128000, "requires_workers": [] },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
-      "node_config": { "rtx": "node-rtx.yaml" },
-      "workers_file": "workers.json"
+      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 }
     },
     "moe-35b-pd": {
       "description": "Qwen 3.6 35B-A3B MoE, P/D split (RTX prefill Q3_K-mini + P100 decode Q5_K-balanced)",
@@ -59,9 +57,7 @@
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 16000, "required_capabilities": 1 } },
       "routing": { "auto_eligible": true, "min_prompt_tokens": 2048, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["p100"] },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
-      "node_config": { "rtx": "node-rtx.yaml", "p100": "node-p100.yaml" },
-      "workers_file": "workers.json"
+      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 }
     },
     "moe-35b-pd-mix": {
       "description": "Alias of moe-35b-pd for issue #469 A/B testing: P/D split, RTX prefill Q3_K-mini + P100 decode Q5_K-balanced (cross-quant). Identical config to moe-35b-pd; named explicitly to pair with moe-35b-pd-mini in test comparisons.",
@@ -71,9 +67,7 @@
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 16000, "required_capabilities": 1 } },
       "routing": { "auto_eligible": false, "min_prompt_tokens": 2048, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["p100"] },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
-      "node_config": { "rtx": "node-rtx.yaml", "p100": "node-p100.yaml" },
-      "workers_file": "workers.json"
+      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 }
     },
     "moe-35b-pd-mini": {
       "description": "DIAGNOSTIC (issue #469): P/D split, RTX prefill + P100 decode, BOTH on Q3_K-mini. Isolates cross-node KV transfer from cross-quant mixing — not for production use. Requires P100 to be deployed with node-p100-mini.yaml instead of node-p100.yaml.",
@@ -83,9 +77,7 @@
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 12000, "required_capabilities": 1 } },
       "routing": { "auto_eligible": false, "min_prompt_tokens": 2048, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["p100"] },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
-      "node_config": { "rtx": "node-rtx.yaml", "p100": "node-p100-mini.yaml" },
-      "workers_file": "workers.json"
+      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 }
     },
     "dense-27b-combined": {
       "description": "Qwen 3.6 27B Dense, COMBINED layer-split (RTX 5060 Ti + RTX 3060)",
@@ -95,9 +87,7 @@
       "quality_tier": 3,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 7, "peer_requirements": { "min_vram_mb": 12000, "required_capabilities": 7 } },
       "routing": { "auto_eligible": true, "default_eligible": false, "min_prompt_tokens": 0, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["rtx3060"] },
-      "engine_config": { "n_gpu_layers": 65, "n_ctx": 128000, "split_mode": "layer", "tensor_split": [25.0, 40.0], "override_tensors": ["token_embd.weight=CPU"], "rope_scaling": "yarn", "rope_scale": 4.0, "yarn_orig_ctx": 32768, "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 },
-      "node_config": { "rtx": "node-rtx-27b-combined.yaml", "rtx3060": "node-rtx3060-27b.yaml" },
-      "workers_file": "workers-27b.json"
+      "engine_config": { "n_gpu_layers": 65, "n_ctx": 128000, "split_mode": "layer", "tensor_split": [25.0, 40.0], "override_tensors": ["token_embd.weight=CPU"], "rope_scaling": "yarn", "rope_scale": 4.0, "yarn_orig_ctx": 32768, "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0, "rpc_servers": ["rtx3060:9504"] }
     }
   }
 }
