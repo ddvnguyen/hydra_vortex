@@ -78,7 +78,8 @@ internal sealed class TestRpcClient : RpcClient
 		var meta = JsonSerializer.Serialize(new
 		{
 			n_past = 2000, restored = true, chunked = true,
-			erased = true, stored = true, total_chunks = 1, deduped_chunks = 0
+			erased = true, stored = true, total_chunks = 1, deduped_chunks = 0,
+			model_match = true, model_hash = "test_hash", model_alias = "nano", model_path = "/dev/null"
 		});
 		return new RpcResponse((byte)StatusCode.Ok, meta, []);
 	}
