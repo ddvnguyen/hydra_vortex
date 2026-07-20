@@ -457,7 +457,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			RequestType.Prefill =>
 				_cfg.Workers.Any(w => w.CanPrefill && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)),
 			RequestType.Combined =>
-				MultiEngineRouter.Select(_cfg, _cfg.Workers, _tracker, _health, qi.WorkItem.EstimatedTokens) != null,
+				// When ForceMode is set (e.g. from AutoRouter), bypass the
+				// MultiEngineThreshold gate — ForceMultiEnginePlan has no
+				// threshold and ColdRouteAsync handles the actual feasibility.
+				// Without this, small-prompt COMBINED requests (e.g. dense-27b-combined)
+				// are blocked by MultiEngineRouter.Select's threshold and time out.
+				!string.IsNullOrWhiteSpace(qi.WorkItem.ForceMode)
+				|| MultiEngineRouter.Select(_cfg, _cfg.Workers, _tracker, _health, qi.WorkItem.EstimatedTokens) != null,
 			_ => false,
 		};
 	}
@@ -795,8 +801,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			var forcePlan = ForceMultiEnginePlan(_cfg, _tracker, _health, item);
-			if (forcePlan is { } plan && TryAcquireMultiEngine(item, plan))
-				return WorkItemState.Decode;
+			if (forcePlan is { } plan && TryAcquireMultiEnginePrefill(item, plan))
+				return _cfg.UseLlamaEngine ? WorkItemState.PrefixRestore : WorkItemState.ModelLoadPrefill;
 		}
 		else
 		{
@@ -977,6 +983,47 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		CoordinatorMetrics.ColdSessionStarts.Inc();
 		CoordinatorMetrics.MultiEngineAttempts.WithLabels(plan.Head.Name, modeStr).Inc();
 		_log.Information("multiengine_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} ModelAlias={Alias} Split={Split} Est={Est}",
+			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name,
+			plan.EngineConfig.ModelAlias, plan.EngineConfig.OverrideTensors?.FirstOrDefault() ?? "",
+			item.EstimatedTokens);
+		return true;
+	}
+
+	/// <summary>
+	/// Like <see cref="TryAcquireMultiEngine"/> but acquires a PREFILL slot on the head
+	/// instead of a decode slot. Used by COMBINED mode to go through the normal
+	/// PrefixRestore → Prefill → SaveKv → Decode flow, so the PREFILL RPC (0x42)
+	/// carries model metadata to the engine. The decode slot is acquired later in
+	/// PickDecodeAsync after the prefill completes.
+	/// </summary>
+	private bool TryAcquireMultiEnginePrefill(WorkItem item, MultiEngineRouter.Plan plan)
+	{
+		if (_tracker.IsSwapping(plan.Head.Name) || _tracker.IsSwapping(plan.Peer.Name))
+			return false;
+		if (!_tracker.TryAcquireSlot(plan.Head.Name, out var headSlot, "prefill"))
+			return false;
+		if (!_tracker.TryReserveWorkerExclusive(plan.Peer.Name))
+		{
+			_tracker.ReleaseSlot(plan.Head.Name, headSlot);
+			return false;
+		}
+
+		var modeStr = ModeLabel(plan.Mode);
+		item.RouteType = $"cold_{modeStr}";
+		item.MultiMode = plan.Mode;
+		item.MultiPeer = plan.Peer.Name;
+		item.MultiEngineConfig = plan.EngineConfig;
+		item.PrefillWorker = plan.Head;
+		item.PrefillSlot = headSlot;
+		item.PrefillLease = new SlotLease(plan.Head.Name, headSlot, item.SessionId, LeaseLifetime.Short, _tracker);
+		item.PeerLease = new ExclusivePeerReservation(plan.Peer.Name, _tracker);
+		LastDispatchedNode = plan.Head.Name;
+
+		CoordinatorMetrics.RequestsTotal.WithLabels(plan.Head.Name, item.RouteType).Inc();
+		CoordinatorMetrics.RequestsTotalAll.Inc();
+		CoordinatorMetrics.ColdSessionStarts.Inc();
+		CoordinatorMetrics.MultiEngineAttempts.WithLabels(plan.Head.Name, modeStr).Inc();
+		_log.Information("multiengine_prefill_route Sid={Sid} Mode={Mode} Head={Head} HeadSlot={HS} Peer={Peer} ModelAlias={Alias} Split={Split} Est={Est}",
 			item.SessionId, modeStr, plan.Head.Name, headSlot, plan.Peer.Name,
 			plan.EngineConfig.ModelAlias, plan.EngineConfig.OverrideTensors?.FirstOrDefault() ?? "",
 			item.EstimatedTokens);
@@ -1419,7 +1466,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// can swap to it (or fall back to the resident model if the
 				// alias is unknown / no preset is configured). When null, the
 				// engine uses the current resident model — pre-feature behavior.
-				var prefillModel = Router.PrefillModel(w);
+				// Priority: AutoRouter result (__auto_model_alias) > worker config
+				// (Router.PrefillModel). The AutoRouter alias is the actual requested
+				// model; the worker config is a fallback for legacy paths.
+				var prefillModel = item.Request.TryGetValue("__auto_model_alias", out var aliasRaw) && aliasRaw is string alias
+					? alias
+					: Router.PrefillModel(w);
 				if (prefillModel != null)
 					body["model"] = prefillModel;
 				if (item.PrefillSlot == null)
@@ -1961,10 +2013,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> PickDecodeAsync(WorkItem item)
 	{
-		var dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
-			item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels)
-			?? (item.PrefillWorker?.CanDecode == true
-				? item.PrefillWorker : null);
+		// COMBINED mode: decode must stay on the head — the peer (rtx3060) is
+		// exclusively reserved and the expert-mode split is wired to this head.
+		// PickBestDecodeWorker would wander to P100 and break the dual-GPU binding.
+		WorkerConfig? dw;
+		if (item.MultiMode == MultiEngineMode.Combined && item.PrefillWorker != null)
+			dw = item.PrefillWorker;
+		else
+			dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
+				item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels)
+				?? (item.PrefillWorker?.CanDecode == true
+					? item.PrefillWorker : null);
 
 		if (dw == null)
 			return WorkItemState.None;
@@ -2172,7 +2231,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				throw new InvalidOperationException($"StatePut RPC failed: status={putResp.Status} meta={putResp.Meta}");
 
 			// #469 trace: log STATE_PUT response for cross-flow comparison
-			_log.Debug("#PD-TRACE STATE_PUT_RESPONSE Sid={Sid} Node={Node} Slot={Slot} Status={Status} Meta={Meta} BlobSize={BlobSize}",
+				_log.Debug("#PD-TRACE STATE_PUT_RESPONSE Sid={Sid} Node={Node} Slot={Slot} Status={Status} Meta={Meta} BlobSize={BlobSize}",
 				item.SessionId, w.Name, slotId, putResp.Status, putResp.Meta ?? "(null)", restoreBlob.Length);
 
 			_log.Information("restore_kv_timing Sid={Sid} total_ms={TotalMs} put_ms={PutMs}",

@@ -201,9 +201,15 @@ public static class AutoRouter
                 if (reqs.PeerRequirements != null)
                 {
                     var peerReqs = reqs.PeerRequirements;
+                    // Peer-only workers (slots=0) don't have slot-based availability;
+                    // instead check exclusive-reservation availability directly.
+                    // A GPU can only do 1 task at a time (SOLO, COMBINED head, or
+                    // COMBINED peer) — IsAvailableForExclusive checks Healthy &&
+                    // !ExclusiveReserved && !Swapping without the slot check.
                     peer = cfg.Workers.FirstOrDefault(w => w.Name != head.Name
-                        && tracker.IsFree(w.Name) && health.IsHealthy(w.Name)
-                        && MeetsRequirements(w, peerReqs));
+                        && health.IsHealthy(w.Name)
+                        && MeetsRequirements(w, peerReqs)
+                        && (w.Slots > 0 ? tracker.IsFree(w.Name) : IsAvailableForExclusive(tracker, w.Name)));
                     if (peer == null) continue;
                 }
 
@@ -212,9 +218,12 @@ public static class AutoRouter
                 if (reqs.DecodeRequirements != null)
                 {
                     var decodeReqs = reqs.DecodeRequirements;
+                    // Same logic: workers with slots=0 use exclusive-reservation
+                    // check, others use slot-based IsFree.
                     decodeWorker = cfg.Workers.FirstOrDefault(w => w.Name != head.Name
-                        && tracker.IsFree(w.Name) && health.IsHealthy(w.Name)
-                        && MeetsRequirements(w, decodeReqs));
+                        && health.IsHealthy(w.Name)
+                        && MeetsRequirements(w, decodeReqs)
+                        && (w.Slots > 0 ? tracker.IsFree(w.Name) : IsAvailableForExclusive(tracker, w.Name)));
                     if (decodeWorker == null) continue;
                 }
 
@@ -240,6 +249,19 @@ public static class AutoRouter
         if (reqs.RequiredCapabilities == GpuCapabilities.Combined && !worker.CombinedCapable) return false;
         if (reqs.RequiredCapabilities == GpuCapabilities.Rpc && !worker.CombinedCapable) return false;
         return true;
+    }
+
+    /// <summary>
+    /// Check if a worker is available for exclusive reservation (COMBINED peer).
+    /// A GPU can only do 1 task at a time — SOLO, COMBINED head, or COMBINED peer.
+    /// This checks Healthy && !ExclusiveReserved && !Swapping without the
+    /// slot-based check (peer-only workers have slots=0).
+    /// </summary>
+    private static bool IsAvailableForExclusive(IWorkerTracker tracker, string workerName)
+    {
+        return tracker.IsHealthy(workerName)
+            && !tracker.IsExclusiveReserved(workerName)
+            && !tracker.IsSwapping(workerName);
     }
 
     // ── STEP 3: Swap-Cost Preference ───────────────────────────────
