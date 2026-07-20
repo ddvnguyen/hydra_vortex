@@ -59,8 +59,12 @@ llama:
   port: 8080
   rpc_port: 9503
   params:
-    # Direct single-model mode (no router, no preset)
+    # Direct single-model mode (resident model at startup). The preset
+    # below lets Core swap to another alias inline on PREFILL via the
+    # already-implemented --models-preset reload path (#479) — no router
+    # mode, no container restart.
     model: /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
+    models-preset: /opt/hydra/config/preset-rtx5060ti.ini
     chat-template-file: /models/qwen3.6_merged_template.jinja
 
     # Per-model tuning for mini (Q3_K, 35B-A3B)

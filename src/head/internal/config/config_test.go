@@ -279,6 +279,38 @@ func TestBuildLlamaArgs_DenseProfile(t *testing.T) {
 	}
 }
 
+// Hydra #479: verifies that the --models-preset param (the per-node preset
+// file that populates preset_alias_to_path and enables inline PREFILL model
+// reload) passes straight through BuildLlamaArgs as a CLI flag. It must NOT
+// be in removedParamsKeys, and it must survive the generic param dump.
+func TestBuildLlamaArgs_ModelsPreset(t *testing.T) {
+	cfg := &Config{
+		Llama: LlamaConfig{
+			Host:    "0.0.0.0",
+			Port:    8080,
+			RPCPort: 9503,
+			Params: map[string]any{
+				"model":         "/models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+				"models-preset": "/opt/hydra/config/preset-rtx.ini",
+				"ctx-size":      128000,
+			},
+		},
+	}
+
+	args := cfg.BuildLlamaArgs()
+
+	found := false
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--models-preset" && args[i+1] == "/opt/hydra/config/preset-rtx.ini" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("--models-preset not found in args: %v", args)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string

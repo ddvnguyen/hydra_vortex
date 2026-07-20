@@ -62,7 +62,9 @@ llama:
     # Same direct single-model mode as the 5060 Ti's quick-test config
     # (no router/preset). 12 GB VRAM only fits the Q3_K-mini 35B-A3B
     # quant comfortably; the larger Balanced Q5_K is reserved for P100.
+    # Preset allows Core to swap aliases inline on PREFILL (#479).
     model: /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
+    models-preset: /opt/hydra/config/preset-rtx3060.ini
     chat-template-file: /models/qwen3.6_merged_template.jinja
 
     # Per-model tuning — same as rtx config, with `n-gpu-layers: 99`
