@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Hydra.Core.Models;
@@ -30,9 +31,12 @@ public sealed record ModelsConfig
     /// on the PREFILL/decode <c>model</c> field so the engine's inline
     /// reload (server-context.cpp) fires. These are Hydra concepts, NOT
     /// GGUF file names — the preset maps GGUF-file alias → .gguf path.
+    /// Stored as raw JsonElement so stray non-object keys (e.g. a
+    /// <c>_comment</c> convention used elsewhere in this file) don't
+    /// fail the whole-file deserialization.
     /// </summary>
     [JsonPropertyName("model_file_aliases")]
-    public Dictionary<string, GgufAliasMapping>? ModelFileAliases { get; init; }
+    public Dictionary<string, JsonElement>? ModelFileAliases { get; init; }
 }
 
 /// <summary>
@@ -45,6 +49,15 @@ public sealed record GgufAliasMapping
 
     [JsonPropertyName("decode")]
     public string? Decode { get; init; }
+
+    public static GgufAliasMapping? FromJsonElement(JsonElement el)
+    {
+        if (el.ValueKind != JsonValueKind.Object) return null;
+        string? prefill = el.TryGetProperty("prefill", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+        string? decode = el.TryGetProperty("decode", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
+        if (prefill is null && decode is null) return null;
+        return new GgufAliasMapping { Prefill = prefill, Decode = decode };
+    }
 }
 
 public sealed record EngineDefaults

@@ -21,7 +21,6 @@
     "swap_cost_budget_s": 30
   },
   "model_file_aliases": {
-    "_comment": "Routing identities (moe-35b-solo, etc.) are Hydra concepts, NOT GGUF files. The engine's --models-preset maps a GGUF-FILE alias -> a .gguf path. Core translates a routing identity to the GGUF-file alias via this dict before putting it in the PREFILL/decode `model` field. Role-aware: P/D-split models map prefill and decode to different quants.",
     "moe-35b-solo": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-mini" },
     "moe-35b-pd": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-balanced" },
     "moe-35b-pd-mix": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-balanced" },

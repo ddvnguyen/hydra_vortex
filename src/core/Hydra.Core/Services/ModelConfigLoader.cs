@@ -25,12 +25,23 @@ public sealed class ModelConfigLoader
     public string ModelsDir { get; }
 
     private readonly Dictionary<string, ModelTemplate> _templates;
+    private readonly Dictionary<string, GgufAliasMapping> _ggufAliases;
 
     private ModelConfigLoader(ModelsConfig config, string modelsDir)
     {
         Config = config;
         ModelsDir = modelsDir;
         _templates = config.Models ?? new Dictionary<string, ModelTemplate>();
+        // #479/S3: build the routing-identity → GGUF-alias map defensively so a
+        // stray non-object key (e.g. a _comment convention) can't fail load.
+        _ggufAliases = new Dictionary<string, GgufAliasMapping>(StringComparer.OrdinalIgnoreCase);
+        if (config.ModelFileAliases is { } raw)
+            foreach (var (key, el) in raw)
+            {
+                var mapping = GgufAliasMapping.FromJsonElement(el);
+                if (mapping is not null)
+                    _ggufAliases[key] = mapping;
+            }
     }
 
     /// <summary>Singleton access. Throws if not initialized — call <see cref="TryLoad"/> first.</summary>
@@ -245,9 +256,7 @@ public sealed class ModelConfigLoader
     {
         if (string.IsNullOrWhiteSpace(routingAlias))
             return null;
-        if (Config?.ModelFileAliases is not { } map)
-            return null;
-        if (!map.TryGetValue(routingAlias, out var mapping) || mapping is null)
+        if (!_ggufAliases.TryGetValue(routingAlias, out var mapping) || mapping is null)
             return null;
         return decodeRole ? mapping.Decode : mapping.Prefill;
     }

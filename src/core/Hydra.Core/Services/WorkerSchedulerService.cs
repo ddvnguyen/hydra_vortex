@@ -175,8 +175,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								result.Mode ?? "solo");
 						// Stamp the resolved alias onto the item so downstream
 						// paths (hydra_config injection, decode) use the correct model.
-						item.Request["model"] = result.ModelAlias;
-						item.Request["__auto_model_alias"] = result.ModelAlias;
+						// #479/S3: translate the routing identity to the engine's
+						// GGUF-file alias here (single source of truth) so every
+						// downstream path — PREFILL, cold_atomic decode, cold_route —
+						// carries the alias the engine's preset reload expects.
+						var ggufAlias = TranslateModelAlias(result.ModelAlias);
+						item.Request["model"] = ggufAlias ?? result.ModelAlias;
+						item.Request["__auto_model_alias"] = ggufAlias ?? result.ModelAlias;
 
 						// FIX #443 P0: persist BoundModel on the session ledger so
 						// STEP 0 (TryWarmAffinity) pins future turns to this model.
@@ -1780,7 +1785,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var loader = ModelConfigLoader.InstanceOrNull;
 		if (loader is null)
 			return routingAlias;
-		return loader.TranslateToGgufAlias(routingAlias, decodeRole) ?? routingAlias;
+		var mapped = loader.TranslateToGgufAlias(routingAlias, decodeRole);
+		return mapped ?? routingAlias;
 	}
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)

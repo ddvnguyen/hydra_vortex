@@ -93,10 +93,11 @@ public class ModelConfigTests
             SchemaVersion = 2,
             AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
             Models = new Dictionary<string, ModelTemplate>(),
-            ModelFileAliases = new Dictionary<string, GgufAliasMapping>
+            ModelFileAliases = new Dictionary<string, JsonElement>
             {
-                ["moe-35b-pd"] = new GgufAliasMapping { Prefill = "qwen3.6-35B-mini", Decode = "qwen3.6-35B-balanced" },
-                ["dense-27b-combined"] = new GgufAliasMapping { Prefill = "qwen3.6-27B-coder", Decode = "qwen3.6-27B-coder" },
+                ["moe-35b-pd"] = JsonSerializer.SerializeToElement(new GgufAliasMapping { Prefill = "qwen3.6-35B-mini", Decode = "qwen3.6-35B-balanced" }),
+                ["dense-27b-combined"] = JsonSerializer.SerializeToElement(new GgufAliasMapping { Prefill = "qwen3.6-27B-coder", Decode = "qwen3.6-27B-coder" }),
+                ["_comment"] = JsonSerializer.SerializeToElement("stray non-object key must be ignored"),
             },
         };
         return ModelConfigLoader.Create(config);
@@ -157,7 +158,11 @@ public class ModelConfigTests
         var config = JsonSerializer.Deserialize<ModelsConfig>(json,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true, ReadCommentHandling = JsonCommentHandling.Skip });
         Assert.NotNull(config?.ModelFileAliases);
-        Assert.Equal("qwen3.6-35B-mini", config!.ModelFileAliases!["moe-35b-pd"].Prefill);
-        Assert.Equal("qwen3.6-35B-balanced", config.ModelFileAliases["moe-35b-pd"].Decode);
+        var pd = GgufAliasMapping.FromJsonElement(config!.ModelFileAliases!["moe-35b-pd"]);
+        Assert.NotNull(pd);
+        Assert.Equal("qwen3.6-35B-mini", pd!.Prefill);
+        Assert.Equal("qwen3.6-35B-balanced", pd.Decode);
+        // Stray non-object key (_comment) must be ignored, not fail load.
+        Assert.False(config.ModelFileAliases.ContainsKey("_comment"));
     }
 }
