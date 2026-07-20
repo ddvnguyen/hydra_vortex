@@ -768,38 +768,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			var mode = item.ForceMode.ToLowerInvariant();
 
-			// P/D split: prefill on head (RTX), decode on P100.
-			// This is cross-host routing — not a same-host combined mode.
+			// P/D split: prefill on head (RTX), decode selected later by
+			// PickDecodeAsync for highest concurrency. ColdRouteAsync only
+			// acquires the prefill slot — decode slot is acquired at decode
+			// time so the tracker sees the freshest GPU availability.
 			if (mode == "pd")
 			{
 				var pdPfWorker = Router.PickBestPrefillWorker(_cfg.Workers, _tracker, _health, item.EstimatedTokens);
 				if (pdPfWorker != null && _tracker.TryAcquireSlot(pdPfWorker.Name, out var pdPfSlot, "prefill"))
 				{
-					// Find a decode worker that matches the decode requirements
-					var pdDecWorker = _cfg.Workers.FirstOrDefault(w => w.Name != pdPfWorker.Name
-						&& _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)
-						&& w.CanDecode);
-					if (pdDecWorker != null && _tracker.TryAcquireSlot(pdDecWorker.Name, out var pdDecSlot, "decode"))
-					{
-						item.RouteType = "cold_pd";
-						item.PrefillWorker = pdPfWorker;
-						item.PrefillSlot = pdPfSlot;
-						item.PrefillLease = new SlotLease(pdPfWorker.Name, pdPfSlot, item.SessionId,
-							LeaseLifetime.Short, _tracker);
-						item.DecodeWorker = pdDecWorker;
-						item.DecodeSlot = pdDecSlot;
-						item.DecodeLease = new SlotLease(pdDecWorker.Name, pdDecSlot, item.SessionId,
-							LeaseLifetime.Long, _tracker);
-						LastDispatchedNode = pdPfWorker.Name;
-						CoordinatorMetrics.RequestsTotal.WithLabels(pdPfWorker.Name, item.RouteType).Inc();
-						CoordinatorMetrics.RequestsTotalAll.Inc();
-						CoordinatorMetrics.ColdSessionStarts.Inc();
-						_log.Information("cold_pd_route Prefill={Pf} Decode={Dec} Est={Est}",
-							pdPfWorker.Name, pdDecWorker.Name, item.EstimatedTokens);
-						return _cfg.UseLlamaEngine ? WorkItemState.PrefixRestore : WorkItemState.ModelLoadPrefill;
-					}
-					// Decode worker not available — release prefill slot and fall through
-					_tracker.ReleaseSlot(pdPfWorker.Name, pdPfSlot);
+					item.RouteType = "cold_pd";
+					item.PrefillWorker = pdPfWorker;
+					item.PrefillSlot = pdPfSlot;
+					item.PrefillLease = new SlotLease(pdPfWorker.Name, pdPfSlot, item.SessionId,
+						LeaseLifetime.Short, _tracker);
+					LastDispatchedNode = pdPfWorker.Name;
+					CoordinatorMetrics.RequestsTotal.WithLabels(pdPfWorker.Name, item.RouteType).Inc();
+					CoordinatorMetrics.RequestsTotalAll.Inc();
+					CoordinatorMetrics.ColdSessionStarts.Inc();
+					_log.Information("cold_pd_route Prefill={Pf} Est={Est}",
+						pdPfWorker.Name, item.EstimatedTokens);
+					return _cfg.UseLlamaEngine ? WorkItemState.PrefixRestore : WorkItemState.ModelLoadPrefill;
 				}
 				_log.Warning("cold_pd_route_failed Est={Est}", item.EstimatedTokens);
 				// Fall through to normal routing
@@ -1437,6 +1426,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					item.PrefillSlot = slotId;
 				var requestJson = JsonSerializer.Serialize(body);
 				var llamaRpc = GetLlamaRpcClient(w);
+				// #469 trace: log PREFILL request body for cross-flow comparison
+				{
+					var msgCount = item.Messages?.Count ?? 0;
+					var firstMsg = msgCount > 0 && item.Messages![0].TryGetValue("content", out var fc) ? (fc?.ToString() ?? "?")[..Math.Min(80, (fc?.ToString() ?? "").Length)] : "?";
+					var lastMsg = msgCount > 0 && item.Messages![^1].TryGetValue("content", out var lc) ? (lc?.ToString() ?? "?")[..Math.Min(80, (lc?.ToString() ?? "").Length)] : "?";
+					_log.Information("#PD-TRACE PREFILL_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Model={Model} Slot={Slot}",
+						item.SessionId, msgCount, firstMsg, lastMsg, prefillModel ?? "(resident)", item.PrefillSlot);
+				}
 				// Record the elapsed time at the first prefill attempt (once per item).
 				if (item.PrefillFirstAttemptMs == 0)
 					item.PrefillFirstAttemptMs = item.ElapsedMs;
@@ -1577,6 +1574,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					CoordinatorMetrics.ModelFallbackTotal
 						.WithLabels(w.Name, prefillModel).Inc();
 				}
+
+				// #469 trace: log PREFILL response for cross-flow comparison
+				_log.Information("#PD-TRACE PREFILL_RESPONSE Sid={Sid} Node={Node} Slot={Slot} NPast={N} KvBlobSize={BlobSize} Model={Model} Fallback={Fb}",
+					item.SessionId, w.Name, slotId, item.NPastAfter, item.KvBlob?.Length ?? 0, item.KvModelAlias ?? "?", item.KvModelFallback);
 
 				// #451: store engine-reported timing metrics into Phases for timeline
 				if (prefillResult.PrefillMs > 0)
@@ -2170,6 +2171,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 				throw new InvalidOperationException($"StatePut RPC failed: status={putResp.Status} meta={putResp.Meta}");
 
+			// #469 trace: log STATE_PUT response for cross-flow comparison
+			_log.Information("#PD-TRACE STATE_PUT_RESPONSE Sid={Sid} Node={Node} Slot={Slot} Status={Status} Meta={Meta} BlobSize={BlobSize}",
+				item.SessionId, w.Name, slotId, putResp.Status, putResp.Meta ?? "(null)", restoreBlob.Length);
+
 			_log.Information("restore_kv_timing Sid={Sid} total_ms={TotalMs} put_ms={PutMs}",
 				item.SessionId, restoreSw.ElapsedMilliseconds, putSw.ElapsedMilliseconds);
 
@@ -2444,6 +2449,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// OpenAI schema including `reasoning_content`. The engine RPC is still used
 			// for prefill (EnginePrefill) and KV state (StateGet/Put). See issue #273.
 			using var syncCts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
+			// #469 trace: log decode request body for cross-flow comparison
+			if (item.Request.TryGetValue("messages", out var msgs) && msgs is JsonElement decodeMsgEl && decodeMsgEl.ValueKind == JsonValueKind.Array)
+			{
+				var decodeMsgCount = decodeMsgEl.GetArrayLength();
+				var decodeFirstMsg = decodeMsgCount > 0 ? decodeMsgEl[0].ToString()[..Math.Min(80, decodeMsgEl[0].ToString().Length)] : "?";
+				var decodeLastMsg = decodeMsgCount > 0 ? decodeMsgEl[decodeMsgCount - 1].ToString()[..Math.Min(80, decodeMsgEl[decodeMsgCount - 1].ToString().Length)] : "?";
+				_log.Information("#PD-TRACE DECODE_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Slot={Slot} NPast={NPast}",
+					item.SessionId, decodeMsgCount, decodeFirstMsg, decodeLastMsg, item.DecodeSlot, item.NPastAfter);
+			}
 			var resp = await _proxy.ProxyCompletionAsync(
 				w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
 			if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
