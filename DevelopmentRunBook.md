@@ -652,13 +652,46 @@ is now embedded in Hydra.Core. No separate Python coordinator container exists.
 
 ### C# Service Rebuild
 
-Hydra.Core is the single C# binary. Rebuild with:
+Hydra.Core is the single C# binary. Rebuild and redeploy with:
 
 ```bash
-cd infra
-podman-compose -f docker-compose.hydra.yml build --no-cache hydra-core
-podman-compose -f docker-compose.hydra.yml up -d
+export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
+podman build --no-cache --target core -f infra/Dockerfile -t localhost/hydra-core:latest .
+podman compose -f infra/docker-compose.hydra.yml up -d --build core
 ```
+
+> **GOTCHA 1 — `up -d` serves a STALE image.**
+> `podman compose up -d core` (without `--build`) does **not** rebuild and will
+> often stand the container up from a previously-cached image digest, silently
+> ignoring your source changes. Always pass `--build`. If you suspect a stale
+> layer is being reused, add `--no-cache` to the compose build:
+> ```bash
+> podman compose -f infra/docker-compose.hydra.yml up -d --build core
+> ```
+> (The `core` service in `infra/docker-compose.hydra.yml` has a `build:` block,
+> so `up -d --build` rebuilds it from source.)
+
+> **GOTCHA 2 — verifying the deployed DLL actually contains your change.**
+> After redeploy, confirm the *running* container really runs your new code.
+> A request that returns "old" behavior usually means a stale image (see
+> GOTCHA 1), not a logic bug. Inspect the assembly inside the live container:
+> ```bash
+> podman cp hydra-system_core_1:/app/Hydra.Core.dll /tmp/core.dll
+> strings -e l /tmp/core.dll | grep -c "some_unique_log_string"
+> ```
+> `-e l` is required: .NET stores string literals as **UTF-16 little-endian**,
+> so plain `strings` (ASCII) and `grep -a` on the raw DLL return **0 matches**
+> even when the string is present. The runtime image has no `strings` binary,
+> so `podman exec … strings` fails silently — use `podman cp` to the host first.
+> Also note the DLL lives at `/app/Hydra.Core.dll` (not `/publish/core/`).
+
+> **GOTCHA 3 — stray keys in `models.json` break the whole-file load.**
+> `model_file_aliases` is parsed defensively (non-object keys like `_comment`
+> are skipped), but other top-level or nested objects are not. A single
+> malformed/mis-typed value makes `ModelConfigLoader.TryLoad` throw and Core
+> falls back to the hardcoded registry — then routing-identity → GGUF-alias
+> translation silently no-ops. Watch the Core log for
+> `model_config_loaded` (good) vs `model_config_fallback` (bad).
 
 ### Profile Switching (MoE ↔ Dense)
 
