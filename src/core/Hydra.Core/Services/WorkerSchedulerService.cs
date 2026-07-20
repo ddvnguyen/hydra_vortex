@@ -3581,6 +3581,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								item.TokensIn = pn.GetInt32();
 							if (item.TokensOut == 0 && t.TryGetProperty("predicted_n", out var dn) && dn.ValueKind == JsonValueKind.Number)
 								item.TokensOut = dn.GetInt32();
+							// Engine mode (cold_combined / inline prefill): PrefillAsync was
+							// skipped, so item.NPastAfter was never set and the ledger still
+							// holds NPast=0. Record the prompt size from timings so the next
+							// turn's NewPromptTokens sees a real baseline and warm affinity
+							// survives instead of being evicted as a full re-prefill. Mirrors
+							// TrackAfterStream but uses the engine's prompt_n directly.
+							if (item.TokensIn > 0)
+							{
+								item.NPastAfter = item.TokensIn;
+								_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
+								_ledger.UpdateNPromptTokens(item.SessionId, item.TokensIn);
+								var e = _ledger.Lookup(item.SessionId);
+								if (e != null && !e.SlotId.HasValue)
+									ResolveSlotFromHealth(item.SessionId, item.NPastAfter);
+							}
 						// Engine mode: PrefillAsync was skipped (RouteDecision→Decode),
 						// so prefill_ms was never recorded. Backfill from the engine's
 						// prompt_ms timing so the Grafana timeline shows the prefill bar.
