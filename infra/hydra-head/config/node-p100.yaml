@@ -36,7 +36,7 @@ llama:
   params:
     # Model
     model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
-    models-preset: /home/vm1/hydra/config/preset-p100.ini
+    models-preset: /opt/hydra/config/preset-p100.ini
     chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
 
     # Context and parallelism
