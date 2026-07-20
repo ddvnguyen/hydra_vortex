@@ -351,6 +351,11 @@ deploy_p100() {
   # model load doesn't get killed).
   rsync -avz infra/hydra-head/config/global.yaml hydra-p100:/opt/hydra/config/global.yaml
   rsync -avz infra/hydra-head/config/node-p100.yaml hydra-p100:/opt/hydra/config/node-p100.yaml
+  rsync -avz infra/hydra-head/config/preset-p100.ini hydra-p100:/opt/hydra/config/preset-p100.ini
+  # Mini-quant variant (issue #469 same-quant A/B test). node-p100-mini.yaml
+  # references this; ship it alongside so the alias file exists if the mini
+  # node is deployed via this same path.
+  rsync -avz infra/hydra-head/config/preset-p100-mini.ini hydra-p100:/opt/hydra/config/preset-p100-mini.ini
   ok "Copied config files"
 
   # Create environment file with auth token
