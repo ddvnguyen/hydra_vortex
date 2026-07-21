@@ -1,5 +1,6 @@
-# Hydra Head - P100 Node Configuration
+# Hydra Head - P100 Node Configuration (model-agnostic)
 # Tesla P100 in KVM VM at 192.168.122.21
+# All model-specific config lives in models.json; this file is pure process/infra.
 
 node:
   name: p100
@@ -34,8 +35,6 @@ llama:
     OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://192.168.122.1:4318
   params:
-    # Model
-    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
     models-preset: /home/vm1/hydra/config/preset-p100.ini
     chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
 
@@ -52,9 +51,6 @@ llama:
     repeat-penalty: 1.06
     top-k: 20
     top-p: 0.95
-
-    # Tensor overrides
-    override-tensor: "token_embd.weight=CPU"
 
     # Chat template
     chat-template-kwargs: '{"preserve_thinking": true}'

@@ -191,7 +191,7 @@ services:
   #
   # Profile switching (#383 T6): set HYDRA_HEAD_RTX_NODE_CONFIG to switch
   # between profiles, e.g.:
-  #   HYDRA_HEAD_RTX_NODE_CONFIG=node-rtx-27b.yaml podman compose ... up -d
+  #   HYDRA_HEAD_RTX_NODE_CONFIG=node-rtx-27b-combined-empty.yaml podman compose ... up -d
   head-rtx5060ti:
     image: localhost/hydra-head:rtx
     # NO per-service userns_mode here — same reason as `core`:
