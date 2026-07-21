@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using Hydra.Shared;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
@@ -34,6 +35,17 @@ public sealed class EngineModeTests
 
         /// <summary>When set, StatePut returns Error status (simulates restore failure).</summary>
         public bool MakeStatePutFail { get; set; } = false;
+
+        /// <summary>When set, StatePut returns model_match=false (simulates cross-model mismatch).
+        /// Only fires once — subsequent StatePut calls return match=true so re-prefill succeeds.</summary>
+        public bool MakeStatePutMismatch { get; set; } = false;
+
+        /// <summary>When set, StatePut returns model_match=true but a differing model_hash.
+        /// Triggers CrossModelGuard.Decide hash comparison. Only fires once.</summary>
+        public bool MakeStatePutHashMismatch { get; set; } = false;
+
+        private int _statePutMismatchFired;
+        private int _statePutHashMismatchFired;
 
         public EngineTestRpcClient() : base("test", 0) { }
 
@@ -83,6 +95,22 @@ public sealed class EngineModeTests
                     (byte)StatusCode.Error,
                     Meta: null,
                     Payload: Array.Empty<byte>()),
+
+                OpCode.StatePut when MakeStatePutMismatch && Interlocked.CompareExchange(ref _statePutMismatchFired, 1, 0) == 0 => new RpcResponse(
+                    (byte)StatusCode.Ok,
+                    JsonSerializer.Serialize(new { n_past = 2000, model_match = false, model_hash = "wrong_hash", model_alias = "other_model", model_path = "/wrong/path" }),
+                    Array.Empty<byte>()),
+
+                // #470: model_match=true but hash differs — triggers CrossModelGuard.Decide
+                OpCode.StatePut when MakeStatePutHashMismatch && Interlocked.CompareExchange(ref _statePutHashMismatchFired, 1, 0) == 0 => new RpcResponse(
+                    (byte)StatusCode.Ok,
+                    JsonSerializer.Serialize(new { n_past = 2000, model_match = true, model_hash = "different_hash_from_resident", model_alias = "nano", model_path = "/dev/null" }),
+                    Array.Empty<byte>()),
+
+                OpCode.StatePut => new RpcResponse(
+                    (byte)StatusCode.Ok,
+                    JsonSerializer.Serialize(new { n_past = 2000, model_match = true, model_hash = "test_hash", model_alias = "nano", model_path = "/dev/null" }),
+                    Array.Empty<byte>()),
 
                 _ => new RpcResponse(
                     (byte)StatusCode.Ok,
@@ -585,6 +613,45 @@ public sealed class EngineModeTests
         // StatePut was attempted (restore tried and failed)
         Assert.True(f.Rpc.HasCall(OpCode.StatePut),
             "StatePut should have been attempted before the failure");
+    }
+
+    [Fact]
+    public async Task Concurrency_StatePutModelMismatch_AbortsAndReRoutes()
+    {
+        // Issue #470: When STATE_PUT returns model_match=false, the coordinator
+        // must abort the restore, erase the slot, and re-route the request.
+        await using var f = new EngineFixture(rtxSlots: 2, p100Slots: 1);
+        ((EngineTestRpcClient)f.Rpc).MakeStatePutMismatch = true;
+
+        // Submit should NOT throw — it must re-route gracefully after the mismatch.
+        var ex = await Record.ExceptionAsync(async () =>
+            await f.SubmitAsync("sess_mismatch", 3000, 100));
+
+        Assert.Null(ex);
+
+        // StatePut was attempted (restore tried and detected mismatch)
+        Assert.True(f.Rpc.HasCall(OpCode.StatePut),
+            "StatePut should have been attempted before the mismatch detection");
+    }
+
+    [Fact]
+    public async Task Concurrency_StatePutHashMismatch_CrossModelGuardCatches()
+    {
+        // Issue #470: STATE_PUT returns model_match=true but a differing model_hash.
+        // CrossModelGuard.Decide must detect the hash mismatch and abort the restore.
+        await using var f = new EngineFixture(rtxSlots: 2, p100Slots: 1);
+        ((EngineTestRpcClient)f.Rpc).MakeStatePutHashMismatch = true;
+
+        // Submit should NOT throw — CrossModelGuard catches the hash mismatch
+        // and re-routes the request.
+        var ex = await Record.ExceptionAsync(async () =>
+            await f.SubmitAsync("sess_hash_mismatch", 3000, 100));
+
+        Assert.Null(ex);
+
+        // StatePut was attempted (restore tried, CrossModelGuard caught hash mismatch)
+        Assert.True(f.Rpc.HasCall(OpCode.StatePut),
+            "StatePut should have been attempted before the hash mismatch detection");
     }
 
     [Fact]
