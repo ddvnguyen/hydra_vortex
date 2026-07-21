@@ -140,7 +140,6 @@ public sealed class ModelConfigLoader
                     RequiresWorkers = isCombined ? ["rtx3060"] : isPd ? ["p100"] : [],
                 },
                 EngineConfig = null,
-                NodeConfig = null,
                 WorkersFile = null,
             };
         }
