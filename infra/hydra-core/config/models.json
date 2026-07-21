@@ -21,24 +21,12 @@
     "swap_cost_budget_s": 30
   },
   "model_file_aliases": {
-    "moe-35b-solo": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-mini" },
+    "moe-35b-solo": { "prefill": "qwen3.6-35B-balanced", "decode": "qwen3.6-35B-balanced" },
     "moe-35b-pd": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-balanced" },
     "moe-35b-pd-mix": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-balanced" },
-    "moe-35b-pd-mini": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-mini" },
-    "balanced": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-mini" },
     "dense-27b-combined": { "prefill": "qwen3.6-27B-coder", "decode": "qwen3.6-27B-coder" }
   },
   "models": {
-    "balanced": {
-      "description": "Backward-compat alias for hydra/balanced → moe-35b-solo (direct lookup only, not auto-routed)",
-      "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-      "decode_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-      "load_time_s": 40,
-      "quality_tier": 1,
-      "requirements": { "min_vram_mb": 8000, "required_capabilities": 1 },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0, "cont_batching": true, "fit": false, "ubatch_size": 512, "cache_prompt": true, "cache_reuse": 64, "reasoning": true, "jinja": true, "context_shift": true, "chat_template_kwargs": "{\"preserve_thinking\": true}" },
-      "routing": { "auto_eligible": false, "min_prompt_tokens": 0, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": [] }
-    },
     "moe-35b-solo": {
       "description": "Qwen 3.6 35B-A3B MoE, SOLO on RTX 5060 Ti",
       "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
