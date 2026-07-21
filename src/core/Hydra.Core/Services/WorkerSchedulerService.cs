@@ -1683,6 +1683,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					CoordinatorMetrics.ModelFallbackTotal
 						.WithLabels(w.Name, prefillModel).Inc();
+					// Phase 2b (#481): when the engine returns model_fallback=true
+					// for a COMBINED prefill, the head did NOT honour the
+					// hydra_config.model_path we sent — it served the resident
+					// model instead. That's only acceptable if the fork-side
+					// 0x42 hydra_config support is not yet landed. Emit a warning
+					// so we notice the moment the fork IS ready and we're still
+					// silently falling back.
+					if (item.MultiMode == MultiEngineMode.Combined)
+					{
+						_log.Warning("multiengine_model_fallback Sid={Sid} Node={Node} RequestedModel={Req} ResidentModel={Res} Mode={Mode}",
+							item.SessionId, w.Name, prefillModel, item.KvModelAlias ?? "(null)", item.MultiMode);
+					}
 				}
 
 				// #469 trace: log PREFILL response for cross-flow comparison
