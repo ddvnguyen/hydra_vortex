@@ -14,9 +14,8 @@
     "peer_worker": "rtx3060",
     "pipeline_capable": false,
     "combined_capable": true,
-    "model_alias": "moe-35b-solo",
     "gpu": { "vram_mb": 16384, "compute_tflops": 22.0, "bandwidth_gbps": 288.0, "cuda_arch": "sm_120", "capabilities": 7 },
-    "_comment_rtx": "RTX 5060 Ti (sm_120, 16 GB) on host. Mixed (prefill+decode) primary. COMBINED-mode head: when MultiEngineRouter picks a 2-GPU plan, it borrows rtx3060 as the expert-peer. The per-model config (override-tensor regex for MoE expert routing, etc.) is in ModelRegistry keyed by `model_alias: moe-35b-mini` (Phase 2a, ddvnguyen/llama.cpp#36). The engine-side wiring for COMBINED-mode expert routing is in ddvnguyen/llama.cpp#19/#20 + #30/#37 (fork side). For SOLO requests, rtx runs the Q3_K-mini 35B-A3B on its own (the SOLO path no longer recruits the 3060 unless it's an explicit COMBINED request)."
+    "_comment_rtx": "RTX 5060 Ti (sm_120, 16 GB) on host. Model-agnostic head (#481 Phase 2c). Serves all SOLO/PIPELINE/COMBINED requests. For COMBINED (dense-27b-combined), borrows rtx3060 as the layer-split peer (slots reserved exclusively during the request). For SOLO (moe-35b-solo), runs the Q3_K-mini 35B-A3B on its own. Resident model is whatever was last requested via PREFILL inline reload (#479/S3) — see preset-rtx5060ti.ini. The per-model config (split_mode, tensor_split, override_tensor, rpc_servers) is in models.json engine_config keyed by the routing identity (e.g. moe-35b-solo, dense-27b-combined)."
   },
   {
     "name": "rtx3060",
@@ -25,16 +24,14 @@
     "llama_rpc_port": 9504,
     "llama_url": "http://localhost:8081",
     "worker_type": 3,
-    "slots": 1,
-    "prefill_priority": 3,
-    "decode_priority": 3,
-    "decode_speed_tps": 60,
+    "slots": 0,
+    "decode_speed_tps": 31,
     "role": "worker",
+    "peer_worker": "rtx",
     "pipeline_capable": false,
     "combined_capable": true,
-    "model_alias": "moe-35b-solo",
     "gpu": { "vram_mb": 12288, "compute_tflops": 17.0, "bandwidth_gbps": 360.0, "cuda_arch": "sm_86", "capabilities": 7 },
-    "_comment_rtx3060": "RTX 3060 (sm_86, 12 GB) on host. Mixed (prefill+decode) but lower priority than rtx. Two roles: (a) SOLO — runs its own Q3_K-mini 35B-A3B instance, slower than rtx (~60 tok/s vs ~200 tok/s decode). (b) COMBINED peer — rtx.peer_worker points here, so when a request exceeds MultiEngineThreshold and the engine advertises expert-mode support, this GPU is reserved exclusively for that request. VRAM budget (12 GB) is the limiter; the Q5_K-balanced model does not fit — only the Q3_K-mini can land here."
+    "_comment_rtx3060": "RTX 3060 (sm_86, 12 GB) on host. Model-agnostic peer-only (#481 Phase 2c). slots=0 means MultiEngineRouter treats it as implicitly available for COMBINED — no solo work, no model load from Core. The 5060 Ti (rtx) is the only Core-facing head; rtx3060 is driven by the head engine over its own RPC (localhost:9504). Resident model is whatever the 5060 Ti pushed via the layer-split plan in PREFILL hydra_config — see preset-rtx3060.ini for the per-quant preset the engine advertises. Two-mode: (a) idle — no resident model. (b) COMBINED 27B peer — reserved exclusively by the 5060 Ti."
   },
   {
     "name": "p100",
@@ -48,6 +45,6 @@
     "decode_priority": 1,
     "decode_speed_tps": 28,
     "gpu": { "vram_mb": 16384, "compute_tflops": 19.0, "bandwidth_gbps": 732.0, "cuda_arch": "sm_60", "capabilities": 1 },
-    "_comment_p100": "P100 llama-server runs in single-model mode (--model /mnt/readonly_data/...gguf), not router mode — /models/load returns 404. Leave prefill_model_name / decode_model_name / router_model_name UNSET so CoordinatorConfig.LoadWorkers and Router.PrefillModel/DecodeModel return null and the model_load call is skipped (Router.PrefillModel is gated by `if (m != null)` in WorkerSchedulerService.ModelLoadAsync). The cross-model guard checks the P100's slot model_hash against the stored KV's model_hash on restore (since the P100 runs the same model as the RTX, the hashes match → Proceed). When a Coordinator restart loses the in-memory manifest, the model identity is read from the chunked manifest in the Store (PutManifestAsync writes it alongside n_past / total_size / chunks)."
+    "_comment_p100": "Tesla P100 (sm_60, 16 GB) KVM VM at 192.168.122.21. P/D decode fallback for moe-35b-pd / moe-35b-pd-mix / moe-35b-pd-mini. Single-model mode (--model /mnt/readonly_data/...gguf), not router mode. The 5060 Ti head reaches the P100 via rpc_servers: ['p100:9502'] in models.json engine_config (Phase 2b). Leave prefill_model_name / decode_model_name / router_model_name UNSET so the inline-reload path is skipped on this worker."
   }
 ]
