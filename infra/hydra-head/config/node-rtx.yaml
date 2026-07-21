@@ -1,6 +1,12 @@
 # Hydra Head - RTX Node Configuration (model-agnostic)
 # RTX 5060 Ti on host machine
 # All model-specific config lives in models.json; this file is pure process/infra.
+# The `model:` below is the BOOT resident only (what llama-engine loads at
+# startup before the first PREFILL). Per-request model selection is driven
+# by the `model_file_aliases` in models.json via inline PREFILL reload
+# (see preset-rtx5060ti.ini for the alias -> file path map the engine
+# uses to swap). To change the boot resident, edit this line; per-request
+# swapping is automatic.
 
 node:
   name: rtx
@@ -57,6 +63,10 @@ llama:
   port: 8080
   rpc_port: 9503
   params:
+    # Boot resident: smallest 35B quant. Inline PREFILL reload swaps
+    # to the requested alias (qwen3.6-35B-balanced, qwen3.6-27B-coder)
+    # per-request based on models.json model_file_aliases.
+    model: /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
     models-preset: /opt/hydra/config/preset-rtx5060ti.ini
     chat-template-file: /models/qwen3.6_merged_template.jinja
 
