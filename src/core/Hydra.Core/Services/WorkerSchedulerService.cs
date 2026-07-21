@@ -2272,12 +2272,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 				item.NPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : item.NPastAfter;
 
-				// M-Perf.9 #289: parse model identity & validation from
-				// STATE_PUT response. The engine now returns model_match,
-				// model_hash, model_alias, and model_path so we can check
-				// cross-model safety *before* proceeding to HTTP decode —
-				// eliminating the race where the KV was already written to
-				// the slot before the STATE_META query confirmed it.
+				// M-Perf.9 #289 + #470: parse model identity from STATE_PUT
+				// response. The engine returns model_match, model_hash,
+				// model_alias, and model_path so we can check cross-model
+				// safety *before* proceeding to HTTP decode — eliminating the
+				// race where the KV was already written to the slot before
+				// the STATE_META query confirmed it.
 				var modelMatch = meta?.TryGetValue("model_match", out var mm) == true
 					? mm.GetBoolean()
 					: true; // back-compat: old servers omit field → assume match
@@ -2291,11 +2291,58 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					? mp.GetString()
 					: null;
 
-				if (!modelMatch)
+				// #470: model_match is the engine-side stub (always true for now).
+				// CrossModelGuard.Decide is the authoritative hash comparison —
+				// it covers the case where model_match=true but the stored KV's
+				// model_hash differs from the slot's resident model_hash (the
+				// exact corruption class #469 investigated). This replaces the
+				// old post-hoc STATE_META query with a single atomic check.
+				if (modelMatch)
 				{
+					var guard = CrossModelGuard.Decide(
+						storedHash: item.KvModelHash,
+						slotHash: slotHash,
+						allowCrossModelKvReuse: _cfg.AllowCrossModelKvReuse);
+
+					switch (guard)
+					{
+						case CrossModelGuard.Outcome.Proceed:
+							_log.Debug("cross_model_kv_proceeded slot={Slot} stored={Stored} slot={SlotHash}",
+								slotId, item.KvModelHash, slotHash);
+							CoordinatorMetrics.CrossModelKvProceeded.WithLabels(w.Name).Inc();
+							break;
+						case CrossModelGuard.Outcome.Skip:
+							_log.Debug("cross_model_kv_skipped slot={Slot} stored={Stored} slot={SlotHash}",
+								slotId, item.KvModelHash, slotHash);
+							CoordinatorMetrics.CrossModelKvSkipped.WithLabels(w.Name).Inc();
+							break;
+						case CrossModelGuard.Outcome.WarnAndProceed:
+							_log.Warning("cross_model_kv_warned slot={Slot} stored={Stored} slot={SlotHash} item={Item}",
+								slotId, item.KvModelHash, slotHash, item.SessionId);
+							CoordinatorMetrics.CrossModelKvWarned.WithLabels(w.Name).Inc();
+							break;
+						case CrossModelGuard.Outcome.Abort:
+							_log.Warning("cross_model_kv_aborted slot={Slot} stored={Stored} slot={SlotHash} item={Item} — re-prefilling",
+								slotId, item.KvModelHash, slotHash, item.SessionId);
+							CoordinatorMetrics.CrossModelKvAborted.WithLabels(w.Name).Inc();
+							// Fall through to the shared erase+re-prefill path below
+							modelMatch = false;
+							break;
+					}
+				}
+				else
+				{
+					// Engine-side model_match=false: the engine already rejected
+					// the KV (future path when KV header carries model identity).
 					_log.Warning("state_put_model_mismatch slot={Slot} stored={Stored} slot={SlotHash} item={Item}",
 						slotId, item.KvModelHash, slotHash, item.SessionId);
 					CoordinatorMetrics.CrossModelKvAborted.WithLabels(w.Name).Inc();
+				}
+
+				if (!modelMatch)
+				{
+					// Shared abort path: erase the slot we just wrote into and
+					// re-prefill on the correct model.
 					// Erase the slot we just wrote into (same as the
 					// existing Abort path — otherwise the same-node skip
 					// would trust the now-incorrect slot).

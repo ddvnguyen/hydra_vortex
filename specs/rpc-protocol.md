@@ -114,15 +114,16 @@ llama-server knows nothing about Store or sessions — it only manages its own s
 0x30  STATE_GET   Stream full KV state out as response payload
                   Request:  key="<slot_id>", payload_len=0
                   Response: meta={"n_past":<N>,"state_size":<N>,
-                                  "model_alias":"<alias or filename>",
-                                  "model_hash":"<reserved for SHA-256, currently empty>",
-                                  "model_path":"<absolute path to GGUF>"}
+                                   "model_alias":"<alias or filename>",
+                                   "model_hash":"<64-char hex SHA-256 of GGUF>",
+                                   "model_path":"<absolute path to GGUF>"}
                             payload=<raw KV bytes, ~800 MB>
-                  M-Perf.9 #289: model identity is included in the response so
-                  the Coordinator can record which model built the KV.
-                  Model identity is populated from the resident model. model_hash
-                  is reserved for future SHA-256 of the GGUF file (currently
-                  empty string). model_alias and model_path are always populated.
+                   M-Perf.9 #289: model identity is included in the response so
+                   the Coordinator can record which model built the KV.
+                   Model identity is populated from the resident model.
+                   model_hash is the SHA-256 of the GGUF file, computed at load
+                   time and cached on the model struct (llama_model_hash()).
+                   model_alias and model_path are always populated.
 
 0x31  STATE_PUT   Restore KV state from request payload
                   Request:  key="<slot_id>", payload=<raw KV bytes>
@@ -149,9 +150,10 @@ llama-server knows nothing about Store or sessions — it only manages its own s
                   M-Perf.9 #289: model_alias / model_hash / model_path are
                   added in #289. Pre-feature servers return the response
                   without these fields (back-compat).
-                  These fields are now populated from the resident model. model_hash
-                  is reserved for future SHA-256 (currently empty string). model_alias
-                  and model_path are always populated.
+                   These fields are populated from the resident model. model_hash
+                   is the SHA-256 of the GGUF file, computed at load time
+                   (llama_model_hash()). model_alias and model_path are always
+                   populated.
 ```
 
 **n_past definition:** `n_prompt_tokens_cache + n_decoded` (prompt tokens in KV cache
