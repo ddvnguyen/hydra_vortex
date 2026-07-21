@@ -2495,7 +2495,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (item.DecodeSlot.HasValue)
 			item.Request["id_slot"] = item.DecodeSlot.Value;
 
-		if (!string.IsNullOrEmpty(w.ModelAlias))
+		// #481 Phase 2c: hydra_config injection is driven by the request's
+		// resolved model alias, NOT by the worker's static ModelAlias (which
+		// is null for model-agnostic workers). The `__auto_model_alias` was
+		// stamped onto item.Request by AutoRouter earlier; fall back to the
+		// raw `model` field if that's not present.
+		var resolvedAlias = item.Request.TryGetValue("__auto_model_alias", out var ama) && ama is not null
+			? ama.ToString()
+			: (item.Request.TryGetValue("model", out var m) ? m?.ToString() : null);
+		if (!string.IsNullOrEmpty(resolvedAlias))
 		{
 			try
 			{
@@ -2504,16 +2512,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				EngineConfig? engineConfig = null;
 				try
 				{
-					// FIX #443 P1: decode role uses DecodeModelFileName for mix-quant
+					// FIX #443 P1: decode role uses DecodeAlias for mix-quant
 					// P/D split (P100 loads Q5_K-balanced, not Q3_K-mini).
 					var isDecodeRole = item.RouteType == "cold_pd";
-					engineConfig = ModelConfigLoader.Instance.ResolveEngineConfig(w.ModelAlias, isDecodeRole);
+					engineConfig = ModelConfigLoader.Instance.ResolveEngineConfig(resolvedAlias, isDecodeRole);
 				}
 				catch (InvalidOperationException)
 				{
 					// ModelConfigLoader not initialized or alias not found —
-					// fall back to the static ModelRegistry.
-					engineConfig = ModelRegistry.Resolve(w.ModelAlias);
+					// fall back to the static ModelRegistry. For the legacy
+					// case the routing identity IS the ModelRegistry key.
+					engineConfig = ModelRegistry.Resolve(resolvedAlias);
 				}
 				if (engineConfig is not null)
 				{
@@ -2524,12 +2533,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 			catch (Exception ex)
 			{
-				_log.Warning("hydra_config injection failed Alias={Alias}: {Error}", w.ModelAlias, ex.Message);
+				_log.Warning("hydra_config injection failed Alias={Alias}: {Error}", resolvedAlias, ex.Message);
 			}
 		}
 		else
 		{
-			_log.Warning("hydra_config skipped: ModelAlias is null/empty for Node={Node}", w.Name);
+			_log.Warning("hydra_config skipped: no resolved model alias in request for Node={Node}", w.Name);
 		}
 
 		Console.Error.WriteLine($"event=decode_body Sid={item.SessionId} " +
