@@ -1063,7 +1063,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				var engine = new HydraEngineClient(llamaRpc);
 				var body = new Dictionary<string, object> { ["messages"] = Array.Empty<object>() };
-				body["hydra_config"] = hydraConfig;
 				var requestJson = System.Text.Json.JsonSerializer.Serialize(body);
 				var result = await engine.EnginePrefillAsync(
 					slotId, null, requestJson, item.TraceId, ct, hydraConfig);
@@ -1126,7 +1125,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <summary>
 	/// Phase 2b (#481): prepare the hydra_config dict that will be injected
 	/// into the PREFILL wire body. Returns null for SOLO/ATOMIC (no config
-	/// injection), or a populated dict for COMBINED/PIPELINE.
+	/// injection), or a populated dict for COMBINED. PIPELINE returns null (uses legacy 0x46 path).
 	///
 	/// This is a PREPARATION step only — it does NOT call any RPC. The caller
 	/// (PrefillAsync) merges the returned dict into the request body and calls
@@ -1548,8 +1547,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// merge it into the request body under the hydra_config key.
 				// SOLO/ATOMIC prefills pass null (no config injection).
 				var hydraConfig = TranslateToWirePayloadAsync(item);
-				if (hydraConfig is not null)
-					body["hydra_config"] = hydraConfig;
 				var prefillResult = await engine.EnginePrefillAsync(slotId, prefillModel, requestJson, item.TraceId, ct,
 					hydraConfig: hydraConfig);
 
