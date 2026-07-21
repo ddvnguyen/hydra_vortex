@@ -1834,8 +1834,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <c>dense-27b-combined</c>, …) to the GGUF-file alias the engine's
 	/// <c>--models-preset</c> expects, so the inline PREFILL/decode reload
 	/// fires. Role-aware (prefill vs decode quant for P/D split). Returns the
-	/// routing identity unchanged when no mapping exists (no models.json, or
-	/// legacy alias), preserving pre-feature behavior.
+	/// routing identity unchanged when no model template is registered (no
+	/// models.json, or legacy alias), preserving pre-feature behavior.
+	/// #481 Phase 2c: returns the GGUF-file alias (e.g. <c>qwen3.6-35B-mini</c>),
+	/// not the file name — the alias is what the engine's preset maps to a
+	/// per-host path. The file name is internal to Core and never crosses the
+	/// wire.
 	/// </summary>
 	private static string? TranslateModelAlias(string? routingAlias, bool decodeRole = false)
 	{
@@ -1844,8 +1848,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var loader = ModelConfigLoader.InstanceOrNull;
 		if (loader is null)
 			return routingAlias;
-		var mapped = loader.TranslateToGgufAlias(routingAlias, decodeRole);
-		return mapped ?? routingAlias;
+		var template = loader.GetModelTemplate(routingAlias);
+		if (template is null)
+			return routingAlias;
+		var alias = decodeRole && !string.IsNullOrWhiteSpace(template.DecodeAlias)
+			? template.DecodeAlias
+			: template.PrefillAlias;
+		return alias ?? routingAlias;
 	}
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)

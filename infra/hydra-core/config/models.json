@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "engine_defaults": {
     "flash_attn": true,
     "cache_type_k": "q8_0",
@@ -21,16 +21,15 @@
     "swap_cost_budget_s": 30
   },
   "model_file_aliases": {
-    "moe-35b-solo": { "prefill": "qwen3.6-35B-balanced", "decode": "qwen3.6-35B-balanced" },
-    "moe-35b-pd": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-balanced" },
-    "moe-35b-pd-mix": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-balanced" },
-    "dense-27b-combined": { "prefill": "qwen3.6-27B-coder", "decode": "qwen3.6-27B-coder" }
+    "qwen3.6-35B-mini":     "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+    "qwen3.6-35B-balanced": "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+    "qwen3.6-27B-coder":    "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf"
   },
   "models": {
     "moe-35b-solo": {
-      "description": "Qwen 3.6 35B-A3B MoE, SOLO on RTX 5060 Ti",
-      "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-      "decode_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+      "description": "Qwen 3.6 35B-A3B MoE, SOLO on RTX 5060 Ti (resident: balanced)",
+      "prefill_alias": "qwen3.6-35B-balanced",
+      "decode_alias":  "qwen3.6-35B-balanced",
       "load_time_s": 40,
       "quality_tier": 1,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1 },
@@ -39,8 +38,8 @@
     },
     "moe-35b-pd": {
       "description": "Qwen 3.6 35B-A3B MoE, P/D split (RTX prefill Q3_K-mini + P100 decode Q5_K-balanced)",
-      "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-      "decode_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+      "prefill_alias": "qwen3.6-35B-mini",
+      "decode_alias":  "qwen3.6-35B-balanced",
       "load_time_s": 40,
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 16000, "required_capabilities": 1 } },
@@ -49,8 +48,8 @@
     },
     "moe-35b-pd-mix": {
       "description": "Alias of moe-35b-pd for issue #469 A/B testing: P/D split, RTX prefill Q3_K-mini + P100 decode Q5_K-balanced (cross-quant). Identical config to moe-35b-pd; named explicitly to pair with moe-35b-pd-mini in test comparisons.",
-      "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-      "decode_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+      "prefill_alias": "qwen3.6-35B-mini",
+      "decode_alias":  "qwen3.6-35B-balanced",
       "load_time_s": 40,
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 16000, "required_capabilities": 1 } },
@@ -59,8 +58,8 @@
     },
     "moe-35b-pd-mini": {
       "description": "DIAGNOSTIC (issue #469): P/D split, RTX prefill + P100 decode, BOTH on Q3_K-mini. Isolates cross-node KV transfer from cross-quant mixing — not for production use. Requires P100 to be deployed with node-p100-mini.yaml instead of node-p100.yaml.",
-      "prefill_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-      "decode_model_file_name": "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+      "prefill_alias": "qwen3.6-35B-mini",
+      "decode_alias":  "qwen3.6-35B-mini",
       "load_time_s": 40,
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 12000, "required_capabilities": 1 } },
@@ -69,8 +68,8 @@
     },
     "dense-27b-combined": {
       "description": "Qwen 3.6 27B Dense, COMBINED layer-split (RTX 5060 Ti + RTX 3060)",
-      "prefill_model_file_name": "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
-      "decode_model_file_name": "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+      "prefill_alias": "qwen3.6-27B-coder",
+      "decode_alias":  "qwen3.6-27B-coder",
       "load_time_s": 45,
       "quality_tier": 3,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 7, "peer_requirements": { "min_vram_mb": 12000, "required_capabilities": 7 } },

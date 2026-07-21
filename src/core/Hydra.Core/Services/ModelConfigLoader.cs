@@ -25,23 +25,20 @@ public sealed class ModelConfigLoader
     public string ModelsDir { get; }
 
     private readonly Dictionary<string, ModelTemplate> _templates;
-    private readonly Dictionary<string, GgufAliasMapping> _ggufAliases;
+    private readonly Dictionary<string, string> _modelFileAliases;
 
     private ModelConfigLoader(ModelsConfig config, string modelsDir)
     {
         Config = config;
         ModelsDir = modelsDir;
         _templates = config.Models ?? new Dictionary<string, ModelTemplate>();
-        // #479/S3: build the routing-identity → GGUF-alias map defensively so a
-        // stray non-object key (e.g. a _comment convention) can't fail load.
-        _ggufAliases = new Dictionary<string, GgufAliasMapping>(StringComparer.OrdinalIgnoreCase);
-        if (config.ModelFileAliases is { } raw)
-            foreach (var (key, el) in raw)
-            {
-                var mapping = GgufAliasMapping.FromJsonElement(el);
-                if (mapping is not null)
-                    _ggufAliases[key] = mapping;
-            }
+        // #481 Phase 2c: alias-name -> GGUF file name table. Strict — every
+        // model.PrefillAlias / model.DecodeAlias MUST be a key here, resolved
+        // at ResolveEngineConfig time so a typo fails the model load, not
+        // silently.
+        _modelFileAliases = config.ModelFileAliases is { } raw
+            ? new Dictionary<string, string>(raw, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>Singleton access. Throws if not initialized — call <see cref="TryLoad"/> first.</summary>
@@ -110,15 +107,32 @@ public sealed class ModelConfigLoader
         // Build model-specific templates for the fallback path.
         // moe-35b-pd needs decode_requirements to trigger P/D split routing.
         var models = new Dictionary<string, ModelTemplate>();
+        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (alias, engineCfg) in ModelRegistry.AllEntries)
         {
             var isPd = alias == "moe-35b-pd";
             var isCombined = alias == "dense-27b-combined";
+            // #481 Phase 2c: every ModelTemplate now references an alias
+            // from the model_file_aliases table. Fallback hardcodes the
+            // three known aliases and one file per alias.
+            var fileName = System.IO.Path.GetFileName(engineCfg.ModelPath);
+            string ggufAlias = alias switch
+            {
+                "moe-35b-solo"      => "qwen3.6-35B-balanced",
+                "moe-35b-pd"        => isPd && false ? "qwen3.6-35B-mini" : "qwen3.6-35B-mini",  // prefill is mini, see DecodeAlias below
+                "moe-35b-pd-mix"    => "qwen3.6-35B-mini",
+                "moe-35b-pd-mini"   => "qwen3.6-35B-mini",
+                "balanced"          => "qwen3.6-35B-balanced",
+                "dense-27b-combined"=> "qwen3.6-27B-coder",
+                _                   => "qwen3.6-35B-mini",
+            };
+            if (!aliases.ContainsKey(ggufAlias))
+                aliases[ggufAlias] = fileName;
             models[alias] = new ModelTemplate
             {
                 Description = alias,
-                PrefillModelFileName = System.IO.Path.GetFileName(engineCfg.ModelPath),
-                DecodeModelFileName = System.IO.Path.GetFileName(engineCfg.ModelPath),
+                PrefillAlias = ggufAlias,
+                DecodeAlias  = ggufAlias,
                 LoadTimeS = 40,
                 QualityTier = isCombined ? 3 : isPd ? 2 : 1,
                 Requirements = new ModelRequirements
@@ -145,10 +159,11 @@ public sealed class ModelConfigLoader
         }
         var config = new ModelsConfig
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             EngineDefaults = null,
             AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
             Models = models,
+            ModelFileAliases = aliases,
         };
         _instance = new ModelConfigLoader(config, "/models");
     }
@@ -196,10 +211,13 @@ public sealed class ModelConfigLoader
         }
 
         // Resolve model file paths to absolute paths.
-        // Decode role uses DecodeModelFileName when present, else PrefillModelFileName.
-        var modelFile = decodeRole && !string.IsNullOrWhiteSpace(template.DecodeModelFileName)
-            ? template.DecodeModelFileName
-            : template.PrefillModelFileName;
+        // #481 Phase 2c: resolve prefill_alias / decode_alias via the
+        // model_file_aliases table. Decode role uses DecodeAlias when
+        // present, else PrefillAlias. Strict: unknown aliases throw.
+        var aliasName = decodeRole && !string.IsNullOrWhiteSpace(template.DecodeAlias)
+            ? template.DecodeAlias
+            : template.PrefillAlias;
+        var modelFile = ResolveAliasFile(alias, aliasName);
         var modelPath = ResolveModelPath(alias, modelFile);
 
         return new EngineConfig(
@@ -241,23 +259,20 @@ public sealed class ModelConfigLoader
         _templates.TryGetValue(alias, out var t) ? t : null;
 
     /// <summary>
-    /// #479/S3: translate a Hydra routing identity (<c>moe-35b-pd</c>,
-    /// <c>dense-27b-combined</c>, …) to the GGUF-file alias the engine's
-    /// <c>--models-preset</c> expects on the PREFILL/decode <c>model</c>
-    /// field, so the inline reload path fires. Role-aware: P/D-split
-    /// identities map prefill and decode to different quants.
-    ///
-    /// Returns <c>null</c> when no mapping exists for the alias (e.g.
-    /// legacy/back-compat routing identities), signalling the caller to
-    /// fall back to passing the routing identity unchanged.
+    /// #481 Phase 2c: resolve a GGUF-file alias to its file name via the
+    /// <c>model_file_aliases</c> table. Strict: throws when the alias is
+    /// missing or empty so a typo fails fast at startup, not silently at
+    /// PREFILL time.
     /// </summary>
-    public string? TranslateToGgufAlias(string routingAlias, bool decodeRole = false)
+    public string ResolveAliasFile(string modelAlias, string? ggufAlias)
     {
-        if (string.IsNullOrWhiteSpace(routingAlias))
-            return null;
-        if (!_ggufAliases.TryGetValue(routingAlias, out var mapping) || mapping is null)
-            return null;
-        return decodeRole ? mapping.Decode : mapping.Prefill;
+        if (string.IsNullOrWhiteSpace(ggufAlias))
+            throw new InvalidOperationException(
+                $"Model alias '{modelAlias}' has no prefill_alias/decode_alias configured");
+        if (!_modelFileAliases.TryGetValue(ggufAlias, out var file) || string.IsNullOrEmpty(file))
+            throw new InvalidOperationException(
+                $"Model alias '{modelAlias}' references GGUF alias '{ggufAlias}' which is not in model_file_aliases. Add it to the 'model_file_aliases' table in models.json.");
+        return file;
     }
 
     /// <summary>List all registered model aliases.</summary>
@@ -279,7 +294,7 @@ public sealed class ModelConfigLoader
     {
         if (string.IsNullOrWhiteSpace(modelFileName))
             throw new InvalidOperationException(
-                $"Model alias '{alias}' has no prefill_model_file_name configured");
+                $"Model alias '{alias}' has no model file name resolved (prefill_alias/decode_alias missing or unknown)");
 
         if (Path.IsPathRooted(modelFileName))
             return modelFileName;
