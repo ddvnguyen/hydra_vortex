@@ -223,6 +223,21 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                                   - "tensor_split":     [float, ...]
                                   - "model":            { "path": str,
                                                           "alias": str (optional) }
+                                  - "model_path":        str (flat form of "model.path",
+                                                          used by the #487 hydra_config
+                                                          carrier on 0x42/HTTP decode)
+                                  - "rpc_servers":       [str, ...] (#487; e.g.
+                                                          ["rtx3060:9504"]). New endpoints
+                                                          not already registered are added
+                                                          to the global ggml RPC backend
+                                                          registry (same primitive
+                                                          `--rpc`/`--rpc-engine` startup
+                                                          parsing uses) before the model
+                                                          reload, so tensor_split/split_mode
+                                                          placement can target them.
+                                                          Already-registered endpoints are
+                                                          skipped (repeated registration is
+                                                          not safe in the underlying API).
 
                         Response: meta=JSON
                                   {
@@ -309,6 +324,24 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                                   alias known to the engine → swap to that model first.
                                   Present + alias unknown → fall back to resident model
                                   and set `model_fallback:true` in the response.
+
+                                  #487: optional `"hydra_config":{...}` object, same key
+                                  shape and T1/T2/T3 semantics as 0x40 CONFIGURE's payload
+                                  (see that section). Applied SYNCHRONOUSLY — PREFILL
+                                  already owns the slot/task-queue-thread context, so T2/T3
+                                  keys are applied immediately via the same
+                                  classify/apply-or-stage helper CONFIGURE uses, instead of
+                                  being deferred to the next slot-free moment. When
+                                  `hydra_config.model_path` is present it drives the model
+                                  swap directly (T3's `model_path` key, already a
+                                  fully-resolved absolute path) and takes priority over the
+                                  legacy bare `"model"` alias field, which remains for
+                                  simple swaps that don't change topology. On apply failure
+                                  the response carries a non-OK status; the caller should
+                                  treat this as a hard failure, not a transient BUSY retry
+                                  (tracked in hydra_vortex#487 — the fork's response does
+                                  not yet carry a distinct "config applied" signal separate
+                                  from RPC-transport success/failure).
                         Response: meta={"n_past":<N>,"tokens_processed":<N>,"prefill_ms":<N>,
                                          "model_alias":"<alias or filename>",
                                          "model_hash":"<64-char hex SHA-256 of GGUF>",
@@ -318,6 +351,17 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                         Note: caller is responsible for keeping `n_tokens > n_past` on the
                               next completion — otherwise the KV cache is invalidated (see
                               CLAUDE.md "Critical Facts").
+
+                        #487: the HTTP `/v1/chat/completions` endpoint (used for decode,
+                        not this binary opcode) accepts the same optional `hydra_config`
+                        key in its JSON body. It's extracted before
+                        `oaicompat_chat_params_parse()` consumes the body, attached to the
+                        `server_task` for that completion, and applied synchronously on the
+                        task-queue thread at the start of that task's processing — not on
+                        the httplib worker thread. (An earlier attempt applied it directly
+                        on the httplib worker thread and raced the main task-queue thread;
+                        that was reverted.) The binary DECODE opcode (0x43) below is not
+                        used by Hydra.Core and does not carry `hydra_config`.
 
 0x43  DECODE            Run decode with streaming token output
                         Request:  key="<slot_id>", payload=JSON {"n_predict":N,"messages":[...]}
