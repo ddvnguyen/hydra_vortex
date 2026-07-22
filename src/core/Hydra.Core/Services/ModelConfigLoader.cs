@@ -119,7 +119,7 @@ public sealed class ModelConfigLoader
             string ggufAlias = alias switch
             {
                 "moe-35b-solo"      => "qwen3.6-35B-balanced",
-                "moe-35b-pd"        => isPd && false ? "qwen3.6-35B-mini" : "qwen3.6-35B-mini",  // prefill is mini, see DecodeAlias below
+                "moe-35b-pd"        => "qwen3.6-35B-mini",  // prefill is mini, see DecodeAlias below
                 "moe-35b-pd-mix"    => "qwen3.6-35B-mini",
                 "moe-35b-pd-mini"   => "qwen3.6-35B-mini",
                 "balanced"          => "qwen3.6-35B-balanced",
