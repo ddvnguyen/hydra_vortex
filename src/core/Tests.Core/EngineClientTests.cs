@@ -71,7 +71,7 @@ public sealed class EngineClientTests
     {
         var rpc = new CapturingRpcClient();
         rpc.NextResponse = MakeRpcResponse(
-            """{"n_past":42,"state_size":1234567,"model_alias":"balanced","model_hash":"deadbeef00000000000000000000000000000000000000000000000000000000","model_path":"/models/Balanced.gguf","model_fallback":false}""");
+            """{"n_past":42,"state_size":1234567,"model_alias":"balanced","tokenizer":"llama","model_name":"Qwopus3.6-35B","model_quant":"Q5_K","model_capabilities":1,"model_path":"/models/Balanced.gguf","model_fallback":false}""");
         var client = new HydraEngineClient(rpc);
 
         var messages = """[{"role":"user","content":"hi"}]""";
@@ -83,7 +83,10 @@ public sealed class EngineClientTests
         Assert.Equal(42, result!.NPast);
         Assert.Equal(1234567L, result.StateSize);
         Assert.Equal("balanced", result.ModelAlias);
-        Assert.Equal("deadbeef00000000000000000000000000000000000000000000000000000000", result.ModelHash);
+        Assert.Equal("llama", result.Tokenizer);
+        Assert.Equal("Qwopus3.6-35B", result.ModelName);
+        Assert.Equal("Q5_K", result.ModelQuant);
+        Assert.Equal(0x01u, result.ModelCapabilities);
         Assert.Equal("/models/Balanced.gguf", result.ModelPath);
         Assert.False(result.ModelFallback);
 
@@ -157,7 +160,7 @@ public sealed class EngineClientTests
     {
         var rpc = new CapturingRpcClient();
         rpc.NextResponse = MakeRpcResponse(
-            """{"n_past":10,"state_size":100,"model_alias":"balanced","model_hash":"abc","model_path":"/x","model_fallback":true}""");
+            """{"n_past":10,"state_size":100,"model_alias":"balanced","tokenizer":"llama","model_name":"Qwopus","model_quant":"Q3_K","model_capabilities":0,"model_path":"/x","model_fallback":true}""");
         var client = new HydraEngineClient(rpc);
 
         var messages = """[{"role":"user","content":"hi"}]""";
@@ -201,7 +204,10 @@ public sealed class EngineClientTests
 
         Assert.NotNull(result);
         Assert.Equal("", result!.ModelAlias);
-        Assert.Equal("", result.ModelHash);
+        Assert.Equal("", result.Tokenizer);
+        Assert.Equal("", result.ModelName);
+        Assert.Equal("", result.ModelQuant);
+        Assert.Equal(0u, result.ModelCapabilities);
         Assert.Equal("", result.ModelPath);
         Assert.False(result.ModelFallback);
     }
@@ -214,7 +220,7 @@ public sealed class EngineClientTests
         // Wire JSON must contain hydra_config with split_mode, tensor_split, model_path
         var rpc = new CapturingRpcClient();
         rpc.NextResponse = MakeRpcResponse(
-            """{"n_past":42,"state_size":1234567,"model_alias":"dense-27b-combined","model_hash":"ab","model_path":"/models/Dense27B.gguf","model_fallback":false}""");
+            """{"n_past":42,"state_size":1234567,"model_alias":"dense-27b-combined","tokenizer":"llama","model_name":"Dense27B","model_quant":"Q4_K","model_capabilities":0,"model_path":"/models/Dense27B.gguf","model_fallback":false}""");
         var client = new HydraEngineClient(rpc);
 
         var hydraConfig = new Dictionary<string, object>

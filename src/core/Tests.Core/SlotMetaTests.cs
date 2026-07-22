@@ -16,7 +16,10 @@ public sealed class SlotMetaTests
             "state_size": 819200000,
             "is_processing": true,
             "model_alias": "balanced",
-            "model_hash": "abc123",
+            "tokenizer": "llama",
+            "model_name": "Qwopus3.6-35B",
+            "model_quant": "Q5_K",
+            "model_capabilities": 1,
             "model_path": "/models/test.gguf",
             "operation": "prefill",
             "progress": 0.65,
@@ -34,7 +37,10 @@ public sealed class SlotMetaTests
         Assert.Equal(819200000, meta.StateSize);
         Assert.True(meta.IsProcessing);
         Assert.Equal("balanced", meta.ModelAlias);
-        Assert.Equal("abc123", meta.ModelHash);
+        Assert.Equal("llama", meta.Tokenizer);
+        Assert.Equal("Qwopus3.6-35B", meta.ModelName);
+        Assert.Equal("Q5_K", meta.ModelQuant);
+        Assert.Equal(0x01u, meta.ModelCapabilities);
         Assert.Equal("/models/test.gguf", meta.ModelPath);
         Assert.Equal("prefill", meta.Operation);
         Assert.Equal(0.65f, meta.Progress, 2);
@@ -53,7 +59,10 @@ public sealed class SlotMetaTests
             "state_size": 1000000,
             "is_processing": false,
             "model_alias": "",
-            "model_hash": "",
+            "tokenizer": "",
+            "model_name": "",
+            "model_quant": "",
+            "model_capabilities": 0,
             "model_path": ""
         }
         """;
@@ -113,7 +122,10 @@ public sealed class SlotMetaTests
         Assert.Equal(0, meta.StateSize);
         Assert.False(meta.IsProcessing);
         Assert.Equal("", meta.ModelAlias);
-        Assert.Equal("", meta.ModelHash);
+        Assert.Equal("", meta.Tokenizer);
+        Assert.Equal("", meta.ModelName);
+        Assert.Equal("", meta.ModelQuant);
+        Assert.Equal(0u, meta.ModelCapabilities);
         Assert.Equal("", meta.ModelPath);
         Assert.Equal("", meta.Operation);
         Assert.Equal(0f, meta.Progress);
@@ -140,7 +152,10 @@ public sealed class SlotMetaTests
             "state_size": 200000,
             "is_processing": false,
             "model_alias": "mini",
-            "model_hash": "def456",
+            "tokenizer": "gpt2",
+            "model_name": "Mini-3B",
+            "model_quant": "Q4_K",
+            "model_capabilities": 2,
             "model_path": "/models/mini.gguf",
             "operation": "idle",
             "progress": 1.0,
@@ -159,7 +174,10 @@ public sealed class SlotMetaTests
         Assert.Equal(200000, meta.StateSize);
         Assert.False(meta.IsProcessing);
         Assert.Equal("mini", meta.ModelAlias);
-        Assert.Equal("def456", meta.ModelHash);
+        Assert.Equal("gpt2", meta.Tokenizer);
+        Assert.Equal("Mini-3B", meta.ModelName);
+        Assert.Equal("Q4_K", meta.ModelQuant);
+        Assert.Equal(0x02u, meta.ModelCapabilities);
         Assert.Equal("/models/mini.gguf", meta.ModelPath);
         Assert.Equal("idle", meta.Operation);
         Assert.Equal(1.0f, meta.Progress, 2);

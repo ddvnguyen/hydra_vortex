@@ -55,8 +55,9 @@ public sealed class HydraEngineClient
     /// <summary>
     /// Engine PREFILL (0x42). Sends the request JSON + optional model alias
     /// to the engine. Returns the parsed response meta (n_past, state_size,
-    /// model_alias, model_hash, model_path, model_fallback) and the raw KV
-    /// blob (the response payload, may be empty for non-engine builds).
+    /// model_alias, tokenizer, model_name, model_quant, model_capabilities,
+    /// model_path, model_fallback) and the raw KV blob (the response payload,
+    /// may be empty for non-engine builds).
     ///
     /// When the engine returns <see cref="StatusCode.NotImplemented"/> (the
     /// pre-#289 build path), the returned object's <see cref="EnginePrefillResult.NotImplemented"/>
@@ -119,20 +120,23 @@ public sealed class HydraEngineClient
         }
         return new EnginePrefillResult
         {
-            NPast         = meta?.NPast         ?? 0,
-            StateSize     = meta?.StateSize     ?? 0,
-            ModelAlias    = meta?.ModelAlias    ?? "",
-            ModelHash     = meta?.ModelHash     ?? "",
-            ModelPath     = meta?.ModelPath     ?? "",
-            ModelFallback = meta?.ModelFallback ?? false,
-            PrefillMs     = meta?.PrefillMs     ?? 0,
-            ModelLoadMs   = meta?.ModelLoadMs   ?? 0,
-            PromptTokens  = meta?.PromptTokens  ?? 0,
-            TokensPerSecond = meta?.TokensPerSecond ?? 0,
-            CacheTokens   = meta?.CacheTokens   ?? 0,
-            KvSize        = meta?.KvSize        ?? 0,
-            LogitsSize    = meta?.LogitsSize    ?? 0,
-            KvBlob        = resp.Payload
+            NPast             = meta?.NPast             ?? 0,
+            StateSize         = meta?.StateSize         ?? 0,
+            ModelAlias        = meta?.ModelAlias        ?? "",
+            Tokenizer         = meta?.Tokenizer         ?? "",
+            ModelName         = meta?.ModelName         ?? "",
+            ModelQuant        = meta?.ModelQuant        ?? "",
+            ModelCapabilities = meta?.ModelCapabilities ?? 0,
+            ModelPath         = meta?.ModelPath         ?? "",
+            ModelFallback     = meta?.ModelFallback     ?? false,
+            PrefillMs         = meta?.PrefillMs         ?? 0,
+            ModelLoadMs       = meta?.ModelLoadMs       ?? 0,
+            PromptTokens      = meta?.PromptTokens      ?? 0,
+            TokensPerSecond   = meta?.TokensPerSecond   ?? 0,
+            CacheTokens       = meta?.CacheTokens       ?? 0,
+            KvSize            = meta?.KvSize            ?? 0,
+            LogitsSize        = meta?.LogitsSize        ?? 0,
+            KvBlob            = resp.Payload
         };
     }
 
@@ -295,8 +299,14 @@ public sealed class EnginePrefillResult
     public long StateSize { get; init; }
     [JsonPropertyName("model_alias")]
     public string ModelAlias { get; init; } = "";
-    [JsonPropertyName("model_hash")]
-    public string ModelHash { get; init; } = "";
+    [JsonPropertyName("tokenizer")]
+    public string Tokenizer { get; init; } = "";
+    [JsonPropertyName("model_name")]
+    public string ModelName { get; init; } = "";
+    [JsonPropertyName("model_quant")]
+    public string ModelQuant { get; init; } = "";
+    [JsonPropertyName("model_capabilities")]
+    public uint ModelCapabilities { get; init; }
     [JsonPropertyName("model_path")]
     public string ModelPath { get; init; } = "";
     [JsonPropertyName("model_fallback")]

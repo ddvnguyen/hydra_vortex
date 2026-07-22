@@ -1,9 +1,16 @@
+using Hydra.Core.Models;
+
 namespace Hydra.Core.Services;
 
 /// <summary>
-/// M-Perf.9 #289: pure decision function for the cross-model KV safety check.
+/// M-Perf.9 #289 / #470: pure decision function for the cross-model KV safety check.
 /// Extracted from <see cref="WorkerSchedulerService.RestoreKvAsync"/> so the
 /// behaviour can be unit-tested without a live llama-server.
+///
+/// #470: replaced single SHA-256 hash comparison with per-bit identity
+/// comparison (tokenizer, name, quant, capabilities) so the guard can
+/// make per-capability decisions (e.g. abort on MTP mismatch, allow
+/// quant mismatch for P/D mix-quant).
 /// </summary>
 public static class CrossModelGuard
 {
@@ -11,15 +18,16 @@ public static class CrossModelGuard
     {
         /// <summary>No cross-model issue. Proceed with the restore.</summary>
         Proceed,
-        /// <summary>Hashes differ and the operator has not opted in to the
-        /// unsafe mode. Abort the restore and re-prefill on the correct model.</summary>
+        /// <summary>Identity fields differ in a way that would corrupt decode,
+        /// and the operator has not opted in to the unsafe mode. Abort the
+        /// restore and re-prefill on the correct model.</summary>
         Abort,
-        /// <summary>Hashes differ but the operator set
+        /// <summary>Identity differs but the operator set
         /// <c>HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true</c>. Warn and proceed
         /// — the model is likely to reject the KV at decode time.</summary>
         WarnAndProceed,
-        /// <summary>At least one of the hashes is empty (pre-#289 data or
-        /// META query failed). Treat as "no opinion" and skip the check.</summary>
+        /// <summary>At least one identity is empty (pre-#470 data or META query
+        /// failed). Treat as "no opinion" and skip the check.</summary>
         Skip
     }
 
@@ -27,29 +35,56 @@ public static class CrossModelGuard
     /// Decide whether a stored KV may be restored into a slot loaded with a
     /// potentially-different model. Pure function: same inputs → same output.
     /// </summary>
-    /// <param name="storedHash">The model_hash of the slot that built the KV
+    /// <param name="stored">The model identity of the slot that built the KV
     ///   (from the WorkItem's prefill, or from the Store manifest on restore
     ///   after a Coordinator restart).</param>
-    /// <param name="slotHash">The model_hash of the slot the KV is being
+    /// <param name="slot">The model identity of the slot the KV is being
     ///   restored into (from the slot META query after StatePut).</param>
     /// <param name="allowCrossModelKvReuse">Operator flag — <c>true</c> turns
-    ///   Abort into WarnAndProceed.</param>
+    ///   Abort into WarnAndProceed for recoverable mismatches.</param>
     public static Outcome Decide(
-        string? storedHash,
-        string? slotHash,
+        ModelIdentity? stored,
+        ModelIdentity? slot,
         bool allowCrossModelKvReuse)
     {
-        bool storedKnown = !string.IsNullOrEmpty(storedHash);
-        bool slotKnown   = !string.IsNullOrEmpty(slotHash);
+        bool storedKnown = stored is not null && !stored.IsEmpty;
+        bool slotKnown   = slot is not null && !slot.IsEmpty;
         bool bothKnown   = storedKnown && slotKnown;
 
         if (!bothKnown)
-            return Outcome.Skip; // back-compat: pre-#289 data or META failure
+            return Outcome.Skip;
 
-        bool hashesMatch = string.Equals(storedHash, slotHash, StringComparison.Ordinal);
-        if (hashesMatch)
+        // Tokenizer must match — different tokenizers produce incompatible token IDs.
+        if (!string.Equals(stored!.Tokenizer, slot!.Tokenizer, StringComparison.Ordinal))
+            return allowCrossModelKvReuse ? Outcome.WarnAndProceed : Outcome.Abort;
+
+        // Model name must match — different models have different weights/architectures.
+        if (!string.Equals(stored.ModelName, slot.ModelName, StringComparison.Ordinal))
+            return allowCrossModelKvReuse ? Outcome.WarnAndProceed : Outcome.Abort;
+
+        // Per-bit capability comparison.
+        uint storedCaps = stored.ModelCapabilities;
+        uint slotCaps   = slot.ModelCapabilities;
+        uint diffCaps   = storedCaps ^ slotCaps;
+
+        if (diffCaps != 0)
+        {
+            // Bit 0 (MTP) or bit 1 (VISION) differ — hard abort (would corrupt decode).
+            bool abortBitSet = (diffCaps & (ModelIdentity.CapMTP | ModelIdentity.CapVision)) != 0;
+            if (abortBitSet)
+                return allowCrossModelKvReuse ? Outcome.WarnAndProceed : Outcome.Abort;
+
+            // Bit 2 (REASONING), bit 3 (TOOL_USE), bit 4 (CODE) differ — always WarnAndProceed
+            // (doesn't corrupt decode, just changes behaviour).
+            return Outcome.WarnAndProceed;
+        }
+
+        // ModelQuant differs — P/D mix-quant is by design, Proceed with log only.
+        // (The caller logs this; the guard itself does not allocate/throw.)
+        if (!string.Equals(stored.ModelQuant, slot.ModelQuant, StringComparison.Ordinal))
             return Outcome.Proceed;
 
-        return allowCrossModelKvReuse ? Outcome.WarnAndProceed : Outcome.Abort;
+        // All identity fields match.
+        return Outcome.Proceed;
     }
 }

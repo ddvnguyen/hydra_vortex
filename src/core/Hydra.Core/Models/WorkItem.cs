@@ -159,15 +159,39 @@ public sealed class WorkItem
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>
 	public bool PrefixCacheHit { get; set; }
 
-	// ── Engine model identity (M-Perf.9 #289) ──
+	// ── Engine model identity (M-Perf.9 #289 / #470) ──
 	/// <summary>Alias of the model that built the KV for this slot, e.g. "balanced".</summary>
 	public string? KvModelAlias { get; set; }
-	/// <summary>SHA-256 hex of the GGUF file the KV was built with. Used for cross-model safety checks.</summary>
-	public string? KvModelHash { get; set; }
+	/// <summary>GGUF-derived tokenizer family, e.g. "llama", "gpt2".</summary>
+	public string? KvTokenizer { get; set; }
+	/// <summary>GGUF display name (from general.base_model.0.name or general.name).</summary>
+	public string? KvModelName { get; set; }
+	/// <summary>GGUF quantization label, e.g. "Q5_K".</summary>
+	public string? KvModelQuant { get; set; }
+	/// <summary>Bitwise capabilities from GGUF metadata (bit0=MTP, bit1=VISION, etc.).</summary>
+	public uint KvModelCapabilities { get; set; }
 	/// <summary>Full path of the GGUF file the KV was built with, e.g. "/models/.../Balanced.gguf".</summary>
 	public string? KvModelPath { get; set; }
 	/// <summary>True when the engine received a `model` value it could not resolve and fell back to the resident model.</summary>
 	public bool KvModelFallback { get; set; }
+
+	/// <summary>Build a <see cref="ModelIdentity"/> from the per-field KV identity properties.</summary>
+	public ModelIdentity GetKvModelIdentity() => new()
+	{
+		Tokenizer = KvTokenizer ?? "",
+		ModelName = KvModelName ?? "",
+		ModelQuant = KvModelQuant ?? "",
+		ModelCapabilities = KvModelCapabilities,
+	};
+
+	/// <summary>Populate per-field KV identity properties from a <see cref="ModelIdentity"/>.</summary>
+	public void SetKvModelIdentity(ModelIdentity id)
+	{
+		KvTokenizer = id.Tokenizer;
+		KvModelName = id.ModelName;
+		KvModelQuant = id.ModelQuant;
+		KvModelCapabilities = id.ModelCapabilities;
+	}
 	public Dictionary<string, long> Phases { get; } = new();
 	private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 	public long ElapsedMs => (Stopwatch.GetTimestamp() - _startTimestamp) * 1000 / Stopwatch.Frequency;

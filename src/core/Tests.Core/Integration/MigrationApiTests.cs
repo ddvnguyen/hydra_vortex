@@ -155,7 +155,7 @@ internal sealed class ThrowOnOpRpcClient : RpcClient
     {
         if (op == _throwOn)
             throw new InvalidOperationException($"injected RPC failure on {op}");
-        var meta = JsonSerializer.Serialize(new { n_past = 2000, restored = true, stored = true, model_match = true, model_hash = "test_hash", model_alias = "nano", model_path = "/dev/null" });
+        var meta = JsonSerializer.Serialize(new { n_past = 2000, restored = true, stored = true, model_match = true, tokenizer = "llama", model_name = "nano", model_quant = "Q4_K", model_capabilities = 0, model_alias = "nano", model_path = "/dev/null" });
         return Task.FromResult(new RpcResponse((byte)StatusCode.Ok, meta, Array.Empty<byte>()));
     }
 }

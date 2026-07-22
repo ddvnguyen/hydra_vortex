@@ -532,7 +532,10 @@ public sealed class WorkItemIntegrationTests
             "sess", "trace", null, 1, 10);
 
         Assert.Null(item.KvModelAlias);
-        Assert.Null(item.KvModelHash);
+        Assert.Null(item.KvTokenizer);
+        Assert.Null(item.KvModelName);
+        Assert.Null(item.KvModelQuant);
+        Assert.Equal(0u, item.KvModelCapabilities);
         Assert.Null(item.KvModelPath);
         Assert.False(item.KvModelFallback);
     }
@@ -549,12 +552,18 @@ public sealed class WorkItemIntegrationTests
             new List<Dictionary<string, object>>(),
             "sess", "trace", null, 1, 10);
         item.KvModelAlias = "balanced";
-        item.KvModelHash  = "deadbeef" + new string('0', 56);
+        item.KvTokenizer  = "llama";
+        item.KvModelName  = "Qwopus3.6-35B";
+        item.KvModelQuant = "Q5_K";
+        item.KvModelCapabilities = 0x01;
         item.KvModelPath  = "/models/Balanced.gguf";
         item.KvModelFallback = false;
 
         Assert.Equal("balanced", item.KvModelAlias);
-        Assert.Equal(64, item.KvModelHash!.Length);
+        Assert.Equal("llama", item.KvTokenizer);
+        Assert.Equal("Qwopus3.6-35B", item.KvModelName);
+        Assert.Equal("Q5_K", item.KvModelQuant);
+        Assert.Equal(0x01u, item.KvModelCapabilities);
         Assert.Equal("/models/Balanced.gguf", item.KvModelPath);
         Assert.False(item.KvModelFallback);
     }
