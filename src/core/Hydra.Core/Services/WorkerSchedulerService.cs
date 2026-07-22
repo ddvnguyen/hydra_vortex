@@ -2367,92 +2367,112 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 				item.NPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : item.NPastAfter;
-			}
 
-			// M-Perf.9 #289: cross-model safety check. After the StatePut
-			// succeeded, query the slot META to learn what model is currently
-			// resident on the slot, then compare its model_hash to the
-			// stored KV's model_hash (carried on item.KvModelHash from the
-			// prefill that built it). If they differ, the restored KV would
-			// be decoded by a different model — silently corrupt. Default
-			// behaviour: abort the restore, erase the slot, and re-prefill on
-			// the correct model. When AllowCrossModelKvReuse=true: warn and
-			// proceed (the model will likely reject the KV at decode time).
-			//
-			// The decision is delegated to CrossModelGuard.Decide (pure
-			// function, fully unit-tested). The only IO done here is the
-			// slot META query; the guard itself has no side effects.
-			try
-			{
-				var slotMeta = await GetLlamaClient(w).GetStateMetaAsync(slotId, ct);
-				var outcome = CrossModelGuard.Decide(
-					storedHash:             item.KvModelHash,
-					slotHash:               slotMeta.ModelHash,
-					allowCrossModelKvReuse: _cfg.AllowCrossModelKvReuse);
+				// M-Perf.9 #289 + #470: parse model identity from STATE_PUT
+				// response. The engine returns model_match, model_hash,
+				// model_alias, and model_path so we can check cross-model
+				// safety *before* proceeding to HTTP decode — eliminating the
+				// race where the KV was already written to the slot before
+				// the STATE_META query confirmed it.
+				var modelMatch = meta?.TryGetValue("model_match", out var mm) == true
+					? mm.GetBoolean()
+					: true; // back-compat: old servers omit field → assume match
+				var slotHash = meta?.TryGetValue("model_hash", out var mh) == true
+					? mh.GetString()
+					: null;
+				var slotAlias = meta?.TryGetValue("model_alias", out var ma) == true
+					? ma.GetString()
+					: null;
+				var slotPath = meta?.TryGetValue("model_path", out var mp) == true
+					? mp.GetString()
+					: null;
 
-				switch (outcome)
+				// #470: model_match is the engine-side stub (always true for now).
+				// CrossModelGuard.Decide is the authoritative hash comparison —
+				// it covers the case where model_match=true but the stored KV's
+				// model_hash differs from the slot's resident model_hash (the
+				// exact corruption class #469 investigated). This replaces the
+				// old post-hoc STATE_META query with a single atomic check.
+				if (modelMatch)
 				{
-					case CrossModelGuard.Outcome.Abort:
-						_log.Warning("cross_model_kv_aborted slot={Slot} stored={Stored} slot={SlotHash} item={Item} — re-prefilling",
-							slotId, item.KvModelHash, slotMeta.ModelHash, item.SessionId);
-						CoordinatorMetrics.CrossModelKvAborted.WithLabels(w.Name).Inc();
-						// Erase the slot we just wrote into (otherwise the
-						// same-node skip would skip the re-prefill's PREFILL
-						// state by trusting the now-incorrect slot).
-						try
-						{
-							await GetLlamaClient(w).EraseSlotAsync(slotId, ct);
-						}
-						catch (Exception eraseEx)
-						{
-							_log.Warning(eraseEx, "cross_model_erase_failed Slot={Slot}", slotId);
-						}
-						if (item.DecodeLease != null)
-						{
-							await item.DecodeLease.DisposeAsync();
-							item.DecodeLease = null;
-							SignalEvaluator();
-						}
-						if (item.PrefillWorker?.CanDecode == true
-							&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot2, "decode-fallback"))
-						{
-							item.DecodeWorker = item.PrefillWorker;
-							item.DecodeSlot = fbSlot2;
-							item.DecodeLease = new SlotLease(item.PrefillWorker.Name, fbSlot2, item.SessionId,
-								LeaseLifetime.Long, _tracker);
-						}
-						item.NPastAfter = 0;
-						item.KvRestoredForDecode = false;
-						CoordinatorMetrics.RestoreKvDuration.WithLabels(w.Name, RouteLabel(item))
-							.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
-						return WorkItemState.Prefill;
+					var guard = CrossModelGuard.Decide(
+						storedHash: item.KvModelHash,
+						slotHash: slotHash,
+						allowCrossModelKvReuse: _cfg.AllowCrossModelKvReuse);
 
-					case CrossModelGuard.Outcome.WarnAndProceed:
-						_log.Warning("cross_model_kv_warn slot={Slot} stored={Stored} slot={SlotHash} — allow_cross_model_kv_reuse=true",
-							slotId, item.KvModelHash, slotMeta.ModelHash);
-						CoordinatorMetrics.CrossModelKvWarned.WithLabels(w.Name).Inc();
-						break;
-
-					case CrossModelGuard.Outcome.Skip:
-						_log.Debug("cross_model_kv_skipped_empty slot={Slot} item={Item} — back-compat",
-							slotId, item.SessionId);
-						CoordinatorMetrics.CrossModelKvSkipped.WithLabels(w.Name).Inc();
-						break;
-
-					case CrossModelGuard.Outcome.Proceed:
-					default:
-						// Hashes match (or both empty AND not Skip — which
-						// shouldn't happen, but is a safe no-op). Fall through.
-						CoordinatorMetrics.CrossModelKvProceeded.WithLabels(w.Name).Inc();
-						break;
+					switch (guard)
+					{
+						case CrossModelGuard.Outcome.Proceed:
+							_log.Debug("cross_model_kv_proceeded slot={Slot} stored={Stored} slot={SlotHash}",
+								slotId, item.KvModelHash, slotHash);
+							CoordinatorMetrics.CrossModelKvProceeded.WithLabels(w.Name).Inc();
+							break;
+						case CrossModelGuard.Outcome.Skip:
+							_log.Debug("cross_model_kv_skipped slot={Slot} stored={Stored} slot={SlotHash}",
+								slotId, item.KvModelHash, slotHash);
+							CoordinatorMetrics.CrossModelKvSkipped.WithLabels(w.Name).Inc();
+							break;
+						case CrossModelGuard.Outcome.WarnAndProceed:
+							_log.Warning("cross_model_kv_warned slot={Slot} stored={Stored} slot={SlotHash} item={Item}",
+								slotId, item.KvModelHash, slotHash, item.SessionId);
+							CoordinatorMetrics.CrossModelKvWarned.WithLabels(w.Name).Inc();
+							break;
+						case CrossModelGuard.Outcome.Abort:
+							_log.Warning("cross_model_kv_aborted slot={Slot} stored={Stored} slot={SlotHash} item={Item} — re-prefilling",
+								slotId, item.KvModelHash, slotHash, item.SessionId);
+							CoordinatorMetrics.CrossModelKvAborted.WithLabels(w.Name).Inc();
+							// Fall through to the shared erase+re-prefill path below
+							modelMatch = false;
+							break;
+					}
 				}
-			}
-			catch (Exception ex)
-			{
-				// Non-fatal: META query failed. The decode may produce a
-				// corrupted response but we don't fail-closed here because
-				// the META endpoint may not be available on older builds.
-				_log.Warning(ex, "cross_model_check_failed slot={Slot} — proceeding without check", slotId);
+				else
+				{
+					// Engine-side model_match=false: the engine already rejected
+					// the KV (future path when KV header carries model identity).
+					_log.Warning("state_put_model_mismatch slot={Slot} stored={Stored} slot={SlotHash} item={Item}",
+						slotId, item.KvModelHash, slotHash, item.SessionId);
+					CoordinatorMetrics.CrossModelKvAborted.WithLabels(w.Name).Inc();
+				}
+
+				if (!modelMatch)
+				{
+					// Shared abort path: erase the slot we just wrote into and
+					// re-prefill on the correct model.
+					// Erase the slot we just wrote into (same as the
+					// existing Abort path — otherwise the same-node skip
+					// would trust the now-incorrect slot).
+					try
+					{
+						await GetLlamaClient(w).EraseSlotAsync(slotId, ct);
+					}
+					catch (Exception eraseEx)
+					{
+						_log.Warning(eraseEx, "state_put_erase_failed Slot={Slot}", slotId);
+					}
+					if (item.DecodeLease != null)
+					{
+						await item.DecodeLease.DisposeAsync();
+						item.DecodeLease = null;
+						SignalEvaluator();
+					}
+					if (item.PrefillWorker?.CanDecode == true
+						&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot2, "decode-fallback"))
+					{
+						item.DecodeWorker = item.PrefillWorker;
+						item.DecodeSlot = fbSlot2;
+						item.DecodeLease = new SlotLease(item.PrefillWorker.Name, fbSlot2, item.SessionId,
+							LeaseLifetime.Long, _tracker);
+					}
+					item.NPastAfter = 0;
+					item.KvRestoredForDecode = false;
+					CoordinatorMetrics.RestoreKvDuration.WithLabels(w.Name, RouteLabel(item))
+						.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
+					return WorkItemState.Prefill;
+				}
+
+				_log.Debug("state_put_validation_ok slot={Slot} model={Alias} path={Path} match={Match}",
+					slotId, slotAlias, slotPath, modelMatch);
 			}
 
 		_log.Information("state_restored Sid={Sid} NPast={N} Node={Node}",
