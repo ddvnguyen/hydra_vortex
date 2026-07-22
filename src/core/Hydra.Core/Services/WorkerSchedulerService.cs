@@ -1575,6 +1575,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// ApplyMultiEngineAsync checks this to (a) skip a redundant empty-body
 				// PREFILL that risks invalidating the KV cache, and (b) record the
 				// appropriate telemetry (success or fallback) even when the RPC is skipped.
+				// TODO(#487): this only proves the PREFILL RPC transport succeeded, not
+				// that the engine actually applied hydra_config correctly — a bad
+				// split_mode/tensor_split could fail config-apply while the RPC still
+				// returns a non-error status. Once the fork's PREFILL response carries a
+				// distinct "hydra_config applied" signal, check it here instead of only
+				// !prefillResult.NotImplemented.
 				if (hydraConfig is not null)
 					item.HydraConfigDeliveredSucceeded = prefillResult is not null && !prefillResult.NotImplemented;
 
