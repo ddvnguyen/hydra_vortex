@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Hydra.Core.Models;
@@ -22,42 +21,17 @@ public sealed record ModelsConfig
     public Dictionary<string, ModelTemplate>? Models { get; init; }
 
     /// <summary>
-    /// #479/S3: maps a Hydra routing identity (e.g. <c>moe-35b-pd</c>,
-    /// <c>dense-27b-combined</c>) to the GGUF-file alias the engine's
-    /// <c>--models-preset</c> uses (<c>qwen3.6-35B-mini</c>,
-    /// <c>qwen3.6-27B-coder</c>). Role-aware: P/D-split identities map
-    /// prefill and decode to different quants. Core translates the
-    /// resolved routing identity to the GGUF-file alias and sends that
-    /// on the PREFILL/decode <c>model</c> field so the engine's inline
-    /// reload (server-context.cpp) fires. These are Hydra concepts, NOT
-    /// GGUF file names — the preset maps GGUF-file alias → .gguf path.
-    /// Stored as raw JsonElement so stray non-object keys (e.g. a
-    /// <c>_comment</c> convention used elsewhere in this file) don't
-    /// fail the whole-file deserialization.
+    /// #481 Phase 2c: single source of truth for GGUF-file alias -> file name.
+    /// Each entry is a GGUF-file alias (the key, e.g. <c>qwen3.6-35B-mini</c>)
+    /// and the actual GGUF file name (the value, e.g.
+    /// <c>Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf</c>). The engine's
+    /// <c>--models-preset</c> still maps alias -> absolute path on the host
+    /// (per-GPU), but Core no longer needs the file name inlined per model.
+    /// Each <see cref="ModelTemplate"/> references an alias via
+    /// <see cref="ModelTemplate.PrefillAlias"/> / <see cref="ModelTemplate.DecodeAlias"/>.
     /// </summary>
     [JsonPropertyName("model_file_aliases")]
-    public Dictionary<string, JsonElement>? ModelFileAliases { get; init; }
-}
-
-/// <summary>
-/// #479/S3: role-aware routing-identity → GGUF-file alias mapping.
-/// </summary>
-public sealed record GgufAliasMapping
-{
-    [JsonPropertyName("prefill")]
-    public string? Prefill { get; init; }
-
-    [JsonPropertyName("decode")]
-    public string? Decode { get; init; }
-
-    public static GgufAliasMapping? FromJsonElement(JsonElement el)
-    {
-        if (el.ValueKind != JsonValueKind.Object) return null;
-        string? prefill = el.TryGetProperty("prefill", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
-        string? decode = el.TryGetProperty("decode", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
-        if (prefill is null && decode is null) return null;
-        return new GgufAliasMapping { Prefill = prefill, Decode = decode };
-    }
+    public Dictionary<string, string>? ModelFileAliases { get; init; }
 }
 
 public sealed record EngineDefaults
@@ -104,10 +78,16 @@ public sealed record ModelTemplate
 {
     [JsonPropertyName("description")]
     public string? Description { get; init; }
-    [JsonPropertyName("prefill_model_file_name")]
-    public string? PrefillModelFileName { get; init; }
-    [JsonPropertyName("decode_model_file_name")]
-    public string? DecodeModelFileName { get; init; }
+    /// <summary>#481 Phase 2c: GGUF-file alias used for prefill. Must be a key in
+    /// <see cref="ModelsConfig.ModelFileAliases"/>. Resolved to a file name by
+    /// <see cref="ModelConfigLoader"/>.</summary>
+    [JsonPropertyName("prefill_alias")]
+    public string? PrefillAlias { get; init; }
+    /// <summary>#481 Phase 2c: GGUF-file alias used for decode. Must be a key in
+    /// <see cref="ModelsConfig.ModelFileAliases"/>. Resolved to a file name by
+    /// <see cref="ModelConfigLoader"/>.</summary>
+    [JsonPropertyName("decode_alias")]
+    public string? DecodeAlias { get; init; }
     [JsonPropertyName("load_time_s")]
     public int LoadTimeS { get; init; }
     [JsonPropertyName("quality_tier")]
@@ -118,6 +98,7 @@ public sealed record ModelTemplate
     public RoutingRule? Routing { get; init; }
     [JsonPropertyName("engine_config")]
     public Dictionary<string, object>? EngineConfig { get; init; }
+    [Obsolete("Moved to engine_config in models.json. NodeConfig is no longer read by Hydra.Core — kept for one deserialization cycle to avoid breaking stale configs.")]
     [JsonPropertyName("node_config")]
     public Dictionary<string, string>? NodeConfig { get; init; }
     [JsonPropertyName("workers_file")]

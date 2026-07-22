@@ -37,7 +37,9 @@ Two profiles can be switched via env vars or the helper script:
 | **moe** | Qwopus3.6-MoE-35B-A3B-v1-APEX-I-Mini | COMBINED-OT + P/D split | Peer with model (partial CPU offload) |
 | **dense** | Qwopus3.6-Dense-27B-Coder-Compat-MTP | COMBINED-static layer-split | `--peer-only` backend (no model) |
 
-Profile files:
-- `.env-moe` / `.env-dense` — environment profiles
-- `infra/hydra-head/config/node-rtx.yaml` / `node-rtx-27b.yaml` — head configs
-- `infra/hydra-core/config/workers.json` / `workers-27b.json` — worker configs
+Profile files (after #481 Phase 2c — single model-agnostic profile):
+- `infra/hydra-head/config/node-rtx.yaml` / `node-rtx3060.yaml` — model-agnostic head/peer node configs
+- `infra/hydra-core/config/workers.json` — single model-agnostic workers config (3060 is peer-only, slots=0)
+- `infra/hydra-core/config/models.json` — single source of truth for all per-model runtime config (split_mode, tensor_split, rpc_servers, …)
+
+(Pre-#481 used `.env-moe` / `.env-dense` profile pairs and `node-rtx-27b.yaml` / `workers-27b.json` variants — all removed because per-model config moved into models.json.)

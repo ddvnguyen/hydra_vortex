@@ -1052,25 +1052,65 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var llamaRpc = GetLlamaRpcClient(head);
 		try
 		{
-			Hydra.Shared.RpcResponse resp = await TranslateToWirePayloadAsync(
-				llamaRpc, head, item, slotId, ct);
-
-			if (resp.Status == (byte)StatusCode.Ok && !ReportsSolo(resp.Meta))
+			// Phase 2b (#481): for COMBINED, the hydra_config dict is
+			// prepared by TranslateToWirePayloadAsync and merged into the
+			// PREFILL body at PrefillAsync time. ApplyMultiEngineAsync
+			// re-sends the config via PREFILL to activate the mode at
+			// decode time.
+			// PIPELINE: keep the legacy 0x46 EnginePipelineAttach path.
+			var hydraConfig = TranslateToWirePayloadAsync(item);
+			if (hydraConfig is not null)
 			{
-				CoordinatorMetrics.MultiEngineActive.WithLabels(head.Name, modeStr).Inc();
-				CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Inc();
-				CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(1);
-				_activeMultiSessions[item.SessionId] = modeStr;
-				_log.Information("multiengine_active Sid={Sid} Mode={Mode} Head={Head} Peer={Peer}",
-					item.SessionId, modeStr, head.Name, item.MultiPeer);
+				// Skip if PrefillAsync already delivered hydra_config via a
+				// real-content PREFILL — sending a second empty-body PREFILL
+				// with ~0 new tokens risks invalidating the KV cache (the
+				// n_tokens > n_past invariant). The auto-multiengine path
+				// (MultiEngineRouter.Select → Decode directly) never sets
+				// this flag, so it still gets its activation PREFILL here.
+				if (item.HydraConfigDeliveredSucceeded.HasValue)
+				{
+					if (item.HydraConfigDeliveredSucceeded.Value)
+					{
+						RecordMultiEngineActive(item, head, modeStr);
+						_log.Debug("multiengine_config_skip Sid={Sid} Mode={Mode} — already delivered via PrefillAsync (success)",
+							item.SessionId, modeStr);
+					}
+					else
+					{
+						RecordMultiEngineFallback(item, head, modeStr, "prefill_model_fallback",
+							"PrefillAsync fell back, skipping redundant empty-body PREFILL");
+						_log.Warning("multiengine_config_skip_fallback Sid={Sid} Mode={Mode} — PrefillAsync fell back, skipping redundant empty-body PREFILL",
+							item.SessionId, modeStr);
+					}
+					item.HydraConfigDeliveredSucceeded = null;
+					return;
+				}
+				var engine = new HydraEngineClient(llamaRpc);
+				var body = new Dictionary<string, object> { ["messages"] = Array.Empty<object>() };
+				var requestJson = System.Text.Json.JsonSerializer.Serialize(body);
+				var result = await engine.EnginePrefillAsync(
+					slotId, null, requestJson, item.TraceId, ct, hydraConfig);
+
+				if (result is not null && !result.NotImplemented)
+					RecordMultiEngineActive(item, head, modeStr);
+				else
+					RecordMultiEngineFallback(item, head, modeStr, "peer_declined",
+						result?.ToString() ?? "null");
 			}
 			else
 			{
-				item.MultiFellBack = true;
-				CoordinatorMetrics.MultiEngineFallback.WithLabels(head.Name, modeStr, "peer_declined").Inc();
-				CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
-				_log.Warning("multiengine_fallback Sid={Sid} Mode={Mode} Status={St} Meta={Meta}",
-					item.SessionId, modeStr, resp.Status, resp.Meta);
+				// PIPELINE: legacy 0x46 path
+				var addr = !string.IsNullOrWhiteSpace(head.PeerHost)
+					? $"{head.PeerHost}:{head.PeerPort}"
+					: ResolvePeerAddr(item.MultiPeer);
+				var otSplit = item.MultiEngineConfig?.OverrideTensors?.FirstOrDefault() ?? "";
+				var resp = await llamaRpc.EnginePipelineAttachAsync(slotId.ToString(), addr, otSplit, item.TraceId, ct);
+
+				if (resp.Status == (byte)StatusCode.Ok && !ReportsSolo(resp.Meta))
+					RecordMultiEngineActive(item, head, modeStr);
+				else
+					RecordMultiEngineFallback(item, head, modeStr, "peer_declined",
+						$"Status={resp.Status} Meta={resp.Meta}");
 			}
 		}
 		catch (Exception ex)
@@ -1082,43 +1122,52 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 	}
 
+	/// <summary>Record successful multi-engine activation: increment counters, track session, log.</summary>
+	private void RecordMultiEngineActive(WorkItem item, WorkerConfig head, string modeStr)
+	{
+		CoordinatorMetrics.MultiEngineActive.WithLabels(head.Name, modeStr).Inc();
+		CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Inc();
+		CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(1);
+		_activeMultiSessions[item.SessionId] = modeStr;
+		_log.Information("multiengine_active Sid={Sid} Mode={Mode} Head={Head} Peer={Peer}",
+			item.SessionId, modeStr, head.Name, item.MultiPeer);
+	}
+
+	/// <summary>Record multi-engine fallback: mark item, increment counters, log.</summary>
+	private void RecordMultiEngineFallback(WorkItem item, WorkerConfig head, string modeStr,
+		string reason, string? resultDetail = null)
+	{
+		item.MultiFellBack = true;
+		CoordinatorMetrics.MultiEngineFallback.WithLabels(head.Name, modeStr, reason).Inc();
+		CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
+		_log.Warning("multiengine_fallback Sid={Sid} Mode={Mode} Reason={Reason} Detail={Detail}",
+			item.SessionId, modeStr, reason, resultDetail ?? "null");
+	}
+
 	/// <summary>
-	/// Phase 2a translator (ddvnguyen/llama.cpp#36): project the
-	/// stock-params-shaped <see cref="EngineConfig"/> from the plan onto
-	/// the existing wire opcodes. Wire payloads are unchanged in Phase 2a
-	/// (no fork change); the translator just selects which opcode to emit
-	/// and which subset of EngineConfig the wire payload consumes.
+	/// Phase 2b (#481): prepare the hydra_config dict that will be injected
+	/// into the PREFILL wire body. Returns null for SOLO/ATOMIC (no config
+	/// injection), or a populated dict for COMBINED. PIPELINE returns null (uses legacy 0x46 path).
 	///
-	/// COMBINED mode: emit <c>0x44 SET_EXPERT_MODE("combined")</c>. The
-	/// engine's dual-load machinery handles the rest — its
-	/// <c>--combined-ot-pattern</c> startup config determines which tensors
-	/// route to the peer's ggml-RPC backend, so the wire payload only
-	/// carries the mode toggle.
+	/// This is a PREPARATION step only — it does NOT call any RPC. The caller
+	/// (PrefillAsync) merges the returned dict into the request body and calls
+	/// EnginePrefillAsync ONCE with the hydra_config key.
 	///
-	/// PIPELINE mode: emit <c>0x46 EnginePipelineAttach</c> with the peer
-	/// address and the override-tensor regex (taken from
-	/// <see cref="EngineConfig.OverrideTensors"/>; empty string if not
-	/// set, in which case the engine will route nothing and the
-	/// PIPELINE activation effectively degrades to SOLO on the head).
+	/// For COMBINED: the dict comes from <see cref="EngineConfig.ToHydraConfigDict"/>
+	/// which already emits split_mode, tensor_split, rpc_servers (as JSON array),
+	/// model_path, etc.
 	///
-	/// Phase 2b will replace this translator with a direct <c>0x40
-	/// EngineConfigure</c> call carrying the full <see cref="EngineConfig"/>
-	/// payload (the fork will accept a complete <c>common_params</c> shape
-	/// and rebuild the model/context as needed).
+	/// For PIPELINE: returns the peer address and override tensor regex.
 	/// </summary>
-	private async Task<Hydra.Shared.RpcResponse> TranslateToWirePayloadAsync(
-		Hydra.Shared.RpcClient llamaRpc, WorkerConfig head, WorkItem item, int slotId, CancellationToken ct)
+	private Dictionary<string, object>? TranslateToWirePayloadAsync(
+		WorkItem item)
 	{
 		if (item.MultiMode == MultiEngineMode.Combined)
 		{
-			return await llamaRpc.EngineSetExpertModeAsync(slotId.ToString(), "combined", item.TraceId, ct);
+			return item.MultiEngineConfig?.ToHydraConfigDict();
 		}
-		// PIPELINE
-		var addr = !string.IsNullOrWhiteSpace(head.PeerHost)
-			? $"{head.PeerHost}:{head.PeerPort}"
-			: ResolvePeerAddr(item.MultiPeer);
-		var otSplit = item.MultiEngineConfig?.OverrideTensors?.FirstOrDefault() ?? "";
-		return await llamaRpc.EnginePipelineAttachAsync(slotId.ToString(), addr, otSplit, item.TraceId, ct);
+		// PIPELINE: keep the existing 0x46 EnginePipelineAttach path.
+		return null;
 	}
 
 	/// <summary>
@@ -1208,15 +1257,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		mode == MultiEngineMode.Pipeline ? "pipeline" : "combined";
 
 	/// <summary>Working-together status surfaced on the response (and in /status) for observability.</summary>
-	internal static Dictionary<string, object> MultiEngineStatus(WorkItem item) => new()
+	internal static Dictionary<string, object> MultiEngineStatus(WorkItem item)
 	{
-		["engine_mode"] = item.MultiFellBack ? "solo" : ModeLabel(item.MultiMode),
-		["requested_mode"] = ModeLabel(item.MultiMode),
-		["peer"] = item.MultiPeer ?? "",
-		["model_alias"] = item.MultiEngineConfig?.ModelAlias ?? "",
-		["split"] = item.MultiEngineConfig?.OverrideTensors?.FirstOrDefault() ?? "",
-		["fell_back"] = item.MultiFellBack
-	};
+		var cfg = item.MultiEngineConfig;
+		var rpcServers = cfg?.RpcServers;
+		var peerCount = rpcServers is { Length: > 0 } ? rpcServers.Length : 0;
+		// Phase 2b (#481): use actual SplitMode/TensorSplit from the
+		// EngineConfig instead of the legacy OverrideTensors.FirstOrDefault().
+		var split = cfg?.SplitMode ?? "";
+		if (string.IsNullOrEmpty(split) && cfg?.TensorSplit is { Length: > 0 })
+			split = string.Join(",", cfg.TensorSplit.Select(t => t.ToString()));
+		if (string.IsNullOrEmpty(split))
+			split = cfg?.OverrideTensors?.FirstOrDefault() ?? "";
+		return new Dictionary<string, object>
+		{
+			["engine_mode"] = item.MultiFellBack ? "solo" : ModeLabel(item.MultiMode),
+			["requested_mode"] = ModeLabel(item.MultiMode),
+			["peer"] = item.MultiPeer ?? "",
+			["model_alias"] = cfg?.ModelAlias ?? "",
+			["split"] = split,
+			["peer_count"] = peerCount,
+			["fell_back"] = item.MultiFellBack
+		};
+	}
 
 	/// <summary>
 	/// P3.0+ / #368: try to enter the SWAPPING state on the named worker and
@@ -1501,7 +1564,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (item.PrefillFirstAttemptMs == 0)
 					item.PrefillFirstAttemptMs = item.ElapsedMs;
 				var engine = new HydraEngineClient(llamaRpc);
-				var prefillResult = await engine.EnginePrefillAsync(slotId, prefillModel, requestJson, item.TraceId, ct);
+				// Phase 2b (#481): for COMBINED prefills, build hydraConfig
+				// from the EngineConfig via TranslateToWirePayloadAsync and
+				// merge it into the request body under the hydra_config key.
+				// SOLO/ATOMIC prefills pass null (no config injection).
+				var hydraConfig = TranslateToWirePayloadAsync(item);
+				var prefillResult = await engine.EnginePrefillAsync(slotId, prefillModel, requestJson, item.TraceId, ct,
+					hydraConfig: hydraConfig);
+				// Mark whether hydra_config was delivered and the PREFILL succeeded.
+				// ApplyMultiEngineAsync checks this to (a) skip a redundant empty-body
+				// PREFILL that risks invalidating the KV cache, and (b) record the
+				// appropriate telemetry (success or fallback) even when the RPC is skipped.
+				if (hydraConfig is not null)
+					item.HydraConfigDeliveredSucceeded = prefillResult is not null && !prefillResult.NotImplemented;
 
 				if (prefillResult != null && prefillResult.NotImplemented)
 				{
@@ -1636,6 +1711,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					CoordinatorMetrics.ModelFallbackTotal
 						.WithLabels(w.Name, prefillModel).Inc();
+					// Phase 2b (#481): when the engine returns model_fallback=true
+					// for a COMBINED prefill, the head did NOT honour the
+					// hydra_config.model_path we sent — it served the resident
+					// model instead. That's only acceptable if the fork-side
+					// 0x42 hydra_config support is not yet landed. Emit a warning
+					// so we notice the moment the fork IS ready and we're still
+					// silently falling back.
+					if (item.MultiMode == MultiEngineMode.Combined)
+					{
+						_log.Warning("multiengine_model_fallback Sid={Sid} Node={Node} RequestedModel={Req} ResidentModel={Res} Mode={Mode}",
+							item.SessionId, w.Name, prefillModel, item.KvModelAlias ?? "(null)", item.MultiMode);
+					}
 				}
 
 				// #469 trace: log PREFILL response for cross-flow comparison
@@ -1775,8 +1862,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <c>dense-27b-combined</c>, …) to the GGUF-file alias the engine's
 	/// <c>--models-preset</c> expects, so the inline PREFILL/decode reload
 	/// fires. Role-aware (prefill vs decode quant for P/D split). Returns the
-	/// routing identity unchanged when no mapping exists (no models.json, or
-	/// legacy alias), preserving pre-feature behavior.
+	/// routing identity unchanged when no model template is registered (no
+	/// models.json, or legacy alias), preserving pre-feature behavior.
+	/// #481 Phase 2c: returns the GGUF-file alias (e.g. <c>qwen3.6-35B-mini</c>),
+	/// not the file name — the alias is what the engine's preset maps to a
+	/// per-host path. The file name is internal to Core and never crosses the
+	/// wire.
 	/// </summary>
 	private static string? TranslateModelAlias(string? routingAlias, bool decodeRole = false)
 	{
@@ -1785,8 +1876,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var loader = ModelConfigLoader.InstanceOrNull;
 		if (loader is null)
 			return routingAlias;
-		var mapped = loader.TranslateToGgufAlias(routingAlias, decodeRole);
-		return mapped ?? routingAlias;
+		var template = loader.GetModelTemplate(routingAlias);
+		if (template is null)
+			return routingAlias;
+		var alias = decodeRole && !string.IsNullOrWhiteSpace(template.DecodeAlias)
+			? template.DecodeAlias
+			: template.PrefillAlias;
+		return alias ?? routingAlias;
 	}
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
@@ -2447,7 +2543,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (item.DecodeSlot.HasValue)
 			item.Request["id_slot"] = item.DecodeSlot.Value;
 
-		if (!string.IsNullOrEmpty(w.ModelAlias))
+		// #481 Phase 2c: hydra_config injection is driven by the request's
+		// resolved model alias, NOT by the worker's static ModelAlias (which
+		// is null for model-agnostic workers). The `__auto_model_alias` was
+		// stamped onto item.Request by AutoRouter earlier; fall back to the
+		// raw `model` field if that's not present.
+		var resolvedAlias = item.Request.TryGetValue("__auto_model_alias", out var ama) && ama is not null
+			? ama.ToString()
+			: (item.Request.TryGetValue("model", out var m) ? m?.ToString() : null);
+		if (!string.IsNullOrEmpty(resolvedAlias))
 		{
 			try
 			{
@@ -2456,16 +2560,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				EngineConfig? engineConfig = null;
 				try
 				{
-					// FIX #443 P1: decode role uses DecodeModelFileName for mix-quant
+					// FIX #443 P1: decode role uses DecodeAlias for mix-quant
 					// P/D split (P100 loads Q5_K-balanced, not Q3_K-mini).
 					var isDecodeRole = item.RouteType == "cold_pd";
-					engineConfig = ModelConfigLoader.Instance.ResolveEngineConfig(w.ModelAlias, isDecodeRole);
+					engineConfig = ModelConfigLoader.Instance.ResolveEngineConfig(resolvedAlias, isDecodeRole);
 				}
 				catch (InvalidOperationException)
 				{
 					// ModelConfigLoader not initialized or alias not found —
-					// fall back to the static ModelRegistry.
-					engineConfig = ModelRegistry.Resolve(w.ModelAlias);
+					// fall back to the static ModelRegistry. For the legacy
+					// case the routing identity IS the ModelRegistry key.
+					engineConfig = ModelRegistry.Resolve(resolvedAlias);
 				}
 				if (engineConfig is not null)
 				{
@@ -2476,12 +2581,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 			catch (Exception ex)
 			{
-				_log.Warning("hydra_config injection failed Alias={Alias}: {Error}", w.ModelAlias, ex.Message);
+				_log.Warning("hydra_config injection failed Alias={Alias}: {Error}", resolvedAlias, ex.Message);
 			}
 		}
 		else
 		{
-			_log.Warning("hydra_config skipped: ModelAlias is null/empty for Node={Node}", w.Name);
+			_log.Warning("hydra_config skipped: no resolved model alias in request for Node={Node}", w.Name);
 		}
 
 		Console.Error.WriteLine($"event=decode_body Sid={item.SessionId} " +

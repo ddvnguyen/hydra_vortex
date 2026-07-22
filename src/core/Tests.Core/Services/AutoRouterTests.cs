@@ -33,8 +33,8 @@ public class AutoRouterTests
             ["moe-35b-solo"] = new ModelTemplate
             {
                 Description = "solo",
-                PrefillModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-                DecodeModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-mini",
                 LoadTimeS = 40,
                 QualityTier = 1,
                 Requirements = new ModelRequirements
@@ -53,8 +53,8 @@ public class AutoRouterTests
             ["moe-35b-pd"] = new ModelTemplate
             {
                 Description = "pd",
-                PrefillModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-                DecodeModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-balanced",
                 LoadTimeS = 40,
                 QualityTier = 2,
                 Requirements = new ModelRequirements
@@ -79,9 +79,15 @@ public class AutoRouterTests
         };
         var config = new ModelsConfig
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
             Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-35B-mini"]     = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                ["qwen3.6-35B-balanced"] = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+                ["qwen3.6-27B-coder"]    = "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+            },
         };
         ModelConfigLoader.Reset();
         ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
@@ -110,8 +116,8 @@ public class AutoRouterTests
             ["moe-35b-solo"] = new ModelTemplate
             {
                 Description = "solo",
-                PrefillModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-                DecodeModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-mini",
                 LoadTimeS = 40,
                 QualityTier = 1,
                 Requirements = new ModelRequirements
@@ -130,8 +136,8 @@ public class AutoRouterTests
             ["moe-35b-pd"] = new ModelTemplate
             {
                 Description = "pd",
-                PrefillModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
-                DecodeModelFileName = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-balanced",
                 LoadTimeS = 40,
                 QualityTier = 2,
                 Requirements = new ModelRequirements
@@ -156,8 +162,8 @@ public class AutoRouterTests
             ["dense-27b-combined"] = new ModelTemplate
             {
                 Description = "combined",
-                PrefillModelFileName = "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
-                DecodeModelFileName = "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+                PrefillAlias = "qwen3.6-27B-coder",
+                DecodeAlias  = "qwen3.6-27B-coder",
                 LoadTimeS = 45,
                 QualityTier = 3,
                 Requirements = new ModelRequirements
@@ -183,9 +189,15 @@ public class AutoRouterTests
         };
         var config = new ModelsConfig
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
             Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-35B-mini"]     = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                ["qwen3.6-35B-balanced"] = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+                ["qwen3.6-27B-coder"]    = "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+            },
         };
         ModelConfigLoader.Reset();
         ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
@@ -270,10 +282,10 @@ public class AutoRouterTests
     }
 
     [Fact]
-    public void ResolveEngineConfig_DecodeRole_UsesDecodeModelFileName()
+    public void ResolveEngineConfig_DecodeRole_UsesDecodeAlias()
     {
-        // moe-35b-pd decode role must resolve to Balanced gguf (decode_model_file_name),
-        // prefill role must resolve to Mini gguf (prefill_model_file_name).
+        // #481 Phase 2c: moe-35b-pd decode role must resolve to Balanced gguf (decode_alias),
+        // prefill role must resolve to Mini gguf (prefill_alias).
         var loader = MakeLoader();
 
         var prefillConfig = loader.ResolveEngineConfig("moe-35b-pd", decodeRole: false);
@@ -284,9 +296,9 @@ public class AutoRouterTests
     }
 
     [Fact]
-    public void ResolveEngineConfig_DecodeRole_FallsBackToPrefillWhenNoDecodeFile()
+    public void ResolveEngineConfig_DecodeRole_FallsBackToPrefillWhenNoDecodeAlias()
     {
-        // When DecodeModelFileName is null/empty, decode role falls back to PrefillModelFileName.
+        // #481 Phase 2c: When DecodeAlias is null/empty, decode role falls back to PrefillAlias.
         var loader = MakeLoader();
 
         var prefillConfig = loader.ResolveEngineConfig("moe-35b-solo", decodeRole: false);

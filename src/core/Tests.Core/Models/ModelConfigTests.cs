@@ -10,8 +10,8 @@ public class ModelConfigTests
     private const string SampleModelJson = """
     {
       "description": "Test model",
-      "prefill_model_file_name": "model-q3.gguf",
-      "decode_model_file_name": "model-q5.gguf",
+      "prefill_alias": "qwen3.6-35B-mini",
+      "decode_alias": "qwen3.6-35B-balanced",
       "load_time_s": 40,
       "quality_tier": 1,
       "requirements": {
@@ -26,9 +26,7 @@ public class ModelConfigTests
         "max_context_tokens": 320000,
         "requires_workers": ["p100"]
       },
-      "engine_config": { "n_gpu_layers": 99, "n_ctx": 320000 },
-      "node_config": { "rtx": "node-rtx.yaml" },
-      "workers_file": "workers.json"
+      "engine_config": { "n_gpu_layers": 99, "n_ctx": 320000 }
     }
     """;
 
@@ -38,8 +36,8 @@ public class ModelConfigTests
         var template = JsonSerializer.Deserialize<ModelTemplate>(SampleModelJson,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         Assert.NotNull(template);
-        Assert.Equal("model-q3.gguf", template.PrefillModelFileName);
-        Assert.Equal("model-q5.gguf", template.DecodeModelFileName);
+        Assert.Equal("qwen3.6-35B-mini", template!.PrefillAlias);
+        Assert.Equal("qwen3.6-35B-balanced", template.DecodeAlias);
         Assert.Equal(40, template.LoadTimeS);
         Assert.Equal(1, template.QualityTier);
         Assert.NotNull(template.Requirements);
@@ -85,84 +83,132 @@ public class ModelConfigTests
         Assert.Equal(30, policy.SwapCostBudgetS);
     }
 
-    // #479/S3: routing identity → GGUF-file alias translation.
+    // ── #481 Phase 2c: model_file_aliases is alias-name -> GGUF file name ──
+
     private static ModelConfigLoader LoaderWithAliases()
     {
         var config = new ModelsConfig
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
-            Models = new Dictionary<string, ModelTemplate>(),
-            ModelFileAliases = new Dictionary<string, JsonElement>
+            Models = new Dictionary<string, ModelTemplate>
             {
-                ["moe-35b-pd"] = JsonSerializer.SerializeToElement(new GgufAliasMapping { Prefill = "qwen3.6-35B-mini", Decode = "qwen3.6-35B-balanced" }),
-                ["dense-27b-combined"] = JsonSerializer.SerializeToElement(new GgufAliasMapping { Prefill = "qwen3.6-27B-coder", Decode = "qwen3.6-27B-coder" }),
-                ["_comment"] = JsonSerializer.SerializeToElement("stray non-object key must be ignored"),
+                ["moe-35b-solo"] = new ModelTemplate
+                {
+                    PrefillAlias = "qwen3.6-35B-balanced",
+                    DecodeAlias  = "qwen3.6-35B-balanced",
+                },
+                ["moe-35b-pd"] = new ModelTemplate
+                {
+                    PrefillAlias = "qwen3.6-35B-mini",
+                    DecodeAlias  = "qwen3.6-35B-balanced",
+                },
+                ["dense-27b-combined"] = new ModelTemplate
+                {
+                    PrefillAlias = "qwen3.6-27B-coder",
+                    DecodeAlias  = "qwen3.6-27B-coder",
+                },
+            },
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-35B-mini"]     = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                ["qwen3.6-35B-balanced"] = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+                ["qwen3.6-27B-coder"]    = "Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
             },
         };
         return ModelConfigLoader.Create(config);
     }
 
     [Fact]
-    public void TranslateToGgufAlias_PrefillRole_ReturnsPrefillAlias()
+    public void ResolveAliasFile_PrefillAlias_ReturnsFileName()
     {
         var loader = LoaderWithAliases();
-        Assert.Equal("qwen3.6-35B-mini", loader.TranslateToGgufAlias("moe-35b-pd"));
+        Assert.Equal("Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+            loader.ResolveAliasFile("moe-35b-pd", "qwen3.6-35B-mini"));
     }
 
     [Fact]
-    public void TranslateToGgufAlias_DecodeRole_ReturnsDecodeAlias()
+    public void ResolveAliasFile_UnknownAlias_Throws()
     {
         var loader = LoaderWithAliases();
-        Assert.Equal("qwen3.6-35B-balanced", loader.TranslateToGgufAlias("moe-35b-pd", decodeRole: true));
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => loader.ResolveAliasFile("moe-35b-pd", "qwen3.6-99B-mythical"));
+        Assert.Contains("qwen3.6-99B-mythical", ex.Message);
+        Assert.Contains("model_file_aliases", ex.Message);
     }
 
     [Fact]
-    public void TranslateToGgufAlias_SameQuant_ReturnsSameAliasBothRoles()
+    public void ResolveAliasFile_NullAlias_Throws()
     {
         var loader = LoaderWithAliases();
-        Assert.Equal("qwen3.6-27B-coder", loader.TranslateToGgufAlias("dense-27b-combined"));
-        Assert.Equal("qwen3.6-27B-coder", loader.TranslateToGgufAlias("dense-27b-combined", decodeRole: true));
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => loader.ResolveAliasFile("moe-35b-pd", null));
+        Assert.Contains("prefill_alias", ex.Message);
     }
 
     [Fact]
-    public void TranslateToGgufAlias_UnknownAlias_ReturnsNull()
+    public void ResolveAliasFile_AliasTableCaseInsensitive()
     {
         var loader = LoaderWithAliases();
-        Assert.Null(loader.TranslateToGgufAlias("does-not-exist"));
+        // Lookup by case-mismatched alias name should still work.
+        Assert.Equal("Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+            loader.ResolveAliasFile("moe-35b-pd", "QWEN3.6-35B-MINI"));
     }
 
     [Fact]
-    public void TranslateToGgufAlias_NoMapConfigured_ReturnsNull()
-    {
-        var loader = ModelConfigLoader.Create(new ModelsConfig
-        {
-            SchemaVersion = 2,
-            AutoRouting = new AutoRoutingPolicy { Enabled = true },
-            Models = new Dictionary<string, ModelTemplate>(),
-        });
-        Assert.Null(loader.TranslateToGgufAlias("moe-35b-pd"));
-    }
-
-    [Fact]
-    public void Deserialize_ModelFileAliases_MapsRoutingIdentityToGgufAlias()
+    public void Deserialize_ModelFileAliases_NewShape()
     {
         var json = """
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "model_file_aliases": {
-                "moe-35b-pd": { "prefill": "qwen3.6-35B-mini", "decode": "qwen3.6-35B-balanced" }
+                "qwen3.6-35B-mini":     "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                "qwen3.6-35B-balanced": "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf"
             }
         }
         """;
         var config = JsonSerializer.Deserialize<ModelsConfig>(json,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true, ReadCommentHandling = JsonCommentHandling.Skip });
         Assert.NotNull(config?.ModelFileAliases);
-        var pd = GgufAliasMapping.FromJsonElement(config!.ModelFileAliases!["moe-35b-pd"]);
-        Assert.NotNull(pd);
-        Assert.Equal("qwen3.6-35B-mini", pd!.Prefill);
-        Assert.Equal("qwen3.6-35B-balanced", pd.Decode);
-        // Stray non-object key (_comment) must be ignored, not fail load.
-        Assert.False(config.ModelFileAliases.ContainsKey("_comment"));
+        Assert.Equal("Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf", config!.ModelFileAliases!["qwen3.6-35B-mini"]);
+        Assert.Equal("Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf", config.ModelFileAliases["qwen3.6-35B-balanced"]);
+    }
+
+    [Fact]
+    public void ResolveEngineConfig_AliasResolution_PrefillRole()
+    {
+        var loader = LoaderWithAliases();
+        var cfg = loader.ResolveEngineConfig("moe-35b-pd", decodeRole: false);
+        // Prefill role should resolve to Mini file name.
+        Assert.Equal("/models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf", cfg.ModelPath);
+    }
+
+    [Fact]
+    public void ResolveEngineConfig_AliasResolution_DecodeRole()
+    {
+        var loader = LoaderWithAliases();
+        var cfg = loader.ResolveEngineConfig("moe-35b-pd", decodeRole: true);
+        // Decode role should resolve to Balanced file name.
+        Assert.Equal("/models/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf", cfg.ModelPath);
+    }
+
+    [Fact]
+    public void ResolveEngineConfig_AliasResolution_UnknownAliasThrows()
+    {
+        var loader = LoaderWithAliases();
+        // Build a model that references a non-existent alias. Should fail fast.
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 3,
+            Models = new Dictionary<string, ModelTemplate>
+            {
+                ["bad-model"] = new ModelTemplate { PrefillAlias = "qwen3.6-99B-mythical", DecodeAlias = "qwen3.6-99B-mythical" },
+            },
+            ModelFileAliases = new Dictionary<string, string> { ["qwen3.6-35B-mini"] = "mini.gguf" },
+        };
+        var badLoader = ModelConfigLoader.Create(config);
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => badLoader.ResolveEngineConfig("bad-model"));
+        Assert.Contains("qwen3.6-99B-mythical", ex.Message);
     }
 }
