@@ -120,6 +120,14 @@ public sealed class WorkItem
 	public EngineConfig? MultiEngineConfig { get; set; }
 	/// <summary>True when the chosen multi-engine mode could not be activated and we ran solo.</summary>
 	public bool MultiFellBack { get; set; }
+	/// <summary>
+	/// Tri-state flag tracking hydra_config delivery via PrefillAsync:
+	///   null  — not yet delivered this turn (auto-multiengine path); ApplyMultiEngineAsync sends its own activation PREFILL.
+	///   true  — delivered and PREFILL succeeded; ApplyMultiEngineAsync skips the redundant empty-body PREFILL and records success telemetry.
+	///   false — delivered but PREFILL fell back (NotImplemented / null); ApplyMultiEngineAsync skips the redundant empty-body PREFILL and records fallback telemetry.
+	/// Cleared to null by ApplyMultiEngineAsync after consuming the value.
+	/// </summary>
+	public bool? HydraConfigDeliveredSucceeded { get; set; }
 
 	/// <summary>
 	/// Per-request engine overrides (T1 keys: sampling, n_predict, seed,

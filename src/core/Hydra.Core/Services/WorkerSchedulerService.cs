@@ -1061,6 +1061,30 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var hydraConfig = TranslateToWirePayloadAsync(item);
 			if (hydraConfig is not null)
 			{
+				// Skip if PrefillAsync already delivered hydra_config via a
+				// real-content PREFILL — sending a second empty-body PREFILL
+				// with ~0 new tokens risks invalidating the KV cache (the
+				// n_tokens > n_past invariant). The auto-multiengine path
+				// (MultiEngineRouter.Select → Decode directly) never sets
+				// this flag, so it still gets its activation PREFILL here.
+				if (item.HydraConfigDeliveredSucceeded.HasValue)
+				{
+					if (item.HydraConfigDeliveredSucceeded.Value)
+					{
+						RecordMultiEngineActive(item, head, modeStr);
+						_log.Debug("multiengine_config_skip Sid={Sid} Mode={Mode} — already delivered via PrefillAsync (success)",
+							item.SessionId, modeStr);
+					}
+					else
+					{
+						RecordMultiEngineFallback(item, head, modeStr, "prefill_model_fallback",
+							"PrefillAsync fell back, skipping redundant empty-body PREFILL");
+						_log.Warning("multiengine_config_skip_fallback Sid={Sid} Mode={Mode} — PrefillAsync fell back, skipping redundant empty-body PREFILL",
+							item.SessionId, modeStr);
+					}
+					item.HydraConfigDeliveredSucceeded = null;
+					return;
+				}
 				var engine = new HydraEngineClient(llamaRpc);
 				var body = new Dictionary<string, object> { ["messages"] = Array.Empty<object>() };
 				var requestJson = System.Text.Json.JsonSerializer.Serialize(body);
@@ -1068,22 +1092,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					slotId, null, requestJson, item.TraceId, ct, hydraConfig);
 
 				if (result is not null && !result.NotImplemented)
-				{
-					CoordinatorMetrics.MultiEngineActive.WithLabels(head.Name, modeStr).Inc();
-					CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Inc();
-					CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(1);
-					_activeMultiSessions[item.SessionId] = modeStr;
-					_log.Information("multiengine_active Sid={Sid} Mode={Mode} Head={Head} Peer={Peer}",
-						item.SessionId, modeStr, head.Name, item.MultiPeer);
-				}
+					RecordMultiEngineActive(item, head, modeStr);
 				else
-				{
-					item.MultiFellBack = true;
-					CoordinatorMetrics.MultiEngineFallback.WithLabels(head.Name, modeStr, "peer_declined").Inc();
-					CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
-					_log.Warning("multiengine_fallback Sid={Sid} Mode={Mode} Result={Result}",
-						item.SessionId, modeStr, result?.ToString() ?? "null");
-				}
+					RecordMultiEngineFallback(item, head, modeStr, "peer_declined",
+						result?.ToString() ?? "null");
 			}
 			else
 			{
@@ -1095,22 +1107,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var resp = await llamaRpc.EnginePipelineAttachAsync(slotId.ToString(), addr, otSplit, item.TraceId, ct);
 
 				if (resp.Status == (byte)StatusCode.Ok && !ReportsSolo(resp.Meta))
-				{
-					CoordinatorMetrics.MultiEngineActive.WithLabels(head.Name, modeStr).Inc();
-					CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Inc();
-					CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(1);
-					_activeMultiSessions[item.SessionId] = modeStr;
-					_log.Information("multiengine_active Sid={Sid} Mode={Mode} Head={Head} Peer={Peer}",
-						item.SessionId, modeStr, head.Name, item.MultiPeer);
-				}
+					RecordMultiEngineActive(item, head, modeStr);
 				else
-				{
-					item.MultiFellBack = true;
-					CoordinatorMetrics.MultiEngineFallback.WithLabels(head.Name, modeStr, "peer_declined").Inc();
-					CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
-					_log.Warning("multiengine_fallback Sid={Sid} Mode={Mode} Status={St} Meta={Meta}",
-						item.SessionId, modeStr, resp.Status, resp.Meta);
-				}
+					RecordMultiEngineFallback(item, head, modeStr, "peer_declined",
+						$"Status={resp.Status} Meta={resp.Meta}");
 			}
 		}
 		catch (Exception ex)
@@ -1120,6 +1120,28 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
 			_log.Warning(ex, "multiengine_activate_error Sid={Sid} Mode={Mode}", item.SessionId, modeStr);
 		}
+	}
+
+	/// <summary>Record successful multi-engine activation: increment counters, track session, log.</summary>
+	private void RecordMultiEngineActive(WorkItem item, WorkerConfig head, string modeStr)
+	{
+		CoordinatorMetrics.MultiEngineActive.WithLabels(head.Name, modeStr).Inc();
+		CoordinatorMetrics.MultiEngineActiveSessions.WithLabels(modeStr).Inc();
+		CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(1);
+		_activeMultiSessions[item.SessionId] = modeStr;
+		_log.Information("multiengine_active Sid={Sid} Mode={Mode} Head={Head} Peer={Peer}",
+			item.SessionId, modeStr, head.Name, item.MultiPeer);
+	}
+
+	/// <summary>Record multi-engine fallback: mark item, increment counters, log.</summary>
+	private void RecordMultiEngineFallback(WorkItem item, WorkerConfig head, string modeStr,
+		string reason, string? resultDetail = null)
+	{
+		item.MultiFellBack = true;
+		CoordinatorMetrics.MultiEngineFallback.WithLabels(head.Name, modeStr, reason).Inc();
+		CoordinatorMetrics.EnginePeerUp.WithLabels(head.Name, item.MultiPeer ?? "").Set(0);
+		_log.Warning("multiengine_fallback Sid={Sid} Mode={Mode} Reason={Reason} Detail={Detail}",
+			item.SessionId, modeStr, reason, resultDetail ?? "null");
 	}
 
 	/// <summary>
@@ -1549,6 +1571,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var hydraConfig = TranslateToWirePayloadAsync(item);
 				var prefillResult = await engine.EnginePrefillAsync(slotId, prefillModel, requestJson, item.TraceId, ct,
 					hydraConfig: hydraConfig);
+				// Mark whether hydra_config was delivered and the PREFILL succeeded.
+				// ApplyMultiEngineAsync checks this to (a) skip a redundant empty-body
+				// PREFILL that risks invalidating the KV cache, and (b) record the
+				// appropriate telemetry (success or fallback) even when the RPC is skipped.
+				if (hydraConfig is not null)
+					item.HydraConfigDeliveredSucceeded = prefillResult is not null && !prefillResult.NotImplemented;
 
 				if (prefillResult != null && prefillResult.NotImplemented)
 				{

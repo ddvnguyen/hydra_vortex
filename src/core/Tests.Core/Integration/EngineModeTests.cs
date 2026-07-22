@@ -111,6 +111,9 @@ public sealed class EngineModeTests
         public bool HasCall(OpCode op, string keyContains)
             => Calls.Any(c => c.Op == op && c.Key.Contains(keyContains));
         public int CountCalls(OpCode op) => Calls.Count(c => c.Op == op);
+        /// <summary>Count EnginePrefill calls whose payload contains the given substring.</summary>
+        public int CountPrefillCallsWithPayload(string contains)
+            => Calls.Count(c => c.Op == OpCode.EnginePrefill && Encoding.UTF8.GetString(c.Payload).Contains(contains));
 
         public string PayloadAsUtf8(OpCode op)
         {
@@ -205,7 +208,7 @@ public sealed class EngineModeTests
 
         public async Task<object?> SubmitAsync(
             string sessionId, int estimatedTokens, int maxTokens = 500,
-            bool stream = false, string? prefixHash = null)
+            bool stream = false, string? prefixHash = null, string? forceMode = null)
         {
             var req = new Dictionary<string, object>
             {
@@ -213,6 +216,8 @@ public sealed class EngineModeTests
                 ["max_tokens"] = maxTokens,
                 ["model"] = "nano"
             };
+            if (forceMode is not null)
+                req["force_mode"] = forceMode;
             var msgs = new List<Dictionary<string, object>>
             {
                 new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
@@ -326,6 +331,34 @@ public sealed class EngineModeTests
         var payload = f.Rpc.PayloadAsUtf8(OpCode.EnginePrefill);
         Assert.Contains("hydra_config", payload);
 
+        // Exactly ONE EnginePrefill with hydra_config — the auto-multiengine path
+        // (MultiEngineRouter.Select → Decode directly) must send it once here,
+        // not redundantly in both PrefillAsync and ApplyMultiEngineAsync.
+        Assert.Equal(1, f.Rpc.CountPrefillCallsWithPayload("hydra_config"));
+
+        var hydra = Assert.IsType<Dictionary<string, object>>(
+            ((Dictionary<string, object>)result!)["hydra"]);
+        Assert.Equal("combined", hydra["engine_mode"]);
+    }
+
+    [Fact]
+    public async Task MultiEngine_Combined_ForceMode_PrefillPath_SendsHydraConfigExactlyOnce()
+    {
+        // Force the combined path through Prefill (ForceMultiEnginePlan → PrefixRestore → Prefill → Decode).
+        // PrefillAsync delivers hydra_config with real content; ApplyMultiEngineAsync must NOT send it again.
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined");
+
+        var result = await f.SubmitAsync("sess_me2_force", 20000, 100, forceMode: "combined");
+
+        Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
+            "COMBINED force-mode should call EnginePrefill with hydra_config");
+        var payload = f.Rpc.PayloadAsUtf8(OpCode.EnginePrefill);
+        Assert.Contains("hydra_config", payload);
+
+        // Exactly ONE EnginePrefill with hydra_config — PrefillAsync sent it with
+        // real content, ApplyMultiEngineAsync must skip the redundant empty-body one.
+        Assert.Equal(1, f.Rpc.CountPrefillCallsWithPayload("hydra_config"));
+
         var hydra = Assert.IsType<Dictionary<string, object>>(
             ((Dictionary<string, object>)result!)["hydra"]);
         Assert.Equal("combined", hydra["engine_mode"]);
@@ -381,6 +414,10 @@ public sealed class EngineModeTests
         // instead of SET_EXPERT_MODE.
         Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
             "COMBINED should call EnginePrefill with hydra_config");
+
+        // Exactly ONE EnginePrefill with hydra_config — no redundant activation.
+        Assert.Equal(1, f.Rpc.CountPrefillCallsWithPayload("hydra_config"));
+
         var hydra = Assert.IsType<Dictionary<string, object>>(
             ((Dictionary<string, object>)result!)["hydra"]);
         Assert.Equal("combined", hydra["engine_mode"]);
