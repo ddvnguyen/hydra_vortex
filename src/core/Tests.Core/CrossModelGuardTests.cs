@@ -91,11 +91,13 @@ public class CrossModelGuardTests
     }
 
     [Fact]
-    public void Decide_MtpBitDiffersWithFlag_WarnsAndProceeds()
+    public void Decide_MtpBitDiffersWithFlag_Aborts()
     {
+        // MTP mismatch always aborts — the allowCrossModelKvReuse flag does not
+        // override destructive capability bits (would corrupt decode).
         var a = MakeIdentity(caps: 0x00);
         var b = MakeIdentity(caps: ModelIdentity.CapMTP);
-        Assert.Equal(CrossModelGuard.Outcome.WarnAndProceed, CrossModelGuard.Decide(a, b, true));
+        Assert.Equal(CrossModelGuard.Outcome.Abort, CrossModelGuard.Decide(a, b, true));
     }
 
     [Fact]
@@ -107,11 +109,13 @@ public class CrossModelGuardTests
     }
 
     [Fact]
-    public void Decide_VisionBitDiffersWithFlag_WarnsAndProceeds()
+    public void Decide_VisionBitDiffersWithFlag_Aborts()
     {
+        // VISION mismatch always aborts — the allowCrossModelKvReuse flag does not
+        // override destructive capability bits (would corrupt decode).
         var a = MakeIdentity(caps: 0x00);
         var b = MakeIdentity(caps: ModelIdentity.CapVision);
-        Assert.Equal(CrossModelGuard.Outcome.WarnAndProceed, CrossModelGuard.Decide(a, b, true));
+        Assert.Equal(CrossModelGuard.Outcome.Abort, CrossModelGuard.Decide(a, b, true));
     }
 
     [Fact]

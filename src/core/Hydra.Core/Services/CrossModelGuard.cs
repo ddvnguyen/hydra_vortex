@@ -69,10 +69,12 @@ public static class CrossModelGuard
 
         if (diffCaps != 0)
         {
-            // Bit 0 (MTP) or bit 1 (VISION) differ — hard abort (would corrupt decode).
+            // Bit 0 (MTP) or bit 1 (VISION) differ — unconditional abort (would corrupt decode).
+            // The allowCrossModelKvReuse flag does NOT override these: proceeding with
+            // a MTP/VISION mismatch corrupts the decode output, not just changes behaviour.
             bool abortBitSet = (diffCaps & (ModelIdentity.CapMTP | ModelIdentity.CapVision)) != 0;
             if (abortBitSet)
-                return allowCrossModelKvReuse ? Outcome.WarnAndProceed : Outcome.Abort;
+                return Outcome.Abort;
 
             // Bit 2 (REASONING), bit 3 (TOOL_USE), bit 4 (CODE) differ — always WarnAndProceed
             // (doesn't corrupt decode, just changes behaviour).
