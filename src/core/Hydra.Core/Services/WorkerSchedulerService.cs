@@ -817,7 +817,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Two-engine "work together": a large request may recruit a second engine.
 			var mePlan = MultiEngineRouter.Select(_cfg, _cfg.Workers, _tracker, _health, item.EstimatedTokens);
 			if (mePlan is { } plan && TryAcquireMultiEnginePrefill(item, plan))
-				return WorkItemState.PrefixRestore;
+				return _cfg.UseLlamaEngine ? WorkItemState.PrefixRestore : WorkItemState.ModelLoadPrefill;
 		}
 
 		// Cold route: no warm slot/cache to reuse — the chosen worker prefills the
