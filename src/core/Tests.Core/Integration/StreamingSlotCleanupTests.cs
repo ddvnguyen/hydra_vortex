@@ -79,7 +79,7 @@ internal sealed class TestRpcClient : RpcClient
 		{
 			n_past = 2000, restored = true, chunked = true,
 			erased = true, stored = true, total_chunks = 1, deduped_chunks = 0,
-			model_match = true, model_hash = "test_hash", model_alias = "nano", model_path = "/dev/null"
+			model_match = true, tokenizer = "llama", model_name = "nano", model_quant = "Q4_K", model_capabilities = 0, model_alias = "nano", model_path = "/dev/null"
 		});
 		return new RpcResponse((byte)StatusCode.Ok, meta, []);
 	}

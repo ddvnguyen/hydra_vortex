@@ -159,25 +159,25 @@ internal static class CoordinatorMetrics
         "hydra_save_kv_async_seconds", "Background bg-save Put duration",
         new[] { "result" });
 
-    // ── M-Perf.9 / Issue #289: cross-model KV safety ──
+    // ── M-Perf.9 / Issue #289 / #470: cross-model KV safety ──
     public static readonly Counter CrossModelKvAborted = Metrics.CreateCounter(
         "hydra_cross_model_kv_aborted_total",
-        "Restores aborted because slot model_hash differs from stored KV model_hash",
+        "Restores aborted because slot model identity differs from stored KV identity (corrupt-decode class)",
         new CounterConfiguration { LabelNames = new[] { "worker" } });
 
     public static readonly Counter CrossModelKvWarned = Metrics.CreateCounter(
         "hydra_cross_model_kv_warned_total",
-        "Restores allowed despite model_hash mismatch (ALLOW_CROSS_MODEL_KV_REUSE=true)",
+        "Restores allowed despite identity mismatch (ALLOW_CROSS_MODEL_KV_REUSE=true or soft-mismatch)",
         new CounterConfiguration { LabelNames = new[] { "worker" } });
 
     public static readonly Counter CrossModelKvSkipped = Metrics.CreateCounter(
         "hydra_cross_model_kv_skipped_total",
-        "Cross-model check skipped: at least one model_hash empty (pre-#289 data or META failure)",
+        "Cross-model check skipped: at least one identity empty (pre-#470 data or META failure)",
         new CounterConfiguration { LabelNames = new[] { "worker" } });
 
     public static readonly Counter CrossModelKvProceeded = Metrics.CreateCounter(
         "hydra_cross_model_kv_proceeded_total",
-        "Cross-model check passed: stored and slot model_hash match",
+        "Cross-model check passed: stored and slot model identity match (or quant-only mismatch)",
         new CounterConfiguration { LabelNames = new[] { "worker" } });
 
     public static readonly Counter ModelFallbackTotal = Metrics.CreateCounter(
@@ -246,4 +246,35 @@ internal static class CoordinatorMetrics
         "hydra_prefix_save_payload_truncated_total",
         "Prefix save truncated to system-prompt boundary (or skipped when boundary undeterminable)",
         new CounterConfiguration { LabelNames = new[] { "reason" } });
+
+    // ── #470: decode RPC + restore observability ──
+    public static readonly Histogram DecodeRpcDuration = Metrics.CreateHistogram(
+        "hydra_decode_rpc_seconds", "Decode RPC round-trip time (engine→core)", new[] { "node" });
+
+    public static readonly Histogram RestoreSlotMs = Metrics.CreateHistogram(
+        "hydra_restore_slot_ms", "Time to restore KV into a decode slot", new[] { "node" });
+
+    public static readonly Histogram DecodeInitMs = Metrics.CreateHistogram(
+        "hydra_decode_init_ms", "Time from decode dispatch to first token", new[] { "node" });
+
+    public static readonly Counter ModelIdentityMismatch = Metrics.CreateCounter(
+        "hydra_model_identity_mismatch_total",
+        "Model identity mismatches detected by CrossModelGuard (counted by outcome)",
+        new CounterConfiguration { LabelNames = new[] { "worker", "outcome" } });
+
+    public static readonly Counter StreamingHydraMetricsReceived = Metrics.CreateCounter(
+        "hydra_streaming_metrics_received_total",
+        "Streaming Hydra metrics packets received from engine decode");
+
+    public static readonly Counter DecodeRequestIdsIssued = Metrics.CreateCounter(
+        "hydra_decode_request_ids_issued_total",
+        "Decode request IDs issued for tracking");
+
+    public static readonly Histogram EngineDecodeMs = Metrics.CreateHistogram(
+        "hydra_engine_decode_ms", "Engine-reported decode duration (ms)", new[] { "node" });
+
+    public static readonly Histogram EngineVsCoordinatorDecodeMs = Metrics.CreateHistogram(
+        "hydra_engine_vs_coordinator_decode_ms",
+        "Difference between engine-reported and coordinator-measured decode duration (ms)",
+        new[] { "node" });
 }

@@ -13,15 +13,51 @@ public sealed class StoreMetadata : IAsyncDisposable
             session_id  TEXT PRIMARY KEY,
             n_past      INT    NOT NULL DEFAULT 0,
             total_size  BIGINT NOT NULL DEFAULT 0,
-            -- M-Perf.9 #289: model identity of the slot that built this KV cache.
-            -- Nullable + back-compat default '' so the schema is additive: pre-#289
-            -- sessions get empty model_* and the cross-model guard treats that
-            -- as "skip" (no-op on restore).
-            model_alias TEXT NOT NULL DEFAULT '',
-            model_hash  TEXT NOT NULL DEFAULT '',
-            model_path  TEXT NOT NULL DEFAULT '',
+            -- M-Perf.9 #289 / #470: model identity of the slot that built this KV cache.
+            -- #470: replaced model_hash with GGUF-derived semantic identity fields.
+            -- Nullable + back-compat defaults so pre-#470 sessions get empty/zero
+            -- values and the cross-model guard treats that as "skip".
+            model_alias      TEXT    NOT NULL DEFAULT '',
+            tokenizer        TEXT    NOT NULL DEFAULT '',
+            model_name       TEXT    NOT NULL DEFAULT '',
+            model_quant      TEXT    NOT NULL DEFAULT '',
+            model_capabilities INTEGER NOT NULL DEFAULT 0,
+            model_path       TEXT    NOT NULL DEFAULT '',
             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now());
+
+        -- #470 migration: drop model_hash (replaced by 4 identity columns above).
+        -- Safe to run repeatedly: ALTER COLUMN IF EXISTS is idempotent.
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'sessions' AND column_name = 'model_hash') THEN
+                ALTER TABLE sessions DROP COLUMN model_hash;
+            END IF;
+        END $$;
+
+        -- #470 migration: add identity columns if they don't exist yet.
+        -- For fresh installs the CREATE TABLE above already has them; this
+        -- handles upgrade from the pre-#470 schema.
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'sessions' AND column_name = 'tokenizer') THEN
+                ALTER TABLE sessions ADD COLUMN tokenizer TEXT NOT NULL DEFAULT '';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'sessions' AND column_name = 'model_name') THEN
+                ALTER TABLE sessions ADD COLUMN model_name TEXT NOT NULL DEFAULT '';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'sessions' AND column_name = 'model_quant') THEN
+                ALTER TABLE sessions ADD COLUMN model_quant TEXT NOT NULL DEFAULT '';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'sessions' AND column_name = 'model_capabilities') THEN
+                ALTER TABLE sessions ADD COLUMN model_capabilities INTEGER NOT NULL DEFAULT 0;
+            END IF;
+        END $$;
 
         CREATE TABLE IF NOT EXISTS chunks(
             hash         TEXT PRIMARY KEY,
@@ -124,9 +160,10 @@ public sealed class StoreMetadata : IAsyncDisposable
     public async Task UpsertManifestAsync(
         string sessionId, int nPast, long totalSize,
         IReadOnlyList<ChunkRef> chunks, CancellationToken ct = default,
-        // M-Perf.9 #289: model identity passed by the caller (WorkerSchedulerService)
-        // so a Coordinator restart can still gate RestoreKvAsync on model_hash.
-        string modelAlias = "", string modelHash = "", string modelPath = "")
+        // M-Perf.9 #289 / #470: model identity passed by the caller (WorkerSchedulerService)
+        // so a Coordinator restart can still gate RestoreKvAsync on model identity.
+        string modelAlias = "", string tokenizer = "", string modelName = "",
+        string modelQuant = "", uint modelCapabilities = 0, string modelPath = "")
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
@@ -134,13 +171,17 @@ public sealed class StoreMetadata : IAsyncDisposable
         await using var upsertSession = conn.CreateCommand();
         upsertSession.CommandText = """
             INSERT INTO sessions (session_id, n_past, total_size,
-                                  model_alias, model_hash, model_path)
-            VALUES (@sid, @np, @ts, @ma, @mh, @mp)
+                                  model_alias, tokenizer, model_name,
+                                  model_quant, model_capabilities, model_path)
+            VALUES (@sid, @np, @ts, @ma, @tk, @mn, @mq, @mc, @mp)
             ON CONFLICT (session_id) DO UPDATE SET
                 n_past = EXCLUDED.n_past,
                 total_size = EXCLUDED.total_size,
                 model_alias = EXCLUDED.model_alias,
-                model_hash = EXCLUDED.model_hash,
+                tokenizer = EXCLUDED.tokenizer,
+                model_name = EXCLUDED.model_name,
+                model_quant = EXCLUDED.model_quant,
+                model_capabilities = EXCLUDED.model_capabilities,
                 model_path = EXCLUDED.model_path,
                 updated_at = now()
             """;
@@ -148,7 +189,10 @@ public sealed class StoreMetadata : IAsyncDisposable
         upsertSession.Parameters.AddWithValue("np", nPast);
         upsertSession.Parameters.AddWithValue("ts", totalSize);
         upsertSession.Parameters.AddWithValue("ma", modelAlias);
-        upsertSession.Parameters.AddWithValue("mh", modelHash);
+        upsertSession.Parameters.AddWithValue("tk", tokenizer);
+        upsertSession.Parameters.AddWithValue("mn", modelName);
+        upsertSession.Parameters.AddWithValue("mq", modelQuant);
+        upsertSession.Parameters.AddWithValue("mc", (int)modelCapabilities);
         upsertSession.Parameters.AddWithValue("mp", modelPath);
         upsertSession.Transaction = tx;
         await upsertSession.ExecuteNonQueryAsync(ct);
@@ -249,12 +293,13 @@ public sealed class StoreMetadata : IAsyncDisposable
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
 
         await using var sessionCmd = conn.CreateCommand();
-        // M-Perf.9 #289: read the 3 model-identity columns too so the cross-model
+        // M-Perf.9 #289 / #470: read the model identity columns so the cross-model
         // guard in WorkerSchedulerService.RestoreKvAsync survives a Coordinator
-        // restart. Pre-#289 sessions get '' for the 3 fields via the schema
-        // default; the guard treats "both empty" as "skip".
+        // restart. Pre-#470 sessions get '' for text fields and 0 for capabilities
+        // via the schema default; the guard treats "both empty" as "skip".
         sessionCmd.CommandText = """
-            SELECT n_past, total_size, model_alias, model_hash, model_path
+            SELECT n_past, total_size, model_alias, tokenizer, model_name,
+                   model_quant, model_capabilities, model_path
             FROM sessions WHERE session_id = @sid
             """;
         sessionCmd.Parameters.AddWithValue("sid", sessionId);
@@ -263,11 +308,14 @@ public sealed class StoreMetadata : IAsyncDisposable
         if (!await reader.ReadAsync(ct))
             return null;
 
-        var nPast      = reader.GetInt32(0);
-        var totalSize  = reader.GetInt64(1);
-        var modelAlias = reader.GetString(2);
-        var modelHash  = reader.GetString(3);
-        var modelPath  = reader.GetString(4);
+        var nPast            = reader.GetInt32(0);
+        var totalSize        = reader.GetInt64(1);
+        var modelAlias       = reader.GetString(2);
+        var tokenizer        = reader.GetString(3);
+        var modelName        = reader.GetString(4);
+        var modelQuant       = reader.GetString(5);
+        var modelCapabilities = (uint)reader.GetInt32(6);
+        var modelPath        = reader.GetString(7);
         await reader.CloseAsync();
 
         await using var chunksCmd = conn.CreateCommand();
@@ -292,7 +340,7 @@ public sealed class StoreMetadata : IAsyncDisposable
 
         return new Manifest(
             sessionId, 1, nPast, totalSize, chunks, DateTime.UtcNow,
-            modelAlias, modelHash, modelPath);
+            modelAlias, tokenizer, modelName, modelQuant, modelCapabilities, modelPath);
     }
 
     public async Task MarkBackedUpAsync(string hash, string nvmePath, CancellationToken ct = default)

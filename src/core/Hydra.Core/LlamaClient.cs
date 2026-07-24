@@ -33,9 +33,18 @@ public sealed class SlotMeta
     /// <summary>Alias of the model that built the KV in this slot (e.g. "balanced"). Empty if unknown / single-model mode without aliases.</summary>
     [JsonPropertyName("model_alias")]
     public string ModelAlias { get; init; } = "";
-    /// <summary>SHA-256 hex of the GGUF file the KV was built with. Empty if the server did not provide one.</summary>
-    [JsonPropertyName("model_hash")]
-    public string ModelHash { get; init; } = "";
+    /// <summary>GGUF-derived tokenizer family (e.g. "llama", "gpt2"). Empty if the server did not provide one.</summary>
+    [JsonPropertyName("tokenizer")]
+    public string Tokenizer { get; init; } = "";
+    /// <summary>GGUF display name (from general.base_model.0.name or general.name). Empty if unknown.</summary>
+    [JsonPropertyName("model_name")]
+    public string ModelName { get; init; } = "";
+    /// <summary>GGUF quantization label (e.g. "Q5_K"). Empty if unknown.</summary>
+    [JsonPropertyName("model_quant")]
+    public string ModelQuant { get; init; } = "";
+    /// <summary>Bitwise capabilities from GGUF metadata (bit0=MTP, bit1=VISION, etc.).</summary>
+    [JsonPropertyName("model_capabilities")]
+    public uint ModelCapabilities { get; init; }
     /// <summary>Full path of the GGUF file the KV was built with.</summary>
     [JsonPropertyName("model_path")]
     public string ModelPath { get; init; } = "";

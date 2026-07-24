@@ -116,18 +116,18 @@ public class CompletionsController : ControllerBase
 			{
 				Response.ContentType = "text/event-stream";
 				Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
-				// M-Perf.9 #289: surface the model identity that served this
-				// response. The hash is truncated to 12 hex chars (48 bits =
-				// 6 bytes of entropy, enough to disambiguate a few hundred
-				// GGUFs in practice) to keep the header short for log
-				// readability. Full 64-char hash is in the X-Hydra-Model
-				// trailer (see below) for debugging.
+				// M-Perf.9 #289 / #470: surface the model identity that served this
+				// response. Replaced X-Hydra-Model-Hash with per-field identity
+				// headers so clients can inspect tokenizer/name/quant/caps.
 				var model = _scheduler.LastDispatchedModel;
-				var modelHash = _scheduler.LastDispatchedModelHash;
+				var tokenizer = _scheduler.LastDispatchedTokenizer;
+				var modelName = _scheduler.LastDispatchedModelName;
 				if (!string.IsNullOrEmpty(model))
 					Response.Headers["X-Hydra-Model"] = model;
-				if (!string.IsNullOrEmpty(modelHash))
-					Response.Headers["X-Hydra-Model-Hash"] = modelHash.Length > 12 ? modelHash[..12] : modelHash;
+				if (!string.IsNullOrEmpty(tokenizer))
+					Response.Headers["X-Hydra-Tokenizer"] = tokenizer;
+				if (!string.IsNullOrEmpty(modelName))
+					Response.Headers["X-Hydra-Model-Name"] = modelName;
 				await foreach (var chunk in stream.WithCancellation(ct))
 				{
 					await Response.Body.WriteAsync(chunk, ct);
@@ -140,11 +140,14 @@ public class CompletionsController : ControllerBase
 			// same model identity headers here.
 			Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
 			var modelNs = _scheduler.LastDispatchedModel;
-			var modelHashNs = _scheduler.LastDispatchedModelHash;
+			var tokenizerNs = _scheduler.LastDispatchedTokenizer;
+			var modelNameNs = _scheduler.LastDispatchedModelName;
 			if (!string.IsNullOrEmpty(modelNs))
 				Response.Headers["X-Hydra-Model"] = modelNs;
-			if (!string.IsNullOrEmpty(modelHashNs))
-				Response.Headers["X-Hydra-Model-Hash"] = modelHashNs.Length > 12 ? modelHashNs[..12] : modelHashNs;
+			if (!string.IsNullOrEmpty(tokenizerNs))
+				Response.Headers["X-Hydra-Tokenizer"] = tokenizerNs;
+			if (!string.IsNullOrEmpty(modelNameNs))
+				Response.Headers["X-Hydra-Model-Name"] = modelNameNs;
 			return new JsonResult(result);
 		}
 		catch (OperationCanceledException)

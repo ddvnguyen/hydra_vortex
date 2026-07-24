@@ -93,7 +93,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	public string? LastDispatchedNode { get; private set; }
 	public string? LastDispatchedModel { get; private set; }
-	public string? LastDispatchedModelHash { get; private set; }
+	public string? LastDispatchedTokenizer { get; private set; }
+	public string? LastDispatchedModelName { get; private set; }
+	public string? LastDispatchedModelQuant { get; private set; }
+	public uint LastDispatchedModelCapabilities { get; private set; }
 
 	public async Task<object> SubmitAsync(
 		Dictionary<string, object> request,
@@ -1708,11 +1711,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.KvBlob = prefillResult.KvBlob;
 
 				item.KvModelAlias    = prefillResult.ModelAlias;
-				item.KvModelHash     = prefillResult.ModelHash;
+				item.KvTokenizer     = prefillResult.Tokenizer;
+				item.KvModelName     = prefillResult.ModelName;
+				item.KvModelQuant    = prefillResult.ModelQuant;
+				item.KvModelCapabilities = prefillResult.ModelCapabilities;
 				item.KvModelPath     = prefillResult.ModelPath;
 				item.KvModelFallback = prefillResult.ModelFallback;
 				LastDispatchedModel     = item.KvModelAlias;
-				LastDispatchedModelHash = item.KvModelHash;
+				LastDispatchedTokenizer = item.KvTokenizer;
+				LastDispatchedModelName = item.KvModelName;
+				LastDispatchedModelQuant = item.KvModelQuant;
+				LastDispatchedModelCapabilities = item.KvModelCapabilities;
 				if (item.KvModelFallback && prefillModel != null)
 				{
 					CoordinatorMetrics.ModelFallbackTotal
@@ -1819,33 +1828,42 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.NPastAfter = ExtractTotalTokens(resp);
 
 			// M-Perf.9 #289: capture model identity for the cross-model guard.
-			// The HTTP path can't learn the model_hash from the response
+			// The HTTP path can't learn the model identity from the response
 			// (the OAI completion response doesn't carry it), so we query the
 			// slot META. The META call also confirms the slot's n_past and
-			// surfaces the engine's model_alias/model_hash/model_path fields
-			// (when the server supports them).
+			// surfaces the engine's model_alias/tokenizer/model_name/model_quant/
+			// model_capabilities/model_path fields (when the server supports them).
 			item.KvModelAlias = prefillModel;
 			try
 			{
 				var slotMeta = await GetLlamaClient(w).GetStateMetaAsync(item.PrefillSlot ?? 0, ct);
 				if (!string.IsNullOrEmpty(slotMeta.ModelAlias))
 					item.KvModelAlias = slotMeta.ModelAlias;
-				if (!string.IsNullOrEmpty(slotMeta.ModelHash))
-					item.KvModelHash = slotMeta.ModelHash;
+				if (!string.IsNullOrEmpty(slotMeta.Tokenizer))
+					item.KvTokenizer = slotMeta.Tokenizer;
+				if (!string.IsNullOrEmpty(slotMeta.ModelName))
+					item.KvModelName = slotMeta.ModelName;
+				if (!string.IsNullOrEmpty(slotMeta.ModelQuant))
+					item.KvModelQuant = slotMeta.ModelQuant;
+				if (slotMeta.ModelCapabilities != 0)
+					item.KvModelCapabilities = slotMeta.ModelCapabilities;
 				if (!string.IsNullOrEmpty(slotMeta.ModelPath))
 					item.KvModelPath = slotMeta.ModelPath;
 			}
 			catch (Exception ex)
 			{
 				// Non-fatal: the cross-model guard will skip the check
-				// (both hashes empty) if we couldn't query META. Logged at
+				// (both identities empty) if we couldn't query META. Logged at
 				// Warning for parity with cross_model_check_failed (P2.10
 				// consistency) — META failures are a real signal in Loki
-				// (operator can spot pre-#289 binaries or transient issues).
+				// (operator can spot pre-#470 binaries or transient issues).
 				_log.Warning(ex, "prefill_meta_query_failed Slot={Slot}", item.PrefillSlot);
 			}
 			LastDispatchedModel     = item.KvModelAlias;
-			LastDispatchedModelHash = item.KvModelHash;
+			LastDispatchedTokenizer = item.KvTokenizer;
+			LastDispatchedModelName = item.KvModelName;
+			LastDispatchedModelQuant = item.KvModelQuant;
+			LastDispatchedModelCapabilities = item.KvModelCapabilities;
 
 			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est} ViaHttp={Http} Model={Model}",
 				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens, engineFailed,
@@ -1958,14 +1976,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var orderedHashes = chunks.Select(c => c.Hash).ToList();
 				var missing = await SyncMissingAsync(storeKey, orderedHashes, item.TraceId, ct);
 				await PushMissingChunksParallelAsync(storeKey, item.SessionId, missing, chunks, payload, item.TraceId, ct);
-				// M-Perf.9 #289: persist model identity alongside the KV so
+				// M-Perf.9 #289 / #470: persist model identity alongside the KV so
 				// the cross-model guard in RestoreKvAsync can detect a model
 				// swap between prefill and decode (e.g. Mini prefill → Balanced
 				// decode would otherwise silently corrupt the response).
 				await PutManifestAsync(
 					storeKey, item.NPastAfter, payload.Length, chunks,
 					item.TraceId, ct,
-					item.KvModelAlias ?? "", item.KvModelHash ?? "", item.KvModelPath ?? "");
+					item.KvModelAlias ?? "", item.KvTokenizer ?? "", item.KvModelName ?? "",
+					item.KvModelQuant ?? "", item.KvModelCapabilities, item.KvModelPath ?? "");
 				var storeMs = item.RecordPhase("save_kv_store_ms");
 				CoordinatorMetrics.SaveKvStoreDuration.WithLabels(w.Name, RouteLabel(item))
 					.Observe(storeMs / 1000.0);
@@ -2174,8 +2193,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// M-Perf.9 #289: the alias-equality check is necessary but not
 			// sufficient. The operator can swap the GGUF file behind a
 			// stable alias (e.g. rebuild Balanced.gguf on disk) — the alias
-			// stays "balanced" but the model_hash changes. When the slot
-			// carries a different model_hash from the KV the prefill built,
+			// stays "balanced" but the model identity changes. When the slot
+			// carries a different identity from the KV the prefill built,
 			// we must NOT skip — fall through to restore so the cross-model
 			// guard in RestoreKvAsync can catch it.
 			if (item.PrefillWorker?.Name == dw.Name
@@ -2183,13 +2202,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					|| Router.DecodeModel(dw) == null
 					|| Router.DecodeModel(dw) == Router.PrefillModel(item.PrefillWorker!)))
 			{
-				// Alias says same; verify the model_hash actually matches.
-				// Both-empty (pre-#289 or no metadata) skips the hash check
+				// Alias says same; verify the model identity actually matches.
+				// Both-empty (pre-#470 or no metadata) skips the identity check
 				// for back-compat — falls back to the old alias-only skip.
 				bool aliasSaysSame = Router.DecodeModel(dw) == null
 					|| Router.DecodeModel(dw) == Router.PrefillModel(item.PrefillWorker!);
-				bool canCheckHash = !string.IsNullOrEmpty(item.KvModelHash);
-				if (!aliasSaysSame || !canCheckHash)
+				bool canCheckIdentity = !item.GetKvModelIdentity().IsEmpty;
+				if (!aliasSaysSame || !canCheckIdentity)
 				{
 					_log.Information("same_node_skip Sid={Sid} Node={Node} — KV already resident (alias check)",
 						item.SessionId, dw.Name);
@@ -2200,22 +2219,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					// Item.PrefillSlot is the slot the prefill wrote to; same
 					// worker, possibly same slot. Query its META to read the
-					// current resident model_hash.
+					// current resident model identity.
 					var prefillSlotId = item.PrefillSlot ?? slot;
 					// CancellationToken.None: the META query is best-effort and
 					// the try-catch below swallows failures. Plumbing ct
 					// through PickDecodeAsync would cascade to 5+ call sites
 					// and the next-step state machine for a non-critical read.
 					var slotMeta = await GetLlamaClient(dw).GetStateMetaAsync(prefillSlotId, default);
-					if (string.IsNullOrEmpty(slotMeta.ModelHash)
-						|| string.Equals(slotMeta.ModelHash, item.KvModelHash, StringComparison.Ordinal))
+					var slotIdentity = new ModelIdentity
 					{
-						_log.Information("same_node_skip Sid={Sid} Node={Node} Slot={Slot} — KV already resident (hash match)",
+						Tokenizer = slotMeta.Tokenizer ?? "",
+						ModelName = slotMeta.ModelName ?? "",
+						ModelQuant = slotMeta.ModelQuant ?? "",
+						ModelCapabilities = slotMeta.ModelCapabilities,
+					};
+					if (slotIdentity.IsEmpty
+						|| item.GetKvModelIdentity() == slotIdentity)
+					{
+						_log.Information("same_node_skip Sid={Sid} Node={Node} Slot={Slot} — KV already resident (identity match)",
 							item.SessionId, dw.Name, prefillSlotId);
 						return WorkItemState.Decode;
 					}
-					_log.Information("same_node_skip_hash_mismatch Sid={Sid} Node={Node} Slot={Slot} stored={Stored} resident={Resident} — falling through to restore for cross-model guard",
-						item.SessionId, dw.Name, prefillSlotId, item.KvModelHash, slotMeta.ModelHash);
+					_log.Information("same_node_skip_identity_mismatch Sid={Sid} Node={Node} Slot={Slot} stored={Stored} resident={Resident} — falling through to restore for cross-model guard",
+						item.SessionId, dw.Name, prefillSlotId, item.KvModelName, slotMeta.ModelName);
 				}
 				catch (Exception ex)
 				{
@@ -2323,8 +2349,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				if (manifestRoot.TryGetProperty("model_alias", out var ma))
 					item.KvModelAlias = ma.GetString();
-				if (manifestRoot.TryGetProperty("model_hash", out var mh))
-					item.KvModelHash = mh.GetString();
+				if (manifestRoot.TryGetProperty("tokenizer", out var tk))
+					item.KvTokenizer = tk.GetString();
+				if (manifestRoot.TryGetProperty("model_name", out var mn))
+					item.KvModelName = mn.GetString();
+				if (manifestRoot.TryGetProperty("model_quant", out var mq))
+					item.KvModelQuant = mq.GetString();
+				if (manifestRoot.TryGetProperty("model_capabilities", out var mc) && mc.ValueKind == JsonValueKind.Number)
+					item.KvModelCapabilities = mc.GetUInt32();
 				if (manifestRoot.TryGetProperty("model_path", out var mp))
 					item.KvModelPath = mp.GetString();
 				if (item.NPastAfter > 0) nPast = item.NPastAfter;
@@ -2375,17 +2407,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.NPastAfter = meta?.TryGetValue("n_past", out var n) == true ? n.GetInt32() : item.NPastAfter;
 
 				// M-Perf.9 #289 + #470: parse model identity from STATE_PUT
-				// response. The engine returns model_match, model_hash,
-				// model_alias, and model_path so we can check cross-model
-				// safety *before* proceeding to HTTP decode — eliminating the
-				// race where the KV was already written to the slot before
-				// the STATE_META query confirmed it.
+				// response. The engine returns model_match, tokenizer, model_name,
+				// model_quant, model_capabilities, model_alias, and model_path so
+				// we can check cross-model safety *before* proceeding to HTTP
+				// decode — eliminating the race where the KV was already written
+				// to the slot before the STATE_META query confirmed it.
 				var modelMatch = meta?.TryGetValue("model_match", out var mm) == true
 					? mm.GetBoolean()
 					: true; // back-compat: old servers omit field → assume match
-				var slotHash = meta?.TryGetValue("model_hash", out var mh) == true
-					? mh.GetString()
+				var slotTokenizer = meta?.TryGetValue("tokenizer", out var tk) == true
+					? tk.GetString()
 					: null;
+				var slotModelName = meta?.TryGetValue("model_name", out var smn) == true
+					? smn.GetString()
+					: null;
+				var slotModelQuant = meta?.TryGetValue("model_quant", out var smq) == true
+					? smq.GetString()
+					: null;
+				uint slotCapabilities = meta?.TryGetValue("model_capabilities", out var sc) == true
+					&& sc.ValueKind == JsonValueKind.Number ? sc.GetUInt32() : 0;
 				var slotAlias = meta?.TryGetValue("model_alias", out var ma) == true
 					? ma.GetString()
 					: null;
@@ -2394,38 +2434,46 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					: null;
 
 				// #470: model_match is the engine-side stub (always true for now).
-				// CrossModelGuard.Decide is the authoritative hash comparison —
+				// CrossModelGuard.Decide is the authoritative identity comparison —
 				// it covers the case where model_match=true but the stored KV's
-				// model_hash differs from the slot's resident model_hash (the
+				// identity differs from the slot's resident identity (the
 				// exact corruption class #469 investigated). This replaces the
 				// old post-hoc STATE_META query with a single atomic check.
 				if (modelMatch)
 				{
+					var storedIdentity = item.GetKvModelIdentity();
+					var slotIdentity = new ModelIdentity
+					{
+						Tokenizer = slotTokenizer ?? "",
+						ModelName = slotModelName ?? "",
+						ModelQuant = slotModelQuant ?? "",
+						ModelCapabilities = slotCapabilities,
+					};
 					var guard = CrossModelGuard.Decide(
-						storedHash: item.KvModelHash,
-						slotHash: slotHash,
+						stored: storedIdentity,
+						slot: slotIdentity,
 						allowCrossModelKvReuse: _cfg.AllowCrossModelKvReuse);
 
 					switch (guard)
 					{
 						case CrossModelGuard.Outcome.Proceed:
-							_log.Debug("cross_model_kv_proceeded slot={Slot} stored={Stored} slot={SlotHash}",
-								slotId, item.KvModelHash, slotHash);
+							_log.Debug("cross_model_kv_proceeded slot={Slot} stored_name={StoredName} slot_name={SlotName}",
+								slotId, item.KvModelName, slotModelName);
 							CoordinatorMetrics.CrossModelKvProceeded.WithLabels(w.Name).Inc();
 							break;
 						case CrossModelGuard.Outcome.Skip:
-							_log.Debug("cross_model_kv_skipped slot={Slot} stored={Stored} slot={SlotHash}",
-								slotId, item.KvModelHash, slotHash);
+							_log.Debug("cross_model_kv_skipped slot={Slot} stored_name={StoredName} slot_name={SlotName}",
+								slotId, item.KvModelName, slotModelName);
 							CoordinatorMetrics.CrossModelKvSkipped.WithLabels(w.Name).Inc();
 							break;
 						case CrossModelGuard.Outcome.WarnAndProceed:
-							_log.Warning("cross_model_kv_warned slot={Slot} stored={Stored} slot={SlotHash} item={Item}",
-								slotId, item.KvModelHash, slotHash, item.SessionId);
+							_log.Warning("cross_model_kv_warned slot={Slot} stored_name={StoredName} slot_name={SlotName} item={Item}",
+								slotId, item.KvModelName, slotModelName, item.SessionId);
 							CoordinatorMetrics.CrossModelKvWarned.WithLabels(w.Name).Inc();
 							break;
 						case CrossModelGuard.Outcome.Abort:
-							_log.Warning("cross_model_kv_aborted slot={Slot} stored={Stored} slot={SlotHash} item={Item} — re-prefilling",
-								slotId, item.KvModelHash, slotHash, item.SessionId);
+							_log.Warning("cross_model_kv_aborted slot={Slot} stored_name={StoredName} slot_name={SlotName} item={Item} — re-prefilling",
+								slotId, item.KvModelName, slotModelName, item.SessionId);
 							CoordinatorMetrics.CrossModelKvAborted.WithLabels(w.Name).Inc();
 							// Fall through to the shared erase+re-prefill path below
 							modelMatch = false;
@@ -2436,8 +2484,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					// Engine-side model_match=false: the engine already rejected
 					// the KV (future path when KV header carries model identity).
-					_log.Warning("state_put_model_mismatch slot={Slot} stored={Stored} slot={SlotHash} item={Item}",
-						slotId, item.KvModelHash, slotHash, item.SessionId);
+					_log.Warning("state_put_model_mismatch slot={Slot} stored_name={StoredName} slot_name={SlotName} item={Item}",
+						slotId, item.KvModelName, slotModelName, item.SessionId);
 					CoordinatorMetrics.CrossModelKvAborted.WithLabels(w.Name).Inc();
 				}
 
@@ -3280,12 +3328,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (stateResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 			return null;
 
-		// M-Perf.9 #289: capture model identity of the slot that built this KV
+		// M-Perf.9 #289 / #470: capture model identity of the slot that built this KV
 		// so the cross-model guard in RestoreKvAsync can detect a model swap
 		// between prefill and decode. SlotMeta is enriched with model_alias +
-		// model_hash + model_path (see META RPC 0x32). On an older binary that
-		// doesn't carry the fields, all three are "" and the guard skips.
-		string modelAlias = "", modelHash = "", modelPath = "";
+		// tokenizer + model_name + model_quant + model_capabilities + model_path
+		// (see META RPC 0x32). On an older binary that doesn't carry the fields,
+		// all text fields are "" and capabilities is 0 — the guard skips.
+		string modelAlias = "", tokenizer = "", modelName = "", modelQuant = "", modelPath = "";
+		uint modelCapabilities = 0;
 		var metaResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateMeta,
 			slotId.ToString(), ReadOnlyMemory<byte>.Empty, traceId, ct);
 		if (metaResp.Status == (byte)Hydra.Shared.StatusCode.Ok
@@ -3296,9 +3346,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var meta = JsonSerializer.Deserialize<SlotMeta>(metaResp.Meta);
 				if (meta != null)
 				{
-					modelAlias = meta.ModelAlias ?? "";
-					modelHash  = meta.ModelHash  ?? "";
-					modelPath  = meta.ModelPath  ?? "";
+					modelAlias       = meta.ModelAlias       ?? "";
+					tokenizer        = meta.Tokenizer         ?? "";
+					modelName        = meta.ModelName         ?? "";
+					modelQuant       = meta.ModelQuant        ?? "";
+					modelCapabilities = meta.ModelCapabilities;
+					modelPath        = meta.ModelPath         ?? "";
 				}
 			}
 			catch (JsonException) { /* keep empty */ }
@@ -3312,7 +3365,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var missing = await SyncMissingAsync(storeKey, orderedHashes, traceId, ct);
 			await PushMissingChunksAsync(storeKey, sessionId, missing, chunks, stateResp.Payload, traceId, ct);
 			await PutManifestAsync(storeKey, nPast, stateResp.Payload.Length, chunks, traceId, ct,
-				modelAlias, modelHash, modelPath);
+				modelAlias, tokenizer, modelName, modelQuant, modelCapabilities, modelPath);
 			if (_chunkCache != null)
 			{
 				await _chunkCache.SaveHashesAsync(sessionId, orderedHashes, ct);
@@ -3530,19 +3583,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private async Task PutManifestAsync(
 		string storeKey, int nPast, long totalSize, List<ChunkRef> chunks,
 		string traceId, CancellationToken ct,
-		// M-Perf.9 #289: model identity of the slot that built this KV. The
+		// M-Perf.9 #289 / #470: model identity of the slot that built this KV. The
 		// RestoreKvAsync cross-model guard reads this back via GetManifestAsync
-		// so it survives a Coordinator restart. Pre-#289 callers pass "" for
-		// all three; the guard treats "both empty" as "skip".
-		string modelAlias = "", string modelHash = "", string modelPath = "")
+		// so it survives a Coordinator restart. Pre-#470 callers pass ""/0 for
+		// all fields; the guard treats "both empty" as "skip".
+		string modelAlias = "", string tokenizer = "", string modelName = "",
+		string modelQuant = "", uint modelCapabilities = 0, string modelPath = "")
 	{
 		var manifest = new
 		{
 			n_past = nPast,
 			total_size = totalSize,
 			model_alias = modelAlias,
-			model_hash  = modelHash,
-			model_path  = modelPath,
+			tokenizer = tokenizer,
+			model_name = modelName,
+			model_quant = modelQuant,
+			model_capabilities = modelCapabilities,
+			model_path = modelPath,
 			chunks = chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size }),
 		};
 		var payload = JsonSerializer.SerializeToUtf8Bytes(manifest);

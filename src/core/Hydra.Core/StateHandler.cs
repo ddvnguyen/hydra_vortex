@@ -187,13 +187,14 @@ public sealed class StateHandler
         var pushed = await PushMissingChunksAsync(storeKey, sid, missing, traceId, ct);
 
         // ── Step 4: write the authoritative ordered manifest (validates residency). ─────
-        // M-Perf.9 #289: persist model identity from the slot META so the
+        // M-Perf.9 #289 / #470: persist model identity from the slot META so the
         // cross-model guard in WorkerSchedulerService.RestoreKvAsync can
-        // detect a model swap across a Coordinator restart. On pre-#289
-        // binaries the three fields are "" and the guard skips.
+        // detect a model swap across a Coordinator restart. On pre-#470
+        // binaries the fields are ""/0 and the guard skips.
         await PutManifestAsync(
             storeKey, meta.NPast, totalSize, chunks, traceId, ct,
-            meta.ModelAlias ?? "", meta.ModelHash ?? "", meta.ModelPath ?? "");
+            meta.ModelAlias ?? "", meta.Tokenizer ?? "", meta.ModelName ?? "",
+            meta.ModelQuant ?? "", meta.ModelCapabilities, meta.ModelPath ?? "");
 
         await _chunkCache.SaveHashesAsync(sid, orderedHashes, ct);
         await _chunkCache.EvictLRUAsync();
@@ -304,23 +305,27 @@ public sealed class StateHandler
     // PUT_MANIFEST (0x15): write the authoritative ordered manifest. The Store refuses if
     // any referenced chunk is not resident, so a partial push can never corrupt restore.
     //
-    // M-Perf.9 #289: when model identity is provided, it's persisted alongside
+    // M-Perf.9 #289 / #470: when model identity is provided, it's persisted alongside
     // n_past/total_size so the cross-model guard in WorkerSchedulerService.
     // RestoreKvAsync can detect a model swap across a Coordinator restart.
-    // The default '' values preserve back-compat: pre-#289 callers pass nothing
+    // The default ''/0 values preserve back-compat: pre-#470 callers pass nothing
     // and the guard treats "both empty" as "skip".
     private async Task PutManifestAsync(
         string storeKey, int nPast, long totalSize, List<ChunkRef> chunks,
         string traceId, CancellationToken ct,
-        string modelAlias = "", string modelHash = "", string modelPath = "")
+        string modelAlias = "", string tokenizer = "", string modelName = "",
+        string modelQuant = "", uint modelCapabilities = 0, string modelPath = "")
     {
         var manifest = new
         {
             n_past = nPast,
             total_size = totalSize,
             model_alias = modelAlias,
-            model_hash  = modelHash,
-            model_path  = modelPath,
+            tokenizer = tokenizer,
+            model_name = modelName,
+            model_quant = modelQuant,
+            model_capabilities = modelCapabilities,
+            model_path = modelPath,
             chunks = chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size }),
         };
         var payload = JsonSerializer.SerializeToUtf8Bytes(manifest);

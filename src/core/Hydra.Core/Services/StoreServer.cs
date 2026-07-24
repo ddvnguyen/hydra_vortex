@@ -471,14 +471,17 @@ public sealed class StoreServer : RpcServer
 
 			int nPast = root.TryGetProperty("n_past", out var np) ? np.GetInt32() : 0;
 			long totalSize = root.TryGetProperty("total_size", out var ts) ? ts.GetInt64() : 0;
-			// M-Perf.9 #289: parse the model identity of the slot that built
+			// M-Perf.9 #289 / #470: parse the model identity of the slot that built
 			// this KV (so the cross-model guard in WorkerSchedulerService.
 			// RestoreKvAsync can detect a model swap across a Coordinator
-			// restart). Pre-#289 manifests don't carry these keys; the
-			// TryGetProperty returns false and the fields stay "".
-			string modelAlias = root.TryGetProperty("model_alias", out var ma) ? (ma.GetString() ?? "") : "";
-			string modelHash  = root.TryGetProperty("model_hash",  out var mh) ? (mh.GetString() ?? "") : "";
-			string modelPath  = root.TryGetProperty("model_path",  out var mp) ? (mp.GetString() ?? "") : "";
+			// restart). Pre-#470 manifests don't carry these keys; the
+			// TryGetProperty returns false and the fields stay ""/0.
+			string modelAlias       = root.TryGetProperty("model_alias",       out var ma) ? (ma.GetString() ?? "") : "";
+			string tokenizer        = root.TryGetProperty("tokenizer",         out var tk) ? (tk.GetString() ?? "") : "";
+			string modelName        = root.TryGetProperty("model_name",        out var mn) ? (mn.GetString() ?? "") : "";
+			string modelQuant       = root.TryGetProperty("model_quant",       out var mq) ? (mq.GetString() ?? "") : "";
+			uint   modelCapabilities = root.TryGetProperty("model_capabilities", out var mc) && mc.ValueKind == JsonValueKind.Number ? mc.GetUInt32() : 0;
+			string modelPath        = root.TryGetProperty("model_path",        out var mp) ? (mp.GetString() ?? "") : "";
 
 			var chunks = new List<ChunkRef>();
 			var missing = new List<string>();
@@ -509,7 +512,7 @@ public sealed class StoreServer : RpcServer
 
 			chunks.Sort((a, b) => a.Index.CompareTo(b.Index));
 			await Metadata.UpsertManifestAsync(key, nPast, totalSize, chunks, ct,
-				modelAlias, modelHash, modelPath);
+				modelAlias, tokenizer, modelName, modelQuant, modelCapabilities, modelPath);
 
 			var meta = $$"""{"written":true,"chunks":{{chunks.Count}},"n_past":{{nPast}}}""";
 			var metaBytes = Encoding.UTF8.GetBytes(meta);
@@ -541,14 +544,17 @@ public sealed class StoreServer : RpcServer
 			var payload = JsonSerializer.SerializeToUtf8Bytes(new {
 				n_past = manifest.NPast,
 				total_size = manifest.TotalSize,
-				// M-Perf.9 #289: surface the model identity of the slot that
+				// M-Perf.9 #289 / #470: surface the model identity of the slot that
 				// built this KV. WorkerSchedulerService.RestoreKvAsync reads
-				// it to gate the cross-model safety check. Pre-#289 sessions
-				// have empty strings and the guard treats "both empty" as
+				// it to gate the cross-model safety check. Pre-#470 sessions
+				// have empty/zero fields and the guard treats "both empty" as
 				// "skip" (back-compat).
-				model_alias = manifest.ModelAlias,
-				model_hash  = manifest.ModelHash,
-				model_path  = manifest.ModelPath,
+				model_alias       = manifest.ModelAlias,
+				tokenizer         = manifest.Tokenizer,
+				model_name        = manifest.ModelName,
+				model_quant       = manifest.ModelQuant,
+				model_capabilities = manifest.ModelCapabilities,
+				model_path        = manifest.ModelPath,
 				chunks = manifest.Chunks.Select(c => new { index = c.Index, hash = c.Hash, size = c.Size })
 			});
 
