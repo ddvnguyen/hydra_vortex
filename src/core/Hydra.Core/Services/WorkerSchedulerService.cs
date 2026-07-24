@@ -2664,9 +2664,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (_cfg.UseLlamaEngine && item.RequestOverrides is { IsEmpty: false })
 				await ApplyRequestOverridesAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
 
-		// Two-engine "work together": activate the peer before decode (no-op when solo).
-		if (_cfg.UseLlamaEngine)
-			await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
+			// Two-engine "work together": activate the peer before decode (no-op when solo).
+			if (_cfg.UseLlamaEngine)
+				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
 
 			// #470: merged decode path — when the engine advertises merged_decode,
 			// send the framed DECODE 0x43 with kv_metadata + model_metadata + prompt
@@ -2684,23 +2684,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
 
-					var kvIdentity = item.GetKvModelIdentity();
-					var modelIdentity = new ModelIdentity
-					{
-						Tokenizer = w.ModelAlias ?? "",
-						ModelName = w.ModelAlias ?? "",
-						ModelQuant = "",
-						ModelCapabilities = 0
-					};
+					// #470: Use engine-reported GGUF identity from PREFILL response.
+					// kv_metadata (what built the KV) and model_metadata (what should
+					// decode) must both match the engine's actual loaded model identity.
+					var modelIdentity = item.GetKvModelIdentity();
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
 						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 						nPast: item.NPastAfter,
-						kvTokenizer: kvIdentity.Tokenizer,
-						kvModelName: kvIdentity.ModelName,
-						kvModelQuant: kvIdentity.ModelQuant,
-						kvModelCapabilities: kvIdentity.ModelCapabilities,
+						kvTokenizer: modelIdentity.Tokenizer,
+						kvModelName: modelIdentity.ModelName,
+						kvModelQuant: modelIdentity.ModelQuant,
+						kvModelCapabilities: modelIdentity.ModelCapabilities,
 						modelTokenizer: modelIdentity.Tokenizer,
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
@@ -2792,23 +2788,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
 
-					var kvIdentity = item.GetKvModelIdentity();
-					var modelIdentity = new ModelIdentity
-					{
-						Tokenizer = w.ModelAlias ?? "",
-						ModelName = w.ModelAlias ?? "",
-						ModelQuant = "",
-						ModelCapabilities = 0
-					};
+					// #470: Use engine-reported GGUF identity from PREFILL response.
+					// kv_metadata (what built the KV) and model_metadata (what should
+					// decode) must both match the engine's actual loaded model identity.
+					var modelIdentity = item.GetKvModelIdentity();
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
 						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 						nPast: item.NPastAfter,
-						kvTokenizer: kvIdentity.Tokenizer,
-						kvModelName: kvIdentity.ModelName,
-						kvModelQuant: kvIdentity.ModelQuant,
-						kvModelCapabilities: kvIdentity.ModelCapabilities,
+						kvTokenizer: modelIdentity.Tokenizer,
+						kvModelName: modelIdentity.ModelName,
+						kvModelQuant: modelIdentity.ModelQuant,
+						kvModelCapabilities: modelIdentity.ModelCapabilities,
 						modelTokenizer: modelIdentity.Tokenizer,
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
