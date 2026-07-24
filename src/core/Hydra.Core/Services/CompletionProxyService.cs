@@ -79,40 +79,43 @@ public sealed class CompletionProxyService : ICompletionProxyService
 		const int maxDelayMs = 500;
 		const int maxAttempts = 600; // 600 * 500ms = 300s max wait
 		var delay = initialDelayMs;
-		for (int attempt = 0; attempt < maxAttempts; attempt++)
+		// try/finally (not try/catch) — C# allows yield inside try/finally but not try/catch.
+		// The finally block fires DELETE when the token is cancelled, covering cancellation
+		// from any point in the loop (HTTP call, Task.Delay, or ThrowIfCancellationRequested).
+		try
 		{
-			ct.ThrowIfCancellationRequested();
-			HttpResponseMessage resp;
-			try
+			for (int attempt = 0; attempt < maxAttempts; attempt++)
 			{
+				ct.ThrowIfCancellationRequested();
+				HttpResponseMessage resp;
 				var req = new HttpRequestMessage(HttpMethod.Get, url);
 				req.Headers.Add("Accept", "text/event-stream");
 				resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+				if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+				{
+					resp.Dispose();
+					await Task.Delay(delay, ct);
+					delay = Math.Min(delay * 2, maxDelayMs);
+					continue;
+				}
+				resp.EnsureSuccessStatusCode();
+				using var stream = await resp.Content.ReadAsStreamAsync(ct);
+				using var reader = new StreamReader(stream);
+				string? line;
+				while ((line = await reader.ReadLineAsync(ct)) != null)
+				{
+					if (line.Length > 0)
+						yield return Encoding.UTF8.GetBytes($"{line}\n\n");
+				}
+				yield break;
 			}
-			catch (OperationCanceledException)
-			{
-				await CancelDecodeAsync(nodeUrl, decodeRequestId, traceId, CancellationToken.None);
-				throw;
-			}
-			if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
-			{
-				resp.Dispose();
-				await Task.Delay(delay, ct);
-				delay = Math.Min(delay * 2, maxDelayMs);
-				continue;
-			}
-			resp.EnsureSuccessStatusCode();
-			using var stream = await resp.Content.ReadAsStreamAsync(ct);
-			using var reader = new StreamReader(stream);
-			string? line;
-			while ((line = await reader.ReadLineAsync(ct)) != null)
-			{
-				if (line.Length > 0)
-					yield return Encoding.UTF8.GetBytes($"{line}\n\n");
-			}
-			yield break;
+			throw new TimeoutException($"GET /v1/decode/{decodeRequestId} timed out after {maxAttempts} attempts");
 		}
-		throw new TimeoutException($"GET /v1/decode/{decodeRequestId} timed out after {maxAttempts} attempts");
+		finally
+		{
+			if (ct.IsCancellationRequested)
+				await CancelDecodeAsync(nodeUrl, decodeRequestId, traceId, CancellationToken.None);
+		}
 	}
 
 	// #470: Poll GET /v1/decode/{id} for buffered (non-streaming) merged-decode result.
@@ -124,31 +127,31 @@ public sealed class CompletionProxyService : ICompletionProxyService
 		const int maxDelayMs = 500;
 		const int maxAttempts = 600;
 		var delay = initialDelayMs;
-		for (int attempt = 0; attempt < maxAttempts; attempt++)
+		try
 		{
-			ct.ThrowIfCancellationRequested();
-			HttpResponseMessage resp;
-			try
+			for (int attempt = 0; attempt < maxAttempts; attempt++)
 			{
+				ct.ThrowIfCancellationRequested();
+				HttpResponseMessage resp;
 				resp = await _http.GetAsync(url, ct);
+				if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+				{
+					resp.Dispose();
+					await Task.Delay(delay, ct);
+					delay = Math.Min(delay * 2, maxDelayMs);
+					continue;
+				}
+				resp.EnsureSuccessStatusCode();
+				var json = await resp.Content.ReadAsStringAsync(ct);
+				return JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
 			}
-			catch (OperationCanceledException)
-			{
-				await CancelDecodeAsync(nodeUrl, decodeRequestId, traceId, CancellationToken.None);
-				throw;
-			}
-			if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
-			{
-				resp.Dispose();
-				await Task.Delay(delay, ct);
-				delay = Math.Min(delay * 2, maxDelayMs);
-				continue;
-			}
-			resp.EnsureSuccessStatusCode();
-			var json = await resp.Content.ReadAsStringAsync(ct);
-			return JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
+			throw new TimeoutException($"GET /v1/decode/{decodeRequestId} timed out after {maxAttempts} attempts");
 		}
-		throw new TimeoutException($"GET /v1/decode/{decodeRequestId} timed out after {maxAttempts} attempts");
+		catch (OperationCanceledException)
+		{
+			await CancelDecodeAsync(nodeUrl, decodeRequestId, traceId, CancellationToken.None);
+			throw;
+		}
 	}
 
 	// #470: DELETE /v1/decode/{id} to cancel orphaned generation on abort.
