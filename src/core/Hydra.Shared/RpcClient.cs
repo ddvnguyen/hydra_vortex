@@ -496,6 +496,7 @@ public class RpcClient : IAsyncDisposable
         int nPast,
         string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
         string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+        string? modelAlias,
         string? messagesJson, int nPredict, string? samplingJson, bool stream,
         ReadOnlyMemory<byte> kvBlob,
         string traceId, CancellationToken ct)
@@ -511,6 +512,7 @@ public class RpcClient : IAsyncDisposable
             // Build JSON header
             var headerObj = new Dictionary<string, object>
             {
+                ["model"] = modelAlias ?? "",
                 ["kv_metadata"] = new Dictionary<string, object>
                 {
                     ["n_past"] = nPast,
@@ -662,6 +664,8 @@ public sealed class MergedDecodeResponse
     public int NPastAfterRestore { get; init; }
     public double RestoreSlotMs { get; init; }
     public double DecodeInitMs { get; init; }
+    public double ModelLoadMs { get; init; }
+    public bool ModelFallback { get; init; }
     public string? Error { get; init; }
 
     // Model identity match fields
@@ -693,6 +697,10 @@ public sealed class MergedDecodeResponse
                 ? rsEl.GetDouble() : 0;
             var decodeInitMs = root.TryGetProperty("decode_init_ms", out var diEl)
                 ? diEl.GetDouble() : 0;
+            var modelLoadMs = root.TryGetProperty("model_load_ms", out var mlEl)
+                ? mlEl.GetDouble() : 0;
+            var modelFallback = root.TryGetProperty("model_fallback", out var mfEl)
+                && mfEl.GetBoolean();
 
             // Parse match object
             bool tokenizerMatch = false, modelNameMatch = false, modelCapabilitiesMatch = false,
@@ -717,6 +725,8 @@ public sealed class MergedDecodeResponse
                 NPastAfterRestore = nPastAfter,
                 RestoreSlotMs = restoreSlotMs,
                 DecodeInitMs = decodeInitMs,
+                ModelLoadMs = modelLoadMs,
+                ModelFallback = modelFallback,
                 TokenizerMatch = tokenizerMatch,
                 ModelNameMatch = modelNameMatch,
                 ModelCapabilitiesMatch = modelCapabilitiesMatch,
