@@ -63,6 +63,29 @@ internal sealed class TestCompletionProxy : ICompletionProxyService
 
 	public Task<bool> LoadModelAsync(string nodeUrl, string modelName, string traceId, CancellationToken ct)
 		=> Task.FromResult(true);
+
+	public async IAsyncEnumerable<byte[]> PollDecodeStreamAsync(
+		string nodeUrl, int decodeRequestId, string traceId,
+		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+	{
+		yield return Encoding.UTF8.GetBytes(
+			$"data: {{\"choices\":[{{\"delta\":{{\"content\":\"Hi\"}}}}]}}\n\n");
+		yield return Encoding.UTF8.GetBytes(
+			$"data: {{\"id_slot\":{_slotId},\"usage\":{{\"total_tokens\":{_totalTokens}}}}}\n\n");
+	}
+
+	public Task<Dictionary<string, object>> PollDecodeResultAsync(
+		string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
+	{
+		return Task.FromResult(new Dictionary<string, object>
+		{
+			["id_slot"] = _slotId,
+			["usage"] = JsonSerializer.SerializeToElement(new { total_tokens = _totalTokens })
+		});
+	}
+
+	public Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
+		=> Task.CompletedTask;
 }
 
 internal sealed class TestRpcClient : RpcClient

@@ -2670,8 +2670,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			// #470: merged decode path — when the engine advertises merged_decode,
 			// send the framed DECODE 0x43 with kv_metadata + model_metadata + prompt
-			// to get the decode_request_id and model identity match. The HTTP proxy
-			// will then poll GET /v1/decode/{id} for the streaming response.
+			// to get the decode_request_id and model identity match. On success,
+			// poll GET /v1/decode/{id} for the streaming result (skips HTTP proxy).
+			bool mergedDecodeOk = false;
 			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
 			{
 				try
@@ -2724,6 +2725,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						mergedResp.TokenizerMatch, mergedResp.ModelNameMatch,
 						mergedResp.ModelCapabilitiesMatch, mergedResp.ModelQuantMatch,
 						mergedResp.ModelAliasMatch);
+
+					if (!mergedResp.Valid || mergedResp.DecodeRequestId <= 0)
+					{
+						_log.Warning("merged_decode_invalid Sid={Sid} Valid={V} DecodeId={Did} — falling back to HTTP proxy",
+							item.SessionId, mergedResp.Valid, mergedResp.DecodeRequestId);
+					}
+					else
+					{
+						// #470: Poll GET /v1/decode/{id} for the streaming result.
+						// The engine generates asynchronously; the GET endpoint returns
+						// 404 until the result is ready.
+						item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
+						IAsyncEnumerable<byte[]> mergedStream = _proxy.PollDecodeStreamAsync(
+							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token);
+
+						item.DecodeChunks = TrackStreamNPast(mergedStream, item);
+						_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
+						item.StreamCompletion.TrySetResult(item.DecodeChunks);
+						item.Response = new { streamed = true };
+						if (_ledger.Lookup(item.SessionId) == null)
+							_ledger.Register(item.SessionId, w.Name, item.DecodeSlot, item.NPastAfter, item.PrefixHash);
+						mergedDecodeOk = true;
+					}
 				}
 				catch (Exception ex)
 				{
@@ -2732,6 +2756,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 			}
 
+			if (!mergedDecodeOk)
+			{
 			// HTTP streaming for chat completions (works for both engine and legacy modes).
 			// The engine RPC (EngineDecodeStreamAsync) was previously used here in engine
 			// mode, but the RPC payload is just raw bytes — it collapsed the model's
@@ -2759,6 +2785,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (_ledger.Lookup(item.SessionId) == null)
 				_ledger.Register(item.SessionId, w.Name, item.DecodeSlot, item.NPastAfter, item.PrefixHash);
 			return WorkItemState.Done;
+			}
+			return WorkItemState.Done;
 		}
 		else
 		{
@@ -2774,8 +2802,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			// #470: merged decode path — when the engine advertises merged_decode,
 			// send the framed DECODE 0x43 with kv_metadata + model_metadata + prompt
-			// to get the decode_request_id and model identity match. The HTTP proxy
-			// will then poll GET /v1/decode/{id} for the synchronous response.
+			// to get the decode_request_id and model identity match. On success,
+			// poll GET /v1/decode/{id} for the synchronous result (skips HTTP proxy).
+			bool mergedDecodeOk = false;
 			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
 			{
 				try
@@ -2828,6 +2857,37 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						mergedResp.TokenizerMatch, mergedResp.ModelNameMatch,
 						mergedResp.ModelCapabilitiesMatch, mergedResp.ModelQuantMatch,
 						mergedResp.ModelAliasMatch);
+
+					if (mergedResp.Valid && mergedResp.DecodeRequestId > 0)
+					{
+						// #470: Poll GET /v1/decode/{id} for the buffered result.
+						var mergedResult = await _proxy.PollDecodeResultAsync(
+							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, ct);
+						if (mergedResult.TryGetValue("id_slot", out var s) && s is JsonElement se)
+							item.LastIdSlot = se.GetInt32();
+						if (item.MultiMode != MultiEngineMode.None)
+							mergedResult["hydra"] = MultiEngineStatus(item);
+						item.Response = mergedResult;
+						item.TokensIn = ExtractUsageInt(mergedResult, "prompt_tokens");
+						item.TokensOut = ExtractUsageInt(mergedResult, "completion_tokens");
+						if (mergedResult.TryGetValue("hydra_metrics", out var hm) && hm is JsonElement hmEl && hmEl.ValueKind == JsonValueKind.Object)
+						{
+							_log.Information("hydra_metrics Sid={Sid} Head={Head} Reloaded={Reloaded} ReloadMs={Ms}",
+								item.SessionId, w.Name,
+								hmEl.TryGetProperty("t3_reloaded", out var tr) && tr.GetBoolean(),
+								hmEl.TryGetProperty("t3_reload_ms", out var rm) ? rm.GetDouble() : 0);
+						}
+						if (_ledger.Lookup(item.SessionId) == null)
+							_ledger.Register(item.SessionId, w.Name,
+								item.LastIdSlot ?? 0, item.NPastAfter, item.PrefixHash);
+						TrackAfterCompletion(item.SessionId, mergedResult);
+						mergedDecodeOk = true;
+					}
+					else
+					{
+						_log.Warning("merged_decode_invalid Sid={Sid} Valid={V} DecodeId={Did} — falling back to HTTP proxy",
+							item.SessionId, mergedResp.Valid, mergedResp.DecodeRequestId);
+					}
 				}
 				catch (Exception ex)
 				{
@@ -2836,60 +2896,63 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 			}
 
-			// HTTP proxy for chat completions (works for both engine and legacy modes).
-			// The engine RPC (EngineDecodeAsync) was previously used here in engine
-			// mode, but the RPC payload is just raw bytes — it collapsed the model's
-			// `reasoning_content` into `content` and dropped `finish_reason`/`id_slot`/
-			// `timings`, making the response unusable for reasoning models like
-			// Qwopus3.6-35B-A3B (--reasoning on). The HTTP proxy preserves the full
-			// OpenAI schema including `reasoning_content`. The engine RPC is still used
-			// for prefill (EnginePrefill) and KV state (StateGet/Put). See issue #273.
-			using var syncCts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
-			// #469 trace: log decode request body for cross-flow comparison
-			if (item.Request.TryGetValue("messages", out var msgs) && msgs is JsonElement decodeMsgEl && decodeMsgEl.ValueKind == JsonValueKind.Array)
+			if (!mergedDecodeOk)
 			{
-				var decodeMsgCount = decodeMsgEl.GetArrayLength();
-				var decodeFirstMsg = decodeMsgCount > 0 ? decodeMsgEl[0].ToString()[..Math.Min(80, decodeMsgEl[0].ToString().Length)] : "?";
-				var decodeLastMsg = decodeMsgCount > 0 ? decodeMsgEl[decodeMsgCount - 1].ToString()[..Math.Min(80, decodeMsgEl[decodeMsgCount - 1].ToString().Length)] : "?";
-			_log.Debug("#PD-TRACE DECODE_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Slot={Slot} NPast={NPast}",
-				item.SessionId, decodeMsgCount, decodeFirstMsg, decodeLastMsg, item.DecodeSlot, item.NPastAfter);
-		}
-		// #479/S3: when driving the engine, translate the routing-identity
-		// model on the decode request to the GGUF-file alias (decode role,
-		// e.g. moe-35b-pd → qwen3.6-35B-balanced for mix-quant P/D split)
-		// so the decode worker's inline reload fires instead of silently
-		// falling back to its resident model.
-		if (_cfg.UseLlamaEngine && !string.IsNullOrEmpty(w.ModelAlias))
-			item.Request["model"] = TranslateModelAlias(w.ModelAlias, decodeRole: true);
-		var resp = await _proxy.ProxyCompletionAsync(
-				w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
-			if (resp.TryGetValue("id_slot", out var s) && s is JsonElement se)
-				item.LastIdSlot = se.GetInt32();
-			if (item.MultiMode != MultiEngineMode.None)
-				resp["hydra"] = MultiEngineStatus(item);
-			item.Response = resp;
-			item.TokensIn = ExtractUsageInt(resp, "prompt_tokens");
-			item.TokensOut = ExtractUsageInt(resp, "completion_tokens");
+				// HTTP proxy for chat completions (works for both engine and legacy modes).
+				// The engine RPC (EngineDecodeAsync) was previously used here in engine
+				// mode, but the RPC payload is just raw bytes — it collapsed the model's
+				// `reasoning_content` into `content` and dropped `finish_reason`/`id_slot`/
+				// `timings`, making the response unusable for reasoning models like
+				// Qwopus3.6-35B-A3B (--reasoning on). The HTTP proxy preserves the full
+				// OpenAI schema including `reasoning_content`. The engine RPC is still used
+				// for prefill (EnginePrefill) and KV state (StateGet/Put). See issue #273.
+				using var syncCts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
+				// #469 trace: log decode request body for cross-flow comparison
+				if (item.Request.TryGetValue("messages", out var msgs) && msgs is JsonElement decodeMsgEl && decodeMsgEl.ValueKind == JsonValueKind.Array)
+				{
+					var decodeMsgCount = decodeMsgEl.GetArrayLength();
+					var decodeFirstMsg = decodeMsgCount > 0 ? decodeMsgEl[0].ToString()[..Math.Min(80, decodeMsgEl[0].ToString().Length)] : "?";
+					var decodeLastMsg = decodeMsgCount > 0 ? decodeMsgEl[decodeMsgCount - 1].ToString()[..Math.Min(80, decodeMsgEl[decodeMsgCount - 1].ToString().Length)] : "?";
+					_log.Debug("#PD-TRACE DECODE_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Slot={Slot} NPast={NPast}",
+						item.SessionId, decodeMsgCount, decodeFirstMsg, decodeLastMsg, item.DecodeSlot, item.NPastAfter);
+				}
+				// #479/S3: when driving the engine, translate the routing-identity
+				// model on the decode request to the GGUF-file alias (decode role,
+				// e.g. moe-35b-pd → qwen3.6-35B-balanced for mix-quant P/D split)
+				// so the decode worker's inline reload fires instead of silently
+				// falling back to its resident model.
+				if (_cfg.UseLlamaEngine && !string.IsNullOrEmpty(w.ModelAlias))
+					item.Request["model"] = TranslateModelAlias(w.ModelAlias, decodeRole: true);
+				var resp = await _proxy.ProxyCompletionAsync(
+						w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
+				if (resp.TryGetValue("id_slot", out var s2) && s2 is JsonElement se2)
+					item.LastIdSlot = se2.GetInt32();
+				if (item.MultiMode != MultiEngineMode.None)
+					resp["hydra"] = MultiEngineStatus(item);
+				item.Response = resp;
+				item.TokensIn = ExtractUsageInt(resp, "prompt_tokens");
+				item.TokensOut = ExtractUsageInt(resp, "completion_tokens");
 
-			if (resp.TryGetValue("hydra_metrics", out var hm) && hm is JsonElement hmEl && hmEl.ValueKind == JsonValueKind.Object)
-			{
-				_log.Information("hydra_metrics Sid={Sid} Head={Head} Reloaded={Reloaded} ReloadMs={Ms}",
-					item.SessionId, w.Name,
-					hmEl.TryGetProperty("t3_reloaded", out var tr) && tr.GetBoolean(),
-					hmEl.TryGetProperty("t3_reload_ms", out var rm) ? rm.GetDouble() : 0);
+				if (resp.TryGetValue("hydra_metrics", out var hm) && hm is JsonElement hmEl && hmEl.ValueKind == JsonValueKind.Object)
+				{
+					_log.Information("hydra_metrics Sid={Sid} Head={Head} Reloaded={Reloaded} ReloadMs={Ms}",
+						item.SessionId, w.Name,
+						hmEl.TryGetProperty("t3_reloaded", out var tr) && tr.GetBoolean(),
+						hmEl.TryGetProperty("t3_reload_ms", out var rm) ? rm.GetDouble() : 0);
+				}
+
+				// Register in ledger so /status can find the session. The cold_atomic HTTP
+				// path skips RestoreKvAsync (which would have registered in the P/D split
+				// path). The previous engine path registered inline; the HTTP path never
+				// did and sessions went missing from /status. Register first so the
+				// TrackAfterCompletion call below can update NPast on the live entry.
+				if (_ledger.Lookup(item.SessionId) == null)
+					_ledger.Register(item.SessionId, w.Name,
+						item.LastIdSlot ?? 0, item.NPastAfter, item.PrefixHash);
+
+				// Track n_past from completion response
+				TrackAfterCompletion(item.SessionId, resp);
 			}
-
-			// Register in ledger so /status can find the session. The cold_atomic HTTP
-			// path skips RestoreKvAsync (which would have registered in the P/D split
-			// path). The previous engine path registered inline; the HTTP path never
-			// did and sessions went missing from /status. Register first so the
-			// TrackAfterCompletion call below can update NPast on the live entry.
-			if (_ledger.Lookup(item.SessionId) == null)
-				_ledger.Register(item.SessionId, w.Name,
-					item.LastIdSlot ?? 0, item.NPastAfter, item.PrefixHash);
-
-			// Track n_past from completion response
-			TrackAfterCompletion(item.SessionId, resp);
 		}
 		CoordinatorMetrics.DecodeDuration.WithLabels(w.Name, RouteLabel(item))
 			.Observe(item.RecordPhase("decode_ms") / 1000.0);
