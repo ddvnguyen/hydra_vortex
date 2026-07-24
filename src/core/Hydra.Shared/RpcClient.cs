@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -482,6 +483,124 @@ public class RpcClient : IAsyncDisposable
             yield return chunk;
     }
 
+    /// <summary>
+    /// Framed DECODE (opcode 0x43) — merged decode path (#470).
+    /// Sends the new wire format: [4B json_len LE][json ≤ 32KiB][raw KV bytes].
+    /// The JSON header carries kv_metadata (KV-side identity), model_metadata
+    /// (engine-side identity), and the prompt. The raw KV bytes follow immediately.
+    /// Returns a parsed <see cref="MergedDecodeResponse"/> with match results and
+    /// the decode_request_id for polling GET /v1/decode/{id}.
+    /// </summary>
+    public async Task<MergedDecodeResponse> EngineMergedDecodeAsync(
+        string slotKey,
+        int nPast,
+        string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
+        string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+        string? messagesJson, int nPredict, string? samplingJson, bool stream,
+        ReadOnlyMemory<byte> kvBlob,
+        string traceId, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_requestTimeout);
+
+        await WaitForTurnAsync(OpCode.EngineDecode, timeoutCts.Token, ct);
+        try
+        {
+            await EnsureConnectedAsync(timeoutCts.Token);
+
+            // Build JSON header
+            var headerObj = new Dictionary<string, object>
+            {
+                ["kv_metadata"] = new Dictionary<string, object>
+                {
+                    ["n_past"] = nPast,
+                    ["tokenizer"] = kvTokenizer ?? "",
+                    ["model_name"] = kvModelName ?? "",
+                    ["model_quant"] = kvModelQuant ?? "",
+                    ["model_capabilities"] = kvModelCapabilities
+                },
+                ["model_metadata"] = new Dictionary<string, object>
+                {
+                    ["tokenizer"] = modelTokenizer ?? "",
+                    ["model_name"] = modelName ?? "",
+                    ["model_quant"] = modelQuant ?? "",
+                    ["model_capabilities"] = modelCapabilities
+                },
+                ["prompt"] = new Dictionary<string, object>
+                {
+                    ["messages"] = messagesJson != null
+                        ? JsonSerializer.Deserialize<object>(messagesJson)
+                        : null,
+                    ["n_predict"] = nPredict,
+                    ["sampling"] = samplingJson != null
+                        ? JsonSerializer.Deserialize<object>(samplingJson)
+                        : null,
+                    ["stream"] = stream
+                }
+            };
+            var jsonBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(headerObj));
+
+            if (jsonBytes.Length > 32768)
+                throw new InvalidOperationException(
+                    $"Merged DECODE JSON header exceeds 32 KiB ({jsonBytes.Length} bytes)");
+
+            // Build framed payload: [4B json_len LE][json bytes][raw KV bytes]
+            var keyBytes = Encoding.UTF8.GetBytes(slotKey);
+            var traceBytes = Encoding.UTF8.GetBytes(traceId);
+            var totalPayloadLen = 4 + jsonBytes.Length + kvBlob.Length;
+
+            var header = Protocol.CreateRequestHeader(
+                OpCode.EngineDecode, (ushort)keyBytes.Length, (ulong)totalPayloadLen, (ushort)traceBytes.Length);
+            var headerBuf = new byte[Protocol.REQUEST_HEADER_SIZE];
+            Protocol.WriteRequest(headerBuf, header);
+
+            await _stream!.WriteAsync(headerBuf, timeoutCts.Token);
+            if (keyBytes.Length > 0)
+                await _stream.WriteAsync(keyBytes, timeoutCts.Token);
+            if (traceBytes.Length > 0)
+                await _stream.WriteAsync(traceBytes, timeoutCts.Token);
+
+            // Write [4B json_len LE]
+            var jsonLenBuf = new byte[4];
+            BinaryPrimitives.WriteUInt32LittleEndian(jsonLenBuf, (uint)jsonBytes.Length);
+            await _stream.WriteAsync(jsonLenBuf, timeoutCts.Token);
+
+            // Write JSON header
+            await _stream.WriteAsync(jsonBytes, timeoutCts.Token);
+
+            // Write raw KV bytes
+            if (kvBlob.Length > 0)
+                await _stream.WriteAsync(kvBlob, timeoutCts.Token);
+
+            await _stream.FlushAsync(timeoutCts.Token);
+
+            // Read response
+            var respHeaderBuf = new byte[Protocol.RESPONSE_HEADER_SIZE];
+            await ReadExactAsync(_stream, respHeaderBuf, timeoutCts.Token);
+            var respHeader = Protocol.ReadResponse(respHeaderBuf);
+
+            var meta = respHeader.MetaLen > 0
+                ? await ReadMetaAsync(_stream, respHeader.MetaLen, timeoutCts.Token)
+                : null;
+
+            if (respHeader.PayloadLen > 0)
+                await ReadPayloadAsync(_stream, (long)respHeader.PayloadLen, timeoutCts.Token);
+
+            return MergedDecodeResponse.Parse(respHeader.Status, meta);
+        }
+        catch (OperationCanceledException)
+        {
+            DropConnection();
+            if (!ct.IsCancellationRequested)
+                throw NewTimeout(OpCode.EngineDecode);
+            throw;
+        }
+        finally
+        {
+            _sync.Release();
+        }
+    }
+
     public async Task<RpcResponse> EngineSetExpertModeAsync(string slotKey, string mode, string traceId, CancellationToken ct)
     {
         var payload = Encoding.UTF8.GetBytes(mode);
@@ -527,5 +646,88 @@ public class RpcClient : IAsyncDisposable
             await _stream.DisposeAsync();
 
         _client?.Dispose();
+    }
+}
+
+/// <summary>
+/// Parsed response from the framed DECODE 0x43 merged decode RPC.
+/// Carries the engine-side model identity match results and the
+/// decode_request_id for polling GET /v1/decode/{id}.
+/// </summary>
+public sealed class MergedDecodeResponse
+{
+    public byte Status { get; init; }
+    public bool Valid { get; init; }
+    public int? DecodeRequestId { get; init; }
+    public int NPastAfterRestore { get; init; }
+    public double RestoreSlotMs { get; init; }
+    public double DecodeInitMs { get; init; }
+    public string? Error { get; init; }
+
+    // Model identity match fields
+    public bool TokenizerMatch { get; init; }
+    public bool ModelNameMatch { get; init; }
+    public bool ModelCapabilitiesMatch { get; init; }
+    public uint CapabilitiesXor { get; init; }
+    public bool ModelQuantMatch { get; init; }
+    public bool ModelAliasMatch { get; init; }
+
+    public static MergedDecodeResponse Parse(byte status, string? meta)
+    {
+        if (status != (byte)StatusCode.Ok)
+            return new MergedDecodeResponse { Status = status, Valid = false };
+
+        if (string.IsNullOrEmpty(meta))
+            return new MergedDecodeResponse { Status = status, Valid = false };
+
+        try
+        {
+            using var doc = JsonDocument.Parse(meta);
+            var root = doc.RootElement;
+            var valid = root.TryGetProperty("valid", out var vEl) && vEl.GetBoolean();
+            int? decodeRequestId = root.TryGetProperty("decode_request_id", out var drEl)
+                ? drEl.GetInt32() : null;
+            var nPastAfter = root.TryGetProperty("n_past_after_restore", out var npEl)
+                ? npEl.GetInt32() : 0;
+            var restoreSlotMs = root.TryGetProperty("restore_slot_ms", out var rsEl)
+                ? rsEl.GetDouble() : 0;
+            var decodeInitMs = root.TryGetProperty("decode_init_ms", out var diEl)
+                ? diEl.GetDouble() : 0;
+
+            // Parse match object
+            bool tokenizerMatch = false, modelNameMatch = false, modelCapabilitiesMatch = false,
+                 modelQuantMatch = false, modelAliasMatch = false;
+            uint capabilitiesXor = 0;
+            if (root.TryGetProperty("match", out var matchEl) && matchEl.ValueKind == JsonValueKind.Object)
+            {
+                tokenizerMatch = matchEl.TryGetProperty("tokenizer_match", out var tm) && tm.GetBoolean();
+                modelNameMatch = matchEl.TryGetProperty("model_name_match", out var nm) && nm.GetBoolean();
+                modelCapabilitiesMatch = matchEl.TryGetProperty("model_capabilities_match", out var cm) && cm.GetBoolean();
+                capabilitiesXor = matchEl.TryGetProperty("capabilities_xor", out var cx)
+                    ? cx.GetUInt32() : 0;
+                modelQuantMatch = matchEl.TryGetProperty("model_quant_match", out var qm) && qm.GetBoolean();
+                modelAliasMatch = matchEl.TryGetProperty("model_alias_match", out var am) && am.GetBoolean();
+            }
+
+            return new MergedDecodeResponse
+            {
+                Status = status,
+                Valid = valid,
+                DecodeRequestId = decodeRequestId,
+                NPastAfterRestore = nPastAfter,
+                RestoreSlotMs = restoreSlotMs,
+                DecodeInitMs = decodeInitMs,
+                TokenizerMatch = tokenizerMatch,
+                ModelNameMatch = modelNameMatch,
+                ModelCapabilitiesMatch = modelCapabilitiesMatch,
+                CapabilitiesXor = capabilitiesXor,
+                ModelQuantMatch = modelQuantMatch,
+                ModelAliasMatch = modelAliasMatch
+            };
+        }
+        catch
+        {
+            return new MergedDecodeResponse { Status = status, Valid = false, Error = "malformed response" };
+        }
     }
 }

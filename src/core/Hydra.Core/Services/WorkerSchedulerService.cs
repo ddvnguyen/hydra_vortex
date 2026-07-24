@@ -2664,9 +2664,77 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (_cfg.UseLlamaEngine && item.RequestOverrides is { IsEmpty: false })
 				await ApplyRequestOverridesAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
 
-			// Two-engine "work together": activate the peer before decode (no-op when solo).
-			if (_cfg.UseLlamaEngine)
-				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
+		// Two-engine "work together": activate the peer before decode (no-op when solo).
+		if (_cfg.UseLlamaEngine)
+			await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, cts.Token);
+
+			// #470: merged decode path — when the engine advertises merged_decode,
+			// send the framed DECODE 0x43 with kv_metadata + model_metadata + prompt
+			// to get the decode_request_id and model identity match. The HTTP proxy
+			// will then poll GET /v1/decode/{id} for the streaming response.
+			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
+			{
+				try
+				{
+					var messagesJson = item.Request.TryGetValue("messages", out var msgsEl)
+						? msgsEl?.ToString() : null;
+					var samplingJson = item.Request.TryGetValue("sampling", out var sampEl)
+						? sampEl?.ToString() : null;
+					var nPredict = item.Request.TryGetValue("max_tokens", out var npEl)
+						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
+						: 2048;
+
+					var kvIdentity = item.GetKvModelIdentity();
+					var modelIdentity = new ModelIdentity
+					{
+						Tokenizer = w.ModelAlias ?? "",
+						ModelName = w.ModelAlias ?? "",
+						ModelQuant = "",
+						ModelCapabilities = 0
+					};
+
+					var llamaRpc = GetLlamaRpcClient(w);
+					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
+						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+						nPast: item.NPastAfter,
+						kvTokenizer: kvIdentity.Tokenizer,
+						kvModelName: kvIdentity.ModelName,
+						kvModelQuant: kvIdentity.ModelQuant,
+						kvModelCapabilities: kvIdentity.ModelCapabilities,
+						modelTokenizer: modelIdentity.Tokenizer,
+						modelName: modelIdentity.ModelName,
+						modelQuant: modelIdentity.ModelQuant,
+						modelCapabilities: modelIdentity.ModelCapabilities,
+						messagesJson: messagesJson,
+						nPredict: nPredict,
+						samplingJson: samplingJson,
+						stream: true,
+						kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
+						traceId: item.TraceId,
+						ct: cts.Token);
+
+					item.DecodeRequestId = mergedResp.DecodeRequestId;
+					item.Match = new DecodeMatch(
+						mergedResp.TokenizerMatch,
+						mergedResp.ModelNameMatch,
+						mergedResp.ModelCapabilitiesMatch,
+						mergedResp.CapabilitiesXor,
+						mergedResp.ModelQuantMatch,
+						mergedResp.ModelAliasMatch);
+
+					_log.Information("merged_decode_initiated Sid={Sid} DecodeId={Did} Valid={V} NPast={N} RestoreMs={R} InitMs={I} Match=Tok={TM}Name={NM}Cap={CM}Quant={QM}Alias={AM}",
+						item.SessionId, mergedResp.DecodeRequestId, mergedResp.Valid,
+						mergedResp.NPastAfterRestore, mergedResp.RestoreSlotMs, mergedResp.DecodeInitMs,
+						mergedResp.TokenizerMatch, mergedResp.ModelNameMatch,
+						mergedResp.ModelCapabilitiesMatch, mergedResp.ModelQuantMatch,
+						mergedResp.ModelAliasMatch);
+				}
+				catch (Exception ex)
+				{
+					_log.Warning(ex, "merged_decode_fallback Sid={Sid} — falling back to HTTP proxy",
+						item.SessionId);
+				}
+			}
 
 			// HTTP streaming for chat completions (works for both engine and legacy modes).
 			// The engine RPC (EngineDecodeStreamAsync) was previously used here in engine
@@ -2707,6 +2775,74 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Two-engine "work together": activate the peer before decode (no-op when solo).
 			if (_cfg.UseLlamaEngine)
 				await ApplyMultiEngineAsync(item, w, item.DecodeSlot ?? item.LastIdSlot ?? 0, ct);
+
+			// #470: merged decode path — when the engine advertises merged_decode,
+			// send the framed DECODE 0x43 with kv_metadata + model_metadata + prompt
+			// to get the decode_request_id and model identity match. The HTTP proxy
+			// will then poll GET /v1/decode/{id} for the synchronous response.
+			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
+			{
+				try
+				{
+					var messagesJson = item.Request.TryGetValue("messages", out var msgsEl)
+						? msgsEl?.ToString() : null;
+					var samplingJson = item.Request.TryGetValue("sampling", out var sampEl)
+						? sampEl?.ToString() : null;
+					var nPredict = item.Request.TryGetValue("max_tokens", out var npEl)
+						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
+						: 2048;
+
+					var kvIdentity = item.GetKvModelIdentity();
+					var modelIdentity = new ModelIdentity
+					{
+						Tokenizer = w.ModelAlias ?? "",
+						ModelName = w.ModelAlias ?? "",
+						ModelQuant = "",
+						ModelCapabilities = 0
+					};
+
+					var llamaRpc = GetLlamaRpcClient(w);
+					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
+						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+						nPast: item.NPastAfter,
+						kvTokenizer: kvIdentity.Tokenizer,
+						kvModelName: kvIdentity.ModelName,
+						kvModelQuant: kvIdentity.ModelQuant,
+						kvModelCapabilities: kvIdentity.ModelCapabilities,
+						modelTokenizer: modelIdentity.Tokenizer,
+						modelName: modelIdentity.ModelName,
+						modelQuant: modelIdentity.ModelQuant,
+						modelCapabilities: modelIdentity.ModelCapabilities,
+						messagesJson: messagesJson,
+						nPredict: nPredict,
+						samplingJson: samplingJson,
+						stream: false,
+						kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
+						traceId: item.TraceId,
+						ct: ct);
+
+					item.DecodeRequestId = mergedResp.DecodeRequestId;
+					item.Match = new DecodeMatch(
+						mergedResp.TokenizerMatch,
+						mergedResp.ModelNameMatch,
+						mergedResp.ModelCapabilitiesMatch,
+						mergedResp.CapabilitiesXor,
+						mergedResp.ModelQuantMatch,
+						mergedResp.ModelAliasMatch);
+
+					_log.Information("merged_decode_initiated Sid={Sid} DecodeId={Did} Valid={V} NPast={N} RestoreMs={R} InitMs={I} Match=Tok={TM}Name={NM}Cap={CM}Quant={QM}Alias={AM}",
+						item.SessionId, mergedResp.DecodeRequestId, mergedResp.Valid,
+						mergedResp.NPastAfterRestore, mergedResp.RestoreSlotMs, mergedResp.DecodeInitMs,
+						mergedResp.TokenizerMatch, mergedResp.ModelNameMatch,
+						mergedResp.ModelCapabilitiesMatch, mergedResp.ModelQuantMatch,
+						mergedResp.ModelAliasMatch);
+				}
+				catch (Exception ex)
+				{
+					_log.Warning(ex, "merged_decode_fallback Sid={Sid} — falling back to HTTP proxy",
+						item.SessionId);
+				}
+			}
 
 			// HTTP proxy for chat completions (works for both engine and legacy modes).
 			// The engine RPC (EngineDecodeAsync) was previously used here in engine
@@ -3835,6 +3971,60 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 									item.SessionId, item.EnginePrefillMs);
 							}
 						}
+						}
+
+						// #470: extract hydra_metrics fields from the streaming chunk.
+						// These fields are emitted by the engine when the merged decode
+						// path is active and carry decode_request_id, id_slot, n_past,
+						// kv_bytes, decode_ms, prompt_ms, model_identity, and match.
+						if (data.TryGetValue("hydra_metrics", out var hmEl) && hmEl.ValueKind == JsonValueKind.Object)
+						{
+							if (hmEl.TryGetProperty("decode_request_id", out var dri) && dri.ValueKind == JsonValueKind.Number)
+								item.DecodeRequestId = dri.GetInt32();
+							if (hmEl.TryGetProperty("id_slot", out var ids) && ids.ValueKind == JsonValueKind.Number)
+								item.LastIdSlot = ids.GetInt32();
+							if (hmEl.TryGetProperty("n_past", out var np) && np.ValueKind == JsonValueKind.Number)
+							{
+								item.NPastAfter = np.GetInt32();
+								_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
+							}
+							if (hmEl.TryGetProperty("kv_bytes", out var kv) && kv.ValueKind == JsonValueKind.Number)
+								item.KvBytes = kv.GetInt64();
+							if (hmEl.TryGetProperty("decode_ms", out var dm) && dm.ValueKind == JsonValueKind.Number)
+								item.Phases["decode_ms"] = (long)dm.GetDouble();
+							if (hmEl.TryGetProperty("prompt_ms", out var prm) && prm.ValueKind == JsonValueKind.Number)
+								item.Phases["prefill_ms"] = (long)prm.GetDouble();
+
+							// Extract model_identity sub-object
+							if (hmEl.TryGetProperty("model_identity", out var mi) && mi.ValueKind == JsonValueKind.Object)
+							{
+								if (mi.TryGetProperty("tokenizer", out var tok) && tok.ValueKind == JsonValueKind.String)
+									item.KvTokenizer = tok.GetString();
+								if (mi.TryGetProperty("model_name", out var mn) && mn.ValueKind == JsonValueKind.String)
+									item.KvModelName = mn.GetString();
+								if (mi.TryGetProperty("model_quant", out var mq) && mq.ValueKind == JsonValueKind.String)
+									item.KvModelQuant = mq.GetString();
+								if (mi.TryGetProperty("model_capabilities", out var mc) && mc.ValueKind == JsonValueKind.Number)
+									item.KvModelCapabilities = mc.GetUInt32();
+							}
+
+							// Extract match sub-object
+							if (hmEl.TryGetProperty("match", out var mtch) && mtch.ValueKind == JsonValueKind.Object)
+							{
+								var tokM = mtch.TryGetProperty("tokenizer_match", out var tm2) && tm2.GetBoolean();
+								var nmM = mtch.TryGetProperty("model_name_match", out var nm2) && nm2.GetBoolean();
+								var cmM = mtch.TryGetProperty("model_capabilities_match", out var cm2) && cm2.GetBoolean();
+								uint cx = mtch.TryGetProperty("capabilities_xor", out var cx2) ? cx2.GetUInt32() : 0;
+								var qmM = mtch.TryGetProperty("model_quant_match", out var qm2) && qm2.GetBoolean();
+								var amM = mtch.TryGetProperty("model_alias_match", out var am2) && am2.GetBoolean();
+								item.Match = new DecodeMatch(tokM, nmM, cmM, cx, qmM, amM);
+							}
+
+							_log.Information("hydra_metrics_extracted Sid={Sid} DecodeId={Did} Slot={Slot} NPast={N} KvBytes={Kb} DecodeMs={Dm} PromptMs={Pm}",
+								item.SessionId, item.DecodeRequestId, item.LastIdSlot,
+								item.NPastAfter, item.KvBytes,
+								item.Phases.TryGetValue("decode_ms", out var dMs) ? dMs : 0,
+								item.Phases.TryGetValue("prefill_ms", out var pMs) ? pMs : 0);
 						}
 					}
 				}

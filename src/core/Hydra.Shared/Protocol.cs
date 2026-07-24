@@ -75,6 +75,9 @@ public static class Protocol
     public const int REQUEST_HEADER_SIZE  = 16;
     public const int RESPONSE_HEADER_SIZE = 12;
 
+    /// <summary>Engine capability: advertises framed DECODE (0x43) with merged KV metadata + model identity.</summary>
+    public const string CapMergedDecode = "merged_decode";
+
     public static RequestHeader ReadRequest(ReadOnlySpan<byte> buf)
     {
         return MemoryMarshal.Read<RequestHeader>(buf);

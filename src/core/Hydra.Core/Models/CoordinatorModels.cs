@@ -273,6 +273,11 @@ public sealed class NodeInfo
 	/// Replaces the removed /v1/models CurrentModel poll (#479/S3).
 	/// </summary>
 	public string CurrentModel { get; set; } = "";
+	/// <summary>
+	/// Engine capabilities advertised via INFO (0x41) health poll.
+	/// Includes "merged_decode" when the engine supports the framed DECODE wire format.
+	/// </summary>
+	public HashSet<string> EngineCapabilities { get; set; } = [];
 }
 
 public sealed class SlotInfo
