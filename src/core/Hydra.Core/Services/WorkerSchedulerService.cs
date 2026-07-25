@@ -2385,6 +2385,24 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			// ── Restore Phase 3: StatePut RPC (push KV to engine) ─────
+			// #470: When the engine advertises merged_decode, skip the blind
+			// STATE_PUT and instead carry the KV blob in the framed DECODE 0x43
+			// RPC. This merges the unvalidated STATE_PUT + HTTP decode into a
+			// single validated call — the engine checks model identity BEFORE
+			// restoring KV. Without this guard, item.KvBlob would be null by
+			// DecodeAsync (consumed + nulled in SaveKvAsync), so the framed
+			// DECODE would send empty bytes and the engine would skip restore.
+			var mergedCapable = _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true;
+			if (mergedCapable)
+			{
+				// Carry the assembled KV blob forward to DecodeAsync so the
+				// framed DECODE 0x43 can send it as part of the merged RPC.
+				item.KvBlob = restoreBlob;
+				_log.Information("restore_kv_merged_skip_state_put Sid={Sid} Node={Node} Slot={Slot} BlobMB={MB}",
+					item.SessionId, w.Name, slotId, restoreBlob.Length / 1024 / 1024);
+			}
+			else
+			{
 			var putSw = System.Diagnostics.Stopwatch.StartNew();
 			var llamaRpc = GetLlamaRpcClient(w);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
@@ -2528,6 +2546,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				_log.Debug("state_put_validation_ok slot={Slot} model={Alias} path={Path} match={Match}",
 					slotId, slotAlias, slotPath, modelMatch);
 			}
+			} // end else (!mergedCapable)
 
 		_log.Information("state_restored Sid={Sid} NPast={N} Node={Node}",
 			item.SessionId, item.NPastAfter, w.Name);
@@ -2702,7 +2721,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
 						modelCapabilities: modelIdentity.ModelCapabilities,
-						modelAlias: w.ModelAlias,
+						// #470: preset_alias_to_path is keyed by GGUF-file aliases
+						// (e.g. "balanced"), not routing aliases (e.g. "moe-35b-pd").
+						// TranslateModelAlias with decodeRole=true resolves routing
+						// identity to the correct GGUF-file alias for the engine's
+						// model-swap lookup.
+						modelAlias: TranslateModelAlias(w.ModelAlias, decodeRole: true),
 						messagesJson: messagesJson,
 						nPredict: nPredict,
 						samplingJson: samplingJson,
@@ -2729,8 +2753,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 					if (!mergedResp.Valid || mergedResp.DecodeRequestId <= 0)
 					{
-						_log.Warning("merged_decode_invalid Sid={Sid} Valid={V} DecodeId={Did} — falling back to HTTP proxy",
-							item.SessionId, mergedResp.Valid, mergedResp.DecodeRequestId);
+						// #470: Enforcing gate — the engine rejected the KV (identity
+						// mismatch, slot busy, etc.). With merged_decode, RestoreKvAsync
+						// skipped the blind STATE_PUT, so the slot is empty. Decoding
+						// via HTTP proxy here would hit an empty/corrupt slot (the #469
+						// hallucination scenario). Abort the entire request instead.
+						throw new InvalidOperationException(
+							$"DECODE 0x43 rejected Sid={item.SessionId} Valid={mergedResp.Valid} DecodeId={mergedResp.DecodeRequestId} — KV not restored, aborting");
 					}
 					else
 					{
@@ -2835,7 +2864,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
 						modelCapabilities: modelIdentity.ModelCapabilities,
-						modelAlias: w.ModelAlias,
+						modelAlias: TranslateModelAlias(w.ModelAlias, decodeRole: true),
 						messagesJson: messagesJson,
 						nPredict: nPredict,
 						samplingJson: samplingJson,
@@ -2887,8 +2916,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					}
 					else
 					{
-						_log.Warning("merged_decode_invalid Sid={Sid} Valid={V} DecodeId={Did} — falling back to HTTP proxy",
-							item.SessionId, mergedResp.Valid, mergedResp.DecodeRequestId);
+						// #470: Enforcing gate — see streaming path comment.
+						throw new InvalidOperationException(
+							$"DECODE 0x43 rejected Sid={item.SessionId} Valid={mergedResp.Valid} DecodeId={mergedResp.DecodeRequestId} — KV not restored, aborting");
 					}
 				}
 				catch (Exception ex)
