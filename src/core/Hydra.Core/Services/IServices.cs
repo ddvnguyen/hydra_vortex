@@ -7,6 +7,14 @@ public interface ICompletionProxyService
     Task<Dictionary<string, object>> ProxyCompletionAsync(string nodeUrl, Dictionary<string, object> body, string traceId, CancellationToken ct);
     IAsyncEnumerable<byte[]> ProxyCompletionStreamAsync(string nodeUrl, Dictionary<string, object> body, string traceId, CancellationToken ct);
     Task<bool> LoadModelAsync(string nodeUrl, string modelName, string traceId, CancellationToken ct);
+
+    // #470: poll GET /v1/decode/{decodeRequestId} for merged-decode results.
+    // Returns SSE lines (streaming) or throws on timeout/not-found.
+    IAsyncEnumerable<byte[]> PollDecodeStreamAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
+    // #470: poll GET /v1/decode/{decodeRequestId} for buffered result.
+    Task<Dictionary<string, object>> PollDecodeResultAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
+    // #470: DELETE /v1/decode/{decodeRequestId} to cancel orphaned generation.
+    Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
 }
 
 public interface IWorkerScheduler

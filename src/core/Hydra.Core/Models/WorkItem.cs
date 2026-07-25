@@ -159,6 +159,12 @@ public sealed class WorkItem
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>
 	public bool PrefixCacheHit { get; set; }
 
+	/// <summary>Request ID for the merged DECODE RPC, used to poll GET /v1/decode/{id}.</summary>
+	public int? DecodeRequestId { get; set; }
+
+	/// <summary>Engine-side model identity match result from the framed DECODE response.</summary>
+	public DecodeMatch? Match { get; set; }
+
 	// ── Engine model identity (M-Perf.9 #289 / #470) ──
 	/// <summary>Alias of the model that built the KV for this slot, e.g. "balanced".</summary>
 	public string? KvModelAlias { get; set; }
@@ -264,3 +270,16 @@ public sealed class WorkItem
 		_ => false
 	};
 }
+
+/// <summary>
+/// Engine-side model identity match from framed DECODE 0x43 response.
+/// Populated when the engine advertises <c>merged_decode</c> capability
+/// and the coordinator sends the new framed wire format.
+/// </summary>
+public sealed record DecodeMatch(
+	bool TokenizerMatch,
+	bool ModelNameMatch,
+	bool ModelCapabilitiesMatch,
+	uint CapabilitiesXor,
+	bool ModelQuantMatch,
+	bool ModelAliasMatch);

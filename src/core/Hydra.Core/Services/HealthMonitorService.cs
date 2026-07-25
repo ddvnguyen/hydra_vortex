@@ -164,6 +164,8 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
             var engineInfo = await engine.EngineInfoAsync($"health-{w.Name}", ct);
             if (engineInfo?.PresetAliases is { } aliases && aliases.Count > 0)
                 info.PresetAliases = new HashSet<string>(aliases, StringComparer.OrdinalIgnoreCase);
+            if (engineInfo?.Capabilities is { } caps && caps.Count > 0)
+                info.EngineCapabilities = new HashSet<string>(caps, StringComparer.OrdinalIgnoreCase);
         }
         catch (Exception ex)
         {
@@ -211,6 +213,7 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         StuckSlots = src.StuckSlots,
         ConsecutiveFailures = src.ConsecutiveFailures,
         PresetAliases = new HashSet<string>(src.PresetAliases, StringComparer.OrdinalIgnoreCase),
+        EngineCapabilities = new HashSet<string>(src.EngineCapabilities, StringComparer.OrdinalIgnoreCase),
         CurrentModel = src.CurrentModel,
         Slots = src.Slots.Select(s => new Models.SlotInfo
         {
