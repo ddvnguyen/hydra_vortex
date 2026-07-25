@@ -816,8 +816,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			// Two-engine "work together": a large request may recruit a second engine.
 			var mePlan = MultiEngineRouter.Select(_cfg, _cfg.Workers, _tracker, _health, item.EstimatedTokens);
-			if (mePlan is { } plan && TryAcquireMultiEngine(item, plan))
-				return WorkItemState.Decode;
+			if (mePlan is { } plan && TryAcquireMultiEnginePrefill(item, plan))
+				return _cfg.UseLlamaEngine ? WorkItemState.PrefixRestore : WorkItemState.ModelLoadPrefill;
 		}
 
 		// Cold route: no warm slot/cache to reuse — the chosen worker prefills the
@@ -2123,6 +2123,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					LeaseLifetime.Long, _tracker);
 				_log.Information("save_fallback_decode Sid={Sid} Node={Node} Slot={Slot}",
 					item.SessionId, item.PrefillWorker.Name, fbSlot);
+				CoordinatorMetrics.DecodeFallbackTotal.WithLabels("save_fail").Inc();
 				// Even on fallback, record the phases we did observe
 				// (e.g. the RPC happened; the store write failed). The
 				// catch block runs after the try body, so the rpc +
@@ -2169,7 +2170,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// PickBestDecodeWorker would wander to P100 and break the dual-GPU binding.
 		WorkerConfig? dw;
 		if (item.MultiMode == MultiEngineMode.Combined && item.PrefillWorker != null)
+		{
 			dw = item.PrefillWorker;
+			_log.Warning("combined_pickdecode Sid={Sid} Node={Node} — decode forced to prefill node for COMBINED mode",
+				item.SessionId, dw.Name);
+			CoordinatorMetrics.DecodeFallbackTotal.WithLabels("combined_pickdecode").Inc();
+		}
 		else
 			dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
 				item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels)
@@ -2535,6 +2541,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.DecodeSlot = fbSlot2;
 						item.DecodeLease = new SlotLease(item.PrefillWorker.Name, fbSlot2, item.SessionId,
 							LeaseLifetime.Long, _tracker);
+						CoordinatorMetrics.DecodeFallbackTotal.WithLabels("cross_model_abort").Inc();
 					}
 					item.NPastAfter = 0;
 					item.KvRestoredForDecode = false;
@@ -2570,6 +2577,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.DecodeSlot = fbSlot;
 				item.DecodeLease = new SlotLease(item.PrefillWorker.Name, fbSlot, item.SessionId,
 					LeaseLifetime.Long, _tracker);
+				CoordinatorMetrics.DecodeFallbackTotal.WithLabels("restore_fail").Inc();
 				CoordinatorMetrics.RestoreKvDuration.WithLabels(w.Name, RouteLabel(item))
 					.Observe(item.RecordPhase("restore_kv_ms") / 1000.0);
 				return WorkItemState.Decode;

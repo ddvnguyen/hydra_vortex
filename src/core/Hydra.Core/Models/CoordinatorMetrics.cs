@@ -180,6 +180,11 @@ internal static class CoordinatorMetrics
         "Cross-model check passed: stored and slot model identity match (or quant-only mismatch)",
         new CounterConfiguration { LabelNames = new[] { "worker" } });
 
+    public static readonly Counter DecodeFallbackTotal = Metrics.CreateCounter(
+        "hydra_decode_fallback_total",
+        "Requests that fell back to same-node decode instead of P/D split",
+        new CounterConfiguration { LabelNames = new[] { "reason" } });
+
     public static readonly Counter ModelFallbackTotal = Metrics.CreateCounter(
         "hydra_model_fallback_total",
         "Engine PREFILL fallback: requested model unknown, used resident model",
