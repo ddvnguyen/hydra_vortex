@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using Hydra.Shared;
+using Hydra.Core;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Services;
@@ -48,6 +49,13 @@ public sealed class EngineModeTests
 
         private int _statePutMismatchFired;
         private int _statePutHashMismatchFired;
+
+        /// <summary>When set, EngineMergedDecodeAsync returns Valid=false (simulates Gate A rejection).
+        /// Only fires once — subsequent calls return success.</summary>
+        public bool MakeMergedDecodeReject { get; set; } = false;
+        private int _mergedDecodeRejectFired;
+
+        public List<(string SlotKey, string ModelName, bool Stream)> MergedDecodeCalls { get; } = new();
 
         public EngineTestRpcClient() : base("test", 0) { }
 
@@ -165,6 +173,80 @@ public sealed class EngineModeTests
             var pair = Calls.FirstOrDefault(c => c.Op == op);
             return pair == default ? "" : Encoding.UTF8.GetString(pair.Payload);
         }
+
+        public override Task<MergedDecodeResponse> EngineMergedDecodeAsync(
+            string slotKey, int nPast,
+            string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
+            string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+            string? modelAlias,
+            string? messagesJson, int nPredict, string? samplingJson, bool stream,
+            ReadOnlyMemory<byte> kvBlob,
+            string traceId, CancellationToken ct)
+        {
+            MergedDecodeCalls.Add((slotKey, modelName ?? "", stream));
+
+            if (MakeMergedDecodeReject && Interlocked.CompareExchange(ref _mergedDecodeRejectFired, 1, 0) == 0)
+            {
+                return Task.FromResult(new MergedDecodeResponse
+                {
+                    Status = (byte)StatusCode.Ok,
+                    Valid = false,
+                    Error = "gate_a_model_mismatch",
+                    TokenizerMatch = kvTokenizer == modelTokenizer,
+                    ModelNameMatch = kvModelName == modelName,
+                    ModelQuantMatch = kvModelQuant == modelQuant,
+                    ModelCapabilitiesMatch = kvModelCapabilities == modelCapabilities,
+                });
+            }
+            return base.EngineMergedDecodeAsync(
+                slotKey, nPast,
+                kvTokenizer, kvModelName, kvModelQuant, kvModelCapabilities,
+                modelTokenizer, modelName, modelQuant, modelCapabilities,
+                modelAlias,
+                messagesJson, nPredict, samplingJson, stream,
+                kvBlob,
+                traceId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Mock LlamaClient that returns a specific model identity from GetStateMetaAsync.
+    /// Used by Gate A tests to verify that model_metadata comes from the decode node's
+    /// own report, not from item.Kv*.
+    /// </summary>
+    internal sealed class GateAMockLlamaClient : LlamaClient
+    {
+        private readonly SlotMeta _meta;
+        public GateAMockLlamaClient(SlotMeta meta) : base("http://mock:0")
+            => _meta = meta;
+        public override Task<SlotMeta> GetStateMetaAsync(int slotId, CancellationToken ct)
+            => Task.FromResult(_meta);
+    }
+
+    /// <summary>
+    /// TestHealthMonitor that advertises merged_decode capability so the
+    /// merged decode code path is entered. Used by Gate A tests.
+    /// </summary>
+    internal sealed class GateATestHealthMonitor : IHealthMonitorService
+    {
+        public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+        public bool IsHealthy(string nodeName) => true;
+        public bool IsStoreHealthy => true;
+        public int? GetIdleSlot(string nodeName) => 0;
+        public NodeInfo? GetNodeInfo(string nodeName) => new()
+        {
+            NodeName = nodeName,
+            Healthy = true,
+            SlotsTotal = 2,
+            SlotsIdle = 2,
+            EngineCapabilities = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                Protocol.CapMergedDecode
+            },
+        };
+        public Dictionary<string, object> GetHealthSummary() => new();
+        public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
     }
 
     internal sealed class EngineFixture : IAsyncDisposable
@@ -185,9 +267,10 @@ public sealed class EngineModeTests
             int p100Slots = 1,
             bool pipeline = false,
             bool combined = false,
-            string multiPolicy = "pipeline")
+            string multiPolicy = "pipeline",
+            IHealthMonitorService? health = null)
         {
-            Health = new TestHealthMonitor();
+            Health = health ?? new TestHealthMonitor();
             Proxy = new TestCompletionProxy(totalTokens: 150, slotId: 0);
             Ledger = new SessionLedger();
             Tracker = new WorkerTracker();
@@ -519,24 +602,46 @@ public sealed class EngineModeTests
     [Fact]
     public async Task GateA_Mismatch_AbortsDecode()
     {
-        // #470/A7: when kv_metadata and model_metadata differ (e.g. the
-        // decode node is running a different model than the prefill node),
-        // Gate A must reject the request. This verifies the tautology fix:
-        // model_metadata now comes from HealthMonitor, not from the same
-        // source as kv_metadata.
-        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2);
-        // Set model_metadata to differ from kv_metadata by making the
-        // HealthMonitor report a different model identity for the decode node.
-        // The PrefillAsync response sets kv_metadata (Q4_K), but the
-        // HealthMonitor node info says Q5_K — a genuine mismatch.
-        f.Rpc.MakeStatePutMismatch = true;
+        // #470/A7: when kv_metadata and model_metadata differ, Gate A
+        // (DECODE 0x43) must reject the request. This verifies the tautology
+        // fix: model_metadata now comes from the decode node's own
+        // GetStateMetaAsync, not from item.Kv* or HealthMonitor.
+        //
+        // The mock LlamaClient returns "different_model" as the decode node's
+        // identity. The PREFILL RPC mock returns "nano" as kv_metadata. These
+        // differ, so the merged decode call carries genuinely independent
+        // identities. The mock RPC client's MakeMergedDecodeReject flag makes
+        // EngineMergedDecodeAsync return valid=false (simulating the engine's
+        // Gate A rejection). Core catches the rejection and falls back to
+        // HTTP proxy — we verify the merged decode was attempted and rejected.
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2,
+            health: new GateATestHealthMonitor());
 
-        // This should still complete (the mismatch is caught by the engine,
-        // not by Core), but the decode request should be rejected.
-        // For this test we just verify the request doesn't hang.
+        // Inject mock LlamaClient that returns a different identity than the
+        // PREFILL response ("nano"). This makes model_metadata independent
+        // from kv_metadata, breaking the former tautology.
+        var differentIdentity = new SlotMeta
+        {
+            ModelName = "different_model",
+            Tokenizer = "gpt2",
+            ModelQuant = "Q5_K",
+            ModelCapabilities = 0x02,
+        };
+        f.Scheduler.LlamaClientFactory = _ => new GateAMockLlamaClient(differentIdentity);
+
+        // Make EngineMergedDecodeAsync return valid=false (Gate A rejection).
+        f.Rpc.MakeMergedDecodeReject = true;
+
         var result = await f.SubmitAsync("sess_gate_a", 20000, 100);
 
-        // The request completes — the engine caught the mismatch.
+        // The merged decode was attempted with the mismatched identity.
+        Assert.Single(f.Rpc.MergedDecodeCalls);
+        Assert.Equal("different_model", f.Rpc.MergedDecodeCalls[0].ModelName);
+
+        // The merged decode was rejected (valid=false), so Core fell back to
+        // HTTP proxy. The request completed via the fallback path.
+        var proxy = (TestCompletionProxy)f.Proxy;
+        Assert.Single(proxy.NonStreamingCalls);
         Assert.NotNull(result);
     }
 

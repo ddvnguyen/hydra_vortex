@@ -494,7 +494,7 @@ public class RpcClient : IAsyncDisposable
     /// Returns a parsed <see cref="MergedDecodeResponse"/> with match results and
     /// the decode_request_id for polling GET /v1/decode/{id}.
     /// </summary>
-    public async Task<MergedDecodeResponse> EngineMergedDecodeAsync(
+    public virtual async Task<MergedDecodeResponse> EngineMergedDecodeAsync(
         string slotKey,
         int nPast,
         string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,

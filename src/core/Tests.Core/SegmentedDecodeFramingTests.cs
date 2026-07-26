@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.Hashing;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Hydra.Shared;
@@ -8,273 +10,270 @@ namespace Tests.Core;
 
 /// <summary>
 /// #470/A2: byte-for-byte verification of the segmented DECODE 0x43 wire format.
-/// The engine agent is writing the C++ half concurrently; these tests ensure the
-/// C# client produces the exact bytes the engine expects.
+/// Tests the real EngineMergedDecodeAsync path by capturing wire output via a
+/// local TCP server.
 /// </summary>
 public sealed class SegmentedDecodeFramingTests
 {
-    [Fact]
-    public void SegmentedDecode_PayloadFormat_IsCorrect()
+    /// <summary>
+    /// Spin up a local TCP server, return (client, server, port, listener).
+    /// The caller must dispose the listener when done.
+    /// </summary>
+    private static (RpcClient client, TcpClient server, int port, TcpListener listener) CreateLoopbackPair()
     {
-        // Arrange
-        var slotKey = "0";
-        var traceId = "trace-test";
-        var nPast = 1000;
-        var kvTokenizer = "llama";
-        var kvModelName = "qwen3.6-35B";
-        var kvModelQuant = "Q3_K";
-        uint kvModelCapabilities = 19;
-        var modelTokenizer = "llama";
-        var modelName = "qwen3.6-35B";
-        var modelQuant = "Q5_K";
-        uint modelCapabilities = 19;
-        var modelAlias = "balanced";
-        var messages = """[{"role":"user","content":"hello"}]""";
-        var nPredict = 256;
-        string? samplingJson = null;
-        var stream = true;
-        var kvBlob = Encoding.UTF8.GetBytes("fake-kv-data");
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
 
-        // Act — build the control header JSON (same logic as RpcClient)
-        var promptBytes = Encoding.UTF8.GetBytes(messages);
-        var promptHash = XxHash3.HashToUInt64(promptBytes);
-        var promptHashStr = $"xxh3:{promptHash:x16}";
+        var client = new RpcClient("127.0.0.1", port, TimeSpan.FromSeconds(10));
+        var serverTask = listener.AcceptTcpClientAsync();
+        var connectTask = client.ConnectAsync(CancellationToken.None);
+        Task.WaitAll(serverTask, connectTask);
 
-        var kvHash = XxHash3.HashToUInt64(kvBlob);
-        var kvHashStr = $"xxh3:{kvHash:x16}";
+        var server = serverTask.Result;
+        return (client, server, port, listener);
+    }
 
-        var headerObj = new Dictionary<string, object>
+    /// <summary>
+    /// Start a background task that reads all bytes from the server socket,
+    /// sends a minimal Ok response with valid meta, and returns the captured bytes.
+    /// The client blocks waiting for the response, so the server must read
+    /// and respond in the background to avoid deadlock.
+    /// </summary>
+    private static Task<byte[]> StartServerReadAndRespond(TcpClient server)
+    {
+        return Task.Run(() =>
         {
-            ["v"] = 3,
-            ["model"] = modelAlias,
-            ["kv_metadata"] = new Dictionary<string, object>
+            var stream = server.GetStream();
+            stream.ReadTimeout = 5000;
+            using var ms = new MemoryStream();
+            var buf = new byte[8192];
+            try
             {
-                ["n_past"] = nPast,
-                ["tokenizer"] = kvTokenizer,
-                ["model_name"] = kvModelName,
-                ["model_quant"] = kvModelQuant,
-                ["model_capabilities"] = kvModelCapabilities
-            },
-            ["model_metadata"] = new Dictionary<string, object>
-            {
-                ["tokenizer"] = modelTokenizer,
-                ["model_name"] = modelName,
-                ["model_quant"] = modelQuant,
-                ["model_capabilities"] = modelCapabilities
-            },
-            ["generation"] = new Dictionary<string, object>
-            {
-                ["n_predict"] = nPredict,
-                ["sampling"] = samplingJson != null
-                    ? JsonSerializer.Deserialize<object>(samplingJson)
-                    : new Dictionary<string, object>(),
-                ["stop"] = Array.Empty<string>(),
-                ["stream"] = stream,
-                ["chat_syntax"] = "",
-                ["oaicompat_model"] = modelAlias
-            },
-            ["segments"] = new List<Dictionary<string, object>>
-            {
-                new()
+                while (true)
                 {
-                    ["id"] = "prompt",
-                    ["offset"] = 0,
-                    ["len"] = promptBytes.Length,
-                    ["hash"] = promptHashStr
-                },
-                new()
-                {
-                    ["id"] = "kv",
-                    ["offset"] = promptBytes.Length,
-                    ["len"] = kvBlob.Length,
-                    ["hash"] = kvHashStr
+                    var n = stream.Read(buf, 0, buf.Length);
+                    if (n == 0) break;
+                    ms.Write(buf, 0, n);
                 }
             }
-        };
-        var hdrJsonBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(headerObj));
-        var hdrHash = XxHash3.HashToUInt64(hdrJsonBytes);
+            catch (IOException) { }
 
-        // Build the framed payload manually
-        var keyBytes = Encoding.UTF8.GetBytes(slotKey);
-        var traceBytes = Encoding.UTF8.GetBytes(traceId);
-        var totalPayloadLen = 4 + 8 + hdrJsonBytes.Length + promptBytes.Length + kvBlob.Length;
+            // Send response after reading all client bytes.
+            // Include meta with valid=true so MergedDecodeResponse.Parse returns Valid=true.
+            var meta = JsonSerializer.Serialize(new { valid = true, decode_request_id = 1 });
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            var respBuf = new byte[Protocol.RESPONSE_HEADER_SIZE];
+            Protocol.WriteResponse(respBuf, (byte)StatusCode.Ok, (uint)metaBytes.Length, 0);
+            stream.Write(respBuf);
+            stream.Write(metaBytes);
+            stream.Flush();
 
-        var payload = new byte[totalPayloadLen];
-        var offset = 0;
+            return ms.ToArray();
+        });
+    }
+
+    [Fact]
+    public void SegmentedDecode_Xxh3Hash_MatchesPublishedVector()
+    {
+        // Published xxh3-64 test vector for "hello world" (11 bytes):
+        // https://raw.githubusercontent.com/Cyan4973/xxHash/dev/tests/input/secret%20seed/hello%20world
+        // Reference: python3 -c "import xxhash; print(f'{xxhash.xxh3_64(b\"hello world\").intdigest():016x}')"
+        var data = Encoding.UTF8.GetBytes("hello world");
+        var hash = XxHash3.HashToUInt64(data);
+
+        // Known xxh3-64 hash of "hello world" — cross-verified with Python xxhash library.
+        const ulong expectedHash = 0xd447b1ea40e6988b;
+        Assert.Equal(expectedHash, hash);
+
+        // Verify format: "xxh3:" + 16 hex chars
+        var hashStr = $"xxh3:{hash:x16}";
+        Assert.Equal(21, hashStr.Length);
+        Assert.StartsWith("xxh3:", hashStr);
+    }
+
+    [Fact]
+    public async Task SegmentedDecode_EmptyPrompt_ProducesZeroLengthSegment()
+    {
+        // Test the real EngineMergedDecodeAsync path: empty prompt should
+        // produce a wire payload where the prompt segment has len=0.
+        var (client, server, _, listener) = CreateLoopbackPair();
+        await using var _ = client;
+
+        var wireTask = StartServerReadAndRespond(server);
+
+        var resp = await client.EngineMergedDecodeAsync(
+            slotKey: "0",
+            nPast: 0,
+            kvTokenizer: "llama", kvModelName: "test", kvModelQuant: "Q4_K", kvModelCapabilities: 0,
+            modelTokenizer: "llama", modelName: "test", modelQuant: "Q4_K", modelCapabilities: 0,
+            modelAlias: "test",
+            messagesJson: "",
+            nPredict: 10,
+            samplingJson: null,
+            stream: false,
+            kvBlob: ReadOnlyMemory<byte>.Empty,
+            traceId: "trace-empty",
+            ct: CancellationToken.None);
+
+        var wireBytes = await wireTask;
+        listener.Stop();
+        Assert.True(resp.Valid, "Response should be valid");
+
+        // Parse the wire: [16B RPC header][key][trace][4B hdr_len LE][8B hdr_hash LE][hdr JSON][segments...]
+        // Skip RPC header (16) + key ("0" = 1 byte) + trace ("trace-empty" = 11 bytes) = 28 bytes
+        var offset = 16 + Encoding.UTF8.GetBytes("0").Length + Encoding.UTF8.GetBytes("trace-empty").Length;
+
+        // Read [4B hdr_len LE]
+        var hdrLen = BinaryPrimitives.ReadUInt32LittleEndian(wireBytes.AsSpan(offset));
+        offset += 4;
+
+        // Skip [8B hdr_hash LE]
+        offset += 8;
+
+        // Read the JSON header
+        var hdrJson = Encoding.UTF8.GetString(wireBytes, offset, (int)hdrLen);
+        using var doc = JsonDocument.Parse(hdrJson);
+        var root = doc.RootElement;
+        var segments = root.GetProperty("segments");
+
+        // Prompt segment must have len=0
+        var promptSeg = segments[0];
+        Assert.Equal("prompt", promptSeg.GetProperty("id").GetString());
+        Assert.Equal(0, promptSeg.GetProperty("len").GetInt32());
+
+        // KV segment must also have len=0 (empty kvBlob)
+        var kvSeg = segments[1];
+        Assert.Equal("kv", kvSeg.GetProperty("id").GetString());
+        Assert.Equal(0, kvSeg.GetProperty("len").GetInt32());
+    }
+
+    [Fact]
+    public async Task SegmentedDecode_LargeHeader_ThrowsAbove32KiB()
+    {
+        // Verify that EngineMergedDecodeAsync rejects headers >32 KiB.
+        // The header JSON doesn't include prompt text (that goes in the
+        // prompt segment), so we inflate it via a huge samplingJson payload.
+        // Inflate the header via a huge samplingJson payload (valid JSON object).
+        var hugeSampling = JsonSerializer.Serialize(new { debug = new string('x', 40000) });
+
+        var (client, server, _, listener) = CreateLoopbackPair();
+        await using var _ = client;
+
+        var wireTask = StartServerReadAndRespond(server);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.EngineMergedDecodeAsync(
+                slotKey: "0", nPast: 0,
+                kvTokenizer: "", kvModelName: "", kvModelQuant: "", kvModelCapabilities: 0,
+                modelTokenizer: "", modelName: "", modelQuant: "", modelCapabilities: 0,
+                modelAlias: "test", messagesJson: "[]",
+                nPredict: 10, samplingJson: hugeSampling, stream: false,
+                kvBlob: ReadOnlyMemory<byte>.Empty,
+                traceId: "trace-large", ct: CancellationToken.None));
+
+        Assert.Contains("32 KiB", ex.Message);
+        listener.Stop();
+        server.Dispose();
+    }
+
+    [Fact]
+    public async Task SegmentedDecode_PayloadFormat_IsCorrect()
+    {
+        // Test the real EngineMergedDecodeAsync path: capture the wire bytes
+        // and verify the full payload structure.
+        var (client, server, _, listener) = CreateLoopbackPair();
+        await using var _ = client;
+
+        var kvBlob = Encoding.UTF8.GetBytes("fake-kv-data");
+        var messages = """[{"role":"user","content":"hello"}]""";
+
+        var wireTask = StartServerReadAndRespond(server);
+
+        var resp = await client.EngineMergedDecodeAsync(
+            slotKey: "0",
+            nPast: 1000,
+            kvTokenizer: "llama", kvModelName: "qwen3.6-35B", kvModelQuant: "Q3_K", kvModelCapabilities: 19,
+            modelTokenizer: "llama", modelName: "qwen3.6-35B", modelQuant: "Q5_K", modelCapabilities: 19,
+            modelAlias: "balanced",
+            messagesJson: messages,
+            nPredict: 256,
+            samplingJson: null,
+            stream: true,
+            kvBlob: kvBlob,
+            traceId: "trace-test",
+            ct: CancellationToken.None);
+
+        var wireBytes = await wireTask;
+        listener.Stop();
+        Assert.True(resp.Valid);
+
+        // Parse the wire frame
+        var keyBytes = Encoding.UTF8.GetBytes("0");
+        var traceBytes = Encoding.UTF8.GetBytes("trace-test");
+        var offset = 16 + keyBytes.Length + traceBytes.Length;
 
         // [4B hdr_len LE]
-        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(offset), (uint)hdrJsonBytes.Length);
+        var hdrLen = BinaryPrimitives.ReadUInt32LittleEndian(wireBytes.AsSpan(offset));
         offset += 4;
 
         // [8B hdr_hash LE]
-        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(offset), hdrHash);
+        var hdrHashWire = BinaryPrimitives.ReadUInt64LittleEndian(wireBytes.AsSpan(offset));
         offset += 8;
 
-        // [hdr_len bytes]
-        hdrJsonBytes.CopyTo(payload, offset);
-        offset += hdrJsonBytes.Length;
+        // [hdr_len bytes] — JSON header
+        var hdrJsonBytes = new byte[hdrLen];
+        Array.Copy(wireBytes, offset, hdrJsonBytes, 0, (int)hdrLen);
+        var hdrHashComputed = XxHash3.HashToUInt64(hdrJsonBytes);
+        Assert.Equal(hdrHashComputed, hdrHashWire);
+        offset += (int)hdrLen;
 
-        // [prompt_len bytes]
-        promptBytes.CopyTo(payload, offset);
-        offset += promptBytes.Length;
-
-        // [kv_len bytes]
-        kvBlob.CopyTo(payload, offset);
-        offset += kvBlob.Length;
-
-        // Assert — verify the structure
-        Assert.Equal(totalPayloadLen, offset);
-
-        // Verify hdr_len
-        var readHdrLen = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(0));
-        Assert.Equal((uint)hdrJsonBytes.Length, readHdrLen);
-
-        // Verify hdr_hash
-        var readHdrHash = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(4));
-        Assert.Equal(hdrHash, readHdrHash);
-
-        // Verify segment offsets
-        var hdrDoc = JsonDocument.Parse(Encoding.UTF8.GetString(payload.AsSpan(12, (int)readHdrLen)));
-        var segments = hdrDoc.RootElement.GetProperty("segments");
-        Assert.Equal(2, segments.GetArrayLength());
-
-        var seg0 = segments[0];
-        Assert.Equal("prompt", seg0.GetProperty("id").GetString());
-        Assert.Equal(0, seg0.GetProperty("offset").GetInt32());
-        Assert.Equal(promptBytes.Length, seg0.GetProperty("len").GetInt32());
-        Assert.Equal(promptHashStr, seg0.GetProperty("hash").GetString());
-
-        var seg1 = segments[1];
-        Assert.Equal("kv", seg1.GetProperty("id").GetString());
-        Assert.Equal(promptBytes.Length, seg1.GetProperty("offset").GetInt32());
-        Assert.Equal(kvBlob.Length, seg1.GetProperty("len").GetInt32());
-        Assert.Equal(kvHashStr, seg1.GetProperty("hash").GetString());
-
-        // Verify contiguous: sum of segment lengths == payload_len - 12 - hdr_len
-        var sumLens = seg0.GetProperty("len").GetInt32() + seg1.GetProperty("len").GetInt32();
-        Assert.Equal(totalPayloadLen - 12 - (int)readHdrLen, sumLens);
-    }
-
-    [Fact]
-    public void SegmentedDecode_Xxh3Hash_IsCorrect()
-    {
-        var data = Encoding.UTF8.GetBytes("hello world");
-        var hash = XxHash3.HashToUInt64(data);
-        var hashStr = $"xxh3:{hash:x16}";
-
-        // Verify the hash is non-zero and has the right format
-        Assert.NotEqual(0UL, hash);
-        Assert.StartsWith("xxh3:", hashStr);
-        Assert.Equal(21, hashStr.Length); // "xxh3:" + 16 hex chars
-
-        // Verify determinism
-        var hash2 = XxHash3.HashToUInt64(data);
-        Assert.Equal(hash, hash2);
-
-        // Verify different data produces different hash
-        var differentData = Encoding.UTF8.GetBytes("hello world!");
-        var differentHash = XxHash3.HashToUInt64(differentData);
-        Assert.NotEqual(hash, differentHash);
-    }
-
-    [Fact]
-    public void SegmentedDecode_EmptyPrompt_ProducesZeroLengthSegment()
-    {
-        var promptBytes = Array.Empty<byte>();
-        var promptHash = XxHash3.HashToUInt64(promptBytes);
-        var promptHashStr = $"xxh3:{promptHash:x16}";
-
-        // Empty prompt should still produce a valid segment with len=0
-        Assert.Equal(0, promptBytes.Length);
-        Assert.StartsWith("xxh3:", promptHashStr);
-    }
-
-    [Fact]
-    public void SegmentedDecode_LargeHeader_ThrowsAbove32KiB()
-    {
-        // Build a header that exceeds 32 KiB
-        var largeMessages = new string('x', 40000); // ~40K chars > 32 KiB
-        var headerObj = new Dictionary<string, object>
-        {
-            ["v"] = 3,
-            ["model"] = "test",
-            ["kv_metadata"] = new Dictionary<string, object> { ["n_past"] = 0 },
-            ["model_metadata"] = new Dictionary<string, object>(),
-            ["generation"] = new Dictionary<string, object>
-            {
-                ["n_predict"] = 256,
-                ["sampling"] = new Dictionary<string, object>(),
-                ["stop"] = Array.Empty<string>(),
-                ["stream"] = true,
-                ["chat_syntax"] = "",
-                ["oaicompat_model"] = "test"
-            },
-            ["segments"] = new List<Dictionary<string, object>>(),
-            // Stuff the header with junk to exceed 32 KiB
-            ["debug"] = largeMessages
-        };
-        var hdrJsonBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(headerObj));
-
-        Assert.True(hdrJsonBytes.Length > 32768,
-            $"Header should exceed 32 KiB for this test, got {hdrJsonBytes.Length}");
-    }
-
-    [Fact]
-    public void SegmentedDecode_HeaderContainsAllRequiredFields()
-    {
-        var headerObj = new Dictionary<string, object>
-        {
-            ["v"] = 3,
-            ["model"] = "balanced",
-            ["kv_metadata"] = new Dictionary<string, object>
-            {
-                ["n_past"] = 100,
-                ["tokenizer"] = "llama",
-                ["model_name"] = "qwen3.6-35B",
-                ["model_quant"] = "Q3_K",
-                ["model_capabilities"] = 19u
-            },
-            ["model_metadata"] = new Dictionary<string, object>
-            {
-                ["tokenizer"] = "llama",
-                ["model_name"] = "qwen3.6-35B",
-                ["model_quant"] = "Q5_K",
-                ["model_capabilities"] = 19u
-            },
-            ["generation"] = new Dictionary<string, object>
-            {
-                ["n_predict"] = 256,
-                ["sampling"] = new Dictionary<string, object>(),
-                ["stop"] = Array.Empty<string>(),
-                ["stream"] = true,
-                ["chat_syntax"] = "qwen3",
-                ["oaicompat_model"] = "balanced"
-            },
-            ["segments"] = new List<Dictionary<string, object>>
-            {
-                new() { ["id"] = "prompt", ["offset"] = 0, ["len"] = 100, ["hash"] = "xxh3:abc" },
-                new() { ["id"] = "kv", ["offset"] = 100, ["len"] = 200, ["hash"] = "xxh3:def" }
-            }
-        };
-        var json = JsonSerializer.Serialize(headerObj);
-        var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-
-        // Verify all required fields exist
+        // Verify header JSON content
+        var hdrDoc = JsonDocument.Parse(Encoding.UTF8.GetString(hdrJsonBytes));
+        var root = hdrDoc.RootElement;
         Assert.Equal(3, root.GetProperty("v").GetInt32());
         Assert.Equal("balanced", root.GetProperty("model").GetString());
-        Assert.True(root.TryGetProperty("kv_metadata", out _));
-        Assert.True(root.TryGetProperty("model_metadata", out _));
-        Assert.True(root.TryGetProperty("generation", out _));
-        Assert.True(root.TryGetProperty("segments", out _));
 
-        var gen = root.GetProperty("generation");
-        Assert.Equal(256, gen.GetProperty("n_predict").GetInt32());
-        Assert.True(gen.GetProperty("stream").GetBoolean());
-        Assert.True(gen.TryGetProperty("chat_syntax", out _));
-        Assert.True(gen.TryGetProperty("oaicompat_model", out _));
+        var kvMeta = root.GetProperty("kv_metadata");
+        Assert.Equal(1000, kvMeta.GetProperty("n_past").GetInt32());
+        Assert.Equal("llama", kvMeta.GetProperty("tokenizer").GetString());
+        Assert.Equal("qwen3.6-35B", kvMeta.GetProperty("model_name").GetString());
+        Assert.Equal("Q3_K", kvMeta.GetProperty("model_quant").GetString());
+        Assert.Equal(19u, kvMeta.GetProperty("model_capabilities").GetUInt32());
 
-        var segs = root.GetProperty("segments");
-        Assert.Equal(2, segs.GetArrayLength());
+        var modelMeta = root.GetProperty("model_metadata");
+        Assert.Equal("llama", modelMeta.GetProperty("tokenizer").GetString());
+        Assert.Equal("qwen3.6-35B", modelMeta.GetProperty("model_name").GetString());
+        Assert.Equal("Q5_K", modelMeta.GetProperty("model_quant").GetString());
+
+        var segments = root.GetProperty("segments");
+        Assert.Equal(2, segments.GetArrayLength());
+
+        // Verify prompt segment
+        var promptBytes = Encoding.UTF8.GetBytes(messages);
+        var promptHash = XxHash3.HashToUInt64(promptBytes);
+        var promptSeg = segments[0];
+        Assert.Equal("prompt", promptSeg.GetProperty("id").GetString());
+        Assert.Equal(0, promptSeg.GetProperty("offset").GetInt32());
+        Assert.Equal(promptBytes.Length, promptSeg.GetProperty("len").GetInt32());
+        Assert.Equal($"xxh3:{promptHash:x16}", promptSeg.GetProperty("hash").GetString());
+
+        // Verify KV segment
+        var kvHash = XxHash3.HashToUInt64(kvBlob);
+        var kvSeg = segments[1];
+        Assert.Equal("kv", kvSeg.GetProperty("id").GetString());
+        Assert.Equal(promptBytes.Length, kvSeg.GetProperty("offset").GetInt32());
+        Assert.Equal(kvBlob.Length, kvSeg.GetProperty("len").GetInt32());
+        Assert.Equal($"xxh3:{kvHash:x16}", kvSeg.GetProperty("hash").GetString());
+
+        // Verify segment data is contiguous after the header
+        var promptWire = new byte[promptBytes.Length];
+        Array.Copy(wireBytes, offset, promptWire, 0, promptBytes.Length);
+        Assert.Equal(promptBytes, promptWire);
+        offset += promptBytes.Length;
+
+        var kvWire = new byte[kvBlob.Length];
+        Array.Copy(wireBytes, offset, kvWire, 0, kvBlob.Length);
+        Assert.Equal(kvBlob.ToArray(), kvWire);
     }
 }
