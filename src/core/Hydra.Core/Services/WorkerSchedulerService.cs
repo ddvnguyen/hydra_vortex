@@ -1585,7 +1585,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// distinct "hydra_config applied" signal, check it here instead of only
 				// !prefillResult.NotImplemented.
 				if (hydraConfig is not null)
-					item.HydraConfigDeliveredSucceeded = prefillResult is not null && !prefillResult.NotImplemented;
+					item.HydraConfigDeliveredSucceeded = prefillResult is not null && !prefillResult.NotImplemented && !prefillResult.ModelFallback;
 
 				if (prefillResult != null && prefillResult.NotImplemented)
 				{

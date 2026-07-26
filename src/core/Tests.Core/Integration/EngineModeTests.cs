@@ -64,15 +64,21 @@ public sealed class EngineModeTests
             // Phase 2b (#481): COMBINED mode now sends hydra_config via PREFILL
             // instead of SET_EXPERT_MODE. When FailMultiEngineAttach is set and
             // this is a PREFILL with hydra_config (combined mode activation),
-            // simulate the peer being down by returning an error.
+            // simulate the engine accepting the PREFILL but being unable to
+            // activate combined mode (peer down) by returning model_fallback.
+            // This makes HydraConfigDeliveredSucceeded=false, so
+            // ApplyMultiEngineAsync at decode time records the fallback and
+            // the request continues as solo. Returning Error here would cause
+            // PrefillAsync to treat it as BUSY and retry with hydra_config
+            // still set, creating an infinite loop.
             if (op == OpCode.EnginePrefill && FailMultiEngineAttach && payload.Length > 0)
             {
                 var payloadStr = Encoding.UTF8.GetString(payload.Span);
                 if (payloadStr.Contains("hydra_config"))
                     return Task.FromResult(new RpcResponse(
-                        (byte)StatusCode.Error,
-                        JsonSerializer.Serialize(new { mode = "solo", peer_connected = false }),
-                        []));
+                        (byte)StatusCode.Ok,
+                        JsonSerializer.Serialize(new { n_past = 2000, state_size = 4096, model_fallback = true }),
+                        new byte[4096]));
             }
 
             var response = op switch
