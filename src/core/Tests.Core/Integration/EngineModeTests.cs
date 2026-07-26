@@ -55,6 +55,11 @@ public sealed class EngineModeTests
         public bool MakeMergedDecodeReject { get; set; } = false;
         private int _mergedDecodeRejectFired;
 
+        /// <summary>When set, EngineMergedDecodeAsync throws (simulates a transport fault).
+        /// Only fires once — subsequent calls succeed.</summary>
+        public bool MakeMergedDecodeThrow { get; set; } = false;
+        private int _mergedDecodeThrowFired;
+
         public List<(string SlotKey, string ModelName, bool Stream)> MergedDecodeCalls { get; } = new();
 
         public EngineTestRpcClient() : base("test", 0) { }
@@ -184,6 +189,11 @@ public sealed class EngineModeTests
             string traceId, CancellationToken ct)
         {
             MergedDecodeCalls.Add((slotKey, modelName ?? "", stream));
+
+            if (MakeMergedDecodeThrow && Interlocked.CompareExchange(ref _mergedDecodeThrowFired, 1, 0) == 0)
+            {
+                throw new System.Net.Http.HttpRequestException("connection reset by engine");
+            }
 
             if (MakeMergedDecodeReject && Interlocked.CompareExchange(ref _mergedDecodeRejectFired, 1, 0) == 0)
             {
@@ -603,17 +613,16 @@ public sealed class EngineModeTests
     public async Task GateA_Mismatch_AbortsDecode()
     {
         // #470/A7: when kv_metadata and model_metadata differ, Gate A
-        // (DECODE 0x43) must reject the request. This verifies the tautology
-        // fix: model_metadata now comes from the decode node's own
-        // GetStateMetaAsync, not from item.Kv* or HealthMonitor.
+        // (DECODE 0x43) must reject the request. The rejection must abort
+        // the entire request — no HTTP proxy fallback. Decoding via proxy
+        // would hit an empty/corrupt KV slot (the #469 hallucination scenario).
         //
         // The mock LlamaClient returns "different_model" as the decode node's
         // identity. The PREFILL RPC mock returns "nano" as kv_metadata. These
         // differ, so the merged decode call carries genuinely independent
         // identities. The mock RPC client's MakeMergedDecodeReject flag makes
         // EngineMergedDecodeAsync return valid=false (simulating the engine's
-        // Gate A rejection). Core catches the rejection and falls back to
-        // HTTP proxy — we verify the merged decode was attempted and rejected.
+        // Gate A rejection). Core must throw — not fall back to HTTP proxy.
         await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2,
             health: new GateATestHealthMonitor());
 
@@ -632,14 +641,41 @@ public sealed class EngineModeTests
         // Make EngineMergedDecodeAsync return valid=false (Gate A rejection).
         f.Rpc.MakeMergedDecodeReject = true;
 
-        var result = await f.SubmitAsync("sess_gate_a", 20000, 100);
+        // The gate rejection must surface as an exception — not be swallowed.
+        var ex = await Record.ExceptionAsync(
+            () => f.SubmitAsync("sess_gate_a", 20000, 100));
+        Assert.IsType<InvalidOperationException>(ex);
 
         // The merged decode was attempted with the mismatched identity.
         Assert.Single(f.Rpc.MergedDecodeCalls);
         Assert.Equal("different_model", f.Rpc.MergedDecodeCalls[0].ModelName);
 
-        // The merged decode was rejected (valid=false), so Core fell back to
-        // HTTP proxy. The request completed via the fallback path.
+        // The HTTP proxy must NOT be called — fallback would decode over
+        // an empty/corrupt KV slot (the #469 hallucination scenario).
+        var proxy = (TestCompletionProxy)f.Proxy;
+        Assert.Empty(proxy.NonStreamingCalls);
+    }
+
+    [Fact]
+    public async Task GateA_TransportFault_FallsBackToProxy()
+    {
+        // #470: when the merged decode RPC throws a transport fault (connection
+        // reset, timeout, engine doesn't implement the opcode), Core must
+        // fall back to the HTTP proxy rather than failing the request. This
+        // is distinct from a Gate A rejection — transport faults are transient
+        // and the KV may still be valid; the proxy can still serve the request.
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2,
+            health: new GateATestHealthMonitor());
+
+        // Make EngineMergedDecodeAsync throw (simulates transport fault).
+        f.Rpc.MakeMergedDecodeThrow = true;
+
+        var result = await f.SubmitAsync("sess_gate_a_transport", 20000, 100);
+
+        // The merged decode was attempted.
+        Assert.Single(f.Rpc.MergedDecodeCalls);
+
+        // The HTTP proxy was called as fallback — the request completed.
         var proxy = (TestCompletionProxy)f.Proxy;
         Assert.Single(proxy.NonStreamingCalls);
         Assert.NotNull(result);
