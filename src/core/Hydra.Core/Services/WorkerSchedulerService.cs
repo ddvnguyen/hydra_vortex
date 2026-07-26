@@ -35,6 +35,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// Set in tests to return tracking test doubles instead of real sockets.
 	/// </summary>
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
+	/// <summary>
+	/// Factory delegate for creating LlamaClient instances. Set in tests to
+	/// return mock clients that override GetStateMetaAsync for Gate A testing.
+	/// </summary>
+	internal Func<string, LlamaClient>? LlamaClientFactory { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
@@ -2751,20 +2756,38 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						: 2048;
 
 					// #470/A7: kv_metadata (what built the KV) comes from the PREFILL
-					// response. model_metadata (what the decode node should be running)
-					// comes from the HealthMonitor — an independent source so Gate A
-					// can catch genuine identity mismatches instead of being a tautology.
+					// response. model_metadata (what the decode node is actually running)
+					// comes from querying the decode node's own STATE_META — the only
+					// truly independent source. This avoids the tautology where both
+					// sides trace back to item.Kv* or HealthMonitor (which was stamped
+					// from item.Kv* during PrefillAsync).
 					var kvIdentity = item.GetKvModelIdentity();
-					var decodeNodeInfo = _health.GetNodeInfo(w.Name);
-					var modelIdentity = decodeNodeInfo is { ModelName.Length: > 0 }
-						? new ModelIdentity
+					var modelIdentity = ModelIdentity.Empty;
+					try
+					{
+						using var metaCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+						var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
+							item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
+						if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
 						{
-							Tokenizer = decodeNodeInfo.ModelTokenizer,
-							ModelName = decodeNodeInfo.ModelName,
-							ModelQuant = decodeNodeInfo.ModelQuant,
-							ModelCapabilities = decodeNodeInfo.ModelCapabilities,
+							modelIdentity = new ModelIdentity
+							{
+								Tokenizer = decodeSlotMeta.Tokenizer,
+								ModelName = decodeSlotMeta.ModelName,
+								ModelQuant = decodeSlotMeta.ModelQuant,
+								ModelCapabilities = decodeSlotMeta.ModelCapabilities,
+							};
 						}
-						: kvIdentity;
+					}
+					catch (Exception ex)
+					{
+						// #470/A7: META query failed — send empty model_metadata so
+						// Gate A rejects on its own terms. Falling back to kvIdentity
+						// would recreate the tautology (comparing the same identity
+						// against itself), defeating the entire guard.
+						_log.Warning(ex, "gate_a_decode_meta_query_failed Sid={Sid} Worker={W} Slot={Slot}",
+							item.SessionId, w.Name, item.DecodeSlot ?? item.LastIdSlot ?? 0);
+					}
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
@@ -2904,18 +2927,31 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
 
-					// #470/A7: kv_metadata from PREFILL, model_metadata from HealthMonitor.
+					// #470/A7: kv_metadata from PREFILL, model_metadata from decode node's
+					// own STATE_META. See streaming path comment for rationale.
 					var kvIdentity = item.GetKvModelIdentity();
-					var decodeNodeInfo = _health.GetNodeInfo(w.Name);
-					var modelIdentity = decodeNodeInfo is { ModelName.Length: > 0 }
-						? new ModelIdentity
+					var modelIdentity = ModelIdentity.Empty;
+					try
+					{
+						using var metaCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+						var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
+							item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
+						if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
 						{
-							Tokenizer = decodeNodeInfo.ModelTokenizer,
-							ModelName = decodeNodeInfo.ModelName,
-							ModelQuant = decodeNodeInfo.ModelQuant,
-							ModelCapabilities = decodeNodeInfo.ModelCapabilities,
+							modelIdentity = new ModelIdentity
+							{
+								Tokenizer = decodeSlotMeta.Tokenizer,
+								ModelName = decodeSlotMeta.ModelName,
+								ModelQuant = decodeSlotMeta.ModelQuant,
+								ModelCapabilities = decodeSlotMeta.ModelCapabilities,
+							};
 						}
-						: kvIdentity;
+					}
+					catch (Exception ex)
+					{
+						_log.Warning(ex, "gate_a_decode_meta_query_failed Sid={Sid} Worker={W} Slot={Slot}",
+							item.SessionId, w.Name, item.DecodeSlot ?? item.LastIdSlot ?? 0);
+					}
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
@@ -4228,8 +4264,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private LlamaClient GetLlamaClient(WorkerConfig w)
 	{
 		if (_llamaClients.TryGetValue(w.Name, out var c)) return c;
-		var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-		c = new LlamaClient(http, w.LlamaUrl);
+		c = LlamaClientFactory != null
+			? LlamaClientFactory(w.Name)
+			: new LlamaClient(new HttpClient { Timeout = TimeSpan.FromMinutes(5) }, w.LlamaUrl);
 		_llamaClients[w.Name] = c;
 		return c;
 	}

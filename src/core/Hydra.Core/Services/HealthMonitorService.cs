@@ -228,6 +228,10 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         PresetAliases = new HashSet<string>(src.PresetAliases, StringComparer.OrdinalIgnoreCase),
         EngineCapabilities = new HashSet<string>(src.EngineCapabilities, StringComparer.OrdinalIgnoreCase),
         CurrentModel = src.CurrentModel,
+        ModelTokenizer = src.ModelTokenizer,
+        ModelName = src.ModelName,
+        ModelQuant = src.ModelQuant,
+        ModelCapabilities = src.ModelCapabilities,
         Slots = src.Slots.Select(s => new Models.SlotInfo
         {
             Id = s.Id, NPast = s.NPast, IsProcessing = s.IsProcessing,
