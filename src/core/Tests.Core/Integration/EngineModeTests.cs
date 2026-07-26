@@ -17,6 +17,8 @@ public sealed class EngineModeTests
         public List<(OpCode Op, string Key, byte[] Payload)> Calls { get; } = new();
         /// <summary>When set, EnginePipelineAttach/EngineSetExpertMode report failure (peer down).</summary>
         public bool FailMultiEngineAttach { get; set; }
+        /// <summary>When set, PREFILL with hydra_config returns Ok + model_fallback (engine accepted but couldn't activate combined mode).</summary>
+        public bool FailMultiEngineAttachFallback { get; set; }
 
         // Regression hooks for #279: when set, the matching opcode returns
         // non-OK status with empty meta, simulating an out-of-date llama-server
@@ -64,14 +66,23 @@ public sealed class EngineModeTests
             // Phase 2b (#481): COMBINED mode now sends hydra_config via PREFILL
             // instead of SET_EXPERT_MODE. When FailMultiEngineAttach is set and
             // this is a PREFILL with hydra_config (combined mode activation),
-            // simulate the engine accepting the PREFILL but being unable to
-            // activate combined mode (peer down) by returning model_fallback.
-            // This makes HydraConfigDeliveredSucceeded=false, so
-            // ApplyMultiEngineAsync at decode time records the fallback and
-            // the request continues as solo. Returning Error here would cause
-            // PrefillAsync to treat it as BUSY and retry with hydra_config
-            // still set, creating an infinite loop.
+            // simulate the engine being unable to activate combined mode.
+            //
+            // StatusCode.Error: terminal engine error — PrefillAsync must fail
+            //   the request immediately (IsError path), not loop.
+            // StatusCode.Ok + model_fallback: engine accepted the PREFILL but
+            //   fell back to a different model — ApplyMultiEngineAsync at decode
+            //   time records the fallback and the request continues as solo.
             if (op == OpCode.EnginePrefill && FailMultiEngineAttach && payload.Length > 0)
+            {
+                var payloadStr = Encoding.UTF8.GetString(payload.Span);
+                if (payloadStr.Contains("hydra_config"))
+                    return Task.FromResult(new RpcResponse(
+                        (byte)StatusCode.Error,
+                        JsonSerializer.Serialize(new { mode = "solo", peer_connected = false }),
+                        []));
+            }
+            if (op == OpCode.EnginePrefill && FailMultiEngineAttachFallback && payload.Length > 0)
             {
                 var payloadStr = Encoding.UTF8.GetString(payload.Span);
                 if (payloadStr.Contains("hydra_config"))
@@ -473,7 +484,7 @@ public sealed class EngineModeTests
         // must STILL be released (we don't want to strand the peer just
         // because the head went solo).
         await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2);
-        f.Rpc.FailMultiEngineAttach = true;
+        f.Rpc.FailMultiEngineAttachFallback = true;
 
         var result = await f.SubmitAsync("sess_p30_2", 20000, 100);
 
@@ -484,6 +495,24 @@ public sealed class EngineModeTests
 
         Assert.False(f.Tracker.IsExclusiveReserved("p100"),
             "Solo-fallback must release the exclusive reservation");
+        Assert.True(f.Tracker.HasFreeSlot("p100"));
+    }
+
+    [Fact]
+    public async Task Combined_Terminal_Error_Aborts_Without_Looping()
+    {
+        // When the engine returns a terminal error (StatusCode.Error) for a
+        // PREFILL with hydra_config, PrefillAsync must fail the request
+        // immediately instead of entering the BUSY retry loop. The exclusive
+        // reservation must still be released in FinalizeAsync.
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2);
+        f.Rpc.FailMultiEngineAttach = true;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => f.SubmitAsync("sess_p30_err", 20000, 100));
+
+        Assert.False(f.Tracker.IsExclusiveReserved("p100"),
+            "Terminal error must release the exclusive reservation");
         Assert.True(f.Tracker.HasFreeSlot("p100"));
     }
 

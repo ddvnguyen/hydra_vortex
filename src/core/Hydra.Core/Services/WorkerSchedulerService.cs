@@ -1601,6 +1601,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						"engine_prefill_fell_back_to_http Sid={Sid} Worker={W} Slot={Slot} Reason={Reason}",
 						item.SessionId, w.Name, item.PrefillSlot, engineFailReason);
 				}
+				else if (prefillResult != null && prefillResult.IsError)
+				{
+					// Terminal engine error — not retryable. Fail the request
+					// immediately so the routing layer can retry on another worker
+					// or surface the error to the client.
+					if (item.PrefillLease != null)
+					{
+						await item.PrefillLease.DisposeAsync();
+						item.PrefillLease = null;
+					}
+					item.Error = new InvalidOperationException(
+						$"EnginePrefill returned terminal error on {w.Name} (slot={slotId})");
+					_log.Error("prefill_engine_terminal_error Sid={Sid} Worker={W} Slot={Slot}",
+						item.SessionId, w.Name, slotId);
+					return WorkItemState.Failed;
+				}
 				else if (prefillResult == null)
 				{
 					// Slot is busy (BUSY) — release the current slot lease and
@@ -1613,6 +1629,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.PrefillLease = null;
 					}
 					item.RetryCount++;
+
+					if (item.RetryCount >= WorkItem.MaxRetries)
+					{
+						_log.Error("prefill_engine_busy_exhausted Sid={Sid} Worker={W} Slot={Slot} Retries={R}",
+							item.SessionId, w.Name, slotId, item.RetryCount);
+						item.Error = new InvalidOperationException(
+							$"EnginePrefill RPC returned BUSY for {item.RetryCount} retries on {w.Name} (slot={slotId})");
+						return WorkItemState.Failed;
+					}
 
 				// Progress-aware guard: get slot progress info and apply
 				// smarter timeout logic based on progress.
