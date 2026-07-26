@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.Hashing;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -485,9 +486,11 @@ public class RpcClient : IAsyncDisposable
 
     /// <summary>
     /// Framed DECODE (opcode 0x43) — merged decode path (#470).
-    /// Sends the new wire format: [4B json_len LE][json ≤ 32KiB][raw KV bytes].
-    /// The JSON header carries kv_metadata (KV-side identity), model_metadata
-    /// (engine-side identity), and the prompt. The raw KV bytes follow immediately.
+    /// New segmented wire format (v3):
+    ///   [4B hdr_len LE][8B hdr_hash LE][hdr JSON ≤ 32KiB][prompt segment][kv segment]
+    /// The control header carries kv_metadata, model_metadata, generation config,
+    /// and segment descriptors. The prompt and KV bytes follow as separate segments.
+    /// Segments are contiguous: sum(segment.len) == payload_len - 12 - hdr_len.
     /// Returns a parsed <see cref="MergedDecodeResponse"/> with match results and
     /// the decode_request_id for polling GET /v1/decode/{id}.
     /// </summary>
@@ -509,9 +512,25 @@ public class RpcClient : IAsyncDisposable
         {
             await EnsureConnectedAsync(timeoutCts.Token);
 
-            // Build JSON header
+            // Build prompt segment (the actual user content, outside the header).
+            // Always send the full prompt — Core has no tokenizer, so only the
+            // engine can compute a token-accurate delta via get_common_prefix.
+            var promptBytes = messagesJson != null
+                ? Encoding.UTF8.GetBytes(messagesJson)
+                : Array.Empty<byte>();
+            var promptHash = XxHash3.HashToUInt64(promptBytes);
+            var promptHashStr = $"xxh3:{promptHash:x16}";
+
+            // Build KV segment
+            var kvBytes = kvBlob.Length > 0 ? kvBlob.ToArray() : Array.Empty<byte>();
+            var kvHash = kvBytes.Length > 0 ? XxHash3.HashToUInt64(kvBytes) : 0UL;
+            var kvHashStr = kvBytes.Length > 0 ? $"xxh3:{kvHash:x16}" : "";
+
+            // Build control header (v3) — 32 KiB cap applies here only.
+            // This carries control data, not user content.
             var headerObj = new Dictionary<string, object>
             {
+                ["v"] = 3,
                 ["model"] = modelAlias ?? "",
                 ["kv_metadata"] = new Dictionary<string, object>
                 {
@@ -528,28 +547,52 @@ public class RpcClient : IAsyncDisposable
                     ["model_quant"] = modelQuant ?? "",
                     ["model_capabilities"] = modelCapabilities
                 },
-                ["prompt"] = new Dictionary<string, object>
+                ["generation"] = new Dictionary<string, object>
                 {
-                    ["messages"] = messagesJson != null
-                        ? JsonSerializer.Deserialize<object>(messagesJson)
-                        : null,
                     ["n_predict"] = nPredict,
                     ["sampling"] = samplingJson != null
                         ? JsonSerializer.Deserialize<object>(samplingJson)
-                        : null,
-                    ["stream"] = stream
+                        : new Dictionary<string, object>(),
+                    ["stop"] = Array.Empty<string>(),
+                    ["stream"] = stream,
+                    ["chat_syntax"] = "",
+                    ["oaicompat_model"] = modelAlias ?? ""
+                },
+                ["segments"] = new List<Dictionary<string, object>>
+                {
+                    new()
+                    {
+                        ["id"] = "prompt",
+                        ["offset"] = 0,
+                        ["len"] = promptBytes.Length,
+                        ["hash"] = promptHashStr
+                    },
+                    new()
+                    {
+                        ["id"] = "kv",
+                        ["offset"] = promptBytes.Length,
+                        ["len"] = kvBytes.Length,
+                        ["hash"] = kvHashStr
+                    }
                 }
             };
-            var jsonBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(headerObj));
+            var hdrJsonBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(headerObj));
 
-            if (jsonBytes.Length > 32768)
+            if (hdrJsonBytes.Length > 32768)
                 throw new InvalidOperationException(
-                    $"Merged DECODE JSON header exceeds 32 KiB ({jsonBytes.Length} bytes)");
+                    $"Merged DECODE control header exceeds 32 KiB ({hdrJsonBytes.Length} bytes)");
+            if (hdrJsonBytes.Length == 0)
+                throw new InvalidOperationException("Merged DECODE control header is empty");
 
-            // Build framed payload: [4B json_len LE][json bytes][raw KV bytes]
+            // Compute xxh3-64 hash of the header JSON bytes
+            var hdrHash = XxHash3.HashToUInt64(hdrJsonBytes);
+
+            // Build framed payload:
+            //   [4B hdr_len LE][8B hdr_hash LE][hdr JSON][prompt segment][kv segment]
+            // payload_len = 4 + 8 + hdr_len + prompt_len + kv_len
             var keyBytes = Encoding.UTF8.GetBytes(slotKey);
             var traceBytes = Encoding.UTF8.GetBytes(traceId);
-            var totalPayloadLen = 4 + jsonBytes.Length + kvBlob.Length;
+            var totalPayloadLen = 4 + 8 + hdrJsonBytes.Length + promptBytes.Length + kvBytes.Length;
 
             var header = Protocol.CreateRequestHeader(
                 OpCode.EngineDecode, (ushort)keyBytes.Length, (ulong)totalPayloadLen, (ushort)traceBytes.Length);
@@ -562,16 +605,25 @@ public class RpcClient : IAsyncDisposable
             if (traceBytes.Length > 0)
                 await _stream.WriteAsync(traceBytes, timeoutCts.Token);
 
-            // Write [4B json_len LE]
-            var jsonLenBuf = new byte[4];
-            BinaryPrimitives.WriteUInt32LittleEndian(jsonLenBuf, (uint)jsonBytes.Length);
-            await _stream.WriteAsync(jsonLenBuf, timeoutCts.Token);
+            // Write [4B hdr_len LE]
+            var hdrLenBuf = new byte[4];
+            BinaryPrimitives.WriteUInt32LittleEndian(hdrLenBuf, (uint)hdrJsonBytes.Length);
+            await _stream.WriteAsync(hdrLenBuf, timeoutCts.Token);
 
-            // Write JSON header
-            await _stream.WriteAsync(jsonBytes, timeoutCts.Token);
+            // Write [8B hdr_hash LE]
+            var hdrHashBuf = new byte[8];
+            BinaryPrimitives.WriteUInt64LittleEndian(hdrHashBuf, hdrHash);
+            await _stream.WriteAsync(hdrHashBuf, timeoutCts.Token);
 
-            // Write raw KV bytes
-            if (kvBlob.Length > 0)
+            // Write control header JSON
+            await _stream.WriteAsync(hdrJsonBytes, timeoutCts.Token);
+
+            // Write prompt segment
+            if (promptBytes.Length > 0)
+                await _stream.WriteAsync(promptBytes, timeoutCts.Token);
+
+            // Write KV segment
+            if (kvBytes.Length > 0)
                 await _stream.WriteAsync(kvBlob, timeoutCts.Token);
 
             await _stream.FlushAsync(timeoutCts.Token);
