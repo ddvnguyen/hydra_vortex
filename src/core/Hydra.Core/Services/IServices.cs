@@ -59,4 +59,10 @@ public interface IHealthMonitorService
     int? GetIdleSlot(string nodeName);
     NodeInfo? GetNodeInfo(string nodeName);
     Dictionary<string, object> GetHealthSummary();
+    /// <summary>
+    /// Stamp the GGUF-derived model identity onto a node's info.
+    /// Called by the worker scheduler after a PREFILL response populates
+    /// the KV model identity so Gate A can verify identity at DECODE time.
+    /// </summary>
+    void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities);
 }

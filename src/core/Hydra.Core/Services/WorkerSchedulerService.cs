@@ -1742,6 +1742,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.KvModelCapabilities = prefillResult.ModelCapabilities;
 				item.KvModelPath     = prefillResult.ModelPath;
 				item.KvModelFallback = prefillResult.ModelFallback;
+				// #470/A7: stamp the GGUF identity onto the HealthMonitor node
+				// so Gate A at DECODE time can compare kv_metadata (what built
+				// the KV) against model_metadata (what the decode node should
+				// be running) from a genuinely independent source.
+				_health.UpdateNodeModelIdentity(w.Name, item.KvTokenizer,
+					item.KvModelName, item.KvModelQuant, item.KvModelCapabilities);
 				LastDispatchedModel     = item.KvModelAlias;
 				LastDispatchedTokenizer = item.KvTokenizer;
 				LastDispatchedModelName = item.KvModelName;
@@ -2744,19 +2750,30 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
 
-					// #470: Use engine-reported GGUF identity from PREFILL response.
-					// kv_metadata (what built the KV) and model_metadata (what should
-					// decode) must both match the engine's actual loaded model identity.
-					var modelIdentity = item.GetKvModelIdentity();
+					// #470/A7: kv_metadata (what built the KV) comes from the PREFILL
+					// response. model_metadata (what the decode node should be running)
+					// comes from the HealthMonitor — an independent source so Gate A
+					// can catch genuine identity mismatches instead of being a tautology.
+					var kvIdentity = item.GetKvModelIdentity();
+					var decodeNodeInfo = _health.GetNodeInfo(w.Name);
+					var modelIdentity = decodeNodeInfo is { ModelName.Length: > 0 }
+						? new ModelIdentity
+						{
+							Tokenizer = decodeNodeInfo.ModelTokenizer,
+							ModelName = decodeNodeInfo.ModelName,
+							ModelQuant = decodeNodeInfo.ModelQuant,
+							ModelCapabilities = decodeNodeInfo.ModelCapabilities,
+						}
+						: kvIdentity;
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
 						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 						nPast: item.NPastAfter,
-						kvTokenizer: modelIdentity.Tokenizer,
-						kvModelName: modelIdentity.ModelName,
-						kvModelQuant: modelIdentity.ModelQuant,
-						kvModelCapabilities: modelIdentity.ModelCapabilities,
+						kvTokenizer: kvIdentity.Tokenizer,
+						kvModelName: kvIdentity.ModelName,
+						kvModelQuant: kvIdentity.ModelQuant,
+						kvModelCapabilities: kvIdentity.ModelCapabilities,
 						modelTokenizer: modelIdentity.Tokenizer,
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
@@ -2887,19 +2904,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
 
-					// #470: Use engine-reported GGUF identity from PREFILL response.
-					// kv_metadata (what built the KV) and model_metadata (what should
-					// decode) must both match the engine's actual loaded model identity.
-					var modelIdentity = item.GetKvModelIdentity();
+					// #470/A7: kv_metadata from PREFILL, model_metadata from HealthMonitor.
+					var kvIdentity = item.GetKvModelIdentity();
+					var decodeNodeInfo = _health.GetNodeInfo(w.Name);
+					var modelIdentity = decodeNodeInfo is { ModelName.Length: > 0 }
+						? new ModelIdentity
+						{
+							Tokenizer = decodeNodeInfo.ModelTokenizer,
+							ModelName = decodeNodeInfo.ModelName,
+							ModelQuant = decodeNodeInfo.ModelQuant,
+							ModelCapabilities = decodeNodeInfo.ModelCapabilities,
+						}
+						: kvIdentity;
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
 						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 						nPast: item.NPastAfter,
-						kvTokenizer: modelIdentity.Tokenizer,
-						kvModelName: modelIdentity.ModelName,
-						kvModelQuant: modelIdentity.ModelQuant,
-						kvModelCapabilities: modelIdentity.ModelCapabilities,
+						kvTokenizer: kvIdentity.Tokenizer,
+						kvModelName: kvIdentity.ModelName,
+						kvModelQuant: kvIdentity.ModelQuant,
+						kvModelCapabilities: kvIdentity.ModelCapabilities,
 						modelTokenizer: modelIdentity.Tokenizer,
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
