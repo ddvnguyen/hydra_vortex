@@ -250,6 +250,28 @@ All source code lives under `src/`.
 | Phase 5 | Profiling run + perf baseline | ⏳ Pending |
 | Phase 6 | AF_UNIX dispatch test (optional) | ⏳ Pending (only if Phase 5 shows wire bottleneck) |
 
+### Merged P/D DECODE (Issue #470)
+
+Replaces the blind `STATE_PUT` (0x31) + HTTP-decode pair with a single validated
+`DECODE` (0x43). The old pair had **no point at which the engine confirmed the KV
+matched the resident model** before generating — the gap behind #469.
+
+| Phase | What | Status |
+|-------|------|--------|
+| 1 | GGUF-derived model identity getters; `model_hash` removed | ✅ Merged (fork #63) |
+| 2 | Framed `0x43` + `HTTP /v1/decode/{id}` | ✅ Merged (fork #64) |
+| 3 | GGUF identity in Store + `CrossModelGuard` | ✅ Merged (#489) |
+| 3b | DECODE dynamic model-swap before KV restore | ✅ Merged (fork #65) |
+| 4 | Coordinator merged-decode path | ✅ Merged (#492) |
+| R1 | Same-node fallback observability + COMBINED routing fix | ✅ Merged (#493) |
+| 5 | v3 segmented framing, validate-first, real SSE streaming | ▶ In progress |
+| 6 | E2E soak on `pi/hydra/moe-35b-pd` | ⏳ Pending |
+
+**⚠️ Deploy hold until Phase 5 lands.** `merged_decode` is advertised
+unconditionally while the engine still rejects `prompt.messages` — the only shape
+Hydra.Core sends — so any live node on this engine build fails every P/D chat
+request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
+
 ## Verified Facts
 | Fact                         | Value        |
 |------------------------------|--------------|
@@ -260,7 +282,11 @@ All source code lives under `src/`.
 | Cross-GPU restore            | ✅ confirmed  |
 | cache_n after restore        | 2964 / 2968  |
 | KV state at 60-80K           | ~800 MB      |
-| n_tokens must be > n_past    | CRITICAL ⚠️  |
+| n_tokens must be > n_past    | CRITICAL ⚠️ — engine-owned under #470 (see below) |
+| PREFILL appends last-position logits | ✅ decode samples without a re-prefill pass |
+| Restored logits are per-slot | ⚠️ `llama_get_logits()` is context-wide; a concurrent slot clobbers it |
+| Only P/D cross-node has restored logits | COMBINED / warm / cold have none → 1-token trick still required |
+| Core cannot compute a token delta | No tokenizer — engine runs `get_common_prefix` |
 | AutoRouter routing           | ✅ 4-step algorithm |
 | EngineConfig via 0x40        | ✅ Config push works |
 | COMBINED mode (MoE)          | ✅ Expert-split verified |
