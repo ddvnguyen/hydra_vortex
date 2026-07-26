@@ -2202,10 +2202,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			CoordinatorMetrics.DecodeFallbackTotal.WithLabels("combined_pickdecode").Inc();
 		}
 		else
+		{
 			dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
-				item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels)
-				?? (item.PrefillWorker?.CanDecode == true
-					? item.PrefillWorker : null);
+				item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels);
+			if (dw == null && item.PrefillWorker?.CanDecode == true)
+			{
+				dw = item.PrefillWorker;
+				CoordinatorMetrics.DecodeFallbackTotal.WithLabels("no_pd_worker_free").Inc();
+				_log.Warning("decode_fallback_no_pd_worker_free Sid={Sid} PrefillNode={Pf} — no P/D-capable decode worker available, decoding on prefill node",
+					item.SessionId, dw.Name);
+			}
+		}
 
 		if (dw == null)
 			return WorkItemState.None;
