@@ -67,7 +67,8 @@ internal sealed class TestCompletionProxy : ICompletionProxyService
 
 	public async IAsyncEnumerable<byte[]> PollDecodeStreamAsync(
 		string nodeUrl, int decodeRequestId, string traceId,
-		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct,
+		Hydra.Core.Models.WorkItem? item = null)
 	{
 		yield return Encoding.UTF8.GetBytes(
 			$"data: {{\"choices\":[{{\"delta\":{{\"content\":\"Hi\"}}}}]}}\n\n");

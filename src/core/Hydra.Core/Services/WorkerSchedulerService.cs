@@ -2825,7 +2825,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// 404 until the result is ready.
 						item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
 						IAsyncEnumerable<byte[]> mergedStream = _proxy.PollDecodeStreamAsync(
-							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token);
+							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token, item);
 
 						item.DecodeChunks = TrackStreamNPast(mergedStream, item);
 						_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
