@@ -2745,6 +2745,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			bool mergedDecodeOk = false;
 			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
 			{
+				bool gateRejected = false;
 				try
 				{
 					var messagesJson = item.Request.TryGetValue("messages", out var msgsEl)
@@ -2838,6 +2839,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// skipped the blind STATE_PUT, so the slot is empty. Decoding
 						// via HTTP proxy here would hit an empty/corrupt slot (the #469
 						// hallucination scenario). Abort the entire request instead.
+						gateRejected = true;
 						throw new InvalidOperationException(
 							$"DECODE 0x43 rejected Sid={item.SessionId} Valid={mergedResp.Valid} DecodeId={mergedResp.DecodeRequestId} — KV not restored, aborting");
 					}
@@ -2859,9 +2861,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						mergedDecodeOk = true;
 					}
 				}
-				catch (Exception ex)
+				catch (Exception ex) when (!gateRejected)
 				{
-					_log.Warning(ex, "merged_decode_fallback Sid={Sid} — falling back to HTTP proxy",
+					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
 				}
 			}
@@ -2917,6 +2919,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			bool mergedDecodeOk = false;
 			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
 			{
+				bool gateRejected = false;
 				try
 				{
 					var messagesJson = item.Request.TryGetValue("messages", out var msgsEl)
@@ -3018,13 +3021,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					else
 					{
 						// #470: Enforcing gate — see streaming path comment.
+						gateRejected = true;
 						throw new InvalidOperationException(
 							$"DECODE 0x43 rejected Sid={item.SessionId} Valid={mergedResp.Valid} DecodeId={mergedResp.DecodeRequestId} — KV not restored, aborting");
 					}
 				}
-				catch (Exception ex)
+				catch (Exception ex) when (!gateRejected)
 				{
-					_log.Warning(ex, "merged_decode_fallback Sid={Sid} — falling back to HTTP proxy",
+					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
 				}
 			}
