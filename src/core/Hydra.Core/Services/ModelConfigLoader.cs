@@ -210,15 +210,26 @@ public sealed class ModelConfigLoader
                 merged[kv.Key] = kv.Value;
         }
 
-        // Resolve model file paths to absolute paths.
+        // Only resolve model path if not explicitly suppressed in config.
+        // If model_path is set to null in engine_config, skip resolution —
+        // the engine will use its --models-preset to resolve the model file.
         // #481 Phase 2c: resolve prefill_alias / decode_alias via the
         // model_file_aliases table. Decode role uses DecodeAlias when
         // present, else PrefillAlias. Strict: unknown aliases throw.
-        var aliasName = decodeRole && !string.IsNullOrWhiteSpace(template.DecodeAlias)
-            ? template.DecodeAlias
-            : template.PrefillAlias;
-        var modelFile = ResolveAliasFile(alias, aliasName);
-        var modelPath = ResolveModelPath(alias, modelFile);
+        string? modelPath;
+        if (merged.ContainsKey("model_path"))
+        {
+            // Key present: null means suppress, non-null means explicit override.
+            modelPath = GetString(merged, "model_path");
+        }
+        else
+        {
+            var aliasName = decodeRole && !string.IsNullOrWhiteSpace(template.DecodeAlias)
+                ? template.DecodeAlias
+                : template.PrefillAlias;
+            var modelFile = ResolveAliasFile(alias, aliasName);
+            modelPath = ResolveModelPath(alias, modelFile);
+        }
 
         return new EngineConfig(
             ModelAlias: alias,

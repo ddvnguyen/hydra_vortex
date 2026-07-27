@@ -19,8 +19,9 @@ namespace Hydra.Core.Models;
 public sealed record EngineConfig(
     /// <summary>Model alias (e.g. "moe-35b-solo", "dense-27b-combined"). Matches WorkerConfig.ModelAlias.</summary>
     string ModelAlias,
-    /// <summary>Absolute path to the GGUF file on the engine host.</summary>
-    string ModelPath,
+    /// <summary>Absolute path to the GGUF file on the engine host. When <c>null</c>,
+    /// the engine resolves the file via its <c>--models-preset</c> flag.</summary>
+    string? ModelPath = null,
     /// <summary>Layers to offload to GPU. <c>null</c> = use engine default (typically "all").</summary>
     int? NGpuLayers = null,
     /// <summary>CPU-side MoE expert count (Qwen35MoE / DeepSeek-style MoE).</summary>

@@ -44,7 +44,7 @@
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 16000, "required_capabilities": 1 } },
       "routing": { "auto_eligible": true, "min_prompt_tokens": 2048, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["p100"] },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0, "rpc_servers": ["p100:9502"] }
+      "engine_config": { "model_path": null, "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 }
     },
     "moe-35b-pd-mix": {
       "description": "Alias of moe-35b-pd for issue #469 A/B testing: P/D split, RTX prefill Q3_K-mini + P100 decode Q5_K-balanced (cross-quant). Identical config to moe-35b-pd; named explicitly to pair with moe-35b-pd-mini in test comparisons.",
@@ -54,7 +54,7 @@
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 16000, "required_capabilities": 1 } },
       "routing": { "auto_eligible": false, "min_prompt_tokens": 2048, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["p100"] },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0, "rpc_servers": ["p100:9502"] }
+      "engine_config": { "model_path": null, "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 }
     },
     "moe-35b-pd-mini": {
       "description": "DIAGNOSTIC (issue #469): P/D split, RTX prefill + P100 decode, BOTH on Q3_K-mini. Isolates cross-node KV transfer from cross-quant mixing — not for production use. Requires P100 to be deployed with node-p100-mini.yaml instead of node-p100.yaml.",
@@ -64,7 +64,7 @@
       "quality_tier": 2,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 1, "decode_requirements": { "min_vram_mb": 12000, "required_capabilities": 1 } },
       "routing": { "auto_eligible": false, "min_prompt_tokens": 2048, "max_prompt_tokens": 999999, "max_context_tokens": 128000, "requires_workers": ["p100"] },
-      "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0, "rpc_servers": ["p100:9502"] }
+      "engine_config": { "model_path": null, "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 }
     },
     "dense-27b-combined": {
       "description": "Qwen 3.6 27B Dense, COMBINED layer-split (RTX 5060 Ti + RTX 3060)",
