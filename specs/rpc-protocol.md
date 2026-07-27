@@ -360,20 +360,136 @@ key = slot_id as ASCII decimal string (e.g. `"0"`).
                         task-queue thread at the start of that task's processing — not on
                         the httplib worker thread. (An earlier attempt applied it directly
                         on the httplib worker thread and raced the main task-queue thread;
-                        that was reverted.) The binary DECODE opcode (0x43) below is not
-                        used by Hydra.Core and does not carry `hydra_config`.
+                        that was reverted.) The DECODE opcode (0x43) below carries its own
+                        `generation` block in the control header instead of `hydra_config`.
 
-0x43  DECODE            Run decode with streaming token output
-                        Request:  key="<slot_id>", payload=JSON {"n_predict":N,"messages":[...]}
-                        Response: meta={"tokens_generated":<N>,"n_past":<N>,"stop_reason":"<eos|length|n_tokens_limit>"}
-                                  payload=streamed frames of [4B token_id][4B logprob][1B flags]
-                                          (flags: 0x01=final; remaining bits reserved)
-                        Streaming model: single RPC response, server writes payload
-                                         incrementally as tokens are generated. Client
-                                         reads via `RequestStreamAsync` (chunked reader
-                                         in `RpcClient.cs`). `payload_len` in the
-                                         response header is set to the total expected
-                                         size; partial writes are flushed per token.
+0x43  DECODE            Merged KV transfer + validation + decode (issue #470, v3 framing).
+                        Replaces the old blind STATE_PUT (0x31) + HTTP decode pair: the
+                        engine now validates model identity BEFORE the KV lands, so there
+                        is no window where a wrong-model KV is resident (issue #469).
+
+                        SUPERSEDES the pre-#470 shape, which streamed raw
+                        [4B token_id][4B logprob][1B flags] frames. That format was
+                        abandoned in #273 because raw token frames cannot carry
+                        reasoning_content / finish_reason / id_slot / timings. Results now
+                        come back over HTTP GET /v1/decode/{id} as OpenAI-compatible SSE.
+
+                        Request: key="<slot_id>" (ASCII decimal), payload =
+
+                            [4B  hdr_len LE]     <= 32768
+                            [8B  hdr_hash LE]    xxh3-64 of the hdr JSON bytes
+                            [hdr_len bytes]      control header JSON (control data only)
+                            [prompt_len bytes]   prompt JSON segment (may be zero-length)
+                            [kv_len bytes]       raw KV blob (may be zero-length)
+
+                        User content is deliberately OUT of the header: with `messages`
+                        inline, the 32 KiB cap was reached around 8K tokens, while P/D
+                        exists to serve 60-80K-token sessions.
+
+                        Control header:
+                          {
+                            "v": 3,
+                            "model": "<gguf-file alias for preset_alias_to_path>",
+                            "kv_metadata":    {n_past, tokenizer, model_name,
+                                               model_quant, model_capabilities},
+                            "model_metadata": {tokenizer, model_name,
+                                               model_quant, model_capabilities},
+                            "generation":     {n_predict, sampling{}, stop[], stream,
+                                               chat_syntax, oaicompat_model},
+                            "segments": [ {id, offset, len, hash}, ... ]
+                          }
+
+                        `generation` lives in the header, not the prompt segment — the
+                        engine needs it even when the prompt segment is empty.
+                        `chat_syntax` is required: with no prompt there is nothing to
+                        derive reasoning_content / tool-call parsing from.
+
+                        Segment table is contiguity-validated. Reject with
+                        SEGMENT_TABLE_INVALID unless segments[0].offset == 0, each
+                        segments[i].offset == segments[i-1].offset + segments[i-1].len,
+                        and sum(len) == payload_len - 12 - hdr_len. Offsets are
+                        redundant-but-validating, so gaps, overlaps and aliasing are
+                        unrepresentable.
+
+                        Caps: prompt_len <= HYDRA_MAX_PROMPT_BYTES (64 MiB),
+                              kv_len <= HYDRA_MAX_STATE_BYTES (4 GiB).
+
+                        Hashes are xxh3-64, not SHA-256: on an 800 MB blob SHA-256 costs
+                        ~530 ms per pass against a ~2.1 s restore budget; xxh3 ~32 ms.
+                        The KV segment hash is verified BEFORE llama_state_seq_set_data,
+                        so a corrupted blob becomes a clean error instead of a plausible
+                        wrong answer. Always on — no toggle, no capability gate.
+
+                        Response (synchronous, ~1 ms — Gate A only):
+                          meta={"valid":<bool>, "match":{...}, "decode_request_id":<int>,
+                                "notes":[...]}
+                        model_load_ms / restore_slot_ms / n_past_after_restore are NOT
+                        here; they moved to the poll endpoint (below) when the handler
+                        became asynchronous.
+
+                        Two-gate validation:
+                          Gate A (sync, header-only) — kv_metadata vs model_metadata.
+                            No GGUF read, no model load, no KV written. tokenizer or
+                            model_name mismatch, or capabilities_xor & (MTP|VISION),
+                            rejects. model_quant mismatch is ALLOWED — mix-quant P/D is
+                            by design. Other capability bits warn.
+                          Gate B (async, post-load) — model_metadata vs the ACTUAL
+                            resident GGUF identity after any model swap. Catches unknown
+                            alias fallback, stale preset ini, alias resolving to the wrong
+                            file. Fails without writing KV.
+
+                        Asynchronous phases after the response is sent:
+                          model swap (preset_alias_to_path -> load_model) -> Gate B ->
+                          verify KV hash -> llama_state_seq_set_data -> post COMPLETION.
+
+                        Error codes: HDR_HASH_MISMATCH, SEGMENT_HASH_MISMATCH,
+                        SEGMENT_TABLE_INVALID, PROMPT_TOO_LARGE, KV_TOO_LARGE,
+                        CAP_MISMATCH, MODEL_SWAP_FAILED, RESIDENT_IDENTITY_MISMATCH,
+                        KV_RESTORE_FAILED.
+
+                        Result retrieval: GET /v1/decode/{decode_request_id}
+                          404 -> not found / expired          TERMINAL, caller aborts
+                          202 -> {state:"loading"|"restoring", model_load_ms?,
+                                  restore_slot_ms?, model_alias}  keep polling
+                          400 -> {error, error_code, match{}}  TERMINAL, caller aborts
+                          200 -> text/event-stream, per-token OAI deltas
+                        A 400 MUST abort the request. It must never fall through to the
+                        HTTP proxy — that would decode over an unvalidated or empty slot,
+                        which is issue #469.
+                        DELETE /v1/decode/{id} cancels the live task and releases the slot
+                        reservation.
+
+                        RUN MODES — only P/D cross-node carries restored logits:
+
+                          Mode                 kv seg  prompt  restored logits
+                          P/D cross-node       full    full    YES
+                          COMBINED same-node   empty   full    no
+                          warm slot            empty   full    no
+                          cold same-node       empty   full    no
+
+                        n_slot is slot->prompt.tokens.size() — whatever is resident, from
+                        a blob restore OR a prior turn OR a prefill. It is NOT "the blob's
+                        n_past". Decision rule:
+
+                          n_common <  n_new                  -> process [n_common, n_new)
+                          n_common == n_new && logits_valid  -> sample directly, 0 processed
+                          n_common == n_new && !logits_valid -> re-decode the final token
+                                                                (the "1-token trick";
+                                                                DEFAULT for warm/COMBINED)
+                          n_common <  n_slot                 -> seq_rm(n_common, -1) and
+                                                                discard restored logits FIRST
+
+                        Never clear the cache and never reject on n_common == n_new. So
+                        the n_tokens > n_past invariant is NOT retired — ownership moves
+                        from the Coordinator to the engine, which is the only side that
+                        can compute n_common. Restored logits describe position n_slot;
+                        any seq_rm invalidates them, and sampling from a stale
+                        distribution is silent corruption.
+
+                        The client always sends the full prompt: Hydra.Core has no
+                        tokenizer, so only the engine can compute a token-accurate delta
+                        via get_common_prefix. An empty prompt segment is a legal
+                        first-class value meaning "continue from restored state".
 
 0x44  SET_EXPERT_MODE   Switch expert mode (solo / combined) — implemented, issue #287/#260
                         Request:  key="<slot_id>", payload="solo" | "combined"
