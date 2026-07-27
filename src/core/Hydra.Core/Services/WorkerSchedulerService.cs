@@ -2657,9 +2657,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// is null for model-agnostic workers). The `__auto_model_alias` was
 		// stamped onto item.Request by AutoRouter earlier; fall back to the
 		// raw `model` field if that's not present.
-		var resolvedAlias = item.Request.TryGetValue("__auto_model_alias", out var ama) && ama is not null
-			? ama.ToString()
-			: (item.Request.TryGetValue("model", out var m) ? m?.ToString() : null);
+		//
+		// COMBINED mode: hydra_config was already applied during PrefillAsync
+		// (same engine, same slot). Skip re-injection to avoid GGUF-alias
+		// vs routing-identity mismatch in ResolveEngineConfig.
+		var resolvedAlias = item.RouteType == "combined"
+			? null
+			: (item.Request.TryGetValue("__auto_model_alias", out var ama) && ama is not null
+				? ama.ToString()
+				: (item.Request.TryGetValue("model", out var m) ? m?.ToString() : null));
 		if (!string.IsNullOrEmpty(resolvedAlias))
 		{
 			try
