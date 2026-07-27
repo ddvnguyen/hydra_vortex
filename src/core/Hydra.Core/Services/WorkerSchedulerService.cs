@@ -184,7 +184,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// carries the alias the engine's preset reload expects.
 						var ggufAlias = TranslateModelAlias(result.ModelAlias);
 						item.Request["model"] = ggufAlias ?? result.ModelAlias;
-						item.Request["__auto_model_alias"] = ggufAlias ?? result.ModelAlias;
+						item.Request["__auto_model_alias"] = result.ModelAlias;
+						item.Request["__auto_gguf_alias"] = ggufAlias;
 
 						// FIX #443 P0: persist BoundModel on the session ledger so
 						// STEP 0 (TryWarmAffinity) pins future turns to this model.
@@ -2662,7 +2663,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 			catch (Exception ex)
 			{
-				_log.Warning("hydra_config injection failed Alias={Alias}: {Error}", resolvedAlias, ex.Message);
+				_log.Error("hydra_config injection failed Alias={Alias}: {Error}", resolvedAlias, ex.Message);
 			}
 		}
 		else
