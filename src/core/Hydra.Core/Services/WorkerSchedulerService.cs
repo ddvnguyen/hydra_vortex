@@ -1879,6 +1879,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		CoordinatorMetrics.PrefillDuration.WithLabels(w.Name, RouteLabel(item))
 			.Observe(item.RecordPhase("prefill_ms") / 1000.0);
+
+		// COMBINED mode: skip KV save — decode happens on the same engine.
+		if (item.RequestType == RequestType.Combined)
+		{
+			item.DecodeWorker = item.PrefillWorker;
+			item.DecodeSlot = item.PrefillSlot;
+			item.DecodeLease = item.PrefillLease;
+			item.PrefillLease = null;
+			item.RouteType = "combined";
+			_log.Information("combined_prefill_done Sid={Sid} Node={Node} Slot={Slot}",
+				item.SessionId, item.DecodeWorker.Name, item.DecodeSlot);
+			return WorkItemState.Decode;
+		}
 		return WorkItemState.SaveKv;
 	}
 
@@ -2166,6 +2179,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> PickDecodeAsync(WorkItem item)
 	{
+		// COMBINED mode safety guard: COMBINED items skip SaveKv entirely and
+		// go directly PrefillAsync → DecodeAsync. If a COMBINED item reaches
+		// here, it's a bug — log and return Decode on the prefill worker.
+		if (item.RequestType == RequestType.Combined && item.PrefillWorker != null)
+		{
+			_log.Error("combined_pickdecode_unexpected Sid={Sid} Node={Node} — COMBINED item reached PickDecode (should have been skipped by PrefillAsync)",
+				item.SessionId, item.PrefillWorker.Name);
+			item.DecodeWorker = item.PrefillWorker;
+			item.DecodeSlot = item.PrefillSlot;
+			item.DecodeLease = item.PrefillLease;
+			item.PrefillLease = null;
+			return WorkItemState.Decode;
+		}
+
 		// COMBINED mode: decode must stay on the head — the peer (rtx3060) is
 		// exclusively reserved and the expert-mode split is wired to this head.
 		// PickBestDecodeWorker would wander to P100 and break the dual-GPU binding.
