@@ -432,6 +432,8 @@ public class RpcClient : IAsyncDisposable
 
     private static async Task<byte[]> ReadPayloadAsync(NetworkStream stream, long payloadLen, CancellationToken ct)
     {
+        if (payloadLen < 0 || payloadLen > 512 * 1024 * 1024)
+            throw new InvalidDataException($"RPC payload length out of range: {payloadLen} bytes");
         var buf = new byte[payloadLen];
         await ReadExactAsync(stream, buf, ct);
         return buf;
