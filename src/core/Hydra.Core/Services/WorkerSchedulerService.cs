@@ -176,16 +176,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								sessionId, result.ModelAlias, result.Head.Name,
 								result.Peer?.Name ?? "none", result.DecodeWorker?.Name ?? "none",
 								result.Mode ?? "solo");
-						// Stamp the resolved alias onto the item so downstream
-						// paths (hydra_config injection, decode) use the correct model.
-						// #479/S3: translate the routing identity to the engine's
-						// GGUF-file alias here (single source of truth) so every
-						// downstream path — PREFILL, cold_atomic decode, cold_route —
-						// carries the alias the engine's preset reload expects.
-						var ggufAlias = TranslateModelAlias(result.ModelAlias);
-						item.Request["model"] = ggufAlias ?? result.ModelAlias;
-						item.Request["__auto_model_alias"] = result.ModelAlias;
-						item.Request["__auto_gguf_alias"] = ggufAlias;
+						// Store the resolved routing identity in `model` so
+						// downstream paths (PrefillAsync, ForceMultiEnginePlan,
+						// DecodeAsync) read the correct alias directly — no
+						// __auto_model_alias intermediary needed.
+						item.Request["model"] = result.ModelAlias;
 
 						// FIX #443 P0: persist BoundModel on the session ledger so
 						// STEP 0 (TryWarmAffinity) pins future turns to this model.
@@ -741,6 +736,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			CoordinatorMetrics.RequestsTotal.WithLabels(entry.NodeName ?? "unknown", "migration").Inc();
 			CoordinatorMetrics.RequestsTotalAll.Inc();
 			CoordinatorMetrics.MigrationSessionStarts.Inc();
+
+			// COMBINED migration: set PrefillWorker from the session's previous
+			// node so PickDecodeAsync's COMBINED guard fires and keeps decode
+			// on the same head. Without this, PrefillWorker is null and decode
+			// wanders to P100, breaking the dual-GPU binding.
+			if (!string.IsNullOrEmpty(entry.NodeName))
+			{
+				item.PrefillWorker = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
+				if (item.PrefillWorker != null && item.PrefillWorker.CombinedCapable)
+					item.MultiMode = MultiEngineMode.Combined;
+			}
+
 			item.State = WorkItemState.PickDecode;
 			return await PickDecodeAsync(item);
 		}
@@ -933,7 +940,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				continue;
 
 			EngineConfig engineConfig;
-			try { engineConfig = ModelRegistry.Resolve(head.ModelAlias ?? ""); }
+			// Resolve engine config from the requested model alias (in
+			// item.Request["model"]), NOT from head.ModelAlias which is
+			// null for model-agnostic workers. Falls back to head.ModelAlias
+			// for legacy paths where model is not set on the item.
+			var requestedAlias = item.Request.TryGetValue("model", out var rm) && rm is string rma ? rma : null;
+			try { engineConfig = ModelRegistry.Resolve(requestedAlias ?? head.ModelAlias ?? ""); }
 			catch (InvalidOperationException) { continue; }
 
 			// PIPELINE needs a runtime override-tensor for the engine to route
@@ -1538,16 +1550,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// engine can swap to it (or fall back to the resident model if the
 			// alias is unknown / no preset is configured). When null, the
 			// engine uses the current resident model — pre-feature behavior.
-			// Priority: AutoRouter result (__auto_model_alias) > worker config
-			// (Router.PrefillModel). The AutoRouter alias is the actual requested
-			// model; the worker config is a fallback for legacy paths.
-			// #479/S3: translate the Hydra routing identity (e.g. moe-35b-pd,
-			// dense-27b-combined) to the GGUF-file alias the engine's preset
-			// expects (e.g. qwen3.6-35B-mini, qwen3.6-27B-coder) so the inline
-			// reload fires. If no mapping exists, fall back to the routing
-			// identity as-is (pre-feature behavior / no preset configured).
-			var routingAlias = item.Request.TryGetValue("__auto_model_alias", out var aliasRaw) && aliasRaw is string alias
-				? alias
+			// Read the routing identity directly from the `model` field
+			// (set by AutoRouter or the client request). Translate to
+			// GGUF-file alias so the engine's inline reload fires.
+			var routingAlias = item.Request.TryGetValue("model", out var modelVal) && modelVal is string mVal
+				? mVal
 				: Router.PrefillModel(w);
 			var prefillModel = TranslateModelAlias(routingAlias);
 			if (prefillModel != null)
@@ -1666,7 +1673,34 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// Workload-aware timeout logic:
 					// Calculate expected timeout based on estimated tokens and hardware capabilities.
 					// See CalculateBusyTimeouts for formula and testability.
-					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens);
+					// #507: detect model swap (T3 rebuild) and add documented load-time headroom.
+					// A COMBINED model reload can take minutes — well beyond the token-based
+					// timeout. The 6x safety multiplier accounts for the observed 270s vs
+					// documented 45s discrepancy in COMBINED reload times.
+					int modelLoadTimeS = 0;
+					if (prefillModel != null && routingAlias != null)
+					{
+						var nodeInfo = _health.GetNodeInfo(w.Name);
+						var loader = ModelConfigLoader.InstanceOrNull;
+						if (loader is not null)
+						{
+							var template = loader.GetModelTemplate(routingAlias);
+							if (template is not null)
+							{
+								// Check if the requested model's aliases are in the worker's preset.
+								// If not, the engine must do a T3 rebuild to load this model.
+								bool aliasInPreset =
+									(template.PrefillAlias != null && nodeInfo?.PresetAliases.Contains(template.PrefillAlias) == true) ||
+									(template.DecodeAlias != null && nodeInfo?.PresetAliases.Contains(template.DecodeAlias) == true);
+								if (!aliasInPreset)
+								{
+									modelLoadTimeS = template.LoadTimeS;
+									CoordinatorMetrics.ModelReloadTimeoutHeadroom.WithLabels(w.Name, routingAlias).Inc();
+								}
+							}
+						}
+					}
+					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens, modelLoadTimeS);
 
 					if (busyMs > stuckTimeoutMs && item.LastBusyProgress == 0)
 					{
@@ -1757,6 +1791,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens,
 					item.KvModelAlias ?? "?", item.KvModelFallback,
 					prefillResult.PrefillMs, prefillResult.ModelLoadMs, prefillResult.TokensPerSecond);
+
+				// #507: warn when observed model reload time significantly exceeds documented LoadTimeS.
+				// Fires on BUSY-retry success (RetryCount > 0) with engine-reported model load time.
+				if (item.RetryCount > 0 && prefillResult.ModelLoadMs > 0 && prefillModel != null && routingAlias != null)
+				{
+					var loader = ModelConfigLoader.InstanceOrNull;
+					var template = loader?.GetModelTemplate(routingAlias);
+					var documentedLoadMs = (template?.LoadTimeS ?? 0) * 1000L;
+					if (documentedLoadMs > 0 && prefillResult.ModelLoadMs > documentedLoadMs * 2)
+					{
+						_log.Warning("model_reload_exceeds_documented Sid={Sid} Node={Node} Model={Model} " +
+							"ObservedMs={Obs} DocumentedMs={Doc} Ratio={Ratio:F1}x",
+							item.SessionId, w.Name, prefillModel,
+							(long)prefillResult.ModelLoadMs, documentedLoadMs,
+							prefillResult.ModelLoadMs / documentedLoadMs);
+						CoordinatorMetrics.ModelReloadExceededDocumented
+							.WithLabels(w.Name, routingAlias!)
+							.Observe(prefillResult.ModelLoadMs / 1000.0);
+					}
+				}
 					if (item.NPastAfter > 0)
 					{
 						_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -1879,6 +1933,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		CoordinatorMetrics.PrefillDuration.WithLabels(w.Name, RouteLabel(item))
 			.Observe(item.RecordPhase("prefill_ms") / 1000.0);
+
+		// COMBINED mode: skip KV save — decode happens on the same engine.
+		if (item.RequestType == RequestType.Combined)
+		{
+			item.DecodeWorker = item.PrefillWorker;
+			item.DecodeSlot = item.PrefillSlot;
+			item.DecodeLease = item.PrefillLease;
+			item.PrefillLease = null;
+			item.RouteType = "combined";
+			_log.Information("combined_prefill_done Sid={Sid} Node={Node} Slot={Slot}",
+				item.SessionId, item.DecodeWorker.Name, item.DecodeSlot);
+			return WorkItemState.Decode;
+		}
 		return WorkItemState.SaveKv;
 	}
 
@@ -2166,6 +2233,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> PickDecodeAsync(WorkItem item)
 	{
+		// COMBINED mode safety guard: COMBINED items skip SaveKv entirely and
+		// go directly PrefillAsync → DecodeAsync. If a COMBINED item reaches
+		// here, it's a bug — log and return Decode on the prefill worker.
+		if (item.RequestType == RequestType.Combined && item.PrefillWorker != null)
+		{
+			_log.Error("combined_pickdecode_unexpected Sid={Sid} Node={Node} — COMBINED item reached PickDecode (should have been skipped by PrefillAsync)",
+				item.SessionId, item.PrefillWorker.Name);
+			item.DecodeWorker = item.PrefillWorker;
+			item.DecodeSlot = item.PrefillSlot;
+			item.DecodeLease = item.PrefillLease;
+			item.PrefillLease = null;
+			return WorkItemState.Decode;
+		}
+
 		// COMBINED mode: decode must stay on the head — the peer (rtx3060) is
 		// exclusively reserved and the expert-mode split is wired to this head.
 		// PickBestDecodeWorker would wander to P100 and break the dual-GPU binding.
@@ -2627,11 +2708,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		// #481 Phase 2c: hydra_config injection is driven by the request's
 		// resolved model alias, NOT by the worker's static ModelAlias (which
-		// is null for model-agnostic workers). The `__auto_model_alias` was
-		// stamped onto item.Request by AutoRouter earlier; fall back to the
-		// raw `model` field if that's not present.
-		var resolvedAlias = item.Request.TryGetValue("__auto_model_alias", out var ama) && ama is not null
-			? ama.ToString()
+		// is null for model-agnostic workers). Read the routing identity
+		// directly from the `model` field.
+		//
+		// COMBINED mode: hydra_config was already applied during PrefillAsync
+		// (same engine, same slot). Skip re-injection to avoid GGUF-alias
+		// vs routing-identity mismatch in ResolveEngineConfig.
+		var resolvedAlias = item.RouteType == "combined"
+			? null
 			: (item.Request.TryGetValue("model", out var m) ? m?.ToString() : null);
 		if (!string.IsNullOrEmpty(resolvedAlias))
 		{
@@ -3485,6 +3569,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <param name="estimatedTokens">Prompt token count from the request. Falls back to 10K if 0.</param>
 	/// <returns>(stuckTimeout, slowTimeout) in milliseconds.</returns>
 	internal static (long stuckMs, long slowMs) CalculateBusyTimeouts(long estimatedTokens)
+		=> CalculateBusyTimeouts(estimatedTokens, modelLoadTimeS: 0);
+
+	/// <summary>
+	/// Calculate workload-aware BUSY timeouts with optional model-reload headroom.
+	/// When <paramref name="modelLoadTimeS"/> is positive, the documented load
+	/// time is added (with a safety multiplier) to account for T3 rebuilds that
+	/// block the slot during model swaps. #507.
+	/// </summary>
+	/// <param name="estimatedTokens">Prompt token count from the request. Falls back to 10K if 0.</param>
+	/// <param name="modelLoadTimeS">ModelConfig.LoadTimeS for the requested model. 0 = no reload headroom.</param>
+	/// <returns>(stuckTimeout, slowTimeout) in milliseconds.</returns>
+	internal static (long stuckMs, long slowMs) CalculateBusyTimeouts(long estimatedTokens, int modelLoadTimeS)
 	{
 		// Conservative prefill rate: 50 tok/s (accounts for slower GPUs like P100 at 28 tok/s decode,
 		// but prefill is typically faster). Safety multiplier: 3x to account for variability.
@@ -3492,6 +3588,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var expectedPrefillMs = (long)(estimatedTokens / 50.0 * 3.0 * 1000.0); // convert seconds to ms
 		var stuckMs = Math.Max(60_000, expectedPrefillMs / 2); // at least 60s
 		var slowMs = expectedPrefillMs;
+
+		// #507: model-reload headroom. A T3 rebuild (model swap) adds a large
+		// fixed cost independent of prompt size. Use a 6x safety multiplier
+		// because observed COMBINED reload (270s) was 6x the documented 45s.
+		if (modelLoadTimeS > 0)
+		{
+			const int ReloadSafetyMultiplier = 6;
+			var reloadHeadroomMs = (long)modelLoadTimeS * ReloadSafetyMultiplier * 1000L;
+			stuckMs += reloadHeadroomMs;
+			slowMs += reloadHeadroomMs;
+		}
+
 		return (stuckMs, slowMs);
 	}
 

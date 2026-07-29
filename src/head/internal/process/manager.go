@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -387,6 +388,12 @@ func (m *Manager) restartWithBackoff(proc *managedProcess) {
 				"attempt", proc.restartCount+1,
 				"backoff", backoff)
 
+			// For the llama process, wait for its HTTP port to be free
+			// before attempting restart to avoid "couldn't bind" crash loop.
+			if proc.name == "llama" {
+				m.waitForPortRelease(8080, 10*time.Second)
+			}
+
 			proc.mu.Lock()
 			proc.restartCount++
 			proc.mu.Unlock()
@@ -421,8 +428,35 @@ func (m *Manager) RestartLlama() error {
 	if err := m.StopLlama(); err != nil {
 		m.logger.Warn("stop failed, starting anyway", "error", err)
 	}
-	time.Sleep(time.Second)
+	// Wait for the engine's HTTP port to be fully released before starting.
+	// The old process may hold the port in TIME_WAIT after SIGTERM. Without
+	// this, the new process hits "couldn't bind HTTP server socket" and
+	// terminates immediately, creating a crash loop.
+	m.waitForPortRelease(8080, 15*time.Second)
 	return m.StartLlama()
+}
+
+// waitForPortRelease polls until the given TCP port is no longer in LISTEN
+// state, up to maxWait. Returns once the port is free or the timeout expires.
+func (m *Manager) waitForPortRelease(port int, maxWait time.Duration) {
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		if !isPortListening(port) {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	m.logger.Warn("port still in use after wait, proceeding anyway",
+		"port", port, "wait", maxWait)
+}
+
+func isPortListening(port int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 func (m *Manager) StartService(name string) error {
