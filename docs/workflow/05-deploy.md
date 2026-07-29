@@ -1,7 +1,7 @@
 # 5. Deploy (only if the change touches runtime or the fork)
 
 **Goal:** get the merged change running on the nodes. Commands: `DevelopmentRunBook.md`
-("llama-server build", "P100 VM setup", "Quick Start").
+("llama-engine / llama-server — build & package", "P100 VM setup", "Quick Start").
 
 ## Services (C#/Python)
 Redeploy via the control plane —
@@ -10,65 +10,40 @@ Redeploy via the control plane —
 
 ## llama.cpp fork change — three parts
 
-### 1. Build per node
-Build the engine-enabled llama-server with the `hydra-fork` branch patches:
+### 1. Build & push via CI/CD (preferred — do not build locally)
 
-| Node   | Arch   | CUDA      | Build flags                              | Output path                    |
-|--------|--------|-----------|------------------------------------------|--------------------------------|
-| RTX    | sm_120 | CUDA 13.2 | `GGML_CUDA_FORCE_CUBLAS=ON`              | `src/llama-cpp/build_sm120/bin/llama-engine` |
-| P100   | sm_60  | CUDA 12.9 | `GGML_CUDA_FORCE_CUBLAS=ON`              | `src/llama-cpp/build_sm60/bin/llama-engine`  |
+Trigger `hydra-build.yml` in `ddvnguyen/llama.cpp` (manual-dispatch only,
+`hydra-fork` branch). It builds **and** pushes the OCI image in one
+dispatch — a coding agent does not need local CUDA toolchain access or to
+run cmake itself. Full flag reference and fallback manual-build commands:
+`DevelopmentRunBook.md` → "llama-engine / llama-server — build & package".
 
-(Build output is named `llama-engine` since the #261/#262 rename. Deployed
-paths below still use `llama-server` until the infra config migrates.)
-
-**sm_60 build (P100) — explicit CUDA toolkit path** to avoid CMake cache cross-contamination from sm_120 build:
 ```bash
-cmake -S . -B build_sm60 \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DGGML_CUDA=ON \
-  -DGGML_CUDA_FORCE_CUBLAS=ON \
-  -DCUDAToolkit_ROOT=/usr/local/cuda-12.9 \
-  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc \
-  -DCMAKE_INSTALL_RPATH=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/lib \
-  -DCMAKE_BUILD_RPATH=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/lib \
-  -DLLAMA_CUDA_BY_DEFAULT=OFF \
-  -DLLAMA_RPC=ON \
-  -DLLAMA_SERVER=ON && \
-cmake --build build_sm60 --config Release -j$(nproc) --target llama-engine
+gh workflow run hydra-build.yml --repo ddvnguyen/llama.cpp --ref hydra-fork \
+  -f build_llama_engine=true -f build_llama_server=false \
+  -f arch_sm86_sm120=true -f arch_sm60=false \
+  -f runner_target=local -f execution_mode=matrix
+
+gh run list --repo ddvnguyen/llama.cpp --workflow hydra-build.yml --limit 5
+gh run watch <run-id> --repo ddvnguyen/llama.cpp
 ```
 
-### 2. Push OCI image for binary distribution
-Hydra-head pulls the llama-server binary from a container image in ghcr.io. After building, push:
+Check both boxes for the architecture you need (`arch_sm86_sm120` for
+RTX 5060 Ti + RTX 3060, `arch_sm60` for P100 — P100 always builds
+`llama-server`, RTX picks `llama-engine`/`llama-server` per the binary
+checkboxes) and it fans out one build per combo.
 
-**RTX:**
-```bash
-# Build the container image with the new binary baked in
-podman build -f infra/hydra-head/Dockerfile.rtx -t hydra-head:rtx .
-# Or push just the binary as an OCI artifact:
-skopeo copy --format=oci \
-  dir:src/llama-cpp/build_sm120/bin/llama-engine \
-  docker://ghcr.io/ddvnguyen/llama-server:engine
+### 2. Resulting OCI image
+
+```
+ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-<short-sha>
+ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-latest
 ```
 
-**P100:**
-```bash
-# Build a minimal OCI image with just the binary
-cd src/llama-cpp/build_sm60/bin
-podman build -t llama-server-sm60:engine -f- . <<'DOCKERFILE'
-FROM scratch
-COPY llama-engine /llama-server
-ENTRYPOINT ["/llama-server"]
-DOCKERFILE
-
-# Tag and push
-podman tag llama-server-sm60:engine ghcr.io/ddvnguyen/llama-server-sm60:engine
-podman push ghcr.io/ddvnguyen/llama-server-sm60:engine
-```
-
-Verify the image digest:
-```bash
-skopeo inspect docker://ghcr.io/ddvnguyen/llama-server-sm60:engine | jq .Digest
-```
+Update the `source:` tag in `infra/hydra-head/config/node-{rtx,rtx3060,p100}.yaml`
+to the new tag (or use `POST /update` below), then redeploy. Only fall back
+to a manual `podman build -f .github/workflows/hydra-build.Dockerfile` +
+`podman push` if CI/CD is genuinely unavailable.
 
 ### 3. Push the fork + bump submodule
 

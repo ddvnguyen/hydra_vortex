@@ -238,18 +238,65 @@ bash scripts/deploy-hydra-head.sh all
 
 **APIs:** `GET /status`, `GET /health`, `POST /restart?name=<service>`, `POST /update`
 
-### llama-server from source (build only)
+### llama-engine / llama-server — build & package
 
 The fork lives in `src/llama-cpp` (submodule, default branch `hydra-fork` of
 `ddvnguyen/llama.cpp`; `.gitmodules` `branch = hydra-fork`).
-Build dirs are at `/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp/build_sm{60,120}/`.
-These builds produce the binaries that get pushed to OCI registry (ghcr.io).
 
-> **Note:** llama-server is deployed via OCI registry, not manual copy. Use the build
-> commands below only when you need to update the OCI images. See "Deploy via Hydra Head"
-> above for the actual deployment workflow.
+> **Preferred: CI/CD (`hydra-build.yml`), not a local build.** A coding
+> agent (or anyone) should default to triggering the fork's GitHub Actions
+> workflow rather than running cmake locally — it builds, packages, and
+> pushes the OCI image in one manual dispatch, on the actual RTX host,
+> with a persistent ccache. No local CUDA toolchain access needed. The
+> manual cmake builds further down are a **fallback** for when CI is
+> unavailable, or for the tight edit/build/test loop while actively
+> patching the fork (see "Fast local iteration" below).
 
-**Prerequisites:** CUDA 12.9 + CUDA 13.2 at `/opt/software/cuda/`, GCC 14 at `/usr/bin/gcc-14`.
+#### CI/CD build (recommended)
+
+`hydra-build.yml` lives in `ddvnguyen/llama.cpp` on the `hydra-fork` branch.
+It is manual-dispatch only — this is a private build fork, not upstream
+llama.cpp, so auto-triggers on push/PR were deliberately disabled fork-wide
+(every workflow in `ddvnguyen/llama.cpp` is `workflow_dispatch`-only except a
+handful of unrelated `schedule`/`issues`-based automation). Checkboxes select
+which binaries/architectures to build; `runner_target` picks where; multiple
+selections fan out per `execution_mode`.
+
+```bash
+# Trigger — llama-engine for sm86-sm120, on the local self-hosted RTX host,
+# one job per selected combo (defaults shown are also the workflow's defaults):
+gh workflow run hydra-build.yml --repo ddvnguyen/llama.cpp --ref hydra-fork \
+  -f build_llama_engine=true \
+  -f build_llama_server=false \
+  -f arch_sm86_sm120=true \
+  -f arch_sm60=false \
+  -f runner_target=local \
+  -f execution_mode=matrix
+
+# Watch it
+gh run list --repo ddvnguyen/llama.cpp --workflow hydra-build.yml --limit 5
+gh run watch <run-id> --repo ddvnguyen/llama.cpp
+```
+
+| Input | Values | Notes |
+|---|---|---|
+| `build_llama_engine` / `build_llama_server` | boolean checkboxes | Both can be checked; sm_60 always builds `llama-server` regardless (P100 has no COMBINED-mode peer) |
+| `arch_sm86_sm120` / `arch_sm60` | boolean checkboxes | Either or both; each checked arch+binary pair becomes one build |
+| `runner_target` | `local` \| `cloud` | `local` = self-hosted RTX host, real hardware, ccache persists on disk across every run. `cloud` = GitHub-hosted `ubuntu-latest`, ephemeral ccache via `actions/cache`, slower but useful if the local runner is down |
+| `execution_mode` | `matrix` \| `sequential` | `matrix` runs each selected combo as a parallel job; `sequential` runs them one after another in a single job |
+
+Resulting images (one per combo):
+```
+ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-<short-sha>
+ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-latest
+# e.g. ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-latest
+```
+
+Point Hydra Head at the new image by updating the `source:` tag in the node
+config (`infra/hydra-head/config/node-{rtx,p100}.yaml`) or via the live
+`POST /update` endpoint — see "Deploy via Hydra Head" below — then redeploy.
+
+**Prerequisites (fallback path only):** CUDA 12.9 + CUDA 13.2 at `/opt/software/cuda/`, GCC 14 at `/usr/bin/gcc-14`.
 
 ```bash
 WORK=/mnt/WorkDisk/Workplace/hydra_vortex/src/llama-cpp
@@ -280,12 +327,18 @@ Check ccache is actually being hit: `ccache -s` shows cache hits incrementing ac
 rebuilds. Once your change is verified, do a real deploy build (below) before pushing
 — the deploy build keeps LTO on since it affects steady-state decode perf.
 
-#### RTX 5060 Ti + RTX 3060 (fat sm_86+sm_120, CUDA 13.2) — preferred
+#### Manual build (fallback — when CI/CD is unavailable)
+
+The blocks below are the same flags `hydra-build.yml` / `build-combo.sh` use
+under the hood; they exist here for direct debugging on the box or when the
+self-hosted runner is down. Prefer the CI/CD build above otherwise.
+
+##### RTX 5060 Ti + RTX 3060 (fat sm_86+sm_120, CUDA 13.2)
 
 One SASS image with both archs compiled in. The 5060 Ti (Blackwell, sm_120a)
 and the 3060 (Ampere, sm_86) pick their cubin at load time. Saves the
-per-arch build dance and is the binary that ships in
-`ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine` (159 MB OCI image).
+per-arch build dance. The CI/CD path above packages this same build as
+`ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-latest`.
 
 > **Default: shared-lib build (`-DBUILD_SHARED_LIBS=ON`).** Static builds
 > (`-DBUILD_SHARED_LIBS=OFF`) hang in the post-init phase on RTX — see
@@ -336,7 +389,7 @@ The RTX 5060 Ti head and the RTX 3060 peer both bind-mount
 > before common arg parsing. `llama-server` rejects them with
 > "invalid argument" at startup.
 
-#### RTX 5060 Ti only (Blackwell sm_120, CUDA 13.2) — fallback for non-fat hosts
+##### RTX 5060 Ti only (Blackwell sm_120, CUDA 13.2) — fallback for non-fat hosts
 
 ```bash
 CUDA_PATH=/opt/software/cuda/13.2
@@ -382,7 +435,7 @@ PTX JIT (slow but functional — see PR #368). For COMBINED mode the 3060's
 > Production is unaffected: the 3060 runs in `--peer-only` mode (no model load,
 > no warmup) so this code path is never hit.
 
-#### RTX 3060 only (Ampere sm_86, CUDA 13.2) — small build for the 3060-only path
+##### RTX 3060 only (Ampere sm_86, CUDA 13.2) — small build for the 3060-only path
 
 ```bash
 CUDA_PATH=/opt/software/cuda/13.2
@@ -406,7 +459,7 @@ cmake -B build_sm86 -G Ninja \
 cmake --build build_sm86 --target llama-engine -j$(nproc)
 ```
 
-#### P100 (Pascal sm_60, CUDA 12.9)
+##### P100 (Pascal sm_60, CUDA 12.9)
 
 Pascal requires **GCC ≤ 14** as the CUDA host compiler (CUDA 12.9 caps at GCC 14;
 GCC 15+ fails with `error: unrecognized command-line option '-###'`).
@@ -460,19 +513,14 @@ The deploy script handles building the hydra-head binary, building/pushing the c
 image (RTX 5060 Ti and RTX 3060 share one image, `hydra-head:rtx`), copying configs and
 systemd unit (P100), and restarting services.
 
-To push updated llama-engine binaries to OCI registry:
-```bash
-# Build sm60, then push to ghcr.io
-podman tag localhost/llama-server-sm60 ghcr.io/ddvnguyen/llama-server-sm60:$(git rev-parse --short HEAD)
-podman push ghcr.io/ddvnguyen/llama-server-sm60:$(git rev-parse --short HEAD)
-# Then update the tag in infra/hydra-head/config/node-p100.yaml
-
-# Build the FAT sm_86+sm_120 (RTX 5060 Ti + RTX 3060 share this), then push
-podman build -t ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine .  # uses a FROM-scratch Dockerfile
-podman push ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
-# The tag is in infra/hydra-head/config/node-{rtx,rtx3060}.yaml (currently "sm86-sm120-engine";
-# the OCI pull is a fallback — the bind-mount in compose is the source of truth on this host).
-```
+To push updated llama-engine/llama-server binaries to the OCI registry, use
+the CI/CD build above — `hydra-build.yml` builds **and** pushes in the same
+dispatch (see "CI/CD build (recommended)"). It replaces the old manual
+`podman build`/`podman push` steps that used to live here. After the
+workflow finishes, update the tag in `infra/hydra-head/config/node-{rtx,rtx3060,p100}.yaml`
+to match the pushed `<arch>-<binary>-<sha>` (or `-latest`) tag, then redeploy.
+Only fall back to a manual `podman build -f .github/workflows/hydra-build.Dockerfile`
+if CI/CD is genuinely unavailable.
 
 Or, for a quick P100 update that bypasses the OCI pull flow, replace the
 binary directly on the VM (still supported):
