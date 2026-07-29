@@ -159,7 +159,7 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         // Best-effort: a pre-#289 engine returns NotImplemented → empty set.
         try
         {
-            await using var rpc = new Hydra.Shared.RpcClient(w.Host, w.LlamaRpcPort > 0 ? w.LlamaRpcPort : w.RpcPort);
+            await using var rpc = new Hydra.Shared.RpcClient(w.LlamaRpcHost, w.LlamaRpcPort > 0 ? w.LlamaRpcPort : w.RpcPort);
             var engine = new HydraEngineClient(rpc);
             var engineInfo = await engine.EngineInfoAsync($"health-{w.Name}", ct);
             if (engineInfo?.PresetAliases is { } aliases && aliases.Count > 0)
@@ -169,7 +169,8 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         }
         catch (Exception ex)
         {
-            _log.Debug(ex, "health_poll_engine_info_failed Node={N}", w.Name);
+            _log.Warning(ex, "health_poll_engine_info_failed Node={N} Host={H} Port={P}",
+                w.Name, w.LlamaRpcHost, w.LlamaRpcPort > 0 ? w.LlamaRpcPort : w.RpcPort);
         }
 
         // Stuck-slot watchdog (#299/C7): carry the per-slot stuck counter across

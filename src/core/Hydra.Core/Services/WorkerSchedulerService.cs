@@ -944,8 +944,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// item.Request["model"]), NOT from head.ModelAlias which is
 			// null for model-agnostic workers. Falls back to head.ModelAlias
 			// for legacy paths where model is not set on the item.
+			// #513: prefer ModelConfigLoader (fresh data-driven config) over
+			// ModelRegistry (static hardcoded entries) to avoid stale paths
+			// after coordinator restart.
 			var requestedAlias = item.Request.TryGetValue("model", out var rm) && rm is string rma ? rma : null;
-			try { engineConfig = ModelRegistry.Resolve(requestedAlias ?? head.ModelAlias ?? ""); }
+			var resolveAlias = requestedAlias ?? head.ModelAlias ?? "";
+			if (string.IsNullOrEmpty(resolveAlias)) continue;
+			try
+			{
+				var loader = ModelConfigLoader.InstanceOrNull;
+				if (loader != null)
+				{
+					try { engineConfig = loader.ResolveEngineConfig(resolveAlias); }
+					catch (InvalidOperationException) { engineConfig = ModelRegistry.Resolve(resolveAlias); }
+				}
+				else
+				{
+					engineConfig = ModelRegistry.Resolve(resolveAlias);
+				}
+			}
 			catch (InvalidOperationException) { continue; }
 
 			// PIPELINE needs a runtime override-tensor for the engine to route
@@ -1673,7 +1690,40 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// Workload-aware timeout logic:
 					// Calculate expected timeout based on estimated tokens and hardware capabilities.
 					// See CalculateBusyTimeouts for formula and testability.
-					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens);
+					// #507: detect model swap (T3 rebuild) and add documented load-time headroom.
+					// A COMBINED model reload can take minutes — well beyond the token-based
+					// timeout. The 6x safety multiplier accounts for the observed 270s vs
+					// documented 45s discrepancy in COMBINED reload times.
+					int modelLoadTimeS = 0;
+					if (prefillModel != null && routingAlias != null)
+					{
+						var nodeInfo = _health.GetNodeInfo(w.Name);
+						var loader = ModelConfigLoader.InstanceOrNull;
+						if (loader is not null)
+						{
+							var template = loader.GetModelTemplate(routingAlias);
+							if (template is not null)
+							{
+							// Check if the requested model's aliases are in the worker's preset.
+							// Only apply reload headroom when we have POSITIVE evidence that a
+							// swap is needed: nodeInfo is non-null, PresetAliases is populated,
+							// and the alias truly isn't in the set. When nodeInfo is null
+							// (before first health poll) or PresetAliases is empty (pre-#289
+							// engine), we conservatively skip the multiplier to avoid failing
+							// open on ordinary contention. #511.
+							bool hasPresetData = nodeInfo != null && nodeInfo.PresetAliases.Count > 0;
+							bool aliasInPreset = hasPresetData
+								&& ((template.PrefillAlias != null && nodeInfo!.PresetAliases.Contains(template.PrefillAlias))
+									|| (template.DecodeAlias != null && nodeInfo!.PresetAliases.Contains(template.DecodeAlias)));
+							if (hasPresetData && !aliasInPreset)
+							{
+								modelLoadTimeS = template.LoadTimeS;
+								CoordinatorMetrics.ModelReloadTimeoutHeadroom.WithLabels(w.Name, routingAlias).Inc();
+							}
+							}
+						}
+					}
+					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens, modelLoadTimeS);
 
 					if (busyMs > stuckTimeoutMs && item.LastBusyProgress == 0)
 					{
@@ -3522,6 +3572,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <param name="estimatedTokens">Prompt token count from the request. Falls back to 10K if 0.</param>
 	/// <returns>(stuckTimeout, slowTimeout) in milliseconds.</returns>
 	internal static (long stuckMs, long slowMs) CalculateBusyTimeouts(long estimatedTokens)
+		=> CalculateBusyTimeouts(estimatedTokens, modelLoadTimeS: 0);
+
+	/// <summary>
+	/// Calculate workload-aware BUSY timeouts with optional model-reload headroom.
+	/// When <paramref name="modelLoadTimeS"/> is positive, the documented load
+	/// time is multiplied by a safety factor and added to both timeouts.
+	/// </summary>
+	internal static (long stuckMs, long slowMs) CalculateBusyTimeouts(long estimatedTokens, int modelLoadTimeS)
 	{
 		// Conservative prefill rate: 50 tok/s (accounts for slower GPUs like P100 at 28 tok/s decode,
 		// but prefill is typically faster). Safety multiplier: 3x to account for variability.
@@ -3529,6 +3587,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var expectedPrefillMs = (long)(estimatedTokens / 50.0 * 3.0 * 1000.0); // convert seconds to ms
 		var stuckMs = Math.Max(60_000, expectedPrefillMs / 2); // at least 60s
 		var slowMs = expectedPrefillMs;
+
+		// #507: model-reload headroom. A T3 rebuild (model swap) adds a large
+		// fixed cost independent of prompt size. Use a 6x safety multiplier
+		// because observed COMBINED reload (270s) was 6x the documented 45s.
+		if (modelLoadTimeS > 0)
+		{
+			const int ReloadSafetyMultiplier = 6;
+			var reloadHeadroomMs = (long)modelLoadTimeS * ReloadSafetyMultiplier * 1000L;
+			stuckMs += reloadHeadroomMs;
+			slowMs += reloadHeadroomMs;
+		}
+
 		return (stuckMs, slowMs);
 	}
 
@@ -4228,7 +4298,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private Hydra.Shared.RpcClient GetLlamaRpcClient(WorkerConfig w)
 	{
 		if (_llamaRpcClients.TryGetValue(w.Name, out var c)) return c;
-		var rpcHost = new Uri(w.LlamaUrl).Host;
+		var rpcHost = w.LlamaRpcHost;
 		// Honor the injectable factory so tests never open real sockets.
 		var client = AgentClientFactory != null
 			? AgentClientFactory(rpcHost, w.LlamaRpcPort)

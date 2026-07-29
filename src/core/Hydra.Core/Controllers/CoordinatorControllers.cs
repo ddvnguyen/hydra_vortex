@@ -102,7 +102,14 @@ public class CompletionsController : ControllerBase
 
 		// Single pass: derive session ID, token estimate, and prefix hash
 		var summary = Router.SummarizeMessages(messages);
-		sessionId ??= summary.SessionId;
+		if (sessionId == null)
+		{
+			// Per-request salt: ensure unique session IDs for identical requests
+			// when no session_id is provided by the client.
+			var salt = $"|{Environment.CurrentManagedThreadId}|{System.Diagnostics.Stopwatch.GetTimestamp()}";
+			sessionId = $"sess_{Convert.ToHexStringLower(
+				System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(summary.SessionId[5..] + salt)))[..24]}";
+		}
 		Log.Information("event=chat_completions_summarized trace_id={TraceId} elapsed_ms={ElapsedMs} estimated_tokens={EstimatedTokens} system_prompt_tokens={SystemPromptTokens} session_id={SessionId}",
 			traceId, sw.ElapsedMilliseconds, summary.EstimatedTokens, summary.SystemPromptTokens, sessionId);
 
