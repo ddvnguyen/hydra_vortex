@@ -35,6 +35,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// Set in tests to return tracking test doubles instead of real sockets.
 	/// </summary>
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
+	/// <summary>
+	/// Factory delegate for creating LlamaClient instances. Set in tests to
+	/// return mock clients that override GetStateMetaAsync for Gate A testing.
+	/// </summary>
+	internal Func<string, LlamaClient>? LlamaClientFactory { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
@@ -1593,7 +1598,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// distinct "hydra_config applied" signal, check it here instead of only
 				// !prefillResult.NotImplemented.
 				if (hydraConfig is not null)
-					item.HydraConfigDeliveredSucceeded = prefillResult is not null && !prefillResult.NotImplemented;
+					item.HydraConfigDeliveredSucceeded = prefillResult is not null && !prefillResult.NotImplemented && !prefillResult.ModelFallback;
 
 				if (prefillResult != null && prefillResult.NotImplemented)
 				{
@@ -1609,6 +1614,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						"engine_prefill_fell_back_to_http Sid={Sid} Worker={W} Slot={Slot} Reason={Reason}",
 						item.SessionId, w.Name, item.PrefillSlot, engineFailReason);
 				}
+				else if (prefillResult != null && prefillResult.IsError)
+				{
+					// Terminal engine error — not retryable. Fail the request
+					// immediately so the routing layer can retry on another worker
+					// or surface the error to the client.
+					if (item.PrefillLease != null)
+					{
+						await item.PrefillLease.DisposeAsync();
+						item.PrefillLease = null;
+					}
+					item.Error = new InvalidOperationException(
+						$"EnginePrefill returned terminal error on {w.Name} (slot={slotId})");
+					_log.Error("prefill_engine_terminal_error Sid={Sid} Worker={W} Slot={Slot}",
+						item.SessionId, w.Name, slotId);
+					return WorkItemState.Failed;
+				}
 				else if (prefillResult == null)
 				{
 					// Slot is busy (BUSY) — release the current slot lease and
@@ -1621,6 +1642,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.PrefillLease = null;
 					}
 					item.RetryCount++;
+
+					if (item.RetryCount >= WorkItem.MaxRetries)
+					{
+						_log.Error("prefill_engine_busy_exhausted Sid={Sid} Worker={W} Slot={Slot} Retries={R}",
+							item.SessionId, w.Name, slotId, item.RetryCount);
+						item.Error = new InvalidOperationException(
+							$"EnginePrefill RPC returned BUSY for {item.RetryCount} retries on {w.Name} (slot={slotId})");
+						return WorkItemState.Failed;
+					}
 
 				// Progress-aware guard: get slot progress info and apply
 				// smarter timeout logic based on progress.
@@ -1752,6 +1782,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.KvModelCapabilities = prefillResult.ModelCapabilities;
 				item.KvModelPath     = prefillResult.ModelPath;
 				item.KvModelFallback = prefillResult.ModelFallback;
+				// #470/A7: stamp the GGUF identity onto the HealthMonitor node
+				// so Gate A at DECODE time can compare kv_metadata (what built
+				// the KV) against model_metadata (what the decode node should
+				// be running) from a genuinely independent source.
+				_health.UpdateNodeModelIdentity(w.Name, item.KvTokenizer,
+					item.KvModelName, item.KvModelQuant, item.KvModelCapabilities);
 				LastDispatchedModel     = item.KvModelAlias;
 				LastDispatchedTokenizer = item.KvTokenizer;
 				LastDispatchedModelName = item.KvModelName;
@@ -2259,10 +2295,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			CoordinatorMetrics.DecodeFallbackTotal.WithLabels("combined_pickdecode").Inc();
 		}
 		else
+		{
 			dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
-				item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels)
-				?? (item.PrefillWorker?.CanDecode == true
-					? item.PrefillWorker : null);
+				item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels);
+			if (dw == null && item.PrefillWorker?.CanDecode == true)
+			{
+				dw = item.PrefillWorker;
+				CoordinatorMetrics.DecodeFallbackTotal.WithLabels("no_pd_worker_free").Inc();
+				_log.Warning("decode_fallback_no_pd_worker_free Sid={Sid} PrefillNode={Pf} — no P/D-capable decode worker available, decoding on prefill node",
+					item.SessionId, dw.Name);
+			}
+		}
 
 		if (dw == null)
 			return WorkItemState.None;
@@ -2787,6 +2830,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			bool mergedDecodeOk = false;
 			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
 			{
+				bool gateRejected = false;
 				try
 				{
 					var messagesJson = item.Request.TryGetValue("messages", out var msgsEl)
@@ -2797,19 +2841,48 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
 
-					// #470: Use engine-reported GGUF identity from PREFILL response.
-					// kv_metadata (what built the KV) and model_metadata (what should
-					// decode) must both match the engine's actual loaded model identity.
-					var modelIdentity = item.GetKvModelIdentity();
+					// #470/A7: kv_metadata (what built the KV) comes from the PREFILL
+					// response. model_metadata (what the decode node is actually running)
+					// comes from querying the decode node's own STATE_META — the only
+					// truly independent source. This avoids the tautology where both
+					// sides trace back to item.Kv* or HealthMonitor (which was stamped
+					// from item.Kv* during PrefillAsync).
+					var kvIdentity = item.GetKvModelIdentity();
+					var modelIdentity = ModelIdentity.Empty;
+					try
+					{
+						using var metaCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+						var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
+							item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
+						if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
+						{
+							modelIdentity = new ModelIdentity
+							{
+								Tokenizer = decodeSlotMeta.Tokenizer,
+								ModelName = decodeSlotMeta.ModelName,
+								ModelQuant = decodeSlotMeta.ModelQuant,
+								ModelCapabilities = decodeSlotMeta.ModelCapabilities,
+							};
+						}
+					}
+					catch (Exception ex)
+					{
+						// #470/A7: META query failed — send empty model_metadata so
+						// Gate A rejects on its own terms. Falling back to kvIdentity
+						// would recreate the tautology (comparing the same identity
+						// against itself), defeating the entire guard.
+						_log.Warning(ex, "gate_a_decode_meta_query_failed Sid={Sid} Worker={W} Slot={Slot}",
+							item.SessionId, w.Name, item.DecodeSlot ?? item.LastIdSlot ?? 0);
+					}
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
 						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 						nPast: item.NPastAfter,
-						kvTokenizer: modelIdentity.Tokenizer,
-						kvModelName: modelIdentity.ModelName,
-						kvModelQuant: modelIdentity.ModelQuant,
-						kvModelCapabilities: modelIdentity.ModelCapabilities,
+						kvTokenizer: kvIdentity.Tokenizer,
+						kvModelName: kvIdentity.ModelName,
+						kvModelQuant: kvIdentity.ModelQuant,
+						kvModelCapabilities: kvIdentity.ModelCapabilities,
 						modelTokenizer: modelIdentity.Tokenizer,
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
@@ -2851,6 +2924,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// skipped the blind STATE_PUT, so the slot is empty. Decoding
 						// via HTTP proxy here would hit an empty/corrupt slot (the #469
 						// hallucination scenario). Abort the entire request instead.
+						gateRejected = true;
 						throw new InvalidOperationException(
 							$"DECODE 0x43 rejected Sid={item.SessionId} Valid={mergedResp.Valid} DecodeId={mergedResp.DecodeRequestId} — KV not restored, aborting");
 					}
@@ -2861,7 +2935,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// 404 until the result is ready.
 						item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
 						IAsyncEnumerable<byte[]> mergedStream = _proxy.PollDecodeStreamAsync(
-							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token);
+							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token, item);
 
 						item.DecodeChunks = TrackStreamNPast(mergedStream, item);
 						_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
@@ -2872,9 +2946,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						mergedDecodeOk = true;
 					}
 				}
-				catch (Exception ex)
+				catch (Exception ex) when (!gateRejected)
 				{
-					_log.Warning(ex, "merged_decode_fallback Sid={Sid} — falling back to HTTP proxy",
+					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
 				}
 			}
@@ -2930,6 +3004,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			bool mergedDecodeOk = false;
 			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
 			{
+				bool gateRejected = false;
 				try
 				{
 					var messagesJson = item.Request.TryGetValue("messages", out var msgsEl)
@@ -2940,19 +3015,40 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
 
-					// #470: Use engine-reported GGUF identity from PREFILL response.
-					// kv_metadata (what built the KV) and model_metadata (what should
-					// decode) must both match the engine's actual loaded model identity.
-					var modelIdentity = item.GetKvModelIdentity();
+					// #470/A7: kv_metadata from PREFILL, model_metadata from decode node's
+					// own STATE_META. See streaming path comment for rationale.
+					var kvIdentity = item.GetKvModelIdentity();
+					var modelIdentity = ModelIdentity.Empty;
+					try
+					{
+						using var metaCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+						var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
+							item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
+						if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
+						{
+							modelIdentity = new ModelIdentity
+							{
+								Tokenizer = decodeSlotMeta.Tokenizer,
+								ModelName = decodeSlotMeta.ModelName,
+								ModelQuant = decodeSlotMeta.ModelQuant,
+								ModelCapabilities = decodeSlotMeta.ModelCapabilities,
+							};
+						}
+					}
+					catch (Exception ex)
+					{
+						_log.Warning(ex, "gate_a_decode_meta_query_failed Sid={Sid} Worker={W} Slot={Slot}",
+							item.SessionId, w.Name, item.DecodeSlot ?? item.LastIdSlot ?? 0);
+					}
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
 						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 						nPast: item.NPastAfter,
-						kvTokenizer: modelIdentity.Tokenizer,
-						kvModelName: modelIdentity.ModelName,
-						kvModelQuant: modelIdentity.ModelQuant,
-						kvModelCapabilities: modelIdentity.ModelCapabilities,
+						kvTokenizer: kvIdentity.Tokenizer,
+						kvModelName: kvIdentity.ModelName,
+						kvModelQuant: kvIdentity.ModelQuant,
+						kvModelCapabilities: kvIdentity.ModelCapabilities,
 						modelTokenizer: modelIdentity.Tokenizer,
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
@@ -3010,13 +3106,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					else
 					{
 						// #470: Enforcing gate — see streaming path comment.
+						gateRejected = true;
 						throw new InvalidOperationException(
 							$"DECODE 0x43 rejected Sid={item.SessionId} Valid={mergedResp.Valid} DecodeId={mergedResp.DecodeRequestId} — KV not restored, aborting");
 					}
 				}
-				catch (Exception ex)
+				catch (Exception ex) when (!gateRejected)
 				{
-					_log.Warning(ex, "merged_decode_fallback Sid={Sid} — falling back to HTTP proxy",
+					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
 				}
 			}
@@ -4280,8 +4377,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private LlamaClient GetLlamaClient(WorkerConfig w)
 	{
 		if (_llamaClients.TryGetValue(w.Name, out var c)) return c;
-		var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-		c = new LlamaClient(http, w.LlamaUrl);
+		c = LlamaClientFactory != null
+			? LlamaClientFactory(w.Name)
+			: new LlamaClient(new HttpClient { Timeout = TimeSpan.FromMinutes(5) }, w.LlamaUrl);
 		_llamaClients[w.Name] = c;
 		return c;
 	}

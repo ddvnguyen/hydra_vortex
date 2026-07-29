@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using Hydra.Core.Models;
 
 namespace Hydra.Core.Services;
 
@@ -67,21 +68,25 @@ public sealed class CompletionProxyService : ICompletionProxyService
 	}
 
 	// #470: Poll GET /v1/decode/{id} for streaming merged-decode result.
-	// The engine generates asynchronously after DECODE 0x43 returns the validation
-	// response. GET returns 404 until the generation completes, then returns the
-	// full SSE response in one shot.
+	// The engine generates asynchronously after DECODE 0x43 returns Gate A validation.
+	// GET /v1/decode/{id} returns:
+	//   404 → not found or expired (terminal, abort)
+	//   202 → {state:"loading"|"restoring", model_load_ms?, restore_slot_ms?, model_alias}
+	//          keep polling; record phase fields as they appear
+	//   400 → {error, error_code, match{}} (terminal, abort — must never fall through
+	//          to HTTP proxy; that decodes over an unvalidated slot = #469 hallucination)
+	//   200 → text/event-stream, per-token OAI deltas
 	public async IAsyncEnumerable<byte[]> PollDecodeStreamAsync(
 		string nodeUrl, int decodeRequestId, string traceId,
-		[EnumeratorCancellation] CancellationToken ct)
+		[EnumeratorCancellation] CancellationToken ct,
+		WorkItem? item = null)
 	{
 		var url = $"{nodeUrl}/v1/decode/{decodeRequestId}";
 		const int initialDelayMs = 100;
 		const int maxDelayMs = 500;
 		const int maxAttempts = 600; // 600 * 500ms = 300s max wait
 		var delay = initialDelayMs;
-		// try/finally (not try/catch) — C# allows yield inside try/finally but not try/catch.
-		// The finally block fires DELETE when the token is cancelled, covering cancellation
-		// from any point in the loop (HTTP call, Task.Delay, or ThrowIfCancellationRequested).
+		var prepareStartMs = item?.ElapsedMs ?? 0;
 		try
 		{
 			for (int attempt = 0; attempt < maxAttempts; attempt++)
@@ -91,16 +96,67 @@ public sealed class CompletionProxyService : ICompletionProxyService
 				var req = new HttpRequestMessage(HttpMethod.Get, url);
 				req.Headers.Add("Accept", "text/event-stream");
 				resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+
 				if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
 				{
+					// 404: not found or expired — terminal. Abort the request.
 					resp.Dispose();
+					throw new InvalidOperationException(
+						$"GET /v1/decode/{decodeRequestId} returned 404 — decode request not found or expired");
+				}
+
+				if (resp.StatusCode == System.Net.HttpStatusCode.Accepted)
+				{
+					// 202: still loading/restoring — record phase fields, keep polling.
+					try
+					{
+						var body = await resp.Content.ReadAsStringAsync(ct);
+						if (!string.IsNullOrEmpty(body) && item != null)
+						{
+							var doc = JsonDocument.Parse(body);
+							var root = doc.RootElement;
+							if (root.TryGetProperty("model_load_ms", out var mlm) && mlm.ValueKind == JsonValueKind.Number)
+								item.Phases["model_load_ms"] = (long)mlm.GetDouble();
+							if (root.TryGetProperty("restore_slot_ms", out var rsm) && rsm.ValueKind == JsonValueKind.Number)
+								item.Phases["restore_slot_ms"] = (long)rsm.GetDouble();
+						}
+					}
+					catch { /* non-fatal: phase fields are best-effort */ }
+					finally { resp.Dispose(); }
+
+					// Record decode_prepare_ms on first 202
+					if (item != null && !item.Phases.ContainsKey("decode_prepare_ms") && prepareStartMs > 0)
+						item.Phases["decode_prepare_ms"] = item.ElapsedMs - prepareStartMs;
+
 					await Task.Delay(delay, ct);
 					delay = Math.Min(delay * 2, maxDelayMs);
 					continue;
 				}
+
+				if (resp.StatusCode == System.Net.HttpStatusCode.BadRequest)
+				{
+					// 400: terminal error — abort. Must never fall through to HTTP
+					// proxy; that would decode over an unvalidated or empty slot
+					// (the #469 hallucination bug).
+					try
+					{
+						var body = await resp.Content.ReadAsStringAsync(ct);
+						Console.Error.WriteLine($"decode_poll_400 Sid={item?.SessionId ?? "?"} DecodeId={decodeRequestId} Body={body}");
+					}
+					catch { }
+					finally { resp.Dispose(); }
+					throw new InvalidOperationException(
+						$"GET /v1/decode/{decodeRequestId} returned 400 — engine rejected the decode request");
+				}
+
 				resp.EnsureSuccessStatusCode();
 				using var stream = await resp.Content.ReadAsStreamAsync(ct);
 				using var reader = new StreamReader(stream);
+
+				// Record ttft_ms on first byte of 200 response
+				if (item != null && !item.Phases.ContainsKey("ttft_ms") && prepareStartMs > 0)
+					item.Phases["ttft_ms"] = item.ElapsedMs - prepareStartMs;
+
 				string? line;
 				while ((line = await reader.ReadLineAsync(ct)) != null)
 				{

@@ -174,7 +174,7 @@ public sealed class EngineClientTests
     }
 
     [Fact]
-    public async Task EnginePrefillAsync_ReturnsNull_OnNonOkResponse()
+    public async Task EnginePrefillAsync_ReturnsIsError_OnNonOkResponse()
     {
         var rpc = new CapturingRpcClient();
         rpc.NextResponse = new RpcResponse((byte)StatusCode.Error, "nope", Array.Empty<byte>());
@@ -185,7 +185,8 @@ public sealed class EngineClientTests
             requestJson: $$"""{"messages":{{messages}}}""",
             traceId: "trace", ct: CancellationToken.None);
 
-        Assert.Null(result);
+        Assert.NotNull(result);
+        Assert.True(result!.IsError);
     }
 
     [Fact]

@@ -274,6 +274,16 @@ public sealed class NodeInfo
 	/// </summary>
 	public string CurrentModel { get; set; } = "";
 	/// <summary>
+	/// GGUF-derived model identity of the model currently resident on this node.
+	/// Populated by the worker scheduler from the engine's PREFILL response.
+	/// Used by Gate A (DECODE 0x43) to verify the KV cache matches the loaded model.
+	/// Empty = unknown (no request seen yet).
+	/// </summary>
+	public string ModelTokenizer { get; set; } = "";
+	public string ModelName { get; set; } = "";
+	public string ModelQuant { get; set; } = "";
+	public uint ModelCapabilities { get; set; }
+	/// <summary>
 	/// Engine capabilities advertised via INFO (0x41) health poll.
 	/// Includes "merged_decode" when the engine supports the framed DECODE wire format.
 	/// </summary>

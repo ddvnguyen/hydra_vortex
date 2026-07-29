@@ -109,8 +109,21 @@ public sealed class HydraEngineClient
             };
         }
 
-        if (resp.Status != (byte)StatusCode.Ok)
+        // Busy: the slot is occupied by another operation — retryable.
+        // Return null so PrefillAsync enters the existing timeout/retry path.
+        if (resp.Status == (byte)StatusCode.Busy)
             return null;
+
+        // Any other non-Ok status (Error, BadRequest, NotFound, etc.) is
+        // terminal — the engine rejected the PREFILL for a reason that
+        // retrying will not fix. Return a non-null result with IsError=true
+        // so PrefillAsync fails immediately instead of looping.
+        if (resp.Status != (byte)StatusCode.Ok)
+            return new EnginePrefillResult
+            {
+                IsError = true,
+                KvBlob  = Array.Empty<byte>()
+            };
 
         EnginePrefillResult? meta = null;
         if (!string.IsNullOrEmpty(resp.Meta))
@@ -338,4 +351,11 @@ public sealed class EnginePrefillResult
     /// </summary>
     [JsonIgnore]
     public bool NotImplemented { get; init; }
+
+    /// <summary>
+    /// True when the engine returned a terminal error (not BUSY, not NotImplemented).
+    /// The caller should fail the request immediately — retrying will not help.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsError { get; init; }
 }
