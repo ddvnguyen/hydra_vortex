@@ -1673,7 +1673,34 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// Workload-aware timeout logic:
 					// Calculate expected timeout based on estimated tokens and hardware capabilities.
 					// See CalculateBusyTimeouts for formula and testability.
-					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens);
+					// #507: detect model swap (T3 rebuild) and add documented load-time headroom.
+					// A COMBINED model reload can take minutes — well beyond the token-based
+					// timeout. The 6x safety multiplier accounts for the observed 270s vs
+					// documented 45s discrepancy in COMBINED reload times.
+					int modelLoadTimeS = 0;
+					if (prefillModel != null && routingAlias != null)
+					{
+						var nodeInfo = _health.GetNodeInfo(w.Name);
+						var loader = ModelConfigLoader.InstanceOrNull;
+						if (loader is not null)
+						{
+							var template = loader.GetModelTemplate(routingAlias);
+							if (template is not null)
+							{
+								// Check if the requested model's aliases are in the worker's preset.
+								// If not, the engine must do a T3 rebuild to load this model.
+								bool aliasInPreset =
+									(template.PrefillAlias != null && nodeInfo?.PresetAliases.Contains(template.PrefillAlias) == true) ||
+									(template.DecodeAlias != null && nodeInfo?.PresetAliases.Contains(template.DecodeAlias) == true);
+								if (!aliasInPreset)
+								{
+									modelLoadTimeS = template.LoadTimeS;
+									CoordinatorMetrics.ModelReloadTimeoutHeadroom.WithLabels(w.Name, routingAlias).Inc();
+								}
+							}
+						}
+					}
+					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens, modelLoadTimeS);
 
 					if (busyMs > stuckTimeoutMs && item.LastBusyProgress == 0)
 					{
@@ -1764,6 +1791,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens,
 					item.KvModelAlias ?? "?", item.KvModelFallback,
 					prefillResult.PrefillMs, prefillResult.ModelLoadMs, prefillResult.TokensPerSecond);
+
+				// #507: warn when observed model reload time significantly exceeds documented LoadTimeS.
+				// Fires on BUSY-retry success (RetryCount > 0) with engine-reported model load time.
+				if (item.RetryCount > 0 && prefillResult.ModelLoadMs > 0 && prefillModel != null && routingAlias != null)
+				{
+					var loader = ModelConfigLoader.InstanceOrNull;
+					var template = loader?.GetModelTemplate(routingAlias);
+					var documentedLoadMs = (template?.LoadTimeS ?? 0) * 1000L;
+					if (documentedLoadMs > 0 && prefillResult.ModelLoadMs > documentedLoadMs * 2)
+					{
+						_log.Warning("model_reload_exceeds_documented Sid={Sid} Node={Node} Model={Model} " +
+							"ObservedMs={Obs} DocumentedMs={Doc} Ratio={Ratio:F1}x",
+							item.SessionId, w.Name, prefillModel,
+							(long)prefillResult.ModelLoadMs, documentedLoadMs,
+							prefillResult.ModelLoadMs / documentedLoadMs);
+						CoordinatorMetrics.ModelReloadExceededDocumented
+							.WithLabels(w.Name, routingAlias!)
+							.Observe(prefillResult.ModelLoadMs / 1000.0);
+					}
+				}
 					if (item.NPastAfter > 0)
 					{
 						_ledger.UpdateNPast(item.SessionId, item.NPastAfter);
@@ -3522,6 +3569,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <param name="estimatedTokens">Prompt token count from the request. Falls back to 10K if 0.</param>
 	/// <returns>(stuckTimeout, slowTimeout) in milliseconds.</returns>
 	internal static (long stuckMs, long slowMs) CalculateBusyTimeouts(long estimatedTokens)
+		=> CalculateBusyTimeouts(estimatedTokens, modelLoadTimeS: 0);
+
+	/// <summary>
+	/// Calculate workload-aware BUSY timeouts with optional model-reload headroom.
+	/// When <paramref name="modelLoadTimeS"/> is positive, the documented load
+	/// time is added (with a safety multiplier) to account for T3 rebuilds that
+	/// block the slot during model swaps. #507.
+	/// </summary>
+	/// <param name="estimatedTokens">Prompt token count from the request. Falls back to 10K if 0.</param>
+	/// <param name="modelLoadTimeS">ModelConfig.LoadTimeS for the requested model. 0 = no reload headroom.</param>
+	/// <returns>(stuckTimeout, slowTimeout) in milliseconds.</returns>
+	internal static (long stuckMs, long slowMs) CalculateBusyTimeouts(long estimatedTokens, int modelLoadTimeS)
 	{
 		// Conservative prefill rate: 50 tok/s (accounts for slower GPUs like P100 at 28 tok/s decode,
 		// but prefill is typically faster). Safety multiplier: 3x to account for variability.
@@ -3529,6 +3588,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var expectedPrefillMs = (long)(estimatedTokens / 50.0 * 3.0 * 1000.0); // convert seconds to ms
 		var stuckMs = Math.Max(60_000, expectedPrefillMs / 2); // at least 60s
 		var slowMs = expectedPrefillMs;
+
+		// #507: model-reload headroom. A T3 rebuild (model swap) adds a large
+		// fixed cost independent of prompt size. Use a 6x safety multiplier
+		// because observed COMBINED reload (270s) was 6x the documented 45s.
+		if (modelLoadTimeS > 0)
+		{
+			const int ReloadSafetyMultiplier = 6;
+			var reloadHeadroomMs = (long)modelLoadTimeS * ReloadSafetyMultiplier * 1000L;
+			stuckMs += reloadHeadroomMs;
+			slowMs += reloadHeadroomMs;
+		}
+
 		return (stuckMs, slowMs);
 	}
 
