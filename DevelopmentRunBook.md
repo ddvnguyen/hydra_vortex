@@ -287,14 +287,18 @@ gh run watch <run-id> --repo ddvnguyen/llama.cpp
 
 Resulting images (one per combo):
 ```
-ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-<short-sha>
+ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-<fork-version>-<short-sha>
 ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-latest
-# e.g. ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-latest
+# e.g. ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-0.1.0-a157edf
 ```
+`<fork-version>` is `src/llama-cpp/VERSION`, bumped by hand.
 
-Point Hydra Head at the new image by updating the `source:` tag in the node
-config (`infra/hydra-head/config/node-{rtx,p100}.yaml`) or via the live
-`POST /update` endpoint — see "Deploy via Hydra Head" below — then redeploy.
+To deploy the new image, trigger the `deploy-llama` job in this repo's
+`ci.yml`: `gh workflow run ci.yml -f deploy-llama=true -f
+llama-tag-suffix=<fork-version>-<short-sha>` (or `latest`). It pins the
+`source:` tag in the node configs (`infra/hydra-head/config/node-{rtx,rtx3060,p100}.yaml`),
+commits it, and redeploys RTX + RTX 3060 + P100. See "Deploy via Hydra Head"
+below for the manual/live-update alternative (`POST /update`).
 
 **Prerequisites (fallback path only):** CUDA 12.9 + CUDA 13.2 at `/opt/software/cuda/`, GCC 14 at `/usr/bin/gcc-14`.
 
@@ -516,11 +520,12 @@ systemd unit (P100), and restarting services.
 To push updated llama-engine/llama-server binaries to the OCI registry, use
 the CI/CD build above — `hydra-build.yml` builds **and** pushes in the same
 dispatch (see "CI/CD build (recommended)"). It replaces the old manual
-`podman build`/`podman push` steps that used to live here. After the
-workflow finishes, update the tag in `infra/hydra-head/config/node-{rtx,rtx3060,p100}.yaml`
-to match the pushed `<arch>-<binary>-<sha>` (or `-latest`) tag, then redeploy.
-Only fall back to a manual `podman build -f .github/workflows/hydra-build.Dockerfile`
-if CI/CD is genuinely unavailable.
+`podman build`/`podman push` steps that used to live here. To deploy the
+result, trigger the `deploy-llama` job in `ci.yml` with `llama-tag-suffix`
+set to the pushed `<fork-version>-<short-sha>` (or `latest`) — it pins
+`source:` in `infra/hydra-head/config/node-{rtx,rtx3060,p100}.yaml`, commits
+it, and redeploys. Only fall back to a manual `podman build -f
+.github/workflows/hydra-build.Dockerfile` if CI/CD is genuinely unavailable.
 
 Or, for a quick P100 update that bypasses the OCI pull flow, replace the
 binary directly on the VM (still supported):

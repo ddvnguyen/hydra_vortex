@@ -36,14 +36,28 @@ checkboxes) and it fans out one build per combo.
 ### 2. Resulting OCI image
 
 ```
-ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-<short-sha>
+ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-<fork-version>-<short-sha>
 ghcr.io/ddvnguyen/llama-server:<arch>-<binary>-latest
 ```
 
-Update the `source:` tag in `infra/hydra-head/config/node-{rtx,rtx3060,p100}.yaml`
-to the new tag (or use `POST /update` below), then redeploy. Only fall back
-to a manual `podman build -f .github/workflows/hydra-build.Dockerfile` +
-`podman push` if CI/CD is genuinely unavailable.
+`<fork-version>` is `src/llama-cpp/VERSION` (bumped by hand — this fork has
+no semver of its own otherwise). RTX/RTX 3060 share the `sm86-sm120-llama-engine`
+tag prefix; P100 uses `sm60-llama-server`.
+
+To actually deploy a build's artifact, trigger the `deploy-llama` job in this
+repo's `ci.yml` (`gh workflow run ci.yml -f deploy-llama=true -f
+llama-tag-suffix=<fork-version>-<short-sha>`, or `latest`). It pins the
+`source:` tag in `infra/hydra-head/config/node-{rtx,rtx3060,p100}.yaml`,
+commits that, and redeploys all three nodes via `deploy-hydra-head.sh`.
+Leave `llama-tag-suffix` blank to redeploy with whatever tag is already
+checked in (the old behavior).
+
+RTX/RTX 3060 default to the OCI pull as of this change — the old bind-mount
+of a local `src/llama-cpp/build_sm86_sm120/bin/` build (which used to shadow
+the pull) is now opt-in via `infra/docker-compose.hydra.local-build.yml`, for
+fast local iteration on the fork. Only fall back to a manual `podman build -f
+.github/workflows/hydra-build.Dockerfile` + `podman push` if CI/CD is
+genuinely unavailable.
 
 ### 3. Push the fork + bump submodule
 

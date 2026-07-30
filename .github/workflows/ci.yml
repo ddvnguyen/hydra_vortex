@@ -46,6 +46,15 @@ on:
         options:
           - "false"
           - "true"
+      llama-tag-suffix:
+        description: >
+          Pin the llama-engine/llama-server OCI tag before deploying, e.g.
+          "latest" or "0.1.0-a157edf" (the <fork-version>-<short-sha> from a
+          hydra-build.yml run in ddvnguyen/llama.cpp). Leave blank to deploy
+          with whatever tag is already checked into the node configs.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   checks: write
@@ -404,6 +413,8 @@ jobs:
     name: Deploy hydra-head (manages llama + 3 services)
     runs-on: self-hosted
     timeout-minutes: 10
+    permissions:
+      contents: write
     if: |
       startsWith(github.ref, 'refs/tags/llama.cpp') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true')
@@ -412,6 +423,41 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
+      - name: Pin llama-server OCI tag (if requested)
+        id: pin
+        if: ${{ github.event.inputs.llama-tag-suffix != '' }}
+        run: |
+          SUFFIX="${{ github.event.inputs.llama-tag-suffix }}"
+          RTX_TAG="ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-${SUFFIX}"
+          P100_TAG="ghcr.io/ddvnguyen/llama-server:sm60-llama-server-${SUFFIX}"
+
+          sed -i "s|^\(\s*source:\s*\)ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-.*|\1${RTX_TAG}|" \
+            infra/hydra-head/config/node-rtx.yaml \
+            infra/hydra-head/config/node-rtx3060.yaml
+          sed -i "s|^\(\s*source:\s*\)ghcr.io/ddvnguyen/llama-server:sm60-llama-server-.*|\1${P100_TAG}|" \
+            infra/hydra-head/config/node-p100.yaml
+
+          echo "rtx_tag=$RTX_TAG" >> "$GITHUB_OUTPUT"
+          echo "p100_tag=$P100_TAG" >> "$GITHUB_OUTPUT"
+
+          if git diff --quiet -- infra/hydra-head/config/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff -- infra/hydra-head/config/
+          fi
+
+      - name: Commit pinned tag
+        if: ${{ steps.pin.outputs.changed == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add infra/hydra-head/config/node-rtx.yaml infra/hydra-head/config/node-rtx3060.yaml infra/hydra-head/config/node-p100.yaml
+          git commit -m "chore: pin llama-server OCI tag to ${{ github.event.inputs.llama-tag-suffix }}
+
+          Triggered by deploy-llama workflow_dispatch (${{ github.actor }})."
+          git push origin HEAD:${{ github.ref_name }}
 
       - name: Ensure SSH config for P100
         run: |
@@ -430,6 +476,12 @@ jobs:
           sleep 8
           curl -sf http://localhost:9700/status >/dev/null && echo "hydra-head-rtx OK" || echo "WARNING: hydra-head-rtx not responding"
 
+      - name: Deploy hydra-head to RTX 3060 (container)
+        run: |
+          bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx3060
+          sleep 8
+          curl -sf http://localhost:9701/status >/dev/null && echo "hydra-head-rtx3060 OK" || echo "WARNING: hydra-head-rtx3060 not responding"
+
       - name: Deploy hydra-head to P100 (VM systemd)
         run: |
           bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh p100
@@ -446,6 +498,7 @@ jobs:
           | Field | Value |
           |-------|-------|
           | Tag   | \`$TAG\` |
+          | Pinned llama tag | \`${{ github.event.inputs.llama-tag-suffix || '(unchanged)' }}\` |
           | By    | ${{ github.actor }} |
           | Time  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
