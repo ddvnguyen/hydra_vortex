@@ -39,9 +39,6 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV PATH=/usr/local/cuda-13.2/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:${LD_LIBRARY_PATH}
 
-# Create hydra user
-RUN useradd -m -s /bin/bash hydra
-
 # Copy init verification script
 COPY infra/hydra-head/init/verify_and_start.sh /init/verify_and_start.sh
 RUN chmod +x /init/verify_and_start.sh
@@ -74,11 +71,17 @@ RUN mkdir -p /opt/hydra/bin && cd /tmp && \
 
 # Create directories for binaries, llama-server, and logs.
 # (promtail-positions volume mount removed in #363.)
+#
+# Owned by the base image's built-in `ubuntu` user (UID/GID 1000) rather
+# than a separately created account — docker-compose.hydra.yml runs this
+# container as `user: "1000:1000"`, and a distinct `hydra` user created via
+# `useradd` with no `-u` lands on the next free UID (1001, since ubuntu:26.04
+# already ships `ubuntu` at 1000), leaving these dirs unwritable by the
+# actual runtime UID (#permission-denied extracting OCI-pulled binaries).
 RUN mkdir -p /opt/hydra/bin /opt/hydra/tmp /var/log/hydra /llama/bin && \
-    chown -R hydra:hydra /opt/hydra /var/log/hydra /llama
+    chown -R ubuntu:ubuntu /opt/hydra /var/log/hydra /llama
 
-# Switch to hydra user
-USER hydra
+USER ubuntu
 WORKDIR /opt/hydra
 
 # Expose Hydra Head API + llama-server + sidecar exporter ports
