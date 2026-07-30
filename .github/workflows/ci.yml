@@ -46,12 +46,24 @@ on:
         options:
           - "false"
           - "true"
-      llama-tag-suffix:
+      rtx-image:
         description: >
-          Pin the llama-engine/llama-server OCI tag before deploying, e.g.
-          "latest" or "0.1.0-a157edf" (the <fork-version>-<short-sha> from a
-          hydra-build.yml run in ddvnguyen/llama.cpp). Leave blank to deploy
-          with whatever tag is already checked into the node configs.
+          Full OCI image ref to pin for the RTX nodes (5060 Ti + 3060 share
+          the same sm86-sm120 fat binary), e.g.
+          "ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-a157edf"
+          from a hydra-build.yml run in ddvnguyen/llama.cpp. Leave blank to
+          deploy with whatever is already checked into node-rtx.yaml /
+          node-rtx3060.yaml. Dispatching against a PR branch commits the
+          pin directly onto that branch (see "Commit pinned image" step).
+        required: false
+        default: ""
+        type: string
+      p100-image:
+        description: >
+          Full OCI image ref to pin for the P100 node, e.g.
+          "ghcr.io/ddvnguyen/llama-server:sm60-llama-server-a157edf". Leave
+          blank to deploy with whatever is already checked into
+          node-p100.yaml.
         required: false
         default: ""
         type: string
@@ -424,22 +436,31 @@ jobs:
         with:
           submodules: true
 
-      - name: Pin llama-server OCI tag (if requested)
+      - name: Pin llama-server OCI image (if requested)
         id: pin
-        if: ${{ github.event.inputs.llama-tag-suffix != '' }}
+        if: ${{ github.event.inputs.rtx-image != '' || github.event.inputs.p100-image != '' }}
         run: |
-          SUFFIX="${{ github.event.inputs.llama-tag-suffix }}"
-          RTX_TAG="ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-${SUFFIX}"
-          P100_TAG="ghcr.io/ddvnguyen/llama-server:sm60-llama-server-${SUFFIX}"
+          # Anchored on the `llama-server:` block key through its `binary:`
+          # field (not on the source value) so this works for any image
+          # ref, including a first-time switch away from the
+          # ghcr.io/ddvnguyen/llama-server repo — see the fixed-suffix
+          # version this replaced for why that mattered. Range must span
+          # to `binary:` rather than +1 because node-rtx.yaml has a long
+          # comment block between `llama-server:` and its `source:` line.
+          if [ -n "${{ github.event.inputs.rtx-image }}" ]; then
+            RTX_IMAGE="${{ github.event.inputs.rtx-image }}"
+            sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*source:\s*\).*|\1${RTX_IMAGE}|" \
+              infra/hydra-head/config/node-rtx.yaml \
+              infra/hydra-head/config/node-rtx3060.yaml
+            echo "rtx_image=$RTX_IMAGE" >> "$GITHUB_OUTPUT"
+          fi
 
-          sed -i "s|^\(\s*source:\s*\)ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-.*|\1${RTX_TAG}|" \
-            infra/hydra-head/config/node-rtx.yaml \
-            infra/hydra-head/config/node-rtx3060.yaml
-          sed -i "s|^\(\s*source:\s*\)ghcr.io/ddvnguyen/llama-server:sm60-llama-server-.*|\1${P100_TAG}|" \
-            infra/hydra-head/config/node-p100.yaml
-
-          echo "rtx_tag=$RTX_TAG" >> "$GITHUB_OUTPUT"
-          echo "p100_tag=$P100_TAG" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ github.event.inputs.p100-image }}" ]; then
+            P100_IMAGE="${{ github.event.inputs.p100-image }}"
+            sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*source:\s*\).*|\1${P100_IMAGE}|" \
+              infra/hydra-head/config/node-p100.yaml
+            echo "p100_image=$P100_IMAGE" >> "$GITHUB_OUTPUT"
+          fi
 
           if git diff --quiet -- infra/hydra-head/config/; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -448,13 +469,16 @@ jobs:
             git diff -- infra/hydra-head/config/
           fi
 
-      - name: Commit pinned tag
+      - name: Commit pinned image
         if: ${{ steps.pin.outputs.changed == 'true' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add infra/hydra-head/config/node-rtx.yaml infra/hydra-head/config/node-rtx3060.yaml infra/hydra-head/config/node-p100.yaml
-          git commit -m "chore: pin llama-server OCI tag to ${{ github.event.inputs.llama-tag-suffix }}
+          git commit -m "chore: pin llama-server OCI image
+
+          rtx-image: ${{ github.event.inputs.rtx-image || '(unchanged)' }}
+          p100-image: ${{ github.event.inputs.p100-image || '(unchanged)' }}
 
           Triggered by deploy-llama workflow_dispatch (${{ github.actor }})."
           git push origin HEAD:${{ github.ref_name }}
@@ -498,7 +522,8 @@ jobs:
           | Field | Value |
           |-------|-------|
           | Tag   | \`$TAG\` |
-          | Pinned llama tag | \`${{ github.event.inputs.llama-tag-suffix || '(unchanged)' }}\` |
+          | Pinned RTX image | \`${{ github.event.inputs.rtx-image || '(unchanged)' }}\` |
+          | Pinned P100 image | \`${{ github.event.inputs.p100-image || '(unchanged)' }}\` |
           | By    | ${{ github.actor }} |
           | Time  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
