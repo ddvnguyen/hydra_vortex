@@ -218,20 +218,12 @@ services:
       - /mnt/SSD:/models:ro
       # Configs (RTX-specific)
       - ./hydra-head/config:/opt/hydra/config:ro
-      # Pre-built llama-server binary (mounted from build dir so the OCI
-      # image doesn't need to re-pull on every start)
-      # IMPORTANT: must be the shared-lib build (BUILD_SHARED_LIBS=ON) so the
-      # launcher can find lib*.so next to it via $ORIGIN RUNPATH. The static
-      # build (BUILD_SHARED_LIBS=OFF, e.g. build_sm120_static) hangs in the
-      # post-init phase on RTX — see ddvnguyen/hydra_vortex#346.
-      #
-      # As of feat/add-rtx-3060-head, the FAT sm_86+sm_120 build at
-      # `build_sm86_sm120/bin/` is the canonical source. The 5060 Ti
-      # picks the sm_120a cubin; the 3060 (in `head-rtx3060` below)
-      # picks sm_86. The legacy `build_sm120_v3/bin/` is kept as a
-      # fallback only — it has only sm_120a so the 3060 would
-      # PTX-JIT from it (slow path).
-      - ../src/llama-cpp/build_sm86_sm120/bin/:/llama/bin/:ro
+      # llama-engine binary: pulled from the OCI image referenced by
+      # node-rtx.yaml's `source:` (pushed by hydra-build.yml in
+      # ddvnguyen/llama.cpp — see DevelopmentRunBook.md "CI/CD build").
+      # The old bind-mount from src/llama-cpp/build_sm86_sm120/bin/,
+      # which used to shadow this pull for fast local iteration, is
+      # now opt-in — see docker-compose.hydra.local-build.yml.
       # ghcr.io creds for in-container pulls
       - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
       # Host filesystem for node_exporter to read host /proc, /sys, /
@@ -311,10 +303,10 @@ services:
       # image; the host bind-mount below shadows that copy with the
       # latest on-disk version, same as head-rtx.)
       - ./hydra-head/config:/opt/hydra/config:ro
-      # Pre-built FAT llama-server binary (sm_86+sm_120). Same bind as
-      # head-rtx so the OCI pull from ghcr.io only needs to happen
-      # once per host. Must be the shared-lib build (BUILD_SHARED_LIBS=ON).
-      - ../src/llama-cpp/build_sm86_sm120/bin/:/llama/bin/:ro
+      # llama-engine binary: pulled from the OCI image referenced by
+      # node-rtx3060.yaml's `source:` — same image as head-rtx (see
+      # that service's comment). Local-build bind-mount is opt-in via
+      # docker-compose.hydra.local-build.yml.
       # ghcr.io creds for in-container pulls
       - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
       # Same host mounts head-rtx uses (for consistency, even though

@@ -16,7 +16,12 @@ infra:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm60:f518cff16
+    # Built + pushed by hydra-build.yml (ddvnguyen/llama.cpp),
+    # arch_sm60 checkbox (always builds llama-server — no COMBINED
+    # peer on P100). Repo path changed from the old llama-server-sm60
+    # to the unified llama-server repo; tag is
+    # <arch>-<binary>-<fork-version>-<short-sha> or -latest.
+    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-server-latest
     binary: llama-server
     dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
 

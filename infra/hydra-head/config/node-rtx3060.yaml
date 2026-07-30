@@ -15,18 +15,22 @@ binaries:
   llama-server:
     # Fat binary: sm_86 (Ampere, this card) + sm_120a (Blackwell, the
     # RTX 5060 Ti sitting next door on the same host). Same OCI image
-    # as node-rtx.yaml. Bind-mount from
-    # src/llama-cpp/build_sm86_sm120/bin/ in docker-compose.hydra.yml
-    # shadows the registry pull on this host. OCI source is the
-    # fallback for hosts that don't build the fat binary themselves.
+    # as node-rtx.yaml, built + pushed by hydra-build.yml
+    # (ddvnguyen/llama.cpp). Defaults to the floating -latest tag;
+    # pinned to a specific <arch>-<binary>-<fork-version>-<short-sha>
+    # tag by the deploy-llama job's llama-tag-suffix input
+    # (.github/workflows/ci.yml, workflow_dispatch).
+    #
+    # This is the default OCI-pull path. The old local-build
+    # bind-mount is now opt-in via docker-compose.hydra.local-build.yml.
     #
     # `binary`/`dest` MUST match `llama.binary` below (llama-engine,
     # not llama-server). See the matching comment in node-rtx.yaml —
     # this filename mismatch caused both host GPU heads to
     # crash-loop on 2026-07-18 (#453/#460). Do not fix a mismatch
-    # like this by making the bind mount :rw; the mount is
-    # intentionally read-only.
-    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
+    # like this by making the bind mount :rw when the opt-in override
+    # is in use; the mount is intentionally read-only.
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-latest
     binary: llama-engine
     dest: /llama/bin/llama-engine
   node_exporter:

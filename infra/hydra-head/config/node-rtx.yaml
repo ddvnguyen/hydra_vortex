@@ -16,11 +16,17 @@ binaries:
   llama-server:
     # Fat binary: sm_86 (RTX 3060) + sm_120a (RTX 5060 Ti) in one SASS
     # image. The RTX 5060 Ti picks sm_120a; the RTX 3060 picks sm_86.
-    # Same OCI image used by node-rtx3060.yaml. Bind-mount from
-    # src/llama-cpp/build_sm86_sm120/bin/ in docker-compose.hydra.yml
-    # shadows the registry pull, so the source is the OCI fallback
-    # only — used by hydra-head if the bind mount isn't present
-    # (e.g. on a host that doesn't build the fat binary itself).
+    # Same OCI image used by node-rtx3060.yaml, built + pushed by
+    # hydra-build.yml (ddvnguyen/llama.cpp). Tag is
+    # <arch>-<binary>-<fork-version>-<short-sha>, plus a floating
+    # -latest; this file defaults to -latest and gets pinned to a
+    # specific tag by the deploy-llama job's llama-tag-suffix input
+    # (.github/workflows/ci.yml, workflow_dispatch).
+    #
+    # This is the default OCI-pull path. The old local-build
+    # bind-mount (src/llama-cpp/build_sm86_sm120/bin/ shadowing this
+    # pull) is now opt-in via docker-compose.hydra.local-build.yml —
+    # see that file if you need the fast local-iteration path back.
     #
     # `binary`/`dest` MUST match `llama.binary` below (llama-engine,
     # not llama-server — see that comment for why). The map key stays
@@ -31,11 +37,9 @@ binaries:
     # for `dest` on disk before pulling — with the wrong filename it
     # never found the already-built binary, fell through to a real
     # OCI pull, and that pull fatally failed against this directory's
-    # intentional :ro mount (the mount is read-only on purpose, so a
-    # config bug like this fails loudly instead of silently
-    # overwriting a local dev build — do not "fix" this by making the
-    # mount :rw).
-    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
+    # intentional :ro mount when the bind-mount override is in use
+    # (do not "fix" a mismatch like this by making the mount :rw).
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-latest
     binary: llama-engine
     dest: /llama/bin/llama-engine
   node_exporter:

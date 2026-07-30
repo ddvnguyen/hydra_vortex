@@ -1,0 +1,40 @@
+# Opt-in override: bind-mount the local build directory over the OCI-pulled
+# llama-engine binary, for fast local edit/build/test iteration on the fork
+# instead of round-tripping through hydra-build.yml + ghcr.io for every
+# change. See DevelopmentRunBook.md "Fast local iteration".
+#
+# Usage:
+#   podman compose -f docker-compose.hydra.yml -f docker-compose.hydra.local-build.yml up -d
+#
+# Compose merges `volumes:` lists by full replacement, not append, so each
+# service below must restate its complete volume list from
+# docker-compose.hydra.yml with the bind-mount added back in.
+#
+# IMPORTANT: must be the shared-lib build (BUILD_SHARED_LIBS=ON) so the
+# launcher can find lib*.so next to it via $ORIGIN RUNPATH. The static
+# build (BUILD_SHARED_LIBS=OFF) hangs in the post-init phase on RTX — see
+# ddvnguyen/hydra_vortex#346.
+
+services:
+  head-rtx5060ti:
+    volumes:
+      - /mnt/SSD:/models:ro
+      - ./hydra-head/config:/opt/hydra/config:ro
+      # FAT sm_86+sm_120 local build shadows the OCI pull — see
+      # DevelopmentRunBook.md "Manual build (fallback)" for how to
+      # produce this directory.
+      - ../src/llama-cpp/build_sm86_sm120/bin/:/llama/bin/:ro
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /mnt/containers/:/mnt/containers/:ro
+
+  head-rtx3060:
+    volumes:
+      - /mnt/SSD:/models:ro
+      - ./hydra-head/config:/opt/hydra/config:ro
+      # Same FAT build as head-rtx5060ti — one build serves both GPUs.
+      - ../src/llama-cpp/build_sm86_sm120/bin/:/llama/bin/:ro
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
+      - /mnt/containers/:/mnt/containers/:ro
