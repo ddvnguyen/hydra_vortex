@@ -851,8 +851,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.DecodeSlot = slot;
 				item.DecodeLease = new SlotLease(aw.Name, slot, item.SessionId, LeaseLifetime.Long, _tracker);
 				LastDispatchedNode = aw.Name;
-				// In engine mode, model is loaded at startup — skip ModelLoadDecode
-				return _cfg.UseLlamaEngine ? WorkItemState.Decode : WorkItemState.ModelLoadDecode;
+				// In engine mode, model is loaded at startup — skip ModelLoadDecode.
+				// However, if the requested model differs from the resident model,
+				// route through PREFILL first which handles the inline swap
+				// (n_predict=0 triggers the swap, then chains to Decode). This
+				// avoids the Decode streaming proxy timing out during a 60-120s
+				// model swap.
+				if (_cfg.UseLlamaEngine)
+				{
+					var residentAlias = _health.GetNodeInfo(aw.Name)?.CurrentModel ?? "";
+					var requestedAlias = TranslateModelAlias(
+						item.Request.TryGetValue("model", out var cmv) && cmv is string cms ? cms : null);
+					if (!string.IsNullOrEmpty(requestedAlias)
+						&& !string.Equals(residentAlias, requestedAlias, StringComparison.OrdinalIgnoreCase))
+					{
+						_log.Information("cold_atomic_prefill_swap Sid={Sid} Node={N} Resident={R} Requested={Req}",
+							item.SessionId, aw.Name, residentAlias, requestedAlias);
+						return WorkItemState.Prefill;
+					}
+					return WorkItemState.Decode;
+				}
+				return WorkItemState.ModelLoadDecode;
 			}
 		}
 
@@ -3044,13 +3063,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					_log.Debug("#PD-TRACE DECODE_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Slot={Slot} NPast={NPast}",
 						item.SessionId, decodeMsgCount, decodeFirstMsg, decodeLastMsg, item.DecodeSlot, item.NPastAfter);
 				}
-				// #479/S3: when driving the engine, translate the routing-identity
-				// model on the decode request to the GGUF-file alias (decode role,
-				// e.g. moe-35b-pd → qwen3.6-35B-balanced for mix-quant P/D split)
-				// so the decode worker's inline reload fires instead of silently
-				// falling back to its resident model.
-				if (_cfg.UseLlamaEngine && !string.IsNullOrEmpty(w.ModelAlias))
-					item.Request["model"] = TranslateModelAlias(w.ModelAlias, decodeRole: true);
+			// #479/S3 + #504: translate the routing-identity model on the decode
+			// request to the GGUF-file alias so the engine's inline reload fires
+			// instead of silently falling back to its resident model.
+			// For model-agnostic workers (e.g. RTX), w.ModelAlias is null —
+			// translate the routing identity from the request field instead.
+			if (_cfg.UseLlamaEngine)
+			{
+				var decodeAlias = !string.IsNullOrEmpty(w.ModelAlias)
+					? TranslateModelAlias(w.ModelAlias, decodeRole: true)
+					: TranslateModelAlias(
+						item.Request.TryGetValue("model", out var dmv) && dmv is string dms ? dms : null);
+				if (!string.IsNullOrEmpty(decodeAlias))
+					item.Request["model"] = decodeAlias;
+			}
 				var resp = await _proxy.ProxyCompletionAsync(
 						w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
 				if (resp.TryGetValue("id_slot", out var s2) && s2 is JsonElement se2)

@@ -133,7 +133,7 @@ public sealed class ModelConfigLoader
                 Description = alias,
                 PrefillAlias = ggufAlias,
                 DecodeAlias  = ggufAlias,
-                LoadTimeS = 40,
+                LoadTimeS = isCombined ? 100 : 90,
                 QualityTier = isCombined ? 3 : isPd ? 2 : 1,
                 Requirements = new ModelRequirements
                 {
