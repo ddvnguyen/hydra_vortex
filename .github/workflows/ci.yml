@@ -88,8 +88,13 @@ jobs:
     steps:
       - name: Cancel duplicate queued runs
         run: |
+          # Only cancel runs from the same event type and branch to avoid
+          # push runs killing queued pull_request runs (they share the
+          # same head branch name). Also skip cancelling workflow_dispatch
+          # runs which are intentional manual triggers.
           gh run list --workflow CI --branch "${{ github.ref_name }}" \
-            --json databaseId,status --jq '.[] | select(.status == "queued") | .databaseId' |
+            --json databaseId,status,event \
+            --jq ".[] | select(.status == \"queued\" and .event == \"${{ github.event_name }}\") | .databaseId" |
           while read id; do
             [ "$id" != "${{ github.run_id }}" ] && gh run cancel "$id" 2>/dev/null || true
           done
