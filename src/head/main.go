@@ -136,34 +136,17 @@ func main() {
 				binaryName = name
 			}
 
-			// Check if binary is already on disk and verify checksum.
-			// If a checksum is configured, compare it against the on-disk
-			// binary — only skip the pull when they match.  If no checksum
-			// is configured (baked-in sidecar exporters), skip the pull
-			// but log a warning so the unverified state is visible.
-			if _, err := os.Stat(dest); err == nil {
-				if spec.BinaryChecksum != "" {
-					actualChecksum, csErr := registry.ComputeChecksum(dest)
-					if csErr != nil {
-						logger.Warn("failed to compute binary checksum, pulling fresh",
-							"name", name, "dest", dest, "error", csErr)
-					} else if actualChecksum == spec.BinaryChecksum {
-						logger.Info("binary checksum matches, skipping pull",
-							"name", name, "dest", dest, "checksum", actualChecksum)
-						continue
-					} else {
-						logger.Warn("binary checksum mismatch, pulling new version",
-							"name", name, "dest", dest,
-							"expected", spec.BinaryChecksum, "actual", actualChecksum)
-					}
-				} else {
-					logger.Warn("binary present but unverified (no checksum configured), skipping pull",
-						"name", name, "dest", dest)
-					continue
-				}
-			} else if !os.IsNotExist(err) {
-				logger.Error("stat binary path", "name", name, "dest", dest, "error", err)
-				os.Exit(1)
+			// Decide whether to skip the pull for an existing on-disk binary.
+			// Delegates to registry.ShouldSkipBinaryPull which handles three
+			// cases: checksum verification, image_digest pinning (must pull
+			// to verify), and unverified baked-in sidecars.
+			if skip, reason := registry.ShouldSkipBinaryPull(dest, spec.BinaryChecksum, spec.ImageDigest); skip {
+				logger.Info("binary verified, skipping pull",
+					"name", name, "dest", dest, "reason", reason)
+				continue
+			} else {
+				logger.Info("pull required",
+					"name", name, "dest", dest, "reason", reason)
 			}
 
 			if err := regMgr.PullBinary(spec.Source, dest, spec.ImageDigest, spec.BinaryChecksum, binaryName); err != nil {

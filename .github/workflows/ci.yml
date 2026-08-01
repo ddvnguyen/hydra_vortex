@@ -112,7 +112,7 @@ jobs:
         run: |
           dotnet test src/core/Tests.Core/ -c Release --no-build --nologo -v normal \
             --settings src/Hydra.runsettings \
-            --filter "FullyQualifiedName!~StoreMetadataTests&FullyQualifiedName!~WriteBehindServiceTests&FullyQualifiedName!~Integration" \
+            --filter "FullyQualifiedName!~Integration" \
             --logger "trx;LogFileName=core-fast.trx" \
             --results-directory TestResults/
 
@@ -120,7 +120,7 @@ jobs:
         run: |
           dotnet test src/core/Tests.Core/ -c Release --no-build --nologo -v normal \
             --settings src/Hydra.runsettings \
-            --filter "FullyQualifiedName~Integration&FullyQualifiedName!~StoreMetadataTests&FullyQualifiedName!~WriteBehindServiceTests" \
+            --filter "FullyQualifiedName~Integration" \
             --logger "trx;LogFileName=core-integration.trx" \
             --results-directory TestResults/
 
@@ -548,31 +548,94 @@ jobs:
           set -eo pipefail
           echo "Verifying deployed engine binaries..."
 
-          # Extract pinned image refs from node configs
-          RTX_SOURCE=$(grep -A5 'llama-server:' infra/hydra-head/config/node-rtx.yaml | grep 'source:' | head -1 | awk '{print $2}')
-          P100_SOURCE=$(grep -A5 'llama-server:' infra/hydra-head/config/node-p100.yaml | grep 'source:' | head -1 | awk '{print $2}')
+          # Extract pinned image_digest from node configs using the same
+          # anchored sed as the pin step (llama-server: ... binary: range).
+          extract_digest() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config"
+          }
+          extract_source() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config"
+          }
 
-          echo "RTX pinned: $RTX_SOURCE"
-          echo "P100 pinned: $P100_SOURCE"
+          RTX_DIGEST=$(extract_digest infra/hydra-head/config/node-rtx.yaml)
+          P100_DIGEST=$(extract_digest infra/hydra-head/config/node-p100.yaml)
+          RTX_SOURCE=$(extract_source infra/hydra-head/config/node-rtx.yaml)
+          P100_SOURCE=$(extract_source infra/hydra-head/config/node-p100.yaml)
 
-          # Check each head is responding (digest verification will be
-          # added once /status exposes image_digest — see #2.2)
-          for endpoint in "http://localhost:9700/status" "http://localhost:9701/status" "http://192.168.122.21:9700/status"; do
-            if curl -sf "$endpoint" >/dev/null 2>&1; then
-              echo "OK: $endpoint responding"
-            else
-              echo "FAIL: $endpoint not responding"
-              exit 1
+          echo "RTX pinned: source=$RTX_SOURCE digest=$RTX_DIGEST"
+          echo "P100 pinned: source=$P100_SOURCE digest=$P100_DIGEST"
+
+          FAIL=0
+
+          # Verify each head: response must include binaries.*.pulled_digest
+          # matching the pinned image_digest from config.
+          verify_head() {
+            local label="$1" endpoint="$2" expected_digest="$3"
+            local status_json
+            status_json=$(curl -sf --max-time 10 "$endpoint" 2>/dev/null) || {
+              echo "FAIL: $label ($endpoint) not responding"
+              FAIL=1; return
+            }
+            # Extract pulled_digest for any binary whose source matches the expected tag
+            local actual_digest
+            actual_digest=$(echo "$status_json" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for name, info in data.get('binaries', {}).items():
+              if info.get('pulled_digest'):
+                  print(info['pulled_digest']); break
+          " 2>/dev/null || echo "")
+
+            if [ -z "$actual_digest" ]; then
+              echo "FAIL: $label ($endpoint) — no pulled_digest in /status response"
+              echo "  Response: $status_json"
+              FAIL=1; return
             fi
-          done
-          echo "All heads responding"
+
+            if [ "$expected_digest" = "$actual_digest" ]; then
+              echo "OK: $label ($endpoint) — digest matches: $actual_digest"
+            else
+              echo "FAIL: $label ($endpoint) — digest mismatch"
+              echo "  Expected: $expected_digest"
+              echo "  Actual:   $actual_digest"
+              FAIL=1
+            fi
+          }
+
+          if [ -n "$RTX_DIGEST" ]; then
+            verify_head "hydra-head-rtx" "http://localhost:9700/status" "$RTX_DIGEST"
+          fi
+          if [ -n "$RTX_DIGEST" ]; then
+            verify_head "hydra-head-rtx3060" "http://localhost:9701/status" "$RTX_DIGEST"
+          fi
+          if [ -n "$P100_DIGEST" ]; then
+            verify_head "hydra-head-p100" "http://192.168.122.21:9700/status" "$P100_DIGEST"
+          fi
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "Digest verification FAILED"
+            exit 1
+          fi
+          echo "All heads verified — digests match pinned config"
 
       - name: Write deploy summary
         if: always()
         run: |
           TAG="${{ github.ref_name }}"
-          RTX_SOURCE=$(grep -A5 'llama-server:' infra/hydra-head/config/node-rtx.yaml | grep 'source:' | head -1 | awk '{print $2}')
-          P100_SOURCE=$(grep -A5 'llama-server:' infra/hydra-head/config/node-p100.yaml | grep 'source:' | head -1 | awk '{print $2}')
+          extract_source() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config"
+          }
+          extract_digest() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config"
+          }
+          RTX_SOURCE=$(extract_source infra/hydra-head/config/node-rtx.yaml)
+          RTX_DIGEST=$(extract_digest infra/hydra-head/config/node-rtx.yaml)
+          P100_SOURCE=$(extract_source infra/hydra-head/config/node-p100.yaml)
+          P100_DIGEST=$(extract_digest infra/hydra-head/config/node-p100.yaml)
           cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
           ## hydra-head Deploy
 
@@ -580,7 +643,9 @@ jobs:
           |-------|-------|
           | Tag   | \`$TAG\` |
           | RTX image | \`${RTX_SOURCE}\` |
+          | RTX digest | \`${RTX_DIGEST}\` |
           | P100 image | \`${P100_SOURCE}\` |
+          | P100 digest | \`${P100_DIGEST}\` |
           | By    | ${{ github.actor }} |
           | Time  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
