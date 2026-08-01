@@ -219,9 +219,13 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 15
+    # Deploy on: push to non-main branches (GitHub deduplicates push+PR
+    # into a single push run, so pull_request never fires for same-repo PRs),
+    # workflow_dispatch, or repository_dispatch.
     if: |
       always() &&
       needs.build-test.result == 'success' && (
+        (github.event_name == 'push' && github.ref_name != 'main') ||
         github.event_name == 'pull_request' ||
         (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true')
       )
@@ -454,6 +458,7 @@ jobs:
       contents: write
     if: |
       always() && (
+        (github.event_name == 'push' && github.ref_name != 'main' && needs.build-test.result == 'success') ||
         (github.event_name == 'pull_request' && needs.build-test.result == 'success') ||
         startsWith(github.ref, 'refs/tags/llama.cpp') ||
         (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true') ||
