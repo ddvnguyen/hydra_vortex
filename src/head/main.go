@@ -136,14 +136,31 @@ func main() {
 				binaryName = name
 			}
 
-			// Skip pull if the binary is already on disk (e.g., baked into
-			// the image at build time). This is the preferred path for
-			// small sidecar exporters — it avoids a network round-trip on
-			// every container start.
+			// Check if binary is already on disk and verify checksum.
+			// If a checksum is configured, compare it against the on-disk
+			// binary — only skip the pull when they match.  If no checksum
+			// is configured (baked-in sidecar exporters), skip the pull
+			// but log a warning so the unverified state is visible.
 			if _, err := os.Stat(dest); err == nil {
-				logger.Info("binary already present on disk, skipping pull",
-					"name", name, "dest", dest)
-				continue
+				if spec.BinaryChecksum != "" {
+					actualChecksum, csErr := registry.ComputeChecksum(dest)
+					if csErr != nil {
+						logger.Warn("failed to compute binary checksum, pulling fresh",
+							"name", name, "dest", dest, "error", csErr)
+					} else if actualChecksum == spec.BinaryChecksum {
+						logger.Info("binary checksum matches, skipping pull",
+							"name", name, "dest", dest, "checksum", actualChecksum)
+						continue
+					} else {
+						logger.Warn("binary checksum mismatch, pulling new version",
+							"name", name, "dest", dest,
+							"expected", spec.BinaryChecksum, "actual", actualChecksum)
+					}
+				} else {
+					logger.Warn("binary present but unverified (no checksum configured), skipping pull",
+						"name", name, "dest", dest)
+					continue
+				}
 			} else if !os.IsNotExist(err) {
 				logger.Error("stat binary path", "name", name, "dest", dest, "error", err)
 				os.Exit(1)

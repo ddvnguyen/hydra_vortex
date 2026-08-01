@@ -20,12 +20,27 @@ import (
 
 // Manager handles OCI registry operations for binary management
 type Manager struct {
-	logger *slog.Logger
-	cache  string
+	logger       *slog.Logger
+	cache        string
+	pulledDigest map[string]string // source → resolved image digest (sha256:...)
+	mu           sync.RWMutex
 }
 
 func NewManager(logger *slog.Logger, cacheDir string) *Manager {
-	return &Manager{logger: logger, cache: cacheDir}
+	return &Manager{
+		logger:       logger,
+		cache:        cacheDir,
+		pulledDigest: make(map[string]string),
+	}
+}
+
+// PulledBinaryInfo returns the resolved image digest for a previously
+// pulled source. Returns empty string if the source was never pulled
+// in this process lifetime.
+func (m *Manager) PulledBinaryInfo(source string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.pulledDigest[source]
 }
 
 // fileEntry is one regular-file entry inside a layer tar.
@@ -95,6 +110,11 @@ func (m *Manager) PullBinary(source, destination, imageDigest, binaryChecksum, b
 		}
 		m.logger.Info("binary checksum verified", "checksum", actualChecksum)
 	}
+
+	// Track the resolved digest for /status provenance.
+	m.mu.Lock()
+	m.pulledDigest[source] = digest.String()
+	m.mu.Unlock()
 
 	m.logger.Info("binary pulled successfully",
 		"source", source, "destination", destination, "digest", digest.String())

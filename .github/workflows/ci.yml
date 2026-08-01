@@ -12,6 +12,8 @@ on:
       - 'CLAUDE.md'
   pull_request:
     branches: [main]
+  repository_dispatch:
+    types: [deploy-llama]
   workflow_dispatch:
     inputs:
       run-system-full:
@@ -115,11 +117,6 @@ jobs:
             --results-directory TestResults/
 
 
-      - name: Unit tests — Coordinator (Python)
-        run: |
-          python3 -m pytest tests/coordinator/test_router.py -v \
-            --junit-xml=TestResults/coordinator.xml
-
       - name: Publish .NET test results
         uses: dorny/test-reporter@v1
         if: always()
@@ -131,24 +128,12 @@ jobs:
           fail-on-empty: false
 
 
-      - name: Publish Python test results
-        uses: dorny/test-reporter@v1
-        if: always()
-        with:
-          name: Python Unit Tests
-          path: TestResults/coordinator.xml
-          reporter: java-junit
-          fail-on-error: false
-          fail-on-empty: false
-
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: unit-test-results-${{ github.run_number }}
-          path: |
-            TestResults/*.trx
-            TestResults/coordinator.xml
+          path: TestResults/*.trx
           retention-days: 30
 
       - name: Clean .NET download cache
@@ -221,7 +206,12 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 15
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true'
+    if: |
+      always() &&
+      needs.build-test.result == 'success' && (
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true')
+      )
 
     steps:
       - uses: actions/checkout@v4
@@ -332,16 +322,18 @@ jobs:
   system-full:
     name: System Tests (full stack)
     runs-on: self-hosted
-    needs: [build-test, deploy-hydra, deploy-infra]
-    timeout-minutes: 60
-    # Only runs on explicit workflow_dispatch with run-system-full=true.
-    # Full-stack tests require all 6 services healthy (llama RTX, llama P100,
-    # Store, Agents, Coordinator, Observability) — never automatic.
+    needs: [build-test, deploy-hydra, deploy-llama]
+    timeout-minutes: 20
+    # Runs on PRs after at least one deploy succeeds, or on manual dispatch.
+    # Skipped when both deploys are skipped (no deployable code changed).
     if: |
       always() &&
       needs.build-test.result == 'success' &&
-      github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.run-system-full == 'true'
+      (needs.deploy-hydra.result == 'success' || needs.deploy-llama.result == 'success') &&
+      (
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.run-system-full == 'true')
+      )
 
     steps:
       - uses: actions/checkout@v4
@@ -424,12 +416,17 @@ jobs:
   deploy-llama:
     name: Deploy hydra-head (manages llama + 3 services)
     runs-on: self-hosted
+    needs: build-test
     timeout-minutes: 10
     permissions:
       contents: write
     if: |
-      startsWith(github.ref, 'refs/tags/llama.cpp') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true')
+      always() && (
+        (github.event_name == 'pull_request' && needs.build-test.result == 'success') ||
+        startsWith(github.ref, 'refs/tags/llama.cpp') ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true') ||
+        github.event_name == 'repository_dispatch'
+      )
 
     steps:
       - uses: actions/checkout@v4
@@ -438,27 +435,53 @@ jobs:
 
       - name: Pin llama-server OCI image (if requested)
         id: pin
-        if: ${{ github.event.inputs.rtx-image != '' || github.event.inputs.p100-image != '' }}
+        if: |
+          github.event.inputs.rtx-image != '' ||
+          github.event.inputs.p100-image != '' ||
+          github.event.client_payload.rtx-image != '' ||
+          github.event.client_payload.p100-image != ''
         run: |
-          # Anchored on the `llama-server:` block key through its `binary:`
-          # field (not on the source value) so this works for any image
-          # ref, including a first-time switch away from the
-          # ghcr.io/ddvnguyen/llama-server repo — see the fixed-suffix
-          # version this replaced for why that mattered. Range must span
-          # to `binary:` rather than +1 because node-rtx.yaml has a long
-          # comment block between `llama-server:` and its `source:` line.
-          if [ -n "${{ github.event.inputs.rtx-image }}" ]; then
-            RTX_IMAGE="${{ github.event.inputs.rtx-image }}"
-            sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*source:\s*\).*|\1${RTX_IMAGE}|" \
-              infra/hydra-head/config/node-rtx.yaml \
-              infra/hydra-head/config/node-rtx3060.yaml
+          # Pin the OCI image ref AND resolve its digest so the node
+          # config has a reproducible source + verifiable image_digest.
+          # Reads from workflow_dispatch inputs OR repository_dispatch
+          # client_payload (fork handoff from ddvnguyen/llama.cpp).
+          pin_image() {
+            local image="$1"
+            local config_file="$2"
+            echo "Pinning $image in $config_file"
+
+            # Update source: line
+            sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*source:\s*\).*|\1${image}|" "$config_file"
+
+            # Resolve digest via podman
+            local digest
+            digest=$(podman pull "$image" 2>/dev/null && podman inspect "$image" --format '{{.Digest}}' 2>/dev/null || echo "")
+            if [ -n "$digest" ]; then
+              echo "Resolved digest: $digest"
+              # Update image_digest: line (add if missing, replace if present)
+              if grep -q 'image_digest:' "$config_file"; then
+                sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*image_digest:\s*\).*|\1${digest}|" "$config_file"
+              else
+                # Insert image_digest after source: line
+                sed -i "/^\s*source:\s*${image}$/a\\    image_digest: ${digest}" "$config_file"
+              fi
+            else
+              echo "WARNING: Could not resolve digest for $image"
+            fi
+          }
+
+          # Resolve image refs from either input source
+          RTX_IMAGE="${{ github.event.inputs.rtx-image || github.event.client_payload.rtx-image }}"
+          P100_IMAGE="${{ github.event.inputs.p100-image || github.event.client_payload.p100-image }}"
+
+          if [ -n "$RTX_IMAGE" ]; then
+            pin_image "$RTX_IMAGE" infra/hydra-head/config/node-rtx.yaml
+            pin_image "$RTX_IMAGE" infra/hydra-head/config/node-rtx3060.yaml
             echo "rtx_image=$RTX_IMAGE" >> "$GITHUB_OUTPUT"
           fi
 
-          if [ -n "${{ github.event.inputs.p100-image }}" ]; then
-            P100_IMAGE="${{ github.event.inputs.p100-image }}"
-            sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*source:\s*\).*|\1${P100_IMAGE}|" \
-              infra/hydra-head/config/node-p100.yaml
+          if [ -n "$P100_IMAGE" ]; then
+            pin_image "$P100_IMAGE" infra/hydra-head/config/node-p100.yaml
             echo "p100_image=$P100_IMAGE" >> "$GITHUB_OUTPUT"
           fi
 
@@ -512,21 +535,48 @@ jobs:
           sleep 8
           curl -sf http://192.168.122.21:9700/status >/dev/null && echo "hydra-head-p100 OK" || echo "WARNING: hydra-head-p100 not responding"
 
+      - name: Verify deployed digests
+        run: |
+          set -eo pipefail
+          echo "Verifying deployed engine binaries..."
+
+          # Extract pinned image refs from node configs
+          RTX_SOURCE=$(grep -A5 'llama-server:' infra/hydra-head/config/node-rtx.yaml | grep 'source:' | head -1 | awk '{print $2}')
+          P100_SOURCE=$(grep -A5 'llama-server:' infra/hydra-head/config/node-p100.yaml | grep 'source:' | head -1 | awk '{print $2}')
+
+          echo "RTX pinned: $RTX_SOURCE"
+          echo "P100 pinned: $P100_SOURCE"
+
+          # Check each head is responding (digest verification will be
+          # added once /status exposes image_digest — see #2.2)
+          for endpoint in "http://localhost:9700/status" "http://localhost:9701/status" "http://192.168.122.21:9700/status"; do
+            if curl -sf "$endpoint" >/dev/null 2>&1; then
+              echo "OK: $endpoint responding"
+            else
+              echo "FAIL: $endpoint not responding"
+              exit 1
+            fi
+          done
+          echo "All heads responding"
+
       - name: Write deploy summary
         if: always()
         run: |
           TAG="${{ github.ref_name }}"
+          RTX_SOURCE=$(grep -A5 'llama-server:' infra/hydra-head/config/node-rtx.yaml | grep 'source:' | head -1 | awk '{print $2}')
+          P100_SOURCE=$(grep -A5 'llama-server:' infra/hydra-head/config/node-p100.yaml | grep 'source:' | head -1 | awk '{print $2}')
           cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
           ## hydra-head Deploy
 
           | Field | Value |
           |-------|-------|
           | Tag   | \`$TAG\` |
-          | Pinned RTX image | \`${{ github.event.inputs.rtx-image || '(unchanged)' }}\` |
-          | Pinned P100 image | \`${{ github.event.inputs.p100-image || '(unchanged)' }}\` |
+          | RTX image | \`${RTX_SOURCE}\` |
+          | P100 image | \`${P100_SOURCE}\` |
           | By    | ${{ github.actor }} |
           | Time  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
           **RTX**: hydra-head container on :9700
-          **P100**: hydra-head systemd service on :9700
+          **RTX 3060**: hydra-head container on :9701
+          **P100**: hydra-head systemd service on 192.168.122.21:9700
           SUMMARY

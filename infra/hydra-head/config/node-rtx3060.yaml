@@ -31,6 +31,7 @@ binaries:
     # like this by making the bind mount :rw when the opt-in override
     # is in use; the mount is intentionally read-only.
     source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-latest
+    image_digest: sha256:c71c6db4cb4dad1470bd6302797b26be1a7db73fbfaa3de8d3775ca0507eda7a
     binary: llama-engine
     dest: /llama/bin/llama-engine
   node_exporter:

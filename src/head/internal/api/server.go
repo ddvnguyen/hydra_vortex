@@ -93,14 +93,44 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	processes := s.manager.GetAllProcessInfo()
 
+	// Build binary provenance map: source → on-disk checksum + pulled digest
+	type binaryInfo struct {
+		Source          string `json:"source"`
+		Dest            string `json:"dest"`
+		ImageDigest     string `json:"image_digest,omitempty"`
+		OnDiskChecksum  string `json:"on_disk_checksum,omitempty"`
+		PulledDigest    string `json:"pulled_digest,omitempty"`
+	}
+	binaries := make(map[string]binaryInfo)
+	for name, spec := range s.cfg.Binaries {
+		info := binaryInfo{
+			Source:      spec.Source,
+			Dest:        spec.Dest,
+			ImageDigest: spec.ImageDigest,
+		}
+		// Compute on-disk checksum if binary exists
+		if spec.Dest != "" {
+			if checksum, err := registry.ComputeChecksum(spec.Dest); err == nil {
+				info.OnDiskChecksum = checksum
+			}
+		}
+		// Get the resolved digest from a previous pull in this process
+		if s.registry != nil {
+			info.PulledDigest = s.registry.PulledBinaryInfo(spec.Source)
+		}
+		binaries[name] = info
+	}
+
 	response := struct {
 		Processes map[string]*process.ProcessInfo `json:"processes"`
 		Health    struct {
 			Mode    string `json:"mode"`
 			Healthy bool   `json:"healthy"`
 		} `json:"health"`
+		Binaries map[string]binaryInfo `json:"binaries,omitempty"`
 	}{
 		Processes: processes,
+		Binaries:  binaries,
 	}
 
 	if s.checker != nil {

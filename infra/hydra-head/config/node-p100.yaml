@@ -22,6 +22,7 @@ binaries:
     # to the unified llama-server repo; tag is
     # <arch>-<binary>-<fork-version>-<short-sha> or -latest.
     source: ghcr.io/ddvnguyen/llama-server:sm60-llama-server-latest
+    image_digest: sha256:30092e047989db36a24d7b8f74fd4126e8109a05f7db88414f6d20a8551da58b
     binary: llama-server
     dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
 
