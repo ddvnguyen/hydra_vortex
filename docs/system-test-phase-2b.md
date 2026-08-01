@@ -164,6 +164,13 @@ curl -s http://localhost:8080/v1/slots | jq '.[] | select(.is_processing==true) 
 
 ### Test 1: defer then trigger via the C# applier
 
+> **⚠️ SUPERSEDED (2026-07-22, PR #488).** `EngineConfigApplier` was deleted as
+> dead code. Engine config now reaches the engine as a `hydra_config` dict
+> injected into the PREFILL request body — see
+> `WorkerSchedulerService.cs:1209` (#481 Phase 2b) and #487. The C# snippets in
+> this section will not compile. They are kept as a record of the original
+> Phase 2b design; rewrite against the `hydra_config` path before using them.
+
 The C# `EngineConfigApplier` is the orchestrator for T2/T3. To
 trigger a T2 CONFIGURE without restarting the engine, use a small
 C# test program that calls the applier (e.g. `tests/system/test-hydra-t2-apply.cs`,

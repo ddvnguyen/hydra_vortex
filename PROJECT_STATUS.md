@@ -75,7 +75,8 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
 ### Engine Config Push
 | Component | Status | Location |
 |-----------|--------|----------|
-| `EngineConfigApplier` | ✅ Implemented | `src/core/Hydra.Core/Services/EngineConfigApplier.cs` |
+| `hydra_config` on PREFILL | ✅ Implemented (#481 Phase 2b, #487) | `src/core/Hydra.Core/Services/WorkerSchedulerService.cs:1209` |
+| `EngineConfigApplier` | ❌ Deleted (PR #488) | — superseded by the `hydra_config` PREFILL path above |
 | `0x40 EngineConfigure` RPC | ✅ Implemented | `src/core/Hydra.Shared/Protocol.cs` (OpCode 0x40) |
 | `0x44 SET_EXPERT_MODE` | ✅ Implemented | COMBINED mode activation |
 | `0x46 EnginePipelineAttach` | ✅ Implemented | PIPELINE mode activation |
@@ -97,7 +98,8 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
 ### What's NOT Implemented (and not needed)
 - **`ProfileSwitcher`** — NOT needed. llama-engine handles model switching internally.
   Hydra.Core sends config via 0x40 EngineConfigure; the engine decides when to reload.
-- **`WorkerSchedulerService.SendEngineConfig`** — replaced by `EngineConfigApplier.ApplyAsync`
+- **`WorkerSchedulerService.SendEngineConfig`** — replaced by the `hydra_config` dict
+  injected into the PREFILL request body (`WorkerSchedulerService.cs:1209`, #481 Phase 2b)
 - **`HydraEngineClient.SetEngineConfigAsync`** — replaced by `EngineConfigureAsync`
 
 ## Worker Node Model
