@@ -859,14 +859,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// model swap.
 				if (_cfg.UseLlamaEngine)
 				{
-					var residentAlias = _health.GetNodeInfo(aw.Name)?.CurrentModel ?? "";
+					var nodeInfo = _health.GetNodeInfo(aw.Name);
 					var requestedAlias = TranslateModelAlias(
 						item.Request.TryGetValue("model", out var cmv) && cmv is string cms ? cms : null);
-					if (!string.IsNullOrEmpty(requestedAlias)
-						&& !string.Equals(residentAlias, requestedAlias, StringComparison.OrdinalIgnoreCase))
+					// When nodeInfo is null (health data not yet available),
+					// we can't determine the resident model — skip the
+					// prefill-swap and let the engine handle inline reload.
+					// Treating null as "" caused a false model mismatch that
+					// triggered a PREFILL swap → slot deadlock → infinite retry
+					// loop (#512 root cause).
+					if (nodeInfo != null
+						&& !string.IsNullOrEmpty(requestedAlias)
+						&& !string.Equals(nodeInfo.CurrentModel, requestedAlias, StringComparison.OrdinalIgnoreCase))
 					{
-						_log.Information("cold_atomic_prefill_swap Sid={Sid} Node={N} Resident={R} Requested={Req}",
-							item.SessionId, aw.Name, residentAlias, requestedAlias);
+					_log.Information("cold_atomic_prefill_swap Sid={Sid} Node={N} Resident={R} Requested={Req}",
+						item.SessionId, aw.Name, nodeInfo!.CurrentModel, requestedAlias);
 						// PrefillAsync reads item.PrefillWorker/PrefillSlot (not
 						// DecodeWorker/DecodeSlot, set above) — without these the
 						// PREFILL dispatch null-refs on item.PrefillWorker! before
