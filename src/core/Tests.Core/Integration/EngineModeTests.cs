@@ -576,24 +576,21 @@ public sealed class EngineModeTests
     [Fact]
     public async Task Combined_Solo_Fallback_Still_Releases_Exclusive_Reserve()
     {
-        // P3.0 §"Failure handling": when combined-mode activation fails
-        // (FailMultiEngineAttach = true → EnginePrefill with hydra_config
-        // returns Error → scheduler fails fast via BusyTimeoutOverride),
-        // the exclusive reservation MUST still be released so the peer is
-        // not stranded. The request itself fails (InvalidOperationException)
-        // because the engine RPC returns Error, but the reservation cleanup
-        // is the invariant we're testing.
+        // P3.0 §"Failure handling": when combined-mode activation falls back
+        // to solo (FailMultiEngineAttachFallback → EnginePrefill with
+        // hydra_config returns Ok with model_fallback=true), the exclusive
+        // reservation MUST still be released so the peer is not stranded.
+        // The request succeeds (engine handled the fallback gracefully) but
+        // the reservation cleanup is the invariant we're testing.
         await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2);
         f.Rpc.FailMultiEngineAttachFallback = true;
 
-        var ex = await Record.ExceptionAsync(async () =>
-            await f.SubmitAsync("sess_p30_2", 20000, 100));
+        var result = await f.SubmitAsync("sess_p30_2", 20000, 100);
 
-        Assert.NotNull(ex);
-        Assert.IsType<InvalidOperationException>(ex);
+        Assert.NotNull(result);
 
         // The combined mode was attempted — exclusive reservation was acquired
-        // during cold routing, and must be released on failure.
+        // during cold routing, and must be released after completion.
         Assert.False(f.Tracker.IsExclusiveReserved("p100"),
             "Solo-fallback must release the exclusive reservation");
         Assert.True(f.Tracker.HasFreeSlot("p100"));
