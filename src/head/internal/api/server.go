@@ -138,9 +138,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		// Get the resolved digest from a previous pull in this process
+		// Resolved digest: this process's pull if there was one, else the
+		// sidecar recorded beside the binary. The fallback matters because a
+		// skipped pull (checksum match, or restart with the binary already in
+		// place) leaves the in-memory map empty, which would otherwise make
+		// deploy-time digest verification fail on a perfectly healthy node.
 		if s.registry != nil {
-			info.PulledDigest = s.registry.PulledBinaryInfo(spec.Source)
+			info.PulledDigest = s.registry.ResolveDigest(spec.Source, spec.Dest)
 		}
 		binaries[name] = info
 	}

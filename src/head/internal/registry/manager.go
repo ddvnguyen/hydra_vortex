@@ -37,10 +37,47 @@ func NewManager(logger *slog.Logger, cacheDir string) *Manager {
 // PulledBinaryInfo returns the resolved image digest for a previously
 // pulled source. Returns empty string if the source was never pulled
 // in this process lifetime.
+//
+// Prefer ResolveDigest for /status provenance: this map only covers pulls
+// made by *this* process, so it is empty after any restart that skipped the
+// pull.
 func (m *Manager) PulledBinaryInfo(source string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.pulledDigest[source]
+}
+
+// DigestSidecarPath is where the resolved image digest is recorded next to a
+// pulled binary, so provenance survives a restart that skips the pull.
+func DigestSidecarPath(destination string) string {
+	return destination + ".digest"
+}
+
+// RecordDigest persists the resolved image digest beside the binary. A failure
+// here is not fatal — it costs provenance on /status, not correctness — so the
+// caller logs and continues.
+func RecordDigest(destination, digest string) error {
+	return os.WriteFile(DigestSidecarPath(destination), []byte(digest), 0o644)
+}
+
+// ResolveDigest returns the image digest for a binary, preferring the digest
+// recorded by a pull in this process and falling back to the on-disk sidecar.
+//
+// Without the fallback, /status reports an empty pulled_digest whenever the
+// pull was skipped (checksum match, or a restart with the binary already in
+// place), which makes deploy-time digest verification fail for a healthy node.
+func (m *Manager) ResolveDigest(source, destination string) string {
+	if d := m.PulledBinaryInfo(source); d != "" {
+		return d
+	}
+	if destination == "" {
+		return ""
+	}
+	data, err := os.ReadFile(DigestSidecarPath(destination))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // fileEntry is one regular-file entry inside a layer tar.
@@ -111,10 +148,15 @@ func (m *Manager) PullBinary(source, destination, imageDigest, binaryChecksum, b
 		m.logger.Info("binary checksum verified", "checksum", actualChecksum)
 	}
 
-	// Track the resolved digest for /status provenance.
+	// Track the resolved digest for /status provenance, both in-process and
+	// on disk so it survives a restart that skips the pull.
 	m.mu.Lock()
 	m.pulledDigest[source] = digest.String()
 	m.mu.Unlock()
+	if err := RecordDigest(destination, digest.String()); err != nil {
+		m.logger.Warn("could not record digest sidecar; /status provenance will be unavailable after restart",
+			"destination", destination, "error", err)
+	}
 
 	m.logger.Info("binary pulled successfully",
 		"source", source, "destination", destination, "digest", digest.String())

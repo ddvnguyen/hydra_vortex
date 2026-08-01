@@ -294,6 +294,19 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 10
+    # DISABLED pending #518 (Python -> xUnit/Aspire conversion).
+    #
+    # This job only ever ran tests/system/test_m1_system.py and
+    # test_m2_system.py — both of which import `coordinator.*`, the Python
+    # coordinator deleted in 8e7d1bffd. They have been uncollectable ever
+    # since, which is the whole of the long-standing
+    # "ModuleNotFoundError: No module named 'coordinator'" failure. 43 of
+    # the 83 system tests are dead for the same reason.
+    #
+    # Disabled rather than left red on purpose: a permanently-failing check
+    # trains people to ignore CI, which is exactly how CI stayed dead for
+    # eight weeks. Re-enable as the Tier 1 Aspire harness in #518.
+    if: false
 
     steps:
       - uses: actions/checkout@v4
@@ -332,16 +345,22 @@ jobs:
     runs-on: self-hosted
     needs: [build-test, deploy-hydra, deploy-llama]
     timeout-minutes: 20
-    # Runs on PRs after at least one deploy succeeds, or on manual dispatch.
-    # Skipped when both deploys are skipped (no deployable code changed).
+    # DISABLED pending #518 (Python -> xUnit/Aspire conversion), except for
+    # explicit manual dispatch, which stays available for ad-hoc live runs.
+    #
+    # The surviving ~29 Python system tests still work when pointed at a live
+    # rig, so this is kept dispatchable rather than hard-disabled like
+    # system-mocked. It no longer runs automatically on PRs: until the
+    # deploy-llama digest check is proven to fire (#497), a green run here
+    # cannot tell you which engine build it tested against.
+    #
+    # Re-enable as the Tier 2 LiveRigFixture suite in #518.
     if: |
       always() &&
       needs.build-test.result == 'success' &&
       (needs.deploy-hydra.result == 'success' || needs.deploy-llama.result == 'success') &&
-      (
-        github.event_name == 'pull_request' ||
-        (github.event_name == 'workflow_dispatch' && github.event.inputs.run-system-full == 'true')
-      )
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.run-system-full == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -579,13 +598,17 @@ jobs:
               FAIL=1; return
             }
             # Extract pulled_digest for any binary whose source matches the expected tag
+            # Select the llama-server entry by name. Picking "the first entry
+            # with a digest" would be a coin flip: Go map iteration is
+            # randomised, so the JSON key order varies per request. It happens
+            # to work today only because llama-server is the sole binary with
+            # an image_digest configured.
             local actual_digest
             actual_digest=$(echo "$status_json" | python3 -c "
           import sys, json
           data = json.load(sys.stdin)
-          for name, info in data.get('binaries', {}).items():
-              if info.get('pulled_digest'):
-                  print(info['pulled_digest']); break
+          info = data.get('binaries', {}).get('llama-server') or {}
+          print(info.get('pulled_digest', ''))
           " 2>/dev/null || echo "")
 
             if [ -z "$actual_digest" ]; then
@@ -604,13 +627,23 @@ jobs:
             fi
           }
 
-          if [ -n "$RTX_DIGEST" ]; then
-            verify_head "hydra-head-rtx" "http://localhost:9700/status" "$RTX_DIGEST"
-          fi
-          if [ -n "$RTX_DIGEST" ]; then
+          # A missing pin is a hard failure, not a reason to skip. Guarding
+          # these calls on `[ -n "$DIGEST" ]` would mean a broken extraction
+          # or a removed image_digest silently turns this step green — the
+          # same "wired up but never engages" failure this step exists to
+          # catch (cf. #502, #477).
+          if [ -z "$RTX_DIGEST" ]; then
+            echo "FAIL: no image_digest pinned for RTX in infra/hydra-head/config/node-rtx.yaml"
+            FAIL=1
+          else
+            verify_head "hydra-head-rtx"     "http://localhost:9700/status" "$RTX_DIGEST"
             verify_head "hydra-head-rtx3060" "http://localhost:9701/status" "$RTX_DIGEST"
           fi
-          if [ -n "$P100_DIGEST" ]; then
+
+          if [ -z "$P100_DIGEST" ]; then
+            echo "FAIL: no image_digest pinned for P100 in infra/hydra-head/config/node-p100.yaml"
+            FAIL=1
+          else
             verify_head "hydra-head-p100" "http://192.168.122.21:9700/status" "$P100_DIGEST"
           fi
 
