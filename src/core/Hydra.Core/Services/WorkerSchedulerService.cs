@@ -867,6 +867,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					{
 						_log.Information("cold_atomic_prefill_swap Sid={Sid} Node={N} Resident={R} Requested={Req}",
 							item.SessionId, aw.Name, residentAlias, requestedAlias);
+						// PrefillAsync reads item.PrefillWorker/PrefillSlot (not
+						// DecodeWorker/DecodeSlot, set above) — without these the
+						// PREFILL dispatch null-refs on item.PrefillWorker! before
+						// ever reaching the engine. item.PrefillLease is deliberately
+						// left null: item.DecodeLease (above) already owns this slot,
+						// and SaveKvAsync/PrefillAsync's cleanup paths already
+						// null-check PrefillLease before disposing it.
+						item.PrefillWorker = aw;
+						item.PrefillSlot = slot;
 						return WorkItemState.Prefill;
 					}
 					return WorkItemState.Decode;
@@ -3063,20 +3072,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					_log.Debug("#PD-TRACE DECODE_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Slot={Slot} NPast={NPast}",
 						item.SessionId, decodeMsgCount, decodeFirstMsg, decodeLastMsg, item.DecodeSlot, item.NPastAfter);
 				}
-			// #479/S3 + #504: translate the routing-identity model on the decode
-			// request to the GGUF-file alias so the engine's inline reload fires
-			// instead of silently falling back to its resident model.
-			// For model-agnostic workers (e.g. RTX), w.ModelAlias is null —
-			// translate the routing identity from the request field instead.
-			if (_cfg.UseLlamaEngine)
-			{
-				var decodeAlias = !string.IsNullOrEmpty(w.ModelAlias)
-					? TranslateModelAlias(w.ModelAlias, decodeRole: true)
-					: TranslateModelAlias(
-						item.Request.TryGetValue("model", out var dmv) && dmv is string dms ? dms : null);
-				if (!string.IsNullOrEmpty(decodeAlias))
-					item.Request["model"] = decodeAlias;
-			}
+				// #479/S3 + #504: translate the routing-identity model on the decode
+				// request to the GGUF-file alias so the engine's inline reload fires
+				// instead of silently falling back to its resident model.
+				// For model-agnostic workers (e.g. RTX), w.ModelAlias is null —
+				// translate the routing identity from the request field instead.
+				if (_cfg.UseLlamaEngine)
+				{
+					var decodeAlias = !string.IsNullOrEmpty(w.ModelAlias)
+						? TranslateModelAlias(w.ModelAlias, decodeRole: true)
+						: TranslateModelAlias(
+							item.Request.TryGetValue("model", out var dmv) && dmv is string dms ? dms : null);
+					if (!string.IsNullOrEmpty(decodeAlias))
+						item.Request["model"] = decodeAlias;
+				}
 				var resp = await _proxy.ProxyCompletionAsync(
 						w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
 				if (resp.TryGetValue("id_slot", out var s2) && s2 is JsonElement se2)
@@ -3617,6 +3626,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// #507: model-reload headroom. A T3 rebuild (model swap) adds a large
 		// fixed cost independent of prompt size. Use a 6x safety multiplier
 		// because observed COMBINED reload (270s) was 6x the documented 45s.
+		// TODO(#514): that 270s figure is itself the degraded-throughput
+		// symptom (engine drops to 2-4 tok/s post-swap, not just a slow
+		// reload) — once #514 is fixed, re-measure actual reload time and
+		// revisit whether 6x is still the right multiplier (it's likely
+		// too generous once reload speed returns to normal).
 		if (modelLoadTimeS > 0)
 		{
 			const int ReloadSafetyMultiplier = 6;

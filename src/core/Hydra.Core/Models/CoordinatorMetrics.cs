@@ -60,6 +60,18 @@ internal static class CoordinatorMetrics
     public static readonly Histogram ModelLoadDuration = Metrics.CreateHistogram(
         "hydra_model_load_seconds", "Model load time", new[] { "model" });
 
+    // Issue #507/#511: incremented in PrefillAsync (CalculateBusyTimeouts
+    // call site) whenever positive evidence of an in-flight model swap
+    // (worker's PresetAliases doesn't contain the requested alias) causes
+    // the BUSY-timeout reload headroom multiplier to be applied. A
+    // non-zero rate is expected during dynamic model swaps; a rate that
+    // never fires despite swaps happening would mean the headroom guard
+    // (see CalculateBusyTimeouts) isn't engaging when it should.
+    public static readonly Counter ModelReloadTimeoutHeadroom = Metrics.CreateCounter(
+        "hydra_model_reload_timeout_headroom_total",
+        "Prefill BUSY-timeout reload headroom applied (model swap detected)",
+        new CounterConfiguration { LabelNames = new[] { "node", "model" } });
+
     public static readonly Histogram QueueWaitDuration = Metrics.CreateHistogram(
         "hydra_queue_wait_seconds", "Time from request enqueue to first dispatch");
 
