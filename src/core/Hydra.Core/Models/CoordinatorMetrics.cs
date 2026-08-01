@@ -282,4 +282,10 @@ internal static class CoordinatorMetrics
         "hydra_engine_vs_coordinator_decode_ms",
         "Difference between engine-reported and coordinator-measured decode duration (ms)",
         new[] { "node" });
+
+    // ── #507: model-reload timeout headroom observability ──
+    public static readonly Counter ModelReloadTimeoutHeadroom = Metrics.CreateCounter(
+        "hydra_model_reload_timeout_headroom_total",
+        "BUSY retry added documented LoadTimeS headroom (model swap detected via PresetAliases mismatch)",
+        new[] { "worker", "model" });
 }
