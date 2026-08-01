@@ -294,4 +294,9 @@ internal static class CoordinatorMetrics
         "hydra_engine_vs_coordinator_decode_ms",
         "Difference between engine-reported and coordinator-measured decode duration (ms)",
         new[] { "node" });
+
+    public static readonly Histogram ModelReloadExceededDocumented = Metrics.CreateHistogram(
+        "hydra_model_reload_exceeded_documented_seconds",
+        "Engine-reported model reload time when it exceeded 2x the documented LoadTimeS (after BUSY retry)",
+        new[] { "worker", "model" });
 }

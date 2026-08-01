@@ -10,7 +10,8 @@ public interface ICompletionProxyService
 
     // #470: poll GET /v1/decode/{decodeRequestId} for merged-decode results.
     // Returns SSE lines (streaming) or throws on timeout/not-found.
-    IAsyncEnumerable<byte[]> PollDecodeStreamAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
+    // Three-way branch: 404=terminal, 202=keep-polling+record-phases, 400=terminal, 200=stream.
+    IAsyncEnumerable<byte[]> PollDecodeStreamAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct, WorkItem? item = null);
     // #470: poll GET /v1/decode/{decodeRequestId} for buffered result.
     Task<Dictionary<string, object>> PollDecodeResultAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
     // #470: DELETE /v1/decode/{decodeRequestId} to cancel orphaned generation.
@@ -59,4 +60,10 @@ public interface IHealthMonitorService
     int? GetIdleSlot(string nodeName);
     NodeInfo? GetNodeInfo(string nodeName);
     Dictionary<string, object> GetHealthSummary();
+    /// <summary>
+    /// Stamp the GGUF-derived model identity onto a node's info.
+    /// Called by the worker scheduler after a PREFILL response populates
+    /// the KV model identity so Gate A can verify identity at DECODE time.
+    /// </summary>
+    void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities);
 }

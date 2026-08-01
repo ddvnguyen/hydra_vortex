@@ -41,6 +41,19 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
     public bool IsHealthy(string name) { lock (_lock) return _nodes.TryGetValue(name, out var n) && n.Healthy; }
     public int? GetIdleSlot(string name) { var info = GetNodeInfo(name); return info?.Slots.FirstOrDefault(s => !s.IsProcessing)?.Id; }
     public NodeInfo? GetNodeInfo(string name) { lock (_lock) return _nodes.TryGetValue(name, out var n) ? Clone(n) : null; }
+    public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
+    {
+        lock (_lock)
+        {
+            if (_nodes.TryGetValue(nodeName, out var n))
+            {
+                n.ModelTokenizer = tokenizer;
+                n.ModelName = modelName;
+                n.ModelQuant = modelQuant;
+                n.ModelCapabilities = modelCapabilities;
+            }
+        }
+    }
     public Dictionary<string, object> GetHealthSummary()
     {
         var r = new Dictionary<string, object>();
@@ -216,6 +229,10 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         PresetAliases = new HashSet<string>(src.PresetAliases, StringComparer.OrdinalIgnoreCase),
         EngineCapabilities = new HashSet<string>(src.EngineCapabilities, StringComparer.OrdinalIgnoreCase),
         CurrentModel = src.CurrentModel,
+        ModelTokenizer = src.ModelTokenizer,
+        ModelName = src.ModelName,
+        ModelQuant = src.ModelQuant,
+        ModelCapabilities = src.ModelCapabilities,
         Slots = src.Slots.Select(s => new Models.SlotInfo
         {
             Id = s.Id, NPast = s.NPast, IsProcessing = s.IsProcessing,

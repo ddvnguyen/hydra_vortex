@@ -95,7 +95,7 @@ public sealed class StateStreamResult : IDisposable
     }
 }
 
-public sealed class LlamaClient : IDisposable
+public class LlamaClient : IDisposable
 {
     private readonly HttpClient _http;
     private readonly string _baseUrl;
@@ -146,7 +146,7 @@ public sealed class LlamaClient : IDisposable
         return result ?? new RestoreResult { Restored = false };
     }
 
-    public async Task<SlotMeta> GetStateMetaAsync(int slotId, CancellationToken ct)
+    public virtual async Task<SlotMeta> GetStateMetaAsync(int slotId, CancellationToken ct)
     {
         var response = await _http.GetAsync(
             $"{_baseUrl}/slots/{slotId}/state/meta", ct);

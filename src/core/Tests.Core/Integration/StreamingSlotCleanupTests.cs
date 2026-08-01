@@ -24,6 +24,7 @@ internal sealed class TestHealthMonitor : IHealthMonitorService
 	public int? GetIdleSlot(string nodeName) => 0;
 	public NodeInfo? GetNodeInfo(string nodeName) => null;
 	public Dictionary<string, object> GetHealthSummary() => new();
+	public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
 }
 
 internal sealed class TestCompletionProxy : ICompletionProxyService
@@ -66,7 +67,8 @@ internal sealed class TestCompletionProxy : ICompletionProxyService
 
 	public async IAsyncEnumerable<byte[]> PollDecodeStreamAsync(
 		string nodeUrl, int decodeRequestId, string traceId,
-		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct,
+		Hydra.Core.Models.WorkItem? item = null)
 	{
 		yield return Encoding.UTF8.GetBytes(
 			$"data: {{\"choices\":[{{\"delta\":{{\"content\":\"Hi\"}}}}]}}\n\n");

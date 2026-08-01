@@ -330,4 +330,18 @@ public sealed class SlotMetaTests
         Assert.Equal(expectedStuck, stuck);
         Assert.Equal(expectedSlow, slow);
     }
+
+    // #507: model-reload headroom overload — 6x safety multiplier on LoadTimeS
+    [Theory]
+    [InlineData(10_000, 0, 300_000, 600_000)]         // no reload: same as base
+    [InlineData(10_000, 45, 570_000, 870_000)]        // 45s load → +270s (6x) headroom
+    [InlineData(10_000, 90, 840_000, 1_140_000)]      // 90s load → +540s headroom
+    [InlineData(0, 45, 570_000, 870_000)]             // fallback tokens + reload headroom
+    [InlineData(50_000, 45, 1_770_000, 3_270_000)]    // large prompt + reload headroom
+    public void CalculateBusyTimeouts_WithModelLoad_Includes_Headroom(long tokens, int loadS, long expectedStuck, long expectedSlow)
+    {
+        var (stuck, slow) = WorkerSchedulerService.CalculateBusyTimeouts(tokens, loadS);
+        Assert.Equal(expectedStuck, stuck);
+        Assert.Equal(expectedSlow, slow);
+    }
 }

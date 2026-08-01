@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using Hydra.Shared;
+using Hydra.Core;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Services;
@@ -17,6 +18,8 @@ public sealed class EngineModeTests
         public List<(OpCode Op, string Key, byte[] Payload)> Calls { get; } = new();
         /// <summary>When set, EnginePipelineAttach/EngineSetExpertMode report failure (peer down).</summary>
         public bool FailMultiEngineAttach { get; set; }
+        /// <summary>When set, PREFILL with hydra_config returns Ok + model_fallback (engine accepted but couldn't activate combined mode).</summary>
+        public bool FailMultiEngineAttachFallback { get; set; }
 
         // Regression hooks for #279: when set, the matching opcode returns
         // non-OK status with empty meta, simulating an out-of-date llama-server
@@ -47,6 +50,18 @@ public sealed class EngineModeTests
         private int _statePutMismatchFired;
         private int _statePutHashMismatchFired;
 
+        /// <summary>When set, EngineMergedDecodeAsync returns Valid=false (simulates Gate A rejection).
+        /// Only fires once — subsequent calls return success.</summary>
+        public bool MakeMergedDecodeReject { get; set; } = false;
+        private int _mergedDecodeRejectFired;
+
+        /// <summary>When set, EngineMergedDecodeAsync throws (simulates a transport fault).
+        /// Only fires once — subsequent calls succeed.</summary>
+        public bool MakeMergedDecodeThrow { get; set; } = false;
+        private int _mergedDecodeThrowFired;
+
+        public List<(string SlotKey, string ModelName, bool Stream)> MergedDecodeCalls { get; } = new();
+
         public EngineTestRpcClient() : base("test", 0) { }
 
         public override Task<RpcResponse> RequestAsync(
@@ -64,7 +79,13 @@ public sealed class EngineModeTests
             // Phase 2b (#481): COMBINED mode now sends hydra_config via PREFILL
             // instead of SET_EXPERT_MODE. When FailMultiEngineAttach is set and
             // this is a PREFILL with hydra_config (combined mode activation),
-            // simulate the peer being down by returning an error.
+            // simulate the engine being unable to activate combined mode.
+            //
+            // StatusCode.Error: terminal engine error — PrefillAsync must fail
+            //   the request immediately (IsError path), not loop.
+            // StatusCode.Ok + model_fallback: engine accepted the PREFILL but
+            //   fell back to a different model — ApplyMultiEngineAsync at decode
+            //   time records the fallback and the request continues as solo.
             if (op == OpCode.EnginePrefill && FailMultiEngineAttach && payload.Length > 0)
             {
                 var payloadStr = Encoding.UTF8.GetString(payload.Span);
@@ -73,6 +94,15 @@ public sealed class EngineModeTests
                         (byte)StatusCode.Error,
                         JsonSerializer.Serialize(new { mode = "solo", peer_connected = false }),
                         []));
+            }
+            if (op == OpCode.EnginePrefill && FailMultiEngineAttachFallback && payload.Length > 0)
+            {
+                var payloadStr = Encoding.UTF8.GetString(payload.Span);
+                if (payloadStr.Contains("hydra_config"))
+                    return Task.FromResult(new RpcResponse(
+                        (byte)StatusCode.Ok,
+                        JsonSerializer.Serialize(new { n_past = 2000, state_size = 4096, model_fallback = true }),
+                        new byte[4096]));
             }
 
             var response = op switch
@@ -148,6 +178,85 @@ public sealed class EngineModeTests
             var pair = Calls.FirstOrDefault(c => c.Op == op);
             return pair == default ? "" : Encoding.UTF8.GetString(pair.Payload);
         }
+
+        public override Task<MergedDecodeResponse> EngineMergedDecodeAsync(
+            string slotKey, int nPast,
+            string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
+            string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+            string? modelAlias,
+            string? messagesJson, int nPredict, string? samplingJson, bool stream,
+            ReadOnlyMemory<byte> kvBlob,
+            string traceId, CancellationToken ct)
+        {
+            MergedDecodeCalls.Add((slotKey, modelName ?? "", stream));
+
+            if (MakeMergedDecodeThrow && Interlocked.CompareExchange(ref _mergedDecodeThrowFired, 1, 0) == 0)
+            {
+                throw new System.Net.Http.HttpRequestException("connection reset by engine");
+            }
+
+            if (MakeMergedDecodeReject && Interlocked.CompareExchange(ref _mergedDecodeRejectFired, 1, 0) == 0)
+            {
+                return Task.FromResult(new MergedDecodeResponse
+                {
+                    Status = (byte)StatusCode.Ok,
+                    Valid = false,
+                    Error = "gate_a_model_mismatch",
+                    TokenizerMatch = kvTokenizer == modelTokenizer,
+                    ModelNameMatch = kvModelName == modelName,
+                    ModelQuantMatch = kvModelQuant == modelQuant,
+                    ModelCapabilitiesMatch = kvModelCapabilities == modelCapabilities,
+                });
+            }
+            return base.EngineMergedDecodeAsync(
+                slotKey, nPast,
+                kvTokenizer, kvModelName, kvModelQuant, kvModelCapabilities,
+                modelTokenizer, modelName, modelQuant, modelCapabilities,
+                modelAlias,
+                messagesJson, nPredict, samplingJson, stream,
+                kvBlob,
+                traceId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Mock LlamaClient that returns a specific model identity from GetStateMetaAsync.
+    /// Used by Gate A tests to verify that model_metadata comes from the decode node's
+    /// own report, not from item.Kv*.
+    /// </summary>
+    internal sealed class GateAMockLlamaClient : LlamaClient
+    {
+        private readonly SlotMeta _meta;
+        public GateAMockLlamaClient(SlotMeta meta) : base("http://mock:0")
+            => _meta = meta;
+        public override Task<SlotMeta> GetStateMetaAsync(int slotId, CancellationToken ct)
+            => Task.FromResult(_meta);
+    }
+
+    /// <summary>
+    /// TestHealthMonitor that advertises merged_decode capability so the
+    /// merged decode code path is entered. Used by Gate A tests.
+    /// </summary>
+    internal sealed class GateATestHealthMonitor : IHealthMonitorService
+    {
+        public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+        public bool IsHealthy(string nodeName) => true;
+        public bool IsStoreHealthy => true;
+        public int? GetIdleSlot(string nodeName) => 0;
+        public NodeInfo? GetNodeInfo(string nodeName) => new()
+        {
+            NodeName = nodeName,
+            Healthy = true,
+            SlotsTotal = 2,
+            SlotsIdle = 2,
+            EngineCapabilities = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                Protocol.CapMergedDecode
+            },
+        };
+        public Dictionary<string, object> GetHealthSummary() => new();
+        public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
     }
 
     internal sealed class EngineFixture : IAsyncDisposable
@@ -168,9 +277,10 @@ public sealed class EngineModeTests
             int p100Slots = 1,
             bool pipeline = false,
             bool combined = false,
-            string multiPolicy = "pipeline")
+            string multiPolicy = "pipeline",
+            IHealthMonitorService? health = null)
         {
-            Health = new TestHealthMonitor();
+            Health = health ?? new TestHealthMonitor();
             Proxy = new TestCompletionProxy(totalTokens: 150, slotId: 0);
             Ledger = new SessionLedger();
             Tracker = new WorkerTracker();
@@ -474,7 +584,7 @@ public sealed class EngineModeTests
         // because the engine RPC returns Error, but the reservation cleanup
         // is the invariant we're testing.
         await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2);
-        f.Rpc.FailMultiEngineAttach = true;
+        f.Rpc.FailMultiEngineAttachFallback = true;
 
         var ex = await Record.ExceptionAsync(async () =>
             await f.SubmitAsync("sess_p30_2", 20000, 100));
@@ -487,6 +597,96 @@ public sealed class EngineModeTests
         Assert.False(f.Tracker.IsExclusiveReserved("p100"),
             "Solo-fallback must release the exclusive reservation");
         Assert.True(f.Tracker.HasFreeSlot("p100"));
+    }
+
+    [Fact]
+    public async Task Combined_Terminal_Error_Aborts_Without_Looping()
+    {
+        // When the engine returns a terminal error (StatusCode.Error) for a
+        // PREFILL with hydra_config, PrefillAsync must fail the request
+        // immediately instead of entering the BUSY retry loop. The exclusive
+        // reservation must still be released in FinalizeAsync.
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2);
+        f.Rpc.FailMultiEngineAttach = true;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => f.SubmitAsync("sess_p30_err", 20000, 100));
+
+        Assert.False(f.Tracker.IsExclusiveReserved("p100"),
+            "Terminal error must release the exclusive reservation");
+        Assert.True(f.Tracker.HasFreeSlot("p100"));
+    }
+
+    [Fact]
+    public async Task GateA_Mismatch_AbortsDecode()
+    {
+        // #470/A7: when kv_metadata and model_metadata differ, Gate A
+        // (DECODE 0x43) must reject the request. The rejection must abort
+        // the entire request — no HTTP proxy fallback. Decoding via proxy
+        // would hit an empty/corrupt KV slot (the #469 hallucination scenario).
+        //
+        // The mock LlamaClient returns "different_model" as the decode node's
+        // identity. The PREFILL RPC mock returns "nano" as kv_metadata. These
+        // differ, so the merged decode call carries genuinely independent
+        // identities. The mock RPC client's MakeMergedDecodeReject flag makes
+        // EngineMergedDecodeAsync return valid=false (simulating the engine's
+        // Gate A rejection). Core must throw — not fall back to HTTP proxy.
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2,
+            health: new GateATestHealthMonitor());
+
+        // Inject mock LlamaClient that returns a different identity than the
+        // PREFILL response ("nano"). This makes model_metadata independent
+        // from kv_metadata, breaking the former tautology.
+        var differentIdentity = new SlotMeta
+        {
+            ModelName = "different_model",
+            Tokenizer = "gpt2",
+            ModelQuant = "Q5_K",
+            ModelCapabilities = 0x02,
+        };
+        f.Scheduler.LlamaClientFactory = _ => new GateAMockLlamaClient(differentIdentity);
+
+        // Make EngineMergedDecodeAsync return valid=false (Gate A rejection).
+        f.Rpc.MakeMergedDecodeReject = true;
+
+        // The gate rejection must surface as an exception — not be swallowed.
+        var ex = await Record.ExceptionAsync(
+            () => f.SubmitAsync("sess_gate_a", 20000, 100));
+        Assert.IsType<InvalidOperationException>(ex);
+
+        // The merged decode was attempted with the mismatched identity.
+        Assert.Single(f.Rpc.MergedDecodeCalls);
+        Assert.Equal("different_model", f.Rpc.MergedDecodeCalls[0].ModelName);
+
+        // The HTTP proxy must NOT be called — fallback would decode over
+        // an empty/corrupt KV slot (the #469 hallucination scenario).
+        var proxy = (TestCompletionProxy)f.Proxy;
+        Assert.Empty(proxy.NonStreamingCalls);
+    }
+
+    [Fact]
+    public async Task GateA_TransportFault_FallsBackToProxy()
+    {
+        // #470: when the merged decode RPC throws a transport fault (connection
+        // reset, timeout, engine doesn't implement the opcode), Core must
+        // fall back to the HTTP proxy rather than failing the request. This
+        // is distinct from a Gate A rejection — transport faults are transient
+        // and the KV may still be valid; the proxy can still serve the request.
+        await using var f = new EngineFixture(combined: true, multiPolicy: "combined", p100Slots: 2,
+            health: new GateATestHealthMonitor());
+
+        // Make EngineMergedDecodeAsync throw (simulates transport fault).
+        f.Rpc.MakeMergedDecodeThrow = true;
+
+        var result = await f.SubmitAsync("sess_gate_a_transport", 20000, 100);
+
+        // The merged decode was attempted.
+        Assert.Single(f.Rpc.MergedDecodeCalls);
+
+        // The HTTP proxy was called as fallback — the request completed.
+        var proxy = (TestCompletionProxy)f.Proxy;
+        Assert.Single(proxy.NonStreamingCalls);
+        Assert.NotNull(result);
     }
 
     [Fact]
