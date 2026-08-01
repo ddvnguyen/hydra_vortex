@@ -129,6 +129,17 @@ jobs:
             --logger "trx;LogFileName=core-integration.trx" \
             --results-directory TestResults/
 
+      - name: Restore & build (Go head)
+        run: |
+          export PATH=$HOME/go-sdk/go/bin:$PATH
+          go build -C $GITHUB_WORKSPACE/src/head -o /dev/null .
+          go vet -C $GITHUB_WORKSPACE/src/head ./...
+
+      - name: Unit tests — Go head
+        run: |
+          export PATH=$HOME/go-sdk/go/bin:$PATH
+          go test -C $GITHUB_WORKSPACE/src/head -count=1 -v ./... 2>&1 | tee /tmp/go-test.log | tail -20
+
 
       - name: Publish .NET test results
         uses: dorny/test-reporter@v1
@@ -219,6 +230,9 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 15
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
     # Deploy on: push to non-main branches (GitHub deduplicates push+PR
     # into a single push run, so pull_request never fires for same-repo PRs),
     # workflow_dispatch, or repository_dispatch.
@@ -252,11 +266,9 @@ jobs:
             -t hydra-cuda-base:latest $GITHUB_WORKSPACE/infra/llama-rtx-node \
             2>&1 | tee /tmp/hydra-build-cuda-base.log | tail -3
           # Build hydra-head (Go binary)
+          export PATH=$HOME/go-sdk/go/bin:$PATH
           go build -C $GITHUB_WORKSPACE/src/head -o $GITHUB_WORKSPACE/bin/hydra-head . \
             2>&1 | tee /tmp/hydra-build-head.log | tail -3
-          # Unit tests for hydra-head Go packages
-          go test -C $GITHUB_WORKSPACE/src/head -count=1 ./... \
-            2>&1 | tee /tmp/hydra-test-head.log | tail -10
           # Build hydra-head RTX container
           podman build -f $GITHUB_WORKSPACE/infra/hydra-head/Dockerfile.rtx \
             -t localhost/hydra-head:rtx $GITHUB_WORKSPACE \
@@ -354,6 +366,9 @@ jobs:
     runs-on: self-hosted
     needs: [build-test, deploy-hydra, deploy-llama]
     timeout-minutes: 20
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
     # DISABLED pending #518 (Python -> xUnit/Aspire conversion), except for
     # explicit manual dispatch, which stays available for ad-hoc live runs.
     #
@@ -454,6 +469,9 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 10
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
     permissions:
       contents: write
     if: |
