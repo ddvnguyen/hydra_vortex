@@ -59,8 +59,7 @@ public sealed record WorkerConfig
 	/// Used by both HealthMonitorService and WorkerSchedulerService to avoid host drift.
 	/// </summary>
 	public string LlamaRpcHost => !string.IsNullOrWhiteSpace(LlamaUrl)
-		? new Uri(LlamaUrl).Host
-		: Host;
+		&& Uri.TryCreate(LlamaUrl, UriKind.Absolute, out var u) ? u.Host : Host;
 }
 
 /// <summary>

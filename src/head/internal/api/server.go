@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/health"
@@ -14,25 +17,35 @@ import (
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/registry"
 )
 
+type checksumCache struct {
+	mu       sync.Mutex
+	path     string
+	mtime    time.Time
+	size     int64
+	checksum string
+}
+
 type Server struct {
-	cfg       *config.Config
-	manager   *process.Manager
-	checker   *health.Checker
-	registry  *registry.Manager
-	logger    *slog.Logger
-	mux       *http.ServeMux
-	authToken string // shared secret for API authentication
+	cfg            *config.Config
+	manager        *process.Manager
+	checker        *health.Checker
+	registry       *registry.Manager
+	logger         *slog.Logger
+	mux            *http.ServeMux
+	authToken      string // shared secret for API authentication
+	checksumCache  map[string]*checksumCache // keyed by binary name
 }
 
 func NewServer(cfg *config.Config, manager *process.Manager, checker *health.Checker, regMgr *registry.Manager, logger *slog.Logger, authToken string) *Server {
 	s := &Server{
-		cfg:       cfg,
-		manager:   manager,
-		checker:   checker,
-		registry:  regMgr,
-		logger:    logger,
-		mux:       http.NewServeMux(),
-		authToken: authToken,
+		cfg:           cfg,
+		manager:       manager,
+		checker:       checker,
+		registry:      regMgr,
+		logger:        logger,
+		mux:           http.NewServeMux(),
+		authToken:     authToken,
+		checksumCache: make(map[string]*checksumCache),
 	}
 
 	// Read-only endpoints (no auth required)
@@ -108,10 +121,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Dest:        spec.Dest,
 			ImageDigest: spec.ImageDigest,
 		}
-		// Compute on-disk checksum if binary exists
+		// Compute on-disk checksum if binary exists (cached by path/mtime/size)
 		if spec.Dest != "" {
-			if checksum, err := registry.ComputeChecksum(spec.Dest); err == nil {
-				info.OnDiskChecksum = checksum
+			if fi, fiErr := os.Stat(spec.Dest); fiErr == nil {
+				key := spec.Dest
+				cc, exists := s.checksumCache[name]
+				if !exists || cc.path != key || !cc.mtime.Equal(fi.ModTime()) || cc.size != fi.Size() {
+					if checksum, csErr := registry.ComputeChecksum(spec.Dest); csErr == nil {
+						s.checksumCache[name] = &checksumCache{
+							path: key, mtime: fi.ModTime(), size: fi.Size(), checksum: checksum,
+						}
+					}
+				}
+				if cc, ok := s.checksumCache[name]; ok {
+					info.OnDiskChecksum = cc.checksum
+				}
 			}
 		}
 		// Get the resolved digest from a previous pull in this process
