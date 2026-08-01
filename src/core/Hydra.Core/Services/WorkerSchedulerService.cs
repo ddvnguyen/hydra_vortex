@@ -35,6 +35,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// Set in tests to return tracking test doubles instead of real sockets.
 	/// </summary>
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
+
+	/// <summary>
+	/// Optional override for CalculateBusyTimeouts used in tests.
+	/// When set, replaces the real wall-clock timeout calculation so busy-retry
+	/// loops fail fast (e.g. 100ms stuck timeout instead of 150s).
+	/// Signature: (estimatedTokens, modelLoadTimeS) → (stuckMs, slowMs).
+	/// </summary>
+	internal Func<long, int, (long stuckMs, long slowMs)>? BusyTimeoutOverride { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
@@ -1758,7 +1766,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							}
 						}
 					}
-					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens, modelLoadTimeS);
+					var (stuckTimeoutMs, slowTimeoutMs) = BusyTimeoutOverride?.Invoke(item.EstimatedTokens, modelLoadTimeS)
+					?? CalculateBusyTimeouts(item.EstimatedTokens, modelLoadTimeS);
 
 					if (busyMs > stuckTimeoutMs && item.LastBusyProgress == 0)
 					{

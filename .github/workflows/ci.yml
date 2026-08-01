@@ -108,12 +108,20 @@ jobs:
             --logger "trx;LogFileName=shared.trx" \
             --results-directory TestResults/
 
-      - name: Unit tests — Core
+      - name: Unit tests — Core (fast)
         run: |
           dotnet test src/core/Tests.Core/ -c Release --no-build --nologo -v normal \
             --settings src/Hydra.runsettings \
-            --filter "FullyQualifiedName!~StoreMetadataTests&FullyQualifiedName!~WriteBehindServiceTests" \
-            --logger "trx;LogFileName=core.trx" \
+            --filter "FullyQualifiedName!~StoreMetadataTests&FullyQualifiedName!~WriteBehindServiceTests&FullyQualifiedName!~Integration" \
+            --logger "trx;LogFileName=core-fast.trx" \
+            --results-directory TestResults/
+
+      - name: Unit tests — Core (integration)
+        run: |
+          dotnet test src/core/Tests.Core/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --filter "FullyQualifiedName~Integration&FullyQualifiedName!~StoreMetadataTests&FullyQualifiedName!~WriteBehindServiceTests" \
+            --logger "trx;LogFileName=core-integration.trx" \
             --results-directory TestResults/
 
 
