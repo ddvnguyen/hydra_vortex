@@ -3,12 +3,6 @@ name: System Tests
 on:
   workflow_dispatch:
     inputs:
-      env:
-        description: "Target environment"
-        required: true
-        type: choice
-        options:
-          - "ddv-home"
       filter:
         description: "Pytest -k filter (blank = all system tests)"
         required: false
@@ -20,11 +14,11 @@ permissions:
 
 jobs:
   system:
-    name: System Tests on ${{ inputs.env }}
+    name: System Tests
     runs-on: self-hosted
     timeout-minutes: 30
     concurrency:
-      group: hydra-${{ inputs.env }}
+      group: hydra-live-rig
       cancel-in-progress: false
 
     steps:
@@ -72,7 +66,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: System Tests (${{ inputs.env }})
+          name: System Tests
           path: TestResults/system.xml
           reporter: java-junit
           fail-on-error: false
@@ -82,6 +76,6 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: system-results-${{ inputs.env }}-${{ github.run_number }}
+          name: system-results-${{ github.run_number }}
           path: TestResults/system.xml
           retention-days: 30

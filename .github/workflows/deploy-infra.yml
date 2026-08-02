@@ -2,20 +2,13 @@ name: Deploy Infra
 
 on:
   workflow_dispatch:
-    inputs:
-      env:
-        description: "Target environment"
-        required: true
-        type: choice
-        options:
-          - "ddv-home"
 
 permissions:
   contents: read
 
 jobs:
   deploy:
-    name: Deploy Infra (${{ inputs.env }})
+    name: Deploy Infra
     runs-on: self-hosted
     timeout-minutes: 10
 
@@ -57,7 +50,7 @@ jobs:
         if: always()
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## Infra Deploy — ${{ inputs.env }}
+          ## Infra Deploy
 
           | Service | URL | Status |
           |---------|-----|--------|

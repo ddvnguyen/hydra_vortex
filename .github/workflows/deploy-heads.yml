@@ -3,12 +3,6 @@ name: Deploy Heads (llama-engine)
 on:
   workflow_dispatch:
     inputs:
-      env:
-        description: "Target environment"
-        required: true
-        type: choice
-        options:
-          - "ddv-home"
       gpu:
         description: "GPU(s) to deploy"
         required: true
@@ -73,13 +67,13 @@ jobs:
 
   # ── Deploy to selected GPUs ───────────────────────────────────────────
   deploy:
-    name: Deploy Heads → ${{ inputs.gpu }} (${{ inputs.env }})
+    name: Deploy Heads → ${{ inputs.gpu }}
     runs-on: self-hosted
     needs: [build-llama]
     if: always() && (needs.build-llama.result == 'success' || needs.build-llama.result == 'skipped')
     timeout-minutes: 35
     concurrency:
-      group: hydra-${{ inputs.env }}
+      group: hydra-live-rig
       cancel-in-progress: false
     permissions:
       contents: write
@@ -172,12 +166,20 @@ jobs:
           bash scripts/deploy-hydra-head.sh p100
           bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480
 
+      # A missing pin is a hard failure, not a reason to skip. Guarding
+      # these calls on `[ -n "$DIGEST" ]` would mean a broken extraction
+      # or a removed image_digest silently turns this step green — the
+      # same "wired up but never engages" failure this step exists to
+      # catch (cf. #502, #477).  Only verify heads that were deployed
+      # this run (gated on inputs.gpu).
       - name: Verify deployed digests
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
         run: |
           set -eo pipefail
           echo "Verifying deployed engine binaries..."
 
+          # Extract pinned image_digest from node configs using anchored
+          # sed within the llama-server: ... binary: range.
           extract_digest() {
             local config="$1"
             sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config"
@@ -187,6 +189,14 @@ jobs:
             sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config"
           }
 
+          RTX_DIGEST=$(extract_digest infra/hydra-head/config/node-rtx.yaml)
+          P100_DIGEST=$(extract_digest infra/hydra-head/config/node-p100.yaml)
+          RTX_SOURCE=$(extract_source infra/hydra-head/config/node-rtx.yaml)
+          P100_SOURCE=$(extract_source infra/hydra-head/config/node-p100.yaml)
+
+          echo "RTX pinned: source=$RTX_SOURCE digest=$RTX_DIGEST"
+          echo "P100 pinned: source=$P100_SOURCE digest=$P100_DIGEST"
+
           FAIL=0
           verify_head() {
             local label="$1" endpoint="$2" expected_digest="$3"
@@ -194,6 +204,9 @@ jobs:
             status_json=$(curl -sf --max-time 10 "$endpoint" 2>/dev/null) || {
               echo "FAIL: $label ($endpoint) not responding"; FAIL=1; return
             }
+            # Select the llama-server entry by name. Picking "the first entry
+            # with a digest" would be a coin flip: Go map iteration is
+            # randomised, so the JSON key order varies per request.
             local actual_digest
             actual_digest=$(echo "$status_json" | python3 -c "
           import sys, json
@@ -201,6 +214,7 @@ jobs:
           info = data.get('binaries', {}).get('llama-server') or {}
           print(info.get('pulled_digest', ''))
           " 2>/dev/null || echo "")
+
             if [ -z "$actual_digest" ]; then
               echo "FAIL: $label — no pulled_digest"; FAIL=1; return
             fi
@@ -211,18 +225,28 @@ jobs:
             fi
           }
 
-          RTX_DIGEST=$(extract_digest infra/hydra-head/config/node-rtx.yaml)
-          P100_DIGEST=$(extract_digest infra/hydra-head/config/node-p100.yaml)
+          # Only verify heads that were actually deployed this run.
+          # Verify RTX heads only if RTX was in the gpu selection and
+          # a digest is pinned.  Same for P100.
+          if [[ "${{ inputs.gpu }}" == all || "${{ inputs.gpu }}" == rtx || "${{ inputs.gpu }}" == "rtx+rtx3060" ]]; then
+            if [ -z "$RTX_DIGEST" ]; then
+              echo "FAIL: no image_digest pinned for RTX in node-rtx.yaml"; FAIL=1
+            else
+              verify_head "hydra-head-rtx" "http://localhost:9700/status" "$RTX_DIGEST"
+              verify_head "hydra-head-rtx3060" "http://localhost:9701/status" "$RTX_DIGEST"
+            fi
+          fi
 
-          if [ -n "$RTX_DIGEST" ]; then
-            verify_head "hydra-head-rtx" "http://localhost:9700/status" "$RTX_DIGEST"
-            verify_head "hydra-head-rtx3060" "http://localhost:9701/status" "$RTX_DIGEST"
+          if [[ "${{ inputs.gpu }}" == all || "${{ inputs.gpu }}" == p100 ]]; then
+            if [ -z "$P100_DIGEST" ]; then
+              echo "FAIL: no image_digest pinned for P100 in node-p100.yaml"; FAIL=1
+            else
+              verify_head "hydra-head-p100" "http://192.168.122.21:9700/status" "$P100_DIGEST"
+            fi
           fi
-          if [ -n "$P100_DIGEST" ]; then
-            verify_head "hydra-head-p100" "http://192.168.122.21:9700/status" "$P100_DIGEST"
-          fi
+
           [ "$FAIL" -ne 0 ] && exit 1
-          echo "All heads verified"
+          echo "All deployed heads verified — digests match pinned config"
 
       - name: Write summary
         if: always()
@@ -233,7 +257,7 @@ jobs:
           RTX_SRC=$(extract_source infra/hydra-head/config/node-rtx.yaml)
           P100_SRC=$(extract_source infra/hydra-head/config/node-p100.yaml)
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## Heads Deploy — ${{ inputs.gpu }} (${{ inputs.env }})
+          ## Heads Deploy — ${{ inputs.gpu }}
 
           | Field | Value |
           |-------|-------|

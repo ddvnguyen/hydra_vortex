@@ -2,24 +2,17 @@ name: Deploy Hydra Core
 
 on:
   workflow_dispatch:
-    inputs:
-      env:
-        description: "Target environment"
-        required: true
-        type: choice
-        options:
-          - "ddv-home"
 
 permissions:
   contents: read
 
 jobs:
   deploy:
-    name: Deploy Core (${{ inputs.env }})
+    name: Deploy Core
     runs-on: self-hosted
     timeout-minutes: 15
     concurrency:
-      group: hydra-${{ inputs.env }}
+      group: hydra-live-rig
       cancel-in-progress: false
     env:
       HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
@@ -86,7 +79,7 @@ jobs:
         if: always()
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## Hydra Core Deploy — ${{ inputs.env }}
+          ## Hydra Core Deploy
 
           | Field | Value |
           |-------|-------|
