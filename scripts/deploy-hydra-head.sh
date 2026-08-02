@@ -46,9 +46,26 @@ TARGET="${1:-all}"
 TOKEN_FILE="$REPO_ROOT/.hydra-head-token"
 
 generate_token() {
+  # An explicit token in the environment always wins — this is how CI supplies
+  # it (secrets.HYDRA_HEAD_AUTH_TOKEN), since .hydra-head-token is gitignored
+  # and therefore never present in a fresh Actions checkout.
+  if [ -n "${HYDRA_HEAD_AUTH_TOKEN:-}" ]; then
+    ok "Using auth token from HYDRA_HEAD_AUTH_TOKEN environment variable"
+    return
+  fi
+
   if [ -f "$TOKEN_FILE" ]; then
     ok "Using existing auth token from $TOKEN_FILE"
     return
+  fi
+
+  # Do NOT mint a token when running unattended. Previously this branch ran in
+  # CI (no token file in the Actions checkout) and generated a fresh random
+  # token, which deploy_p100() then pushed to the VM — silently re-keying the
+  # P100 on every run to a value neither the coordinator nor the other nodes
+  # knew. Minting is only ever correct for a human bootstrapping a new host.
+  if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+    die "No auth token available. Set the HYDRA_HEAD_AUTH_TOKEN secret in the repository — refusing to generate one in CI, which would re-key the running nodes."
   fi
 
   step "Generating new auth token"
@@ -59,8 +76,12 @@ generate_token() {
 }
 
 get_token() {
+  if [ -n "${HYDRA_HEAD_AUTH_TOKEN:-}" ]; then
+    printf '%s' "$HYDRA_HEAD_AUTH_TOKEN"
+    return
+  fi
   if [ ! -f "$TOKEN_FILE" ]; then
-    die "Auth token not found at $TOKEN_FILE. Run: openssl rand -hex 32 > $TOKEN_FILE"
+    die "Auth token not found at $TOKEN_FILE and HYDRA_HEAD_AUTH_TOKEN is unset. Run: openssl rand -hex 32 > $TOKEN_FILE"
   fi
   cat "$TOKEN_FILE"
 }

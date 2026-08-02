@@ -238,6 +238,11 @@ jobs:
     concurrency:
       group: hydra-live-rig
       cancel-in-progress: false
+    env:
+      # .hydra-head-token is gitignored, so it never exists in the Actions
+      # checkout. podman-compose reads ${HYDRA_HEAD_AUTH_TOKEN:?} and aborts
+      # without it ("must export HYDRA_HEAD_AUTH_TOKEN").
+      HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
     # Deploy on: push to non-main branches (GitHub deduplicates push+PR
     # into a single push run, so pull_request never fires for same-repo PRs),
     # workflow_dispatch, or repository_dispatch.
@@ -479,6 +484,12 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+    env:
+      # deploy-hydra-head.sh reads this in preference to .hydra-head-token,
+      # which is gitignored and absent from the Actions checkout. Without it
+      # the script used to mint a fresh random token and push it to the P100
+      # over SSH, silently re-keying the VM on every CI run.
+      HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
     if: |
       always() && (
         (github.event_name == 'push' && github.ref_name != 'main' && needs.build-test.result == 'success') ||
