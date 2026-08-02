@@ -175,7 +175,21 @@ check_llama_build_type_local() {
     bind_src="$REPO_ROOT/src/llama-cpp/build_sm120/bin/llama-server"
   fi
   if [ ! -x "$bind_src" ]; then
-    die "llama-server binary not found at $REPO_ROOT/src/llama-cpp/build_sm120_v3/bin/llama-server (or build_sm120/bin/) — build it with DevelopmentRunBook.md"
+    # No local binary. That is now the DEFAULT, not an error:
+    # docker-compose.hydra.yml no longer bind-mounts build_sm86_sm120/bin —
+    # hydra-head pulls the engine from the OCI ref pinned in node-rtx.yaml.
+    # The local bind-mount is opt-in via docker-compose.hydra.local-build.yml.
+    #
+    # This gate exists only to catch a *static* local build (#346), so when
+    # there is no local build to check there is nothing to protect against.
+    # Failing here blocked every CI deploy, since the Actions checkout never
+    # has a compiled binary.
+    if grep -qE '^\s*source:\s*(ghcr\.io|docker\.io|quay\.io)/' \
+         "$REPO_ROOT/infra/hydra-head/config/node-rtx.yaml" 2>/dev/null; then
+      ok "No local llama-server build; node-rtx.yaml pulls from OCI — skipping local build-type gate"
+      return 0
+    fi
+    die "llama-server binary not found at $REPO_ROOT/src/llama-cpp/build_sm120_v3/bin/llama-server (or build_sm120/bin/), and node-rtx.yaml has no OCI source to fall back on — build it with DevelopmentRunBook.md"
   fi
   step "Build-type gate (RTX local binary)"
   bash "$REPO_ROOT/scripts/ci/check-build-type.sh" "$bind_src" || \
