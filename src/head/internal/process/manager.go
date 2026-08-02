@@ -391,7 +391,7 @@ func (m *Manager) restartWithBackoff(proc *managedProcess) {
 			// For the llama process, wait for its HTTP port to be free
 			// before attempting restart to avoid "couldn't bind" crash loop.
 			if proc.name == "llama" {
-				m.waitForPortRelease(8080, 10*time.Second)
+				m.waitForPortRelease(m.cfg.Llama.Port, 10*time.Second)
 			}
 
 			proc.mu.Lock()
@@ -432,7 +432,7 @@ func (m *Manager) RestartLlama() error {
 	// The old process may hold the port in TIME_WAIT after SIGTERM. Without
 	// this, the new process hits "couldn't bind HTTP server socket" and
 	// terminates immediately, creating a crash loop.
-	m.waitForPortRelease(8080, 15*time.Second)
+	m.waitForPortRelease(m.cfg.Llama.Port, 15*time.Second)
 	return m.StartLlama()
 }
 
