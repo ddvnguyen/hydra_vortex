@@ -346,7 +346,7 @@ deploy_rtx() {
       break
     fi
     if [ "$i" = "15" ]; then
-      warn "Health not fully green after 45s — check `podman ps` and `podman logs <ctr>`"
+      warn "Health not fully green after 45s — check 'podman ps' and 'podman logs <ctr>'"
     fi
   done
 
