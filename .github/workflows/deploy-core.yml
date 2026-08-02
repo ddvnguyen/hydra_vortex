@@ -1,0 +1,100 @@
+name: Deploy Hydra Core
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - "ddv-home"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Core (${{ inputs.env }})
+    runs-on: self-hosted
+    timeout-minutes: 15
+    concurrency:
+      group: hydra-${{ inputs.env }}
+      cancel-in-progress: false
+    env:
+      HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select profile
+        run: bash scripts/set-profile.sh moe
+
+      - name: Read version
+        id: version
+        run: |
+          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          echo "rev=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build images
+        run: |
+          set -eo pipefail
+          podman build --target core -f infra/Dockerfile \
+            -t localhost/hydra-core:latest . \
+            2>&1 | tee /tmp/hydra-build-core.log | tail -3
+          podman build -f infra/llama-rtx-node/Dockerfile_26.04_cuda13.2 \
+            -t hydra-cuda-base:latest infra/llama-rtx-node \
+            2>&1 | tee /tmp/hydra-build-cuda-base.log | tail -3
+          export PATH=$HOME/go-sdk/go/bin:$PATH
+          go build -C src/head -o bin/hydra-head . \
+            2>&1 | tee /tmp/hydra-build-head.log | tail -3
+          podman build -f infra/hydra-head/Dockerfile.rtx \
+            -t localhost/hydra-head:rtx . \
+            2>&1 | tee /tmp/hydra-build-head-rtx.log | tail -3
+          echo "Build complete"
+
+      - name: Deploy Hydra Core
+        run: |
+          set -eo pipefail
+          podman stop hydra-core 2>/dev/null || true
+          podman rm hydra-core 2>/dev/null || true
+          cd infra
+          podman compose -f docker-compose.hydra.yml up -d
+          echo "Hydra core started"
+
+      - name: Deploy Hydra Head RTX
+        run: |
+          bash scripts/deploy-hydra-head.sh rtx
+
+      - name: Verify services healthy
+        run: |
+          echo "Waiting for services to stabilise..."
+          sleep 15
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -sf http://localhost:9000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])" 2>/dev/null || echo "unreachable")
+            echo "Attempt $i: coordinator status=$STATUS"
+            if [ "$STATUS" = "healthy" ] || [ "$STATUS" = "degraded" ]; then
+              echo "Services OK"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Coordinator did not come up healthy after deploy"
+          exit 1
+
+      - name: Write summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Hydra Core Deploy — ${{ inputs.env }}
+
+          | Field | Value |
+          |-------|-------|
+          | Version | \`v${{ steps.version.outputs.version }}\` |
+          | Commit | \`${{ steps.version.outputs.rev }}\` |
+          | By | ${{ github.actor }} |
+          | Time | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
+
+          **Coordinator**: http://localhost:9000/health
+          **Head RTX**: http://localhost:9700/status
+          EOF

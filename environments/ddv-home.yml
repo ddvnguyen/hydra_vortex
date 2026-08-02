@@ -1,0 +1,48 @@
+name: ddv-home
+description: "ddv's home server — RTX 5060 Ti + RTX 3060 + Tesla P100"
+
+coordinator:
+  host: 0.0.0.0
+  port: 9000
+  store_host: 127.0.0.1
+  store_port: 9500
+
+nodes:
+  rtx:
+    name: rtx
+    host: 127.0.0.1
+    rpc_port: 9601
+    llama_url: http://localhost:8080
+    head_port: 9700
+    mode: container
+    ssh_alias: null
+    cuda_toolkit: /opt/software/cuda/13.2
+    gpu_type: rtx5060ti
+
+  rtx3060:
+    name: rtx3060
+    host: 127.0.0.1
+    rpc_port: 9601
+    llama_url: http://localhost:8081
+    head_port: 9701
+    mode: container
+    ssh_alias: null
+    cuda_toolkit: /opt/software/cuda/13.2
+    gpu_type: rtx3060
+
+  p100:
+    name: p100
+    host: 192.168.122.21
+    rpc_port: 9602
+    llama_url: http://192.168.122.21:8086
+    head_port: 9700
+    mode: systemd
+    ssh_alias: hydra-p100
+    cuda_toolkit: /opt/software/cuda/12.9
+    gpu_type: p100
+
+infra:
+  prometheus: http://localhost:9091
+  grafana: http://localhost:3000
+  loki: http://localhost:3100
+  otel_collector: http://localhost:13133

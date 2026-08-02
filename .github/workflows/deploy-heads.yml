@@ -1,0 +1,245 @@
+name: Deploy Heads (llama-engine)
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - "ddv-home"
+      gpu:
+        description: "GPU(s) to deploy"
+        required: true
+        type: choice
+        options:
+          - "all"
+          - "rtx"
+          - "rtx3060"
+          - "p100"
+          - "rtx+rtx3060"
+      rtx-image:
+        description: >
+          Full OCI image ref for RTX nodes (blank = build from fork or use current).
+          E.g. ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-0.1.0-a157edf
+        required: false
+        default: ""
+        type: string
+      p100-image:
+        description: >
+          Full OCI image ref for P100 (blank = build from fork or use current).
+          E.g. ghcr.io/ddvnguyen/llama-server:sm60-llama-server-0.1.0-a157edf
+        required: false
+        default: ""
+        type: string
+      build-from-fork:
+        description: "Build llama-engine from fork before deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_REPO: ghcr.io/ddvnguyen/llama-server
+
+jobs:
+  # ── Optional: build llama-engine via fork's workflow ───────────────────
+  build-llama:
+    name: Build llama-engine (fork)
+    runs-on: ubuntu-latest
+    if: inputs.build-from-fork == 'true' && inputs.rtx-image == '' && inputs.p100-image == ''
+    outputs:
+      rtx-image: ${{ steps.build.outputs.rtx-image }}
+      p100-image: ${{ steps.build.outputs.p100-image }}
+    steps:
+      - name: Trigger fork build
+        id: build
+        uses: ddvnguyen/llama.cpp/.github/workflows/hydra-build.yml@hydra-fork
+        with:
+          build_llama_engine: true
+          build_llama_server: false
+          arch_sm86_sm120: ${{ inputs.gpu != 'p100' }}
+          arch_sm60: ${{ inputs.gpu == 'all' || inputs.gpu == 'p100' }}
+          runner_target: local
+          execution_mode: matrix
+        secrets: inherit
+
+  # ── Deploy to selected GPUs ───────────────────────────────────────────
+  deploy:
+    name: Deploy Heads → ${{ inputs.gpu }} (${{ inputs.env }})
+    runs-on: self-hosted
+    needs: [build-llama]
+    if: always() && (needs.build-llama.result == 'success' || needs.build-llama.result == 'skipped')
+    timeout-minutes: 35
+    concurrency:
+      group: hydra-${{ inputs.env }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Select profile
+        run: bash scripts/set-profile.sh moe
+
+      - name: Determine images
+        id: images
+        run: |
+          RTX="${{ inputs.rtx-image || needs.build-llama.outputs.rtx-image }}"
+          P100="${{ inputs.p100-image || needs.build-llama.outputs.p100-image }}"
+          echo "rtx=$RTX" >> "$GITHUB_OUTPUT"
+          echo "p100=$P100" >> "$GITHUB_OUTPUT"
+          echo "RTX image: ${RTX:-'(use current)'}"
+          echo "P100 image: ${P100:-'(use current)'}"
+
+      - name: Pin OCI images in node configs
+        if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
+        run: |
+          pin_image() {
+            local image="$1" config="$2"
+            echo "Pinning $image in $config"
+            sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*source:\s*\).*|\1${image}|" "$config"
+            local digest
+            digest=$(podman pull "$image" 2>/dev/null && podman inspect "$image" --format '{{.Digest}}' 2>/dev/null || echo "")
+            if [ -n "$digest" ]; then
+              echo "Resolved digest: $digest"
+              if grep -q 'image_digest:' "$config"; then
+                sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*image_digest:\s*\).*|\1${digest}|" "$config"
+              else
+                sed -i "/^\s*source:\s*${image}$/a\\    image_digest: ${digest}" "$config"
+              fi
+            else
+              echo "WARNING: Could not resolve digest for $image"
+            fi
+          }
+
+          [ -n "${{ steps.images.outputs.rtx }}" ] && \
+            pin_image "${{ steps.images.outputs.rtx }}" infra/hydra-head/config/node-rtx.yaml && \
+            pin_image "${{ steps.images.outputs.rtx }}" infra/hydra-head/config/node-rtx3060.yaml
+          [ -n "${{ steps.images.outputs.p100 }}" ] && \
+            pin_image "${{ steps.images.outputs.p100 }}" infra/hydra-head/config/node-p100.yaml
+
+      - name: Commit pinned images
+        if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add infra/hydra-head/config/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: pin llama-engine OCI image (deploy-heads)"
+            git push
+          fi
+
+      - name: Ensure SSH for P100
+        if: inputs.gpu == 'all' || inputs.gpu == 'p100'
+        run: |
+          grep -q "Host hydra-p100" ~/.ssh/config 2>/dev/null || cat >> ~/.ssh/config <<'EOF'
+
+          Host hydra-p100
+              HostName 192.168.122.21
+              User vm1
+              IdentityFile ~/.ssh/vm_agent_01
+              IdentitiesOnly yes
+          EOF
+
+      - name: Deploy RTX
+        if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx+rtx3060'
+        run: |
+          bash scripts/deploy-hydra-head.sh rtx
+          bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
+
+      - name: Deploy RTX 3060
+        if: inputs.gpu == 'all' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
+        run: |
+          bash scripts/deploy-hydra-head.sh rtx3060
+          bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480
+
+      - name: Deploy P100
+        if: inputs.gpu == 'all' || inputs.gpu == 'p100'
+        run: |
+          bash scripts/deploy-hydra-head.sh p100
+          bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480
+
+      - name: Verify deployed digests
+        if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
+        run: |
+          set -eo pipefail
+          echo "Verifying deployed engine binaries..."
+
+          extract_digest() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config"
+          }
+          extract_source() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config"
+          }
+
+          FAIL=0
+          verify_head() {
+            local label="$1" endpoint="$2" expected_digest="$3"
+            local status_json
+            status_json=$(curl -sf --max-time 10 "$endpoint" 2>/dev/null) || {
+              echo "FAIL: $label ($endpoint) not responding"; FAIL=1; return
+            }
+            local actual_digest
+            actual_digest=$(echo "$status_json" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          info = data.get('binaries', {}).get('llama-server') or {}
+          print(info.get('pulled_digest', ''))
+          " 2>/dev/null || echo "")
+            if [ -z "$actual_digest" ]; then
+              echo "FAIL: $label — no pulled_digest"; FAIL=1; return
+            fi
+            if [ "$expected_digest" = "$actual_digest" ]; then
+              echo "OK: $label — digest matches: $actual_digest"
+            else
+              echo "FAIL: $label — digest mismatch (expected=$expected_digest actual=$actual_digest)"; FAIL=1
+            fi
+          }
+
+          RTX_DIGEST=$(extract_digest infra/hydra-head/config/node-rtx.yaml)
+          P100_DIGEST=$(extract_digest infra/hydra-head/config/node-p100.yaml)
+
+          if [ -n "$RTX_DIGEST" ]; then
+            verify_head "hydra-head-rtx" "http://localhost:9700/status" "$RTX_DIGEST"
+            verify_head "hydra-head-rtx3060" "http://localhost:9701/status" "$RTX_DIGEST"
+          fi
+          if [ -n "$P100_DIGEST" ]; then
+            verify_head "hydra-head-p100" "http://192.168.122.21:9700/status" "$P100_DIGEST"
+          fi
+          [ "$FAIL" -ne 0 ] && exit 1
+          echo "All heads verified"
+
+      - name: Write summary
+        if: always()
+        run: |
+          extract_source() {
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$1"
+          }
+          RTX_SRC=$(extract_source infra/hydra-head/config/node-rtx.yaml)
+          P100_SRC=$(extract_source infra/hydra-head/config/node-p100.yaml)
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Heads Deploy — ${{ inputs.gpu }} (${{ inputs.env }})
+
+          | Field | Value |
+          |-------|-------|
+          | GPU | \`${{ inputs.gpu }}\` |
+          | RTX image | \`${RTX_SRC}\` |
+          | P100 image | \`${P100_SRC}\` |
+          | By | ${{ github.actor }} |
+          | Time | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
+          EOF

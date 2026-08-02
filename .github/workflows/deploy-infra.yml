@@ -1,0 +1,68 @@
+name: Deploy Infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - "ddv-home"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Infra (${{ inputs.env }})
+    runs-on: self-hosted
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Quadlet files
+        run: |
+          mkdir -p ~/.config/containers/systemd/
+          cp infra/quadlets/infra-*.container ~/.config/containers/systemd/
+          cp infra/quadlets/infra-host.pod ~/.config/containers/systemd/
+          cp infra/quadlets/*.volume ~/.config/containers/systemd/
+          cp infra/quadlets/hydra-coordinator.env ~/.config/containers/systemd/ 2>/dev/null || true
+
+      - name: Deploy infra services
+        run: |
+          systemctl --user daemon-reload
+          systemctl --user stop infra-host-pod.service 2>/dev/null || true
+          sleep 1
+          for s in infra-node-exporter infra-nvidia-exporter infra-loki infra-otel-collector infra-prometheus infra-grafana infra-pgadmin; do
+            systemctl --user start "$s.service" || true
+          done
+
+      - name: Verify infra services
+        run: |
+          sleep 10
+          FAIL=0
+          for url in "http://localhost:9091" "http://localhost:3000" "http://localhost:3100" "http://localhost:13133"; do
+            if curl -sf "$url" --connect-timeout 5 &>/dev/null; then
+              echo "OK: $url"
+            else
+              echo "WARNING: $url not responding"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+      - name: Write summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Infra Deploy — ${{ inputs.env }}
+
+          | Service | URL | Status |
+          |---------|-----|--------|
+          | Prometheus | http://localhost:9091 | $(curl -sf http://localhost:9091 --connect-timeout 3 &>/dev/null && echo OK || echo DOWN) |
+          | Grafana | http://localhost:3000 | $(curl -sf http://localhost:3000 --connect-timeout 3 &>/dev/null && echo OK || echo DOWN) |
+          | Loki | http://localhost:3100 | $(curl -sf http://localhost:3100 --connect-timeout 3 &>/dev/null && echo OK || echo DOWN) |
+          | OTel Collector | http://localhost:13133 | $(curl -sf http://localhost:13133 --connect-timeout 3 &>/dev/null && echo OK || echo DOWN) |
+          EOF
