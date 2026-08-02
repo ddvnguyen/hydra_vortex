@@ -143,13 +143,7 @@ jobs:
           # whose last command succeeds.
           set -eo pipefail
           export PATH=$HOME/go-sdk/go/bin:$PATH
-          # Skip internal/process tests — they test real process lifecycle
-          # with mock binaries that need a functioning llama-server, which
-          # is not available in CI. The process manager is tested via
-          # system-full on the live rig instead.
-          go test -C $GITHUB_WORKSPACE/src/head -count=1 -v \
-            $(go list -C $GITHUB_WORKSPACE/src/head ./... | grep -v '/process') \
-            2>&1 | tee /tmp/go-test.log | tail -20
+          go test -C $GITHUB_WORKSPACE/src/head -count=1 -v ./... 2>&1 | tee /tmp/go-test.log | tail -20
 
 
       - name: Publish .NET test results
