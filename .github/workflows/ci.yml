@@ -143,7 +143,7 @@ jobs:
           # whose last command succeeds.
           set -eo pipefail
           export PATH=$HOME/go-sdk/go/bin:$PATH
-          go test -C $GITHUB_WORKSPACE/src/head -count=1 -v ./... 2>&1 | tee /tmp/go-test.log | tail -20
+          go test -C $GITHUB_WORKSPACE/src/head -count=1 -v ./... 2>&1 | tee /tmp/go-test.log
 
 
       - name: Publish .NET test results
