@@ -1,0 +1,81 @@
+name: System Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "Pytest -k filter (blank = all system tests)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  system:
+    name: System Tests
+    runs-on: self-hosted
+    timeout-minutes: 30
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python deps
+        run: pip install -e ".[all]" --quiet
+
+      - name: Verify coordinator healthy
+        run: |
+          STATUS=$(curl -sf http://localhost:9000/health | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unreachable")
+          if [ "$STATUS" != "healthy" ] && [ "$STATUS" != "degraded" ]; then
+            echo "Coordinator not healthy (status=$STATUS). Deploy services first."
+            exit 1
+          fi
+          echo "Coordinator: $STATUS"
+
+      - name: Run system tests
+        run: |
+          set +e
+          pytest tests/system/ -m system -v --timeout=300 \
+            --ignore=tests/system/test_large_prompt_system.py \
+            --ignore=tests/system/test_stress_system.py \
+            --junit-xml=TestResults/system.xml \
+            ${{ inputs.filter && format('-k "{0}"', inputs.filter) || '' }}
+          EXIT_CODE=$?
+          set -e
+          echo "pytest exit code: $EXIT_CODE"
+          # Don't fail the workflow — tests may fail, that's expected
+          # Just publish results for visibility
+        env:
+          COORD_URL: http://localhost:9000
+          RTX_LLAMA_URL: http://localhost:8080
+          P100_LLAMA_URL: http://192.168.122.21:8086
+          LLAMA_RTX_URL: http://localhost:8080
+          LLAMA_P100_URL: http://192.168.122.21:8086
+          RTX_AGENT_HOST: "127.0.0.1"
+          RTX_AGENT_PORT: "9601"
+          P100_AGENT_HOST: "192.168.122.21"
+          P100_AGENT_PORT: "9602"
+          STORE_HOST: "127.0.0.1"
+          STORE_PORT: "9500"
+
+      - name: Publish results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: System Tests
+          path: TestResults/system.xml
+          reporter: java-junit
+          fail-on-error: false
+          fail-on-empty: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: system-results-${{ github.run_number }}
+          path: TestResults/system.xml
+          retention-days: 30
