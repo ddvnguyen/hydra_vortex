@@ -346,7 +346,7 @@ deploy_rtx() {
       break
     fi
     if [ "$i" = "15" ]; then
-      warn "Health not fully green after 45s — check `podman ps` and `podman logs <ctr>`"
+      warn "Health not fully green after 45s — check 'podman ps' and 'podman logs <ctr>'"
     fi
   done
 
@@ -480,7 +480,7 @@ deploy_rtx3060() {
       break
     fi
     if [ "$i" = "15" ]; then
-      warn "head-rtx3060 :9701 not yet green after 45s — check `podman logs hydra-system_head-rtx3060_1`"
+      warn "head-rtx3060 :9701 not yet green after 45s — check 'podman logs hydra-system_head-rtx3060_1'"
     fi
   done
 }
