@@ -215,19 +215,27 @@ check_llama_build_type_local_fat() {
 check_llama_build_type_p100() {
   step "Build-type gate (P100 VM binary)"
   local vm_bin="/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server"
-  local tmp
-  tmp=$(mktemp -d)
-  if ! scp "hydra-p100:$vm_bin" "$tmp/llama-server" 2>/dev/null; then
-    rm -rf "$tmp"
-    warn "Could not scp $vm_bin from hydra-p100 — skipping P100 build-type check"
+
+  # Run --version ON THE VM. The previous implementation scp'd just the
+  # executable to a temp dir and checked it there — but that file is a small
+  # launcher (~16 KB) that dynamic-links libllama-server-impl.so and the
+  # libggml-*.so beside it. Copied without them it cannot start, so --version
+  # emitted no "[shared]" token and check-build-type.sh (which treats a
+  # missing token as static) reported every P100 deploy as a static build.
+  # That is exactly the #498 failure mode — an executable separated from its
+  # shared libraries — reproduced inside the check itself. Checking in place
+  # is both simpler and actually tests the artifact as it will run.
+  local version_out
+  if ! version_out=$(ssh -o ConnectTimeout=10 -o BatchMode=yes hydra-p100 \
+        "'$vm_bin' --version 2>&1" 2>/dev/null); then
+    warn "Could not run $vm_bin on hydra-p100 — skipping P100 build-type check"
     return 0
   fi
-  chmod +x "$tmp/llama-server"
-  if ! bash "$REPO_ROOT/scripts/ci/check-build-type.sh" "$tmp/llama-server"; then
-    rm -rf "$tmp"
-    die "P100 llama-server is a static build. Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
+
+  if ! grep -q '\[shared\]' <<<"$version_out"; then
+    die "P100 llama-server is not a shared-lib build (output: ${version_out:-<empty>}). Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
   fi
-  rm -rf "$tmp"
+  ok "P100 llama-server reports [shared]"
 }
 
 # ── Pre-deploy Cleanup ───────────────────────────────────────────────────────
