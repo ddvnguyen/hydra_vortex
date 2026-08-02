@@ -257,6 +257,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Select profile (.env)
+        # docker-compose.hydra.yml declares `env_file: ../.env`, and .env is
+        # gitignored so a fresh Actions checkout never has one — podman-compose
+        # aborts with "Env file at .../.env does not exist". set-profile.sh
+        # copies the tracked .env-moe into place. Pinned to moe (the documented
+        # default) so CI deploys are reproducible; .env-moe and .env-dense are
+        # both in git and audited to contain no secrets.
+        run: bash scripts/set-profile.sh moe
+
       - name: Read version
         id: version
         run: |
@@ -503,6 +512,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
+      - name: Select profile (.env)
+        # deploy-hydra-head.sh runs `podman compose -f docker-compose.hydra.yml
+        # up -d` (lines 326, 450), which needs the gitignored ../.env. Same
+        # reason as deploy-hydra — see the comment there.
+        run: bash scripts/set-profile.sh moe
 
       - name: Pin llama-server OCI image (if requested)
         id: pin
