@@ -36,6 +36,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	internal Func<string, int, Hydra.Shared.RpcClient>? AgentClientFactory { get; set; }
 	/// <summary>
+	/// Optional override for CalculateBusyTimeouts used in tests.
+	/// When set, replaces the real wall-clock timeout calculation so busy-retry
+	/// loops fail fast (e.g. 100ms stuck timeout instead of 150s).
+	/// Signature: (estimatedTokens, modelLoadTimeS) → (stuckMs, slowMs).
+	/// </summary>
+	internal Func<long, int, (long stuckMs, long slowMs)>? BusyTimeoutOverride { get; set; }
+
+	/// <summary>
 	/// Factory delegate for creating LlamaClient instances. Set in tests to
 	/// return mock clients that override GetStateMetaAsync for Gate A testing.
 	/// </summary>
@@ -856,8 +864,43 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.DecodeSlot = slot;
 				item.DecodeLease = new SlotLease(aw.Name, slot, item.SessionId, LeaseLifetime.Long, _tracker);
 				LastDispatchedNode = aw.Name;
-				// In engine mode, model is loaded at startup — skip ModelLoadDecode
-				return _cfg.UseLlamaEngine ? WorkItemState.Decode : WorkItemState.ModelLoadDecode;
+				// In engine mode, model is loaded at startup — skip ModelLoadDecode.
+				// However, if the requested model differs from the resident model,
+				// route through PREFILL first which handles the inline swap
+				// (n_predict=0 triggers the swap, then chains to Decode). This
+				// avoids the Decode streaming proxy timing out during a 60-120s
+				// model swap.
+				if (_cfg.UseLlamaEngine)
+				{
+					var nodeInfo = _health.GetNodeInfo(aw.Name);
+					var requestedAlias = TranslateModelAlias(
+						item.Request.TryGetValue("model", out var cmv) && cmv is string cms ? cms : null);
+					// When nodeInfo is null (health data not yet available),
+					// we can't determine the resident model — skip the
+					// prefill-swap and let the engine handle inline reload.
+					// Treating null as "" caused a false model mismatch that
+					// triggered a PREFILL swap → slot deadlock → infinite retry
+					// loop (#512 root cause).
+					if (nodeInfo != null
+						&& !string.IsNullOrEmpty(requestedAlias)
+						&& !string.Equals(nodeInfo.CurrentModel, requestedAlias, StringComparison.OrdinalIgnoreCase))
+					{
+					_log.Information("cold_atomic_prefill_swap Sid={Sid} Node={N} Resident={R} Requested={Req}",
+						item.SessionId, aw.Name, nodeInfo!.CurrentModel, requestedAlias);
+						// PrefillAsync reads item.PrefillWorker/PrefillSlot (not
+						// DecodeWorker/DecodeSlot, set above) — without these the
+						// PREFILL dispatch null-refs on item.PrefillWorker! before
+						// ever reaching the engine. item.PrefillLease is deliberately
+						// left null: item.DecodeLease (above) already owns this slot,
+						// and SaveKvAsync/PrefillAsync's cleanup paths already
+						// null-check PrefillLease before disposing it.
+						item.PrefillWorker = aw;
+						item.PrefillSlot = slot;
+						return WorkItemState.Prefill;
+					}
+					return WorkItemState.Decode;
+				}
+				return WorkItemState.ModelLoadDecode;
 			}
 		}
 
@@ -949,8 +992,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// item.Request["model"]), NOT from head.ModelAlias which is
 			// null for model-agnostic workers. Falls back to head.ModelAlias
 			// for legacy paths where model is not set on the item.
+			// #513: prefer ModelConfigLoader (fresh data-driven config) over
+			// ModelRegistry (static hardcoded entries) to avoid stale paths
+			// after coordinator restart.
 			var requestedAlias = item.Request.TryGetValue("model", out var rm) && rm is string rma ? rma : null;
-			try { engineConfig = ModelRegistry.Resolve(requestedAlias ?? head.ModelAlias ?? ""); }
+			var resolveAlias = requestedAlias ?? head.ModelAlias ?? "";
+			if (string.IsNullOrEmpty(resolveAlias)) continue;
+			try
+			{
+				var loader = ModelConfigLoader.InstanceOrNull;
+				if (loader != null)
+				{
+					try { engineConfig = loader.ResolveEngineConfig(resolveAlias); }
+					catch (InvalidOperationException) { engineConfig = ModelRegistry.Resolve(resolveAlias); }
+				}
+				else
+				{
+					engineConfig = ModelRegistry.Resolve(resolveAlias);
+				}
+			}
 			catch (InvalidOperationException) { continue; }
 
 			// PIPELINE needs a runtime override-tensor for the engine to route
@@ -1717,20 +1777,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							var template = loader.GetModelTemplate(routingAlias);
 							if (template is not null)
 							{
-								// Check if the requested model's aliases are in the worker's preset.
-								// If not, the engine must do a T3 rebuild to load this model.
-								bool aliasInPreset =
-									(template.PrefillAlias != null && nodeInfo?.PresetAliases.Contains(template.PrefillAlias) == true) ||
-									(template.DecodeAlias != null && nodeInfo?.PresetAliases.Contains(template.DecodeAlias) == true);
-								if (!aliasInPreset)
-								{
-									modelLoadTimeS = template.LoadTimeS;
-									CoordinatorMetrics.ModelReloadTimeoutHeadroom.WithLabels(w.Name, routingAlias).Inc();
-								}
-							}
+						// Check if the requested model's aliases are in the worker's preset.
+						// Only apply reload headroom when we have POSITIVE evidence that a
+						// swap is needed: nodeInfo is non-null, PresetAliases is populated,
+						// and the alias truly isn't in the set. When nodeInfo is null
+						// (before first health poll) or PresetAliases is empty (pre-#289
+						// engine), we conservatively skip the multiplier to avoid failing
+						// open on ordinary contention. #511.
+						bool hasPresetData = nodeInfo != null && nodeInfo.PresetAliases.Count > 0;
+						bool aliasInPreset = hasPresetData
+							&& ((template.PrefillAlias != null && nodeInfo!.PresetAliases.Contains(template.PrefillAlias))
+								|| (template.DecodeAlias != null && nodeInfo!.PresetAliases.Contains(template.DecodeAlias)));
+						if (hasPresetData && !aliasInPreset)
+						{
+							modelLoadTimeS = template.LoadTimeS;
+							CoordinatorMetrics.ModelReloadTimeoutHeadroom.WithLabels(w.Name, routingAlias).Inc();
 						}
 					}
-					var (stuckTimeoutMs, slowTimeoutMs) = CalculateBusyTimeouts(item.EstimatedTokens, modelLoadTimeS);
+				}
+			}
+				var (stuckTimeoutMs, slowTimeoutMs) = BusyTimeoutOverride?.Invoke(item.EstimatedTokens, modelLoadTimeS)
+				?? CalculateBusyTimeouts(item.EstimatedTokens, modelLoadTimeS);
 
 					if (busyMs > stuckTimeoutMs && item.LastBusyProgress == 0)
 					{
@@ -3138,13 +3205,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					_log.Debug("#PD-TRACE DECODE_REQUEST Sid={Sid} MsgCount={Count} FirstMsg={First} LastMsg={Last} Slot={Slot} NPast={NPast}",
 						item.SessionId, decodeMsgCount, decodeFirstMsg, decodeLastMsg, item.DecodeSlot, item.NPastAfter);
 				}
-				// #479/S3: when driving the engine, translate the routing-identity
-				// model on the decode request to the GGUF-file alias (decode role,
-				// e.g. moe-35b-pd → qwen3.6-35B-balanced for mix-quant P/D split)
-				// so the decode worker's inline reload fires instead of silently
-				// falling back to its resident model.
-				if (_cfg.UseLlamaEngine && !string.IsNullOrEmpty(w.ModelAlias))
-					item.Request["model"] = TranslateModelAlias(w.ModelAlias, decodeRole: true);
+				// #479/S3 + #504: translate the routing-identity model on the decode
+				// request to the GGUF-file alias so the engine's inline reload fires
+				// instead of silently falling back to its resident model.
+				// For model-agnostic workers (e.g. RTX), w.ModelAlias is null —
+				// translate the routing identity from the request field instead.
+				if (_cfg.UseLlamaEngine)
+				{
+					var decodeAlias = !string.IsNullOrEmpty(w.ModelAlias)
+						? TranslateModelAlias(w.ModelAlias, decodeRole: true)
+						: TranslateModelAlias(
+							item.Request.TryGetValue("model", out var dmv) && dmv is string dms ? dms : null);
+					if (!string.IsNullOrEmpty(decodeAlias))
+						item.Request["model"] = decodeAlias;
+				}
 				var resp = await _proxy.ProxyCompletionAsync(
 						w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
 				if (resp.TryGetValue("id_slot", out var s2) && s2 is JsonElement se2)
@@ -3689,6 +3763,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// #507: model-reload headroom. A T3 rebuild (model swap) adds a large
 		// fixed cost independent of prompt size. Use a 6x safety multiplier
 		// because observed COMBINED reload (270s) was 6x the documented 45s.
+		// TODO(#514): that 270s figure is itself the degraded-throughput
+		// symptom (engine drops to 2-4 tok/s post-swap, not just a slow
+		// reload) — once #514 is fixed, re-measure actual reload time and
+		// revisit whether 6x is still the right multiplier (it's likely
+		// too generous once reload speed returns to normal).
 		if (modelLoadTimeS > 0)
 		{
 			const int ReloadSafetyMultiplier = 6;
@@ -4397,7 +4476,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private Hydra.Shared.RpcClient GetLlamaRpcClient(WorkerConfig w)
 	{
 		if (_llamaRpcClients.TryGetValue(w.Name, out var c)) return c;
-		var rpcHost = new Uri(w.LlamaUrl).Host;
+		var rpcHost = w.LlamaRpcHost;
 		// Honor the injectable factory so tests never open real sockets.
 		var client = AgentClientFactory != null
 			? AgentClientFactory(rpcHost, w.LlamaRpcPort)

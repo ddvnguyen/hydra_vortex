@@ -36,7 +36,9 @@ hydra-coordinator = "coordinator.main:run"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests/coordinator", "tests"]
+# tests/coordinator was deleted in cd3f9a0a1; leaving it here made a bare
+# `pytest` fail with "file or directory not found" before collecting anything.
+testpaths = ["tests"]
 markers = [
     "system: marks system tests that require real services (llama-servers, Store, Agents)",
     "slow: marks tests that take >5 min (40k context, deselect with -m 'not slow')",

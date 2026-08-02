@@ -136,17 +136,17 @@ func main() {
 				binaryName = name
 			}
 
-			// Skip pull if the binary is already on disk (e.g., baked into
-			// the image at build time). This is the preferred path for
-			// small sidecar exporters — it avoids a network round-trip on
-			// every container start.
-			if _, err := os.Stat(dest); err == nil {
-				logger.Info("binary already present on disk, skipping pull",
-					"name", name, "dest", dest)
+			// Decide whether to skip the pull for an existing on-disk binary.
+			// Delegates to registry.ShouldSkipBinaryPull which handles three
+			// cases: checksum verification, image_digest pinning (must pull
+			// to verify), and unverified baked-in sidecars.
+			if skip, reason := registry.ShouldSkipBinaryPull(dest, spec.BinaryChecksum, spec.ImageDigest); skip {
+				logger.Info("binary verified, skipping pull",
+					"name", name, "dest", dest, "reason", reason)
 				continue
-			} else if !os.IsNotExist(err) {
-				logger.Error("stat binary path", "name", name, "dest", dest, "error", err)
-				os.Exit(1)
+			} else {
+				logger.Info("pull required",
+					"name", name, "dest", dest, "reason", reason)
 			}
 
 			if err := regMgr.PullBinary(spec.Source, dest, spec.ImageDigest, spec.BinaryChecksum, binaryName); err != nil {

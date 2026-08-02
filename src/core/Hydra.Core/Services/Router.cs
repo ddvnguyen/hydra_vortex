@@ -65,13 +65,11 @@ public static class Router
 			}
 		}
 
-		// Include a per-request salt so each API call produces a unique session ID,
-		// even when the message content is identical (e.g. multiple PI agents sending
-		// the same system prompt). The prefix-hash for KV reuse is computed separately
-		// from the content-only prefix, so this does not affect cache hit rates.
-		var salt = $"|{Environment.CurrentManagedThreadId}|{Stopwatch.GetTimestamp()}";
+		// Deterministic: session ID is purely a function of message content.
+		// Per-request salt (for unique session IDs on identical messages) is applied
+		// by the request-routing caller (CoordinatorControllers), not here.
 		var sessionId = $"sess_{Convert.ToHexStringLower(
-			SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString() + salt)))[..24]}";
+			SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..24]}";
 
 		if (sw.ElapsedMilliseconds > 200)
 		{

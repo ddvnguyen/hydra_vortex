@@ -51,6 +51,15 @@ public sealed record WorkerConfig
 	// availability as implicit. Replaces the old WorkerConfig.RunType ==
 	// "combined-static-peer" + IsCombinedStatic derived property.
 	public bool IsPeerOnly => Slots == 0;
+
+	/// <summary>
+	/// Resolved host for llama-engine RPC connections. Extracts the host from
+	/// <see cref="LlamaUrl"/> (e.g. "192.168.122.21" from "http://192.168.122.21:8086").
+	/// Falls back to <see cref="Host"/> when <see cref="LlamaUrl"/> is not set.
+	/// Used by both HealthMonitorService and WorkerSchedulerService to avoid host drift.
+	/// </summary>
+	public string LlamaRpcHost => !string.IsNullOrWhiteSpace(LlamaUrl)
+		&& Uri.TryCreate(LlamaUrl, UriKind.Absolute, out var u) ? u.Host : Host;
 }
 
 /// <summary>

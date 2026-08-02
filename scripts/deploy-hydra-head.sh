@@ -46,9 +46,26 @@ TARGET="${1:-all}"
 TOKEN_FILE="$REPO_ROOT/.hydra-head-token"
 
 generate_token() {
+  # An explicit token in the environment always wins — this is how CI supplies
+  # it (secrets.HYDRA_HEAD_AUTH_TOKEN), since .hydra-head-token is gitignored
+  # and therefore never present in a fresh Actions checkout.
+  if [ -n "${HYDRA_HEAD_AUTH_TOKEN:-}" ]; then
+    ok "Using auth token from HYDRA_HEAD_AUTH_TOKEN environment variable"
+    return
+  fi
+
   if [ -f "$TOKEN_FILE" ]; then
     ok "Using existing auth token from $TOKEN_FILE"
     return
+  fi
+
+  # Do NOT mint a token when running unattended. Previously this branch ran in
+  # CI (no token file in the Actions checkout) and generated a fresh random
+  # token, which deploy_p100() then pushed to the VM — silently re-keying the
+  # P100 on every run to a value neither the coordinator nor the other nodes
+  # knew. Minting is only ever correct for a human bootstrapping a new host.
+  if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+    die "No auth token available. Set the HYDRA_HEAD_AUTH_TOKEN secret in the repository — refusing to generate one in CI, which would re-key the running nodes."
   fi
 
   step "Generating new auth token"
@@ -59,8 +76,12 @@ generate_token() {
 }
 
 get_token() {
+  if [ -n "${HYDRA_HEAD_AUTH_TOKEN:-}" ]; then
+    printf '%s' "$HYDRA_HEAD_AUTH_TOKEN"
+    return
+  fi
   if [ ! -f "$TOKEN_FILE" ]; then
-    die "Auth token not found at $TOKEN_FILE. Run: openssl rand -hex 32 > $TOKEN_FILE"
+    die "Auth token not found at $TOKEN_FILE and HYDRA_HEAD_AUTH_TOKEN is unset. Run: openssl rand -hex 32 > $TOKEN_FILE"
   fi
   cat "$TOKEN_FILE"
 }
@@ -154,7 +175,21 @@ check_llama_build_type_local() {
     bind_src="$REPO_ROOT/src/llama-cpp/build_sm120/bin/llama-server"
   fi
   if [ ! -x "$bind_src" ]; then
-    die "llama-server binary not found at $REPO_ROOT/src/llama-cpp/build_sm120_v3/bin/llama-server (or build_sm120/bin/) — build it with DevelopmentRunBook.md"
+    # No local binary. That is now the DEFAULT, not an error:
+    # docker-compose.hydra.yml no longer bind-mounts build_sm86_sm120/bin —
+    # hydra-head pulls the engine from the OCI ref pinned in node-rtx.yaml.
+    # The local bind-mount is opt-in via docker-compose.hydra.local-build.yml.
+    #
+    # This gate exists only to catch a *static* local build (#346), so when
+    # there is no local build to check there is nothing to protect against.
+    # Failing here blocked every CI deploy, since the Actions checkout never
+    # has a compiled binary.
+    if grep -qE '^\s*source:\s*(ghcr\.io|docker\.io|quay\.io)/' \
+         "$REPO_ROOT/infra/hydra-head/config/node-rtx.yaml" 2>/dev/null; then
+      ok "No local llama-server build; node-rtx.yaml pulls from OCI — skipping local build-type gate"
+      return 0
+    fi
+    die "llama-server binary not found at $REPO_ROOT/src/llama-cpp/build_sm120_v3/bin/llama-server (or build_sm120/bin/), and node-rtx.yaml has no OCI source to fall back on — build it with DevelopmentRunBook.md"
   fi
   step "Build-type gate (RTX local binary)"
   bash "$REPO_ROOT/scripts/ci/check-build-type.sh" "$bind_src" || \
@@ -180,19 +215,27 @@ check_llama_build_type_local_fat() {
 check_llama_build_type_p100() {
   step "Build-type gate (P100 VM binary)"
   local vm_bin="/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server"
-  local tmp
-  tmp=$(mktemp -d)
-  if ! scp "hydra-p100:$vm_bin" "$tmp/llama-server" 2>/dev/null; then
-    rm -rf "$tmp"
-    warn "Could not scp $vm_bin from hydra-p100 — skipping P100 build-type check"
+
+  # Run --version ON THE VM. The previous implementation scp'd just the
+  # executable to a temp dir and checked it there — but that file is a small
+  # launcher (~16 KB) that dynamic-links libllama-server-impl.so and the
+  # libggml-*.so beside it. Copied without them it cannot start, so --version
+  # emitted no "[shared]" token and check-build-type.sh (which treats a
+  # missing token as static) reported every P100 deploy as a static build.
+  # That is exactly the #498 failure mode — an executable separated from its
+  # shared libraries — reproduced inside the check itself. Checking in place
+  # is both simpler and actually tests the artifact as it will run.
+  local version_out
+  if ! version_out=$(ssh -o ConnectTimeout=10 -o BatchMode=yes hydra-p100 \
+        "'$vm_bin' --version 2>&1" 2>/dev/null); then
+    warn "Could not run $vm_bin on hydra-p100 — skipping P100 build-type check"
     return 0
   fi
-  chmod +x "$tmp/llama-server"
-  if ! bash "$REPO_ROOT/scripts/ci/check-build-type.sh" "$tmp/llama-server"; then
-    rm -rf "$tmp"
-    die "P100 llama-server is a static build. Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
+
+  if ! grep -q '\[shared\]' <<<"$version_out"; then
+    die "P100 llama-server is not a shared-lib build (output: ${version_out:-<empty>}). Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
   fi
-  rm -rf "$tmp"
+  ok "P100 llama-server reports [shared]"
 }
 
 # ── Pre-deploy Cleanup ───────────────────────────────────────────────────────
@@ -339,6 +382,14 @@ deploy_p100() {
     die "Cannot reach hydra-p100 via SSH (check ~/.ssh/config)"
   fi
 
+  # Resolve the token here rather than relying on deploy_rtx() having run
+  # first in the same shell. deploy_rtx() and deploy_rtx3060() both do this;
+  # deploy_p100() did not, so `deploy-hydra-head.sh p100` on its own died
+  # with "AUTH_TOKEN: unbound variable" under `set -u`. CI invokes the three
+  # targets as three separate processes, so it hit this every time.
+  generate_token
+  AUTH_TOKEN=$(get_token)
+
   check_llama_build_type_p100
 
   # Create directories (user-level, no sudo needed)
@@ -356,8 +407,11 @@ deploy_p100() {
   rsync -avz infra/hydra-head/config/preset-p100.ini hydra-p100:/home/vm1/hydra/config/preset-p100.ini
   ok "Copied config files"
 
-  # Create environment file with auth token
-  ssh hydra-p100 "echo 'HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN' > /home/vm1/.config/hydra-head/env"
+  # Create environment file with auth token. Written over stdin rather than
+  # interpolated into the remote command string, which exposed the token in
+  # `ps` output on the VM for the lifetime of the ssh command.
+  ssh hydra-p100 "umask 077 && cat > /home/vm1/.config/hydra-head/env" \
+    <<<"HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN"
   ssh hydra-p100 "chmod 600 /home/vm1/.config/hydra-head/env"
   ok "Created auth token environment file"
 

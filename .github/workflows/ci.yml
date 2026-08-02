@@ -12,6 +12,8 @@ on:
       - 'CLAUDE.md'
   pull_request:
     branches: [main]
+  repository_dispatch:
+    types: [deploy-llama]
   workflow_dispatch:
     inputs:
       run-system-full:
@@ -46,6 +48,27 @@ on:
         options:
           - "false"
           - "true"
+      rtx-image:
+        description: >
+          Full OCI image ref to pin for the RTX nodes (5060 Ti + 3060 share
+          the same sm86-sm120 fat binary), e.g.
+          "ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-a157edf"
+          from a hydra-build.yml run in ddvnguyen/llama.cpp. Leave blank to
+          deploy with whatever is already checked into node-rtx.yaml /
+          node-rtx3060.yaml. Dispatching against a PR branch commits the
+          pin directly onto that branch (see "Commit pinned image" step).
+        required: false
+        default: ""
+        type: string
+      p100-image:
+        description: >
+          Full OCI image ref to pin for the P100 node, e.g.
+          "ghcr.io/ddvnguyen/llama-server:sm60-llama-server-a157edf". Leave
+          blank to deploy with whatever is already checked into
+          node-p100.yaml.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   checks: write
@@ -65,8 +88,13 @@ jobs:
     steps:
       - name: Cancel duplicate queued runs
         run: |
+          # Only cancel runs from the same event type and branch to avoid
+          # push runs killing queued pull_request runs (they share the
+          # same head branch name). Also skip cancelling workflow_dispatch
+          # runs which are intentional manual triggers.
           gh run list --workflow CI --branch "${{ github.ref_name }}" \
-            --json databaseId,status --jq '.[] | select(.status == "queued") | .databaseId' |
+            --json databaseId,status,event \
+            --jq ".[] | select(.status == \"queued\" and .event == \"${{ github.event_name }}\") | .databaseId" |
           while read id; do
             [ "$id" != "${{ github.run_id }}" ] && gh run cancel "$id" 2>/dev/null || true
           done
@@ -85,19 +113,38 @@ jobs:
             --logger "trx;LogFileName=shared.trx" \
             --results-directory TestResults/
 
-      - name: Unit tests — Core
+      - name: Unit tests — Core (fast)
         run: |
           dotnet test src/core/Tests.Core/ -c Release --no-build --nologo -v normal \
             --settings src/Hydra.runsettings \
-            --filter "FullyQualifiedName!~StoreMetadataTests&FullyQualifiedName!~WriteBehindServiceTests" \
-            --logger "trx;LogFileName=core.trx" \
+            --filter "FullyQualifiedName!~Integration" \
+            --logger "trx;LogFileName=core-fast.trx" \
             --results-directory TestResults/
 
-
-      - name: Unit tests — Coordinator (Python)
+      - name: Unit tests — Core (integration)
         run: |
-          python3 -m pytest tests/coordinator/test_router.py -v \
-            --junit-xml=TestResults/coordinator.xml
+          dotnet test src/core/Tests.Core/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --filter "FullyQualifiedName~Integration" \
+            --logger "trx;LogFileName=core-integration.trx" \
+            --results-directory TestResults/
+
+      - name: Restore & build (Go head)
+        run: |
+          export PATH=$HOME/go-sdk/go/bin:$PATH
+          go build -C $GITHUB_WORKSPACE/src/head -o /dev/null .
+          go vet -C $GITHUB_WORKSPACE/src/head ./...
+
+      - name: Unit tests — Go head
+        run: |
+          # pipefail is required: without it `go test | tee | tail` exits with
+          # tail's status, so a failing Go test would pass this step silently.
+          # The step's shell is `bash -e`, and -e does not catch a pipeline
+          # whose last command succeeds.
+          set -eo pipefail
+          export PATH=$HOME/go-sdk/go/bin:$PATH
+          go test -C $GITHUB_WORKSPACE/src/head -count=1 -v ./... 2>&1 | tee /tmp/go-test.log
+
 
       - name: Publish .NET test results
         uses: dorny/test-reporter@v1
@@ -110,48 +157,17 @@ jobs:
           fail-on-empty: false
 
 
-      - name: Publish Python test results
-        uses: dorny/test-reporter@v1
-        if: always()
-        with:
-          name: Python Unit Tests
-          path: TestResults/coordinator.xml
-          reporter: java-junit
-          fail-on-error: false
-          fail-on-empty: false
-
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: unit-test-results-${{ github.run_number }}
-          path: |
-            TestResults/*.trx
-            TestResults/coordinator.xml
+          path: TestResults/*.trx
           retention-days: 30
 
       - name: Clean .NET download cache
         if: always()
         run: dotnet nuget locals http-cache --clear --force-english-output
-
-      - name: Create issue on build/unit-test failure
-        if: failure()
-        run: |
-          TITLE="CI: build-test failure on ${{ github.ref_name }}"
-          EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
-            echo "Open issue #$EXISTING already exists — skipping"
-          else
-            gh issue create \
-              --title "$TITLE" \
-              --body "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          **Commit:** \`${{ github.sha }}\`
-          **Branch:** \`${{ github.ref_name }}\`
-          **Actor:** ${{ github.actor }}
-
-          Build or unit tests failed. See run for details and test artifacts." \
-              --label "ci-failure,auto-created"
-          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -200,10 +216,35 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 15
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true'
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
+    env:
+      # .hydra-head-token is gitignored, so it never exists in the Actions
+      # checkout. podman-compose reads ${HYDRA_HEAD_AUTH_TOKEN:?} and aborts
+      # without it ("must export HYDRA_HEAD_AUTH_TOKEN").
+      HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
+    # Deploy on: push to non-main branches (GitHub deduplicates push+PR
+    # into a single push run, so pull_request never fires for same-repo PRs),
+    # workflow_dispatch, or repository_dispatch.
+    if: |
+      always() &&
+      needs.build-test.result == 'success' && (
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true')
+      )
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select profile (.env)
+        # docker-compose.hydra.yml declares `env_file: ../.env`, and .env is
+        # gitignored so a fresh Actions checkout never has one — podman-compose
+        # aborts with "Env file at .../.env does not exist". set-profile.sh
+        # copies the tracked .env-moe into place. Pinned to moe (the documented
+        # default) so CI deploys are reproducible; .env-moe and .env-dense are
+        # both in git and audited to contain no secrets.
+        run: bash scripts/set-profile.sh moe
 
       - name: Read version
         id: version
@@ -224,11 +265,9 @@ jobs:
             -t hydra-cuda-base:latest $GITHUB_WORKSPACE/infra/llama-rtx-node \
             2>&1 | tee /tmp/hydra-build-cuda-base.log | tail -3
           # Build hydra-head (Go binary)
+          export PATH=$HOME/go-sdk/go/bin:$PATH
           go build -C $GITHUB_WORKSPACE/src/head -o $GITHUB_WORKSPACE/bin/hydra-head . \
             2>&1 | tee /tmp/hydra-build-head.log | tail -3
-          # Unit tests for hydra-head Go packages
-          go test -C $GITHUB_WORKSPACE/src/head -count=1 ./... \
-            2>&1 | tee /tmp/hydra-test-head.log | tail -10
           # Build hydra-head RTX container
           podman build -f $GITHUB_WORKSPACE/infra/hydra-head/Dockerfile.rtx \
             -t localhost/hydra-head:rtx $GITHUB_WORKSPACE \
@@ -275,6 +314,19 @@ jobs:
     runs-on: self-hosted
     needs: build-test
     timeout-minutes: 10
+    # DISABLED pending #518 (Python -> xUnit/Aspire conversion).
+    #
+    # This job only ever ran tests/system/test_m1_system.py and
+    # test_m2_system.py — both of which import `coordinator.*`, the Python
+    # coordinator deleted in 8e7d1bffd. They have been uncollectable ever
+    # since, which is the whole of the long-standing
+    # "ModuleNotFoundError: No module named 'coordinator'" failure. 43 of
+    # the 83 system tests are dead for the same reason.
+    #
+    # Disabled rather than left red on purpose: a permanently-failing check
+    # trains people to ignore CI, which is exactly how CI stayed dead for
+    # eight weeks. Re-enable as the Tier 1 Aspire harness in #518.
+    if: false
 
     steps:
       - uses: actions/checkout@v4
@@ -311,14 +363,25 @@ jobs:
   system-full:
     name: System Tests (full stack)
     runs-on: self-hosted
-    needs: [build-test, deploy-hydra, deploy-infra]
-    timeout-minutes: 60
-    # Only runs on explicit workflow_dispatch with run-system-full=true.
-    # Full-stack tests require all 6 services healthy (llama RTX, llama P100,
-    # Store, Agents, Coordinator, Observability) — never automatic.
+    needs: [build-test, deploy-hydra, deploy-llama]
+    timeout-minutes: 20
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
+    # DISABLED pending #518 (Python -> xUnit/Aspire conversion), except for
+    # explicit manual dispatch, which stays available for ad-hoc live runs.
+    #
+    # The surviving ~29 Python system tests still work when pointed at a live
+    # rig, so this is kept dispatchable rather than hard-disabled like
+    # system-mocked. It no longer runs automatically on PRs: until the
+    # deploy-llama digest check is proven to fire (#497), a green run here
+    # cannot tell you which engine build it tested against.
+    #
+    # Re-enable as the Tier 2 LiveRigFixture suite in #518.
     if: |
       always() &&
       needs.build-test.result == 'success' &&
+      (needs.deploy-hydra.result == 'success' || needs.deploy-llama.result == 'success') &&
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.run-system-full == 'true'
 
@@ -378,40 +441,119 @@ jobs:
           name: system-full-results-${{ github.run_number }}
           path: TestResults/system-full.xml
           retention-days: 30
-
-      - name: Create issue on system test full-stack failure
-        if: failure()
-        run: |
-          TITLE="CI: System test full-stack failure on ${{ github.ref_name }}"
-          EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
-            echo "Open issue #$EXISTING already exists — skipping"
-          else
-            gh issue create \
-              --title "$TITLE" \
-              --body "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          **Commit:** \`${{ github.sha }}\`
-          **Branch:** \`${{ github.ref_name }}\`
-          **Actor:** ${{ github.actor }}
-
-          Full-stack system tests failed. Hardware may be involved — check GPU health, KV migration path, and coordinator logs in Grafana." \
-              --label "ci-failure,auto-created"
-          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy-llama:
     name: Deploy hydra-head (manages llama + 3 services)
     runs-on: self-hosted
-    timeout-minutes: 10
+    needs: build-test
+    # Three heads, each allowed up to 8 min to become ready (OCI pull + model
+    # load) via scripts/ci/wait-for-head.sh, plus image builds and the P100
+    # rsync/systemd round trip. 10 min could not cover even one slow head.
+    timeout-minutes: 35
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      # deploy-hydra-head.sh reads this in preference to .hydra-head-token,
+      # which is gitignored and absent from the Actions checkout. Without it
+      # the script used to mint a fresh random token and push it to the P100
+      # over SSH, silently re-keying the VM on every CI run.
+      HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
     if: |
-      startsWith(github.ref, 'refs/tags/llama.cpp') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true')
+      always() && (
+        (github.event_name == 'pull_request' && needs.build-test.result == 'success') ||
+        startsWith(github.ref, 'refs/tags/llama.cpp') ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true') ||
+        github.event_name == 'repository_dispatch'
+      )
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
+      - name: Select profile (.env)
+        # deploy-hydra-head.sh runs `podman compose -f docker-compose.hydra.yml
+        # up -d` (lines 326, 450), which needs the gitignored ../.env. Same
+        # reason as deploy-hydra — see the comment there.
+        run: bash scripts/set-profile.sh moe
+
+      - name: Pin llama-server OCI image (if requested)
+        id: pin
+        if: |
+          github.event.inputs.rtx-image != '' ||
+          github.event.inputs.p100-image != '' ||
+          github.event.client_payload.rtx-image != '' ||
+          github.event.client_payload.p100-image != ''
+        run: |
+          # Pin the OCI image ref AND resolve its digest so the node
+          # config has a reproducible source + verifiable image_digest.
+          # Reads from workflow_dispatch inputs OR repository_dispatch
+          # client_payload (fork handoff from ddvnguyen/llama.cpp).
+          pin_image() {
+            local image="$1"
+            local config_file="$2"
+            echo "Pinning $image in $config_file"
+
+            # Update source: line
+            sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*source:\s*\).*|\1${image}|" "$config_file"
+
+            # Resolve digest via podman
+            local digest
+            digest=$(podman pull "$image" 2>/dev/null && podman inspect "$image" --format '{{.Digest}}' 2>/dev/null || echo "")
+            if [ -n "$digest" ]; then
+              echo "Resolved digest: $digest"
+              # Update image_digest: line (add if missing, replace if present)
+              if grep -q 'image_digest:' "$config_file"; then
+                sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*image_digest:\s*\).*|\1${digest}|" "$config_file"
+              else
+                # Insert image_digest after source: line
+                sed -i "/^\s*source:\s*${image}$/a\\    image_digest: ${digest}" "$config_file"
+              fi
+            else
+              echo "WARNING: Could not resolve digest for $image"
+            fi
+          }
+
+          # Resolve image refs from either input source
+          RTX_IMAGE="${{ github.event.inputs.rtx-image || github.event.client_payload.rtx-image }}"
+          P100_IMAGE="${{ github.event.inputs.p100-image || github.event.client_payload.p100-image }}"
+
+          if [ -n "$RTX_IMAGE" ]; then
+            pin_image "$RTX_IMAGE" infra/hydra-head/config/node-rtx.yaml
+            pin_image "$RTX_IMAGE" infra/hydra-head/config/node-rtx3060.yaml
+            echo "rtx_image=$RTX_IMAGE" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$P100_IMAGE" ]; then
+            pin_image "$P100_IMAGE" infra/hydra-head/config/node-p100.yaml
+            echo "p100_image=$P100_IMAGE" >> "$GITHUB_OUTPUT"
+          fi
+
+          if git diff --quiet -- infra/hydra-head/config/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff -- infra/hydra-head/config/
+          fi
+
+      - name: Commit pinned image
+        if: ${{ steps.pin.outputs.changed == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add infra/hydra-head/config/node-rtx.yaml infra/hydra-head/config/node-rtx3060.yaml infra/hydra-head/config/node-p100.yaml
+          git commit -m "chore: pin llama-server OCI image
+
+          rtx-image: ${{ github.event.inputs.rtx-image || '(unchanged)' }}
+          p100-image: ${{ github.event.inputs.p100-image || '(unchanged)' }}
+
+          Triggered by deploy-llama workflow_dispatch (${{ github.actor }})."
+          git push origin HEAD:${{ github.ref_name }}
 
       - name: Ensure SSH config for P100
         run: |
@@ -427,28 +569,139 @@ jobs:
       - name: Deploy hydra-head to RTX (container)
         run: |
           bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx
-          sleep 8
-          curl -sf http://localhost:9700/status >/dev/null && echo "hydra-head-rtx OK" || echo "WARNING: hydra-head-rtx not responding"
+          bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
+
+      - name: Deploy hydra-head to RTX 3060 (container)
+        run: |
+          bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx3060
+          bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480
 
       - name: Deploy hydra-head to P100 (VM systemd)
         run: |
           bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh p100
-          sleep 8
-          curl -sf http://192.168.122.21:9700/status >/dev/null && echo "hydra-head-p100 OK" || echo "WARNING: hydra-head-p100 not responding"
+          bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480
+
+      - name: Verify deployed digests
+        run: |
+          set -eo pipefail
+          echo "Verifying deployed engine binaries..."
+
+          # Extract pinned image_digest from node configs using the same
+          # anchored sed as the pin step (llama-server: ... binary: range).
+          extract_digest() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config"
+          }
+          extract_source() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config"
+          }
+
+          RTX_DIGEST=$(extract_digest infra/hydra-head/config/node-rtx.yaml)
+          P100_DIGEST=$(extract_digest infra/hydra-head/config/node-p100.yaml)
+          RTX_SOURCE=$(extract_source infra/hydra-head/config/node-rtx.yaml)
+          P100_SOURCE=$(extract_source infra/hydra-head/config/node-p100.yaml)
+
+          echo "RTX pinned: source=$RTX_SOURCE digest=$RTX_DIGEST"
+          echo "P100 pinned: source=$P100_SOURCE digest=$P100_DIGEST"
+
+          FAIL=0
+
+          # Verify each head: response must include binaries.*.pulled_digest
+          # matching the pinned image_digest from config.
+          verify_head() {
+            local label="$1" endpoint="$2" expected_digest="$3"
+            local status_json
+            status_json=$(curl -sf --max-time 10 "$endpoint" 2>/dev/null) || {
+              echo "FAIL: $label ($endpoint) not responding"
+              FAIL=1; return
+            }
+            # Extract pulled_digest for any binary whose source matches the expected tag
+            # Select the llama-server entry by name. Picking "the first entry
+            # with a digest" would be a coin flip: Go map iteration is
+            # randomised, so the JSON key order varies per request. It happens
+            # to work today only because llama-server is the sole binary with
+            # an image_digest configured.
+            local actual_digest
+            actual_digest=$(echo "$status_json" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          info = data.get('binaries', {}).get('llama-server') or {}
+          print(info.get('pulled_digest', ''))
+          " 2>/dev/null || echo "")
+
+            if [ -z "$actual_digest" ]; then
+              echo "FAIL: $label ($endpoint) — no pulled_digest in /status response"
+              echo "  Response: $status_json"
+              FAIL=1; return
+            fi
+
+            if [ "$expected_digest" = "$actual_digest" ]; then
+              echo "OK: $label ($endpoint) — digest matches: $actual_digest"
+            else
+              echo "FAIL: $label ($endpoint) — digest mismatch"
+              echo "  Expected: $expected_digest"
+              echo "  Actual:   $actual_digest"
+              FAIL=1
+            fi
+          }
+
+          # A missing pin is a hard failure, not a reason to skip. Guarding
+          # these calls on `[ -n "$DIGEST" ]` would mean a broken extraction
+          # or a removed image_digest silently turns this step green — the
+          # same "wired up but never engages" failure this step exists to
+          # catch (cf. #502, #477).
+          if [ -z "$RTX_DIGEST" ]; then
+            echo "FAIL: no image_digest pinned for RTX in infra/hydra-head/config/node-rtx.yaml"
+            FAIL=1
+          else
+            verify_head "hydra-head-rtx"     "http://localhost:9700/status" "$RTX_DIGEST"
+            verify_head "hydra-head-rtx3060" "http://localhost:9701/status" "$RTX_DIGEST"
+          fi
+
+          if [ -z "$P100_DIGEST" ]; then
+            echo "FAIL: no image_digest pinned for P100 in infra/hydra-head/config/node-p100.yaml"
+            FAIL=1
+          else
+            verify_head "hydra-head-p100" "http://192.168.122.21:9700/status" "$P100_DIGEST"
+          fi
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "Digest verification FAILED"
+            exit 1
+          fi
+          echo "All heads verified — digests match pinned config"
 
       - name: Write deploy summary
         if: always()
         run: |
           TAG="${{ github.ref_name }}"
+          extract_source() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config"
+          }
+          extract_digest() {
+            local config="$1"
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config"
+          }
+          RTX_SOURCE=$(extract_source infra/hydra-head/config/node-rtx.yaml)
+          RTX_DIGEST=$(extract_digest infra/hydra-head/config/node-rtx.yaml)
+          P100_SOURCE=$(extract_source infra/hydra-head/config/node-p100.yaml)
+          P100_DIGEST=$(extract_digest infra/hydra-head/config/node-p100.yaml)
           cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
           ## hydra-head Deploy
 
           | Field | Value |
           |-------|-------|
           | Tag   | \`$TAG\` |
+          | RTX image | \`${RTX_SOURCE}\` |
+          | RTX digest | \`${RTX_DIGEST}\` |
+          | P100 image | \`${P100_SOURCE}\` |
+          | P100 digest | \`${P100_DIGEST}\` |
           | By    | ${{ github.actor }} |
           | Time  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
           **RTX**: hydra-head container on :9700
-          **P100**: hydra-head systemd service on :9700
+          **RTX 3060**: hydra-head container on :9701
+          **P100**: hydra-head systemd service on 192.168.122.21:9700
           SUMMARY

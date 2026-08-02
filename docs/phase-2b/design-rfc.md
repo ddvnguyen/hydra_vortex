@@ -871,6 +871,13 @@ The default keeps the legacy path working. The C# side can choose to migrate to 
 
 ### Q4: `EngineConfigApplier` (parent-side) timing
 
+> **Outcome note (2026-07-22):** the implementation diverged from this RFC.
+> `EngineConfigApplier` was never wired up and was deleted as dead code in
+> PR #488. Engine config instead reaches the engine as a `hydra_config` dict
+> injected into the PREFILL request body (`WorkerSchedulerService.cs:1209`,
+> #481 Phase 2b / #487). This section is retained as design history.
+
+
 **Default: startup + profile switch.** The parent-side `EngineConfigApplier` (PR 4 in the stack) is invoked at two moments:
 1. **Startup** — once per worker, after the engine's `INFO` (0x41) returns `solo_active=true` and the model is loaded. The applier looks up the worker's `EngineConfig` from `ModelRegistry` and sends a single `CONFIGURE` with the full key set.
 2. **Profile switch** — when the operator changes the profile (the `.env-moe` ↔ `.env-dense` switch via `bash scripts/set-profile.sh`, per `CLAUDE.md` "Profiles"), the applier sends a fresh `CONFIGURE` with the new profile's `EngineConfig` shape.
@@ -1135,7 +1142,7 @@ LOC breakdown:
 
 This PR is split from PR 2 because the mutators are a clean unit — they expose the `cparams` setters that PR 2 needs, but they could equally well be called from other paths (e.g. a future `EnginePipelineAttach` 0x46 use, or the per-request override layer in PR 5). Reviewing them in isolation is easier.
 
-### PR 4 — Parent-side `EngineConfigApplier`
+### PR 4 — Parent-side `EngineConfigApplier` — ❌ NOT SHIPPED (deleted, PR #488)
 
 | | |
 |---|---|

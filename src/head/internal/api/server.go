@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/health"
@@ -14,25 +17,35 @@ import (
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/registry"
 )
 
+type checksumCache struct {
+	mu       sync.Mutex
+	path     string
+	mtime    time.Time
+	size     int64
+	checksum string
+}
+
 type Server struct {
-	cfg       *config.Config
-	manager   *process.Manager
-	checker   *health.Checker
-	registry  *registry.Manager
-	logger    *slog.Logger
-	mux       *http.ServeMux
-	authToken string // shared secret for API authentication
+	cfg            *config.Config
+	manager        *process.Manager
+	checker        *health.Checker
+	registry       *registry.Manager
+	logger         *slog.Logger
+	mux            *http.ServeMux
+	authToken      string // shared secret for API authentication
+	checksumCache  map[string]*checksumCache // keyed by binary name
 }
 
 func NewServer(cfg *config.Config, manager *process.Manager, checker *health.Checker, regMgr *registry.Manager, logger *slog.Logger, authToken string) *Server {
 	s := &Server{
-		cfg:       cfg,
-		manager:   manager,
-		checker:   checker,
-		registry:  regMgr,
-		logger:    logger,
-		mux:       http.NewServeMux(),
-		authToken: authToken,
+		cfg:           cfg,
+		manager:       manager,
+		checker:       checker,
+		registry:      regMgr,
+		logger:        logger,
+		mux:           http.NewServeMux(),
+		authToken:     authToken,
+		checksumCache: make(map[string]*checksumCache),
 	}
 
 	// Read-only endpoints (no auth required)
@@ -93,14 +106,59 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	processes := s.manager.GetAllProcessInfo()
 
+	// Build binary provenance map: source → on-disk checksum + pulled digest
+	type binaryInfo struct {
+		Source          string `json:"source"`
+		Dest            string `json:"dest"`
+		ImageDigest     string `json:"image_digest,omitempty"`
+		OnDiskChecksum  string `json:"on_disk_checksum,omitempty"`
+		PulledDigest    string `json:"pulled_digest,omitempty"`
+	}
+	binaries := make(map[string]binaryInfo)
+	for name, spec := range s.cfg.Binaries {
+		info := binaryInfo{
+			Source:      spec.Source,
+			Dest:        spec.Dest,
+			ImageDigest: spec.ImageDigest,
+		}
+		// Compute on-disk checksum if binary exists (cached by path/mtime/size)
+		if spec.Dest != "" {
+			if fi, fiErr := os.Stat(spec.Dest); fiErr == nil {
+				key := spec.Dest
+				cc, exists := s.checksumCache[name]
+				if !exists || cc.path != key || !cc.mtime.Equal(fi.ModTime()) || cc.size != fi.Size() {
+					if checksum, csErr := registry.ComputeChecksum(spec.Dest); csErr == nil {
+						s.checksumCache[name] = &checksumCache{
+							path: key, mtime: fi.ModTime(), size: fi.Size(), checksum: checksum,
+						}
+					}
+				}
+				if cc, ok := s.checksumCache[name]; ok {
+					info.OnDiskChecksum = cc.checksum
+				}
+			}
+		}
+		// Resolved digest: this process's pull if there was one, else the
+		// sidecar recorded beside the binary. The fallback matters because a
+		// skipped pull (checksum match, or restart with the binary already in
+		// place) leaves the in-memory map empty, which would otherwise make
+		// deploy-time digest verification fail on a perfectly healthy node.
+		if s.registry != nil {
+			info.PulledDigest = s.registry.ResolveDigest(spec.Source, spec.Dest)
+		}
+		binaries[name] = info
+	}
+
 	response := struct {
 		Processes map[string]*process.ProcessInfo `json:"processes"`
 		Health    struct {
 			Mode    string `json:"mode"`
 			Healthy bool   `json:"healthy"`
 		} `json:"health"`
+		Binaries map[string]binaryInfo `json:"binaries,omitempty"`
 	}{
 		Processes: processes,
+		Binaries:  binaries,
 	}
 
 	if s.checker != nil {
