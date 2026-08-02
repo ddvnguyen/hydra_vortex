@@ -40,6 +40,31 @@ fail() { echo -e "  ${RED}✗${NC} $*"; }
 step() { echo -e "\n${BOLD}==> $*${NC}"; }
 die()  { fail "$*"; exit 1; }
 
+# `podman compose up -d` is idempotent by design — it skips recreating a
+# container podman believes is already running. That check trusts podman's
+# cached state, not reality: if conmon dies out from under a container
+# (observed 2026-08-02 — no OOM, no GPU reset, conmon just vanished),
+# `podman inspect` keeps reporting Running:true with a PID that no longer
+# exists on the host forever after, and every subsequent `compose up` quietly
+# no-ops against the zombie instead of recreating it. The health-wait then
+# burns its full timeout against a container nothing is running in, on every
+# single deploy, until a human notices and force-removes it by hand.
+# Reap it proactively: if the recorded PID is dead, the container is a
+# zombie regardless of what podman's status string says — remove it so the
+# following `compose up` is forced to create a fresh one.
+reap_zombie_container() {
+  local name="$1"
+  if ! podman container exists "$name" 2>/dev/null; then
+    return 0
+  fi
+  local pid
+  pid=$(podman inspect "$name" --format '{{.State.Pid}}' 2>/dev/null || echo 0)
+  if [ "$pid" != "0" ] && ! kill -0 "$pid" 2>/dev/null; then
+    warn "Container $name is desynced (podman reports it running; PID $pid is dead on the host) — removing so compose recreates it"
+    podman rm -f "$name" 2>/dev/null || true
+  fi
+}
+
 TARGET="${1:-all}"
 
 # ── Auth Token Management ─────────────────────────────────────────────────────
@@ -328,6 +353,9 @@ deploy_rtx() {
 
   # Export the token so podman-compose picks it up via ${HYDRA_HEAD_AUTH_TOKEN:?}
   export HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN"
+
+  reap_zombie_container hydra-system_core_1
+  reap_zombie_container hydra-system_head-rtx5060ti_1
 
   # Deploy. Use `up` (not `up -d`) so we see errors; it returns
   # immediately when containers are detached.

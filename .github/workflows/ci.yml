@@ -569,12 +569,12 @@ jobs:
       - name: Deploy hydra-head to RTX (container)
         run: |
           bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx
-          bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
+          bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480 "hydra-system_head-rtx5060ti_1"
 
       - name: Deploy hydra-head to RTX 3060 (container)
         run: |
           bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx3060
-          bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480
+          bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480 "hydra-system_head-rtx3060_1"
 
       - name: Deploy hydra-head to P100 (VM systemd)
         run: |
