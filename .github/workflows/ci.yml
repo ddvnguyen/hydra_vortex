@@ -249,7 +249,6 @@ jobs:
     if: |
       always() &&
       needs.build-test.result == 'success' && (
-        (github.event_name == 'push' && github.ref_name != 'main') ||
         github.event_name == 'pull_request' ||
         (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-hydra == 'true')
       )
@@ -487,7 +486,10 @@ jobs:
     name: Deploy hydra-head (manages llama + 3 services)
     runs-on: self-hosted
     needs: build-test
-    timeout-minutes: 10
+    # Three heads, each allowed up to 8 min to become ready (OCI pull + model
+    # load) via scripts/ci/wait-for-head.sh, plus image builds and the P100
+    # rsync/systemd round trip. 10 min could not cover even one slow head.
+    timeout-minutes: 35
     concurrency:
       group: hydra-live-rig
       cancel-in-progress: false
@@ -501,7 +503,6 @@ jobs:
       HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
     if: |
       always() && (
-        (github.event_name == 'push' && github.ref_name != 'main' && needs.build-test.result == 'success') ||
         (github.event_name == 'pull_request' && needs.build-test.result == 'success') ||
         startsWith(github.ref, 'refs/tags/llama.cpp') ||
         (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-llama == 'true') ||
@@ -606,20 +607,17 @@ jobs:
       - name: Deploy hydra-head to RTX (container)
         run: |
           bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx
-          sleep 8
-          curl -sf http://localhost:9700/status >/dev/null && echo "hydra-head-rtx OK" || echo "WARNING: hydra-head-rtx not responding"
+          bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
 
       - name: Deploy hydra-head to RTX 3060 (container)
         run: |
           bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh rtx3060
-          sleep 8
-          curl -sf http://localhost:9701/status >/dev/null && echo "hydra-head-rtx3060 OK" || echo "WARNING: hydra-head-rtx3060 not responding"
+          bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480
 
       - name: Deploy hydra-head to P100 (VM systemd)
         run: |
           bash $GITHUB_WORKSPACE/scripts/deploy-hydra-head.sh p100
-          sleep 8
-          curl -sf http://192.168.122.21:9700/status >/dev/null && echo "hydra-head-p100 OK" || echo "WARNING: hydra-head-p100 not responding"
+          bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480
 
       - name: Verify deployed digests
         run: |
