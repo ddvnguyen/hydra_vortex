@@ -174,25 +174,6 @@ jobs:
       - name: Clean .NET download cache
         if: always()
         run: dotnet nuget locals http-cache --clear --force-english-output
-
-      - name: Create issue on build/unit-test failure
-        if: failure()
-        run: |
-          TITLE="CI: build-test failure on ${{ github.ref_name }}"
-          EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
-            echo "Open issue #$EXISTING already exists — skipping"
-          else
-            gh issue create \
-              --title "$TITLE" \
-              --body "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          **Commit:** \`${{ github.sha }}\`
-          **Branch:** \`${{ github.ref_name }}\`
-          **Actor:** ${{ github.actor }}
-
-          Build or unit tests failed. See run for details and test artifacts." \
-              --label "ci-failure,auto-created"
-          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -466,25 +447,6 @@ jobs:
           name: system-full-results-${{ github.run_number }}
           path: TestResults/system-full.xml
           retention-days: 30
-
-      - name: Create issue on system test full-stack failure
-        if: failure()
-        run: |
-          TITLE="CI: System test full-stack failure on ${{ github.ref_name }}"
-          EXISTING=$(gh issue list --search "$TITLE" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
-            echo "Open issue #$EXISTING already exists — skipping"
-          else
-            gh issue create \
-              --title "$TITLE" \
-              --body "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          **Commit:** \`${{ github.sha }}\`
-          **Branch:** \`${{ github.ref_name }}\`
-          **Actor:** ${{ github.actor }}
-
-          Full-stack system tests failed. Hardware may be involved — check GPU health, KV migration path, and coordinator logs in Grafana." \
-              --label "ci-failure,auto-created"
-          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
