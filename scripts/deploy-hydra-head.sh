@@ -382,6 +382,14 @@ deploy_p100() {
     die "Cannot reach hydra-p100 via SSH (check ~/.ssh/config)"
   fi
 
+  # Resolve the token here rather than relying on deploy_rtx() having run
+  # first in the same shell. deploy_rtx() and deploy_rtx3060() both do this;
+  # deploy_p100() did not, so `deploy-hydra-head.sh p100` on its own died
+  # with "AUTH_TOKEN: unbound variable" under `set -u`. CI invokes the three
+  # targets as three separate processes, so it hit this every time.
+  generate_token
+  AUTH_TOKEN=$(get_token)
+
   check_llama_build_type_p100
 
   # Create directories (user-level, no sudo needed)
@@ -399,8 +407,11 @@ deploy_p100() {
   rsync -avz infra/hydra-head/config/preset-p100.ini hydra-p100:/home/vm1/hydra/config/preset-p100.ini
   ok "Copied config files"
 
-  # Create environment file with auth token
-  ssh hydra-p100 "echo 'HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN' > /home/vm1/.config/hydra-head/env"
+  # Create environment file with auth token. Written over stdin rather than
+  # interpolated into the remote command string, which exposed the token in
+  # `ps` output on the VM for the lifetime of the ssh command.
+  ssh hydra-p100 "umask 077 && cat > /home/vm1/.config/hydra-head/env" \
+    <<<"HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN"
   ssh hydra-p100 "chmod 600 /home/vm1/.config/hydra-head/env"
   ok "Created auth token environment file"
 
