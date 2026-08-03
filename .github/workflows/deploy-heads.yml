@@ -47,22 +47,19 @@ jobs:
   # ── Optional: build llama-engine via fork's workflow ───────────────────
   build-llama:
     name: Build llama-engine (fork)
-    runs-on: ubuntu-latest
+    # Reusable workflow must be referenced at the JOB level (jobs.*.uses),
+    # not inside a step. hydra-build.yml@hydra-fork declares workflow_call
+    # with the inputs/outputs below. GITHUB_TOKEN is passed by default, so no
+    # explicit secrets mapping is required for a cross-repo call.
     if: inputs.build-from-fork == 'true' && inputs.rtx-image == '' && inputs.p100-image == ''
-    outputs:
-      rtx-image: ${{ steps.build.outputs.rtx-image }}
-      p100-image: ${{ steps.build.outputs.p100-image }}
-    steps:
-      - name: Trigger fork build
-        id: build
-        uses: ddvnguyen/llama.cpp/.github/workflows/hydra-build.yml@hydra-fork
-        with:
-          build_llama_engine: true
-          build_llama_server: false
-          arch_sm86_sm120: ${{ inputs.gpu != 'p100' }}
-          arch_sm60: ${{ inputs.gpu == 'all' || inputs.gpu == 'p100' }}
-          runner_target: local
-          execution_mode: matrix
+    uses: ddvnguyen/llama.cpp/.github/workflows/hydra-build.yml@hydra-fork
+    with:
+      build_llama_engine: true
+      build_llama_server: false
+      arch_sm86_sm120: ${{ inputs.gpu != 'p100' }}
+      arch_sm60: ${{ inputs.gpu == 'all' || inputs.gpu == 'p100' }}
+      runner_target: local
+      execution_mode: matrix
 
   # ── Deploy to selected GPUs ───────────────────────────────────────────
   deploy:
