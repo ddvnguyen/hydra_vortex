@@ -3,52 +3,46 @@ using Aspire.Hosting;
 var builder = DistributedApplication.CreateBuilder(args);
 
 // ── PostgreSQL (Hydra.Core StoreMetadata requires it) ────────────────
+var pgPassword = builder.AddParameter("pg-password", "hydra-test-pw");
 var postgres = builder.AddPostgres("postgres")
-    .WithDataVolume(isReadOnly: false);
+    .WithDataVolume(isReadOnly: false)
+    .WithPassword(pgPassword);
 
 var hydraDb = postgres.AddDatabase("hydra-store");
 
 // ── Fake LLM engine nodes ────────────────────────────────────────────
+// Ports offset from production (8080/9000/9601/9602) to avoid collisions
+// when the real hydra-system pod is running on the same host.
 var fakeEngine1 = builder.AddProject<Projects.FakeLlamaEngine>("fake-engine-rtx")
-    .WithEnvironment("FAKE_ENGINE_HTTP_PORT", "8080")
-    .WithEnvironment("FAKE_ENGINE_RPC_PORT", "9601");
+    .WithEnvironment("FAKE_ENGINE_HTTP_PORT", "18080")
+    .WithEnvironment("FAKE_ENGINE_RPC_PORT", "19601");
 
 var fakeEngine2 = builder.AddProject<Projects.FakeLlamaEngine>("fake-engine-p100")
-    .WithEnvironment("FAKE_ENGINE_HTTP_PORT", "8081")
-    .WithEnvironment("FAKE_ENGINE_RPC_PORT", "9602");
+    .WithEnvironment("FAKE_ENGINE_HTTP_PORT", "18081")
+    .WithEnvironment("FAKE_ENGINE_RPC_PORT", "19602");
 
 // ── Hydra.Core coordinator ───────────────────────────────────────────
-// Hydra.Core reads its worker list from HYDRA_COORD_CONFIG_FILE (JSON)
-// or HYDRA_COORD_WORKERS (inline JSON). The AppHost sets HYDRA_COORD_WORKERS
-// to point at the two fake engines above. Ports are injected via env so
-// Aspire can bind them dynamically.
-//
-// Hydra.Core also needs HYDRA_STORE_PORT / HYDRA_STORE_PG_CONN for the
-// embedded store. For Tier-1 E2E tests, the store is not needed — set
-// HYDRA_COORD_ENABLED=false to skip the coordinator WebApplication and
-// only run the store server (which can be a lightweight no-op for now).
-//
-// Open questions for a later task:
-//   1. Hydra.Core's Program.cs boots both StoreServer AND Coordinator in
-//      one process. For hermetic E2E we likely need to either:
-//      a) Set HYDRA_COORD_ENABLED=false and mock the store endpoint, OR
-//      b) Extract the coordinator into a standalone project.
-//      Option (a) is the pragmatic first cut.
-//   2. The coordinator needs StoreClient (RPC :9500) to save/restore KV.
-//      For fake-engine-only E2E, sessions skip KV save/restore, so the
-//      store can be a no-op stub or omitted entirely.
-//   3. Hydra.Core is referenced as a project dependency so Aspire can
-//      manage its lifecycle, but Projects.HydraCore is not used in code
-//      because Hydra.Core boots its own WebApplication internally.
+// Coordinator reads workers from HYDRA_COORD_WORKERS (inline JSON).
+// All ports are test-only offsets (18xxx/19xxx) to avoid production
+// port collisions. HYDRA_COORD_PORT defaults to 9000 in CoordinatorConfig
+// so we must set it explicitly to 19000.
+var hydraWorkersJson = """
+[{"name":"rtx","host":"localhost","rpc_port":19601,"llama_url":"http://localhost:18080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2},{"name":"p100","host":"localhost","rpc_port":19602,"llama_url":"http://localhost:18081","worker_type":2,"slots":1,"prefill_priority":100,"decode_priority":1}]
+""";
 
 var hydraCore = builder.AddProject<Projects.Hydra_Core>("hydra-core")
-    .WithEnvironment("HYDRA_COORD_ENABLED", "false")
-    .WithEnvironment("HYDRA_STORE_PORT", "9500")
-    .WithEnvironment("HYDRA_STORE_DEBUG_PORT", "9501")
+    .WithHttpEndpoint(targetPort: 19000, name: "http")
+    .WithReference(fakeEngine1)
+    .WithReference(fakeEngine2)
+    .WithReference(hydraDb)
+    .WithEnvironment("HYDRA_COORD_ENABLED", "true")
+    .WithEnvironment("HYDRA_COORD_PORT", "19000")
+    .WithEnvironment("HYDRA_COORD_WORKERS", hydraWorkersJson)
+    .WithEnvironment("HYDRA_STORE_PORT", "19500")
+    .WithEnvironment("HYDRA_STORE_DEBUG_PORT", "19501")
     .WithEnvironment("HYDRA_STORE_HOST", "0.0.0.0")
     .WithEnvironment("HYDRA_STORE_DIR", "/tmp/hydra-store")
-    .WithEnvironment("HYDRA_STORE_PG_CONN",
-        builder.Configuration["ConnectionStrings:hydra-store"]
-        ?? "Host=localhost;Database=hydra_store;Username=hydra;Password=hydra");
+    .WithEnvironment("HYDRA_COORD_STORE_PORT", "19500")
+    .WithEnvironment("HYDRA_COORD_NO_STORE_KV_RESTORE", "true");
 
 builder.Build().Run();
