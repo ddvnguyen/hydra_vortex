@@ -101,8 +101,14 @@ jobs:
             local image="$1" config="$2"
             echo "Pinning $image in $config"
             sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*source:\s*\).*|\1${image}|" "$config"
+            # Resolve the digest from the local store first (the image is often
+            # already present), falling back to a pull. A failed resolution
+            # keeps the config's existing image_digest — a pre-pinned digest
+            # must survive — and must never hard-fail the step.
             local digest
-            digest=$(podman pull "$image" 2>/dev/null && podman inspect "$image" --format '{{.Digest}}' 2>/dev/null || echo "")
+            digest=$(podman inspect "$image" --format '{{.Digest}}' 2>/dev/null || \
+                     (podman pull "$image" >/dev/null 2>&1 && podman inspect "$image" --format '{{.Digest}}' 2>/dev/null) || \
+                     echo "")
             if [ -n "$digest" ]; then
               echo "Resolved digest: $digest"
               if grep -q 'image_digest:' "$config"; then
@@ -111,15 +117,19 @@ jobs:
                 sed -i "/^\s*source:\s*${image}$/a\\    image_digest: ${digest}" "$config"
               fi
             else
-              echo "WARNING: Could not resolve digest for $image"
+              echo "WARNING: Could not resolve digest for $image — keeping existing image_digest (if any)"
             fi
           }
 
-          [ -n "${{ steps.images.outputs.rtx }}" ] && \
-            pin_image "${{ steps.images.outputs.rtx }}" infra/hydra-head/config/node-rtx.yaml && \
-            pin_image "${{ steps.images.outputs.rtx }}" infra/hydra-head/config/node-rtx3060.yaml
-          [ -n "${{ steps.images.outputs.p100 }}" ] && \
-            pin_image "${{ steps.images.outputs.p100 }}" infra/hydra-head/config/node-p100.yaml
+          RTX_IMG="${{ steps.images.outputs.rtx }}"
+          P100_IMG="${{ steps.images.outputs.p100 }}"
+          if [ -n "$RTX_IMG" ]; then
+            pin_image "$RTX_IMG" infra/hydra-head/config/node-rtx.yaml
+            pin_image "$RTX_IMG" infra/hydra-head/config/node-rtx3060.yaml
+          fi
+          if [ -n "$P100_IMG" ]; then
+            pin_image "$P100_IMG" infra/hydra-head/config/node-p100.yaml
+          fi
 
       - name: Commit pinned images
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
