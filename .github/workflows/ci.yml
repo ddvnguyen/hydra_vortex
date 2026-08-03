@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
     tags:
       - "llama.cpp*"
     paths-ignore:
@@ -50,22 +50,18 @@ jobs:
     name: Build & Test
     runs-on: self-hosted
     timeout-minutes: 30
+    # Serialize per-branch so a push and a pull_request run for the same
+    # commit never race on the shared self-hosted Postgres. The key unifies
+    # both events: push uses github.ref_name (branch), pull_request uses the
+    # head branch. The newest run in the group cancels older ones.
+    concurrency:
+      group: build-test-${{ github.event.pull_request.head.ref || github.ref_name }}
+      cancel-in-progress: true
     # Never run on a fork's pull request — fork PRs can execute arbitrary code
     # on the self-hosted runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
-      - name: Cancel duplicate queued runs
-        run: |
-          gh run list --workflow CI --branch "${{ github.ref_name }}" \
-            --json databaseId,status,event \
-            --jq ".[] | select(.status == \"queued\" and .event == \"${{ github.event_name }}\") | .databaseId" |
-          while read id; do
-            [ "$id" != "${{ github.run_id }}" ] && gh run cancel "$id" 2>/dev/null || true
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: actions/checkout@v4
 
       - name: Restore & build (.NET)
