@@ -11,6 +11,10 @@ permissions:
 jobs:
   trigger-resolve:
     runs-on: ubuntu-latest
+    # One resolve trigger per PR — later reviews cancel earlier queued ones.
+    concurrency:
+      group: opencode-resolve-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     # Only fire when github-actions[bot] posted a commented/changes_requested review
     if: |
       (github.event.review.state == 'changes_requested' ||
