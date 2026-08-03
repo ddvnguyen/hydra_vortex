@@ -94,6 +94,13 @@ jobs:
             --logger "trx;LogFileName=core-integration.trx" \
             --results-directory TestResults/
 
+      - name: Unit tests — E2E (hermetic)
+        run: |
+          dotnet test src/core/Tests.E2E/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --logger "trx;LogFileName=e2e.trx" \
+            --results-directory TestResults/
+
       - name: Restore & build (Go head)
         run: |
           export PATH=$HOME/go-sdk/go/bin:$PATH

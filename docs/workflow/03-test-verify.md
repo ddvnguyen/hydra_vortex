@@ -6,11 +6,18 @@
 1. **Always (unit):**
    - .NET: `dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`
 2. **If behaviour/runtime changed (E2E):**
-   - System / E2E: `pytest tests/system` (mocked first; full-stack needs the live
-      stack up — `cd infra && docker compose -f docker-compose.infra.yml -f docker-compose.hydra.yml up -d`, see `DevelopmentRunBook.md`).
-3. **All green is required before opening a PR.** If you cannot run a tier (e.g. the
+   - Hermetic E2E: `dotnet test src/core/Tests.E2E/` (no live stack needed — boots
+      Postgres + coordinator + fake engines via Aspire). Runs automatically in CI
+      on every PR.
+3. **If behaviour/runtime changed and live stack is available:**
+   - Live rig: `dotnet test src/core/Tests.LiveRig/` + `dotnet test src/core/Tests.EngineParity/`
+      (needs the live stack up — `cd infra && docker compose -f docker-compose.infra.yml
+      -f docker-compose.hydra.yml up -d`, see `DevelopmentRunBook.md`).
+   - Agent workload: `dotnet test src/core/Tests.AgentWorkload/` (opt-in, real GPU +
+      real CLI — triggered via `test-agent-workload.yml` workflow_dispatch).
+4. **All green is required before opening a PR.** If you cannot run a tier (e.g. the
    GPU stack isn't up), say so explicitly in the PR and note what was/wasn't verified.
-4. Builds must be clean (`dotnet build src/Hydra.sln -c Release`); treat new warnings as
+5. Builds must be clean (`dotnet build src/Hydra.sln -c Release`); treat new warnings as
    review items.
 
 > **When the user asks for "E2E verify" specifically:** deploy the current
