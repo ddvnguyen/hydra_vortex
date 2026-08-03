@@ -11,7 +11,7 @@ namespace Tests.LiveRig;
 /// Cross-model KV safety guard — system test for the M-Perf.9 #289 wiring.
 /// Exercises WorkerSchedulerService.RestoreKvAsync → CrossModelGuard.Decide
 /// via the live Coordinator HTTP API. Verifies:
-///   1. Same-model, same-worker restore: hash matches → Proceed
+///   1. Same-model restore: hash matches → Proceed
 ///   2. Cross-worker restore: same model loaded on RTX and P100
 ///   3. Metric exposure: Prometheus endpoint exposes cross-model guard counters
 ///
@@ -93,6 +93,19 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
         return HttpHelpers.SumCounter(samples, name, labels);
     }
 
+    /// <summary>
+    /// Bug #6 fix: The cross-model guard counter (hydra_cross_model_kv_proceeded_total)
+    /// only increments on the non-merged STATE_PUT / cold-slot path in RestoreKvAsync.
+    /// A warm follow-up with the same session_id takes the warm affinity path (RouteAsync
+    /// → Decode directly) and never hits RestoreKvAsync.
+    ///
+    /// To exercise the cross-model guard on a same-model restore, we:
+    ///   1. Complete turn 1 (cold route → prefill → save KV to store)
+    ///   2. Evict the session (mark slot freed, KV stays in store)
+    ///   3. Complete turn 2 (migration route → RestoreKvAsync → StatePut → cross-model guard)
+    ///
+    /// This ensures the guard's Decide path fires and the "Proceed" counter increments.
+    /// </summary>
     [SkippableFact]
     public async Task CrossModelProceedSameModelSameWorker()
     {
@@ -100,12 +113,23 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
         var sessionId = MakeSessionId();
         try
         {
-            // Turn 1: initial request
+            // Record baseline counter
+            var proceededBefore = await GetCounter("hydra_cross_model_kv_proceeded_total");
+
+            // Turn 1: initial request — cold route, prefill, save KV to store
             var resp1 = await DoCompletion(MakeMessages(SystemPrompt, UserPrompt1), sessionId, maxTokens: 8);
             var content1 = ExtractContent(resp1);
             Assert.False(string.IsNullOrEmpty(content1), $"Turn 1 empty");
 
-            // Turn 2: follow-up with the same session_id
+            // Evict session so the next request goes through migration → RestoreKvAsync
+            using var delClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            var delResp = await delClient.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessionId}");
+            Assert.True(delResp.IsSuccessStatusCode, $"Eviction failed: {await delResp.Content.ReadAsStringAsync()}");
+            var delBody = await delResp.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.True(delBody.GetProperty("evicted").GetBoolean());
+
+            // Turn 2: same model, same worker, but after eviction → migration route
+            // This triggers RestoreKvAsync → StatePut → CrossModelGuard.Decide → Proceed
             var history = new List<Dictionary<string, object?>>
             {
                 new() { ["role"] = "user", ["content"] = UserPrompt1 },
@@ -117,9 +141,11 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
             Assert.False(string.IsNullOrEmpty(content2), $"Turn 2 empty");
 
             // Verify the cross-model guard ran and proceeded
-            var proceeded = await GetCounter("hydra_cross_model_kv_proceeded_total");
-            Assert.True(proceeded > 0,
-                $"Expected hydra_cross_model_kv_proceeded_total > 0 after a same-model follow-up, got {proceeded}.");
+            var proceededAfter = await GetCounter("hydra_cross_model_kv_proceeded_total");
+            Assert.True(proceededAfter > proceededBefore,
+                $"Expected hydra_cross_model_kv_proceeded_total to increase after a same-model migration restore. " +
+                $"Before={proceededBefore}, After={proceededAfter}. " +
+                $"The cross-model guard only fires on non-merged STATE_PUT / cold-slot paths in RestoreKvAsync.");
         }
         finally
         {
