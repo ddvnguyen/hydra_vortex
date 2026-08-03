@@ -1,5 +1,12 @@
 # GitHub Workflow Guide for Coding Agents
 
+> **⚠ Superseded.** This doc predates the `review-finding`-label GitHub Issues
+> workflow — the `reviews/*.md` + `sync_reviews_to_github.py` pipeline and
+> `pytest tests/system` commands described below no longer exist. For the
+> current process, see `CLAUDE.md`'s "Task Lifecycle" / "GitHub Workflow"
+> sections and `docs/workflow/01-pickup.md` through `07-issue-and-close.md`.
+> Retained for historical context; do not follow the commands below as-is.
+
 Complete walkthrough of the **feature → issue → implement → review → merge → deploy → monitoring** cycle.
 
 ---

@@ -66,7 +66,11 @@ GitHub Projects is the single source of truth. Commands: `DevelopmentRunBook.md`
    → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`. → `docs/workflow/02-implement.md`
 3. **Test / verify** — `dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`
-   + `pytest tests/system`. "E2E verify" = deploy to live, **never merge**.
+   + `dotnet test src/core/Tests.E2E/` (hermetic, Aspire-orchestrated, no hardware
+   needed — runs on every PR). Live-rig tiers (`Tests.LiveRig`, `Tests.EngineParity`,
+   `Tests.AgentWorkload`) are opt-in via `workflow_dispatch`, not PR-gating.
+   `tests/system` (pytest) no longer exists — ported to xUnit in #518/PR #528.
+   "E2E verify" = deploy to live, **never merge**.
    → `docs/workflow/03-test-verify.md`
 4. **Commit & PR** — conventional commits + `Co-Authored-By`; `gh pr create … Closes #N`.
    **Merging requires explicit user confirmation.**

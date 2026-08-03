@@ -109,9 +109,12 @@ python3 --version
 
 ### Tests
 
+`tests/system` (pytest) no longer exists — ported to xUnit (`src/core/Tests.E2E`,
+`Tests.LiveRig`, `Tests.EngineParity`, `Tests.AgentWorkload`) in #518/PR #528.
+`pyproject.toml` testpaths are now just `tests/bench` + `tests/conformance`:
+
 ```bash
-# System tests
-pytest tests/system
+pytest tests/conformance
 
 # Bench harness (PR #307)
 python3 tests/bench/compare.py --baseline tests/bench/baselines/main.json --current report.json
