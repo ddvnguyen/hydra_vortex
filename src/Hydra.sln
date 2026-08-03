@@ -13,8 +13,9 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hydra.Core", "core\Hydra.Co
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests.Core", "core\Tests.Core\Tests.Core.csproj", "{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "core", "core", "{FBF56CC3-7AE6-AD2D-3F14-7F97FD322CD6}"
 EndProject
-EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests.AgentWorkload", "core\Tests.AgentWorkload\Tests.AgentWorkload.csproj", "{9C7BF86E-01C8-4116-8963-687725C51569}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -74,6 +75,18 @@ Global
 		{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1}.Release|x64.Build.0 = Release|Any CPU
 		{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1}.Release|x86.ActiveCfg = Release|Any CPU
 		{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1}.Release|x86.Build.0 = Release|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Debug|x64.Build.0 = Debug|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Debug|x86.Build.0 = Debug|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Release|x64.ActiveCfg = Release|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Release|x64.Build.0 = Release|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Release|x86.ActiveCfg = Release|Any CPU
+		{9C7BF86E-01C8-4116-8963-687725C51569}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -81,5 +94,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{C3C15CE7-1A9D-451D-8E6B-0068ACDF1C32} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{9C7BF86E-01C8-4116-8963-687725C51569} = {FBF56CC3-7AE6-AD2D-3F14-7F97FD322CD6}
 	EndGlobalSection
 EndGlobal
