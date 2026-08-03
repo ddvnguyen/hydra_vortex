@@ -1,6 +1,13 @@
 name: System Tests
 
 on:
+  workflow_call:
+    inputs:
+      filter:
+        description: "xUnit filter expression — FullyQualifiedName substring match (blank = all live-rig + engine-parity tests)"
+        required: false
+        default: ""
+        type: string
   workflow_dispatch:
     inputs:
       filter:
@@ -11,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   system:

@@ -1,10 +1,12 @@
 name: Agent Workload Tests
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   agent-workload:
