@@ -79,6 +79,11 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
         return ParseOutput(output, proc.ExitCode, sw.Elapsed, startedAt, completedAt);
     }
 
+    /// <summary>
+    /// Parse NDJSON output from <c>opencode --format json</c>. Each line is a
+    /// separate JSON object. We scan for the line carrying the final response
+    /// content and usage metrics (typically the last complete JSON object).
+    /// </summary>
     internal static AgentTurnResult ParseOutput(
         string output,
         int exitCode,
@@ -95,40 +100,70 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
             CompletedAt = completedAt,
         };
 
-        try
+        if (string.IsNullOrWhiteSpace(output))
         {
-            using var doc = JsonDocument.Parse(output);
-            var root = doc.RootElement;
+            return builder.Build();
+        }
 
-            if (root.TryGetProperty("content", out var contentEl))
+        // opencode --format json emits NDJSON: one JSON object per line.
+        // Parse each line independently; accumulate the most complete result.
+        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var bestContent = (string?)null;
+        var bestPromptTokens = 0;
+        var bestCompletionTokens = 0;
+        var bestCachedTokens = 0;
+        var bestReasoningPresent = false;
+        var anyValidJson = false;
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0) continue;
+
+            try
             {
-                builder.ResponseContent = contentEl.ValueKind == JsonValueKind.String
-                    ? contentEl.GetString()
-                    : contentEl.GetRawText();
-            }
+                using var doc = JsonDocument.Parse(trimmed);
+                var root = doc.RootElement;
+                anyValidJson = true;
 
-            builder.ReasoningContentPresent = root.TryGetProperty("reasoning_content", out _);
-
-            if (root.TryGetProperty("usage", out var usage))
-            {
-                if (usage.TryGetProperty("prompt_tokens", out var pt))
-                    builder.PromptTokens = pt.GetInt32();
-                if (usage.TryGetProperty("completion_tokens", out var ct2))
-                    builder.CompletionTokens = ct2.GetInt32();
-                if (usage.TryGetProperty("prompt_tokens_details", out var details)
-                    && details.TryGetProperty("cached_tokens", out var cached))
+                if (root.TryGetProperty("content", out var contentEl))
                 {
-                    builder.CachedTokens = cached.GetInt32();
+                    var content = contentEl.ValueKind == JsonValueKind.String
+                        ? contentEl.GetString()
+                        : contentEl.GetRawText();
+                    // Prefer the last non-empty content (final response)
+                    if (!string.IsNullOrEmpty(content))
+                        bestContent = content;
+                }
+
+                if (root.TryGetProperty("reasoning_content", out _))
+                    bestReasoningPresent = true;
+
+                if (root.TryGetProperty("usage", out var usage))
+                {
+                    if (usage.TryGetProperty("prompt_tokens", out var pt))
+                        bestPromptTokens = pt.GetInt32();
+                    if (usage.TryGetProperty("completion_tokens", out var ct2))
+                        bestCompletionTokens = ct2.GetInt32();
+                    if (usage.TryGetProperty("prompt_tokens_details", out var details)
+                        && details.TryGetProperty("cached_tokens", out var cached))
+                    {
+                        bestCachedTokens = cached.GetInt32();
+                    }
                 }
             }
+            catch (JsonException)
+            {
+                // Non-JSON line (e.g. progress indicator) — skip
+            }
+        }
 
-            builder.IsValidJson = true;
-        }
-        catch (JsonException)
-        {
-            builder.IsValidJson = false;
-            builder.ResponseContent = output;
-        }
+        builder.ResponseContent = bestContent;
+        builder.ReasoningContentPresent = bestReasoningPresent;
+        builder.PromptTokens = bestPromptTokens;
+        builder.CompletionTokens = bestCompletionTokens;
+        builder.CachedTokens = bestCachedTokens;
+        builder.IsValidJson = anyValidJson;
 
         return builder.Build();
     }

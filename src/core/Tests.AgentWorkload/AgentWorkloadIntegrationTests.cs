@@ -35,6 +35,14 @@ public sealed class AgentWorkloadIntegrationTests
             results.Add(turn);
         }
 
+        // Require all turns completed successfully
+        Assert.Equal(ScriptedConversation.FullTurns, results.Count);
+        foreach (var r in results)
+        {
+            Assert.Equal(0, r.ExitCode);
+            Assert.True(r.IsValidJson, $"Turn output is not valid JSON: {r.RawOutput[..Math.Min(200, r.RawOutput.Length)]}");
+        }
+
         // Turn 1: cached_tokens should be 0 (cold start)
         Assert.Equal(0, results[0].CachedTokens);
 
@@ -75,6 +83,7 @@ public sealed class AgentWorkloadIntegrationTests
         }
 
         Assert.NotNull(lastResult);
+        Assert.True(lastResult.IsValidJson, $"Last turn output is not valid JSON: {lastResult.RawOutput[..Math.Min(200, lastResult.RawOutput.Length)]}");
         Assert.True(lastResult.ReasoningContentPresent,
             "reasoning_content should be present in response JSON for thinking-capable models");
     }
@@ -82,6 +91,7 @@ public sealed class AgentWorkloadIntegrationTests
     /// <summary>
     /// §3 Criterion 3: restore_kv_ms == 0 on warm turns.
     /// Turn 2+ should have zero KV restore time (full prefix reuse).
+    /// Requires positive evidence: the scrape must actually return events.
     /// </summary>
     [SkippableFact]
     public void RestoreKvMs_ZeroOnWarmTurns()
@@ -104,8 +114,12 @@ public sealed class AgentWorkloadIntegrationTests
         var runEnd = DateTimeOffset.UtcNow;
         var timelineEvents = scraper.ScrapeRequestTimeline(runStart, runEnd);
 
+        // Require positive evidence: at least 2 events (1 cold + 1 warm)
+        Assert.True(timelineEvents.Count >= 2,
+            $"Expected at least 2 request_timeline events (cold + warm turns), found {timelineEvents.Count}. " +
+            "An empty scrape means no events were captured, not that restore_kv_ms is zero.");
+
         // Warm turns (skip first) should have restore_kv_ms == 0
-        // timelineEvents are ordered by log appearance; skip index 0 (first/cold turn)
         for (int i = 1; i < timelineEvents.Count; i++)
         {
             Assert.Equal(0f, timelineEvents[i].RestoreKvMs);
@@ -137,6 +151,7 @@ public sealed class AgentWorkloadIntegrationTests
         var runEnd = DateTimeOffset.UtcNow;
         var timelineEvents = scraper.ScrapeRequestTimeline(runStart, runEnd);
 
+        // Require positive evidence
         Assert.NotEmpty(timelineEvents);
 
         // All requests should have near-zero queue wait (single agent, no contention)
@@ -173,6 +188,7 @@ public sealed class AgentWorkloadIntegrationTests
         var runEnd = DateTimeOffset.UtcNow;
         var timelineEvents = scraper.ScrapeRequestTimeline(runStart, runEnd);
 
+        // Require positive evidence
         Assert.NotEmpty(timelineEvents);
 
         foreach (var evt in timelineEvents.Where(e => e.Status == "done"))
@@ -199,6 +215,8 @@ public sealed class AgentWorkloadIntegrationTests
 
     /// <summary>
     /// §3 Criterion 6: no engine restarts during the run.
+    /// Requires positive evidence that the scrape window contained real activity
+    /// before concluding "no restarts found".
     /// </summary>
     [SkippableFact]
     public void NoEngineRestarts_DuringRun()
@@ -219,8 +237,17 @@ public sealed class AgentWorkloadIntegrationTests
         }
 
         var runEnd = DateTimeOffset.UtcNow;
-        var crashEvents = scraper.ScrapeCrashRestart(runStart, runEnd);
 
+        // Positive evidence: confirm the scrape window captured real activity.
+        // If no request_timeline events were scraped, we cannot distinguish
+        // "no restarts" from "scrape returned nothing".
+        var timelineEvents = scraper.ScrapeRequestTimeline(runStart, runEnd);
+        Assert.True(timelineEvents.Count > 0,
+            $"Scrape returned {timelineEvents.Count} request_timeline events — " +
+            "cannot conclude 'no restarts' without evidence the window contained real activity. " +
+            "Check container names and time window.");
+
+        var crashEvents = scraper.ScrapeCrashRestart(runStart, runEnd);
         var restarts = crashEvents.Where(e => e.EventType == "attempting_restart").ToList();
         Assert.Empty(restarts);
     }
@@ -250,6 +277,7 @@ public sealed class AgentWorkloadIntegrationTests
         var runEnd = DateTimeOffset.UtcNow;
         var timelineEvents = scraper.ScrapeRequestTimeline(runStart, runEnd);
 
+        // Require positive evidence
         Assert.NotEmpty(timelineEvents);
 
         // First turn may be affinity (cold start); subsequent should be affinity (session stickiness)

@@ -39,14 +39,17 @@ public static class LiveRigGuard
                 return false;
             }
 
-            // Must list at least one GPU node
+            // Must list at least one GPU node.
+            // Coordinator serialises nodes as a JSON object keyed by node name
+            // (e.g. { "rtx": {...}, "rtx3060": {...} }), NOT an array.
             if (root.TryGetProperty("nodes", out var nodes) &&
-                nodes.GetArrayLength() > 0)
+                nodes.ValueKind == JsonValueKind.Object)
             {
-                return true;
+                foreach (var _ in nodes.EnumerateObject())
+                    return true; // at least one property = one node
             }
 
-            // Also accept if health endpoint has expected fields without nodes array
+            // Also accept if health endpoint has expected fields without nodes object
             return root.TryGetProperty("slots_idle", out _);
         }
         catch

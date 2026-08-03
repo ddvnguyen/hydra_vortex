@@ -46,8 +46,8 @@ public sealed partial class HydraLogScraper
     private readonly string _headContainer;
 
     public HydraLogScraper(
-        string coreContainer = "hydra-infra_core_1",
-        string headContainer = "hydra-infra_head-rtx5060ti_1")
+        string coreContainer = "hydra-system_core_1",
+        string headContainer = "hydra-system_head-rtx5060ti_1")
     {
         _coreContainer = coreContainer;
         _headContainer = headContainer;
@@ -55,18 +55,31 @@ public sealed partial class HydraLogScraper
 
     /// <summary>
     /// Scrape request_timeline events from the core container logs.
+    /// Deduplicates by (trace_id, timestamp_ms) — the coordinator emits
+    /// each event via both Console.Error and Serilog, which can produce
+    /// duplicate lines in the podman log stream.
     /// </summary>
     public IReadOnlyList<RequestTimelineEvent> ScrapeRequestTimeline(
         DateTimeOffset since, DateTimeOffset? until = null)
     {
         var lines = FetchLogs(_coreContainer, since, until);
+        var seen = new HashSet<string>();
         var events = new List<RequestTimelineEvent>();
 
         foreach (var line in lines)
         {
             if (!RequestTimelineRegex().IsMatch(line)) continue;
             var parsed = ParseRequestTimeline(line);
-            if (parsed is not null) events.Add(parsed);
+            if (parsed is null) continue;
+
+            // Dedup key: trace_id + timestamp_ms (stable across Serilog vs Console.Error dups)
+            var fields = ExtractKeyValuePairs(line);
+            var traceId = fields.GetValueOrDefault("trace_id", "");
+            var timestampMs = fields.GetValueOrDefault("timestamp_ms", "");
+            var dedupKey = $"{traceId}|{timestampMs}";
+            if (!seen.Add(dedupKey)) continue;
+
+            events.Add(parsed);
         }
 
         return events;
@@ -254,6 +267,11 @@ public sealed partial class HydraLogScraper
         return DateTimeOffset.MinValue;
     }
 
+    /// <summary>
+    /// Fetch log lines from a podman container within the given time window.
+    /// Uses real enforced timeouts: WaitForExit(30s) + kill on timeout,
+    /// and drains both stdout and stderr concurrently to prevent pipe deadlock.
+    /// </summary>
     internal static List<string> FetchLogs(
         string container, DateTimeOffset since, DateTimeOffset? until)
     {
@@ -264,6 +282,8 @@ public sealed partial class HydraLogScraper
             args += $" --until {until.Value:yyyy-MM-ddTHH:mm:ss}";
         }
         args += $" {container}";
+
+        const int timeoutMs = 30_000;
 
         try
         {
@@ -278,10 +298,25 @@ public sealed partial class HydraLogScraper
             using var proc = Process.Start(psi);
             if (proc is null) return [];
 
-            var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(TimeSpan.FromSeconds(30));
+            // Drain stdout and stderr concurrently to prevent pipe deadlock
+            // when stderr is chatty (e.g. "Following log output from ...").
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
 
-            // podman logs writes to stderr for the "following" mode; combine both
+            if (!proc.WaitForExit(timeoutMs))
+            {
+                try { proc.Kill(entireProcessTree: true); }
+                catch { /* best-effort kill */ }
+                return [];
+            }
+
+            // Process has exited — tasks must complete promptly.
+            // Use a short grace period for cleanup; already-exited process
+            // means the readers will finish near-instantly.
+            stdoutTask.Wait(TimeSpan.FromSeconds(5));
+            stderrTask.Wait(TimeSpan.FromSeconds(5));
+
+            var output = stdoutTask.IsCompleted ? stdoutTask.Result : string.Empty;
             return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries)];
         }
         catch
