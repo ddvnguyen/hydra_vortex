@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hydra.Core", "core\Hydra.Co
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests.Core", "core\Tests.Core\Tests.Core.csproj", "{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests.EngineParity", "core\Tests.EngineParity\Tests.EngineParity.csproj", "{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}"
+EndProject
 EndProject
 EndProject
 EndProject
@@ -74,6 +76,18 @@ Global
 		{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1}.Release|x64.Build.0 = Release|Any CPU
 		{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1}.Release|x86.ActiveCfg = Release|Any CPU
 		{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1}.Release|x86.Build.0 = Release|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Debug|x64.Build.0 = Debug|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Debug|x86.Build.0 = Debug|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Release|x64.ActiveCfg = Release|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Release|x64.Build.0 = Release|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Release|x86.ActiveCfg = Release|Any CPU
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -81,5 +95,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{C3C15CE7-1A9D-451D-8E6B-0068ACDF1C32} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{CE0C4715-7DAF-47D2-90BC-743DE44EB6E1} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{D4E5F6A7-B8C9-0123-CDEF-4567890ABCDE} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

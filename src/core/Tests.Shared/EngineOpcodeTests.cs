@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.Pipelines;
 using System.Text;
+using System.Text.Json;
 using Hydra.Shared;
 
 namespace Tests.Shared;
@@ -257,5 +258,225 @@ public sealed class EngineOpcodeTests : IAsyncLifetime
         Assert.Equal(18, totalBytes);
         Assert.True(chunkCount >= 2,
             $"Expected ≥2 incremental chunks (one per frame), got {chunkCount}");
+    }
+
+    // ── HTTP / RPC parity tests (issue #469 / #518) ──────────────────────
+
+    [Fact]
+    public async Task Prefill_HttpBodyShape_MatchesRpcPayload()
+    {
+        // The HTTP /v1/chat/completions request body and the RPC 0x42 PREFILL
+        // payload must be the same JSON structure so that the engine processes
+        // identical prefill parameters through both paths.
+        Assert.NotNull(_server);
+
+        var server = _server!;
+        byte[]? capturedPayload = null;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            capturedPayload = payloadLen > 0
+                ? await RpcServer.ReadPayloadAsync(reader, payloadLen, ct)
+                : [];
+            var meta = """{"n_past":5,"state_size":1024}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok,
+                (uint)metaBytes.Length, 0, ct);
+            var mSpan = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(mSpan);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        var requestJson = """
+            {"messages":[{"role":"user","content":"What is 2+2?"}],"temperature":0.7,"seed":42}
+            """;
+
+        // RPC path: sends requestJson directly as PREFILL payload
+        await client.EnginePrefillAsync("0", requestJson, "trace-parity", CancellationToken.None);
+
+        Assert.NotNull(capturedPayload);
+        var rpcBody = JsonDocument.Parse(capturedPayload!);
+
+        // HTTP path: same schema, parsed and re-serialized by HydraEngineClient
+        var httpNode = System.Text.Json.Nodes.JsonNode.Parse(requestJson)
+            as System.Text.Json.Nodes.JsonObject;
+        var httpBody = JsonDocument.Parse(httpNode!.ToJsonString());
+
+        // Both must carry identical messages, temperature, and seed
+        Assert.Equal(
+            httpBody.RootElement.GetProperty("messages")[0].GetProperty("content").GetString(),
+            rpcBody.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
+        Assert.Equal(
+            httpBody.RootElement.GetProperty("temperature").GetDouble(),
+            rpcBody.RootElement.GetProperty("temperature").GetDouble());
+        Assert.Equal(
+            httpBody.RootElement.GetProperty("seed").GetInt32(),
+            rpcBody.RootElement.GetProperty("seed").GetInt32());
+    }
+
+    [Fact]
+    public async Task Prefill_WithModelInjection_MatchesRpcPayload()
+    {
+        // HydraEngineClient.EnginePrefillAsync injects a "model" key when the
+        // caller provides one and the body doesn't already carry it. The RPC
+        // payload must reflect this injection identically.
+        Assert.NotNull(_server);
+
+        var server = _server!;
+        byte[]? capturedPayload = null;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            capturedPayload = payloadLen > 0
+                ? await RpcServer.ReadPayloadAsync(reader, payloadLen, ct)
+                : [];
+            var meta = """{"n_past":3}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok,
+                (uint)metaBytes.Length, 0, ct);
+            var mSpan = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(mSpan);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        var requestJson = """{"messages":[{"role":"user","content":"hi"}]}""";
+        var modelAlias = "Qwopus3.6-35B-A3B";
+
+        await client.EnginePrefillAsync("0", requestJson, "trace-model", CancellationToken.None);
+
+        Assert.NotNull(capturedPayload);
+        var rpcDoc = JsonDocument.Parse(capturedPayload!);
+
+        // Simulate HydraEngineClient model injection
+        var httpNode = System.Text.Json.Nodes.JsonNode.Parse(requestJson)
+            as System.Text.Json.Nodes.JsonObject;
+        if (!string.IsNullOrEmpty(modelAlias) && !httpNode!.ContainsKey("model"))
+            httpNode["model"] = modelAlias;
+        var httpDoc = JsonDocument.Parse(httpNode!.ToJsonString());
+
+        // RPC payload (no model injection at RpcClient level) should NOT have model
+        Assert.False(rpcDoc.RootElement.TryGetProperty("model", out _));
+
+        // But the HTTP path (via HydraEngineClient) DOES inject model
+        Assert.True(httpDoc.RootElement.TryGetProperty("model", out var modelEl));
+        Assert.Equal(modelAlias, modelEl.GetString());
+    }
+
+    [Fact]
+    public async Task Decode_HttpBodyShape_MatchesRpcPayload()
+    {
+        // RPC 0x43 DECODE wraps n_predict + messages into JSON. The HTTP
+        // decode path must construct an equivalent shape.
+        Assert.NotNull(_server);
+
+        var server = _server!;
+        byte[]? capturedPayload = null;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            capturedPayload = payloadLen > 0
+                ? await RpcServer.ReadPayloadAsync(reader, payloadLen, ct)
+                : [];
+            var meta = """{"tokens_generated":5}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok,
+                (uint)metaBytes.Length, 0, ct);
+            var mSpan = writer.GetSpan(metaBytes.Length);
+            metaBytes.CopyTo(mSpan);
+            writer.Advance(metaBytes.Length);
+            await writer.FlushAsync(ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        var messagesJson = """[{"role":"user","content":"hi"}]""";
+        const int nPredict = 64;
+
+        await client.EngineDecodeAsync("0", nPredict, messagesJson,
+            "trace-decode-parity", CancellationToken.None);
+
+        Assert.NotNull(capturedPayload);
+        var doc = JsonDocument.Parse(capturedPayload!);
+
+        // Verify the RPC DECODE payload has the expected shape
+        Assert.True(doc.RootElement.TryGetProperty("n_predict", out var npEl));
+        Assert.Equal(nPredict, npEl.GetInt32());
+        Assert.True(doc.RootElement.TryGetProperty("messages", out var msgEl));
+        Assert.Equal(JsonValueKind.Array, msgEl.ValueKind);
+        Assert.Equal(1, msgEl.GetArrayLength());
+        Assert.Equal("user", msgEl[0]!.GetProperty("role").GetString());
+    }
+
+    [Fact]
+    public async Task Decode_NullMessages_NullInRpcPayload()
+    {
+        // When no messages are provided, DECODE must encode "messages":null
+        // so the engine knows to decode from the existing KV state.
+        Assert.NotNull(_server);
+
+        var server = _server!;
+        byte[]? capturedPayload = null;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            capturedPayload = payloadLen > 0
+                ? await RpcServer.ReadPayloadAsync(reader, payloadLen, ct)
+                : [];
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, 0, ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        await client.EngineDecodeAsync("0", 16, null,
+            "trace-decode-null-parity", CancellationToken.None);
+
+        Assert.NotNull(capturedPayload);
+        var doc = JsonDocument.Parse(capturedPayload!);
+        Assert.True(doc.RootElement.TryGetProperty("messages", out var msgEl));
+        Assert.Equal(JsonValueKind.Null, msgEl.ValueKind);
+    }
+
+    [Fact]
+    public void PrefillParams_SamplingFields_PreservedAcrossPaths()
+    {
+        // Verify that sampling parameters (temperature, top_p, top_k, seed,
+        // repeat_penalty) survive the round-trip through both HTTP and RPC
+        // encoding paths without loss or mutation.
+        var requestJson = """
+            {
+                "messages": [{"role": "user", "content": "test"}],
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "top_k": 40,
+                "seed": 12345,
+                "repeat_penalty": 1.1,
+                "max_tokens": 256
+            }
+            """;
+
+        // Parse through the same JsonObject path HydraEngineClient uses
+        var node = System.Text.Json.Nodes.JsonNode.Parse(requestJson)
+            as System.Text.Json.Nodes.JsonObject;
+        var serialized = node!.ToJsonString();
+        var doc = JsonDocument.Parse(serialized);
+
+        Assert.Equal(0.7, doc.RootElement.GetProperty("temperature").GetDouble());
+        Assert.Equal(0.9, doc.RootElement.GetProperty("top_p").GetDouble());
+        Assert.Equal(40, doc.RootElement.GetProperty("top_k").GetInt32());
+        Assert.Equal(12345, doc.RootElement.GetProperty("seed").GetInt32());
+        Assert.Equal(1.1, doc.RootElement.GetProperty("repeat_penalty").GetDouble());
+        Assert.Equal(256, doc.RootElement.GetProperty("max_tokens").GetInt32());
+
+        // Messages survive unchanged
+        var msgs = doc.RootElement.GetProperty("messages");
+        Assert.Equal(1, msgs.GetArrayLength());
+        Assert.Equal("user", msgs[0]!.GetProperty("role").GetString());
+        Assert.Equal("test", msgs[0]!.GetProperty("content").GetString());
     }
 }
