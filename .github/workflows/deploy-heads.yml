@@ -49,6 +49,7 @@ jobs:
     name: Build llama-engine (fork)
     runs-on: ubuntu-latest
     if: inputs.build-from-fork == 'true' && inputs.rtx-image == '' && inputs.p100-image == ''
+    secrets: inherit
     outputs:
       rtx-image: ${{ steps.build.outputs.rtx-image }}
       p100-image: ${{ steps.build.outputs.p100-image }}
@@ -63,7 +64,6 @@ jobs:
           arch_sm60: ${{ inputs.gpu == 'all' || inputs.gpu == 'p100' }}
           runner_target: local
           execution_mode: matrix
-        secrets: inherit
 
   # ── Deploy to selected GPUs ───────────────────────────────────────────
   deploy:
