@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -11,10 +12,23 @@ namespace Tests.LiveRig;
 ///
 /// Health-checks the Coordinator at COORD_URL before running tests. If
 /// unreachable, tests using this fixture skip (not fail).
+///
+/// Uses static shared state so the health probe runs exactly once across all
+/// test classes in the "LiveRig" collection — xUnit's IClassFixture creates a
+/// new instance per class, but the static state ensures the expensive probe
+/// only executes once.
 /// </summary>
 public sealed class LiveRigFixture : IAsyncLifetime
 {
-    private static readonly HttpClient SharedClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    // ── Static shared state: probe runs once for the entire collection ──
+    // xUnit creates a new LiveRigFixture instance per test class even within
+    // the same collection.  A static Lazy<T> ensures the health probe + model
+    // readiness check executes exactly once across the whole test run.
+    private static readonly object _probeLock = new();
+    private static bool _probeCompleted;
+    private static bool _probeResult;
+    private static string _probeHealthStatus = "not-probed";
+    private static List<string> _probeLog = [];
 
     public string CoordUrl { get; } =
         Environment.GetEnvironmentVariable("COORD_URL") ?? "http://localhost:9000";
@@ -40,54 +54,181 @@ public sealed class LiveRigFixture : IAsyncLifetime
     /// <summary>Health status string from the Coordinator.</summary>
     public string HealthStatus { get; private set; } = "unknown";
 
-    public async Task InitializeAsync()
+    // Retry budget: poll every 5s for up to 120s to handle model load times.
+    private const int RetryIntervalMs = 5_000;
+    private const int MaxRetryMs = 120_000;
+
+    public Task InitializeAsync()
     {
+        lock (_probeLock)
+        {
+            if (_probeCompleted)
+            {
+                IsHealthy = _probeResult;
+                HealthStatus = _probeHealthStatus;
+                return Task.CompletedTask;
+            }
+        }
+
+        // Probe runs outside the lock so concurrent InitializeAsync calls
+        // don't deadlock; the lock is re-acquired only when writing the result.
+        return RunProbeAsync();
+    }
+
+    private async Task RunProbeAsync()
+    {
+        var log = new List<string>();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
-            // First check the health endpoint
-            var resp = await SharedClient.GetFromJsonAsync<HealthResponse>($"{CoordUrl}/health");
-            if (resp?.Status is not ("healthy" or "degraded"))
+            log.Add($"[t={sw.ElapsedMilliseconds}ms] Starting health probe for {CoordUrl}");
+
+            // ── Phase 1: retry-loop health endpoint ──
+            // A freshly-deployed rig's model load takes 60-120s (per CLAUDE.md).
+            // Poll /health every 5s up to 120s to distinguish "still warming up"
+            // from "actually down".
+            bool healthOk = false;
+            string lastHealthStatus = "unknown";
+            while (sw.ElapsedMilliseconds < MaxRetryMs)
             {
-                IsHealthy = false;
-                HealthStatus = resp?.Status ?? "unknown";
+                try
+                {
+                    using var healthClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                    var healthResp = await healthClient.GetAsync($"{CoordUrl}/health");
+                    log.Add($"[t={sw.ElapsedMilliseconds}ms] GET /health → {(int)healthResp.StatusCode}");
+
+                    if (healthResp.IsSuccessStatusCode)
+                    {
+                        var healthBody = await healthResp.Content.ReadFromJsonAsync<HealthResponse>();
+                        lastHealthStatus = healthBody?.Status ?? "unknown";
+                        log.Add($"[t={sw.ElapsedMilliseconds}ms] Health status: {lastHealthStatus}");
+
+                        if (lastHealthStatus is "healthy" or "degraded")
+                        {
+                            healthOk = true;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        lastHealthStatus = $"http-{(int)healthResp.StatusCode}";
+                    }
+                }
+                catch (HttpRequestException ex)
+                {
+                    lastHealthStatus = $"connection-refused: {ex.Message}";
+                    log.Add($"[t={sw.ElapsedMilliseconds}ms] Health check failed: {ex.Message}");
+                }
+                catch (TaskCanceledException)
+                {
+                    lastHealthStatus = "timeout";
+                    log.Add($"[t={sw.ElapsedMilliseconds}ms] Health check timed out");
+                }
+
+                log.Add($"[t={sw.ElapsedMilliseconds}ms] Retrying health check in {RetryIntervalMs}ms...");
+                await Task.Delay(RetryIntervalMs);
+            }
+
+            if (!healthOk)
+            {
+                var diag = $"Coordinator unreachable at {CoordUrl} after {sw.ElapsedMilliseconds}ms. " +
+                    $"Last status: {lastHealthStatus}. " +
+                    $"Log: [{string.Join("; ", log)}]. " +
+                    "Set COORD_URL and ensure the full stack is running.";
+                lock (_probeLock)
+                {
+                    _probeCompleted = true;
+                    _probeResult = false;
+                    _probeHealthStatus = diag;
+                    _probeLog = log;
+                    IsHealthy = false;
+                    HealthStatus = diag;
+                }
                 return;
             }
 
-            // Health endpoint is OK — now verify the stack can actually process a request.
-            // A coordinator may report "healthy" while backends are down (503 on completions).
-            try
+            // ── Phase 2: verify the stack can process a completion request ──
+            // The coordinator may report "healthy" while backends are still
+            // warming up (503 on completions). Poll until the first successful
+            // completion or the budget is exhausted.
+            log.Add($"[t={sw.ElapsedMilliseconds}ms] Health OK, probing completions endpoint...");
+            while (sw.ElapsedMilliseconds < MaxRetryMs)
             {
-                var probeBody = new Dictionary<string, object?>
+                try
                 {
-                    ["messages"] = new[] { new { role = "user", content = "Say ok." } },
-                    ["max_tokens"] = 4,
-                    ["temperature"] = 0,
-                    ["stream"] = false,
-                    ["session_id"] = $"live-rig-probe-{Guid.NewGuid():N}"[..20],
-                };
-                var probeResp = await SharedClient.PostAsJsonAsync($"{CoordUrl}/v1/chat/completions", probeBody);
-                if (probeResp.IsSuccessStatusCode)
-                {
-                    IsHealthy = true;
-                    HealthStatus = resp?.Status ?? "healthy";
+                    using var probeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    var probeBody = new Dictionary<string, object?>
+                    {
+                        ["messages"] = new[] { new { role = "user", content = "Say ok." } },
+                        ["max_tokens"] = 4,
+                        ["temperature"] = 0,
+                        ["stream"] = false,
+                        ["session_id"] = $"live-rig-probe-{Guid.NewGuid():N}"[..20],
+                    };
+                    var probeResp = await probeClient.PostAsJsonAsync($"{CoordUrl}/v1/chat/completions", probeBody);
+                    log.Add($"[t={sw.ElapsedMilliseconds}ms] POST /v1/chat/completions → {(int)probeResp.StatusCode}");
+
+                    if (probeResp.IsSuccessStatusCode)
+                    {
+                        var probeJson = await probeResp.Content.ReadFromJsonAsync<JsonElement>();
+                        var hasChoices = probeJson.TryGetProperty("choices", out _);
+                        log.Add($"[t={sw.ElapsedMilliseconds}ms] Probe response has choices: {hasChoices}");
+
+                        lock (_probeLock)
+                        {
+                            _probeCompleted = true;
+                            _probeResult = true;
+                            _probeHealthStatus = lastHealthStatus;
+                            _probeLog = log;
+                            IsHealthy = true;
+                            HealthStatus = lastHealthStatus;
+                        }
+                        return;
+                    }
+                    else
+                    {
+                        var bodyText = await probeResp.Content.ReadAsStringAsync();
+                        log.Add($"[t={sw.ElapsedMilliseconds}ms] Probe failed: {bodyText[..Math.Min(200, bodyText.Length)]}");
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    // Coordinator is up but backends can't serve — treat as unhealthy
-                    IsHealthy = false;
-                    HealthStatus = $"coordinator-up but completions-return-{(int)probeResp.StatusCode}";
+                    log.Add($"[t={sw.ElapsedMilliseconds}ms] Probe exception: {ex.Message}");
                 }
+
+                log.Add($"[t={sw.ElapsedMilliseconds}ms] Retrying completion probe in {RetryIntervalMs}ms...");
+                await Task.Delay(RetryIntervalMs);
             }
-            catch
+
+            // Exhausted budget: backends never became ready
+            var diagFail = $"Coordinator at {CoordUrl} responds to /health ({lastHealthStatus}) " +
+                $"but completions never succeeded after {sw.ElapsedMilliseconds}ms. " +
+                $"Log: [{string.Join("; ", log)}]. " +
+                "Backends may still be loading models (expect 60-120s).";
+            lock (_probeLock)
             {
+                _probeCompleted = true;
+                _probeResult = false;
+                _probeHealthStatus = diagFail;
+                _probeLog = log;
                 IsHealthy = false;
-                HealthStatus = "completions-unreachable";
+                HealthStatus = diagFail;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            IsHealthy = false;
-            HealthStatus = "unreachable";
+            var diag = $"Unexpected probe failure at {CoordUrl}: {ex}. " +
+                $"Log: [{string.Join("; ", log)}].";
+            lock (_probeLock)
+            {
+                _probeCompleted = true;
+                _probeResult = false;
+                _probeHealthStatus = diag;
+                _probeLog = log;
+                IsHealthy = false;
+                HealthStatus = diag;
+            }
         }
     }
 
@@ -99,9 +240,7 @@ public sealed class LiveRigFixture : IAsyncLifetime
     /// </summary>
     public void SkipIfUnreachable()
     {
-        Skip.IfNot(IsHealthy,
-            $"Live rig unreachable at {CoordUrl} (status={HealthStatus}). " +
-            "Set COORD_URL and ensure the full stack is running.");
+        Skip.IfNot(IsHealthy, HealthStatus);
     }
 
     /// <summary>GET {CoordUrl}/status and return the parsed JSON.</summary>
@@ -145,6 +284,9 @@ public sealed class LiveRigFixture : IAsyncLifetime
 
     public sealed class SessionsWrapper
     {
+        [System.Text.Json.Serialization.JsonPropertyName("active")]
+        public int Active { get; set; }
+
         [System.Text.Json.Serialization.JsonPropertyName("sessions")]
         public List<SessionInfo> Sessions { get; set; } = [];
     }

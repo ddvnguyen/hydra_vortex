@@ -450,7 +450,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
             using var migrateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
             var migrateResp = await migrateClient.PostAsJsonAsync(
                 $"{_fx.CoordUrl}/sessions/{sessionId}/migrate",
-                new { target_node = "p100" });
+                new { target = "p100" });
             Assert.True(migrateResp.IsSuccessStatusCode, $"Migration failed: {await migrateResp.Content.ReadAsStringAsync()}");
             var migrateBody = await migrateResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(migrateBody.GetProperty("migrated").GetBoolean());
