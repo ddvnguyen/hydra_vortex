@@ -133,4 +133,37 @@ public class PromHelpersTests
         // The garbage line is silently dropped (no exception, no entry).
         Assert.Equal(2, samples.Count);
     }
+
+    [Fact]
+    public void ParseNaNCoercedToZero()
+    {
+        const string body = "hydra_nan_total{worker=\"rtx\"} NaN\n";
+        var samples = PromHelpers.ParsePromLines(body);
+
+        Assert.Single(samples);
+        Assert.Equal("hydra_nan_total", samples[0].Name);
+        Assert.Equal(0.0, samples[0].Value);
+    }
+
+    [Fact]
+    public void ParsePositiveInfCoercedToZero()
+    {
+        const string body = "hydra_inf_total{worker=\"rtx\"} +Inf\n";
+        var samples = PromHelpers.ParsePromLines(body);
+
+        Assert.Single(samples);
+        Assert.Equal("hydra_inf_total", samples[0].Name);
+        Assert.Equal(0.0, samples[0].Value);
+    }
+
+    [Fact]
+    public void ParseNegativeInfCoercedToZero()
+    {
+        const string body = "hydra_neginf_total{worker=\"rtx\"} -Inf\n";
+        var samples = PromHelpers.ParsePromLines(body);
+
+        Assert.Single(samples);
+        Assert.Equal("hydra_neginf_total", samples[0].Name);
+        Assert.Equal(0.0, samples[0].Value);
+    }
 }

@@ -250,7 +250,7 @@ public sealed class OpencodeFlowTests : IAsyncLifetime
     [Fact]
     public async Task TestOpencodeInitialRequest()
     {
-        var sessionId = $"system-opencode-{Guid.NewGuid():N}"[..16];
+        var sessionId = $"system-opencode-{Guid.NewGuid().ToString("N")[..12]}";
         var messages = MakeMessages(SystemPrompt, UserPrompt1);
 
         var resp = await DoCompletionAsync(messages, sessionId: sessionId, stream: true);
@@ -287,7 +287,7 @@ public sealed class OpencodeFlowTests : IAsyncLifetime
     [Fact]
     public async Task TestOpencodeFollowupReusesKvCache()
     {
-        var sessionId = $"system-opencode-{Guid.NewGuid():N}"[..16];
+        var sessionId = $"system-opencode-{Guid.NewGuid().ToString("N")[..12]}";
 
         // ── Turn 1: initial request with system prompt ──
         var messages1 = MakeMessages(SystemPrompt, UserPrompt1);
@@ -340,7 +340,7 @@ public sealed class OpencodeFlowTests : IAsyncLifetime
     [Fact]
     public async Task TestOpencodeMultiTurnSessionLifecycle()
     {
-        var sessionId = $"system-opencode-{Guid.NewGuid():N}"[..16];
+        var sessionId = $"system-opencode-{Guid.NewGuid().ToString("N")[..12]}";
 
         // ── Turn 1 ──
         var messages1 = MakeMessages(SystemPrompt, UserPrompt1);
@@ -403,8 +403,9 @@ public sealed class OpencodeFlowTests : IAsyncLifetime
     [Fact]
     public async Task TestOpencodeConcurrentSessions()
     {
-        var sidA = $"system-oc-concur-a-{Guid.NewGuid():N}"[..16];
-        var sidB = $"system-oc-concur-b-{Guid.NewGuid():N}"[..16];
+        var sidA = $"system-oc-a-{Guid.NewGuid().ToString("N")[..12]}";
+        var sidB = $"system-oc-b-{Guid.NewGuid().ToString("N")[..12]}";
+        Assert.NotEqual(sidA, sidB);
 
         async Task<string> SessionTurn(string sid, string prompt)
         {

@@ -30,13 +30,13 @@ public static class PromHelpers
         IReadOnlyDictionary<string, string> Labels,
         double Value);
 
-    // Anchored at start-of-line. The `(?:\{...\}|\\s+)` allows either
+    // Anchored at start-of-line. The `(?:\{...\}|\s+)` allows either
     // `{labels}` (labeled series) or whitespace (unlabeled series) after
     // the metric name. The value is the standard Prometheus float grammar
-    // (with optional exponent) but we use a permissive `[0-9.eE+\-]+`
-    // so that NaN, Inf, and other special values parse as 0.0.
+    // (with optional exponent) plus the special tokens NaN, +Inf, -Inf.
+    // Special tokens are matched but coerced to 0.0 by the parser below.
     private static readonly Regex LinePattern = new(
-        @"^(?<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(?<labels>[^}]*)\})?\s+(?<value>[0-9.eE+\-]+)\s*$",
+        @"^(?<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(?<labels>[^}]*)\})?\s+(?<value>[0-9.eE+\-]+|NaN|\+Inf|\-Inf)\s*$",
         RegexOptions.Compiled);
 
     /// <summary>
@@ -45,9 +45,7 @@ public static class PromHelpers
     /// <c># HELP</c> / <c># TYPE</c> comment lines silently.
     ///
     /// Labels is an empty dictionary for unlabeled series. The value is
-    /// a double (NaN and Inf become 0.0 via the permissive regex — callers
-    /// that need to distinguish can check <see cref="double.IsNaN"/> /
-    /// <see cref="double.IsInfinity"/> on the result).
+    /// a double. NaN and Inf special tokens are coerced to 0.0.
     /// </summary>
     public static IReadOnlyList<Sample> ParsePromLines(string body)
     {
@@ -94,7 +92,10 @@ public static class PromHelpers
                     CultureInfo.InvariantCulture,
                     out var parsed))
             {
-                value = parsed;
+                // Prometheus NaN/Inf are non-numeric sentinel values.
+                // Coerce to 0.0 so callers get a usable double without
+                // needing to special-case every sample.
+                value = double.IsNaN(parsed) || double.IsInfinity(parsed) ? 0.0 : parsed;
             }
 
             outList.Add(new Sample(name, labels, value));
