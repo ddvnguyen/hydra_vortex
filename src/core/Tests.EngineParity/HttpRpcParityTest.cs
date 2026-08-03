@@ -92,18 +92,25 @@ public sealed class HttpRpcParityTest
             var httpResponse = await http.PostAsync(
                 $"http://127.0.0.1:{httpPort}/v1/chat/completions", httpBody);
             httpResponse.EnsureSuccessStatusCode();
+            var httpDoc = JsonDocument.Parse(await httpResponse.Content.ReadAsStringAsync());
 
-            // Step 4: Compare KV state blobs
-            // The RPC PREFILL response payload contains the raw KV state.
-            // The HTTP path produces logits but not a raw KV blob directly;
-            // for parity we compare the n_past (token count) and any
-            // exposed KV metadata. A full byte-identical comparison requires
-            // the engine to expose KV state via HTTP too (future work).
-            Assert.Equal(rpcNPast, rpcNPast); // Sanity — both paths tokenized the same prompt
+            // Step 4: Compare prompt-token counts between the two paths.
+            // This is the actual #469 signature: the real incident showed
+            // HTTP prefill reporting prompt_n=4 (correct) while RPC PREFILL
+            // reported prompt_n=1 (corrupted state) for the identical
+            // prompt. rpcNPast is RPC's n_past after PREFILL; the HTTP path's
+            // equivalent is usage.prompt_tokens on the completion response.
+            // A full byte-identical KV-blob comparison additionally requires
+            // the engine to expose raw KV state via HTTP too (future work,
+            // tracked below) — this prompt-token check is real today and
+            // covers the exact divergence #469 exhibited.
+            var httpPromptTokens = httpDoc.RootElement
+                .GetProperty("usage").GetProperty("prompt_tokens").GetInt32();
+            Assert.Equal(httpPromptTokens, rpcNPast);
 
             // TODO(#518): When the engine exposes KV state via HTTP (e.g.
             // through a /v1/state endpoint or by comparing STATE_META after
-            // HTTP prefill), assert byte-identical KV blobs here:
+            // HTTP prefill), also assert byte-identical KV blobs here:
             // Assert.Equal(rpcKvBlob, httpKvBlob);
 
             // Step 5: DECODE from the RPC-primed slot and capture logits
@@ -154,6 +161,9 @@ public sealed class HttpRpcParityTest
                 "trace-logit-rpc-prefill", CancellationToken.None);
             var rpcDecode = await rpcClient.EngineDecodeAsync(
                 "0", NPredict, null, "trace-logit-rpc-decode", CancellationToken.None);
+            Assert.Equal((byte)StatusCode.Ok, rpcDecode.Status);
+            var rpcDecodeMeta = JsonSerializer.Deserialize<JsonElement>(rpcDecode.Meta!);
+            var rpcTokensGenerated = rpcDecodeMeta.GetProperty("tokens_generated").GetInt32();
 
             // HTTP path: POST /v1/chat/completions with same prompt+seed
             using var http = new HttpClient();
@@ -171,7 +181,16 @@ public sealed class HttpRpcParityTest
             var httpJson = await httpResponse.Content.ReadAsStringAsync();
             var httpDoc = JsonDocument.Parse(httpJson);
 
-            // TODO(#518): Extract logits from both paths and compare.
+            // Compare decoded token counts between the two paths — a real,
+            // checkable-today signal (not the full logit comparison, which
+            // needs the engine to expose raw logits — see TODO below, and
+            // requires an actual engine/GGUF to confirm the "tokens_generated"
+            // meta field name above once this is unskipped for real).
+            var httpCompletionTokens = httpDoc.RootElement
+                .GetProperty("usage").GetProperty("completion_tokens").GetInt32();
+            Assert.Equal(httpCompletionTokens, rpcTokensGenerated);
+
+            // TODO(#518): Extract raw logits from both paths and compare.
             // The exact comparison depends on how the engine exposes logits:
             //   - RPC: DECODE response payload or streaming frames
             //   - HTTP: response body choices[].logprobs or similar
