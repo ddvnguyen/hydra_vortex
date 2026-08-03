@@ -94,8 +94,22 @@ public sealed class PiCliDriver : IAgentCliDriver
 
     /// <summary>
     /// Parse NDJSON output from <c>pi --mode json</c>. Each line is a separate
-    /// JSON object. We scan for the line carrying the final response content
-    /// and usage metrics (typically the last complete JSON object).
+    /// JSON object of pi's internal session event stream (event types such as
+    /// <c>session</c>, <c>agent_start</c>, <c>turn_start</c>, <c>message_start</c>,
+    /// <c>message_end</c>, <c>turn_end</c>, <c>agent_end</c>, <c>auto_retry_start</c>).
+    ///
+    /// The finalized assistant message is carried in the <c>message</c> property of
+    /// message_start/message_end (and the finalized turn in turn_end/agent_end):
+    /// <c>message.content</c> is an ARRAY of typed blocks
+    /// (<c>{"type":"text","text":...}</c> for output, <c>{"type":"thinking","thinking":...}</c>
+    /// for reasoning) and <c>message.usage</c> uses pi's own counters
+    /// (<c>input</c>, <c>output</c>, <c>cacheRead</c>, <c>cacheWrite</c>, <c>totalTokens</c>),
+    /// NOT OpenAI's <c>prompt_tokens</c>/<c>prompt_tokens_details.cached_tokens</c>.
+    ///
+    /// We prefer the LAST assistant message whose <c>stopReason</c> is not
+    /// <c>"error"</c> (the final response). As a fallback for legacy OpenAI-shaped
+    /// single-doc fixtures, top-level <c>content</c>/<c>reasoning_content</c> and
+    /// <c>usage.prompt_tokens</c> are still honored when present.
     /// </summary>
     internal static AgentTurnResult ParseOutput(
         string output,
@@ -139,11 +153,74 @@ public sealed class PiCliDriver : IAgentCliDriver
                 var root = doc.RootElement;
                 anyValidJson = true;
 
-                if (root.TryGetProperty("content", out var contentEl))
+                // PRIMARY: pi's internal assistant-message schema.
+                if (IsAssistantMessage(root, out var messageEl))
                 {
-                    var content = contentEl.ValueKind == JsonValueKind.String
-                        ? contentEl.GetString()
-                        : contentEl.GetRawText();
+                    // Skip errored messages so an earlier good response is not
+                    // overwritten by a failed final attempt.
+                    if (messageEl.TryGetProperty("stopReason", out var stopReasonEl)
+                        && stopReasonEl.ValueKind == JsonValueKind.String
+                        && stopReasonEl.GetString() == "error")
+                    {
+                        continue;
+                    }
+
+                    if (messageEl.TryGetProperty("content", out var contentEl)
+                        && contentEl.ValueKind == JsonValueKind.Array)
+                    {
+                        var textParts = new List<string>();
+                        foreach (var block in contentEl.EnumerateArray())
+                        {
+                            if (block.ValueKind != JsonValueKind.Object
+                                || !block.TryGetProperty("type", out var blockType)
+                                || blockType.ValueKind != JsonValueKind.String)
+                            {
+                                continue;
+                            }
+
+                            var blockTypeName = blockType.GetString();
+                            if (blockTypeName == "text"
+                                && block.TryGetProperty("text", out var textEl)
+                                && textEl.ValueKind == JsonValueKind.String)
+                            {
+                                var text = textEl.GetString();
+                                if (!string.IsNullOrEmpty(text))
+                                    textParts.Add(text!);
+                            }
+                            else if (blockTypeName == "thinking"
+                                && block.TryGetProperty("thinking", out var thinkingEl)
+                                && thinkingEl.ValueKind == JsonValueKind.String
+                                && !string.IsNullOrWhiteSpace(thinkingEl.GetString()))
+                            {
+                                bestReasoningPresent = true;
+                            }
+                        }
+
+                        if (textParts.Count > 0)
+                            bestContent = string.Join("", textParts);
+                    }
+
+                    if (messageEl.TryGetProperty("usage", out var usageEl)
+                        && usageEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (usageEl.TryGetProperty("input", out var inputEl))
+                            bestPromptTokens = JsonElementExtensions.GetInt32OrDefault(inputEl);
+                        if (usageEl.TryGetProperty("output", out var outputEl))
+                            bestCompletionTokens = JsonElementExtensions.GetInt32OrDefault(outputEl);
+                        if (usageEl.TryGetProperty("cacheRead", out var cacheReadEl))
+                            bestCachedTokens = JsonElementExtensions.GetInt32OrDefault(cacheReadEl);
+                    }
+
+                    continue;
+                }
+
+                // FALLBACK: legacy / OpenAI-shaped single-doc fixtures that have
+                // no `message` wrapper (kept so older fixtures remain valid).
+                if (root.TryGetProperty("content", out var legacyContentEl))
+                {
+                    var content = legacyContentEl.ValueKind == JsonValueKind.String
+                        ? legacyContentEl.GetString()
+                        : legacyContentEl.GetRawText();
                     // Prefer the last non-empty content (final response)
                     if (!string.IsNullOrEmpty(content))
                         bestContent = content;
@@ -152,16 +229,18 @@ public sealed class PiCliDriver : IAgentCliDriver
                 if (root.TryGetProperty("reasoning_content", out _))
                     bestReasoningPresent = true;
 
-                if (root.TryGetProperty("usage", out var usage))
+                if (root.TryGetProperty("usage", out var legacyUsage)
+                    && legacyUsage.ValueKind == JsonValueKind.Object)
                 {
-                    if (usage.TryGetProperty("prompt_tokens", out var pt))
-                        bestPromptTokens = pt.GetInt32();
-                    if (usage.TryGetProperty("completion_tokens", out var ct2))
-                        bestCompletionTokens = ct2.GetInt32();
-                    if (usage.TryGetProperty("prompt_tokens_details", out var details)
+                    if (legacyUsage.TryGetProperty("prompt_tokens", out var pt))
+                        bestPromptTokens = JsonElementExtensions.GetInt32OrDefault(pt);
+                    if (legacyUsage.TryGetProperty("completion_tokens", out var completionTokens))
+                        bestCompletionTokens = JsonElementExtensions.GetInt32OrDefault(completionTokens);
+                    if (legacyUsage.TryGetProperty("prompt_tokens_details", out var details)
+                        && details.ValueKind == JsonValueKind.Object
                         && details.TryGetProperty("cached_tokens", out var cached))
                     {
-                        bestCachedTokens = cached.GetInt32();
+                        bestCachedTokens = JsonElementExtensions.GetInt32OrDefault(cached);
                     }
                 }
             }
@@ -179,6 +258,22 @@ public sealed class PiCliDriver : IAgentCliDriver
         builder.IsValidJson = anyValidJson;
 
         return builder.Build();
+    }
+
+    private static bool IsAssistantMessage(JsonElement root, out JsonElement messageEl)
+    {
+        messageEl = default;
+        if (!root.TryGetProperty("message", out var candidate)
+            || candidate.ValueKind != JsonValueKind.Object
+            || !candidate.TryGetProperty("role", out var roleEl)
+            || roleEl.ValueKind != JsonValueKind.String
+            || roleEl.GetString() != "assistant")
+        {
+            return false;
+        }
+
+        messageEl = candidate;
+        return true;
     }
 }
 

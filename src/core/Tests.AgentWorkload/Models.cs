@@ -17,13 +17,13 @@ public sealed class AgentTurnResult
     /// <summary>Presence of reasoning_content in the response JSON.</summary>
     public bool ReasoningContentPresent { get; init; }
 
-    /// <summary>Prompt tokens from usage.prompt_tokens.</summary>
+    /// <summary>Prompt tokens from usage.input (pi) / part.tokens.input (opencode).</summary>
     public int PromptTokens { get; init; }
 
-    /// <summary>Completion tokens from usage.completion_tokens.</summary>
+    /// <summary>Completion tokens from usage.output (pi) / part.tokens.output (opencode).</summary>
     public int CompletionTokens { get; init; }
 
-    /// <summary>Cached tokens from usage.prompt_tokens_details.cached_tokens.</summary>
+    /// <summary>Cached tokens from usage.cacheRead (pi) / part.tokens.cache.read (opencode).</summary>
     public int CachedTokens { get; init; }
 
     /// <summary>Whether the raw output was valid JSON.</summary>

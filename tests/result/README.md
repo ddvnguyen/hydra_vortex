@@ -14,14 +14,15 @@ Each system test run produces a JSON result file in this directory:
 | Hydra.Core       | `localhost:9000` (HTTP) + `:9500` (Store RPC) |
 
 ```bash
-# Full system test suite
-python -m pytest tests/system/ -v -m system
+# Live full-stack tests (Coordinator + Store + heads; skips when the rig is down)
+dotnet test src/core/Tests.LiveRig/ -c Release
 
-# Individual suites
-python -m pytest tests/system/test_full_workflow_system.py -v -m system
-python -m pytest tests/system/test_stress_system.py -v -m system
-python -m pytest tests/system/test_large_prompt_system.py -v -m system
+# Agent workload tests (pi / opencode CLI drivers; live tiers skip when the rig is down)
+dotnet test src/core/Tests.AgentWorkload/ -c Release
 ```
+
+> The old `python -m pytest tests/system/` suite was removed in the xUnit
+> migration (PR #518/#528). The two `dotnet test` tiers above are its replacement.
 
 ## Result File Fields
 

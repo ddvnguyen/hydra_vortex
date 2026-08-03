@@ -12,6 +12,15 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
     private readonly string _model;
     private readonly string _binPath;
 
+    /// <summary>
+    /// The opencode-created session id captured from the first run's output.
+    /// <c>--session</c> only accepts ids that already exist, so turn 1 must let
+    /// opencode create the session (no <c>--session</c> flag) and every later
+    /// turn must pass the resolved id. <c>-c</c> (continue LAST session) is
+    /// deliberately not used — it would resume a different session.
+    /// </summary>
+    private string? _resolvedSessionId;
+
     public OpenCodeCliDriver(
         string model = "hydra/moe-35b-solo",
         string binPath = "opencode")
@@ -47,10 +56,11 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
     public async Task<AgentTurnResult> RunTurnAsync(
         string sessionId, string prompt, CancellationToken ct = default)
     {
-        // opencode run <prompt> --model <model> --session <id> --format json
-        // For continuation: use -c / --continue to pick up an existing session
-        var args = $"run \"{EscapeForShell(prompt)}\" --model {_model} --session {sessionId} -c --format json";
-        var psi = new ProcessStartInfo(_binPath, args)
+        // opencode run <prompt> --model <model> [--session <id>] --format json
+        // opencode generates its own session id and emits it in every event
+        // line's `sessionID` field. The caller-supplied `sessionId` is logical
+        // only; the real id is resolved from the first run's output below.
+        var psi = new ProcessStartInfo(_binPath)
         {
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -58,6 +68,17 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        psi.ArgumentList.Add("run");
+        psi.ArgumentList.Add(prompt);
+        psi.ArgumentList.Add("--model");
+        psi.ArgumentList.Add(_model);
+        if (_resolvedSessionId is not null)
+        {
+            psi.ArgumentList.Add("--session");
+            psi.ArgumentList.Add(_resolvedSessionId);
+        }
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("json");
 
         var startedAt = DateTimeOffset.UtcNow;
         var sw = Stopwatch.StartNew();
@@ -76,13 +97,30 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
         var completedAt = DateTimeOffset.UtcNow;
         var output = stdout + stderr;
 
+        // Capture the opencode-created session id for subsequent turns. Only
+        // store it when a real id is found — passing the caller's arbitrary id
+        // to --session later would error with "Session not found".
+        if (_resolvedSessionId is null)
+        {
+            var foundId = ExtractSessionId(output);
+            if (foundId is not null)
+                _resolvedSessionId = foundId;
+        }
+
         return ParseOutput(output, proc.ExitCode, sw.Elapsed, startedAt, completedAt);
     }
 
     /// <summary>
-    /// Parse NDJSON output from <c>opencode --format json</c>. Each line is a
-    /// separate JSON object. We scan for the line carrying the final response
-    /// content and usage metrics (typically the last complete JSON object).
+    /// Parse NDJSON output from <c>opencode run --format json</c>. Each line is a
+    /// separate event: <c>step_start</c>, <c>text</c>, <c>step_finish</c>,
+    /// <c>tool</c>/<c>error</c>, etc.
+    ///
+    /// Content is carried in <c>part.text</c> of <c>type=="text"</c> events and
+    /// token usage in <c>part.tokens</c> of <c>type=="step_finish"</c> events:
+    /// <c>{total, input, output, reasoning, cache:{write, read}}</c>. Reasoning is
+    /// detected via <c>part.tokens.reasoning &gt; 0</c>. As a fallback for legacy
+    /// OpenAI-shaped single-doc fixtures, top-level <c>content</c> and
+    /// <c>usage.prompt_tokens</c> are still honored when present.
     /// </summary>
     internal static AgentTurnResult ParseOutput(
         string output,
@@ -126,11 +164,61 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
                 var root = doc.RootElement;
                 anyValidJson = true;
 
-                if (root.TryGetProperty("content", out var contentEl))
+                // PRIMARY: opencode's event stream (every event carries `type`).
+                if (root.TryGetProperty("type", out var typeEl)
+                    && typeEl.ValueKind == JsonValueKind.String)
                 {
-                    var content = contentEl.ValueKind == JsonValueKind.String
-                        ? contentEl.GetString()
-                        : contentEl.GetRawText();
+                    var eventType = typeEl.GetString();
+                    if (eventType == "text")
+                    {
+                        if (root.TryGetProperty("part", out var partEl)
+                            && partEl.ValueKind == JsonValueKind.Object
+                            && partEl.TryGetProperty("type", out var partTypeEl)
+                            && partTypeEl.ValueKind == JsonValueKind.String
+                            && partTypeEl.GetString() == "text"
+                            && partEl.TryGetProperty("text", out var textEl)
+                            && textEl.ValueKind == JsonValueKind.String)
+                        {
+                            var text = textEl.GetString();
+                            if (!string.IsNullOrEmpty(text))
+                                bestContent = text;
+                        }
+                    }
+                    else if (eventType == "step_finish")
+                    {
+                        if (root.TryGetProperty("part", out var partEl)
+                            && partEl.ValueKind == JsonValueKind.Object
+                            && partEl.TryGetProperty("tokens", out var tokensEl)
+                            && tokensEl.ValueKind == JsonValueKind.Object)
+                        {
+                            if (tokensEl.TryGetProperty("input", out var inputEl))
+                                bestPromptTokens = JsonElementExtensions.GetInt32OrDefault(inputEl);
+                            if (tokensEl.TryGetProperty("output", out var outputEl))
+                                bestCompletionTokens = JsonElementExtensions.GetInt32OrDefault(outputEl);
+                            if (tokensEl.TryGetProperty("reasoning", out var reasoningEl)
+                                && JsonElementExtensions.GetInt32OrDefault(reasoningEl) > 0)
+                            {
+                                bestReasoningPresent = true;
+                            }
+                            if (tokensEl.TryGetProperty("cache", out var cacheEl)
+                                && cacheEl.ValueKind == JsonValueKind.Object
+                                && cacheEl.TryGetProperty("read", out var cacheReadEl))
+                            {
+                                bestCachedTokens = JsonElementExtensions.GetInt32OrDefault(cacheReadEl);
+                            }
+                        }
+                    }
+
+                    continue;
+                }
+
+                // FALLBACK: legacy / OpenAI-shaped single-doc fixtures that
+                // carry no event `type` (kept so older fixtures remain valid).
+                if (root.TryGetProperty("content", out var legacyContentEl))
+                {
+                    var content = legacyContentEl.ValueKind == JsonValueKind.String
+                        ? legacyContentEl.GetString()
+                        : legacyContentEl.GetRawText();
                     // Prefer the last non-empty content (final response)
                     if (!string.IsNullOrEmpty(content))
                         bestContent = content;
@@ -139,16 +227,18 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
                 if (root.TryGetProperty("reasoning_content", out _))
                     bestReasoningPresent = true;
 
-                if (root.TryGetProperty("usage", out var usage))
+                if (root.TryGetProperty("usage", out var legacyUsage)
+                    && legacyUsage.ValueKind == JsonValueKind.Object)
                 {
-                    if (usage.TryGetProperty("prompt_tokens", out var pt))
-                        bestPromptTokens = pt.GetInt32();
-                    if (usage.TryGetProperty("completion_tokens", out var ct2))
-                        bestCompletionTokens = ct2.GetInt32();
-                    if (usage.TryGetProperty("prompt_tokens_details", out var details)
+                    if (legacyUsage.TryGetProperty("prompt_tokens", out var pt))
+                        bestPromptTokens = JsonElementExtensions.GetInt32OrDefault(pt);
+                    if (legacyUsage.TryGetProperty("completion_tokens", out var completionTokens))
+                        bestCompletionTokens = JsonElementExtensions.GetInt32OrDefault(completionTokens);
+                    if (legacyUsage.TryGetProperty("prompt_tokens_details", out var details)
+                        && details.ValueKind == JsonValueKind.Object
                         && details.TryGetProperty("cached_tokens", out var cached))
                     {
-                        bestCachedTokens = cached.GetInt32();
+                        bestCachedTokens = JsonElementExtensions.GetInt32OrDefault(cached);
                     }
                 }
             }
@@ -168,9 +258,38 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
         return builder.Build();
     }
 
-    private static string EscapeForShell(string input)
+    /// <summary>
+    /// Pulls the opencode-created session id from the NDJSON event stream. Every
+    /// event carries a <c>sessionID</c> field; the first non-empty value wins.
+    /// </summary>
+    internal static string? ExtractSessionId(string output)
     {
-        // Escape double quotes for shell argument passing
-        return input.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        if (string.IsNullOrWhiteSpace(output)) return null;
+
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0) continue;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(trimmed);
+                var root = doc.RootElement;
+                if (root.ValueKind == JsonValueKind.Object
+                    && root.TryGetProperty("sessionID", out var idEl)
+                    && idEl.ValueKind == JsonValueKind.String)
+                {
+                    var id = idEl.GetString();
+                    if (!string.IsNullOrEmpty(id))
+                        return id;
+                }
+            }
+            catch (JsonException)
+            {
+                // Non-JSON line — skip
+            }
+        }
+
+        return null;
     }
 }

@@ -80,6 +80,10 @@ public sealed class LiveRigFixture : IAsyncLifetime
         var log = new List<string>();
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
+        // Created once for the whole completion-probe phase so retries reuse the
+        // same session instead of leaking a new one per attempt.
+        string? probeSessionId = null;
+
         try
         {
             log.Add($"[t={sw.ElapsedMilliseconds}ms] Starting health probe for {CoordUrl}");
@@ -153,6 +157,7 @@ public sealed class LiveRigFixture : IAsyncLifetime
             // warming up (503 on completions). Poll until the first successful
             // completion or the budget is exhausted.
             log.Add($"[t={sw.ElapsedMilliseconds}ms] Health OK, probing completions endpoint...");
+            probeSessionId = $"live-rig-probe-{Guid.NewGuid():N}"[..20];
             while (sw.ElapsedMilliseconds < MaxRetryMs)
             {
                 try
@@ -164,7 +169,7 @@ public sealed class LiveRigFixture : IAsyncLifetime
                         ["max_tokens"] = 4,
                         ["temperature"] = 0,
                         ["stream"] = false,
-                        ["session_id"] = $"live-rig-probe-{Guid.NewGuid():N}"[..20],
+                        ["session_id"] = probeSessionId,
                     };
                     var probeResp = await probeClient.PostAsJsonAsync($"{CoordUrl}/v1/chat/completions", probeBody);
                     log.Add($"[t={sw.ElapsedMilliseconds}ms] POST /v1/chat/completions → {(int)probeResp.StatusCode}");
@@ -174,6 +179,10 @@ public sealed class LiveRigFixture : IAsyncLifetime
                         var probeJson = await probeResp.Content.ReadFromJsonAsync<JsonElement>();
                         var hasChoices = probeJson.TryGetProperty("choices", out _);
                         log.Add($"[t={sw.ElapsedMilliseconds}ms] Probe response has choices: {hasChoices}");
+
+                        // Best-effort cleanup of the probe session on the success
+                        // path so live-rig runs do not leak a session per probe.
+                        await DeleteSessionAsync(probeSessionId);
 
                         lock (_probeLock)
                         {
@@ -206,6 +215,8 @@ public sealed class LiveRigFixture : IAsyncLifetime
                 $"but completions never succeeded after {sw.ElapsedMilliseconds}ms. " +
                 $"Log: [{string.Join("; ", log)}]. " +
                 "Backends may still be loading models (expect 60-120s).";
+            if (probeSessionId is not null)
+                await DeleteSessionAsync(probeSessionId);
             lock (_probeLock)
             {
                 _probeCompleted = true;
@@ -218,6 +229,10 @@ public sealed class LiveRigFixture : IAsyncLifetime
         }
         catch (Exception ex)
         {
+            // Best-effort cleanup on the failure path too — a session may have
+            // been created before the exception was thrown.
+            if (probeSessionId is not null)
+                await DeleteSessionAsync(probeSessionId);
             var diag = $"Unexpected probe failure at {CoordUrl}: {ex}. " +
                 $"Log: [{string.Join("; ", log)}].";
             lock (_probeLock)
