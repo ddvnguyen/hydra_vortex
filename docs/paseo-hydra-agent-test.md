@@ -109,7 +109,7 @@ State the expected value **before** the run, then verify. Prose conclusions like
 
 | # | Criterion | How to check | Fail looks like |
 |---|---|---|---|
-| 1 | `cached_tokens` climbs turn over turn | `usage.prompt_tokens_details.cached_tokens` in each response | flat 0 → prefix reuse is broken |
+| 1 | `cached_tokens` climbs turn over turn | `usage.cacheRead` in pi responses (`pi --mode json`) / `part.tokens.cache.read` in opencode responses (`opencode run --format json`) | flat 0 → prefix reuse is broken |
 | 2 | `n_common` fires on turns ≥ 2 | `#PD-TRACE N_COMMON` in engine logs | absent → warm slot path not taken |
 | 3 | `restore_kv_ms == 0` on warm turns | `event=request_timeline` | non-zero → doing a full restore when it should reuse |
 | 4 | `queue_wait_ms` ≈ 0 for a single agent | `event=request_timeline` | seconds/minutes → slot contention or a stuck lease |

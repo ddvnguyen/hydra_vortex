@@ -141,7 +141,7 @@ See `docs/architecture.md` for the 4-tier routing algorithm and session lifecycl
 | HTTP client      | HttpClient          |
 | Logging          | Serilog (JSON)      |
 | Config           | appsettings.json + models.json |
-| Testing          | xUnit + Moq         |
+| Testing          | xUnit + Moq + Aspire.Testing |
 | Metrics          | prometheus-net      |
 | Tracing          | OpenTelemetry       |
 | Zero-copy I/O    | Socket.SendFileAsync|
@@ -190,6 +190,10 @@ All source code lives under `src/`.
 │   │
 │   ├── Tests.Shared/            xUnit — Protocol, RpcClient, RpcServer
 │   ├── Tests.Core/              xUnit — AutoRouter, EngineConfig, ModelConfig, etc.
+│   ├── Tests.E2E/               xUnit — Hermetic E2E (Aspire + fake engine, Tier 1)
+│   ├── Tests.LiveRig/           xUnit — Live-rig tests (Tier 2, SkippableFact-gated)
+│   ├── Tests.EngineParity/      xUnit — HTTP/RPC parity (Tier 3, SkippableFact-gated)
+│   ├── Tests.AgentWorkload/     xUnit — CLI-driven agent workload (Tier 4, opt-in)
 │   │
 │   ├── llama-cpp/               git submodule — hydra fork (sm_120 + sm_60)
 │   │
@@ -203,7 +207,7 @@ All source code lives under `src/`.
 │   │       ├── process/           4-service lifecycle manager
 │   │       └── registry/          OCI registry pull via crane
 │   │
-│   └── tests/                   Python system/E2E tests
+│   └── tests/                   Python bench/stress tooling (out of scope for #518)
 │
 ├── infra/
 │   ├── hydra-core/config/

@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>Tests.Shared</RootNamespace>
+    <RootNamespace>Tests.EngineParity</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
@@ -16,15 +16,11 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Hydra.Shared\Hydra.Shared.csproj" />
-    <!-- Needed so parity tests can exercise the real HydraEngineClient
-         wrapper (production code) instead of duplicating its injection
-         logic inline in the test — see PR #528 review, bugs re: tautological
-         HTTP/RPC parity assertions. -->
-    <ProjectReference Include="..\Hydra.Core\Hydra.Core.csproj" />
   </ItemGroup>
 
 </Project>

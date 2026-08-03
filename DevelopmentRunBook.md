@@ -143,9 +143,18 @@ dotnet test src/core/Tests.Core             # Core tests (Store + Chunk + Routin
 dotnet test src/core/Tests.Core --filter "FullyQualifiedName~Chunk" -v m
 dotnet test src/core/Tests.Core --filter "FullyQualifiedName~ChunkCache" -v m
 
-# System tests
-pytest tests/system/test_system.py -v -m system                  # M0 System test (RPC save/restore)
-pytest tests/system/test_full_workflow_system.py -v -m system    # M1+M2 full workflow via Hydra.Core HTTP
+# Tier 1 — Hermetic E2E (Aspire + fake engine, no live stack needed)
+dotnet test src/core/Tests.E2E/
+
+# Tier 2 — Live rig (requires live stack)
+dotnet test src/core/Tests.LiveRig/ -v m
+dotnet test src/core/Tests.LiveRig/ --filter "FullyQualifiedName~FullWorkflow"
+
+# Tier 3 — Engine parity (HTTP/RPC parity, live-rig tests need live stack)
+dotnet test src/core/Tests.EngineParity/
+
+# Tier 4 — Agent workload (opt-in, real GPU + CLI, workflow_dispatch only)
+dotnet test src/core/Tests.AgentWorkload/
 ```
 
 ---

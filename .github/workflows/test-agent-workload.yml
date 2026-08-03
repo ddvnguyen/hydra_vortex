@@ -1,20 +1,14 @@
-name: System Tests
+name: Agent Workload Tests
 
 on:
   workflow_dispatch:
-    inputs:
-      filter:
-        description: "xUnit filter expression — FullyQualifiedName substring match (blank = all live-rig + engine-parity tests)"
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
 
 jobs:
-  system:
-    name: System Tests
+  agent-workload:
+    name: Agent Workload Tests (Tier 4)
     runs-on: self-hosted
     timeout-minutes: 30
     concurrency:
@@ -36,31 +30,11 @@ jobs:
           fi
           echo "Coordinator: $STATUS"
 
-      - name: Run live-rig tests (Tier 2)
+      - name: Run agent workload tests (Tier 4)
         run: |
-          dotnet test src/core/Tests.LiveRig/ -c Release --no-build --nologo -v normal \
+          dotnet test src/core/Tests.AgentWorkload/ -c Release --no-build --nologo -v normal \
             --settings src/Hydra.runsettings \
-            --logger "trx;LogFileName=liverig.trx" \
-            --results-directory TestResults/ \
-            ${{ inputs.filter && format('--filter "FullyQualifiedName~{0}"', inputs.filter) || '' }}
-        env:
-          COORD_URL: http://localhost:9000
-          RTX_LLAMA_URL: http://localhost:8080
-          P100_LLAMA_URL: http://192.168.122.21:8086
-          LLAMA_RTX_URL: http://localhost:8080
-          LLAMA_P100_URL: http://192.168.122.21:8086
-          RTX_AGENT_HOST: "127.0.0.1"
-          RTX_AGENT_PORT: "9601"
-          P100_AGENT_HOST: "192.168.122.21"
-          P100_AGENT_PORT: "9602"
-          STORE_HOST: "127.0.0.1"
-          STORE_PORT: "9500"
-
-      - name: Run engine-parity tests (Tier 3)
-        run: |
-          dotnet test src/core/Tests.EngineParity/ -c Release --no-build --nologo -v normal \
-            --settings src/Hydra.runsettings \
-            --logger "trx;LogFileName=engineparity.trx" \
+            --logger "trx;LogFileName=agentworkload.trx" \
             --results-directory TestResults/
         env:
           COORD_URL: http://localhost:9000
@@ -79,7 +53,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: System Tests
+          name: Agent Workload Tests
           path: TestResults/*.trx
           reporter: dotnet-trx
           fail-on-error: false
@@ -89,6 +63,6 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: system-results-${{ github.run_number }}
+          name: agent-workload-results-${{ github.run_number }}
           path: TestResults/*.trx
           retention-days: 30
