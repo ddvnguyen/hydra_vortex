@@ -49,7 +49,6 @@ jobs:
     name: Build llama-engine (fork)
     runs-on: ubuntu-latest
     if: inputs.build-from-fork == 'true' && inputs.rtx-image == '' && inputs.p100-image == ''
-    secrets: inherit
     outputs:
       rtx-image: ${{ steps.build.outputs.rtx-image }}
       p100-image: ${{ steps.build.outputs.p100-image }}
