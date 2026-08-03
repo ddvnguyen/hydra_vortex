@@ -130,7 +130,12 @@ public sealed class OpencodeFlowTests : IAsyncLifetime
         };
 
         var response = await _httpClient!.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync();
+            throw new HttpRequestException(
+                $"Response status code does not indicate success: {(int)response.StatusCode} ({response.StatusCode}). Body: {errorBody}");
+        }
         return response;
     }
 

@@ -97,7 +97,7 @@ app.MapPost("/v1/chat/completions", async (HttpRequest request) =>
     // ── SSE streaming ────────────────────────────────────────────────
     return Results.Stream(async stream =>
     {
-        var sw = new StreamWriter(stream) { AutoFlush = true };
+        var sw = new StreamWriter(stream);
 
         // Content chunk
         var chunk = new
@@ -118,6 +118,7 @@ app.MapPost("/v1/chat/completions", async (HttpRequest request) =>
         };
         await sw.WriteLineAsync($"data: {JsonSerializer.Serialize(chunk)}");
         await sw.WriteLineAsync();
+        await sw.FlushAsync();
 
         // Finish chunk
         var finishChunk = new
@@ -138,6 +139,7 @@ app.MapPost("/v1/chat/completions", async (HttpRequest request) =>
         };
         await sw.WriteLineAsync($"data: {JsonSerializer.Serialize(finishChunk)}");
         await sw.WriteLineAsync();
+        await sw.FlushAsync();
 
         // Usage chunk
         var usageChunk = new
@@ -156,10 +158,12 @@ app.MapPost("/v1/chat/completions", async (HttpRequest request) =>
         };
         await sw.WriteLineAsync($"data: {JsonSerializer.Serialize(usageChunk)}");
         await sw.WriteLineAsync();
+        await sw.FlushAsync();
 
         // Done marker
         await sw.WriteLineAsync("data: [DONE]");
         await sw.WriteLineAsync();
+        await sw.FlushAsync();
     }, "text/event-stream");
 });
 
