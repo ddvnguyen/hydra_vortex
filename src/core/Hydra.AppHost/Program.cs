@@ -3,8 +3,11 @@ using Aspire.Hosting;
 var builder = DistributedApplication.CreateBuilder(args);
 
 // ── PostgreSQL (Hydra.Core StoreMetadata requires it) ────────────────
+// Pin to :16 for hermetic CI — avoids untagged "latest" pulls and
+// ensures the E2E tests don't depend on a network-fetched image.
 var pgPassword = builder.AddParameter("pg-password", "hydra-test-pw");
 var postgres = builder.AddPostgres("postgres")
+    .WithImageTag("16")
     .WithDataVolume(isReadOnly: false)
     .WithPassword(pgPassword);
 
@@ -27,7 +30,7 @@ var fakeEngine2 = builder.AddProject<Projects.FakeLlamaEngine>("fake-engine-p100
 // port collisions. HYDRA_COORD_PORT defaults to 9000 in CoordinatorConfig
 // so we must set it explicitly to 19000.
 var hydraWorkersJson = """
-[{"name":"rtx","host":"localhost","rpc_port":19601,"llama_url":"http://localhost:18080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2},{"name":"p100","host":"localhost","rpc_port":19602,"llama_url":"http://localhost:18081","worker_type":2,"slots":1,"prefill_priority":100,"decode_priority":1}]
+[{"name":"rtx","host":"localhost","rpc_port":19601,"llama_rpc_port":19601,"llama_url":"http://localhost:18080","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2},{"name":"p100","host":"localhost","rpc_port":19602,"llama_rpc_port":19602,"llama_url":"http://localhost:18081","worker_type":2,"slots":1,"prefill_priority":100,"decode_priority":1}]
 """;
 
 var hydraCore = builder.AddProject<Projects.Hydra_Core>("hydra-core")
