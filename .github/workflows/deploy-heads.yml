@@ -177,23 +177,42 @@ jobs:
               IdentitiesOnly yes
           EOF
 
-      - name: Deploy RTX
-        if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx+rtx3060'
-        run: |
-          bash scripts/deploy-hydra-head.sh rtx
-          bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
+      # `core` + the shared `hydra-head:rtx` image must exist exactly once,
+      # before either head's `compose up`, and before RTX/RTX3060 fan out
+      # below — see deploy_shared_setup in the script for why.
+      - name: Shared setup (build image, bring up core)
+        if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
+        run: bash scripts/deploy-hydra-head.sh setup
 
-      - name: Deploy RTX 3060
-        if: inputs.gpu == 'all' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
-        run: |
-          bash scripts/deploy-hydra-head.sh rtx3060
-          bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480
+      # True parallel steps (GH Actions `parallel:`, June 2026) — RTX,
+      # RTX3060, and P100 each show as their own named step with its own
+      # log, running concurrently, not three steps waiting on each other.
+      # Safe because setup above already did the one-time shared work;
+      # each `-only` target here touches nothing but its own compose
+      # service (or, for P100, a wholly separate host over SSH). Deploy +
+      # its authoritative health-wait (480s, rich diagnostics via
+      # wait-for-head.sh — the script's own internal wait is just a quick
+      # 45s smoke-check) stay together in one step per head: they're
+      # inherently sequential for a given head anyway, so there's nothing
+      # to gain from a second parallel group.
+      - parallel:
+          - name: Deploy RTX
+            if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx+rtx3060'
+            run: |
+              bash scripts/deploy-hydra-head.sh rtx-only
+              bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
 
-      - name: Deploy P100
-        if: inputs.gpu == 'all' || inputs.gpu == 'p100'
-        run: |
-          bash scripts/deploy-hydra-head.sh p100
-          bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480
+          - name: Deploy RTX 3060
+            if: inputs.gpu == 'all' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
+            run: |
+              bash scripts/deploy-hydra-head.sh rtx3060-only
+              bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480
+
+          - name: Deploy P100
+            if: inputs.gpu == 'all' || inputs.gpu == 'p100'
+            run: |
+              bash scripts/deploy-hydra-head.sh p100
+              bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480
 
       # A missing pin is a hard failure, not a reason to skip. Guarding
       # these calls on `[ -n "$DIGEST" ]` would mean a broken extraction

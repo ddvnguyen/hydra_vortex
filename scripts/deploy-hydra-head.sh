@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # Deploy Hydra Head to GPU nodes
-# Usage: bash scripts/deploy-hydra-head.sh [rtx|p100|rtx3060|all]
+# Usage: bash scripts/deploy-hydra-head.sh [rtx|p100|rtx3060|rtx+rtx3060|all]
+#
+# core + head-rtx5060ti + head-rtx3060 are three independent containers in
+# one compose project (infra/docker-compose.hydra.yml); the two heads share
+# the `hydra-head:rtx` image and both depend on `core`, but are otherwise
+# unrelated. `rtx+rtx3060` and `all` build the shared image and bring up
+# `core` ONCE (deploy_shared_setup), then deploy the requested heads
+# concurrently (run_concurrent) — each targets only its own compose
+# service (`up -d <service>`, not a whole-project `up -d`), so they don't
+# step on each other. P100 has no compose/image dependency at all (SSH +
+# systemd on a separate VM) and joins the same concurrent batch for `all`.
 #
 # RTX path (since #322 / PR #328):
 #   - Build Go binary + container image
-#   - Deploy via `podman compose -f infra/docker-compose.hydra.yml up -d`
-#     which brings up `core` + `head-rtx5060ti` as a single pod with
-#     userns=host (so the in-container promtail can read /mnt/containers/
-#     ctr.log directly, no socat proxy needed).
+#   - Deploy via `podman compose -f infra/docker-compose.hydra.yml up -d
+#     head-rtx5060ti`, userns=host (so the in-container promtail can read
+#     /mnt/containers/ctr.log directly, no socat proxy needed).
 #   - The compose file is the source of truth for mount paths,
 #     env vars, health checks, and resource limits.
 #
@@ -18,8 +27,6 @@
 #   - The fat sm_86+sm_120 llama-server binary at
 #     `src/llama-cpp/build_sm86_sm120/bin/` is bind-mounted into the
 #     container; the 3060 picks the sm_86 SASS path.
-#   - `deploy_rtx` already builds the image; this path only ensures
-#     the build dir exists and the image is current.
 #
 # P100 path (still uses systemd, not in compose):
 #   - rsync binary + configs to hydra-p100
@@ -306,11 +313,15 @@ check_auth_file() {
   done
 }
 
-# ── Deploy: RTX via compose ──────────────────────────────────────────────────
-deploy_rtx() {
-  step "Deploying to RTX (compose)"
+# ── Shared setup: build the image once, bring up `core` once ─────────────────
+# Everything RTX and RTX3060 have in common — the `hydra-head:rtx` image
+# build and the `core` service — happens here, exactly once, before any
+# per-head work starts. This is what makes it safe to deploy the heads
+# concurrently afterward: neither of them touches the image build or the
+# whole-project compose state again, only their own service.
+deploy_shared_setup() {
+  step "Shared setup (image build + core)"
 
-  # Build prerequisites
   build_go
   build_core_image
   generate_token
@@ -318,7 +329,6 @@ deploy_rtx() {
   build_rtx_image
   stop_host_sidecars
   check_auth_file
-  check_llama_build_type_local
 
   # Ensure the promtail positions volume is removed (was used
   # by the promtail binary inside hydra-head; Promtail is
@@ -327,15 +337,11 @@ deploy_rtx() {
     podman volume rm hydra-head-promtail-positions 2>/dev/null || true
   fi
 
-  # Drop any pre-compose standalone container (we used to run a single
-  # hydra-head-rtx container via `podman run`; the compose brings it
-  # up under the pod_hydra-system name).
-  if podman container exists hydra-head-rtx 2>/dev/null; then
-    podman stop hydra-head-rtx 2>/dev/null || true
-    podman rm hydra-head-rtx 2>/dev/null || true
-  fi
-  # Also drop the old manually-created 'hydra-system' pod (from before
-  # the compose existed). It's safe to remove — compose will recreate.
+  # Drop the old manually-created 'hydra-system' pod (from before the
+  # compose existed). It's safe to remove — compose will recreate. Must
+  # happen before any per-service `compose up`, and only once — this is
+  # a whole-project-level operation, not something the per-head paths
+  # should ever repeat.
   for old_pod in hydra-system pod_hydra-system; do
     if podman pod exists "$old_pod" 2>/dev/null; then
       timeout 10 podman pod rm -f "$old_pod" 2>/dev/null || true
@@ -352,29 +358,74 @@ deploy_rtx() {
   fi
 
   # Export the token so podman-compose picks it up via ${HYDRA_HEAD_AUTH_TOKEN:?}
+  # (exported here, inherited by every concurrent deploy_*_only subshell).
   export HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN"
 
   reap_zombie_container hydra-system_core_1
-  reap_zombie_container hydra-system_head-rtx5060ti_1
 
-  # Deploy. Use `up` (not `up -d`) so we see errors; it returns
-  # immediately when containers are detached.
-  if ! podman compose -f infra/docker-compose.hydra.yml up -d 2>&1 | tail -10; then
-    die "podman compose up failed — check the output above. Common causes: HYDRA_HEAD_AUTH_TOKEN not exported, image not built, or userns conflict."
+  # Service-scoped — brings up ONLY `core`. head-rtx5060ti/head-rtx3060
+  # both declare `depends_on: core`, so a bare `up -d` (no service arg)
+  # would also try to reconcile them; scoping it avoids that entirely.
+  if ! podman compose -f infra/docker-compose.hydra.yml up -d core 2>&1 | tail -10; then
+    die "podman compose up (core) failed — check the output above. Common causes: HYDRA_HEAD_AUTH_TOKEN not exported, image not built, or userns conflict."
   fi
-  ok "Compose up: core + head-rtx5060ti in pod hydra-system"
+  ok "Compose up: core in pod hydra-system"
 
-  # Wait for both healthchecks to pass
-  step "Waiting for health"
+  step "Waiting for core health"
   for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     sleep 3
-    if curl -sf http://localhost:9000/health >/dev/null 2>&1 \
-       && curl -sf http://localhost:9700/health >/dev/null 2>&1; then
-      ok "Both core (:9000) and head-rtx5060ti (:9700) are healthy"
+    if curl -sf http://localhost:9000/health >/dev/null 2>&1; then
+      ok "core (:9000) is healthy"
       break
     fi
     if [ "$i" = "15" ]; then
-      warn "Health not fully green after 45s — check 'podman ps' and 'podman logs <ctr>'"
+      warn "core health not green after 45s — check 'podman ps' and 'podman logs hydra-system_core_1'"
+    fi
+  done
+}
+
+# ── Deploy: RTX via compose ──────────────────────────────────────────────────
+# Standalone entry point (CLI / single-target CI step): does the shared
+# setup itself, then deploys just this head. For concurrent multi-head
+# deploys, deploy_shared_setup runs once up front and deploy_rtx_only runs
+# directly — see the `all` / `rtx+rtx3060` cases below.
+deploy_rtx() {
+  deploy_shared_setup
+  deploy_rtx_only
+}
+
+deploy_rtx_only() {
+  step "Deploying head-rtx5060ti (compose)"
+
+  check_llama_build_type_local
+
+  # Drop any pre-compose standalone container (we used to run a single
+  # hydra-head-rtx container via `podman run`; the compose brings it
+  # up under the pod_hydra-system name).
+  if podman container exists hydra-head-rtx 2>/dev/null; then
+    podman stop hydra-head-rtx 2>/dev/null || true
+    podman rm hydra-head-rtx 2>/dev/null || true
+  fi
+
+  reap_zombie_container hydra-system_head-rtx5060ti_1
+
+  # Service-scoped — only touches head-rtx5060ti. `core` is already up
+  # (deploy_shared_setup), so this is safe to run concurrently with
+  # deploy_rtx3060_only, which only ever touches head-rtx3060.
+  if ! podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
+    die "podman compose up (head-rtx5060ti) failed — check the output above."
+  fi
+  ok "Compose up: head-rtx5060ti in pod hydra-system"
+
+  step "Waiting for head-rtx5060ti health"
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    sleep 3
+    if curl -sf http://localhost:9700/health >/dev/null 2>&1; then
+      ok "head-rtx5060ti (:9700) is healthy"
+      break
+    fi
+    if [ "$i" = "15" ]; then
+      warn "head-rtx5060ti health not green after 45s — check 'podman ps' and 'podman logs hydra-system_head-rtx5060ti_1'"
     fi
   done
 
@@ -466,18 +517,20 @@ deploy_p100() {
 # `pod_hydra-system`. It reuses the `hydra-head:rtx` image; the
 # compose `command:` points it at node-rtx3060.yaml and api-port
 # 9701, and `nvidia.com/gpu=1` + `CUDA_VISIBLE_DEVICES=1` restrict
-# it to the 3060. So `deploy_rtx3060` is mostly a verification +
-# re-up step — the image was already built by `deploy_rtx`.
+# it to the 3060.
+#
+# Standalone entry point (CLI / single-target CI step): does the shared
+# setup itself, then deploys just this head. For concurrent multi-head
+# deploys, deploy_shared_setup runs once up front and deploy_rtx3060_only
+# runs directly — see the `all` / `rtx+rtx3060` cases below.
 deploy_rtx3060() {
-  step "Verifying RTX 3060 (same image as RTX, second compose service)"
+  deploy_shared_setup
+  deploy_rtx3060_only
+}
 
-  build_go
-  build_core_image
-  generate_token
-  AUTH_TOKEN=$(get_token)
-  build_rtx_image
-  stop_host_sidecars
-  check_auth_file
+deploy_rtx3060_only() {
+  step "Deploying head-rtx3060 (compose)"
+
   check_llama_build_type_local_fat
 
   # Ensure the bind mount source (the FAT sm_86+sm_120 build dir) exists.
@@ -491,13 +544,15 @@ deploy_rtx3060() {
     podman rm hydra-system_head-rtx3060_1 2>/dev/null || true
   fi
 
-  # Deploy. `podman compose up` is idempotent — it'll (re)create only
-  # the services whose config or image hash changed.
-  export HYDRA_HEAD_AUTH_TOKEN="$AUTH_TOKEN"
-  if ! podman compose -f infra/docker-compose.hydra.yml up -d 2>&1 | tail -10; then
-    die "podman compose up failed (rtx3060 path) — check the output above. Common cause: image not built (run deploy_rtx first)."
+  reap_zombie_container hydra-system_head-rtx3060_1
+
+  # Service-scoped — only touches head-rtx3060. `core` is already up
+  # (deploy_shared_setup), so this is safe to run concurrently with
+  # deploy_rtx_only, which only ever touches head-rtx5060ti.
+  if ! podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
+    die "podman compose up (head-rtx3060) failed — check the output above."
   fi
-  ok "Compose up: core + head-rtx5060ti + head-rtx3060 in pod hydra-system"
+  ok "Compose up: head-rtx3060 in pod hydra-system"
 
   # Wait for the 3060 head to come up on :9701
   step "Waiting for head-rtx3060 health on :9701"
@@ -513,6 +568,32 @@ deploy_rtx3060() {
   done
 }
 
+# ── Run named deploy functions concurrently ───────────────────────────────────
+# Used for `all` / `rtx+rtx3060`: once deploy_shared_setup has built the
+# image and brought up `core`, RTX, RTX3060, and P100 have no shared
+# mutable state — each `deploy_*_only` targets only its own compose
+# service (or, for P100, a separate host over SSH entirely) — so there is
+# no reason to make them wait on each other. Output is prefixed per branch
+# since it interleaves; `wait` on each PID (not `wait` with no args) is
+# what lets us catch which branch failed under `set -e`, since a
+# backgrounded command's failure doesn't trigger errexit on its own.
+run_concurrent() {
+  local pids=() names=() fn failed=0
+  for fn in "$@"; do
+    ( "$fn" 2>&1 | sed -u "s/^/[$fn] /" ) &
+    pids+=("$!")
+    names+=("$fn")
+  done
+  local i
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      fail "${names[$i]} failed"
+      failed=1
+    fi
+  done
+  [ "$failed" = "0" ] || die "One or more concurrent deploys failed (see prefixed output above)"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 case "$TARGET" in
   rtx)
@@ -524,13 +605,30 @@ case "$TARGET" in
   p100)
     deploy_p100
     ;;
+  rtx+rtx3060)
+    deploy_shared_setup
+    run_concurrent deploy_rtx_only deploy_rtx3060_only
+    ;;
   all)
-    deploy_rtx
-    deploy_rtx3060
-    deploy_p100
+    deploy_shared_setup
+    run_concurrent deploy_rtx_only deploy_rtx3060_only deploy_p100
+    ;;
+  # Lean, no-setup targets for callers that run deploy_shared_setup as a
+  # separate prior step themselves (deploy-heads.yml's GitHub Actions
+  # `parallel:` step group does this, so RTX/RTX3060/P100 show as three
+  # separate, individually-named, concurrently-running steps in the
+  # Actions UI instead of one step that backgrounds internally).
+  setup)
+    deploy_shared_setup
+    ;;
+  rtx-only)
+    deploy_rtx_only
+    ;;
+  rtx3060-only)
+    deploy_rtx3060_only
     ;;
   *)
-    die "Unknown target: $TARGET (expected: rtx, rtx3060, p100, all)"
+    die "Unknown target: $TARGET (expected: rtx, rtx3060, p100, rtx+rtx3060, all, setup, rtx-only, rtx3060-only)"
     ;;
 esac
 
