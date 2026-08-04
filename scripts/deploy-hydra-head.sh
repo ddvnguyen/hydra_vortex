@@ -613,8 +613,22 @@ case "$TARGET" in
     deploy_shared_setup
     run_concurrent deploy_rtx_only deploy_rtx3060_only deploy_p100
     ;;
+  # Lean, no-setup targets for callers that run deploy_shared_setup as a
+  # separate prior step themselves (deploy-heads.yml's GitHub Actions
+  # `parallel:` step group does this, so RTX/RTX3060/P100 show as three
+  # separate, individually-named, concurrently-running steps in the
+  # Actions UI instead of one step that backgrounds internally).
+  setup)
+    deploy_shared_setup
+    ;;
+  rtx-only)
+    deploy_rtx_only
+    ;;
+  rtx3060-only)
+    deploy_rtx3060_only
+    ;;
   *)
-    die "Unknown target: $TARGET (expected: rtx, rtx3060, p100, rtx+rtx3060, all)"
+    die "Unknown target: $TARGET (expected: rtx, rtx3060, p100, rtx+rtx3060, all, setup, rtx-only, rtx3060-only)"
     ;;
 esac
 
