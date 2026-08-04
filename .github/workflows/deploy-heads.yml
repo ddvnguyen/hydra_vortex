@@ -177,23 +177,55 @@ jobs:
               IdentitiesOnly yes
           EOF
 
-      - name: Deploy RTX
-        if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx+rtx3060'
-        run: |
-          bash scripts/deploy-hydra-head.sh rtx
-          bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
+      # scripts/deploy-hydra-head.sh handles `rtx+rtx3060` and `all` as
+      # concurrent multi-head deploys internally (shared image build + core
+      # brought up once, then each requested head deployed against its own
+      # compose service in parallel — see run_concurrent in the script).
+      # inputs.gpu's choices map 1:1 onto the script's target names.
+      - name: Deploy heads
+        run: bash scripts/deploy-hydra-head.sh "${{ inputs.gpu }}"
 
-      - name: Deploy RTX 3060
-        if: inputs.gpu == 'all' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
+      # The script's own health-wait is a quick internal smoke-check (45s);
+      # this is the authoritative gate (480s, rich failure diagnostics via
+      # wait-for-head.sh). These are read-only status polls with no shared
+      # state, so — same reasoning as the deploy step above — whichever
+      # heads were actually deployed this run are waited on concurrently
+      # rather than one after another.
+      - name: Wait for deployed heads
         run: |
-          bash scripts/deploy-hydra-head.sh rtx3060
-          bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480
+          set -uo pipefail
+          pids=(); names=()
+          start_wait() {
+            bash scripts/ci/wait-for-head.sh "$1" "$2" 480 &
+            pids+=("$!"); names+=("$1")
+          }
 
-      - name: Deploy P100
-        if: inputs.gpu == 'all' || inputs.gpu == 'p100'
-        run: |
-          bash scripts/deploy-hydra-head.sh p100
-          bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480
+          case "${{ inputs.gpu }}" in
+            all)
+              start_wait "hydra-head-rtx" "http://localhost:9700/status"
+              start_wait "hydra-head-rtx3060" "http://localhost:9701/status"
+              start_wait "hydra-head-p100" "http://192.168.122.21:9700/status"
+              ;;
+            rtx+rtx3060)
+              start_wait "hydra-head-rtx" "http://localhost:9700/status"
+              start_wait "hydra-head-rtx3060" "http://localhost:9701/status"
+              ;;
+            rtx)
+              start_wait "hydra-head-rtx" "http://localhost:9700/status"
+              ;;
+            rtx3060)
+              start_wait "hydra-head-rtx3060" "http://localhost:9701/status"
+              ;;
+            p100)
+              start_wait "hydra-head-p100" "http://192.168.122.21:9700/status"
+              ;;
+          esac
+
+          failed=0
+          for i in "${!pids[@]}"; do
+            wait "${pids[$i]}" || { echo "::error::${names[$i]} did not become healthy"; failed=1; }
+          done
+          [ "$failed" = "0" ] || exit 1
 
       # A missing pin is a hard failure, not a reason to skip. Guarding
       # these calls on `[ -n "$DIGEST" ]` would mean a broken extraction
