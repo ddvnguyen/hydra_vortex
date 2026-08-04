@@ -39,7 +39,10 @@ jobs:
             -t hydra-cuda-base:latest infra/llama-rtx-node \
             2>&1 | tee /tmp/hydra-build-cuda-base.log | tail -3
           export PATH=$HOME/go-sdk/go/bin:$PATH
-          go build -C src/head -o bin/hydra-head . \
+          # -C changes dir, so a relative -o resolves under src/head — the
+          # Dockerfile.rtx COPY expects <repo>/bin/hydra-head (same as
+          # deploy-hydra-head.sh). Use an absolute output path.
+          go build -C src/head -o "${{ github.workspace }}/bin/hydra-head" . \
             2>&1 | tee /tmp/hydra-build-head.log | tail -3
           podman build -f infra/hydra-head/Dockerfile.rtx \
             -t localhost/hydra-head:rtx . \

@@ -64,8 +64,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Reset stale .NET build servers
+        # This runner is also the host for the live GPU inference stack, so
+        # it can be under enough memory pressure to abort the CLR mid-startup
+        # (exit 134). A poisoned VBCSCompiler/MSBuild server socket from a
+        # prior abort then fails the *next* build too. Clear it before we start.
+        run: dotnet build-server shutdown || true
+
       - name: Restore & build (.NET)
-        run: dotnet build src/Hydra.sln -c Release --nologo -v minimal
+        run: |
+          for attempt in 1 2; do
+            if dotnet build src/Hydra.sln -c Release --nologo -v minimal; then
+              exit 0
+            fi
+            code=$?
+            if [ "$code" != "134" ] || [ "$attempt" == "2" ]; then
+              exit "$code"
+            fi
+            echo "::warning::dotnet build aborted (exit 134, CLR fatal error) on attempt $attempt — likely runner memory pressure. Resetting build servers and retrying."
+            dotnet build-server shutdown || true
+            sleep 5
+          done
 
       - name: Unit tests — Shared
         run: |
