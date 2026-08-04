@@ -1,5 +1,5 @@
 name: Deploy Heads (llama-engine)
-run-name: Deploy Heads → ${{ inputs.gpu }}${{ inputs.run-tests != 'none' && format(' → {0} tests', inputs.run-tests) || '' }}
+run-name: Deploy Heads → ${{ inputs.gpu }}${{ inputs.image-tag != 'current' && format(' [{0}]', inputs.image-tag) || '' }}${{ inputs.run-tests != 'none' && format(' → {0} tests', inputs.run-tests) || '' }}
 
 on:
   workflow_dispatch:
@@ -14,22 +14,26 @@ on:
           - "rtx3060"
           - "p100"
           - "rtx+rtx3060"
-      rtx-image:
+      image-tag:
         description: >
-          Full OCI image ref for RTX nodes (blank = build from fork or use current).
-          E.g. ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-0.1.0-a157edf
+          llama-server OCI build to deploy to ALL selected GPUs. Per-arch
+          refs are derived: RTX/3060 = sm86-sm120-llama-engine-<tag>, P100 =
+          sm60-llama-server-<tag>. "current" = deploy the stable version
+          pinned in the node configs (no re-pin). "latest" = newest build.
+          Immutable tags are <fork-sha>[-pr<N>] (PR-built) or
+          <version>-<fork-sha>. Refresh this list with
+          scripts/ci/list-llama-image-tags.sh.
         required: false
-        default: ""
-        type: string
-      p100-image:
-        description: >
-          Full OCI image ref for P100 (blank = build from fork or use current).
-          E.g. ghcr.io/ddvnguyen/llama-server:sm60-llama-server-0.1.0-a157edf
-        required: false
-        default: ""
-        type: string
+        default: "current"
+        type: choice
+        options:
+          - "current"
+          - "latest"
+          - "22fff15"
+          - "0.1.0-6473fce"
+          - "0.1.0-cfe8146"
       build-from-fork:
-        description: "Build llama-engine from fork before deploy"
+        description: "Build llama-engine + llama-server from fork before deploy (tags image with commit SHA and -pr<N> when built from a PR)"
         required: false
         default: "false"
         type: choice
@@ -49,11 +53,6 @@ on:
           - "system"
           - "agent-workload"
           - "both"
-      system-test-filter:
-        description: "Optional xUnit filter (FullyQualifiedName substring) passed to the System Tests workflow"
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: write
@@ -64,25 +63,51 @@ env:
   IMAGE_REPO: ghcr.io/ddvnguyen/llama-server
 
 jobs:
-  # ── Optional: build llama-engine via fork's workflow ───────────────────
+  # ── Resolve the PR id for the current branch (used to label fork builds) ──
+  resolve-pr:
+    name: Resolve PR id
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    concurrency:
+      group: deploy-heads-resolve-pr
+      cancel-in-progress: false
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+    steps:
+      - name: Detect PR id from head branch
+        id: pr
+        run: |
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "Detected PR id: ${PR:-none}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Optional: build llama-engine + llama-server via fork's workflow ─────
+  # Builds both RTX (engine) and P100 (server) images. The fork tags them
+  # <arch>-<binary>-<version>-<sha>[-pr<N>]; the PR id is passed
+  # programmatically (never a user input).
   build-llama:
-    name: Build llama-engine (fork)
+    name: Build llama-engine + llama-server (fork)
+    needs: [resolve-pr]
     # Reusable workflow must be referenced at the JOB level (jobs.*.uses),
     # not inside a step. hydra-build.yml@hydra-fork declares workflow_call
     # with the inputs/outputs below. GITHUB_TOKEN is passed by default, so no
     # explicit secrets mapping is required for a cross-repo call.
-    if: inputs.build-from-fork == 'true' && inputs.rtx-image == '' && inputs.p100-image == ''
+    if: inputs.build-from-fork == 'true' && inputs.image-tag == 'current'
     concurrency:
       group: deploy-heads-build
       cancel-in-progress: false
     uses: ddvnguyen/llama.cpp/.github/workflows/hydra-build.yml@hydra-fork
     with:
       build_llama_engine: true
-      build_llama_server: false
+      build_llama_server: true
       arch_sm86_sm120: ${{ inputs.gpu != 'p100' }}
       arch_sm60: ${{ inputs.gpu == 'all' || inputs.gpu == 'p100' }}
       runner_target: local
       execution_mode: matrix
+      pr: ${{ needs.resolve-pr.outputs.pr }}
 
   # ── Deploy to selected GPUs ───────────────────────────────────────────
   deploy:
@@ -110,12 +135,66 @@ jobs:
       - name: Determine images
         id: images
         run: |
-          RTX="${{ inputs.rtx-image || needs.build-llama.outputs.rtx-image }}"
-          P100="${{ inputs.p100-image || needs.build-llama.outputs.p100-image }}"
+          RTX=""
+          P100=""
+          if [ "${{ inputs.build-from-fork }}" = "true" ]; then
+            RTX="${{ needs.build-llama.outputs.rtx-image }}"
+            P100="${{ needs.build-llama.outputs.p100-image }}"
+          elif [ "${{ inputs.image-tag }}" != "current" ]; then
+            RTX="ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-${{ inputs.image-tag }}"
+            P100="ghcr.io/ddvnguyen/llama-server:sm60-llama-server-${{ inputs.image-tag }}"
+          fi
           echo "rtx=$RTX" >> "$GITHUB_OUTPUT"
           echo "p100=$P100" >> "$GITHUB_OUTPUT"
           echo "RTX image: ${RTX:-'(use current)'}"
           echo "P100 image: ${P100:-'(use current)'}"
+
+      # Fail fast BEFORE touching the live rig: a missing/mutated image ref
+      # (or a stale config pin, like the P100 crash-loop) is caught here with
+      # a clear message instead of a crash-looping head.
+      - name: Validate image refs exist
+        if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
+        run: |
+          set -euo pipefail
+          validate_ref() {
+            local ref="$1"
+            if podman pull "$ref" >/dev/null 2>&1; then
+              echo "OK: $ref"
+            else
+              echo "::error::Image ref not found or not pullable: $ref"
+              echo "::error::Run scripts/ci/list-llama-image-tags.sh for the current valid image-tag list."
+              exit 1
+            fi
+          }
+          [ -n "${{ steps.images.outputs.rtx }}" ] && validate_ref "${{ steps.images.outputs.rtx }}"
+          [ -n "${{ steps.images.outputs.p100 }}" ] && validate_ref "${{ steps.images.outputs.p100 }}"
+
+      - name: Validate current pins in node configs
+        if: steps.images.outputs.rtx == '' && steps.images.outputs.p100 == ''
+        run: |
+          set -euo pipefail
+          check_pin() {
+            local config="$1"
+            local src digest actual
+            src=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config")
+            digest=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config")
+            [ -n "$src" ] || { echo "::error::$config: no source pinned under llama-server:"; exit 1; }
+            echo "Checking $config: $src"
+            podman pull "$src" >/dev/null 2>&1 || { echo "::error::$config: $src not pullable"; exit 1; }
+            if [ -n "$digest" ]; then
+              actual=$(podman inspect "$src" --format '{{.Digest}}' 2>/dev/null || true)
+              if [ "$actual" = "$digest" ]; then
+                echo "OK: digest matches $actual"
+              else
+                echo "::error::$config: pinned digest mismatch (pinned=$digest actual=${actual:-none})"
+                echo "::error::Re-run deploy with an explicit image-tag to re-pin, or fix $config."
+                exit 1
+              fi
+            fi
+          }
+          check_pin infra/hydra-head/config/node-rtx.yaml
+          check_pin infra/hydra-head/config/node-rtx3060.yaml
+          check_pin infra/hydra-head/config/node-p100.yaml
 
       - name: Pin OCI images in node configs
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
@@ -325,8 +404,6 @@ jobs:
     needs: deploy
     if: inputs.run-tests == 'system' || inputs.run-tests == 'both'
     uses: ./.github/workflows/test-system.yml
-    with:
-      filter: ${{ inputs.system-test-filter }}
 
   agent-workload-tests:
     name: Agent Workload Tests (Tier 4)
