@@ -29,9 +29,15 @@ on:
         options:
           - "current"
           - "latest"
-          - "22fff15"
+          - "0.1.0-5b19995"
           - "0.1.0-6473fce"
+          - "0.1.0-a9ce093-pr74"
           - "0.1.0-cfe8146"
+          - "0.1.0-eb71174-pr74"
+          - "22fff15"
+          - "5b19995"
+          - "a9ce093-pr74"
+          - "eb71174-pr74"
       build-from-fork:
         description: "Build llama-engine + llama-server from fork before deploy (tags image with commit SHA and -pr<N> when built from a PR)"
         required: false
