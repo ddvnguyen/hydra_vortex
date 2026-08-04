@@ -428,11 +428,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (ct.IsCancellationRequested) break;
 
 				// Skip requests whose client has disconnected — don't waste
-				// a GPU slot on a dead connection.
+				// a GPU slot on a dead connection. The item may already be
+				// holding a lease from an earlier phase (e.g. queued for the
+				// SaveDone->PickDecode handoff while still owning
+				// PrefillLease) — finalize it so that lease is released
+				// instead of leaking (WorkerTracker busy-time never clears).
 				if (qi.WorkItem.IsCancelled)
 				{
 					_log.Information("evaluator_skip_cancelled Sid={Sid}", qi.WorkItem.SessionId);
 					lock (_queueLock) { _requestQueue.Remove(qi); }
+					await FinalizeAsync(qi.WorkItem, WorkItemState.Cancelled);
 					continue;
 				}
 
@@ -556,6 +561,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					return;
 				}
 			}
+
+			// Loop exited because item.IsCancelled flipped true between
+			// dispatches (client disconnected — see WorkItem.Cancel(), called
+			// from SubmitAsync's own cancellation catch) rather than via a
+			// thrown OperationCanceledException. Without this, any lease
+			// already acquired (item.PrefillLease/DecodeLease) is never
+			// disposed and the WorkerTracker's busy timestamp is never
+			// cleared — the worker stays "busy" (hydra_worker_busy_seconds
+			// climbs forever) until the coordinator process restarts.
+			await FinalizeAsync(item, WorkItemState.Cancelled);
 		}
 		catch (OperationCanceledException)
 		{
