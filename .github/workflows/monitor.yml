@@ -14,6 +14,11 @@ jobs:
     name: Sync Prometheus alerts to GitHub issues
     runs-on: self-hosted
     timeout-minutes: 5
+    # A manual dispatch queued behind a scheduled run (or vice versa) must
+    # not run concurrently on the shared runner.
+    concurrency:
+      group: monitor-alerts
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
