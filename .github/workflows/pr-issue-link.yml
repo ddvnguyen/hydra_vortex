@@ -11,6 +11,10 @@ jobs:
   check-closes:
     name: Verify PR links a GitHub issue
     runs-on: ubuntu-latest
+    # Rapid edits/synchronizes can spawn concurrent runs; keep one per PR.
+    concurrency:
+      group: pr-issue-link-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
 
     steps:
       - name: Check for closing keyword

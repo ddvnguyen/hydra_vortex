@@ -1,4 +1,5 @@
 name: Deploy Heads (llama-engine)
+run-name: Deploy Heads → ${{ inputs.gpu }}${{ inputs.run-tests != 'none' && format(' → {0} tests', inputs.run-tests) || '' }}
 
 on:
   workflow_dispatch:
@@ -35,10 +36,29 @@ on:
         options:
           - "false"
           - "true"
+      run-tests:
+        description: >
+          Run tests after deploy, in order (both run serially on the live
+          rig): system = LiveRig (Tier 2) + EngineParity (Tier 3);
+          agent-workload = AgentWorkload (Tier 4).
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - "none"
+          - "system"
+          - "agent-workload"
+          - "both"
+      system-test-filter:
+        description: "Optional xUnit filter (FullyQualifiedName substring) passed to the System Tests workflow"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
   packages: write
+  checks: write
 
 env:
   IMAGE_REPO: ghcr.io/ddvnguyen/llama-server
@@ -52,6 +72,9 @@ jobs:
     # with the inputs/outputs below. GITHUB_TOKEN is passed by default, so no
     # explicit secrets mapping is required for a cross-repo call.
     if: inputs.build-from-fork == 'true' && inputs.rtx-image == '' && inputs.p100-image == ''
+    concurrency:
+      group: deploy-heads-build
+      cancel-in-progress: false
     uses: ddvnguyen/llama.cpp/.github/workflows/hydra-build.yml@hydra-fork
     with:
       build_llama_engine: true
@@ -273,3 +296,21 @@ jobs:
           | By | ${{ github.actor }} |
           | Time | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
           EOF
+
+  # ── Optional: run test suites against the freshly deployed heads ──────
+  # Triggered via the run-tests input. Each suite is its own reusable
+  # workflow; the shared hydra-live-rig concurrency group serializes them
+  # after the deploy job releases its slot.
+  system-tests:
+    name: System Tests (Tier 2 + 3)
+    needs: deploy
+    if: inputs.run-tests == 'system' || inputs.run-tests == 'both'
+    uses: ./.github/workflows/test-system.yml
+    with:
+      filter: ${{ inputs.system-test-filter }}
+
+  agent-workload-tests:
+    name: Agent Workload Tests (Tier 4)
+    needs: deploy
+    if: inputs.run-tests == 'agent-workload' || inputs.run-tests == 'both'
+    uses: ./.github/workflows/test-agent-workload.yml

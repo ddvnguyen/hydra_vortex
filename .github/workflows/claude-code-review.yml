@@ -13,6 +13,11 @@ jobs:
   review:
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false
+    # One review per PR at a time — a synchronize push cancels the in-flight
+    # review of an older commit so we never review stale code concurrently.
+    concurrency:
+      group: claude-code-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:

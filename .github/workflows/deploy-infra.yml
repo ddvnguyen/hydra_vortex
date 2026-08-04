@@ -11,6 +11,11 @@ jobs:
     name: Deploy Infra
     runs-on: self-hosted
     timeout-minutes: 10
+    # Share the live-rig group so infra deploys serialize with the other
+    # self-hosted deploys and test runs instead of racing on the runner.
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
