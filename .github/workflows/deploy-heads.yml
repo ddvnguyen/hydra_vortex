@@ -128,6 +128,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+      pull-requests: write
     env:
       HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
 
@@ -240,23 +241,33 @@ jobs:
             pin_image "$P100_IMG" infra/hydra-head/config/node-p100.yaml
           fi
 
-      - name: Commit pinned images
+      - name: Commit pinned images (PR)
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add infra/hydra-head/config/
           if ! git diff --cached --quiet; then
+            BRANCH="deploy-heads/pin-$(date +%Y%m%d-%H%M%S)"
+            git checkout -b "$BRANCH"
             git commit -m "chore: pin llama-engine OCI image (deploy-heads)"
             # Branch protection (GH006) rejects a direct push to main from
-            # this job's GITHUB_TOKEN. The deploy steps use the pinned config
-            # from this working tree regardless, so warn instead of failing.
-            if git push; then
-              echo "Pinned images committed and pushed."
+            # this job's GITHUB_TOKEN. Land the pin via a PR instead; the
+            # deploy steps use the pinned config from this working tree
+            # regardless, so a persistence failure must warn, not fail.
+            if git push origin "$BRANCH"; then
+              echo "Pushed pin branch $BRANCH."
+              gh pr create --base main --head "$BRANCH" \
+                --title "chore: pin llama-engine OCI image (deploy-heads)" \
+                --body "Automatic image pin from deploy-heads (${{ github.actor }}). Deploy already applied this pin to the live rig; this PR persists it to main." \
+                --label review-finding \
+              || echo "::warning::gh pr create failed; the pin lives on branch $BRANCH — open a PR manually to persist it."
             else
-              echo "::warning::Could not push pinned images (protected branch). Deploy continues using the pinned config from this checkout; open a PR to persist the pin."
+              echo "::warning::Could not push pin branch $BRANCH. Deploy continues using the pinned config from this checkout; open a PR to persist the pin."
             fi
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Ensure SSH for P100
         if: inputs.gpu == 'all' || inputs.gpu == 'p100'

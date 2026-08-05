@@ -56,6 +56,7 @@ permissions:
   checks: write
   contents: read
   issues: write
+  pull-requests: write
 
 jobs:
   # ── Decide which runner pool build-test uses ──────────────────────────
@@ -278,6 +279,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+      pull-requests: write
     env:
       HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
     if: |
@@ -333,11 +335,13 @@ jobs:
             git diff -- infra/hydra-head/config/
           fi
 
-      - name: Commit pinned image
+      - name: Commit pinned image (PR)
         if: ${{ steps.pin.outputs.changed == 'true' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          BRANCH="deploy-llama/pin-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
           git add infra/hydra-head/config/node-rtx.yaml infra/hydra-head/config/node-rtx3060.yaml infra/hydra-head/config/node-p100.yaml
           git commit -m "chore: pin llama-server OCI image
 
@@ -345,16 +349,23 @@ jobs:
           p100-image: ${{ github.event.inputs.p100-image || '(unchanged)' }}
 
           Triggered by deploy-llama workflow_dispatch (${{ github.actor }})."
-          # main is branch-protected (requires "Build & Test" before merge),
-          # so a direct push from this job's GITHUB_TOKEN is rejected with
-          # GH006. The deploy steps below still use the pinned config from
-          # this working tree, so a blocked push must warn rather than fail
-          # the whole deploy. Open a PR to persist the pin.
-          if git push origin HEAD:${{ github.ref_name }}; then
-            echo "Pinned image committed and pushed to ${{ github.ref_name }}."
+          # main is branch-protected (requires "Build & Test" before merge,
+          # added in PR #517), so a direct push from this job's GITHUB_TOKEN
+          # is rejected with GH006. Land the pin via a PR instead; the deploy
+          # steps below still use the pinned config from this working tree,
+          # so a persistence failure must warn rather than fail the deploy.
+          if git push origin "$BRANCH"; then
+            echo "Pushed pin branch $BRANCH."
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore: pin llama-server OCI image (deploy-llama)" \
+              --body "Automatic image pin from deploy-llama (${{ github.actor }}). Deploy already applied this pin to the live rig; this PR persists it to main." \
+              --label review-finding \
+            || echo "::warning::gh pr create failed; the pin lives on branch $BRANCH — open a PR manually to persist it."
           else
-            echo "::warning::Could not push pinned image to ${{ github.ref_name }} (protected branch). Deploy continues using the pinned config from this checkout; open a PR to persist the pin."
+            echo "::warning::Could not push pin branch $BRANCH. Deploy continues using the pinned config from this checkout; open a PR to persist the pin."
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Ensure SSH config for P100
         run: |
