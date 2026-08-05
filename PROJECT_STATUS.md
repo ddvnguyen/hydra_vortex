@@ -244,6 +244,25 @@ All source code lives under `src/`.
 | M4           | Model Management & Multi-Modal  | model distribution, dynamic load, vision/embed/audio        | Production (later) |
 | M5           | LLM Obs & Agentic              | Langfuse tracing, A/B testing, agentic system               | Production (later) |
 
+## CI/CD Structure
+
+| Check | When | Required for merge |
+|-------|------|--------------------|
+| `Build & Test` (ci.yml) | every push/PR | ✅ |
+| `E2E (hermetic)` (e2e-hermetic.yml) | **manual only** (`gh workflow run e2e-hermetic.yml --ref <pr-branch>`) | ✅ required status check |
+| System Tests (test-system.yml, LiveRig) | manual / deploy-heads | opt-in |
+
+Notes:
+- Hermetic E2E boots the full Aspire stack + Postgres and takes ~1–6 min; it was removed
+  from push/PR CI to stop it from slowing/flaking the shared runner. It remains a
+  mandatory merge gate via the required `E2E (hermetic)` check (reported on the PR
+  head when run manually).
+- Tests.Core integration tests are hermetic: the scheduler fixtures stub
+  `LlamaClientFactory`, so they never dial the live engine
+  (`localhost:8080` / `192.168.122.21:8086`). Live-boundary tests live in
+  Tests.LiveRig. This fixed a 30-min teardown hang where the tests hit the
+  production rig.
+
 ### Llama-Engine Sub-phases (v4 Design — Issue #397)
 
 | Phase | What | Status |

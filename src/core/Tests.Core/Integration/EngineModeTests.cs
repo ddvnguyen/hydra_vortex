@@ -222,12 +222,13 @@ public sealed class EngineModeTests
     /// <summary>
     /// Mock LlamaClient that returns a specific model identity from GetStateMetaAsync.
     /// Used by Gate A tests to verify that model_metadata comes from the decode node's
-    /// own report, not from item.Kv*.
+    /// own report, not from item.Kv*. Extends TestLlamaClient so EraseSlotAsync /
+    /// HealthAsync are also no-ops (no live engine dial).
     /// </summary>
-    internal sealed class GateAMockLlamaClient : LlamaClient
+    internal sealed class GateAMockLlamaClient : TestLlamaClient
     {
         private readonly SlotMeta _meta;
-        public GateAMockLlamaClient(SlotMeta meta) : base("http://mock:0")
+        public GateAMockLlamaClient(SlotMeta meta)
             => _meta = meta;
         public override Task<SlotMeta> GetStateMetaAsync(int slotId, CancellationToken ct)
             => Task.FromResult(_meta);
@@ -312,9 +313,17 @@ public sealed class EngineModeTests
                 Tracker.InitWorker(w.Name, w.Slots);
 
             var sp = new ServiceCollection().BuildServiceProvider();
-            Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, Rpc,
-                sp, Serilog.Log.Logger);
-            Scheduler.AgentClientFactory = (_, _) => Rpc;
+		Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, Rpc,
+			sp, Serilog.Log.Logger);
+		Scheduler.AgentClientFactory = (_, _) => Rpc;
+		// Hermetic: the scheduler's GetLlamaClient() would otherwise build a
+		// REAL HttpClient against the live engine URL (localhost:8080 /
+		// 192.168.122.21:8086) for GetStateMetaAsync / EraseSlotAsync. These
+		// tests verify coordinator logic, not the engine boundary — stub the
+		// state calls so the suite never dials the production rig. Live-boundary
+		// tests live in Tests.LiveRig. Gate A tests that need a specific
+		// model identity set their own LlamaClientFactory override below.
+		Scheduler.LlamaClientFactory = _ => new TestLlamaClient();
 
             // Override busy-timeout so retry loops fail fast in tests (~100ms
             // instead of the real 150s for 5000 tokens). These tests verify

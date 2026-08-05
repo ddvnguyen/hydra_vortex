@@ -166,6 +166,10 @@ internal sealed class StreamingFixture : IAsyncDisposable
 		Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, Rpc,
 			sp, Serilog.Log.Logger);
 		Scheduler.AgentClientFactory = (_, _) => Rpc;
+		// Hermetic: stub the state HTTP calls so the scheduler never dials
+		// the live engine (localhost:8080 / 192.168.122.21:8086). These are
+		// coordinator-logic tests; live-boundary tests live in Tests.LiveRig.
+		Scheduler.LlamaClientFactory = _ => new TestLlamaClient();
 
 		// Register test model so the "nano" alias used by these tests
 		// passes the unknown-model validation in SubmitAsync.

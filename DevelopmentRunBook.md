@@ -146,6 +146,12 @@ dotnet test src/core/Tests.Core --filter "FullyQualifiedName~ChunkCache" -v m
 # Tier 1 — Hermetic E2E (Aspire + fake engine, no live stack needed)
 dotnet test src/core/Tests.E2E/
 
+# Hermetic E2E is the manual PR-merge gate. It is NOT in ci.yml (push/PR) —
+# it runs on demand and satisfies the required "E2E (hermetic)" branch
+# protection check:
+#   gh workflow run e2e-hermetic.yml --ref <pr-head-branch>
+# See .github/workflows/e2e-hermetic.yml for the full flow.
+
 # Tier 2 — Live rig (requires live stack)
 dotnet test src/core/Tests.LiveRig/ -v m
 dotnet test src/core/Tests.LiveRig/ --filter "FullyQualifiedName~FullWorkflow"

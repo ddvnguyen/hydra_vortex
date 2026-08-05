@@ -1,0 +1,86 @@
+name: E2E (hermetic)
+
+# Manual-only hermetic end-to-end suite. This is deliberately NOT wired into
+# `on: push` / `on: pull_request`: the suite boots the full coordinator stack
+# (Aspire AppHost + FakeLlamaEngine) and needs an uncontended Postgres on the
+# shared self-hosted runner. Running it on every push/PR made CI slow and
+# flaky, and its AppHost/Postgres footprint collided with the build-test job.
+#
+# HOW TO SATISFY THE PR MERGE GATE
+# -------------------------------
+# Branch protection on `main` requires a status check named exactly
+# "E2E (hermetic)" (this workflow's job name). GitHub treats a green check
+# reported on the PR head commit by THIS workflow as satisfying that gate:
+#
+#   gh workflow run e2e-hermetic.yml --ref <pr-head-branch>
+#
+# The run checks out the PR branch, boots the hermetic stack, runs the suite,
+# and reports the "E2E (hermetic)" check on that commit. A PR can only be
+# merged once that check is green. So the suite is manual to run but still
+# mandatory before merge.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  e2e-hermetic:
+    name: E2E (hermetic)
+    runs-on: self-hosted
+    timeout-minutes: 30
+    concurrency:
+      group: e2e-hermetic
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reset stale .NET build servers
+        run: dotnet build-server shutdown || true
+
+      - name: Restore & build (.NET)
+        run: |
+          for attempt in 1 2; do
+            if dotnet build src/Hydra.sln -c Release --nologo -v minimal; then
+              exit 0
+            fi
+            code=$?
+            if [ "$code" != "134" ] || [ "$attempt" == "2" ]; then
+              exit "$code"
+            fi
+            echo "::warning::dotnet build aborted (exit 134) on attempt $attempt — retrying clean."
+            dotnet build-server shutdown || true
+            find src -type d \( -name bin -o -name obj \) -prune -exec rm -rf {} + 2>/dev/null || true
+            sleep 5
+          done
+
+      - name: Run hermetic E2E suite
+        run: |
+          # Pre-pull the pinned postgres image so Aspire DCP doesn't
+          # block on a network pull during the test run.
+          docker pull postgres:16 2>/dev/null || podman pull docker.io/library/postgres:16 2>/dev/null || true
+          dotnet test src/core/Tests.E2E/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --logger "trx;LogFileName=e2e.trx" \
+            --results-directory TestResults/
+
+      - name: Publish results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: E2E (hermetic)
+          path: TestResults/*.trx
+          reporter: dotnet-trx
+          fail-on-error: false
+          fail-on-empty: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results-${{ github.run_number }}
+          path: TestResults/*.trx
+          retention-days: 30
