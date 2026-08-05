@@ -24,6 +24,17 @@ func TestShouldSkipBinaryPull(t *testing.T) {
 		t.Fatalf("setup: write mismatch file: %v", err)
 	}
 
+	// A file with a recorded digest sidecar (what a successful pull leaves
+	// behind via RecordDigest).
+	sidecarFile := filepath.Join(tmpDir, "sidecar-verified")
+	if err := os.WriteFile(sidecarFile, []byte("verified bytes"), 0644); err != nil {
+		t.Fatalf("setup: write sidecarFile: %v", err)
+	}
+	const pinnedDigest = "sha256:abcdef1234567890"
+	if err := os.WriteFile(DigestSidecarPath(sidecarFile), []byte(pinnedDigest), 0644); err != nil {
+		t.Fatalf("setup: write digest sidecar: %v", err)
+	}
+
 	missingPath := filepath.Join(tmpDir, "does-not-exist")
 
 	tests := []struct {
@@ -58,6 +69,20 @@ func TestShouldSkipBinaryPull(t *testing.T) {
 			name:        "image_digest set, no checksum",
 			dest:        knownFile,
 			imageDigest: "sha256:abcdef1234567890",
+			wantSkip:    false,
+			wantReason:  "image_digest pinned, must verify via pull",
+		},
+		{
+			name:        "image_digest matches recorded sidecar",
+			dest:        sidecarFile,
+			imageDigest: pinnedDigest,
+			wantSkip:    true,
+			wantReason:  "image_digest matches recorded sidecar",
+		},
+		{
+			name:        "image_digest mismatches recorded sidecar",
+			dest:        sidecarFile,
+			imageDigest: "sha256:deadbeefdeadbeef",
 			wantSkip:    false,
 			wantReason:  "image_digest pinned, must verify via pull",
 		},
