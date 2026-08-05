@@ -55,20 +55,20 @@ services:
   nvidia_exporter:
     enabled: false
 
-# Health checker for the llama-server subprocess. Defaults are safe
-# for fast NVMe hosts (RTX 5060 Ti: model load ≈30-40s with mmap).
-# Slow VM disks (P100: model load = 235-300s) override max_fails in
-# node-p100.yaml.
+# Readiness for the llama-engine subprocess (event-driven, no HTTP polling).
+# hydra-head is the parent of llama-engine, so it learns readiness from the
+# child's own stdout: when a line contains any sentinel below, the process
+# transitions to StateReady. The old `health` block drove a periodic HTTP
+# poll of llama's /slots endpoint — that woke llama-engine up pointlessly
+# and reported "ready" as soon as the port bound, even before the model was
+# loaded. Removed in favour of sentinel-based readiness.
 #
-# max_fails history: was 3 — too aggressive, killed the model-load
-# window on first start. Bumped to 10 (≈10 min budget) on 2026-07-01
-# because the /slots endpoint returns 503 from the moment the process
-# binds the port until the slot subsystem is fully wired (up to
-# ~40s in practice; longer on a cold mmap of the 12 GB Q3_K model).
-# The P100 already runs max_fails=30; this brings the host-side
-# minimum to the same order.
-health:
-  path: /slots                  # HTTP endpoint the checker probes
-  interval_idle_sec: 60         # probe interval when llama is idle
-  interval_busy_sec: 300        # probe interval when llama is busy
-  max_fails: 10                 # consecutive failures → restart
+# timeout_sec is the miss-deadline: if no sentinel appears within this
+# window after spawn, the process is marked SUSPECT (started, not ready).
+# A generous default covers slow VM disks (P100 model load = 235-300s).
+readiness:
+  sentinels:
+    - "server is listening on"
+    - "router server is listening on"
+    - "model loaded"
+  timeout_sec: 180

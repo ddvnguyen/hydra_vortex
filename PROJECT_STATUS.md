@@ -132,6 +132,22 @@ Coordinator worker config:
 
 See `docs/architecture.md` for the 4-tier routing algorithm and session lifecycle detail.
 
+### Hydra Head supervision (event-driven, no HTTP polling)
+Hydra Head is the parent of llama-engine, so it supervises from the child's own
+signals instead of HTTP-polling it:
+
+| Signal | Source | Mechanism |
+|--------|--------|-----------|
+| Liveness | child exit event | `cmd.Wait()` → backoff restart (long-standing) |
+| Readiness | child stdout sentinel | `childWriter` onLine hook matches lifecycle lines (`server is listening on` / `router server is listening on` / `model loaded`) → `StateReady` |
+| Miss-deadline | readiness timeout | no sentinel within `readiness.timeout_sec` → `StateSuspect` (started, not ready); **no restart** on timeout — slow model load is legitimate, crashes come via the exit event |
+
+The periodic HTTP `/slots` health poll was removed (issue #538). The head never
+wakes llama-engine with health probes. `/status` returns 503 until llama is
+READY (real readiness gate for `wait-for-head.sh`); `/health` stays 200 on
+liveness for the pod healthcheck and deploy scripts, reporting `ready` in the
+body.
+
 ## Tech Stack Detail
 | Concern          | Hydra.Core (C#)    |
 |------------------|---------------------|
@@ -321,3 +337,4 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 | `/state/meta` model identity | ✅ Engine now returns tokenizer/model_name/quant/caps (fork PR #77); Gate A requires them |
 | Worker lease on mid-pipeline cancel | ✅ FinalizeAsync called at both exit points (PR #541). Before: BusySince climbed unbounded until coordinator restart |
 | deploy-heads startup_failure | ✅ Root cause: caller workflow lacked `pull-requests: read` for the cross-repo reusable workflow's job-level `permissions` (PR #539) |
+| Head supervision             | ✅ Event-driven (stdout sentinel readiness + exit-event liveness), no HTTP poll (issue #538) |

@@ -128,6 +128,15 @@ services:
 	if !cfg.Services.NvidiaExporter.Enabled {
 		t.Error("expected nvidia_exporter enabled from node")
 	}
+
+	// Readiness defaults: with no readiness block in either file, the
+	// sentinel defaults + 180s timeout are applied by the merge.
+	if len(cfg.Readiness.Sentinels) == 0 {
+		t.Error("expected readiness sentinels to be defaulted")
+	}
+	if cfg.Readiness.TimeoutSec != 180 {
+		t.Errorf("expected default readiness timeout 180, got %d", cfg.Readiness.TimeoutSec)
+	}
 }
 
 func TestBuildLlamaArgs(t *testing.T) {

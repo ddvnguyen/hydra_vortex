@@ -1,9 +1,11 @@
 package process
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -285,5 +287,126 @@ func TestConcurrentStartStopStateAccess(t *testing.T) {
 
 	t.Logf("concurrent ops: starts=%d stops=%d info=%d",
 		startCount.Load(), stopCount.Load(), infoCount.Load())
+}
+
+// readinessTestCfg builds a manager config with a mock binary whose stdout
+// emits the given lines (via echo), plus a readiness sentinel contract.
+func readinessTestCfg(t *testing.T, stdoutLines []string, sentinels []string, timeoutSec int) (*config.Config, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	mockBinary := filepath.Join(tmpDir, "mock-server")
+	var b strings.Builder
+	b.WriteString("#!/bin/bash\n")
+	for _, line := range stdoutLines {
+		fmt.Fprintf(&b, "echo %q\n", line)
+	}
+	b.WriteString("sleep 10\n")
+	if err := os.WriteFile(mockBinary, []byte(b.String()), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Node: config.NodeConfig{Name: "test"},
+		Llama: config.LlamaConfig{
+			Binary:     mockBinary,
+			WorkingDir: tmpDir,
+			Host:       "127.0.0.1",
+			Port:       18083,
+			RPCPort:    19506,
+			Params:     map[string]any{},
+			Env:        map[string]string{},
+		},
+		Readiness: config.ReadinessConfig{
+			Sentinels:  sentinels,
+			TimeoutSec: timeoutSec,
+		},
+	}
+	return cfg, mockBinary
+}
+
+// TestReadinessSentinelMarksReady: a stdout line containing the sentinel
+// transitions the process to READY with no HTTP probe.
+func TestReadinessSentinelMarksReady(t *testing.T) {
+	cfg, _ := readinessTestCfg(t,
+		[]string{"some boot log line", "router server is listening on http://0.0.0.0:8080"},
+		[]string{"router server is listening on"}, 60)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	mgr := NewManager(cfg, logger, nil)
+	defer mgr.Shutdown()
+
+	if err := mgr.StartLlama(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		info, err := mgr.GetProcessInfo("llama")
+		if err == nil && info.Ready {
+			if info.State != StateReady {
+				t.Errorf("state = %s, want %s", info.State, StateReady)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("llama never became ready from stdout sentinel")
+}
+
+// TestReadinessNoSentinelAssumeReady: without a readiness contract the
+// process is ready once alive (legacy behaviour).
+func TestReadinessNoSentinelAssumeReady(t *testing.T) {
+	cfg, _ := readinessTestCfg(t,
+		[]string{"mock server started"},
+		nil, 60)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	mgr := NewManager(cfg, logger, nil)
+	defer mgr.Shutdown()
+
+	if err := mgr.StartLlama(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := mgr.GetProcessInfo("llama")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Ready {
+		t.Error("expected ready=true without a readiness contract")
+	}
+}
+
+// TestReadinessTimeoutMarksSuspect: no sentinel within the timeout marks the
+// process SUSPECT (started, not ready), but does not restart it (a slow model
+// load is legitimate; crashes are handled by the exit event).
+func TestReadinessTimeoutMarksSuspect(t *testing.T) {
+	cfg, _ := readinessTestCfg(t,
+		[]string{"silently loading a big model..."}, // never contains the sentinel
+		[]string{"server is listening on"}, 1)        // 1s miss-deadline
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	mgr := NewManager(cfg, logger, nil)
+	defer mgr.Shutdown()
+
+	if err := mgr.StartLlama(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		info, err := mgr.GetProcessInfo("llama")
+		if err == nil && info.State == StateSuspect {
+			if info.Ready {
+				t.Error("expected ready=false in suspect state")
+			}
+			// The process must still be alive (no restart from the timeout).
+			if _, err := os.Stat("/proc/" + fmt.Sprintf("%d", info.PID)); err != nil {
+				t.Errorf("process should still be alive in suspect state: %v", err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("llama never became suspect after readiness timeout")
 }
 

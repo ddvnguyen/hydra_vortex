@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
-	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/health"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/process"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/registry"
 )
@@ -39,21 +38,40 @@ sleep 10
 			Params:     map[string]any{},
 			Env:        map[string]string{},
 		},
+		Readiness: config.ReadinessConfig{
+			Sentinels:  []string{"mock server"},
+			TimeoutSec: 60,
+		},
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	manager := process.NewManager(cfg, logger, nil)
-	checker := health.NewChecker("http://localhost:18080", "/slots", false, logger, 10*time.Second, 30*time.Second, 3)
 	regMgr := registry.NewManager(logger, tmpDir)
 
-	server := NewServer(cfg, manager, checker, regMgr, logger, authToken)
+	server := NewServer(cfg, manager, regMgr, logger, authToken)
 
 	cleanup := func() {
 		manager.Shutdown()
-		checker.Stop()
 	}
 
 	return server, cleanup
+}
+
+// startLlamaAndWaitReady starts the llama process and blocks until it is
+// marked READY (the mock prints its sentinel on stdout immediately).
+func startLlamaAndWaitReady(t *testing.T, server *Server) {
+	t.Helper()
+	if err := server.manager.StartLlama(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, err := server.manager.GetProcessInfo("llama"); err == nil && info.Ready {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("llama did not become ready within 3s")
 }
 
 func TestStatusEndpoint(t *testing.T) {
@@ -65,8 +83,19 @@ func TestStatusEndpoint(t *testing.T) {
 
 	server.ServeHTTP(w, req)
 
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 before llama ready, got %d", w.Code)
+	}
+
+	startLlamaAndWaitReady(t, server)
+
+	req = httptest.NewRequest(http.MethodGet, "/status", nil)
+	w = httptest.NewRecorder()
+
+	server.ServeHTTP(w, req)
+
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Errorf("expected status 200 after ready, got %d", w.Code)
 	}
 
 	var response map[string]any
@@ -77,8 +106,12 @@ func TestStatusEndpoint(t *testing.T) {
 	if _, ok := response["processes"]; !ok {
 		t.Error("expected processes in response")
 	}
-	if _, ok := response["health"]; !ok {
-		t.Error("expected health in response")
+	healthResp, ok := response["health"].(map[string]any)
+	if !ok {
+		t.Fatal("expected health in response")
+	}
+	if healthResp["ready"] != true {
+		t.Errorf("expected health.ready=true, got %v", healthResp["ready"])
 	}
 }
 
