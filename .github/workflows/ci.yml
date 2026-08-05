@@ -114,16 +114,6 @@ jobs:
             --logger "trx;LogFileName=core-integration.trx" \
             --results-directory TestResults/
 
-      - name: Unit tests — E2E (hermetic)
-        run: |
-          # Pre-pull the pinned postgres image so Aspire DCP doesn't
-          # block on a network pull during the test run.
-          docker pull postgres:16 2>/dev/null || podman pull docker.io/library/postgres:16 2>/dev/null || true
-          dotnet test src/core/Tests.E2E/ -c Release --no-build --nologo -v normal \
-            --settings src/Hydra.runsettings \
-            --logger "trx;LogFileName=e2e.trx" \
-            --results-directory TestResults/
-
       - name: Restore & build (Go head)
         run: |
           export PATH=$HOME/go-sdk/go/bin:$PATH

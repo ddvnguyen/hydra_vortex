@@ -160,7 +160,7 @@ public class LlamaClient : IDisposable
         return result ?? new SlotMeta { StateSize = 0 };
     }
 
-    public async Task<bool> HealthAsync(CancellationToken ct)
+    public virtual async Task<bool> HealthAsync(CancellationToken ct)
     {
         try
         {
@@ -183,7 +183,7 @@ public class LlamaClient : IDisposable
         return ParseSlots(json);
     }
 
-    public async Task EraseSlotAsync(int slotId, CancellationToken ct)
+    public virtual async Task EraseSlotAsync(int slotId, CancellationToken ct)
     {
         var response = await _http.PostAsync(
             $"{_baseUrl}/slots/{slotId}?action=erase", null, ct);
