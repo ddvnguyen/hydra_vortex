@@ -38,17 +38,95 @@ on:
         required: false
         default: ""
         type: string
+      runner:
+        description: >
+          Runner pool for build-test. auto = ubuntu-latest, falling back to
+          self-hosted only when cloud is busy (>= CI_CLOUD_BUSY_THRESHOLD
+          in-progress ubuntu-latest jobs) or CI_RUNNER=self-hosted is set.
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - "auto"
+          - "cloud"
+          - "self-hosted"
 
 permissions:
+  actions: read
   checks: write
   contents: read
   issues: write
 
 jobs:
+  # ── Decide which runner pool build-test uses ──────────────────────────
+  # Cloud (ubuntu-latest) by default. Falls back to the self-hosted runner
+  # only when (a) explicitly chosen via the workflow_dispatch `runner` input,
+  # (b) the CI_RUNNER repo variable is set to "self-hosted", or (c) in auto
+  # mode >= CI_CLOUD_BUSY_THRESHOLD jobs are already running on ubuntu-latest.
+  # The local runner stays reserved for deploys / live-rig tests; build-test
+  # only lands on it as a safety valve.
+  resolve-runner:
+    name: Resolve build-test runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+      reason: ${{ steps.pick.outputs.reason }}
+    steps:
+      - name: Decide runner pool
+        id: pick
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          RUN_ID="${{ github.run_id }}"
+          SELECTION="${{ inputs.runner || 'auto' }}"
+          THRESHOLD="${{ vars.CI_CLOUD_BUSY_THRESHOLD || 4 }}"
+
+          choose() {
+            echo "runner=$1" >> "$GITHUB_OUTPUT"
+            echo "reason=$2" >> "$GITHUB_OUTPUT"
+          }
+
+          # 1. Explicit per-trigger choice wins.
+          if [ "$SELECTION" = "self-hosted" ]; then
+            choose "self-hosted" "workflow_dispatch input"
+            exit 0
+          fi
+          if [ "$SELECTION" = "cloud" ]; then
+            choose "ubuntu-latest" "workflow_dispatch input"
+            exit 0
+          fi
+          # 2. Repo variable overrides the auto default globally.
+          if [ "${{ vars.CI_RUNNER }}" = "self-hosted" ]; then
+            choose "self-hosted" "CI_RUNNER variable"
+            exit 0
+          fi
+
+          # 3. Auto: cloud first; fall back to self-hosted only when cloud is
+          #    already busy. Count in-progress jobs labelled ubuntu-latest,
+          #    excluding this run's own resolve job.
+          BUSY=0
+          for RID in $(gh api "repos/${REPO}/actions/runs?status=in_progress&per_page=100" \
+            --jq '.workflow_runs[].id' 2>/dev/null || true); do
+            [ "$RID" = "$RUN_ID" ] && continue
+            N=$(gh api "repos/${REPO}/actions/runs/${RID}/jobs" \
+              --jq '[.jobs[] | select(.status=="in_progress") | select(.labels | index("ubuntu-latest"))] | length' \
+              2>/dev/null || echo 0)
+            BUSY=$((BUSY + N))
+          done
+
+          echo "Cloud in-progress ubuntu-latest jobs: ${BUSY} (threshold ${THRESHOLD})"
+          if [ "${BUSY}" -ge "${THRESHOLD}" ]; then
+            choose "self-hosted" "cloud busy (${BUSY} >= ${THRESHOLD})"
+          else
+            choose "ubuntu-latest" "cloud available (${BUSY} < ${THRESHOLD})"
+          fi
+
   # ── Build & Unit Test (every push/PR) ──────────────────────────────────
   build-test:
     name: Build & Test
-    runs-on: self-hosted
+    needs: resolve-runner
+    runs-on: ${{ needs.resolve-runner.outputs.runner }}
     timeout-minutes: 30
     # Serialize per-branch so a push and a pull_request run for the same
     # commit never race on the shared self-hosted Postgres. The key unifies
@@ -57,12 +135,28 @@ jobs:
     concurrency:
       group: build-test-${{ github.event.pull_request.head.ref || github.ref_name }}
       cancel-in-progress: true
-    # Never run on a fork's pull request — fork PRs can execute arbitrary code
-    # on the self-hosted runner.
+    # Never run on a fork's pull request — fork PRs can execute arbitrary code,
+    # and this job may land on the self-hosted runner (which has the live rig)
+    # when cloud is busy.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       - uses: actions/checkout@v4
+
+      # Toolchains only needed on the cloud pool — the self-hosted runner
+      # already has the system .NET 10 SDK and ~/go-sdk on PATH. Skipping
+      # here avoids re-downloading the SDK on every self-hosted run.
+      - uses: actions/setup-dotnet@v4
+        if: needs.resolve-runner.outputs.runner == 'ubuntu-latest'
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+
+      - uses: actions/setup-go@v5
+        if: needs.resolve-runner.outputs.runner == 'ubuntu-latest'
+        with:
+          go-version-file: src/head/go.mod
+          cache: true
 
       - name: Reset stale .NET build servers
         # This runner is also the host for the live GPU inference stack, so
