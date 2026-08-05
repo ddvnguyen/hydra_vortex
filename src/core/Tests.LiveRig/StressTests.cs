@@ -34,16 +34,16 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
             ["stream"] = false,
         };
         if (sessionId is not null) body["session_id"] = sessionId;
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSec) };
-        var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     private async Task<JsonElement> GetStatus()
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var resp = await client.GetAsync($"{_fx.CoordUrl}/status");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var resp = await HttpHelpers.Client.GetAsync($"{_fx.CoordUrl}/status", cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
@@ -117,11 +117,11 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
         };
 
         // ── Direct to RTX llama-server ─────────────────────────────────────
-        using (var directClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) })
         {
-            var directResp = await directClient.PostAsJsonAsync(
+            using var directCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var directResp = await HttpHelpers.Client.PostAsJsonAsync(
                 $"{_fx.LlamaRtxUrl}/v1/chat/completions",
-                new { messages, max_tokens = 100, temperature = 0 });
+                new { messages, max_tokens = 100, temperature = 0 }, directCts.Token);
             Assert.True(directResp.IsSuccessStatusCode, $"Direct llama completion failed: {await directResp.Content.ReadAsStringAsync()}");
             var directBody = await directResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(directBody.TryGetProperty("choices", out var directChoices));

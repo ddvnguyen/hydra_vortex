@@ -4484,9 +4484,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private LlamaClient GetLlamaClient(WorkerConfig w)
 	{
 		if (_llamaClients.TryGetValue(w.Name, out var c)) return c;
-		c = LlamaClientFactory != null
-			? LlamaClientFactory(w.Name)
-			: new LlamaClient(new HttpClient { Timeout = TimeSpan.FromMinutes(5) }, w.LlamaUrl);
+		if (LlamaClientFactory != null)
+		{
+			c = LlamaClientFactory(w.Name);
+		}
+		else
+		{
+			// Go through IHttpClientFactory (matches HealthMonitorService) instead of
+			// a raw `new HttpClient()`. This instance is cached in _llamaClients for
+			// the process lifetime, so it isn't a per-call leak — but the BUSY-retry
+			// progress query (GetStateMetaAsync, fired on every SignalEvaluator() wake
+			// while a slot stays busy, unthrottled by any polling interval) is the one
+			// production path hitting GET /slots/{id}/state/meta, the exact endpoint
+			// implicated in issue #552's TIME_WAIT spikes. Routing it through the
+			// factory gets it named HTTP logging (client "llama-{worker}") so a future
+			// recurrence is attributable from logs instead of live /proc forensics.
+			var http = _serviceProvider.GetRequiredService<IHttpClientFactory>().CreateClient($"llama-{w.Name}");
+			http.Timeout = TimeSpan.FromMinutes(5);
+			c = new LlamaClient(http, w.LlamaUrl);
+		}
 		_llamaClients[w.Name] = c;
 		return c;
 	}
