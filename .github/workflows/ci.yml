@@ -127,7 +127,7 @@ jobs:
     name: Build & Test
     needs: resolve-runner
     runs-on: ${{ needs.resolve-runner.outputs.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     # Serialize per-branch so a push and a pull_request run for the same
     # commit never race on the shared self-hosted Postgres. The key unifies
     # both events: push uses github.ref_name (branch), pull_request uses the
@@ -183,6 +183,28 @@ jobs:
             find src -type d \( -name bin -o -name obj \) -prune -exec rm -rf {} + 2>/dev/null || true
             sleep 5
           done
+
+      # Some Core unit tests (StoreMetadataTests, WriteBehindServiceTests)
+      # need Postgres. The self-hosted runner already runs one on 5432; the
+      # cloud pool must provision an identical one (db/user/pw = hydra_store/
+      # hydra/hydra). E2E's Aspire Postgres binds a dynamic port, so no clash.
+      - name: Start Postgres for Core unit tests
+        if: needs.resolve-runner.outputs.runner == 'ubuntu-latest'
+        run: |
+          docker rm -f hydra-test-pg >/dev/null 2>&1 || true
+          docker run -d --name hydra-test-pg \
+            -e POSTGRES_DB=hydra_store -e POSTGRES_USER=hydra -e POSTGRES_PASSWORD=hydra \
+            -p 5432:5432 postgres:16 >/dev/null
+          for i in $(seq 1 30); do
+            if docker exec hydra-test-pg pg_isready -U hydra -d hydra_store >/dev/null 2>&1; then
+              echo "Postgres ready on 127.0.0.1:5432"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Postgres container did not become ready" >&2
+          docker logs hydra-test-pg >&2 || true
+          exit 1
 
       - name: Unit tests — Shared
         run: |
