@@ -58,6 +58,7 @@ permissions:
   contents: write
   packages: write
   checks: write
+  pull-requests: read
 
 env:
   IMAGE_REPO: ghcr.io/ddvnguyen/llama-server
@@ -241,7 +242,14 @@ jobs:
           git add infra/hydra-head/config/
           if ! git diff --cached --quiet; then
             git commit -m "chore: pin llama-engine OCI image (deploy-heads)"
-            git push
+            # Branch protection (GH006) rejects a direct push to main from
+            # this job's GITHUB_TOKEN. The deploy steps use the pinned config
+            # from this working tree regardless, so warn instead of failing.
+            if git push; then
+              echo "Pinned images committed and pushed."
+            else
+              echo "::warning::Could not push pinned images (protected branch). Deploy continues using the pinned config from this checkout; open a PR to persist the pin."
+            fi
           fi
 
       - name: Ensure SSH for P100
