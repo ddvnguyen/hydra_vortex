@@ -36,9 +36,13 @@ public sealed class StoreHttpDebugTests : IAsyncLifetime
         // Start the debug endpoint task (blocks until cancelled)
         var serverTask = Task.Run(() => _server.StartDebugEndpointAsync(_cts.Token));
         
-        // Wait for HTTP server to start - poll the port
+        // Wait for HTTP server to start - poll the port. On slow or cold
+        // runners (e.g. 2-4 vCPU GitHub-hosted VMs) the 200 ms probe can
+        // time out before the endpoint binds, surfacing as a
+        // TaskCanceledException rather than HttpRequestException — treat
+        // both as "not ready yet".
         var retryCount = 0;
-        while (retryCount < 50)
+        while (retryCount < 100)
         {
             try
             {
@@ -46,7 +50,7 @@ public sealed class StoreHttpDebugTests : IAsyncLifetime
                 await testClient.GetAsync($"http://127.0.0.1:{_debugPort}/version");
                 break; // Server is ready
             }
-            catch (HttpRequestException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
                 retryCount++;
                 await Task.Delay(50);
