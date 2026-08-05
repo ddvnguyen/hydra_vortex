@@ -1245,7 +1245,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		if (item.MultiMode == MultiEngineMode.Combined)
 		{
-			return item.MultiEngineConfig?.ToHydraConfigDict();
+			var dict = item.MultiEngineConfig?.ToHydraConfigDict();
+			// Gap-1 fix: models.json rpc_servers name workers by logical name
+			// ("rtx3060:9504"), which is not resolvable from the head engine's
+			// network namespace (host networking, no DNS entry). Translate to
+			// the reachable host:port from workers.json so the fork's
+			// apply_t3_rebuild() can register the layer-split peer device.
+			if (dict is { } d && d.TryGetValue("rpc_servers", out var raw)
+				&& raw is string[] endpoints)
+			{
+				d["rpc_servers"] = MultiEngineRouter.ResolveRpcServerEndpoints(endpoints, _cfg.Workers);
+			}
+			return dict;
 		}
 		// PIPELINE: keep the existing 0x46 EnginePipelineAttach path.
 		return null;
