@@ -24,6 +24,8 @@ const (
 	StateStopped  State = "stopped"
 	StateStarting State = "starting"
 	StateRunning  State = "running"
+	StateReady    State = "ready"
+	StateSuspect  State = "suspect"
 	StateStopping State = "stopping"
 )
 
@@ -31,6 +33,7 @@ type ProcessInfo struct {
 	Name         string `json:"name"`
 	PID          int    `json:"pid"`
 	State        State  `json:"state"`
+	Ready        bool   `json:"ready"`
 	Uptime       string `json:"uptime"`
 	RestartCount int    `json:"restart_count"`
 	LastExitCode int    `json:"last_exit_code"`
@@ -76,6 +79,13 @@ type managedProcess struct {
 	startFunc  func() error
 	mu         sync.RWMutex // guards all fields below this point
 	done       chan struct{}
+
+	// Readiness (llama only): set when a sentinel line arrives on stdout.
+	ready     bool
+	readyAt   time.Time
+	suspect   bool
+	readyCh   chan struct{} // closed once ready (or when the proc exits)
+	sentinels []string
 }
 
 func NewManager(cfg *config.Config, logger *slog.Logger, otel *hydralog.SharedLogger) *Manager {
@@ -91,6 +101,13 @@ func NewManager(cfg *config.Config, logger *slog.Logger, otel *hydralog.SharedLo
 	}
 }
 
+// isActiveState reports whether a state means "process is alive and being
+// supervised" (vs. stopped/starting/stopping). Includes ready and suspect,
+// which are refinements of running for the llama process.
+func isActiveState(s State) bool {
+	return s == StateRunning || s == StateReady || s == StateSuspect
+}
+
 // getProcess returns the proc pointer for the given name, or nil if not found.
 // Callers must use proc.mu for all field access on the returned pointer.
 func (m *Manager) getProcess(name string) *managedProcess {
@@ -99,8 +116,9 @@ func (m *Manager) getProcess(name string) *managedProcess {
 	return m.processes[name]
 }
 
-// listRunning returns a snapshot of process names that are currently in StateRunning.
-// Uses m.mu only for map iteration; each proc.state read is guarded by proc.mu.
+// listRunning returns a snapshot of process names that are currently active
+// (running / ready / suspect). Uses m.mu only for map iteration; each
+// proc.state read is guarded by proc.mu.
 func (m *Manager) listRunning() []string {
 	m.mu.RLock()
 	procs := make([]*managedProcess, 0, len(m.processes))
@@ -112,7 +130,7 @@ func (m *Manager) listRunning() []string {
 	var running []string
 	for _, p := range procs {
 		p.mu.RLock()
-		if p.state == StateRunning {
+		if isActiveState(p.state) {
 			running = append(running, p.name)
 		}
 		p.mu.RUnlock()
@@ -208,7 +226,7 @@ func (m *Manager) StartLlama() error {
 	var existingLogger *slog.Logger
 	if existing := m.getProcess("llama"); existing != nil {
 		existing.mu.RLock()
-		if existing.state == StateRunning {
+		if isActiveState(existing.state) {
 			existing.mu.RUnlock()
 			return fmt.Errorf("llama-server already running (PID %d)", existing.pid)
 		}
@@ -235,12 +253,27 @@ func (m *Manager) StartLlama() error {
 	} else {
 		childLogger = m.childLoggerFor("llama")
 	}
+	// Build the writer with an onLine hook that marks the process READY
+	// the moment a lifecycle sentinel appears on stdout. This is the
+	// event-driven readiness signal — the head never HTTP-polls llama.
+	// If no sentinels are configured there is no readiness contract: the
+	// process is considered ready once it is alive (legacy behaviour).
+	readyCh := make(chan struct{})
+	sentinels := m.cfg.ReadinessSentinels()
 	proc := &managedProcess{
 		name:      "llama",
 		state:     StateStarting,
-		logWriter: newChildWriter(childLogger),
 		done:      make(chan struct{}),
+		ready:     len(sentinels) == 0,
+		readyCh:   readyCh,
+		sentinels: sentinels,
 	}
+	if len(sentinels) == 0 {
+		// No readiness contract: assume ready once alive. Close the channel
+		// so the (skipped) watcher and any caller waiting on it unblock.
+		close(readyCh)
+	}
+	proc.logWriter = newChildWriter(childLogger, func(line string) { m.onLlamaLine(proc, line) })
 
 	// Pre-populate state that we want to preserve from a prior run, under proc.mu.
 	if existing := m.getProcess("llama"); existing != nil {
@@ -329,8 +362,69 @@ func (m *Manager) StartLlama() error {
 	m.logger.Info("llama-server started", "pid", proc.pid, "args", args)
 
 	go m.monitorProcess(proc)
+	go m.watchReadiness(proc)
 
 	return nil
+}
+
+// onLlamaLine is the childWriter onLine hook for the llama process. It
+// matches each stdout line against the configured readiness sentinels and
+// marks the process READY on the first hit. Idempotent.
+func (m *Manager) onLlamaLine(proc *managedProcess, line string) {
+	proc.mu.RLock()
+	alreadyReady := proc.ready
+	proc.mu.RUnlock()
+	if alreadyReady {
+		return
+	}
+	for _, sentinel := range proc.sentinels {
+		if strings.Contains(line, sentinel) {
+			proc.mu.Lock()
+			proc.ready = true
+			proc.readyAt = time.Now()
+			proc.state = StateReady
+			close(proc.readyCh)
+			proc.mu.Unlock()
+			m.logger.Info("llama-engine ready (stdout sentinel)",
+				"pid", proc.pid, "sentinel", sentinel)
+			return
+		}
+	}
+}
+
+// watchReadiness watches for the readiness sentinel with a miss-deadline.
+// If the sentinel never arrives within the configured timeout, the process
+// is marked SUSPECT (started, not ready) so the coordinator sees it is not
+// serving — but the head does NOT restart it here: a slow model load on a
+// VM disk is legitimate, and a real crash is handled by monitorProcess via
+// the exit event. Returns when ready, suspect, or the process exits.
+func (m *Manager) watchReadiness(proc *managedProcess) {
+	if len(proc.sentinels) == 0 {
+		// No readiness contract (legacy): the process is ready once alive.
+		// Keep state=Running and leave proc.ready=true from StartLlama.
+		<-proc.done
+		return
+	}
+	timeout := m.cfg.ReadinessTimeout()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-proc.readyCh:
+		// ready — nothing to do, onLlamaLine already set the state.
+	case <-proc.done:
+		// process exited before readiness (monitorProcess owns the state).
+	case <-m.ctx.Done():
+	case <-timer.C:
+		proc.mu.Lock()
+		if !proc.ready && proc.state == StateRunning {
+			proc.state = StateSuspect
+			proc.suspect = true
+		}
+		proc.mu.Unlock()
+		m.logger.Warn("llama-engine readiness sentinel not observed within timeout",
+			"pid", proc.pid, "timeout", timeout, "sentinels", proc.sentinels)
+	}
 }
 
 func (m *Manager) monitorProcess(proc *managedProcess) {
@@ -492,7 +586,7 @@ func (m *Manager) StartService(name string) error {
 	var existingLogger *slog.Logger
 	if existing := m.getProcess(name); existing != nil {
 		existing.mu.RLock()
-		if existing.state == StateRunning {
+		if isActiveState(existing.state) {
 			existing.mu.RUnlock()
 			return fmt.Errorf("%s already running (PID %d)", name, existing.pid)
 		}
@@ -595,7 +689,7 @@ func (m *Manager) stop(name string, isLlama bool) error {
 	// Mark as stopping + manual under proc.mu — the only writer of these
 	// fields outside monitorProcess.
 	proc.mu.Lock()
-	if proc.state != StateRunning {
+	if !isActiveState(proc.state) {
 		proc.mu.Unlock()
 		if isLlama {
 			return fmt.Errorf("llama-server not running")
@@ -675,12 +769,13 @@ func (m *Manager) GetProcessInfo(name string) (*ProcessInfo, error) {
 		Name:         proc.name,
 		PID:          proc.pid,
 		State:        proc.state,
+		Ready:        proc.ready,
 		RestartCount: proc.restartCount,
 		LastExitCode: proc.lastExitCode,
 		LastError:    proc.lastError,
 	}
 
-	if proc.state == StateRunning && !proc.startedAt.IsZero() {
+	if (proc.state == StateRunning || proc.state == StateReady || proc.state == StateSuspect) && !proc.startedAt.IsZero() {
 		info.Uptime = time.Since(proc.startedAt).Round(time.Second).String()
 	}
 

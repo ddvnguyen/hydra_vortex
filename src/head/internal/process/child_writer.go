@@ -35,6 +35,11 @@ type childWriter struct {
 	buf    []byte
 	logger *slog.Logger
 	closed  bool
+	// onLine, if set, is invoked for each complete line (after it is
+	// logged). It is the event-driven readiness hook: the manager wires
+	// it to match llama-engine lifecycle sentinels so it can mark the
+	// process READY from the child's own stdout instead of HTTP-polling.
+	onLine func(line string)
 }
 
 // newChildWriter returns an io.Writer that emits each line to the
@@ -45,10 +50,15 @@ type childWriter struct {
 // exceeds it (which would indicate a child writing a multi-MB
 // blob without a newline — the truncation is logged and
 // processing continues).
-func newChildWriter(logger *slog.Logger) *childWriter {
+func newChildWriter(logger *slog.Logger, onLine ...func(string)) *childWriter {
+	var cb func(string)
+	if len(onLine) > 0 {
+		cb = onLine[0]
+	}
 	return &childWriter{
 		buf:    make([]byte, 0, 4096),
 		logger: logger,
+		onLine: cb,
 	}
 }
 
@@ -126,6 +136,9 @@ func (w *childWriter) emitLinesLocked() error {
 			// with a non-zero status; we don't try to
 			// detect log-level from the line content.
 			w.logger.Info(string(line))
+			if w.onLine != nil {
+				w.onLine(string(line))
+			}
 		}
 	}
 }

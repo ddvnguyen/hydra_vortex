@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
-	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/health"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/process"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/registry"
 )
@@ -26,21 +25,19 @@ type checksumCache struct {
 }
 
 type Server struct {
-	cfg            *config.Config
-	manager        *process.Manager
-	checker        *health.Checker
-	registry       *registry.Manager
-	logger         *slog.Logger
-	mux            *http.ServeMux
-	authToken      string // shared secret for API authentication
-	checksumCache  map[string]*checksumCache // keyed by binary name
+	cfg           *config.Config
+	manager       *process.Manager
+	registry      *registry.Manager
+	logger        *slog.Logger
+	mux           *http.ServeMux
+	authToken     string // shared secret for API authentication
+	checksumCache map[string]*checksumCache // keyed by binary name
 }
 
-func NewServer(cfg *config.Config, manager *process.Manager, checker *health.Checker, regMgr *registry.Manager, logger *slog.Logger, authToken string) *Server {
+func NewServer(cfg *config.Config, manager *process.Manager, regMgr *registry.Manager, logger *slog.Logger, authToken string) *Server {
 	s := &Server{
 		cfg:           cfg,
 		manager:       manager,
-		checker:       checker,
 		registry:      regMgr,
 		logger:        logger,
 		mux:           http.NewServeMux(),
@@ -154,6 +151,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Health    struct {
 			Mode    string `json:"mode"`
 			Healthy bool   `json:"healthy"`
+			Ready   bool   `json:"ready"`
 		} `json:"health"`
 		Binaries map[string]binaryInfo `json:"binaries,omitempty"`
 	}{
@@ -161,13 +159,31 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Binaries:  binaries,
 	}
 
-	if s.checker != nil {
-		response.Health.Mode = string(s.checker.GetMode())
-		response.Health.Healthy = s.checker.IsHealthy()
+	// Readiness is event-driven from the llama-engine stdout sentinel (see
+	// process.Manager). The head never HTTP-polls llama; /status reflects
+	// what the parent actually knows from the child's own output + exit
+	// events. If llama is not (yet) ready, report 503 so wait-for-head.sh
+	// and the deploy gate genuinely wait for real readiness.
+	if llamaInfo, ok := processes["llama"]; ok {
+		response.Health.Mode = string(llamaInfo.State)
+		response.Health.Ready = llamaInfo.Ready
+		response.Health.Healthy = llamaInfo.Ready && isActive(llamaInfo.State)
+	} else {
+		response.Health.Mode = "no-llama"
+		response.Health.Ready = false
+		response.Health.Healthy = false
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	if !response.Health.Healthy {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
 	json.NewEncoder(w).Encode(response)
+}
+
+// isActive reports whether a process state means "alive and supervised".
+func isActive(s process.State) bool {
+	return s == process.StateRunning || s == process.StateReady || s == process.StateSuspect
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -218,27 +234,30 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /health is the liveness endpoint used by the pod healthcheck
+	// (curl -f http://localhost:9700/health) and the deploy scripts. It
+	// returns 200 while the head API is up; readiness (llama actually
+	// serving) is reported in the body and is the real gate on /status.
+	// Keeping /health 200-on-liveness avoids the pod healthcheck flapping
+	// during model load (RTX ~30s boot-resident load is longer than the
+	// health-start-period).
 	response := struct {
 		Status  string `json:"status"`
 		Node    string `json:"node"`
 		Healthy bool   `json:"healthy"`
+		Ready   bool   `json:"ready"`
 	}{
 		Status:  "ok",
 		Node:    s.cfg.Node.Name,
 		Healthy: true,
+		Ready:   false,
 	}
 
-	if s.checker != nil {
-		response.Healthy = s.checker.IsHealthy()
-		if !response.Healthy {
-			response.Status = "degraded"
-		}
+	if info, err := s.manager.GetProcessInfo("llama"); err == nil {
+		response.Ready = info.Ready
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if !response.Healthy {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}
 	json.NewEncoder(w).Encode(response)
 }
 
