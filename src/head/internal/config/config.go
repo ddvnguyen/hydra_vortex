@@ -224,9 +224,13 @@ func mergeConfigs(global, node *Config) *Config {
 		merged.Readiness.TimeoutSec = global.Readiness.TimeoutSec
 	}
 	if len(merged.Readiness.Sentinels) == 0 {
-		// Default lifecycle sentinels for the fork's llama-engine. These
-		// are the lines the engine prints when it is actually serving.
+		// Default lifecycle sentinels for the fork's binaries. The
+		// llama-engine binary (RTX/RTX3060) emits "hydra-engine ready" at
+		// true readiness on all three startup paths (fork PR
+		// ddvnguyen/llama.cpp#80). The classic llama-server binary (P100)
+		// emits the three server.cpp lines.
 		merged.Readiness.Sentinels = []string{
+			"hydra-engine ready",
 			"server is listening on",
 			"router server is listening on",
 			"model loaded",

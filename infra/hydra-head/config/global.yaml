@@ -68,6 +68,7 @@ services:
 # A generous default covers slow VM disks (P100 model load = 235-300s).
 readiness:
   sentinels:
+    - "hydra-engine ready"
     - "server is listening on"
     - "router server is listening on"
     - "model loaded"
