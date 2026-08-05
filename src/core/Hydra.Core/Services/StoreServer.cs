@@ -630,7 +630,7 @@ public sealed class StoreServer : RpcServer
 		await WriteMetaAsync(writer, meta, ct);
 	}
 
-	public Task StartDebugEndpointAsync(CancellationToken ct)
+	public Task StartDebugEndpointAsync(CancellationToken ct, Action? onStarted = null)
 	{
 		var builder = WebApplication.CreateBuilder();
 		builder.WebHost.UseSetting(WebHostDefaults.ServerUrlsKey, $"http://{_cfg.Host}:{_cfg.DebugHttpPort}");
@@ -682,6 +682,13 @@ public sealed class StoreServer : RpcServer
 		});
 
 		app.UseMetricServer();
+
+		// Signal when the endpoint is actually listening. ApplicationStarted
+		// fires after the host has bound its addresses and started accepting
+		// connections, so callers (tests) can await readiness instead of
+		// polling the port.
+		if (onStarted is not null)
+			app.Lifetime.ApplicationStarted.Register(onStarted);
 
 		ct.Register(async () => await app.StopAsync());
 		return app.RunAsync();
