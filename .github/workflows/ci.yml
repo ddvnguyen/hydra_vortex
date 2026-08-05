@@ -150,7 +150,6 @@ jobs:
         if: needs.resolve-runner.outputs.runner == 'ubuntu-latest'
         with:
           dotnet-version: '10.0.x'
-          cache: true
 
       - uses: actions/setup-go@v5
         if: needs.resolve-runner.outputs.runner == 'ubuntu-latest'
