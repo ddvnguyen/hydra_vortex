@@ -58,6 +58,7 @@ permissions:
   contents: write
   packages: write
   checks: write
+  pull-requests: read
 
 env:
   IMAGE_REPO: ghcr.io/ddvnguyen/llama-server
