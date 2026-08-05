@@ -503,7 +503,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		_ => false,
 	};
 
-	private async Task RunItemPipeline(WorkItem item, RequestType initialType, CancellationToken ct)
+	// internal (Tests.Core seam): tests drive the loop directly to verify
+	// lease release when item.IsCancelled flips between dispatch phases.
+	internal async Task RunItemPipeline(WorkItem item, RequestType initialType, CancellationToken ct)
 	{
 		try
 		{
