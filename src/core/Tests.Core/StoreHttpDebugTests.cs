@@ -1,4 +1,6 @@
 using Hydra.Core;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 
 namespace Tests.Core;
@@ -13,8 +15,12 @@ public sealed class StoreHttpDebugTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // Use a unique port per test to avoid conflicts
-        _debugPort = 19500 + (Guid.NewGuid().GetHashCode() % 200);
+        // Reserve a genuinely free ephemeral port. The previous approach
+        // (19500 + GetHashCode() % 200) is signed and yields a fixed
+        // 19301-19699 window that collides when two dotnet test runs run
+        // concurrently on the shared CI host (issue #547) — and this runner
+        // can land on the shared self-hosted box when cloud is busy.
+        _debugPort = GetFreeEphemeralPort();
         
         _storeDir = new DirectoryInfo(
             Path.Combine(Path.GetTempPath(), $"hydra-store-http-test-{Guid.NewGuid():N}"));
@@ -127,5 +133,22 @@ public sealed class StoreHttpDebugTests : IAsyncLifetime
         var response = await _httpClient.GetAsync($"http://127.0.0.1:{_debugPort}/unknown");
         
         Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    /// <summary>
+    /// Returns a port that is currently free on 127.0.0.1 by binding to
+    /// port 0 and reading the OS-assigned ephemeral port. The listener is
+    /// closed before the caller uses the port; the release-then-reuse
+    /// window is tiny and acceptable for a unit test, and it completely
+    /// avoids the fixed port range that used to collide between concurrent
+    /// CI runs (issue #547).
+    /// </summary>
+    private static int GetFreeEphemeralPort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
     }
 }
