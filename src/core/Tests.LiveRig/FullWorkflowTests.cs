@@ -40,16 +40,16 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
             ["stream"] = stream,
             ["session_id"] = sessionId,
         };
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSec) };
-        var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     private async Task<JsonElement> GetStatus()
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var resp = await client.GetAsync($"{_fx.CoordUrl}/status");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var resp = await HttpHelpers.Client.GetAsync($"{_fx.CoordUrl}/status", cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
@@ -59,8 +59,8 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
     /// </summary>
     private async Task<JsonElement[]> GetSessionsJsonArray()
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var resp = await client.GetAsync($"{_fx.CoordUrl}/sessions");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var resp = await HttpHelpers.Client.GetAsync($"{_fx.CoordUrl}/sessions", cts.Token);
         resp.EnsureSuccessStatusCode();
         var doc = await resp.Content.ReadFromJsonAsync<JsonDocument>();
         if (doc is null || doc.RootElement.ValueKind != JsonValueKind.Array)
@@ -98,8 +98,8 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
     public async Task HealthEndpoint()
     {
         _fx.SkipIfUnreachable();
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var resp = await client.GetAsync($"{_fx.CoordUrl}/health");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var resp = await HttpHelpers.Client.GetAsync($"{_fx.CoordUrl}/health", cts.Token);
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
         var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(body.TryGetProperty("status", out var statusProp));
@@ -170,8 +170,8 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
                 ["stream"] = true,
                 ["session_id"] = sessionId,
             };
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(300) };
-            var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+            var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
             resp.EnsureSuccessStatusCode();
             var stream = await resp.Content.ReadAsStreamAsync();
             using var reader = new StreamReader(stream);
@@ -223,8 +223,8 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
                 .ToList();
             Assert.Contains(sessionId, sessionIds);
 
-            using var delClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-            var delResp = await delClient.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessionId}");
+            using var delCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var delResp = await HttpHelpers.Client.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessionId}", delCts.Token);
             delResp.EnsureSuccessStatusCode();
             var delBody = await delResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(delBody.GetProperty("evicted").GetBoolean());
@@ -263,10 +263,10 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
             Assert.True(sessionBefore.ValueKind != JsonValueKind.Undefined);
             var sourceNode = sessionBefore.TryGetProperty("node", out var n) ? n.GetString()! : "";
 
-            using var migrateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-            var migrateResp = await migrateClient.PostAsJsonAsync(
+            using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var migrateResp = await HttpHelpers.Client.PostAsJsonAsync(
                 $"{_fx.CoordUrl}/sessions/{sessionId}/migrate",
-                new { target = "p100" });
+                new { target = "p100" }, migrateCts.Token);
             Assert.True(migrateResp.IsSuccessStatusCode, $"Migration failed: {await migrateResp.Content.ReadAsStringAsync()}");
             var migrateBody = await migrateResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(migrateBody.GetProperty("migrated").GetBoolean());
@@ -295,10 +295,10 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
             var first = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 50);
             var assistantReply = first.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()!;
 
-            using var migrateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-            var migrateResp = await migrateClient.PostAsJsonAsync(
+            using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var migrateResp = await HttpHelpers.Client.PostAsJsonAsync(
                 $"{_fx.CoordUrl}/sessions/{sessionId}/migrate",
-                new { target = "p100" });
+                new { target = "p100" }, migrateCts.Token);
             Assert.True(migrateResp.IsSuccessStatusCode, $"Migration failed: {await migrateResp.Content.ReadAsStringAsync()}");
 
             var continuationMessages = new List<Dictionary<string, object?>>
@@ -333,8 +333,8 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
             var resp = await DoCompletion(sessionId, MakeMessages(Prompt));
             Assert.True(resp.TryGetProperty("choices", out _));
 
-            using var delClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-            var delResp = await delClient.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessionId}");
+            using var delCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var delResp = await HttpHelpers.Client.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessionId}", delCts.Token);
             Assert.True(delResp.IsSuccessStatusCode);
             var delBody = await delResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(delBody.GetProperty("evicted").GetBoolean());
@@ -382,8 +382,8 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
                 ["stream"] = true,
                 ["session_id"] = sessId,
             };
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(300) };
-            var streamResp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", streamBody);
+            using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+            var streamResp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", streamBody, streamCts.Token);
             streamResp.EnsureSuccessStatusCode();
 
             var status3 = await GetStatus();
@@ -413,8 +413,8 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
             var slotIdBefore = session.GetProperty("slot_id").GetInt32();
 
             // Step 2: evict
-            using var delClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-            var delResp = await delClient.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessId}");
+            using var delCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var delResp = await HttpHelpers.Client.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessId}", delCts.Token);
             Assert.True(delResp.IsSuccessStatusCode);
 
             // Step 3: restore via new completion
@@ -442,10 +442,10 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
             var body = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 50);
             var assistantReply = body.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()!;
 
-            using var migrateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-            var migrateResp = await migrateClient.PostAsJsonAsync(
+            using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var migrateResp = await HttpHelpers.Client.PostAsJsonAsync(
                 $"{_fx.CoordUrl}/sessions/{sessionId}/migrate",
-                new { target = "p100" });
+                new { target = "p100" }, migrateCts.Token);
             Assert.True(migrateResp.IsSuccessStatusCode, $"Migration failed: {await migrateResp.Content.ReadAsStringAsync()}");
             var migrateBody = await migrateResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(migrateBody.GetProperty("migrated").GetBoolean());

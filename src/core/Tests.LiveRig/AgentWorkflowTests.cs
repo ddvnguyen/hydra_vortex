@@ -19,7 +19,6 @@ namespace Tests.LiveRig;
 public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
 {
     private readonly LiveRigFixture _fx;
-    private static readonly HttpClient Shared = new() { Timeout = TimeSpan.FromSeconds(300) };
 
     public AgentWorkflowTests(LiveRigFixture fx) => _fx = fx;
 
@@ -112,14 +111,16 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
         };
         if (tools != null) body["tools"] = tools;
 
-        var resp = await Shared.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     private async Task<JsonElement> GetStatus()
     {
-        var resp = await Shared.GetAsync($"{_fx.CoordUrl}/status");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+        var resp = await HttpHelpers.Client.GetAsync($"{_fx.CoordUrl}/status", cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
@@ -241,7 +242,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
                     new() { ["role"] = "user", ["content"] = userMsg }
                 };
 
-                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSec) };
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
                 var body = new Dictionary<string, object?>
                 {
                     ["messages"] = messages,
@@ -250,7 +251,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
                     ["stream"] = false,
                     ["session_id"] = sessionId,
                 };
-                var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+                var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
                 resp.EnsureSuccessStatusCode();
                 var respJson = await resp.Content.ReadFromJsonAsync<JsonElement>();
                 var choice = respJson.GetProperty("choices")[0];
@@ -309,7 +310,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
                     new() { ["role"] = "user", ["content"] = userMsg }
                 };
 
-                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(600) };
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(600));
                 var body = new Dictionary<string, object?>
                 {
                     ["messages"] = messages,
@@ -318,7 +319,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
                     ["stream"] = false,
                     ["session_id"] = sessionId,
                 };
-                var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+                var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
                 resp.EnsureSuccessStatusCode();
                 var respJson = await resp.Content.ReadFromJsonAsync<JsonElement>();
                 var reply = HttpHelpers.GetOutputText(respJson.GetProperty("choices")[0].GetProperty("message"));
@@ -447,10 +448,10 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
             Assert.True(sessionInfo.NPast > 0, "n_past should be > 0 after 5 turns");
 
             // Migrate to P100
-            using var migrateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-            var migrateResp = await migrateClient.PostAsJsonAsync(
+            using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var migrateResp = await HttpHelpers.Client.PostAsJsonAsync(
                 $"{_fx.CoordUrl}/sessions/{sessionId}/migrate",
-                new { target = "p100" });
+                new { target = "p100" }, migrateCts.Token);
             Assert.True(migrateResp.IsSuccessStatusCode, $"Migration failed: {await migrateResp.Content.ReadAsStringAsync()}");
             var migrateBody = await migrateResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(migrateBody.GetProperty("migrated").GetBoolean());
@@ -463,7 +464,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
                 {
                     new() { ["role"] = "user", ["content"] = userMsg }
                 };
-                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
                 var body = new Dictionary<string, object?>
                 {
                     ["messages"] = messages,
@@ -472,7 +473,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
                     ["stream"] = false,
                     ["session_id"] = sessionId,
                 };
-                var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+                var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
                 resp.EnsureSuccessStatusCode();
                 var respJson = await resp.Content.ReadFromJsonAsync<JsonElement>();
                 var reply = HttpHelpers.GetOutputText(respJson.GetProperty("choices")[0].GetProperty("message"));

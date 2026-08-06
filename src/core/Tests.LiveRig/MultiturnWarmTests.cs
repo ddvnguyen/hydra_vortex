@@ -72,8 +72,8 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
             ["stream"] = true,
             ["session_id"] = sessionId,
         };
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSec) };
-        var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
 
         var events = new List<JsonElement>();
@@ -110,8 +110,8 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
     {
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var resp = await client.GetAsync($"{url}/slots");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var resp = await HttpHelpers.Client.GetAsync($"{url}/slots", cts.Token);
             resp.EnsureSuccessStatusCode();
             var arr = await resp.Content.ReadFromJsonAsync<JsonElement>();
             return arr.ValueKind == JsonValueKind.Array

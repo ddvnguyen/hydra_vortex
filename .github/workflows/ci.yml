@@ -144,6 +144,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify live-hardware jobs stay unreachable from push/PR
+        run: python3 scripts/ci/check-live-hardware-gating.py
+
       # Toolchains only needed on the cloud pool — the self-hosted runner
       # already has the system .NET 10 SDK and ~/go-sdk on PATH. Skipping
       # here avoids re-downloading the SDK on every self-hosted run.

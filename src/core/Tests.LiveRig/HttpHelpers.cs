@@ -10,6 +10,16 @@ namespace Tests.LiveRig;
 /// </summary>
 internal static class HttpHelpers
 {
+    /// <summary>
+    /// Single shared HttpClient for all live-rig tests. A fresh HttpClient per
+    /// call exhausts the ephemeral port pool under sustained request volume —
+    /// each connection sits in TIME_WAIT for ~60s after close (issue #552).
+    /// Timeout is unbounded here; callers enforce their own per-call deadline
+    /// via CancellationTokenSource, since deadlines vary from 5s (health
+    /// checks) to 600s (40k-context multiturn tests).
+    /// </summary>
+    public static readonly HttpClient Client = new() { Timeout = Timeout.InfiniteTimeSpan };
+
     public const double CharsPerToken = 3.0;
 
     private static readonly string[] SeedParas =

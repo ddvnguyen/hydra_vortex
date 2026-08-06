@@ -36,8 +36,8 @@ import sys
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any
-from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
+
+import httpx
 
 # ── Wire format constants (mirror src/core/Hydra.Shared/Protocol.cs) ──────
 
@@ -202,34 +202,50 @@ class RpcClient:
 
 
 # ── HTTP helper (legacy path) ───────────────────────────────────────────
+#
+# Uses a single module-level httpx.Client so every request in a run shares
+# one pooled TCP connection per host, instead of opening (and TIME_WAIT-ing)
+# a fresh socket per call — see issue #552 (unpooled urlopen() calls drove
+# host TIME_WAIT to ~29k, near ephemeral-port exhaustion).
+
+_http_client: httpx.Client | None = None
+
+
+def _client() -> httpx.Client:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.Client()
+    return _http_client
+
+
+def close_http_client() -> None:
+    """Release the pooled connections. Call once at the end of a run."""
+    global _http_client
+    if _http_client is not None:
+        _http_client.close()
+        _http_client = None
+
 
 def http_get(url: str, timeout: float = 30.0) -> tuple[int, bytes, dict[str, str]]:
     try:
-        with urlopen(url, timeout=timeout) as resp:
-            return resp.status, resp.read(), dict(resp.headers)
-    except HTTPError as e:
-        return e.code, e.read() if e.fp else b"", dict(e.headers) if e.headers else {}
-    except URLError as e:
+        resp = _client().get(url, timeout=timeout)
+        return resp.status_code, resp.content, dict(resp.headers)
+    except httpx.HTTPError as e:
         return 0, str(e).encode(), {}
 
 
 def http_post_json(url: str, body: dict, timeout: float = 60.0) -> tuple[int, Any, float]:
-    data = json.dumps(body).encode("utf-8")
-    req = Request(url, data=data, method="POST",
-                  headers={"Content-Type": "application/json"})
     t0 = time.monotonic()
     try:
-        with urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-        elapsed = (time.monotonic() - t0) * 1000
-        return resp.status, json.loads(raw), elapsed
-    except HTTPError as e:
-        raw = e.read() if e.fp else b""
+        resp = _client().post(url, json=body, timeout=timeout)
         elapsed = (time.monotonic() - t0) * 1000
         try:
-            return e.code, json.loads(raw), elapsed
+            return resp.status_code, resp.json(), elapsed
         except json.JSONDecodeError:
-            return e.code, raw, elapsed
+            return resp.status_code, resp.content, elapsed
+    except httpx.HTTPError as e:
+        elapsed = (time.monotonic() - t0) * 1000
+        return 0, str(e).encode(), elapsed
 
 
 # ── Capability A/B result types ─────────────────────────────────────────
@@ -804,6 +820,7 @@ async def run(args: argparse.Namespace) -> int:
     finally:
         if rpc is not None:
             await rpc.close()
+        close_http_client()
 
     # Print the A/B tables
     print()

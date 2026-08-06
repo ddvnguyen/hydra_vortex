@@ -38,20 +38,20 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
             ["stream"] = stream,
         };
         if (sessionId is not null) body["session_id"] = sessionId;
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSec) };
-        var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     private static async Task<(Dictionary<string, JsonElement> Slots, Dictionary<string, double> Metrics)> ScrapeLlama(string baseUrl)
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var slotsResp = await client.GetAsync($"{baseUrl}/slots");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var slotsResp = await HttpHelpers.Client.GetAsync($"{baseUrl}/slots", cts.Token);
         slotsResp.EnsureSuccessStatusCode();
         var slots = await slotsResp.Content.ReadFromJsonAsync<JsonElement>();
 
-        var metricsResp = await client.GetAsync($"{baseUrl}/metrics");
+        var metricsResp = await HttpHelpers.Client.GetAsync($"{baseUrl}/metrics", cts.Token);
         metricsResp.EnsureSuccessStatusCode();
         var metricsText = await metricsResp.Content.ReadAsStringAsync();
         var metrics = HttpHelpers.ParseLlamaMetrics(metricsText);

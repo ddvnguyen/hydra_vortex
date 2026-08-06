@@ -69,8 +69,8 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
             ["stream"] = false,
             ["session_id"] = sessionId,
         };
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(300) };
-        var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
@@ -85,8 +85,8 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
 
     private async Task<double> GetCounter(string name, Dictionary<string, string>? labels = null)
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var resp = await client.GetAsync(_fx.CoordMetricsUrl);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var resp = await HttpHelpers.Client.GetAsync(_fx.CoordMetricsUrl, cts.Token);
         resp.EnsureSuccessStatusCode();
         var body = await resp.Content.ReadAsStringAsync();
         var samples = HttpHelpers.ParsePromLines(body);
@@ -122,8 +122,8 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
             Assert.False(string.IsNullOrEmpty(content1), $"Turn 1 empty");
 
             // Evict session so the next request goes through migration → RestoreKvAsync
-            using var delClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-            var delResp = await delClient.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessionId}");
+            using var delCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var delResp = await HttpHelpers.Client.DeleteAsync($"{_fx.CoordUrl}/sessions/{sessionId}", delCts.Token);
             Assert.True(delResp.IsSuccessStatusCode, $"Eviction failed: {await delResp.Content.ReadAsStringAsync()}");
             var delBody = await delResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(delBody.GetProperty("evicted").GetBoolean());
@@ -164,8 +164,8 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
             var resp = await DoCompletion(MakeMessages(SystemPrompt, "Say 'ok'."), sessionId, maxTokens: 4);
             Assert.True(resp.TryGetProperty("choices", out _));
 
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            var m = await client.GetAsync(_fx.CoordMetricsUrl);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var m = await HttpHelpers.Client.GetAsync(_fx.CoordMetricsUrl, cts.Token);
             Assert.True(m.IsSuccessStatusCode);
             var body = await m.Content.ReadAsStringAsync();
 
