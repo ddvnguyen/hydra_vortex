@@ -42,10 +42,8 @@ llama:
     LD_LIBRARY_PATH: /llama/bin:/usr/local/cuda-13.2/lib64
     LLAMA_CHAT_TEMPLATE_KWARGS: '{"preserve_thinking": true}'
 
-health:
-  path: /slots
-  interval_idle_sec: 120
-  max_fails: 15
+readiness:
+  timeout_sec: 240
 
 services:
   node_exporter:

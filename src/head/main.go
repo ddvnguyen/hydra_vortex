@@ -13,7 +13,6 @@ import (
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/api"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
-	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/health"
 	hydralog "github.com/ddvnguyen/hydra_vortex/hydra-head/internal/logging"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/process"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/registry"
@@ -164,25 +163,6 @@ func main() {
 	manager := process.NewManager(cfg, logger, otelShared)
 	defer manager.Shutdown()
 
-	llamaURL := fmt.Sprintf("http://%s:%d", cfg.Llama.Host, cfg.Llama.Port)
-	checker := health.NewChecker(
-		llamaURL,
-		cfg.Health.Path,
-		cfg.IsPeerOnly(), // simple mode: just check HTTP 200, no []SlotStatus decode (#399)
-		logger,
-		time.Duration(cfg.Health.IntervalIdleSec)*time.Second,
-		time.Duration(cfg.Health.IntervalBusySec)*time.Second,
-		cfg.Health.MaxFails,
-	)
-	checker.SetOnUnhealthy(func() {
-		logger.Warn("llama-server unhealthy, triggering restart")
-		if err := manager.RestartLlama(); err != nil {
-			logger.Error("restart failed", "error", err)
-		}
-	})
-	checker.Start()
-	defer checker.Stop()
-
 	if err := manager.StartLlama(); err != nil {
 		logger.Error("failed to start llama-server", "error", err)
 		os.Exit(1)
@@ -201,7 +181,7 @@ func main() {
 		}
 	}
 
-	apiServer := api.NewServer(cfg, manager, checker, regMgr, logger, *authToken)
+	apiServer := api.NewServer(cfg, manager, regMgr, logger, *authToken)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *apiPort),

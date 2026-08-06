@@ -78,9 +78,9 @@ services:
 
 # P100 lives in a KVM VM with a slow virtio disk. Model load
 # (mmap'ing 16GB of GGUF) takes 235-300s on this hardware, so the
-# default max_fails=3 (3 min kill budget) is too aggressive — the
-# hydra-head health checker would kill the llama-server 5-60s
-# before the model finishes loading. Bump to 30 (≈30 min budget).
-# Closes #326.
-health:
-  max_fails: 30
+# readiness miss-deadline must be generous: the old health.max_fails=30
+# (≈30 min budget) was tuned for that. With sentinel-based readiness the
+# default 180s timeout is fine for router mode (no boot model), but keep
+# the slower budget explicit in case a boot-resident model is configured.
+readiness:
+  timeout_sec: 480
