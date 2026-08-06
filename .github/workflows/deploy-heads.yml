@@ -29,6 +29,7 @@ on:
         options:
           - "current"
           - "latest"
+          - "0.1.0-3bbac47"
           - "0.1.0-5b19995"
           - "0.1.0-6473fce"
           - "0.1.0-a9ce093-pr74"
@@ -139,6 +140,13 @@ jobs:
 
       - name: Select profile
         run: bash scripts/set-profile.sh moe
+
+      # The runner's static ghcr auth (auth.json) is not reliable — an
+      # expired PAT or a GITHUB_TOKEN clobber from another run leaves
+      # podman pull 403. Login with THIS run's GITHUB_TOKEN (owner-scoped
+      # packages: write) so image validation and pinning can pull.
+      - name: Login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
 
       - name: Determine images
         id: images
