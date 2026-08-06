@@ -130,6 +130,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      packages: read
     env:
       HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
 
@@ -143,10 +144,19 @@ jobs:
 
       # The runner's static ghcr auth (auth.json) is not reliable — an
       # expired PAT or a GITHUB_TOKEN clobber from another run leaves
-      # podman pull 403. Login with THIS run's GITHUB_TOKEN (owner-scoped
-      # packages: write) so image validation and pinning can pull.
+      # podman pull 403. Login with GHCR_PAT when configured (a PAT with
+      # read:packages can pull the fork-built llama-server package even
+      # though it's linked to ddvnguyen/llama.cpp), else fall back to
+      # THIS run's GITHUB_TOKEN (owner-scoped packages: write).
       - name: Login to ghcr.io
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
+        env:
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+        run: |
+          if [ -n "$GHCR_PAT" ]; then
+            echo "$GHCR_PAT" | podman login ghcr.io -u ddvnguyen --password-stdin
+          else
+            echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
+          fi
 
       - name: Determine images
         id: images
