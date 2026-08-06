@@ -7,6 +7,9 @@
      (e.g. `fix/m2-p2-060`).
    - Other work: `git checkout -b feat/<area>-<short>` (or `chore/…`, `docs/…`,
      `perf/…`) off the latest `main`.
+   - **Part of an epic** (`09-epic-branch.md`): branch off and PR into the epic
+     branch instead of `main` — `gh issue develop N --base epic/{id}-{slug} --name
+     fix/...`.
 2. **Scope:** follow the milestone doc for the area —
    `docs/milestone-perf.md`, `docs/milestone-3-production.md`, etc. Respect the
    `## Language Decisions`, `## Critical Facts`, and `## Key Design Decisions` in

@@ -19,6 +19,13 @@
    a prior "verify"/"test this" request is not implicit merge approval
    (see the E2E-verify note in `03-test-verify.md`).
 
+> ### Part of an epic?
+> PR into the epic branch (`--base epic/{id}-{slug}`), not `main` — see
+> `09-epic-branch.md`. Those PRs still need CI green + review, but skip the
+> live-hardware/E2E gate (that runs once, on the final epic → main PR). The
+> final epic → main PR still needs the user's explicit merge confirmation
+> regardless of any earlier "merge freely into the epic branch" green light.
+
 > ### ⚠️ If your PR bumps a submodule pointer (e.g. `src/llama-cpp`)
 >
 > Before opening the PR, **verify the pinned SHA is reachable from the
