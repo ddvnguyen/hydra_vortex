@@ -41,6 +41,12 @@ public sealed class OpencodeFlowTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
+        // Tells Hydra.AppHost's Program.cs to skip the persistent Postgres
+        // data volume — see the comment there and issue #531. Without this,
+        // repeated CI runs on the self-hosted runner reuse the same named
+        // volume and a prior unclean teardown breaks the next run's initdb.
+        Environment.SetEnvironmentVariable("HYDRA_E2E_HERMETIC", "true");
+
         var builder = await DistributedApplicationTestingBuilder
             .CreateAsync<Projects.Hydra_AppHost>();
 
