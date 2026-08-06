@@ -86,7 +86,7 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
 |-------------|------|------|--------|
 | `moe-35b-solo` | SOLO | RTX 5060 Ti | ✅ Production |
 | `moe-35b-pd` | P/D split | RTX prefill + P100 decode | ✅ Production |
-| `dense-27b-combined` | COMBINED layer-split | RTX 5060 Ti + RTX 3060 | ✅ Config ready |
+| `dense-27b-combined` | COMBINED layer-split | RTX 5060 Ti + RTX 3060 | ⚠️ Swap fixed (PR #537); decode blocked by fork KV-restore (#78) |
 
 ### AutoRouter Algorithm (4-step)
 1. **STEP 0: Warm Affinity** — reuse existing KV session (highest priority)
@@ -315,4 +315,9 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 | AutoRouter routing           | ✅ 4-step algorithm |
 | EngineConfig via 0x40        | ✅ Config push works |
 | COMBINED mode (MoE)          | ✅ Expert-split verified |
-| COMBINED mode (Dense)        | ✅ Layer-split config ready |
+| COMBINED mode (Dense)        | ⚠️ Layer-split swap works (PR #537); decode KV-restore blocked (#78) |
+| rpc_servers reachability     | ✅ Coordinator translates worker names → reachable host:port (PR #537). Before: `rtx3060:9504` unresolvable → peer never registered → whole model on CUDA0 → OOM → rollback |
+| Merged DECODE prompt shape   | ✅ Coordinator sends bare messages array; engine now wraps it (fork PR #77). Before: `prompt_obj["n_predict"]` threw type_error on the array, silently swallowed by the RPC worker → connection leak → 180s coordinator timeout |
+| `/state/meta` model identity | ✅ Engine now returns tokenizer/model_name/quant/caps (fork PR #77); Gate A requires them |
+| Worker lease on mid-pipeline cancel | ✅ FinalizeAsync called at both exit points (PR #541). Before: BusySince climbed unbounded until coordinator restart |
+| deploy-heads startup_failure | ✅ Root cause: caller workflow lacked `pull-requests: read` for the cross-repo reusable workflow's job-level `permissions` (PR #539) |
