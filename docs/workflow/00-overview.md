@@ -27,6 +27,7 @@ pick up ─► implement ─► test/verify ─► commit ─► PR ─► CI/me
 | 6 | Check monitoring | `06-monitoring.md` | Grafana |
 | 7 | Issue + close-out | `07-issue-and-close.md` | `gh` + GitHub MCP |
 | 8 | Cross-repo coordination *(only if `src/llama-cpp` changes)* | `08-llama-fork.md` | `gh` against `ddvnguyen/llama.cpp` |
+| 9 | Epic branch *(large, multi-PR issues — suggest proactively)* | `09-epic-branch.md` | git + `gh` |
 
 Principles:
 - **One platform.** Roadmap = GitHub Project "Hydra Vortex"; milestones = native GitHub

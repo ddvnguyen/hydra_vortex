@@ -81,6 +81,13 @@ GitHub Projects is the single source of truth. Commands: `DevelopmentRunBook.md`
 7. **Close-out** — `gh issue create --label review-finding`; Status → Done on merge.
    → `docs/workflow/07-issue-and-close.md`
 
+**Large / multi-PR issues (epics):** if a task looks like it'll spawn 3+ PRs, spans
+`src/llama-cpp` + `src/core` + `src/head`, or can't be E2E-verified until several
+pieces land together — **proactively suggest** an `epic/{issue-id}-{slug}` integration
+branch (all sub-PRs land there, CI-gated but not E2E-gated; one final PR does the real
+E2E/live-GPU verify before merging to `main`). Don't set it up unilaterally — propose
+it, wait for the user's go-ahead. → `docs/workflow/09-epic-branch.md`
+
 ## GitHub Workflow
 Findings → issues (`review-finding` label) → branch (`gh issue develop N`) →
 fix → PR (`Closes #N`) → merge → deploy. **No manual board cross-linking.**
