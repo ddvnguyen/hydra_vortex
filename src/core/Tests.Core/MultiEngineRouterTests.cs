@@ -281,4 +281,96 @@ public sealed class MultiEngineRouterTests
 			"Multi-slot peer with one busy slot must NOT be reservable for COMBINED");
 		_ = plan; // router may have picked the plan; the scheduler gate is what matters
 	}
+
+	// ── ResolveRpcServerEndpoints (gap-1 regression) ─────────────────────
+	// dense-27b-combined failed to load because models.json names the COMBINED
+	// layer-split peer by logical worker name ("rtx3060:9504"), which is not
+	// resolvable from the head engine's network namespace (host networking, no
+	// DNS entry). The fork's apply_t3_rebuild() then failed to register the RPC
+	// peer device, leaving only CUDA0 for the tensor_split → whole model on one
+	// GPU → OOM → load_model() false → rollback. The coordinator must translate
+	// worker-name endpoints to the reachable host:port from workers.json.
+
+	private static IReadOnlyList<WorkerConfig> Gap1Workers() => new List<WorkerConfig>
+	{
+		new()
+		{
+			Name = "rtx", Host = "localhost", RpcPort = 9601,
+			LlamaUrl = "http://localhost:8080", LlamaRpcPort = 9503,
+			WorkerType = 3, Slots = 2, Role = "head", PeerWorker = "rtx3060",
+			CombinedCapable = true
+		},
+		new()
+		{
+			Name = "rtx3060", Host = "localhost", RpcPort = 9603,
+			LlamaUrl = "http://localhost:8081", LlamaRpcPort = 9504,
+			WorkerType = 3, Slots = 0, Role = "worker", CombinedCapable = true
+		},
+		new()
+		{
+			Name = "p100", Host = "localhost", RpcPort = 9602,
+			LlamaUrl = "http://192.168.122.21:8086", LlamaRpcPort = 9502,
+			WorkerType = 2, Slots = 1, Role = "worker"
+		}
+	};
+
+	[Fact]
+	public void ResolveRpcServerEndpoints_WorkerNameHost_ResolvesToReachableAddress()
+	{
+		// The exact dense-27b-combined config: peer named "rtx3060", same host.
+		var resolved = MultiEngineRouter.ResolveRpcServerEndpoints(
+			new[] { "rtx3060:9504" }, Gap1Workers());
+		Assert.Equal("localhost:9504", resolved![0]);
+	}
+
+	[Fact]
+	public void ResolveRpcServerEndpoints_P100_ResolvesToItsLlamaUrlHost()
+	{
+		// Peer on a separate VM (192.168.122.21) — reachable host comes from
+		// the worker's LlamaUrl, not its logical name.
+		var resolved = MultiEngineRouter.ResolveRpcServerEndpoints(
+			new[] { "p100:9502" }, Gap1Workers());
+		Assert.Equal("192.168.122.21:9502", resolved![0]);
+	}
+
+	[Fact]
+	public void ResolveRpcServerEndpoints_UnknownHost_PassesThrough()
+	{
+		var resolved = MultiEngineRouter.ResolveRpcServerEndpoints(
+			new[] { "somewhere-else:9505" }, Gap1Workers());
+		Assert.Equal("somewhere-else:9505", resolved![0]);
+	}
+
+	[Fact]
+	public void ResolveRpcServerEndpoints_AlreadyReachable_PassesThrough()
+	{
+		var resolved = MultiEngineRouter.ResolveRpcServerEndpoints(
+			new[] { "localhost:9504" }, Gap1Workers());
+		Assert.Equal("localhost:9504", resolved![0]);
+	}
+
+	[Fact]
+	public void ResolveRpcServerEndpoints_NullOrEmpty_PassesThrough()
+	{
+		Assert.Null(MultiEngineRouter.ResolveRpcServerEndpoints(null, Gap1Workers()));
+		Assert.Empty(MultiEngineRouter.ResolveRpcServerEndpoints(Array.Empty<string>(), Gap1Workers()));
+	}
+
+	[Fact]
+	public void ResolveRpcServerEndpoints_PeerPortWinsOverLlamaRpcPort()
+	{
+		var workers = new List<WorkerConfig>
+		{
+			new()
+			{
+				Name = "peer", Host = "localhost", RpcPort = 9603,
+				LlamaUrl = "http://peerhost:8081", LlamaRpcPort = 9504,
+				PeerHost = "192.168.50.5", PeerPort = 9707,
+				WorkerType = 3, Slots = 0, Role = "worker"
+			}
+		};
+		var resolved = MultiEngineRouter.ResolveRpcServerEndpoints(
+			new[] { "peer:9504" }, workers);
+		Assert.Equal("192.168.50.5:9707", resolved![0]);
+	}
 }
