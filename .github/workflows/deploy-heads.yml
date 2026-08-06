@@ -74,7 +74,7 @@ jobs:
   # ── Resolve the PR id for the current branch (used to label fork builds) ──
   resolve-pr:
     name: Resolve PR id
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       pull-requests: read
     concurrency:
