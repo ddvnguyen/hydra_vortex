@@ -453,6 +453,77 @@ public sealed class WorkerSchedulerTests
         Assert.False(ok);
         Assert.False(tracker.IsSwapping("does_not_exist"));
     }
+
+    [Fact]
+    public async Task RunItemPipeline_CancelledBetweenDispatches_ReleasesLease()
+    {
+        // Regression for the lease leak (fix/worker-tracker-lease-leak-on-cancel):
+        // RunItemPipeline's `while (!item.IsCancelled)` loop exits silently when a
+        // client disconnects BETWEEN dispatch phases — item.Cancel() flips the flag
+        // without throwing an OperationCanceledException. Before the fix, neither
+        // the loop nor the evaluator called FinalizeAsync, so the acquired
+        // DecodeLease was never disposed and WorkerTracker.BusySince was never
+        // cleared — hydra_worker_busy_seconds climbed without bound until the
+        // coordinator process restarted.
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        var item = new WorkItem(
+            new Dictionary<string, object> { ["stream"] = false },
+            new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "test" } },
+            "sess_lease_leak", "trace_lease_leak", null, estimatedTokens: 2000, estimatedNewTokens: 50);
+
+        // Phase 1: dispatch acquires a real decode slot lease (cold_atomic route).
+        var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+        Assert.Equal(WorkItemState.ModelLoadDecode, next);
+        Assert.NotNull(item.DecodeLease);
+        Assert.True(tracker.GetElapsedSeconds("rtx") > 0, "slot must be busy before finalize");
+
+        // Client disconnects between dispatch phases: Cancel() flips IsCancelled
+        // directly (the real bug path) — NOT via a thrown OperationCanceledException.
+        item.Cancel();
+        Assert.True(item.IsCancelled);
+
+        // Phase 2: the pipeline re-enters; the loop body is skipped and the fix's
+        // FinalizeAsync(item, Cancelled) must release the held lease.
+        await scheduler.RunItemPipeline(item, RequestType.Atomic, CancellationToken.None);
+
+        Assert.Equal(0d, tracker.GetElapsedSeconds("rtx"));
+        Assert.True(item.Completion.Task.IsCanceled, "finalized-cancelled item must complete as cancelled");
+    }
+
+    [Fact]
+    public async Task RunItemPipeline_NoLeaseWhenCancelledBeforeDispatch_IsSafe()
+    {
+        // The pre-dispatch cancel case (no lease held yet) must not throw — the
+        // fix's FinalizeAsync(Cancelled) is a no-op for leases and just marks
+        // the item cancelled.
+        var cfg = MakeConfig();
+        var ledger = new SessionLedger();
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+        var proxy = new CompletionProxyService();
+        var health = new TestHealthMonitor();
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, null, sp, Serilog.Log.Logger);
+
+        var item = new WorkItem(
+            new Dictionary<string, object> { ["stream"] = false },
+            new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "test" } },
+            "sess_lease_pre_cancel", "trace_pre_cancel", null, 2000, 50);
+        item.Cancel();
+
+        await scheduler.RunItemPipeline(item, RequestType.Atomic, CancellationToken.None);
+
+        Assert.True(tracker.IsFree("rtx"), "no slot should ever be held");
+        Assert.True(item.Completion.Task.IsCanceled);
+    }
 }
 
 public sealed class WorkItemIntegrationTests
@@ -600,4 +671,5 @@ public sealed class WorkItemIntegrationTests
             Environment.SetEnvironmentVariable("HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE", prev);
         }
     }
+
 }
