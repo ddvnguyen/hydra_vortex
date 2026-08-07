@@ -50,6 +50,7 @@ on:
           - "22fff15"
           - "5b19995"
           - "a9ce093-pr74"
+          - "dd9c19a"
           - "eb71174-pr74"
       build-from-fork:
         description: "Build llama-engine + llama-server from fork before deploy (tags image with commit SHA and -pr<N> when built from a PR)"
@@ -294,7 +295,11 @@ jobs:
               if grep -q 'image_digest:' "$config"; then
                 sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*image_digest:\s*\).*|\1${digest}|" "$config"
               else
-                sed -i "/^\s*source:\s*${image}$/a\\    image_digest: ${digest}" "$config"
+                # The image ref contains unescaped '/' which would break a
+                # sed address regex — escape them before matching the source
+                # line, then append image_digest right after it.
+                local image_sed="${image//\//\\/}"
+                sed -i "/^\s*source:\s*${image_sed}$/a\\    image_digest: ${digest}" "$config"
               fi
             else
               echo "WARNING: Could not resolve digest for $image — keeping existing image_digest (if any)"
