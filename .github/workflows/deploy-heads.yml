@@ -499,14 +499,23 @@ jobs:
   # Triggered via the run-tests input. Each suite is its own reusable
   # workflow; the shared hydra-live-rig concurrency group serializes them
   # after the deploy job releases its slot.
+  #
+  # NOTE: `inputs` here must be `github.event.inputs`, NOT `inputs`. These
+  # jobs call reusable workflows (`uses:`), and in that context the `inputs`
+  # context refers to the CALLED workflow's inputs (declared under
+  # `on.workflow_call.inputs`), not this caller's workflow_dispatch inputs.
+  # Since test-system.yml / test-agent-workload.yml declare no such inputs,
+  # `inputs.run-tests` evaluates to empty → the job silently skips. See
+  # actions/runner#1661. `github.event.inputs` always carries the dispatch
+  # values for a workflow_dispatch run.
   system-tests:
     name: System Tests (Tier 2 + 3)
     needs: deploy
-    if: inputs.run-tests == 'system' || inputs.run-tests == 'both'
+    if: github.event.inputs.run-tests == 'system' || github.event.inputs.run-tests == 'both'
     uses: ./.github/workflows/test-system.yml
 
   agent-workload-tests:
     name: Agent Workload Tests (Tier 4)
     needs: deploy
-    if: inputs.run-tests == 'agent-workload' || inputs.run-tests == 'both'
+    if: github.event.inputs.run-tests == 'agent-workload' || github.event.inputs.run-tests == 'both'
     uses: ./.github/workflows/test-agent-workload.yml
