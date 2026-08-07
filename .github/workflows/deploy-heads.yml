@@ -182,6 +182,12 @@ jobs:
           if [ "${{ inputs.build-from-fork }}" = "true" ]; then
             RTX="${{ needs.build-llama.outputs.rtx-image }}"
             P100="${{ needs.build-llama.outputs.p100-image }}"
+            # The fork's resolve-outputs prefers llama-engine for EVERY arch,
+            # but node-p100.yaml runs the llama-server binary (P100 has no
+            # COMBINED/RPC requirement). Remap P100 to its -llama-server- twin
+            # so the pinned image actually contains the binary the head pulls.
+            # The fork always builds both images per arch, so the twin exists.
+            P100="${P100/-llama-engine-/-llama-server-}"
           elif [ "${{ inputs.image-tag }}" != "current" ]; then
             RTX="ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-${{ inputs.image-tag }}"
             P100="ghcr.io/ddvnguyen/llama-server:sm60-llama-server-${{ inputs.image-tag }}"
