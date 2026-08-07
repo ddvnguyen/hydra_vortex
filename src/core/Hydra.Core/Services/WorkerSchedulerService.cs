@@ -892,30 +892,40 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					var nodeInfo = _health.GetNodeInfo(aw.Name);
 					var requestedAlias = TranslateModelAlias(
 						item.Request.TryGetValue("model", out var cmv) && cmv is string cms ? cms : null);
-					// When nodeInfo is null (health data not yet available),
-					// we can't determine the resident model — skip the
-					// prefill-swap and let the engine handle inline reload.
-					// Treating null as "" caused a false model mismatch that
-					// triggered a PREFILL swap → slot deadlock → infinite retry
-					// loop (#512 root cause).
+					// #470 merged-decode: Gate A validates kv_metadata (what
+					// built the KV) against the decode node's model_metadata
+					// BEFORE the KV lands. With no PREFILL the KV blob AND the
+					// kv_metadata are both empty, so Gate A rejects every cold
+					// atomic request ("tokenizer=0 name=0 caps_xor=0xc") and
+					// decode aborts with "KV not restored". Routing through
+					// PREFILL first (same worker/slot, model already resident
+					// → no swap, just a KV-building prefill) produces the
+					// identity + KV the merged DECODE requires.
+					//
+					// PrefillAsync reads item.PrefillWorker/PrefillSlot (not
+					// DecodeWorker/DecodeSlot, set above) — without these the
+					// PREFILL dispatch null-refs on item.PrefillWorker! before
+					// ever reaching the engine. item.PrefillLease is deliberately
+					// left null: item.DecodeLease (above) already owns this slot,
+					// and SaveKvAsync/PrefillAsync's cleanup paths already
+					// null-check PrefillLease before disposing it.
+					item.PrefillWorker = aw;
+					item.PrefillSlot = slot;
 					if (nodeInfo != null
 						&& !string.IsNullOrEmpty(requestedAlias)
 						&& !string.Equals(nodeInfo.CurrentModel, requestedAlias, StringComparison.OrdinalIgnoreCase))
 					{
-					_log.Information("cold_atomic_prefill_swap Sid={Sid} Node={N} Resident={R} Requested={Req}",
-						item.SessionId, aw.Name, nodeInfo!.CurrentModel, requestedAlias);
-						// PrefillAsync reads item.PrefillWorker/PrefillSlot (not
-						// DecodeWorker/DecodeSlot, set above) — without these the
-						// PREFILL dispatch null-refs on item.PrefillWorker! before
-						// ever reaching the engine. item.PrefillLease is deliberately
-						// left null: item.DecodeLease (above) already owns this slot,
-						// and SaveKvAsync/PrefillAsync's cleanup paths already
-						// null-check PrefillLease before disposing it.
-						item.PrefillWorker = aw;
-						item.PrefillSlot = slot;
-						return WorkItemState.Prefill;
+						_log.Information("cold_atomic_prefill_swap Sid={Sid} Node={N} Resident={R} Requested={Req}",
+							item.SessionId, aw.Name, nodeInfo!.CurrentModel, requestedAlias);
 					}
-					return WorkItemState.Decode;
+					else
+					{
+						// Model already resident — prefill still required so the
+						// merged DECODE has KV + kv_metadata for Gate A (#470).
+						_log.Information("cold_atomic_prefill_resident Sid={Sid} Node={N} Model={Model}",
+							item.SessionId, aw.Name, nodeInfo?.CurrentModel ?? requestedAlias);
+					}
+					return WorkItemState.Prefill;
 				}
 				return WorkItemState.ModelLoadDecode;
 			}
@@ -2389,6 +2399,41 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.SessionId, dw.Name);
 			CoordinatorMetrics.DecodeFallbackTotal.WithLabels("combined_pickdecode").Inc();
 		}
+		else if (item.RouteType == "cold_atomic" && item.PrefillWorker != null)
+		{
+			// Atomic = single-GPU intent: the prefill built KV on this worker
+			// and the KV is resident there. #470 merged-decode routes cold
+			// atomic requests through Prefill first (so Gate A has kv_metadata
+			// + a KV blob to validate); decoding must then stay on the SAME
+			// worker — PickBestDecodeWorker would otherwise wander to a
+			// higher-decode-priority peer (e.g. p100) and force a needless
+			// cross-node KV transfer (or a Gate A rejection on an empty slot).
+			//
+			// NB: item.RequestType is overwritten to Decode by the pipeline
+			// SaveDone→PickDecode handoff (RunItemPipeline), so the atomic
+			// intent is tracked via RouteType == "cold_atomic" instead.
+			//
+			// The cold_atomic route already acquired the slot up-front and
+			// holds it via item.DecodeLease (PrefillLease is deliberately
+			// null — see ColdRouteAsync). Re-acquiring via TryAcquireSlot
+			// would fail (the slot is held by our own DecodeLease) and
+			// wander to p100. Reuse the existing lease when it targets the
+			// prefill worker.
+			if (item.DecodeLease?.WorkerName == item.PrefillWorker.Name
+				&& item.DecodeLease.SlotId == (item.PrefillSlot ?? 0))
+			{
+				dw = item.PrefillWorker;
+				item.DecodeSlot = item.DecodeLease.SlotId;
+				_log.Information("atomic_pickdecode_reuse_lease Sid={Sid} Node={Node} Slot={Slot} — decode reuses cold_atomic lease (atomic single-GPU)",
+					item.SessionId, dw.Name, item.DecodeSlot);
+			}
+			else
+			{
+				dw = item.PrefillWorker;
+				_log.Information("atomic_pickdecode Sid={Sid} Node={Node} — decode stays on prefill node (atomic single-GPU)",
+					item.SessionId, dw.Name);
+			}
+		}
 		else
 		{
 			dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
@@ -2405,14 +2450,49 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (dw == null)
 			return WorkItemState.None;
 
-		if (_tracker.TryAcquireSlot(dw.Name, out var slot, "decode"))
+		// Atomic reuse path: the cold_atomic route already holds the slot via
+		// item.DecodeLease (PrefillLease is null by design). Re-acquiring via
+		// TryAcquireSlot would fail against our own lease; skip re-acquisition
+		// and jump straight to the same-node skip decision.
+		bool leaseReused = false;
+		int slot = -1;
+		if (item.RouteType == "cold_atomic"
+			&& item.DecodeLease != null
+			&& item.DecodeLease.WorkerName == dw.Name
+			&& item.DecodeSlot == item.DecodeLease.SlotId)
+		{
+			leaseReused = true;
+			slot = item.DecodeLease.SlotId;
+		}
+
+		if (!leaseReused && !_tracker.TryAcquireSlot(dw.Name, out slot, "decode"))
+		{
+			// No free decode slots — evict oldest warm lease and retry
+			if (_warmLeases.Count > 0)
+			{
+				var oldest = _warmLeases.OrderBy(kv => kv.Value.CreatedAt).First();
+				_log.Information("evicting_warm_decode Sid={Sid} Worker={W} Slot={Slot}",
+					oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId);
+				await SaveSlotStateBeforeEvictAsync(oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId, item.TraceId, default);
+				await oldest.Value.DisposeAsync();
+				_warmLeases.TryRemove(oldest.Key, out _);
+				_ledger.MarkEvicted(oldest.Key);
+				return WorkItemState.None; // retry via dispatch loop
+			}
+
+			return WorkItemState.None;
+		}
+
+		if (!leaseReused)
 		{
 			item.DecodeWorker = dw;
 			item.DecodeSlot = slot;
 			item.DecodeLease = new SlotLease(dw.Name, slot, item.SessionId,
 				LeaseLifetime.Long, _tracker);
 			LastDispatchedNode = dw.Name;
+		}
 
+		{
 			// Same-node skip: when decode == prefill and no model switch,
 			// the KV state is already on the node — no restore needed.
 			//
@@ -2483,21 +2563,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			return WorkItemState.ModelLoadDecode;
 		}
-
-		// No free decode slots — evict oldest warm lease and retry
-		if (_warmLeases.Count > 0)
-		{
-			var oldest = _warmLeases.OrderBy(kv => kv.Value.CreatedAt).First();
-			_log.Information("evicting_warm_decode Sid={Sid} Worker={W} Slot={Slot}",
-				oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId);
-			await SaveSlotStateBeforeEvictAsync(oldest.Key, oldest.Value.WorkerName, oldest.Value.SlotId, item.TraceId, default);
-			await oldest.Value.DisposeAsync();
-			_warmLeases.TryRemove(oldest.Key, out _);
-			_ledger.MarkEvicted(oldest.Key);
-			return WorkItemState.None; // retry via dispatch loop
-		}
-
-		return WorkItemState.None;
 	}
 
 	private async Task<WorkItemState> RestoreKvAsync(WorkItem item, CancellationToken ct)
