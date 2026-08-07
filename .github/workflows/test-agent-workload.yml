@@ -2,6 +2,12 @@ name: Agent Workload Tests
 
 on:
   workflow_call:
+    inputs:
+      run-tests:
+        description: "run-tests dispatch value (none|system|agent-workload|both); the job runs only when this includes 'agent-workload' or 'both'"
+        required: false
+        default: "none"
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -11,6 +17,7 @@ permissions:
 jobs:
   agent-workload:
     name: Agent Workload Tests (Tier 4)
+    if: inputs.run-tests == 'agent-workload' || inputs.run-tests == 'both'
     runs-on: self-hosted
     timeout-minutes: 30
     concurrency:
