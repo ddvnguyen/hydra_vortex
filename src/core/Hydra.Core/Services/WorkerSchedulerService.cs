@@ -2908,6 +2908,55 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return WorkItemState.Decode;
 	}
 
+	/// <summary>
+	/// Build the merged-decode (0x43) "prompt segment" as a JSON object
+	/// containing messages + optional tools/tool_choice/response_format +
+	/// optional sampling/stop. The engine's DECODE_APPLY handler
+	/// (server-context.cpp) reads tools/tool_choice/response_format off the
+	/// prompt object directly, and the nested sampling object
+	/// (temperature/top_p/top_k/seed) plus sibling "stop" array. When none of
+	/// those are present the output is {"messages": [...]}, semantically
+	/// identical to what the engine's bare-array-wrap produces for the legacy
+	/// messages-only case — the common path is unchanged.
+	///
+	/// Tool/response-format schemas can be large, so they belong here in the
+	/// prompt segment (arbitrary length, its own segment framing) rather than
+	/// the RPC control header (hard-capped at 32 KiB in RpcClient.cs).
+	/// </summary>
+	internal static string? BuildMergedDecodePromptSegment(WorkItem item)
+	{
+		if (!item.Request.TryGetValue("messages", out var messagesEl))
+			return null;
+
+		var segment = new Dictionary<string, object?> { ["messages"] = messagesEl };
+
+		if (item.Request.TryGetValue("tools", out var toolsEl))
+			segment["tools"] = toolsEl;
+		if (item.Request.TryGetValue("tool_choice", out var toolChoiceEl))
+			segment["tool_choice"] = toolChoiceEl;
+		if (item.Request.TryGetValue("response_format", out var responseFormatEl))
+			segment["response_format"] = responseFormatEl;
+
+		var ov = item.RequestOverrides;
+		if (ov is not null)
+		{
+			// NOTE: keys here are DECODE_APPLY's wire shape (temperature/top_p/
+			// top_k/seed, sibling "stop") — NOT the same as
+			// EngineRequestOverrides.ToWireJson()'s 0x40-CONFIGURE shape
+			// (temp/antiprompt). Do not reuse ToWireJson() here.
+			var sampling = new Dictionary<string, object>();
+			if (ov.Temperature is { } temperature) sampling["temperature"] = temperature;
+			if (ov.TopP is { } topP) sampling["top_p"] = topP;
+			if (ov.TopK is { } topK) sampling["top_k"] = topK;
+			if (ov.Seed is { } seed) sampling["seed"] = seed;
+			if (sampling.Count > 0) segment["sampling"] = sampling;
+
+			if (ov.Stop is { Count: > 0 } stop) segment["stop"] = stop;
+		}
+
+		return JsonSerializer.Serialize(segment);
+	}
+
 	// ── Gap 4: n_past tracking from decode ──
 	private async Task<WorkItemState> DecodeAsync(WorkItem item, CancellationToken ct)
 	{
@@ -3006,10 +3055,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				bool gateRejected = false;
 				try
 				{
-					var messagesJson = item.Request.TryGetValue("messages", out var msgsEl)
-						? msgsEl?.ToString() : null;
-					var samplingJson = item.Request.TryGetValue("sampling", out var sampEl)
-						? sampEl?.ToString() : null;
+					// #576: tools/tool_choice/response_format/sampling/stop travel
+					// inside the prompt-segment object (not the samplingJson
+					// parameter / 32 KiB control header).
+					var messagesJson = BuildMergedDecodePromptSegment(item);
 					var nPredict = item.Request.TryGetValue("max_tokens", out var npEl)
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
@@ -3068,7 +3117,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						modelAlias: TranslateModelAlias(w.ModelAlias, decodeRole: true),
 						messagesJson: messagesJson,
 						nPredict: nPredict,
-						samplingJson: samplingJson,
+						// #576: sampling/stop now travel inside messagesJson
+						// (the prompt segment), so the separate samplingJson
+						// channel stays empty — the engine's generation-header
+						// merge only fills keys the prompt object lacks.
+						samplingJson: null,
 						stream: true,
 						kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
 						traceId: item.TraceId,
@@ -3180,10 +3233,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				bool gateRejected = false;
 				try
 				{
-					var messagesJson = item.Request.TryGetValue("messages", out var msgsEl)
-						? msgsEl?.ToString() : null;
-					var samplingJson = item.Request.TryGetValue("sampling", out var sampEl)
-						? sampEl?.ToString() : null;
+					// #576: tools/tool_choice/response_format/sampling/stop travel
+					// inside the prompt-segment object (not the samplingJson
+					// parameter / 32 KiB control header).
+					var messagesJson = BuildMergedDecodePromptSegment(item);
 					var nPredict = item.Request.TryGetValue("max_tokens", out var npEl)
 						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
 						: 2048;
@@ -3229,7 +3282,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						modelAlias: TranslateModelAlias(w.ModelAlias, decodeRole: true),
 						messagesJson: messagesJson,
 						nPredict: nPredict,
-						samplingJson: samplingJson,
+						// #576: sampling/stop now travel inside messagesJson
+						// (the prompt segment), so the separate samplingJson
+						// channel stays empty — the engine's generation-header
+						// merge only fills keys the prompt object lacks.
+						samplingJson: null,
 						stream: false,
 						kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
 						traceId: item.TraceId,
