@@ -84,6 +84,23 @@ env:
   IMAGE_REPO: ghcr.io/ddvnguyen/llama-server
 
 jobs:
+  # ── Diagnostic: print how inputs/needs resolve on a uses: job ─────────
+  diag-uses-inputs:
+    name: "Diag uses-inputs"
+    runs-on: ubuntu-latest
+    needs: []
+    steps:
+      - run: |
+          echo "workflow-level inputs.run-tests   = [${{ inputs.run-tests }}]"
+          echo "github.event.inputs.run-tests     = [${{ github.event.inputs.run-tests }}]"
+
+  diag-uses-with:
+    name: "Diag uses-with"
+    runs-on: ubuntu-latest
+    uses: ./.github/workflows/diag-reusable.yml
+    with:
+      value: ${{ github.event.inputs.run-tests }}
+
   # ── Resolve the PR id for the current branch (used to label fork builds) ──
   resolve-pr:
     name: Resolve PR id
