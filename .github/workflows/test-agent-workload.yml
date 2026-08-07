@@ -2,7 +2,24 @@ name: Agent Workload Tests
 
 on:
   workflow_call:
+    inputs:
+      run-tests:
+        description: "run-tests dispatch value (none|system|agent-workload|both); the job runs only when this includes 'agent-workload' or 'both'"
+        required: false
+        default: "none"
+        type: string
   workflow_dispatch:
+    inputs:
+      run-tests:
+        description: "run-tests dispatch value (none|system|agent-workload|both); the job runs only when this includes 'agent-workload' or 'both'"
+        required: false
+        default: "agent-workload"
+        type: choice
+        options:
+          - "none"
+          - "system"
+          - "agent-workload"
+          - "both"
 
 permissions:
   contents: read
@@ -13,6 +30,7 @@ jobs:
     name: Agent Workload Tests (Tier 4)
     runs-on: self-hosted
     timeout-minutes: 30
+    if: ${{ inputs.run-tests == 'agent-workload' || inputs.run-tests == 'both' }}
     concurrency:
       group: hydra-live-rig
       cancel-in-progress: false
