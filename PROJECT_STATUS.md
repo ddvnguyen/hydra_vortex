@@ -313,16 +313,6 @@ unconditionally while the engine still rejects `prompt.messages` — the only sh
 Hydra.Core sends — so any live node on this engine build fails every P/D chat
 request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 
-**Deploy status (2026-08-07, epic/470-merged-decode):** deploy-heads CI is now
-GREEN end-to-end (runs 31145623110, 31147791917 — all 3 heads verified with
-`dd9c19a` digests). Two live-rig blockers filed: #563 (head containers become
-conmon-vanishing zombies minutes after deploy, pre-existing) and #564 (coordinator
-health monitor stops polling → stale healthy). Both must be resolved before
-LiveRig/AgentWorkflow/EngineParity can go GREEN. Also fixed: test jobs were
-silently skipped because `uses:`-job `if:` cannot read caller `workflow_dispatch`
-inputs (`inputs` nor `github.event.inputs`); now gated on
-`needs.deploy.outputs.run-tests`.
-
 ## Verified Facts
 | Fact                         | Value        |
 |------------------------------|--------------|

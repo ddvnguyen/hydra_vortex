@@ -50,7 +50,6 @@ on:
           - "22fff15"
           - "5b19995"
           - "a9ce093-pr74"
-          - "dd9c19a"
           - "eb71174-pr74"
       build-from-fork:
         description: "Build llama-engine + llama-server from fork before deploy (tags image with commit SHA and -pr<N> when built from a PR)"
@@ -84,29 +83,6 @@ env:
   IMAGE_REPO: ghcr.io/ddvnguyen/llama-server
 
 jobs:
-  # ── Diagnostic: print how inputs/needs resolve on a uses: job ─────────
-  diag-uses-inputs:
-    name: "Diag uses-inputs"
-    runs-on: ubuntu-latest
-    needs: []
-    steps:
-      - run: |
-          echo "workflow-level inputs.run-tests   = [${{ inputs.run-tests }}]"
-          echo "github.event.inputs.run-tests     = [${{ github.event.inputs.run-tests }}]"
-
-  diag-uses-with:
-    name: "Diag uses-with"
-    uses: ./.github/workflows/diag-reusable.yml
-    with:
-      value: ${{ github.event.inputs.run-tests }}
-
-  diag-uses-with-needs:
-    name: "Diag uses-with-needs"
-    needs: deploy
-    uses: ./.github/workflows/diag-reusable.yml
-    with:
-      value: ${{ github.event.inputs.run-tests }}
-
   # ── Resolve the PR id for the current branch (used to label fork builds) ──
   resolve-pr:
     name: Resolve PR id
@@ -318,11 +294,7 @@ jobs:
               if grep -q 'image_digest:' "$config"; then
                 sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*image_digest:\s*\).*|\1${digest}|" "$config"
               else
-                # The image ref contains unescaped '/' which would break a
-                # sed address regex — escape them before matching the source
-                # line, then append image_digest right after it.
-                local image_sed="${image//\//\\/}"
-                sed -i "/^\s*source:\s*${image_sed}$/a\\    image_digest: ${digest}" "$config"
+                sed -i "/^\s*source:\s*${image}$/a\\    image_digest: ${digest}" "$config"
               fi
             else
               echo "WARNING: Could not resolve digest for $image — keeping existing image_digest (if any)"
@@ -522,26 +494,14 @@ jobs:
   # Triggered via the run-tests input. Each suite is its own reusable
   # workflow; the shared hydra-live-rig concurrency group serializes them
   # after the deploy job releases its slot.
-  #
-  # The run-tests value is passed INTO each reusable workflow via `with:`
-  # and the decision to run is made INSIDE the called workflow (its own job
-  # `if: inputs.run-tests == ...`). Caller-side job `if:` on a `uses:` job
-  # cannot reliably read the caller's workflow_dispatch inputs (`inputs`,
-  # `github.event.inputs`, nor `needs.<job>.outputs` — observed skipped on
-  # runs 31145623110 / 31147791917 / 31148472120; actions/runner#1661).
-  # `github.event.inputs` is used in `with:` because, for a workflow_dispatch
-  # run, it always carries the dispatch values (unlike `inputs`, which on a
-  # `uses:` job resolves to the called workflow's own input schema).
   system-tests:
     name: System Tests (Tier 2 + 3)
     needs: deploy
+    if: inputs.run-tests == 'system' || inputs.run-tests == 'both'
     uses: ./.github/workflows/test-system.yml
-    with:
-      run-tests: ${{ github.event.inputs.run-tests }}
 
   agent-workload-tests:
     name: Agent Workload Tests (Tier 4)
     needs: deploy
+    if: inputs.run-tests == 'agent-workload' || inputs.run-tests == 'both'
     uses: ./.github/workflows/test-agent-workload.yml
-    with:
-      run-tests: ${{ github.event.inputs.run-tests }}
