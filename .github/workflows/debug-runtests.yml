@@ -1,0 +1,53 @@
+name: Debug Run-Tests Gating
+
+on:
+  workflow_dispatch:
+    inputs:
+      run-tests:
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - "none"
+          - "system"
+          - "agent-workload"
+          - "both"
+      debug-text:
+        required: false
+        default: "hi"
+        type: string
+
+jobs:
+  probe-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo dispatch contexts
+        run: |
+          echo "inputs.run-tests    = [${{ inputs.run-tests }}]"
+          echo "gei.run-tests       = [${{ github.event.inputs.run-tests }}]"
+          echo "inputs.debug-text   = [${{ inputs.debug-text }}]"
+          echo "gei.debug-text      = [${{ github.event.inputs.debug-text }}]"
+
+  uses-gated:
+    name: "Uses-job gated (inputs.run-tests)"
+    if: ${{ inputs.run-tests == 'system' }}
+    uses: ./.github/workflows/debug-reusable.yml
+
+  uses-gated-gei:
+    name: "Uses-job gated (github.event.inputs)"
+    if: ${{ github.event.inputs.run-tests == 'system' }}
+    uses: ./.github/workflows/debug-reusable.yml
+
+  uses-with:
+    name: "Uses-job with inputs.run-tests"
+    needs: probe-dispatch
+    uses: ./.github/workflows/debug-reusable.yml
+    with:
+      value: ${{ inputs.run-tests }}
+
+  uses-with-gei:
+    name: "Uses-job with github.event.inputs.run-tests"
+    needs: probe-dispatch
+    uses: ./.github/workflows/debug-reusable.yml
+    with:
+      value: ${{ github.event.inputs.run-tests }}
