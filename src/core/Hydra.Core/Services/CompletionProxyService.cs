@@ -199,7 +199,24 @@ public sealed class CompletionProxyService : ICompletionProxyService
 				}
 				resp.EnsureSuccessStatusCode();
 				var json = await resp.Content.ReadAsStringAsync(ct);
-				return JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
+				var body = JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
+				// #470: the engine serves 202-style LOADING bodies (state=loading)
+				// while the async DECODE_APPLY is still generating. Only a
+				// terminal state (done, or an error field) is the real result —
+				// returning the loading body as the completion makes the
+				// coordinator reply `{"state":"loading"}` instead of the text.
+				var state = body.TryGetValue("state", out var sv) && sv is JsonElement se && se.ValueKind == JsonValueKind.String
+					? se.GetString()
+					: null;
+				var hasError = body.ContainsKey("error");
+				if (state == "done" || state == "error" || hasError || state == null)
+				{
+					return body;
+				}
+				// Still generating — retry with backoff.
+				resp.Dispose();
+				await Task.Delay(delay, ct);
+				delay = Math.Min(delay * 2, maxDelayMs);
 			}
 			throw new TimeoutException($"GET /v1/decode/{decodeRequestId} timed out after {maxAttempts} attempts");
 		}
