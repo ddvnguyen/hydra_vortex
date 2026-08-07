@@ -96,7 +96,6 @@ jobs:
 
   diag-uses-with:
     name: "Diag uses-with"
-    runs-on: ubuntu-latest
     uses: ./.github/workflows/diag-reusable.yml
     with:
       value: ${{ github.event.inputs.run-tests }}
