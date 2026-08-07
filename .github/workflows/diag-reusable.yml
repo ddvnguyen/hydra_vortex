@@ -13,4 +13,5 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ inputs.value == 'system' }}
     steps:
-      - run: echo "GATED-ON: received value = [${{ inputs.value }}]"
+      - run: |
+          echo "GATED-ON received value = [${{ inputs.value }}]"
