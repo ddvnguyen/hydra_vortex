@@ -318,7 +318,13 @@ jobs:
               if grep -q 'image_digest:' "$config_file"; then
                 sed -i "/^\s*llama-server:\s*$/,/^\s*binary:\s*/ s|^\(\s*image_digest:\s*\).*|\1${digest}|" "$config_file"
               else
-                sed -i "/^\s*source:\s*${image}$/a\\    image_digest: ${digest}" "$config_file"
+                # Escape '/' in the image ref — it is interpolated into a
+                # '/'-delimited sed address, and ghcr.io/… refs always
+                # contain '/'. Without escaping, sed aborts with
+                # "extra characters after command".
+                local esc_image
+                esc_image=$(printf '%s' "$image" | sed 's|/|\\/|g')
+                sed -i "/^\s*source:\s*${esc_image}$/a\\    image_digest: ${digest}" "$config_file"
               fi
             else
               echo "WARNING: Could not resolve digest for $image"
