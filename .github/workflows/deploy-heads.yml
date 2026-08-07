@@ -30,7 +30,7 @@ on:
         description: >
           llama-server OCI build to deploy to ALL selected GPUs. Per-arch
           refs are derived: RTX/3060 = sm86-sm120-llama-engine-<tag>, P100 =
-          sm60-llama-server-<tag>. "current" = deploy the stable version
+          sm60-llama-engine-<tag>. "current" = deploy the stable version
           pinned in the node configs (no re-pin). "latest" = newest build.
           Immutable tags are <fork-sha>[-pr<N>] (PR-built) or
           <version>-<fork-sha>. Refresh this list with
@@ -182,15 +182,15 @@ jobs:
           if [ "${{ inputs.build-from-fork }}" = "true" ]; then
             RTX="${{ needs.build-llama.outputs.rtx-image }}"
             P100="${{ needs.build-llama.outputs.p100-image }}"
-            # The fork's resolve-outputs prefers llama-engine for EVERY arch,
-            # but node-p100.yaml runs the llama-server binary (P100 has no
-            # COMBINED/RPC requirement). Remap P100 to its -llama-server- twin
-            # so the pinned image actually contains the binary the head pulls.
-            # The fork always builds both images per arch, so the twin exists.
-            P100="${P100/-llama-engine-/-llama-server-}"
+            # The fork's resolve-outputs (hydra-build.yml, #90) still prefers
+            # llama-server for sm60. P100 now runs llama-engine (issue #577),
+            # so remap to the -llama-engine- twin — the fork always builds
+            # both per arch. Long-term fix is reverting #90 in the fork so
+            # p100-image is natively the engine image.
+            P100="${P100/-llama-server-/-llama-engine-}"
           elif [ "${{ inputs.image-tag }}" != "current" ]; then
             RTX="ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-${{ inputs.image-tag }}"
-            P100="ghcr.io/ddvnguyen/llama-server:sm60-llama-server-${{ inputs.image-tag }}"
+            P100="ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-${{ inputs.image-tag }}"
           fi
           echo "rtx=$RTX" >> "$GITHUB_OUTPUT"
           echo "p100=$P100" >> "$GITHUB_OUTPUT"

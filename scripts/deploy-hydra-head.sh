@@ -246,7 +246,7 @@ check_llama_build_type_local_fat() {
 
 check_llama_build_type_p100() {
   step "Build-type gate (P100 VM binary)"
-  local vm_bin="/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server"
+  local vm_bin="/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine"
 
   # Run --version ON THE VM. The previous implementation scp'd just the
   # executable to a temp dir and checked it there — but that file is a small
@@ -265,9 +265,9 @@ check_llama_build_type_p100() {
   fi
 
   if ! grep -q '\[shared\]' <<<"$version_out"; then
-    die "P100 llama-server is not a shared-lib build (output: ${version_out:-<empty>}). Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
+    die "P100 llama-engine is not a shared-lib build (output: ${version_out:-<empty>}). Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
   fi
-  ok "P100 llama-server reports [shared]"
+  ok "P100 llama-engine reports [shared]"
 }
 
 # ── Pre-deploy Cleanup ───────────────────────────────────────────────────────

@@ -34,7 +34,7 @@ on:
       p100-image:
         description: >
           Full OCI image ref to pin for P100 (blank = use current).
-          E.g. ghcr.io/ddvnguyen/llama-server:sm60-llama-server-a157edf
+          E.g. ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-a157edf
         required: false
         default: ""
         type: string

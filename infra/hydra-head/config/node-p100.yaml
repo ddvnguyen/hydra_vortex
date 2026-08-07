@@ -17,30 +17,38 @@ infra:
 binaries:
   llama-server:
     # Built + pushed by hydra-build.yml (ddvnguyen/llama.cpp),
-    # arch_sm60 checkbox (always builds llama-server — no COMBINED
-    # peer on P100). Repo path changed from the old llama-server-sm60
-    # to the unified llama-server repo; tag is
-    # <arch>-<binary>-<fork-version>-<short-sha> or -latest.
-    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-server-6d00536
-    image_digest: sha256:bffe08fdcbd7b63a59a449ec8edc3db7181eb9958c5187ae955e28edfe498223
-    binary: llama-server
-    dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+    # arch_sm60 checkbox. P100 runs llama-engine (not llama-server) so
+    # the Hydra RPC listener (--rpc-port 9502) is available for
+    # cross-node KV restore + P/D decode: llama-server only starts the
+    # RPC server in non-router mode, and P100 boots with a resident
+    # model (router mode), so the RPC never came up on llama-server
+    # (issue #577). The map key stays `llama-server` to match the OCI
+    # repo name — the on-disk binary is llama-engine (same convention
+    # as node-rtx.yaml). Tag is <arch>-<binary>-<fork-version>-<sha>.
+    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-6d00536
+    binary: llama-engine
+    dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine
 
 llama:
-  binary: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
+  binary: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine
   working_dir: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin
   port: 8086
   rpc_port: 9502
   env:
-    # Per-service OTel log push (#363). llama-server on P100
+    # Per-service OTel log push (#363). llama-engine on P100
     # is supervised by hydra-head and its stdout is captured
     # by a per-child childWriter (commit 6). The child's OTel
-    # resource has service.name=llama-server; the writer
+    # resource has service.name=llama-engine; the writer
     # pushes OTLP to the OTel Collector on the RTX host.
-    OTEL_SERVICE_NAME: llama-server
+    OTEL_SERVICE_NAME: llama-engine
     OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://192.168.122.1:4318
   params:
+    # Boot-resident model (Q5_K-Balanced — the P/D decode side). Core
+    # skips inline PREFILL reload on p100 (workers.json), so this is the
+    # only model p100 hosts; models-preset is kept for alias resolution
+    # and the same-quant Mini path if inline reload is re-enabled.
+    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
     models-preset: /home/vm1/hydra/config/preset-p100.ini
     chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
 
