@@ -100,6 +100,13 @@ jobs:
     with:
       value: ${{ github.event.inputs.run-tests }}
 
+  diag-uses-with-needs:
+    name: "Diag uses-with-needs"
+    needs: deploy
+    uses: ./.github/workflows/diag-reusable.yml
+    with:
+      value: ${{ github.event.inputs.run-tests }}
+
   # ── Resolve the PR id for the current branch (used to label fork builds) ──
   resolve-pr:
     name: Resolve PR id
