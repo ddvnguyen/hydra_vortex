@@ -162,12 +162,17 @@ jobs:
       # login when a GHCR_PAT is configured (read:packages — needed if the
       # package is ever made private again); NEVER login with the run's
       # GITHUB_TOKEN, which cannot read the fork-linked package and would
-      # override the working anonymous access.
+      # override the working anonymous access. (secrets cannot be used in
+      # step `if:` — the empty-string check happens in the shell.)
       - name: Login to ghcr.io
-        if: secrets.GHCR_PAT != ''
         env:
           GHCR_PAT: ${{ secrets.GHCR_PAT }}
-        run: echo "$GHCR_PAT" | podman login ghcr.io -u ddvnguyen --password-stdin
+        run: |
+          if [ -n "$GHCR_PAT" ]; then
+            echo "$GHCR_PAT" | podman login ghcr.io -u ddvnguyen --password-stdin
+          else
+            echo "ghcr auth: anonymous (package is public; no GHCR_PAT configured)"
+          fi
 
       - name: Determine images
         id: images
