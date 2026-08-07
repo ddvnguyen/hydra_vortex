@@ -333,6 +333,7 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 | COMBINED mode (MoE)          | ✅ Expert-split verified |
 | COMBINED mode (Dense)        | ⚠️ Layer-split swap works (PR #537); decode KV-restore blocked (#78) |
 | rpc_servers reachability     | ✅ Coordinator translates worker names → reachable host:port (PR #537). Before: `rtx3060:9504` unresolvable → peer never registered → whole model on CUDA0 → OOM → rollback |
+| P100 binary                  | ✅ llama-engine `6d00536` (build 9670) — switched from llama-server (was RPC-dead in router mode, #577). Boots Q5_K-Balanced, Hydra RPC :9502 up |
 | Merged DECODE prompt shape   | ✅ Coordinator sends bare messages array; engine now wraps it (fork PR #77). Before: `prompt_obj["n_predict"]` threw type_error on the array, silently swallowed by the RPC worker → connection leak → 180s coordinator timeout |
 | `/state/meta` model identity | ✅ Engine now returns tokenizer/model_name/quant/caps (fork PR #77); Gate A requires them |
 | Worker lease on mid-pipeline cancel | ✅ FinalizeAsync called at both exit points (PR #541). Before: BusySince climbed unbounded until coordinator restart |

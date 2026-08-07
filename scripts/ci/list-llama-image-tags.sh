@@ -3,7 +3,7 @@
 #
 # Queries GHCR (ghcr.io/ddvnguyen/llama-server) and keeps only suffixes that
 # exist for BOTH arch refs (sm86-sm120-llama-engine-<s> and
-# sm60-llama-server-<s>) so a single picker selection works for all GPUs.
+# sm60-llama-engine-<s>) so a single picker selection works for all GPUs.
 # Prints an `options:` block ready to paste into .github/workflows/deploy-heads.yml.
 #
 # Usage: bash scripts/ci/list-llama-image-tags.sh
@@ -14,7 +14,7 @@ import base64, json, os, urllib.request
 
 REPO = "ddvnguyen/llama-server"
 REGISTRY = "https://ghcr.io"
-PREFIXES = ("sm86-sm120-llama-engine", "sm60-llama-server")
+PREFIXES = ("sm86-sm120-llama-engine", "sm60-llama-engine")
 
 def token():
     for path in (
