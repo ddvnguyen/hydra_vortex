@@ -771,10 +771,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// node so PickDecodeAsync's COMBINED guard fires and keeps decode
 			// on the same head. Without this, PrefillWorker is null and decode
 			// wanders to P100, breaking the dual-GPU binding.
+			//
+			// NB: MultiMode must ONLY be Combined when the requested model is a
+			// combined-mode model. Inferring it from worker.CombinedCapable
+			// (hardware capability) broke solo sessions: the second turn of a
+			// moe-35b-solo session got MultiMode=Combined → the coordinator
+			// sent PIPELINE_ATTACH to the peer → fork stub (#287) → peer
+			// declined → fallback crashed with "KV not restored".
 			if (!string.IsNullOrEmpty(entry.NodeName))
 			{
 				item.PrefillWorker = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
-				if (item.PrefillWorker != null && item.PrefillWorker.CombinedCapable)
+				var reqAlias = TranslateModelAlias(
+					item.Request.TryGetValue("model", out var mv) && mv is string ms ? ms : null);
+				var reqIsCombined = reqAlias != null
+					&& reqAlias.Contains("combined", StringComparison.OrdinalIgnoreCase);
+				if (item.PrefillWorker != null
+					&& item.PrefillWorker.CombinedCapable
+					&& reqIsCombined)
 					item.MultiMode = MultiEngineMode.Combined;
 			}
 
