@@ -401,13 +401,19 @@ public sealed class EngineModeTests
         Assert.Single(proxy.NonStreamingCalls);
         Assert.Equal("http://localhost:8080", proxy.NonStreamingCalls[0].NodeUrl);
 
-        // Engine RPC no longer drives chat completions.
+        // #470 merged-decode: the engine does not advertise merged_decode in this
+        // fixture (TestHealthMonitor.GetNodeInfo returns null → no capabilities),
+        // so the final completion still goes through the HTTP proxy on the SAME
+        // node the prefill built KV on (cold_atomic keeps decode on rtx).
         Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
-            "Engine chat-completion path is disabled (issue #273 hotfix); HTTP proxy owns text responses");
-        Assert.False(f.Rpc.HasCall(OpCode.EnginePrefill),
-            "Engine atomic should NOT call EnginePrefill separately");
+            "Engine chat-completion path requires the merged_decode capability; HTTP proxy owns text responses here");
+        // #470: cold atomic routes through engine PREFILL first (Gate A needs
+        // kv_metadata + a KV blob to validate before DECODE), so EnginePrefill
+        // IS expected now — this supersedes the pre-#470 "no prefill" assertion.
+        Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
+            "Engine atomic must PREFILL first so the merged DECODE has KV + kv_metadata for Gate A (#470)");
         Assert.False(f.Rpc.HasCall(OpCode.StatePut),
-            "Engine atomic should NOT call StatePut for KV restore");
+            "Engine atomic should NOT call StatePut for KV restore (decode stays on the prefill node)");
 
         var e = f.Ledger.Lookup("sess_ea1");
         Assert.NotNull(e);
@@ -933,9 +939,36 @@ public sealed class EngineModeTests
         await f.SubmitAsync("sess_er2", 500, 100);
 
         Assert.DoesNotContain(OpCode.EngineDecode, f.Rpc.Calls.Select(c => c.Op));
-        Assert.DoesNotContain(OpCode.EnginePrefill, f.Rpc.Calls.Select(c => c.Op));
         Assert.DoesNotContain(OpCode.StatePut, f.Rpc.Calls.Select(c => c.Op));
+        // #470 merged-decode: cold atomic routes through engine PREFILL first
+        // (Gate A needs kv_metadata + KV blob before DECODE). This supersedes
+        // the pre-#470 assertion that EnginePrefill must NOT be called.
+        Assert.Contains(OpCode.EnginePrefill, f.Rpc.Calls.Select(c => c.Op));
         Assert.Single(proxy.NonStreamingCalls);
+    }
+
+    [Fact]
+    public async Task Atomic_ColdProbe_DecodeStaysOnPrefillNode()
+    {
+        // Regression for the live-rig cold-probe failure (AgentWorkflowTests
+        // fixture probe): a cold atomic request (resident model, tiny prompt)
+        // must PREFILL first so the merged DECODE has KV + kv_metadata for
+        // Gate A, and decode must stay on the SAME node — otherwise the
+        // probe 503s with "DECODE 0x43 rejected — KV not restored" and every
+        // LiveRig test skips.
+        await using var f = new EngineFixture(runMode: "fast");
+        var proxy = (TestCompletionProxy)f.Proxy;
+
+        await f.SubmitAsync("sess_coldprobe", 20, 4);
+
+        // PREFILL ran on rtx (cold_atomic always prefills first in engine mode).
+        Assert.Contains(OpCode.EnginePrefill, f.Rpc.Calls.Select(c => c.Op));
+        // No StatePut: decode stays on the prefill node — no KV transfer.
+        Assert.DoesNotContain(OpCode.StatePut, f.Rpc.Calls.Select(c => c.Op));
+        // The completion went through the HTTP proxy on rtx (fixture does not
+        // advertise merged_decode, so the proxy owns the final completion).
+        Assert.Single(proxy.NonStreamingCalls);
+        Assert.Equal("http://localhost:8080", proxy.NonStreamingCalls[0].NodeUrl);
     }
 
     // ─────────────────────────────────────────────────────────────────────
