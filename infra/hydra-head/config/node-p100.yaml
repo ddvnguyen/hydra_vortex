@@ -21,8 +21,8 @@ binaries:
     # peer on P100). Repo path changed from the old llama-server-sm60
     # to the unified llama-server repo; tag is
     # <arch>-<binary>-<fork-version>-<short-sha> or -latest.
-    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-server-0.1.0-3bbac47
-    image_digest: sha256:c91033af3175aa62b147d6140c073656df52b85f61b78271b039577e39a3be68
+    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-server-dd9c19a
+    image_digest: sha256:80d206035efd2d2a5266662a02367cc8d17f6fd133bb8a4ba1043a34936c96ed
     binary: llama-server
     dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
 
