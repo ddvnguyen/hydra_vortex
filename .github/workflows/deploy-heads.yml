@@ -141,8 +141,6 @@ jobs:
     concurrency:
       group: hydra-live-rig
       cancel-in-progress: false
-    outputs:
-      run-tests: ${{ inputs.run-tests }}
     permissions:
       contents: write
       pull-requests: write
@@ -502,20 +500,22 @@ jobs:
   # workflow; the shared hydra-live-rig concurrency group serializes them
   # after the deploy job releases its slot.
   #
-  # IMPORTANT: these jobs call reusable workflows (`uses:`), and in that
-  # context neither the `inputs` nor the `github.event.inputs` context carries
-  # the caller's workflow_dispatch inputs (actions/runner#1661). The reliable
-  # pattern is to read the value from the deploy job's outputs via `needs` —
-  # `needs` IS available to job-level `if:` on reusable-workflow jobs. The
-  # deploy job re-emits `inputs.run-tests` as output `run-tests`.
+  # The run-tests value is passed INTO each reusable workflow via `with:`
+  # and the decision to run is made INSIDE the called workflow (its own job
+  # `if: inputs.run-tests == ...`). Caller-side job `if:` on a `uses:` job
+  # cannot reliably read the caller's workflow_dispatch inputs (`inputs`,
+  # `github.event.inputs`, nor `needs.<job>.outputs` — observed skipped on
+  # runs 31145623110 / 31147791917 / 31148472120; actions/runner#1661).
   system-tests:
     name: System Tests (Tier 2 + 3)
     needs: deploy
-    if: needs.deploy.outputs.run-tests == 'system' || needs.deploy.outputs.run-tests == 'both'
     uses: ./.github/workflows/test-system.yml
+    with:
+      run-tests: ${{ inputs.run-tests }}
 
   agent-workload-tests:
     name: Agent Workload Tests (Tier 4)
     needs: deploy
-    if: needs.deploy.outputs.run-tests == 'agent-workload' || needs.deploy.outputs.run-tests == 'both'
     uses: ./.github/workflows/test-agent-workload.yml
+    with:
+      run-tests: ${{ inputs.run-tests }}

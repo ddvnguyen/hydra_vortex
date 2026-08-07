@@ -3,6 +3,11 @@ name: System Tests
 on:
   workflow_call:
     inputs:
+      run-tests:
+        description: "run-tests dispatch value (none|system|agent-workload|both); the job runs only when this includes 'system' or 'both'"
+        required: false
+        default: "none"
+        type: string
       filter:
         description: "xUnit filter expression — FullyQualifiedName substring match (blank = all live-rig + engine-parity tests)"
         required: false
@@ -10,6 +15,16 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      run-tests:
+        description: "run-tests dispatch value (none|system|agent-workload|both); the job runs only when this includes 'system' or 'both'"
+        required: false
+        default: "system"
+        type: choice
+        options:
+          - "none"
+          - "system"
+          - "agent-workload"
+          - "both"
       filter:
         description: "xUnit filter expression — FullyQualifiedName substring match (blank = all live-rig + engine-parity tests)"
         required: false
@@ -25,6 +40,7 @@ jobs:
     name: System Tests
     runs-on: self-hosted
     timeout-minutes: 30
+    if: ${{ inputs.run-tests == 'system' || inputs.run-tests == 'both' }}
     concurrency:
       group: hydra-live-rig
       cancel-in-progress: false
