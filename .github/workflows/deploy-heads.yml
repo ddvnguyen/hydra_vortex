@@ -141,6 +141,8 @@ jobs:
     concurrency:
       group: hydra-live-rig
       cancel-in-progress: false
+    outputs:
+      run-tests: ${{ inputs.run-tests }}
     permissions:
       contents: write
       pull-requests: write
@@ -500,22 +502,20 @@ jobs:
   # workflow; the shared hydra-live-rig concurrency group serializes them
   # after the deploy job releases its slot.
   #
-  # NOTE: `inputs` here must be `github.event.inputs`, NOT `inputs`. These
-  # jobs call reusable workflows (`uses:`), and in that context the `inputs`
-  # context refers to the CALLED workflow's inputs (declared under
-  # `on.workflow_call.inputs`), not this caller's workflow_dispatch inputs.
-  # Since test-system.yml / test-agent-workload.yml declare no such inputs,
-  # `inputs.run-tests` evaluates to empty → the job silently skips. See
-  # actions/runner#1661. `github.event.inputs` always carries the dispatch
-  # values for a workflow_dispatch run.
+  # IMPORTANT: these jobs call reusable workflows (`uses:`), and in that
+  # context neither the `inputs` nor the `github.event.inputs` context carries
+  # the caller's workflow_dispatch inputs (actions/runner#1661). The reliable
+  # pattern is to read the value from the deploy job's outputs via `needs` —
+  # `needs` IS available to job-level `if:` on reusable-workflow jobs. The
+  # deploy job re-emits `inputs.run-tests` as output `run-tests`.
   system-tests:
     name: System Tests (Tier 2 + 3)
     needs: deploy
-    if: github.event.inputs.run-tests == 'system' || github.event.inputs.run-tests == 'both'
+    if: needs.deploy.outputs.run-tests == 'system' || needs.deploy.outputs.run-tests == 'both'
     uses: ./.github/workflows/test-system.yml
 
   agent-workload-tests:
     name: Agent Workload Tests (Tier 4)
     needs: deploy
-    if: github.event.inputs.run-tests == 'agent-workload' || github.event.inputs.run-tests == 'both'
+    if: needs.deploy.outputs.run-tests == 'agent-workload' || needs.deploy.outputs.run-tests == 'both'
     uses: ./.github/workflows/test-agent-workload.yml
