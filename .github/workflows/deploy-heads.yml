@@ -157,19 +157,17 @@ jobs:
 
       # The runner's static ghcr auth (auth.json) is not reliable — an
       # expired PAT or a GITHUB_TOKEN clobber from another run leaves
-      # podman pull 403. Login with GHCR_PAT when configured (a PAT with
-      # read:packages can pull the fork-built llama-server package even
-      # though it's linked to ddvnguyen/llama.cpp), else fall back to
-      # THIS run's GITHUB_TOKEN (owner-scoped packages: write).
+      # podman pull 403. The llama-server package is PUBLIC, so anonymous
+      # pulls work and are never poisoned by a stale credential. Only
+      # login when a GHCR_PAT is configured (read:packages — needed if the
+      # package is ever made private again); NEVER login with the run's
+      # GITHUB_TOKEN, which cannot read the fork-linked package and would
+      # override the working anonymous access.
       - name: Login to ghcr.io
+        if: secrets.GHCR_PAT != ''
         env:
           GHCR_PAT: ${{ secrets.GHCR_PAT }}
-        run: |
-          if [ -n "$GHCR_PAT" ]; then
-            echo "$GHCR_PAT" | podman login ghcr.io -u ddvnguyen --password-stdin
-          else
-            echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
-          fi
+        run: echo "$GHCR_PAT" | podman login ghcr.io -u ddvnguyen --password-stdin
 
       - name: Determine images
         id: images
