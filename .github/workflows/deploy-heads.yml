@@ -194,6 +194,42 @@ jobs:
       # Fail fast BEFORE touching the live rig: a missing/mutated image ref
       # (or a stale config pin, like the P100 crash-loop) is caught here with
       # a clear message instead of a crash-looping head.
+      #
+      # The llama-server package is PUBLIC: anonymous pulls are the reliable
+      # path. Stale ghcr creds anywhere in podman's auth files (an expired
+      # PAT, or a run-scoped GITHUB_TOKEN left by another job's login) make
+      # podman send a token that ghcr DENIES — overriding the working
+      # anonymous access with a 403. Strip ghcr.io from every auth file podman
+      # could read, then pull anonymously. (GHCR_PAT, when configured, is
+      # re-applied by the login step above AFTER these pulls run.)
+      - name: Ensure anonymous ghcr access
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, glob
+          paths = set()
+          for env in ("REGISTRY_AUTH_FILE", "XDG_RUNTIME_DIR"):
+              v = os.environ.get(env, "")
+              if v:
+                  paths.add(v)
+          for pat in (os.path.expanduser("~/.config/containers/auth.json"),
+                      os.path.expanduser("~/.docker/config.json"),
+                      f"/run/user/{os.getuid()}/containers/auth.json"):
+              paths.add(pat)
+          for p in sorted(paths):
+              if not os.path.exists(p):
+                  continue
+              try:
+                  d = json.load(open(p))
+                  if d.get("auths", {}).pop("ghcr.io", None) is not None:
+                      json.dump(d, open(p, "w"))
+                      print(f"stripped ghcr.io from {p}")
+                  elif "ghcr.io" not in str(d.get("auths", {})):
+                      print(f"clean (no ghcr.io): {p}")
+              except Exception as e:
+                  print(f"skip {p}: {e}")
+          PY
+
       - name: Validate image refs exist
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
         run: |
