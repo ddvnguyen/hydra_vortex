@@ -494,14 +494,21 @@ jobs:
   # Triggered via the run-tests input. Each suite is its own reusable
   # workflow; the shared hydra-live-rig concurrency group serializes them
   # after the deploy job releases its slot.
+  #
+  # NB: job-level `if:` cannot read the caller's `inputs` context on a
+  # `uses:` job (the skipped-System-Tests bug: run-tests=system was passed
+  # but the job still skipped). Gate INSIDE the reusable workflow instead —
+  # pass run-tests via `with:` and let the called workflow decide.
   system-tests:
     name: System Tests (Tier 2 + 3)
     needs: deploy
-    if: inputs.run-tests == 'system' || inputs.run-tests == 'both'
     uses: ./.github/workflows/test-system.yml
+    with:
+      run-tests: ${{ github.event.inputs.run-tests || inputs.run-tests || 'none' }}
 
   agent-workload-tests:
     name: Agent Workload Tests (Tier 4)
     needs: deploy
-    if: inputs.run-tests == 'agent-workload' || inputs.run-tests == 'both'
     uses: ./.github/workflows/test-agent-workload.yml
+    with:
+      run-tests: ${{ github.event.inputs.run-tests || inputs.run-tests || 'none' }}
