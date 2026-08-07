@@ -1,0 +1,16 @@
+name: Debug Reusable
+
+on:
+  workflow_call:
+    inputs:
+      value:
+        required: false
+        default: "none"
+        type: string
+
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo received input
+        run: echo "received value = [${{ inputs.value }}]"
