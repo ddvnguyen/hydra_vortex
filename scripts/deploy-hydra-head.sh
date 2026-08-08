@@ -412,7 +412,16 @@ deploy_rtx_only() {
   # Service-scoped — only touches head-rtx5060ti. `core` is already up
   # (deploy_shared_setup), so this is safe to run concurrently with
   # deploy_rtx3060_only, which only ever touches head-rtx3060.
-  if ! podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
+  #
+  # Run compose-up inside a transient systemd user scope: the GitHub
+  # self-hosted runner's job-end "Cleaning up orphan processes" kills
+  # conmon (issue #575), orphaning the head containers. Inside a scope
+  # unit the conmon lands in a session/cgroup the runner cleanup cannot
+  # reach. --unit is timestamped so retries never collide; --collect
+  # garbage-collects the transient unit when it exits.
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if ! systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)" \
+      podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
     die "podman compose up (head-rtx5060ti) failed — check the output above."
   fi
   ok "Compose up: head-rtx5060ti in pod hydra-system"
@@ -549,7 +558,16 @@ deploy_rtx3060_only() {
   # Service-scoped — only touches head-rtx3060. `core` is already up
   # (deploy_shared_setup), so this is safe to run concurrently with
   # deploy_rtx_only, which only ever touches head-rtx5060ti.
-  if ! podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
+  #
+  # Run compose-up inside a transient systemd user scope: the GitHub
+  # self-hosted runner's job-end "Cleaning up orphan processes" kills
+  # conmon (issue #575), orphaning the head containers. Inside a scope
+  # unit the conmon lands in a session/cgroup the runner cleanup cannot
+  # reach. --unit is timestamped so retries never collide; --collect
+  # garbage-collects the transient unit when it exits.
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if ! systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)" \
+      podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
     die "podman compose up (head-rtx3060) failed — check the output above."
   fi
   ok "Compose up: head-rtx3060 in pod hydra-system"
