@@ -2,6 +2,15 @@ name: Deploy Hydra Core
 
 on:
   workflow_dispatch:
+    inputs:
+      run-liverig:
+        description: "Run Tests.LiveRig against the rig after deploy (Tier 2)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 permissions:
   contents: read
@@ -16,6 +25,12 @@ jobs:
       cancel-in-progress: false
     env:
       HYDRA_HEAD_AUTH_TOKEN: ${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}
+      COORD_URL: http://localhost:9000
+      LLAMA_RTX_URL: http://localhost:8080
+      LLAMA_P100_URL: http://192.168.122.21:8086
+      COORD_METRICS_URL: http://localhost:9501/metrics
+      STORE_HOST: 127.0.0.1
+      STORE_PORT: "9500"
 
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +105,24 @@ jobs:
           done
           echo "Coordinator did not come up healthy after deploy"
           exit 1
+
+      - name: Run LiveRig tests (Tier 2, optional)
+        if: inputs.run-liverig == 'true'
+        timeout-minutes: 180
+        run: |
+          set -eo pipefail
+          dotnet build src/Hydra.sln -c Release --nologo -v minimal
+          dotnet test src/core/Tests.LiveRig/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --logger "trx;LogFileName=liverig.trx" \
+            --results-directory TestResults/
+        env:
+          COORD_URL: http://localhost:9000
+          LLAMA_RTX_URL: http://localhost:8080
+          LLAMA_P100_URL: http://192.168.122.21:8086
+          COORD_METRICS_URL: http://localhost:9501/metrics
+          STORE_HOST: 127.0.0.1
+          STORE_PORT: "9500"
 
       - name: Write summary
         if: always()
