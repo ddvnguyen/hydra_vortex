@@ -9,8 +9,8 @@ public interface ICompletionProxyService
     Task<bool> LoadModelAsync(string nodeUrl, string modelName, string traceId, CancellationToken ct);
 
     // #470: poll GET /v1/decode/{decodeRequestId} for merged-decode results.
-    // Returns SSE lines (streaming) or throws on timeout/not-found.
-    // Three-way branch: 404=terminal, 202=keep-polling+record-phases, 400=terminal, 200=stream.
+    // Returns SSE lines (streaming) or throws on timeout.
+    // Branch: 404=retry (transient mid-generation, #587), 202=keep-polling+record-phases, 400=terminal, 200=stream.
     IAsyncEnumerable<byte[]> PollDecodeStreamAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct, WorkItem? item = null);
     // #470: poll GET /v1/decode/{decodeRequestId} for buffered result.
     Task<Dictionary<string, object>> PollDecodeResultAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);

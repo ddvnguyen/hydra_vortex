@@ -14,6 +14,13 @@ public sealed class CompletionProxyService : ICompletionProxyService
 		_http = new HttpClient { Timeout = TimeSpan.FromSeconds(readTimeoutSeconds) };
 	}
 
+	/// <summary>Test-injectable transport. Production callers use the
+	/// readTimeoutSeconds ctor; this overload only swaps the HttpClient.</summary>
+	public CompletionProxyService(HttpClient http)
+	{
+		_http = http;
+	}
+
 	public async Task<bool> LoadModelAsync(string nodeUrl, string modelName, string traceId, CancellationToken ct)
 	{
 		var body = JsonSerializer.Serialize(new { model = modelName });

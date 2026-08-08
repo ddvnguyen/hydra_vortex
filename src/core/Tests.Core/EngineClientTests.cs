@@ -187,6 +187,10 @@ public sealed class EngineClientTests
 
         Assert.NotNull(result);
         Assert.True(result!.IsError);
+        // #587: the raw status byte + engine meta must survive so the caller
+        // can log WHICH non-Ok status the engine returned.
+        Assert.Equal((byte)StatusCode.Error, result.StatusByte);
+        Assert.Equal("nope", result.StatusMeta);
     }
 
     [Fact]
