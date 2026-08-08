@@ -83,8 +83,10 @@ jobs:
           # --force-recreate: the core image was just rebuilt under the same
           # `localhost/hydra-core:latest` tag, so a plain `up` would leave the
           # previous container running the old image. Force a fresh container.
-          podman compose -f docker-compose.hydra.yml up -d --force-recreate core
-          echo "Hydra core started"
+          # Recreate ALL services (core + both heads) so a cancelled/partial
+          # deploy or a zombie head is fully restored, not just the core.
+          podman compose -f docker-compose.hydra.yml up -d --force-recreate
+          echo "Hydra services started"
 
       - name: Deploy Hydra Head RTX
         run: |
