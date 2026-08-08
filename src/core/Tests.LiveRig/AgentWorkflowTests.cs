@@ -414,6 +414,8 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
     }
 
     // ── Test: migration mid-workflow ──────────────────────────────────────
+    // Note: warm-affinity routing may auto-migrate the session to p100 during
+    // Phase 1, so the session is not guaranteed to still be on RTX here.
 
     [SkippableFact]
     public async Task SessionMigrationMidWorkflow()
@@ -440,21 +442,31 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
                 history = [.. messages, new() { ["role"] = "assistant", ["content"] = reply }];
             }
 
-            // Verify session is on RTX
+            // Verify session exists with context built; node may already be p100
+            // (warm-affinity auto-migration) or still on RTX.
             var status = await _fx.GetStatusAsync();
             var sessionInfo = status.Sessions?.Sessions.FirstOrDefault(s => s.SessionId == sessionId);
             Assert.NotNull(sessionInfo);
-            Assert.Equal("rtx", sessionInfo.Node);
             Assert.True(sessionInfo.NPast > 0, "n_past should be > 0 after 5 turns");
+            Assert.True(sessionInfo.Node is "rtx" or "rtx3060" or "p100",
+                $"Session should be active on a worker node, got: {sessionInfo.Node}");
+            var currentNode = sessionInfo.Node;
 
-            // Migrate to P100
-            using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
-            var migrateResp = await HttpHelpers.Client.PostAsJsonAsync(
-                $"{_fx.CoordUrl}/sessions/{sessionId}/migrate",
-                new { target = "p100" }, migrateCts.Token);
-            Assert.True(migrateResp.IsSuccessStatusCode, $"Migration failed: {await migrateResp.Content.ReadAsStringAsync()}");
-            var migrateBody = await migrateResp.Content.ReadFromJsonAsync<JsonElement>();
-            Assert.True(migrateBody.GetProperty("migrated").GetBoolean());
+            // Migrate to P100 (explicit path only when auto-migration hasn't already done it)
+            if (currentNode == "p100")
+            {
+                Console.WriteLine("SessionMigrationMidWorkflow: session already auto-migrated to p100 during Phase 1; skipping explicit migrate call.");
+            }
+            else
+            {
+                using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+                var migrateResp = await HttpHelpers.Client.PostAsJsonAsync(
+                    $"{_fx.CoordUrl}/sessions/{sessionId}/migrate",
+                    new { target = "p100" }, migrateCts.Token);
+                Assert.True(migrateResp.IsSuccessStatusCode, $"Migration failed: {await migrateResp.Content.ReadAsStringAsync()}");
+                var migrateBody = await migrateResp.Content.ReadFromJsonAsync<JsonElement>();
+                Assert.True(migrateBody.GetProperty("migrated").GetBoolean());
+            }
 
             // Phase 2: 2 more turns on P100
             for (var turn = 6; turn <= 7; turn++)
