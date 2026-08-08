@@ -81,6 +81,15 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
 | `0x44 SET_EXPERT_MODE` | ✅ Implemented | COMBINED mode activation |
 | `0x46 EnginePipelineAttach` | ✅ Implemented | PIPELINE mode activation |
 
+### Scheduler Rewrite Epic (#591)
+Event-driven, slot-bounded rewrite of `WorkerSchedulerService` (event-loop executor +
+fluent-DSL state machine + differential parity harness). Branch: `epic/591-rewrite-worker-scheduler`.
+| Component | Status | Location |
+|-----------|--------|----------|
+| `Hydra.StateMachine` DSL framework | ✅ Implemented (epic #591, 23 unit tests) | `src/core/Hydra.StateMachine/` |
+| `Tests.StateMachine` | ✅ Implemented | `src/core/Tests.StateMachine/` |
+| Hydra.Core integration (executor + harness + v2 scheduler) | ⏳ Planned (next workstreams) | — |
+
 ### Model Config (models.json)
 | Model Alias | Mode | GPUs | Status |
 |-------------|------|------|--------|
