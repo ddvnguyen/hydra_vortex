@@ -40,7 +40,7 @@ public class BuildMergedDecodePromptSegmentTests
     }
 
     [Fact]
-    public void MessagesOnly_ProducesSingleKeyObject()
+    public void MessagesOnly_ProducesMessagesAndDefaultNPredict()
     {
         var item = MakeItem(RequestWithMessages("""[{"role":"user","content":"hi"}]"""));
 
@@ -49,12 +49,16 @@ public class BuildMergedDecodePromptSegmentTests
 
         using var doc = JsonDocument.Parse(json!);
         var root = doc.RootElement;
-        Assert.Single(root.EnumerateObject());
+        // #581: n_predict is always present so the prompt segment and the
+        // control header's generation object agree on the token budget
+        // (2048 default when the request carries no limit).
+        Assert.Equal(2, root.EnumerateObject().Count());
         var messages = root.GetProperty("messages");
         Assert.Equal(JsonValueKind.Array, messages.ValueKind);
         Assert.Equal(1, messages.GetArrayLength());
         Assert.Equal("user", messages[0].GetProperty("role").GetString());
         Assert.Equal("hi", messages[0].GetProperty("content").GetString());
+        Assert.Equal(2048, root.GetProperty("n_predict").GetInt32());
     }
 
     [Fact]
@@ -73,7 +77,7 @@ public class BuildMergedDecodePromptSegmentTests
 
         using var doc = JsonDocument.Parse(json!);
         var root = doc.RootElement;
-        Assert.Equal(4, root.EnumerateObject().Count());
+        Assert.Equal(5, root.EnumerateObject().Count());
         Assert.Equal(messages, root.GetProperty("messages").GetRawText());
         Assert.Equal(tools, root.GetProperty("tools").GetRawText());
         Assert.Equal(toolChoice, root.GetProperty("tool_choice").GetRawText());
@@ -177,13 +181,27 @@ public class BuildMergedDecodePromptSegmentTests
         // Precedence mirrors llama-server's own request parsing
         // (params_from_json_cmpl: n_predict → max_completion_tokens → max_tokens).
         var item = MakeItem(RequestWithMessages("""[{"role":"user","content":"hi"}]""",
-            ("n_predict", "50"), ("max_tokens", "150")));
+            ("n_predict", "50"), ("max_completion_tokens", "75"), ("max_tokens", "150")));
 
         var json = WorkerSchedulerService.BuildMergedDecodePromptSegment(item);
         Assert.NotNull(json);
 
         using var doc = JsonDocument.Parse(json!);
         Assert.Equal(50, doc.RootElement.GetProperty("n_predict").GetInt32());
+    }
+
+    [Fact]
+    public void MaxCompletionTokens_TakesPrecedenceOverMaxTokens()
+    {
+        // params_from_json_cmpl precedence: max_completion_tokens beats max_tokens.
+        var item = MakeItem(RequestWithMessages("""[{"role":"user","content":"hi"}]""",
+            ("max_completion_tokens", "75"), ("max_tokens", "150")));
+
+        var json = WorkerSchedulerService.BuildMergedDecodePromptSegment(item);
+        Assert.NotNull(json);
+
+        using var doc = JsonDocument.Parse(json!);
+        Assert.Equal(75, doc.RootElement.GetProperty("n_predict").GetInt32());
     }
 
     [Fact]
@@ -217,7 +235,7 @@ public class BuildMergedDecodePromptSegmentTests
 
         using var doc = JsonDocument.Parse(json!);
         var root = doc.RootElement;
-        Assert.Single(root.EnumerateObject());
+        Assert.Equal(2, root.EnumerateObject().Count());
         Assert.False(root.TryGetProperty("sampling", out _));
         Assert.False(root.TryGetProperty("stop", out _));
     }
