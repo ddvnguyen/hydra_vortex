@@ -35,6 +35,7 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 LIVE_HARDWARE_WORKFLOWS = {
     "test-system.yml",
     "test-agent-workload.yml",
+    "test-live-rig.yml",
     "deploy-heads.yml",
 }
 
