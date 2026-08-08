@@ -50,6 +50,16 @@ public interface IWorkerTracker
     int TotalSlots(string name);
 
     /// <summary>
+    /// Fired on every slot release (slot lease dispose, warm-lease eviction,
+    /// cross-node skip, session cleanup). Subscribers (the scheduler) use it to
+    /// wake the evaluator so queued items get a fresh capacity check — notably
+    /// the eviction service releases slots without otherwise notifying the
+    /// scheduler, which previously left freed capacity unclaimed until an
+    /// unrelated event.
+    /// </summary>
+    event Action? SlotReleased;
+
+    /// <summary>
     /// Succeeds only if the worker is healthy, has NO slots in use (all free), and
     /// is not already exclusively reserved. Marks the worker exclusive so that
     /// subsequent <see cref="TryAcquireSlot"/>, <see cref="HasFreeSlot"/>,

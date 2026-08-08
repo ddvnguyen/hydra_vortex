@@ -91,6 +91,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		_health = health; _storeClient = storeClient; _serviceProvider = serviceProvider; _log = log;
 		_chunkCache = chunkCache;
 
+		// Every slot release (lease dispose, eviction, cross-node skip, session
+		// cleanup) and every node health flip wakes the evaluator so queued
+		// items get a fresh capacity/health check.
+		_tracker.SlotReleased += SignalEvaluator;
+		_health.HealthyChanged += SignalEvaluator;
+
 		if (config.EnableChunks)
 		{
 			ChunkEngine.CHUNK_SIZE = config.ChunkSize;
@@ -441,6 +447,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					continue;
 				}
 
+				// Accurate gate: Atomic requires a prefill-capable worker, so an
+				// item with no prefill capacity simply waits in the queue (the
+				// evaluator re-checks on every wake) instead of being dispatched
+				// to routing that can only fail (the old 30-retry spin).
 				if (!CanServeRequest(qi)) continue;
 
 				lock (_queueLock) { _requestQueue.Remove(qi); }
@@ -474,8 +484,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			RequestType.Decode or RequestType.Solo =>
 				_cfg.Workers.Any(w => w.CanDecode && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)),
 			RequestType.Atomic =>
-				_cfg.Workers.Any(w => w.CanPrefill && w.CanDecode && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name))
-				|| _cfg.Workers.Any(w => w.CanDecode && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)),
+				// Atomic = same-node cold request: the router (ColdRouteAsync)
+				// requires a PREFILL-capable free worker (PickBestPrefillWorker
+				// = CanPrefill && IsFree && IsHealthy). A decode-only worker
+				// (e.g. p100, cp=False) can NOT satisfy an atomic request — the
+				// old `|| any CanDecode free worker` escape branch let items
+				// pass the gate and then fail routing to None, which spun the
+				// retry loop. Gate must mirror the router's accept set.
+				_cfg.Workers.Any(w => w.CanPrefill && w.CanDecode && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)),
 			RequestType.Prefill =>
 				_cfg.Workers.Any(w => w.CanPrefill && _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name)),
 			RequestType.Combined =>
@@ -528,6 +544,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 				if (next == WorkItemState.None)
 				{
+					// No worker could be routed right now. With the accurate
+					// admission gate (Atomic requires a prefill-capable worker),
+					// this is a genuine transient race (health blip, free-slot
+					// contention) that resolves on the next dispatch. Re-enqueue
+					// and let the evaluator re-dispatch — the gate prevents the
+					// admission/router mismatch that used to spin this loop.
 					if (item.NoWorkerRetries < 30)
 					{
 						item.NoWorkerRetries++;

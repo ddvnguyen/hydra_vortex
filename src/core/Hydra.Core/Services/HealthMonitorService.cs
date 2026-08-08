@@ -15,14 +15,37 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
     private readonly ILogger _log;
     private readonly Dictionary<string, NodeInfo> _nodes = new();
     private readonly object _lock = new();
+    private Action? _healthyChanged;
 
     public bool IsStoreHealthy { get; private set; } = true;
+
+    /// <inheritdoc/>
+    public event Action? HealthyChanged
+    {
+        add => _healthyChanged += value;
+        remove => _healthyChanged -= value;
+    }
 
     public HealthMonitorService(CoordinatorConfig cfg, IEnumerable<WorkerConfig> workers,
         IWorkerTracker tracker, IHttpClientFactory httpFactory, ILogger log)
     {
         _cfg = cfg; _workers = workers.ToList(); _tracker = tracker; _httpFactory = httpFactory; _log = log;
         foreach (var w in _workers) _nodes[w.Name] = new NodeInfo { NodeName = w.Name, Healthy = true };
+    }
+
+    // Writes a node's health snapshot, firing HealthyChanged only when the
+    // Healthy flag actually flips (capacity-significant event for the
+    // scheduler's evaluator).
+    private void SetNodeInfo(string name, NodeInfo info)
+    {
+        bool flipped;
+        lock (_lock)
+        {
+            var prev = _nodes.TryGetValue(name, out var n) && n.Healthy;
+            _nodes[name] = info;
+            flipped = prev != info.Healthy;
+        }
+        if (flipped) _healthyChanged?.Invoke();
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -104,17 +127,14 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
             var healthy = await llama.HealthAsync(ct);
             if (healthy)
             {
-                lock (_lock)
+                SetNodeInfo(w.Name, new NodeInfo
                 {
-                    _nodes[w.Name] = new NodeInfo
-                    {
-                        NodeName = w.Name,
-                        Healthy = true,
-                        SlotsTotal = 0,
-                        SlotsIdle = 0,
-                        ConsecutiveFailures = 0,
-                    };
-                }
+                    NodeName = w.Name,
+                    Healthy = true,
+                    SlotsTotal = 0,
+                    SlotsIdle = 0,
+                    ConsecutiveFailures = 0,
+                });
                 return;
             }
             _log.Warning("health_poll_fallback_fail Node={N}", w.Name);
@@ -128,17 +148,14 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
             if (healthy)
             {
                 _log.Information("health_poll_router_ready Node={N} (no slots, server OK — router/loading)", w.Name);
-                lock (_lock)
+                SetNodeInfo(w.Name, new NodeInfo
                 {
-                    _nodes[w.Name] = new NodeInfo
-                    {
-                        NodeName = w.Name,
-                        Healthy = true,
-                        SlotsTotal = 0,
-                        SlotsIdle = 0,
-                        ConsecutiveFailures = 0,
-                    };
-                }
+                    NodeName = w.Name,
+                    Healthy = true,
+                    SlotsTotal = 0,
+                    SlotsIdle = 0,
+                    ConsecutiveFailures = 0,
+                });
                 return;
             }
             _log.Warning("health_poll_empty_slots Node={N}", w.Name); OnFail(w.Name); return;
@@ -198,8 +215,8 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
                 if (slot.StuckPollCount == _cfg.StuckSlotCycles)  // log once, on the cycle it crosses
                     _log.Warning("stuck_slot_detected Node={N} Slot={S} Cycles={C} NPast={P}",
                         w.Name, slot.Id, slot.StuckPollCount, slot.NPast);
-            _nodes[w.Name] = info;
         }
+        SetNodeInfo(w.Name, info);
         _log.Information("health_poll_ok Node={N} Slots={S} Idle={I} Stuck={K} Presets={P}",
             w.Name, slots.Count, info.SlotsIdle, info.StuckSlots,
             info.PresetAliases.Count);
@@ -207,15 +224,20 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
 
     private void OnFail(string name)
     {
+        bool flipped = false;
         lock (_lock)
         {
             if (_nodes.TryGetValue(name, out var info))
             {
                 info.ConsecutiveFailures++;
-                if (info.ConsecutiveFailures >= 3)
+                if (info.ConsecutiveFailures >= 3 && info.Healthy)
+                {
                     info.Healthy = false;
+                    flipped = true;
+                }
             }
         }
+        if (flipped) _healthyChanged?.Invoke();
     }
 
     private static NodeInfo Clone(NodeInfo src) => new()

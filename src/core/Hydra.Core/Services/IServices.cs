@@ -66,4 +66,11 @@ public interface IHealthMonitorService
     /// the KV model identity so Gate A can verify identity at DECODE time.
     /// </summary>
     void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities);
+
+    /// <summary>
+    /// Fired when a node's Healthy flag flips (to healthy OR to unhealthy). The
+    /// scheduler subscribes so queued items get re-checked when a node recovers
+    /// — capacity can return without a slot release.
+    /// </summary>
+    event Action? HealthyChanged;
 }
