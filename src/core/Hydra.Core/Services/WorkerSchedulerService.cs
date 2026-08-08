@@ -1776,8 +1776,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					}
 					item.Error = new InvalidOperationException(
 						$"EnginePrefill returned terminal error on {w.Name} (slot={slotId})");
-					_log.Error("prefill_engine_terminal_error Sid={Sid} Worker={W} Slot={Slot}",
-						item.SessionId, w.Name, slotId);
+					// #587: expose WHICH non-Ok status + engine meta so bursts
+					// of prefill failures are diagnosable at a glance.
+					var statusMeta = prefillResult.StatusMeta ?? "";
+					_log.Error("prefill_engine_terminal_error Sid={Sid} Worker={W} Slot={Slot} Status={Status} StatusMeta={Meta}",
+						item.SessionId, w.Name, slotId, prefillResult.StatusByte,
+						statusMeta[..Math.Min(200, statusMeta.Length)]);
 					return WorkItemState.Failed;
 				}
 				else if (prefillResult == null)

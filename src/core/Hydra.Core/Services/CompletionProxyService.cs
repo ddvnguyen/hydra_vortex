@@ -70,7 +70,10 @@ public sealed class CompletionProxyService : ICompletionProxyService
 	// #470: Poll GET /v1/decode/{id} for streaming merged-decode result.
 	// The engine generates asynchronously after DECODE 0x43 returns Gate A validation.
 	// GET /v1/decode/{id} returns:
-	//   404 → not found or expired (terminal, abort)
+	//   404 → decode entry absent mid-generation (NORMAL — entry is absent while
+	//          GENERATING, re-inserted at DONE) or truly expired. Retry with
+	//          backoff like the non-streaming path (#587); only a poll loop that
+	//          exhausts maxAttempts is terminal (TimeoutException).
 	//   202 → {state:"loading"|"restoring", model_load_ms?, restore_slot_ms?, model_alias}
 	//          keep polling; record phase fields as they appear
 	//   400 → {error, error_code, match{}} (terminal, abort — must never fall through
@@ -99,10 +102,15 @@ public sealed class CompletionProxyService : ICompletionProxyService
 
 				if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
 				{
-					// 404: not found or expired — terminal. Abort the request.
+					// #587: 404 is NOT terminal. The engine's decode entry is
+					// absent while GENERATING and re-inserted at DONE, so a
+					// mid-generation 404 must be retried with backoff exactly
+					// like the non-streaming path (PollDecodeResultAsync).
+					// Only exhausting maxAttempts is terminal (TimeoutException).
 					resp.Dispose();
-					throw new InvalidOperationException(
-						$"GET /v1/decode/{decodeRequestId} returned 404 — decode request not found or expired");
+					await Task.Delay(delay, ct);
+					delay = Math.Min(delay * 2, maxDelayMs);
+					continue;
 				}
 
 				if (resp.StatusCode == System.Net.HttpStatusCode.Accepted)

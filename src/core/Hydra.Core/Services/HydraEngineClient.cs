@@ -117,12 +117,15 @@ public sealed class HydraEngineClient
         // Any other non-Ok status (Error, BadRequest, NotFound, etc.) is
         // terminal — the engine rejected the PREFILL for a reason that
         // retrying will not fix. Return a non-null result with IsError=true
-        // so PrefillAsync fails immediately instead of looping.
+        // so PrefillAsync fails immediately instead of looping. Carry the raw
+        // status byte + engine meta so the caller can log WHICH status (#587).
         if (resp.Status != (byte)StatusCode.Ok)
             return new EnginePrefillResult
             {
-                IsError = true,
-                KvBlob  = Array.Empty<byte>()
+                IsError    = true,
+                StatusByte = resp.Status,
+                StatusMeta = resp.Meta ?? "",
+                KvBlob     = Array.Empty<byte>()
             };
 
         EnginePrefillResult? meta = null;
@@ -358,4 +361,20 @@ public sealed class EnginePrefillResult
     /// </summary>
     [JsonIgnore]
     public bool IsError { get; init; }
+
+    /// <summary>
+    /// Raw engine RPC status byte for the terminal-error path (#587). Zero when
+    /// the result did not come from a non-Ok response. Lets the caller log WHICH
+    /// status the engine returned instead of a bare "terminal error".
+    /// </summary>
+    [JsonIgnore]
+    public byte StatusByte { get; init; }
+
+    /// <summary>
+    /// Engine RPC response meta for the terminal-error path (#587). Empty when
+    /// the result did not come from a non-Ok response. Lets the caller log the
+    /// engine's error detail (e.g. {"error": "..."}).
+    /// </summary>
+    [JsonIgnore]
+    public string StatusMeta { get; init; } = "";
 }
