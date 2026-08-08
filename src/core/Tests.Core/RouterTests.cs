@@ -18,6 +18,7 @@ internal sealed class TestHealthMonitor : IHealthMonitorService
 	public NodeInfo? GetNodeInfo(string nodeName) => null;
 	public Dictionary<string, object> GetHealthSummary() => new();
 	public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public event Action? HealthyChanged;
 }
 
 public sealed class RouterTests
@@ -390,6 +391,7 @@ public sealed class IsModelAllowedTests
 		public int? GetIdleSlot(string nodeName) => null;
 		public NodeInfo? GetNodeInfo(string nodeName) => _nodes.TryGetValue(nodeName, out var n) ? n : null;
 		public Dictionary<string, object> GetHealthSummary() => new();
+		public event Action? HealthyChanged;
 		public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
 		{
 			if (_nodes.TryGetValue(nodeName, out var n))
