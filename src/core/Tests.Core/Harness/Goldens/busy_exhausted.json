@@ -1,0 +1,41 @@
+{
+  "Scenario": "busy_exhausted",
+  "Description": "EnginePrefill returns BUSY on every attempt: after WorkItem.MaxRetries the request fails with a clear BUSY-exhausted error (deterministic: 60s busy timeout).",
+  "Version": 1,
+  "Trace": {
+    "Rpc": [
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 28,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EnginePrefill",
+        "Key": "0",
+        "Len": 5104,
+        "Status": "Busy"
+      },
+      {
+        "Op": "EnginePrefill",
+        "Key": "0",
+        "Len": 5104,
+        "Status": "Busy"
+      },
+      {
+        "Op": "EnginePrefill",
+        "Key": "0",
+        "Len": 5104,
+        "Status": "Busy"
+      }
+    ],
+    "MergedDecode": [],
+    "Proxy": [],
+    "FinalState": "Failed",
+    "Ledger": null,
+    "BusySeconds": {
+      "rtx": 0,
+      "p100": 0
+    }
+  }
+}
