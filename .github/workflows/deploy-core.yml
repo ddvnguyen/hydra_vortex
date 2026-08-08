@@ -52,10 +52,23 @@ jobs:
       - name: Deploy Hydra Core
         run: |
           set -eo pipefail
-          podman stop hydra-core 2>/dev/null || true
-          podman rm hydra-core 2>/dev/null || true
+          # The compose interpolates `../.env` (repo-root) as env_file for every
+          # service; it's gitignored so a fresh checkout has none and
+          # podman-compose refuses to start. Recreate it from the known values.
+          [ -f .env ] || cat > .env <<'EOF'
+          HYDRA_HEAD_RTX_NODE_CONFIG=node-rtx.yaml
+          HYDRA_HEAD_RTX3060_NODE_CONFIG=node-rtx3060.yaml
+          HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers.json
+          HYDRA_COORD_COMBINED_ENABLED=true
+          HYDRA_COORD_MULTI_ENGINE_POLICY=combined
+          HYDRA_COORD_MULTI_ENGINE_THRESHOLD=4096
+          HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true
+          EOF
           cd infra
-          podman compose -f docker-compose.hydra.yml up -d
+          # --force-recreate: the core image was just rebuilt under the same
+          # `localhost/hydra-core:latest` tag, so a plain `up` would leave the
+          # previous container running the old image. Force a fresh container.
+          podman compose -f docker-compose.hydra.yml up -d --force-recreate core
           echo "Hydra core started"
 
       - name: Deploy Hydra Head RTX
