@@ -366,6 +366,11 @@ deploy_shared_setup() {
   # Service-scoped — brings up ONLY `core`. head-rtx5060ti/head-rtx3060
   # both declare `depends_on: core`, so a bare `up -d` (no service arg)
   # would also try to reconcile them; scoping it avoids that entirely.
+  #
+  # The GitHub runner kills every process whose env carries RUNNER_TRACKING_ID
+  # at job end ("Cleaning up orphan processes", JobExtension.cs) — regardless
+  # of session/cgroup. Strip it so core's conmon doesn't inherit the marker.
+  unset RUNNER_TRACKING_ID 2>/dev/null || true
   if ! podman compose -f infra/docker-compose.hydra.yml up -d core 2>&1 | tail -10; then
     die "podman compose up (core) failed — check the output above. Common causes: HYDRA_HEAD_AUTH_TOKEN not exported, image not built, or userns conflict."
   fi
