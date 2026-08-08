@@ -80,13 +80,18 @@ jobs:
           HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true
           EOF
           cd infra
+          # Strip the runner's job-end orphan-cleanup marker so core's conmon
+          # isn't killed when the job ends (actions/runner kills every process
+          # whose env carries RUNNER_TRACKING_ID, JobExtension.cs).
+          unset RUNNER_TRACKING_ID 2>/dev/null || true
           # --force-recreate: the core image was just rebuilt under the same
           # `localhost/hydra-core:latest` tag, so a plain `up` would leave the
           # previous container running the old image. Force a fresh container.
-          # Recreate ALL services (core + both heads) so a cancelled/partial
-          # deploy or a zombie head is fully restored, not just the core.
-          podman compose -f docker-compose.hydra.yml up -d --force-recreate
-          echo "Hydra services started"
+          # Core ONLY — the heads are created by the next step's
+          # deploy-hydra-head.sh, which strips the marker around its own
+          # compose-up (zombie heads are reaped/recreated there too).
+          podman compose -f docker-compose.hydra.yml up -d --force-recreate core
+          echo "Hydra core started"
 
       - name: Deploy Hydra Head RTX
         run: |
