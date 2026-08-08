@@ -88,7 +88,9 @@ fluent-DSL state machine + differential parity harness). Branch: `epic/591-rewri
 |-----------|--------|----------|
 | `Hydra.StateMachine` DSL framework | ✅ Implemented (epic #591, 23 unit tests) | `src/core/Hydra.StateMachine/` |
 | `Tests.StateMachine` | ✅ Implemented | `src/core/Tests.StateMachine/` |
-| Hydra.Core integration (executor + harness + v2 scheduler) | ⏳ Planned (next workstreams) | — |
+| Differential/contract harness (WP0) | ✅ Implemented (21 golden scenarios, lease invariants, route matrix; 500/500 Tests.Core green) | `src/core/Tests.Core/Harness/` |
+| `Hydra.Core.Scheduling` executor core (WP1) | ✅ Implemented (SlotPool, PriorityWaiterQueue, MailboxExecutor, RpcConnectionPool, TimerWheel, OffloadPool; 75 tests) | `src/core/Hydra.Core.Scheduling/` + `src/core/Tests.Core.Scheduling/` |
+| Hydra.Core v2 integration (toggle + strangler swap) | ⏳ Planned (WP2/WP3) | — |
 
 ### Model Config (models.json)
 | Model Alias | Mode | GPUs | Status |
