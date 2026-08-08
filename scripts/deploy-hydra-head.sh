@@ -419,6 +419,11 @@ deploy_rtx_only() {
   # unit the conmon lands in a session/cgroup the runner cleanup cannot
   # reach. --unit is timestamped so retries never collide; --collect
   # garbage-collects the transient unit when it exits.
+  #
+  # The GitHub runner kills every process whose env carries RUNNER_TRACKING_ID
+  # at job end ("Cleaning up orphan processes", JobExtension.cs) — regardless
+  # of session/cgroup. Strip it so conmon doesn't inherit the marker.
+  unset RUNNER_TRACKING_ID 2>/dev/null || true
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$$" \
       podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
@@ -565,6 +570,11 @@ deploy_rtx3060_only() {
   # unit the conmon lands in a session/cgroup the runner cleanup cannot
   # reach. --unit is timestamped so retries never collide; --collect
   # garbage-collects the transient unit when it exits.
+  #
+  # The GitHub runner kills every process whose env carries RUNNER_TRACKING_ID
+  # at job end ("Cleaning up orphan processes", JobExtension.cs) — regardless
+  # of session/cgroup. Strip it so conmon doesn't inherit the marker.
+  unset RUNNER_TRACKING_ID 2>/dev/null || true
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$$" \
       podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
