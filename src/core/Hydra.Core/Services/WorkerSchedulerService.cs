@@ -2747,7 +2747,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			else
 			{
 			var putSw = System.Diagnostics.Stopwatch.StartNew();
-			var llamaRpc = GetLlamaRpcClient(w);
+			var llamaRpc = GetStateRpcClient(w);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), restoreBlob, item.TraceId, ct);
 			putSw.Stop();
@@ -2949,15 +2949,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	/// <summary>
 	/// Resolve the token budget for the merged-decode (0x43) request.
-	/// Precedence mirrors llama-server's own parsing (n_predict →
-	/// max_tokens) so the merged path and the HTTP fallback agree; the merged
-	/// path must honor the client's limit or a failure degrades to a very long
-	/// decode instead of a bounded reply (#581).
+	/// Precedence mirrors llama-server's own parsing in
+	/// params_from_json_cmpl (n_predict → max_completion_tokens → max_tokens)
+	/// so the merged path and the HTTP fallback agree; the merged path must
+	/// honor the client's limit or a failure degrades to a very long decode
+	/// instead of a bounded reply (#581).
 	/// </summary>
 	internal static int GetMergedDecodeNPredict(WorkItem item)
 	{
 		if (item.Request.TryGetValue("n_predict", out var npEl) && TryAsInt(npEl, out var n))
 			return n;
+		if (item.Request.TryGetValue("max_completion_tokens", out var mctEl) && TryAsInt(mctEl, out var mct))
+			return mct;
 		if (item.Request.TryGetValue("max_tokens", out var mtEl) && TryAsInt(mtEl, out var mt))
 			return mt;
 		return 2048;
@@ -3004,13 +3007,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		var segment = new Dictionary<string, object?> { ["messages"] = messagesEl };
 
-		// #581: n_predict (from n_predict/max_tokens) must ride in the prompt
-		// segment itself — DECODE_APPLY reads prompt.value("n_predict", 256)
-		// directly, and some engine revisions do not merge the control header's
-		// "generation" object into the prompt. Without it the engine decodes
-		// until EOS instead of honoring the client's token budget.
-		if (item.Request.ContainsKey("n_predict") || item.Request.ContainsKey("max_tokens"))
-			segment["n_predict"] = GetMergedDecodeNPredict(item);
+		// #581: n_predict must ride in the prompt segment itself — DECODE_APPLY
+		// reads prompt.value("n_predict", 256) directly, and some engine
+		// revisions do not merge the control header's "generation" object into
+		// the prompt. Always emit it so the segment and the header generation
+		// object agree (both carry the same resolved budget); without it the
+		// engine decodes until EOS instead of honoring the client's limit.
+		segment["n_predict"] = GetMergedDecodeNPredict(item);
 
 		if (item.Request.TryGetValue("tools", out var toolsEl))
 			segment["tools"] = toolsEl;
