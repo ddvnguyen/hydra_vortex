@@ -420,7 +420,7 @@ deploy_rtx_only() {
   # reach. --unit is timestamped so retries never collide; --collect
   # garbage-collects the transient unit when it exits.
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if ! systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)" \
+  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$$" \
       podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
     die "podman compose up (head-rtx5060ti) failed — check the output above."
   fi
@@ -566,7 +566,7 @@ deploy_rtx3060_only() {
   # reach. --unit is timestamped so retries never collide; --collect
   # garbage-collects the transient unit when it exits.
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if ! systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)" \
+  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$$" \
       podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
     die "podman compose up (head-rtx3060) failed — check the output above."
   fi
