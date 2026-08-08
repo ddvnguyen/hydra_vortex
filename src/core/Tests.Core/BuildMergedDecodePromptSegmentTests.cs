@@ -154,6 +154,57 @@ public class BuildMergedDecodePromptSegmentTests
     }
 
     [Fact]
+    public void MaxTokens_EmitsNPredictInSegment()
+    {
+        // #581: DECODE_APPLY reads n_predict off the prompt segment directly;
+        // the merged path must honor max_tokens even when the engine does not
+        // merge the control header's "generation" object into the prompt.
+        var item = MakeItem(RequestWithMessages("""[{"role":"user","content":"hi"}]""",
+            ("max_tokens", "150")));
+
+        var json = WorkerSchedulerService.BuildMergedDecodePromptSegment(item);
+        Assert.NotNull(json);
+
+        using var doc = JsonDocument.Parse(json!);
+        var root = doc.RootElement;
+        Assert.Equal(150, root.GetProperty("n_predict").GetInt32());
+        Assert.Equal("hi", root.GetProperty("messages")[0].GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public void NPredictKey_TakesPrecedenceOverMaxTokens()
+    {
+        // Precedence mirrors llama-server's own request parsing
+        // (params_from_json_cmpl: n_predict → max_completion_tokens → max_tokens).
+        var item = MakeItem(RequestWithMessages("""[{"role":"user","content":"hi"}]""",
+            ("n_predict", "50"), ("max_tokens", "150")));
+
+        var json = WorkerSchedulerService.BuildMergedDecodePromptSegment(item);
+        Assert.NotNull(json);
+
+        using var doc = JsonDocument.Parse(json!);
+        Assert.Equal(50, doc.RootElement.GetProperty("n_predict").GetInt32());
+    }
+
+    [Fact]
+    public void PrimitiveMaxTokens_EmitsNPredictInSegment()
+    {
+        // Requests built programmatically (tests/CLI) carry a plain int instead
+        // of a JsonElement — the budget must still reach the engine.
+        var item = MakeItem(new Dictionary<string, object>
+        {
+            ["messages"] = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "hi" } },
+            ["max_tokens"] = 150
+        });
+
+        var json = WorkerSchedulerService.BuildMergedDecodePromptSegment(item);
+        Assert.NotNull(json);
+
+        using var doc = JsonDocument.Parse(json!);
+        Assert.Equal(150, doc.RootElement.GetProperty("n_predict").GetInt32());
+    }
+
+    [Fact]
     public void MessagesOnly_WithEmptyOverrides_NoExtraKeys()
     {
         // An overrides record with all nulls must not add sampling/stop keys.

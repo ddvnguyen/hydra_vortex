@@ -28,6 +28,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly CancellationTokenSource _cts = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _agentClients = new();
 	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _llamaRpcClients = new();
+	/// <summary>Dedicated per-worker connection for large state transfers
+	/// (STATE_GET / STATE_PUT). The engine's RPC protocol is strictly serial
+	/// per connection, so a 265 MB BgSave STATE_GET stream must not hold the
+	/// main connection's turn — it would stall STATE_META / DECODE RPCs of the
+	/// next turn behind the whole stream (#581).</summary>
+	internal readonly Dictionary<string, Hydra.Shared.RpcClient> _llamaStateRpcClients = new();
 	private readonly HashSet<string> _prefixSet = [];
 
 	/// <summary>
@@ -52,6 +58,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
 	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new();
+
+	/// <summary>
+	/// Bounded wait for the decode node's STATE_META query in the merged-decode
+	/// path (#581). Must exceed the engine's STATE_GET stream window: the fork
+	/// streams a 265 MB BgSave synchronously on its inference thread (~9s), and
+	/// STATE_META is served from that same thread — a 3s timeout failed
+	/// spuriously when a BgSave stream overlapped the next turn, leaving Gate A
+	/// with empty model_metadata. 15s covers the stream window while still
+	/// failing fast on a genuinely wedged engine.
+	/// </summary>
+	private static readonly TimeSpan DecodeMetaQueryTimeout = TimeSpan.FromSeconds(15);
 	internal readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
 	private readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
 	internal readonly ConcurrentDictionary<string, WorkItem> _pendingTimelines = new();
@@ -304,7 +321,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		int nPastAfter;
 		try
 		{
-			var llamaRpc = GetLlamaRpcClient(targetWorker);
+			var llamaRpc = GetStateRpcClient(targetWorker);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), storeResp.Payload, traceId, ct);
 
@@ -1615,7 +1632,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			var slotId = item.PrefillSlot ?? 0;
-			var llamaRpc = GetLlamaRpcClient(item.PrefillWorker);
+			var llamaRpc = GetStateRpcClient(item.PrefillWorker);
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
 
@@ -2931,6 +2948,41 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	/// <summary>
+	/// Resolve the token budget for the merged-decode (0x43) request.
+	/// Precedence mirrors llama-server's own parsing (n_predict →
+	/// max_tokens) so the merged path and the HTTP fallback agree; the merged
+	/// path must honor the client's limit or a failure degrades to a very long
+	/// decode instead of a bounded reply (#581).
+	/// </summary>
+	internal static int GetMergedDecodeNPredict(WorkItem item)
+	{
+		if (item.Request.TryGetValue("n_predict", out var npEl) && TryAsInt(npEl, out var n))
+			return n;
+		if (item.Request.TryGetValue("max_tokens", out var mtEl) && TryAsInt(mtEl, out var mt))
+			return mt;
+		return 2048;
+
+		static bool TryAsInt(object? value, out int result)
+		{
+			switch (value)
+			{
+				case JsonElement { ValueKind: JsonValueKind.Number } je when je.TryGetInt32(out var i):
+					result = i;
+					return true;
+				case int i:
+					result = i;
+					return true;
+				case long l when l is >= int.MinValue and <= int.MaxValue:
+					result = (int)l;
+					return true;
+				default:
+					result = 0;
+					return false;
+			}
+		}
+	}
+
+	/// <summary>
 	/// Build the merged-decode (0x43) "prompt segment" as a JSON object
 	/// containing messages + optional tools/tool_choice/response_format +
 	/// optional sampling/stop. The engine's DECODE_APPLY handler
@@ -2951,6 +3003,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			return null;
 
 		var segment = new Dictionary<string, object?> { ["messages"] = messagesEl };
+
+		// #581: n_predict (from n_predict/max_tokens) must ride in the prompt
+		// segment itself — DECODE_APPLY reads prompt.value("n_predict", 256)
+		// directly, and some engine revisions do not merge the control header's
+		// "generation" object into the prompt. Without it the engine decodes
+		// until EOS instead of honoring the client's token budget.
+		if (item.Request.ContainsKey("n_predict") || item.Request.ContainsKey("max_tokens"))
+			segment["n_predict"] = GetMergedDecodeNPredict(item);
 
 		if (item.Request.TryGetValue("tools", out var toolsEl))
 			segment["tools"] = toolsEl;
@@ -3081,9 +3141,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// inside the prompt-segment object (not the samplingJson
 					// parameter / 32 KiB control header).
 					var messagesJson = BuildMergedDecodePromptSegment(item);
-					var nPredict = item.Request.TryGetValue("max_tokens", out var npEl)
-						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
-						: 2048;
+					var nPredict = GetMergedDecodeNPredict(item);
 
 					// #470/A7: kv_metadata (what built the KV) comes from the PREFILL
 					// response. model_metadata (what the decode node is actually running)
@@ -3095,7 +3153,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					var modelIdentity = ModelIdentity.Empty;
 					try
 					{
-						using var metaCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+						using var metaCts = new CancellationTokenSource(DecodeMetaQueryTimeout);
 						var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
 							item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
 						if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
@@ -3259,9 +3317,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// inside the prompt-segment object (not the samplingJson
 					// parameter / 32 KiB control header).
 					var messagesJson = BuildMergedDecodePromptSegment(item);
-					var nPredict = item.Request.TryGetValue("max_tokens", out var npEl)
-						? (npEl is JsonElement npJe && npJe.ValueKind == JsonValueKind.Number ? npJe.GetInt32() : 2048)
-						: 2048;
+					var nPredict = GetMergedDecodeNPredict(item);
 
 					// #470/A7: kv_metadata from PREFILL, model_metadata from decode node's
 					// own STATE_META. See streaming path comment for rationale.
@@ -3269,7 +3325,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					var modelIdentity = ModelIdentity.Empty;
 					try
 					{
-						using var metaCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+						using var metaCts = new CancellationTokenSource(DecodeMetaQueryTimeout);
 						var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
 							item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
 						if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
@@ -3467,7 +3523,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			else
 			{
 				var slotId = item.LastIdSlot ?? 0;
-				var llamaRpc = GetLlamaRpcClient(w);
+				var llamaRpc = GetStateRpcClient(w);
 				var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
 					slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
 
@@ -3608,7 +3664,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					bgTraceId = bgInfo2.TraceId;
 					try
 					{
-						var llamaRpc = GetLlamaRpcClient(w);
+						var llamaRpc = GetStateRpcClient(w);
 						stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
 							bgInfo2.SlotId.ToString(), ReadOnlyMemory<byte>.Empty, bgInfo2.TraceId, CancellationToken.None);
 					}
@@ -4023,7 +4079,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private async Task<byte[]?> SaveKvStateCoreAsync(
 		WorkerConfig worker, int slotId, string sessionId, int nPast, string traceId, CancellationToken ct)
 	{
-		var llamaRpc = GetLlamaRpcClient(worker);
+		var llamaRpc = GetStateRpcClient(worker);
 		var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
 			slotId.ToString(), ReadOnlyMemory<byte>.Empty, traceId, ct);
 		if (stateResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
@@ -4674,7 +4730,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return client;
 	}
 
-	private Hydra.Shared.RpcClient GetLlamaRpcClient(WorkerConfig w)
+	internal Hydra.Shared.RpcClient GetLlamaRpcClient(WorkerConfig w)
 	{
 		if (_llamaRpcClients.TryGetValue(w.Name, out var c)) return c;
 		var rpcHost = w.LlamaRpcHost;
@@ -4684,6 +4740,28 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
 		_llamaRpcClients[w.Name] = client;
 		_ = ConfigureStateChunkSizeAsync(client, w.Name);
+		return client;
+	}
+
+	/// <summary>
+	/// Per-worker RpcClient dedicated to large state transfers (STATE_GET /
+	/// STATE_PUT). #581: the engine's hydra RPC loop is strictly serial per
+	/// connection, so a multi-hundred-MB STATE_GET response stream would hold
+	/// the shared connection's _sync for its whole duration and block the next
+	/// turn's STATE_META/DECODE RPCs. A second connection lets the engine queue
+	/// the DECODE behind the stream (its inference thread is busy either way)
+	/// instead of the coordinator failing its own request timeout. Same
+	/// factory as <see cref="GetLlamaRpcClient"/> so tests route both to the
+	/// same fake.
+	/// </summary>
+	internal Hydra.Shared.RpcClient GetStateRpcClient(WorkerConfig w)
+	{
+		if (_llamaStateRpcClients.TryGetValue(w.Name, out var c)) return c;
+		var rpcHost = w.LlamaRpcHost;
+		var client = AgentClientFactory != null
+			? AgentClientFactory(rpcHost, w.LlamaRpcPort)
+			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
+		_llamaStateRpcClients[w.Name] = client;
 		return client;
 	}
 
