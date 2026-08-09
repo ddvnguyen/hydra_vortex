@@ -9,22 +9,20 @@ namespace Hydra.Core.Services.SchedulerV2;
 
 /// <summary>
 /// v2 scheduler — the SOLID successor to <c>WorkerSchedulerService</c>. Implements
-/// the same <see cref="IWorkerScheduler"/> contract (so legacy and v2 are A/B
-/// swappable behind one DI toggle) but shares ZERO implementation with the legacy
-/// god class.
+/// the same <see cref="IWorkerScheduler"/> contract (A/B swappable) with a typed
+/// <see cref="ICompletionResult"/> submit, and shares ZERO implementation with the
+/// legacy god class.
 ///
 /// <para>Design (epic #591):</para>
 /// <list type="bullet">
-/// <item><b>DIP</b> — everything is constructor-injected (classifier, planner,
-/// lease manager, gateways, phase handlers, timeline). No static singletons.</item>
-/// <item><b>SRP</b> — one collaborator per concern; this type is the thin
-/// orchestrator (submission + queue + evaluator).</item>
-/// <item><b>OCP</b> — the pipeline is a data-driven
-/// <see cref="Hydra.StateMachine.StateMachine{TState,TEvent}"/>: adding a phase =
-/// a new <see cref="IPhaseHandler"/> + one <c>Configure</c> edge. No switch edits.</item>
-/// <item><b>Concurrency</b> — no global semaphore. Requests wait in a priority
-/// queue; a request runs only while it owns a slot lease. Invariant:
-/// <i>#live ≤ Σ occupied slots</i>, enforced by <see cref="ILeaseManager"/>.</item>
+/// <item><b>State runners</b> — one class per <see cref="WorkItemState"/> deriving
+/// from <see cref="WorkerStateRunner"/> (open/closed: a new state = a new runner +
+/// one <c>Configure</c> edge). The <c>PlanRunner</c> implements both plan states.</item>
+/// <item><b>Simple model</b> — <see cref="SchedulerRequest"/>; no legacy WorkItem.</item>
+/// <item><b>DIP</b> — everything injected; no static singletons.</item>
+/// <item><b>Concurrency</b> — no global semaphore: requests wait in a priority
+/// queue and run only while they own a slot lease; two-phase requests hold ONE
+/// slot at a time (prefill released before the decode slot is acquired).</item>
 /// </list>
 /// </summary>
 public sealed class WorkerSchedulerV2 : IWorkerScheduler
@@ -40,11 +38,11 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
     private readonly ILeaseManager _leases;
     private readonly ITimelineEmitter _timeline;
     private readonly ILogger _log;
-    private readonly Dictionary<WorkItemState, IPhaseHandler> _phaseHandlers;
+    private readonly Dictionary<WorkItemState, WorkerStateRunner> _runners;
 
-    private readonly PriorityWaiterQueue<WorkRequest> _admission = new(AdmissionCapacity);
+    private readonly PriorityWaiterQueue<SchedulerRequest> _admission = new(AdmissionCapacity);
     private readonly MailboxExecutor _admissionExecutor = new();
-    private readonly ConcurrentDictionary<string, WorkRequest> _streaming = new();
+    private readonly ConcurrentDictionary<string, SchedulerRequest> _streaming = new();
 
     // ── IWorkerScheduler: last-dispatched telemetry (populated at decode start) ──
 
@@ -63,7 +61,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         IRequestClassifier classifier,
         IRoutePlanner planner,
         ILeaseManager leases,
-        IEnumerable<IPhaseHandler> phaseHandlers,
+        IEnumerable<WorkerStateRunner> runners,
         ITimelineEmitter timeline,
         ILogger? log = null)
     {
@@ -76,12 +74,16 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         _leases = leases;
         _timeline = timeline;
         _log = log ?? Serilog.Log.ForContext("component", "coordinator-v2");
-        _phaseHandlers = phaseHandlers.ToDictionary(h => h.State);
+
+        // One runner per handled state (PlanRunner registers for RouteDecision + PickDecode).
+        _runners = runners
+            .SelectMany(r => Enum.GetValues<WorkItemState>().Where(r.Handles).Select(s => (State: s, Runner: r)))
+            .ToDictionary(x => x.State, x => x.Runner);
     }
 
-    // ── Submission ──
+    // ── Submission (typed contract) ──
 
-    public async Task<object> SubmitAsync(
+    public async Task<ICompletionResult> SubmitAsync(
         Dictionary<string, object> request,
         List<Dictionary<string, object>> messages,
         string sessionId,
@@ -92,22 +94,16 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         int systemPromptTokens = 0)
     {
         var chat = ChatRequest.FromSubmit(request, messages, sessionId, estimatedTokens, maxTokens, prefixHash, systemPromptTokens);
-        var item = new WorkItem(request, messages, sessionId, chat.TraceId, prefixHash, estimatedTokens, maxTokens)
-        {
-            SystemPromptTokens = systemPromptTokens,
-        };
-
-        var hasWarmSession = _ledger.Lookup(sessionId) is { SlotFreed: false };
-        var type = _classifier.Classify(chat, _cfg, hasWarmSession);
-        var wr = new WorkRequest(chat, item, type, _classifier.ComputePriority(type));
+        var type = _classifier.Classify(chat, _cfg, hasWarmSession: _ledger.Lookup(sessionId) is { SlotFreed: false });
+        var req = new SchedulerRequest(chat, type, _classifier.ComputePriority(type));
 
         if (type == RequestType.Solo)
-            wr.Plan = _planner.Plan(chat, type, _cfg.Workers, _tracker, _health, _ledger);
+            req.Plan = _planner.Plan(chat, type, _cfg.Workers, _tracker, _health, _ledger);
 
-        if (!_admission.TryEnqueue(wr, wr.Priority))
+        if (!_admission.TryEnqueue(req, req.Priority))
         {
-            item.Completion.TrySetException(new InvalidOperationException("scheduler admission queue full"));
-            return await item.Completion.Task;
+            req.Completion.TrySetException(new InvalidOperationException("scheduler admission queue full"));
+            return await req.Completion.Task;
         }
 
         SignalEvaluator();
@@ -115,13 +111,13 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         // Streaming: return the chunk stream once decode starts (controller SSE).
         if (chat.Stream)
         {
-            var stream = await item.StreamCompletion.Task.WaitAsync(TimeSpan.FromSeconds(_cfg.LlamaRequestTimeoutS), ct);
-            return stream;
+            var chunks = await req.StreamReady.Task.WaitAsync(TimeSpan.FromSeconds(_cfg.LlamaRequestTimeoutS), ct);
+            return new StreamCompletionResult(chunks);
         }
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(_cfg.LlamaRequestTimeoutS));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
-        return (await item.Completion.Task.WaitAsync(linked.Token))!;
+        return await req.Completion.Task.WaitAsync(linked.Token);
     }
 
     // ── Evaluator (serialized via the admission mailbox) ──
@@ -131,115 +127,112 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
     private async Task EvaluateAsync(CancellationToken ct)
     {
-        while (_admission.TryPeek(out var wr, out _))
+        while (_admission.TryPeek(out var req, out _))
         {
             if (ct.IsCancellationRequested) break;
 
-            if (wr.Item.IsCancelled)
+            if (req.Completion.Task.IsCanceled)
             {
                 _admission.TryDequeue(out _);
-                await FinalizeAsync(wr, WorkItemState.Cancelled);
+                await FinalizeAsync(req, WorkItemState.Cancelled);
                 continue;
             }
 
             // Plan lazily (once) so warm-affinity/cold decisions reflect live capacity.
-            if (!wr.Plan.HasCapacity)
+            if (!req.Plan.HasCapacity)
             {
-                wr.Plan = _planner.Plan(wr.Chat, wr.Type, _cfg.Workers, _tracker, _health, _ledger);
-                if (!wr.Plan.HasCapacity)
+                req.Plan = _planner.Plan(req.Chat, req.Type, _cfg.Workers, _tracker, _health, _ledger);
+                if (!req.Plan.HasCapacity)
                     break; // no viable worker — wait for a slot release / health change
             }
 
-            if (!_leases.HasCapacity(wr.Plan))
+            if (!_leases.HasCapacity(req.Plan))
                 break;
 
             _admission.TryDequeue(out _);
-            _ = RunPipelineAsync(wr, ct); // slot-bounded inside; signals on release
+            _ = RunPipelineAsync(req, ct); // slot-bounded inside; signals on release
         }
     }
 
-    private async Task RunPipelineAsync(WorkRequest wr, CancellationToken ct)
+    private async Task RunPipelineAsync(SchedulerRequest req, CancellationToken ct)
     {
-        var item = wr.Item;
-
-        // GPU-utilization rule: a Prefill-type request acquires the PREFILL slot
-        // only; the decode slot is acquired later at the PickDecode handoff. Solo
+        // GPU-utilization rule: Prefill-type acquires the PREFILL slot only; the
+        // decode slot is acquired at the PlanRunner (PickDecode) handoff. Solo
         // (decode-only) acquires the decode slot directly.
-        var startWorker = wr.Plan.PrefillWorker ?? wr.Plan.DecodeWorker;
+        var startWorker = req.Plan.PrefillWorker ?? req.Plan.DecodeWorker;
         if (string.IsNullOrEmpty(startWorker))
         {
-            _admission.Enqueue(wr, wr.Priority);
+            _admission.Enqueue(req, req.Priority);
             SignalEvaluator();
             return;
         }
 
-        var lease = _leases.TryAcquire(startWorker, item.SessionId);
+        var lease = _leases.TryAcquire(startWorker, req.SessionId);
         if (lease is null)
         {
             // Capacity lost between planning and acquisition — requeue.
-            _admission.Enqueue(wr, wr.Priority);
+            _admission.Enqueue(req, req.Priority);
             SignalEvaluator();
             return;
         }
 
-        if (wr.Plan.PrefillWorker is not null)
-            item.PrefillLease = lease;
+        if (req.Plan.PrefillWorker is not null)
+            req.PrefillLease = lease;
         else
-            item.DecodeLease = lease;
+            req.DecodeLease = lease;
 
-        item.State = WorkItemState.RouteDecision; // sync item with the machine's initial state
+        req.State = WorkItemState.RouteDecision; // sync request with the machine's initial state
         var suspended = false;
         try
         {
             var machine = NewMachine(WorkItemState.RouteDecision);
-            suspended = await StepAsync(wr, startWorker, machine, ct);
+            suspended = await StepAsync(req, startWorker, machine, ct);
         }
         finally
         {
             if (suspended)
             {
                 // Streaming: the slot stays held until NotifyStreamComplete.
-                _streaming[item.SessionId] = wr;
+                _streaming[req.SessionId] = req;
             }
             else
             {
-                ReleaseLeases(item);
+                ReleaseLeases(req);
             }
         }
     }
 
-    /// <summary>Stepping driver: run the current phase handler, fire its event,
-    /// sync <c>WorkItem.State</c>, repeat until terminal / suspended.</summary>
+    /// <summary>Stepping driver: run the state's runner, fire its event, sync
+    /// <c>SchedulerRequest.State</c>, repeat until terminal / suspended.</summary>
     private async Task<bool> StepAsync(
-        WorkRequest wr,
+        SchedulerRequest req,
         string worker,
         StateMachine<WorkItemState, SchedulerEvent> machine,
         CancellationToken ct)
     {
-        var item = wr.Item;
         var suspended = false;
         try
         {
-            while (!item.IsCancelled && !IsTerminal(item.State))
+            while (!req.IsTerminal)
             {
                 ct.ThrowIfCancellationRequested();
 
-                if (!_phaseHandlers.TryGetValue(item.State, out var phase))
+                if (!_runners.TryGetValue(req.State, out var runner))
                 {
-                    item.Error = new InvalidOperationException($"no phase handler for state {item.State}");
-                    await machine.FireAsync(SchedulerEvent.Failed, item, CancellationToken.None);
-                    item.State = machine.State;
+                    req.Error = new InvalidOperationException($"no state runner for state {req.State}");
+                    await machine.FireAsync(SchedulerEvent.Failed, req, CancellationToken.None);
+                    req.State = machine.State;
                     break;
                 }
 
-                var result = await phase.RunAsync(new PhaseContext(wr, item, worker), ct);
+                var result = await runner.RunAsync(new RunnerContext(req, worker), ct);
                 switch (result.Outcome)
                 {
                     case PhaseOutcome.Fire:
-                        await machine.FireAsync(result.Event, item, ct);
-                        item.State = machine.State;
-                        if (item.State == WorkItemState.Decode)
-                            UpdateLastDispatched(item.DecodeWorker);
+                        await machine.FireAsync(result.Event, req, ct);
+                        req.State = machine.State;
+                        if (req.State == WorkItemState.Decode)
+                            UpdateLastDispatched(req.DecodeWorker);
                         break;
                     case PhaseOutcome.Wait:
                         suspended = true;
@@ -249,54 +242,53 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
                 }
             }
         }
-        catch (OperationCanceledException) when (item.IsCancelled || ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested || req.Completion.Task.IsCanceled)
         {
-            await machine.FireAsync(SchedulerEvent.Cancelled, item, CancellationToken.None);
-            item.State = machine.State;
+            await machine.FireAsync(SchedulerEvent.Cancelled, req, CancellationToken.None);
+            req.State = machine.State;
         }
         catch (Exception ex)
         {
-            item.Error = ex;
-            _log.Warning(ex, "v2_pipeline_error Sid={Sid}", item.SessionId);
-            await machine.FireAsync(SchedulerEvent.Failed, item, CancellationToken.None);
-            item.State = machine.State;
+            req.Error = ex;
+            _log.Warning(ex, "v2_pipeline_error Sid={Sid}", req.SessionId);
+            await machine.FireAsync(SchedulerEvent.Failed, req, CancellationToken.None);
+            req.State = machine.State;
         }
         finally
         {
             if (!suspended)
-                await FinalizeAsync(wr, item.State);
+                await FinalizeAsync(req, req.State);
         }
         return suspended;
     }
 
-    private async Task FinalizeAsync(WorkRequest wr, WorkItemState terminal)
+    private async Task FinalizeAsync(SchedulerRequest req, WorkItemState terminal)
     {
-        var item = wr.Item;
-        _timeline.Emit(item, terminal);
+        _timeline.Emit(req, terminal);
         switch (terminal)
         {
             case WorkItemState.Done:
-                item.Completion.TrySetResult(item.Response ?? new { status = "done" });
+                req.Completion.TrySetResult(new FinalCompletionResult(req.Response ?? new { status = "done" }));
                 break;
             case WorkItemState.Failed:
-                item.Completion.TrySetException(item.Error ?? new InvalidOperationException($"request failed in state {terminal}"));
+                req.Completion.TrySetException(req.Error ?? new InvalidOperationException($"request failed in state {terminal}"));
                 break;
             case WorkItemState.Cancelled:
-                item.Completion.TrySetCanceled();
+                req.Completion.TrySetCanceled();
                 break;
             default:
-                item.Completion.TrySetResult(item.Response ?? new { status = terminal.ToString() });
+                req.Completion.TrySetResult(new FinalCompletionResult(req.Response ?? new { status = terminal.ToString() }));
                 break;
         }
         SignalEvaluator();
     }
 
-    private void ReleaseLeases(WorkItem item)
+    private void ReleaseLeases(SchedulerRequest req)
     {
-        _leases.Release(item.PrefillLease);
-        item.PrefillLease = null;
-        _leases.Release(item.DecodeLease);
-        item.DecodeLease = null;
+        _leases.Release(req.PrefillLease);
+        req.PrefillLease = null;
+        _leases.Release(req.DecodeLease);
+        req.DecodeLease = null;
     }
 
     private void UpdateLastDispatched(WorkerConfig? worker)
@@ -326,7 +318,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
         m.Configure(WorkItemState.Prefill)
             .On(SchedulerEvent.PrefillSucceeded, WorkItemState.SaveKv)
-            .On(SchedulerEvent.Retry, ctx => ((WorkItem)ctx.Payload!).RetryCount < WorkItem.MaxRetries, WorkItemState.RouteDecision)
+            .On(SchedulerEvent.Retry, ctx => ((SchedulerRequest)ctx.Payload!).RetryCount < SchedulerRequest.MaxRetries, WorkItemState.RouteDecision)
             .On(SchedulerEvent.Failed, WorkItemState.Failed)
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
 
@@ -375,9 +367,6 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         return Task.CompletedTask;
     }
 
-    private static bool IsTerminal(WorkItemState s)
-        => s is WorkItemState.Done or WorkItemState.Failed or WorkItemState.Cancelled;
-
     // ── Remaining IWorkerScheduler members ──
 
     public int WarmLeaseCount
@@ -410,40 +399,39 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         }
     }
 
-    /// <summary>Resumes a suspended streaming request and completes it: the
-    /// stream already delivered its chunks, so skip decode and run the
-    /// background-save teardown to <see cref="WorkItemState.Done"/>.</summary>
+    /// <summary>Resumes a suspended streaming request and completes it: the stream
+    /// already delivered its chunks, so skip decode and run background-save to Done.</summary>
     public async Task NotifyStreamComplete(string sessionId)
     {
-        if (!_streaming.TryRemove(sessionId, out var wr))
+        if (!_streaming.TryRemove(sessionId, out var req))
             return;
 
-        var item = wr.Item;
         try
         {
             var machine = NewMachine(WorkItemState.Decode);
-            await machine.FireAsync(SchedulerEvent.DecodeSucceeded, item, CancellationToken.None);
-            item.State = machine.State;
+            await machine.FireAsync(SchedulerEvent.DecodeSucceeded, req, CancellationToken.None);
+            req.State = machine.State;
 
-            while (!item.IsCancelled && !IsTerminal(item.State))
+            while (!req.IsTerminal)
             {
-                if (!_phaseHandlers.TryGetValue(item.State, out var phase))
+                if (!_runners.TryGetValue(req.State, out var runner))
                     break;
-                var result = await phase.RunAsync(new PhaseContext(wr, item, wr.Plan.PrefillWorker ?? wr.Plan.DecodeWorker ?? ""), CancellationToken.None);
+                var result = await runner.RunAsync(
+                    new RunnerContext(req, req.Plan.PrefillWorker ?? req.Plan.DecodeWorker ?? ""), CancellationToken.None);
                 if (result.Outcome != PhaseOutcome.Fire)
                     break;
-                await machine.FireAsync(result.Event, item, CancellationToken.None);
-                item.State = machine.State;
+                await machine.FireAsync(result.Event, req, CancellationToken.None);
+                req.State = machine.State;
             }
         }
         catch (Exception ex)
         {
-            item.Error = ex;
+            req.Error = ex;
         }
         finally
         {
-            ReleaseLeases(item);
-            await FinalizeAsync(wr, item.State);
+            ReleaseLeases(req);
+            await FinalizeAsync(req, req.State);
         }
     }
 

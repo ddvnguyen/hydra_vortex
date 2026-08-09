@@ -290,15 +290,15 @@ internal sealed class SchedulerScenarioRunner : IScenarioDriver
         if (stream)
         {
             // SubmitAsync returns once DecodeAsync has produced the chunk enumerable.
-            var chunks = await submit.WaitAsync(TimeSpan.FromSeconds(30), ct);
-            var enumerable = (IAsyncEnumerable<byte[]>)chunks!;
+            var raw = CompletionResults.Unwrap(await submit.WaitAsync(TimeSpan.FromSeconds(30), ct));
+            var enumerable = (IAsyncEnumerable<byte[]>)raw!;
             await foreach (var _ in enumerable.WithCancellation(ct)) { }
             await Scheduler.NotifyStreamComplete(sessionId);
             await SettleAsync();
-            return chunks;
+            return raw;
         }
 
-        var result = await submit.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        var result = CompletionResults.Unwrap(await submit.WaitAsync(TimeSpan.FromSeconds(30), ct));
         await SettleAsync();
         return result;
     }
@@ -315,8 +315,8 @@ internal sealed class SchedulerScenarioRunner : IScenarioDriver
             new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) },
         };
         EnsureModelRegistered();
-        return Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens, maxTokens,
-            prefixHash, ct);
+        return CompletionResults.UnwrapAsync(Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens, maxTokens,
+            prefixHash, ct));
     }
 
     // ── Direct-drive seams (used by matrix + cancel-mid-flight tests) ──

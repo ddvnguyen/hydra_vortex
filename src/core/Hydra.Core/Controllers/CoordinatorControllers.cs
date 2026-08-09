@@ -118,8 +118,8 @@ public class CompletionsController : ControllerBase
 			Log.Information("event=chat_completions_submit_start trace_id={TraceId} elapsed_ms={ElapsedMs}", traceId, sw.ElapsedMilliseconds);
 			var result = await _scheduler.SubmitAsync(body, messages, sessionId, summary.EstimatedTokens, maxTokens, summary.PrefixHash, ct, summary.SystemPromptTokens);
 			Log.Information("event=chat_completions_submit_returned trace_id={TraceId} elapsed_ms={ElapsedMs} is_stream={IsStream}",
-				traceId, sw.ElapsedMilliseconds, result is IAsyncEnumerable<byte[]>);
-			if (result is IAsyncEnumerable<byte[]> stream)
+				traceId, sw.ElapsedMilliseconds, result is StreamCompletionResult);
+			if (result is StreamCompletionResult stream)
 			{
 				Response.ContentType = "text/event-stream";
 				Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
@@ -135,7 +135,7 @@ public class CompletionsController : ControllerBase
 					Response.Headers["X-Hydra-Tokenizer"] = tokenizer;
 				if (!string.IsNullOrEmpty(modelName))
 					Response.Headers["X-Hydra-Model-Name"] = modelName;
-				await foreach (var chunk in stream.WithCancellation(ct))
+				await foreach (var chunk in stream.Chunks.WithCancellation(ct))
 				{
 					await Response.Body.WriteAsync(chunk, ct);
 				}
@@ -155,7 +155,7 @@ public class CompletionsController : ControllerBase
 				Response.Headers["X-Hydra-Tokenizer"] = tokenizerNs;
 			if (!string.IsNullOrEmpty(modelNameNs))
 				Response.Headers["X-Hydra-Model-Name"] = modelNameNs;
-			return new JsonResult(result);
+			return new JsonResult(((FinalCompletionResult)result).Payload);
 		}
 		catch (OperationCanceledException)
 		{

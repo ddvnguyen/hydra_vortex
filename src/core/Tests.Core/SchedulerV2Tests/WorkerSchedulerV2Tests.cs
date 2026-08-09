@@ -1,5 +1,6 @@
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
+using Hydra.Core.Services;
 using Hydra.Core.Services.SchedulerV2;
 using Tests.Core.TestHelpers;
 
@@ -48,21 +49,20 @@ public sealed class WorkerSchedulerV2Tests
         });
         _proxy = new FakeCompletionProxy();
 
-        var phases = new IPhaseHandler[]
+        var runners = new WorkerStateRunner[]
         {
-            new RoutePhase(_cfg.Workers),
-            new PrefillPhase(engine),
-            new SaveKvPhase(store),
-            new PickDecodePhase(new RoutePlanner(), new LeaseManager(_tracker), _ledger, _cfg.Workers, _tracker, health),
-            new RestorePhase(store, engine),
-            new DecodePhase(_proxy),
-            new BgSavePhase(),
+            new PlanRunner(new RoutePlanner(), new LeaseManager(_tracker), _ledger, _cfg.Workers, _tracker, health),
+            new PrefillRunner(engine),
+            new SaveKvRunner(store),
+            new RestoreRunner(store, engine),
+            new DecodeRunner(_proxy),
+            new BgSaveRunner(),
         };
 
         _scheduler = new WorkerSchedulerV2(
             _cfg, _ledger, _tracker, health,
             new RequestClassifier(), new RoutePlanner(), new LeaseManager(_tracker),
-            phases, new TimelineEmitter());
+            runners, new TimelineEmitter());
 
         _runCts = new CancellationTokenSource();
         _ = _scheduler.RunAsync(_runCts.Token);
@@ -73,7 +73,8 @@ public sealed class WorkerSchedulerV2Tests
     {
         var req = new Dictionary<string, object> { ["stream"] = stream, ["max_tokens"] = 30, ["model"] = "nano" };
         var msgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "hello" } };
-        return await _scheduler.SubmitAsync(req, msgs, "sess_v2", estimatedTokens: 100, maxTokens: 30, prefixHash: null, CancellationToken.None, systemPromptTokens: 0);
+        var result = await _scheduler.SubmitAsync(req, msgs, "sess_v2", estimatedTokens: 100, maxTokens: 30, prefixHash: null, CancellationToken.None, systemPromptTokens: 0);
+        return CompletionResults.Unwrap(result)!;
     }
 
     [Fact]
@@ -121,6 +122,20 @@ public sealed class WorkerSchedulerV2Tests
     }
 
     [Fact]
+    public async Task SubmitAsync_Returns_Typed_CompletionResult_Not_Object()
+    {
+        await Setup();
+
+        var req = new Dictionary<string, object> { ["stream"] = false, ["max_tokens"] = 30, ["model"] = "nano" };
+        var msgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "hello" } };
+        var result = await _scheduler.SubmitAsync(req, msgs, "sess_typed", estimatedTokens: 100, maxTokens: 30, prefixHash: null, CancellationToken.None, systemPromptTokens: 0);
+
+        Assert.IsType<FinalCompletionResult>(result);
+        Assert.Equal(CompletionResultKind.Final, result.Kind);
+        _runCts.Cancel();
+    }
+
+    [Fact]
     public async Task Prefill_Two_Phase_Splits_Prefill_And_Decode_Across_Workers()
     {
         await Setup();
@@ -128,9 +143,9 @@ public sealed class WorkerSchedulerV2Tests
         // estimatedTokens >= AtomicThreshold → two-phase (Prefill) request.
         var req = new Dictionary<string, object> { ["stream"] = false, ["max_tokens"] = 30, ["model"] = "nano" };
         var msgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = new string('x', 5000) } };
-        var result = await _scheduler.SubmitAsync(
+        var result = CompletionResults.Unwrap(await _scheduler.SubmitAsync(
             req, msgs, "sess_pd", estimatedTokens: 5000, maxTokens: 30, prefixHash: null,
-            CancellationToken.None, systemPromptTokens: 0);
+            CancellationToken.None, systemPromptTokens: 0));
 
         Assert.NotNull(result);
         Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.EnginePrefill);

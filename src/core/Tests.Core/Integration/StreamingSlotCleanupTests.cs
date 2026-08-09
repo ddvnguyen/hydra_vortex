@@ -209,8 +209,8 @@ internal sealed class StreamingFixture : IAsyncDisposable
 		{
 			new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
 		};
-		return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
-			maxTokens, prefixHash, _runCts.Token);
+		return CompletionResults.Unwrap(await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+			maxTokens, prefixHash, _runCts.Token));
 	}
 }
 

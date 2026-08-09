@@ -13,7 +13,7 @@ public interface ITimelineEmitter
 {
     void OnTransitionStart(Hydra.StateMachine.Transition<WorkItemState, SchedulerEvent> transition);
     void OnTransitionEnd(Hydra.StateMachine.Transition<WorkItemState, SchedulerEvent> transition);
-    void Emit(WorkItem item, WorkItemState terminal);
+    void Emit(SchedulerRequest req, WorkItemState terminal);
 }
 
 public sealed class TimelineEmitter : ITimelineEmitter
@@ -29,11 +29,11 @@ public sealed class TimelineEmitter : ITimelineEmitter
     public void OnTransitionEnd(Hydra.StateMachine.Transition<WorkItemState, SchedulerEvent> transition)
     {
         if (transition.Destination is WorkItemState.Done or WorkItemState.Failed or WorkItemState.Cancelled)
-            _log.Information("v2_terminal State={State} Sid={Sid} ElapsedMs={ElapsedMs}",
-                transition.Destination, (transition.Payload as WorkItem)?.SessionId, (transition.Payload as WorkItem)?.ElapsedMs);
+            _log.Information("v2_terminal State={State} Sid={Sid}",
+                transition.Destination, (transition.Payload as SchedulerRequest)?.SessionId);
     }
 
-    public void Emit(WorkItem item, WorkItemState terminal)
-        => _log.Information("v2_finalize Sid={Sid} Terminal={Terminal} ElapsedMs={ElapsedMs}",
-            item.SessionId, terminal, item.ElapsedMs);
+    public void Emit(SchedulerRequest req, WorkItemState terminal)
+        => _log.Information("v2_finalize Sid={Sid} Terminal={Terminal} Phases={Phases}",
+            req.SessionId, terminal, string.Join(",", req.Phases.Keys));
 }

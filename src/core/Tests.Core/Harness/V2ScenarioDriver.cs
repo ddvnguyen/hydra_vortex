@@ -99,21 +99,20 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
         var store = new StoreGateway(Rpc);
         var engine = new EngineRpcGateway(channels);
 
-        var phases = new IPhaseHandler[]
+        var runners = new WorkerStateRunner[]
         {
-            new RoutePhase(Cfg.Workers),
-            new PrefillPhase(engine),
-            new SaveKvPhase(store),
-            new PickDecodePhase(new RoutePlanner(), new LeaseManager(Tracker), Ledger, Cfg.Workers, Tracker, Health),
-            new RestorePhase(store, engine),
-            new DecodePhase(Proxy),
-            new BgSavePhase(),
+            new PlanRunner(new RoutePlanner(), new LeaseManager(Tracker), Ledger, Cfg.Workers, Tracker, Health),
+            new PrefillRunner(engine),
+            new SaveKvRunner(store),
+            new RestoreRunner(store, engine),
+            new DecodeRunner(Proxy),
+            new BgSaveRunner(),
         };
 
         Scheduler = new WorkerSchedulerV2(
             Cfg, Ledger, Tracker, Health,
             new RequestClassifier(), new RoutePlanner(), new LeaseManager(Tracker),
-            phases, new TimelineEmitter());
+            runners, new TimelineEmitter());
 
         options.ConfigureRpc?.Invoke(Rpc);
         _ = Scheduler.RunAsync(_runCts.Token);
@@ -150,15 +149,15 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
 
         if (stream)
         {
-            var chunks = await submit.WaitAsync(TimeSpan.FromSeconds(30), ct);
-            var enumerable = (IAsyncEnumerable<byte[]>)chunks!;
+            var raw = CompletionResults.Unwrap(await submit.WaitAsync(TimeSpan.FromSeconds(30), ct));
+            var enumerable = (IAsyncEnumerable<byte[]>)raw!;
             await foreach (var _ in enumerable.WithCancellation(ct)) { }
             await Scheduler.NotifyStreamComplete(sessionId);
             await SettleAsync();
-            return chunks;
+            return raw;
         }
 
-        var result = await submit.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        var result = CompletionResults.Unwrap(await submit.WaitAsync(TimeSpan.FromSeconds(30), ct));
         await SettleAsync();
         return result;
     }

@@ -101,20 +101,19 @@ public static class CoordinatorServiceExtensions
             var leases = new LeaseManager(tracker);
             var timeline = new TimelineEmitter();
 
-            var phases = new IPhaseHandler[]
+            var runners = new WorkerStateRunner[]
             {
-                new RoutePhase(cfg.Workers),
-                new PrefillPhase(engine),
-                new SaveKvPhase(store),
-                new PickDecodePhase(planner, leases, ledger, cfg.Workers, tracker, health),
-                new RestorePhase(store, engine),
-                new DecodePhase(proxy),
-                new BgSavePhase(),
+                new PlanRunner(planner, leases, ledger, cfg.Workers, tracker, health),
+                new PrefillRunner(engine),
+                new SaveKvRunner(store),
+                new RestoreRunner(store, engine),
+                new DecodeRunner(proxy),
+                new BgSaveRunner(),
             };
 
             return new WorkerSchedulerV2(
                 cfg, ledger, tracker, health,
-                classifier, planner, leases, phases, timeline,
+                classifier, planner, leases, runners, timeline,
                 Serilog.Log.ForContext("component", "coordinator-v2"));
         });
 
