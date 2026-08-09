@@ -430,7 +430,7 @@ deploy_rtx_only() {
   # of session/cgroup. Strip it so conmon doesn't inherit the marker.
   unset RUNNER_TRACKING_ID 2>/dev/null || true
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$$" \
+  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$BASHPID" \
       podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
     die "podman compose up (head-rtx5060ti) failed — check the output above."
   fi
@@ -581,7 +581,7 @@ deploy_rtx3060_only() {
   # of session/cgroup. Strip it so conmon doesn't inherit the marker.
   unset RUNNER_TRACKING_ID 2>/dev/null || true
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$$" \
+  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$BASHPID" \
       podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
     die "podman compose up (head-rtx3060) failed — check the output above."
   fi
