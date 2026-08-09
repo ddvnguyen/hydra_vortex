@@ -17,9 +17,13 @@ internal sealed class ScenarioSpec
     public required string Id { get; init; }
     public required string Description { get; init; }
     public required ScenarioOptions Options { get; init; }
-    public required Func<SchedulerScenarioRunner, Task> Run { get; init; }
+    public required Func<IScenarioDriver, Task> Run { get; init; }
     /// <summary>Terminal outcome family the scenario is expected to land in.</summary>
     public OutcomeClass ExpectedOutcome { get; init; } = OutcomeClass.Done;
+
+    /// <summary>Scenario depends on legacy-only direct-drive seams (DispatchAsync /
+    /// RunItemPipeline / CreateWorkItem); the v2 differential driver skips these.</summary>
+    public bool LegacyOnly { get; init; }
 
     /// <summary>
     /// Documented legacy defect this scenario pins: the cross-model abort path
@@ -307,13 +311,16 @@ internal static class ScenarioCatalog
             Description = "Client cancels between dispatch phases: the pipeline finalizes as Cancelled and " +
                           "every held lease is released (WorkerTracker busy-seconds back to 0).",
             Options = new ScenarioOptions { StartEvaluator = false },
+            LegacyOnly = true, // direct-drive seams (DispatchAsync/RunItemPipeline) are legacy-only
             Run = async r =>
             {
-                var item = r.CreateWorkItem(r.SessionId, 2000, 100);
-                var next = await r.DispatchAsync(item);
+                if (r is not SchedulerScenarioRunner sr)
+                    throw new NotSupportedException("cancel_mid_flight is legacy-only");
+                var item = sr.CreateWorkItem(r.SessionId, 2000, 100);
+                var next = await sr.DispatchAsync(item);
                 Assert.True(next != WorkItemState.Failed, "phase-1 dispatch should acquire a route");
-                r.CancelItem(item);
-                await r.RunItemPipelineAsync(item, RequestType.Atomic);
+                sr.CancelItem(item);
+                await sr.RunItemPipelineAsync(item, RequestType.Atomic);
                 throw new OperationCanceledException("scenario cancelled by design");
             },
             ExpectedOutcome = OutcomeClass.Cancelled,

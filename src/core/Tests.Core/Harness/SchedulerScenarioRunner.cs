@@ -111,7 +111,7 @@ internal sealed class ScenarioOptions
 /// SubmitAsync / RunItemPipeline / DispatchAsync / FinalizeAsync /
 /// NotifyStreamComplete and produces a normalized <see cref="ScenarioTrace"/>.
 /// </summary>
-internal sealed class SchedulerScenarioRunner : IAsyncDisposable
+internal sealed class SchedulerScenarioRunner : IScenarioDriver
 {
     public ScenarioOptions Options { get; }
     public CoordinatorConfig Cfg { get; }
@@ -122,6 +122,8 @@ internal sealed class SchedulerScenarioRunner : IAsyncDisposable
     public ScenarioRpcClient Rpc { get; }
     public WorkerSchedulerService Scheduler { get; }
     public string SessionId { get; }
+
+    public int WarmLeaseCount => Scheduler.WarmLeaseCount;
 
     private readonly CancellationTokenSource _runCts = new();
     private readonly Task _runTask;
@@ -371,60 +373,27 @@ internal sealed class SchedulerScenarioRunner : IAsyncDisposable
 
     /// <summary>Capture the normalized trace AFTER the scenario finished and settled.</summary>
     public ScenarioTrace CaptureTrace(string sessionId, OutcomeClass outcome, Exception? error = null)
-    {
-        _ = error;
-        var rpc = Rpc.RpcCalls.Select(c => new TraceRpcCall(c.Op.ToString(), c.Key, c.PayloadLen, c.Status)).ToList();
-        var merged = Rpc.MergedDecodeCalls
-            .Select(c => new TraceMergedDecode(c.SlotKey, c.ModelName, c.Stream)).ToList();
-        var proxy = new List<TraceProxyCall>();
-        foreach (var (url, body, _) in Proxy.NonStreamingCalls)
-            proxy.Add(SummarizeProxy(url, body, stream: false));
-        foreach (var (url, body, _) in Proxy.StreamingCalls)
-            proxy.Add(SummarizeProxy(url, body, stream: true));
-
-        var entry = Ledger.Lookup(sessionId);
-        var ledger = entry == null
-            ? null
-            : new TraceLedger(entry.NodeName, entry.SlotId, entry.NPast, entry.HasStoreState, entry.SlotFreed);
-
-        // Per-worker busy signal, normalized to 0/1 (idle/busy): wall-clock
-        // seconds are nondeterministic between runs (a warm lease held for
-        // 0.352s vs 0.351s), but the semantic signal — is any claim still
-        // outstanding after settle — is the contract the differential gate
-        // must reproduce. 1 == a sanctioned warm lease or a leak; the
-        // LeaseInvariantTests disambiguate which.
-        var busy = new Dictionary<string, double>();
-        foreach (var w in Cfg.Workers)
-            busy[w.Name] = Tracker.GetElapsedSeconds(w.Name) == 0d ? 0d : 1d;
-
-        var finalState = outcome == OutcomeClass.RetriedThenDone ? "Done" : outcome.ToString();
-        return new ScenarioTrace(rpc, merged, proxy, finalState, ledger, busy);
-    }
-
-    private static TraceProxyCall SummarizeProxy(string url, Dictionary<string, object> body, bool stream)
-    {
-        string? model = null;
-        int? maxTokens = null;
-        int? nPredict = null;
-        if (body.TryGetValue("model", out var m) && m is string ms) model = ms;
-        if (body.TryGetValue("max_tokens", out var mt) && mt is int mti) maxTokens = mti;
-        if (body.TryGetValue("n_predict", out var np) && np is int npi) nPredict = npi;
-        return new TraceProxyCall(url, stream, model, maxTokens, nPredict);
-    }
+        => ScenarioTraceCapture.Capture(Rpc, Proxy, Ledger, Cfg.Workers, Tracker, sessionId, outcome, error);
 
     /// <summary>Serialize a golden trace to its canonical JSON (deterministic ordering).</summary>
     public static string SerializeGolden(GoldenTrace golden)
         => JsonSerializer.Serialize(golden, JsonOpts) + "\n";
 
-    /// <summary>Run one scenario spec end-to-end and capture the normalized result.</summary>
+    /// <summary>Run one scenario spec end-to-end against the LEGACY scheduler and capture the normalized result.</summary>
     public static async Task<ScenarioRunResult> ExecuteAsync(ScenarioSpec spec)
     {
         await using var runner = new SchedulerScenarioRunner(spec.Options, "sess_h");
+        return await ExecuteOnAsync(runner, spec);
+    }
+
+    /// <summary>Run one scenario spec against an arbitrary driver (legacy or v2) and capture the normalized result.</summary>
+    public static async Task<ScenarioRunResult> ExecuteOnAsync(IScenarioDriver driver, ScenarioSpec spec)
+    {
         OutcomeClass outcome;
         Exception? error = null;
         try
         {
-            await spec.Run(runner);
+            await spec.Run(driver);
             outcome = OutcomeClass.Done;
         }
         catch (OperationCanceledException)
@@ -437,8 +406,8 @@ internal sealed class SchedulerScenarioRunner : IAsyncDisposable
             error = ex;
         }
 
-        await runner.SettleAsync();
-        var trace = runner.CaptureTrace(runner.SessionId, outcome, error);
+        await driver.SettleAsync();
+        var trace = driver.CaptureTrace(driver.SessionId, outcome, error);
 
         // Classify a completed-after-retries request: Done plus any BUSY
         // EnginePrefill response means the request was re-enqueued and served
@@ -448,7 +417,7 @@ internal sealed class SchedulerScenarioRunner : IAsyncDisposable
             && trace.Rpc.Any(c => c.Op == "EnginePrefill" && c.Status == StatusCode.Busy.ToString()))
             outcome = OutcomeClass.RetriedThenDone;
 
-        return new ScenarioRunResult(spec.Id, outcome, error, trace, runner.Scheduler.WarmLeaseCount);
+        return new ScenarioRunResult(spec.Id, outcome, error, trace, driver.WarmLeaseCount);
     }
 
     public async ValueTask DisposeAsync()

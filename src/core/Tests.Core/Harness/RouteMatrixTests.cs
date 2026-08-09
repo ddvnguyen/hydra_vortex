@@ -224,7 +224,7 @@ public sealed class RouteMatrixTests
         Assert.True(failures.Count == 0, "Route-matrix failures:\n" + string.Join("\n", failures));
     }
 
-    private static async Task RunMatrixRequest(SchedulerScenarioRunner r, MatrixCase c)
+    private static async Task RunMatrixRequest(IScenarioDriver r, MatrixCase c)
     {
         if (c.Name == "warm_affinity_turn2")
         {
