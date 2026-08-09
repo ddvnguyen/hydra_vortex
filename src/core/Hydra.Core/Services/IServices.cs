@@ -68,6 +68,16 @@ public interface IHealthMonitorService
     void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities);
 
     /// <summary>
+    /// #592: re-mark a node healthy based on positive liveness evidence that
+    /// arrived outside the health-poll cycle — e.g. a successful PREFILL served
+    /// by that node, or a direct router liveness probe. A node flagged unhealthy
+    /// by <c>health_poll_failed</c> (say, during an inline model swap) must not
+    /// keep excluding requests once it demonstrably serves again. Fires
+    /// HealthyChanged only on an actual unhealthy→healthy flip.
+    /// </summary>
+    void MarkHealthy(string nodeName);
+
+    /// <summary>
     /// Fired when a node's Healthy flag flips (to healthy OR to unhealthy). The
     /// scheduler subscribes so queued items get re-checked when a node recovers
     /// — capacity can return without a slot release.

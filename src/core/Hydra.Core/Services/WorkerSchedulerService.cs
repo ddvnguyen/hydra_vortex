@@ -865,6 +865,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> ColdRouteAsync(WorkItem item)
 	{
+		// #592: a stale unhealthy flag (set by health_poll_failed during e.g. an
+		// inline model swap, cleared by the next successful poll) must not 503 a
+		// request that could be served. When a worker is free + prefill-capable
+		// but flagged unhealthy, run one bounded direct liveness probe before
+		// excluding it — on success the flag is cleared and every pick below
+		// (multi-engine plan, atomic, cold_concurrency) sees fresh health.
+		await ProbeStaleUnhealthyWorkersAsync(default);
+
 		// Debug force-mode: bypass MultiEngineRouter.Select when the caller
 		// sets force_mode in the request body. Handy for testing COMBINED
 		// without adjusting the system's threshold/capability config.
@@ -1669,6 +1677,55 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	// ── Gap 4: n_past tracking in prefill ──
+
+	// ── #592: worker-health recovery on positive liveness evidence ─────────
+	//
+	// A successful PREFILL is proof the node is alive and serving: the engine
+	// tokenized the prompt, built KV and returned a result. During a long inline
+	// model swap (T3 rebuild) the health monitor can flag the worker unhealthy
+	// (3× health_poll_failed while the engine is busy reloading) even though the
+	// engine recovers before the request completes. Clear the stale flag on the
+	// PREFILL-success path BEFORE the decode-handoff routing decision so the
+	// request isn't 503'd by a flag that no longer reflects reality.
+	private void RecoverWorkerHealthByPrefill(WorkItem item, WorkerConfig w)
+	{
+		if (_health.IsHealthy(w.Name)) return;
+		_health.MarkHealthy(w.Name);
+		_log.Information("worker_health_recovered_by_prefill Sid={Sid} Node={Node} — stale unhealthy flag cleared by successful PREFILL",
+			item.SessionId, w.Name);
+	}
+
+	// #592 router fallback liveness probe: a worker that is free + routable but
+	// flagged unhealthy (stale flag from the poll cycle) gets ONE bounded direct
+	// probe (GET /health, ≤5s) before being excluded. On success the flag is
+	// cleared so the routing picks below see fresh health. No-op when nothing is
+	// stale-unhealthy (zero probes → zero latency in the common case).
+	private async Task ProbeStaleUnhealthyWorkersAsync(CancellationToken ct)
+	{
+		foreach (var w in _cfg.Workers.Where(w =>
+			w.CanPrefill && _tracker.IsFree(w.Name) && !_health.IsHealthy(w.Name)))
+		{
+			try
+			{
+				using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+				probeCts.CancelAfter(TimeSpan.FromSeconds(5));
+				if (await GetLlamaClient(w).HealthAsync(probeCts.Token))
+				{
+					_log.Information("worker_health_recovered_by_probe Node={Node} — stale unhealthy flag cleared after direct liveness probe", w.Name);
+					_health.MarkHealthy(w.Name);
+				}
+				else
+				{
+					_log.Warning("worker_health_probe_failed Node={Node} — liveness probe negative, staying unhealthy", w.Name);
+				}
+			}
+			catch (Exception ex)
+			{
+				_log.Warning(ex, "worker_health_probe_error Node={Node} — liveness probe inconclusive, staying unhealthy", w.Name);
+			}
+		}
+	}
+
 	private async Task<WorkItemState> PrefillAsync(WorkItem item, CancellationToken ct)
 	{
 		// Fast path: if the client disconnected while this item was queued/retrying,
@@ -1988,6 +2045,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					item.SessionId, w.Name, slotId, item.NPastAfter, item.EstimatedTokens,
 					item.KvModelAlias ?? "?", item.KvModelFallback,
 					prefillResult.PrefillMs, prefillResult.ModelLoadMs, prefillResult.TokensPerSecond);
+				// #592: the engine just served this PREFILL — it's demonstrably
+				// alive. Clear a stale unhealthy flag BEFORE the decode-handoff
+				// routing decision so a poll-cycle failure during an inline
+				// model swap can't 503 this request.
+				RecoverWorkerHealthByPrefill(item, w);
 
 				// #507: warn when observed model reload time significantly exceeds documented LoadTimeS.
 				// Fires on BUSY-retry success (RetryCount > 0) with engine-reported model load time.
@@ -2120,6 +2182,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			_log.Information("prefill_done Sid={Sid} Node={Node} Slot={Slot} NPastFromLLama={N} EstTokens={Est} ViaHttp={Http} Model={Model}",
 				item.SessionId, w.Name, item.PrefillSlot, item.NPastAfter, item.EstimatedTokens, engineFailed,
 				item.KvModelAlias ?? "?");
+			// #592: same liveness evidence on the HTTP fallback path — the node
+			// just served a PREFILL, so a stale poll-cycle unhealthy flag must
+			// not exclude it from the decode-handoff routing decision.
+			RecoverWorkerHealthByPrefill(item, w);
 			if (item.NPastAfter > 0)
 			{
 				_ledger.UpdateNPast(item.SessionId, item.NPastAfter);

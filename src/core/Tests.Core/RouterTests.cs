@@ -18,6 +18,7 @@ internal sealed class TestHealthMonitor : IHealthMonitorService
 	public NodeInfo? GetNodeInfo(string nodeName) => null;
 	public Dictionary<string, object> GetHealthSummary() => new();
 	public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public void MarkHealthy(string nodeName) { }
 	public event Action? HealthyChanged;
 }
 
@@ -402,6 +403,7 @@ public sealed class IsModelAllowedTests
 				n.ModelCapabilities = modelCapabilities;
 			}
 		}
+		public void MarkHealthy(string nodeName) { }
 	}
 
 	[Fact]

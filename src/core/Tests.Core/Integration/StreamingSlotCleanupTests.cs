@@ -26,6 +26,7 @@ internal sealed class TestHealthMonitor : IHealthMonitorService
 	public Dictionary<string, object> GetHealthSummary() => new();
 	public event Action? HealthyChanged;
 	public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public void MarkHealthy(string nodeName) { }
 }
 
 internal sealed class TestCompletionProxy : ICompletionProxyService

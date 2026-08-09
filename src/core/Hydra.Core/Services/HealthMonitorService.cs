@@ -62,6 +62,27 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
     }
 
     public bool IsHealthy(string name) { lock (_lock) return _nodes.TryGetValue(name, out var n) && n.Healthy; }
+
+    /// <inheritdoc/>
+    public void MarkHealthy(string name)
+    {
+        // #592: mutate the existing NodeInfo in place (slot/model data stays
+        // fresh) and fire HealthyChanged only on a real unhealthy→healthy flip,
+        // mirroring OnFail's flip-only signal semantics.
+        bool flipped = false;
+        lock (_lock)
+        {
+            if (_nodes.TryGetValue(name, out var info) && !info.Healthy)
+            {
+                info.Healthy = true;
+                info.ConsecutiveFailures = 0;
+                info.LastCheck = DateTime.UtcNow;
+                flipped = true;
+            }
+        }
+        if (flipped) _healthyChanged?.Invoke();
+    }
+
     public int? GetIdleSlot(string name) { var info = GetNodeInfo(name); return info?.Slots.FirstOrDefault(s => !s.IsProcessing)?.Id; }
     public NodeInfo? GetNodeInfo(string name) { lock (_lock) return _nodes.TryGetValue(name, out var n) ? Clone(n) : null; }
     public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
