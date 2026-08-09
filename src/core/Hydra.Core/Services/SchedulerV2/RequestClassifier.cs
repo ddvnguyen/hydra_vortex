@@ -16,6 +16,11 @@ public sealed class RequestClassifier : IRequestClassifier
 {
     public RequestType Classify(ChatRequest chat, CoordinatorConfig config, bool hasWarmSession)
     {
+        // Explicit multi-engine request (hydra model rule): COMBINED/PIPELINE
+        // mode is only valid when the coordinator has it enabled.
+        if (chat.ForceMode is "combined" && config.CombinedEnabled)
+            return RequestType.Combined;
+
         // Warm affinity (session KV resident) is always decode-only follow-up work.
         if (hasWarmSession)
             return RequestType.Solo;

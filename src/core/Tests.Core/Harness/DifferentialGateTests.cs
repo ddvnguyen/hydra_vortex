@@ -53,6 +53,12 @@ public sealed class DifferentialGateTests
                 matrix.Add($"{spec.Id,-28} SKIP  (legacy-only direct-drive seams)");
                 continue;
             }
+            if (spec.LegacyMode)
+            {
+                skipped++;
+                matrix.Add($"{spec.Id,-28} SKIP  (legacy mode UseLlamaEngine=false — v2 is engine-mode/hydra-model by contract)");
+                continue;
+            }
 
             ScenarioRunResult result;
             await using (var driver = new V2ScenarioDriver(spec.Options, "sess_h"))

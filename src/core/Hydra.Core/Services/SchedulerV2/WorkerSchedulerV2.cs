@@ -102,7 +102,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         var wr = new WorkRequest(chat, item, type, _classifier.ComputePriority(type));
 
         if (type == RequestType.Solo)
-            wr.Plan = _planner.Plan(chat, _cfg.Workers, _tracker, _health, _ledger);
+            wr.Plan = _planner.Plan(chat, type, _cfg.Workers, _tracker, _health, _ledger);
 
         if (!_admission.TryEnqueue(wr, wr.Priority))
         {
@@ -145,7 +145,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             // Plan lazily (once) so warm-affinity/cold decisions reflect live capacity.
             if (!wr.Plan.HasCapacity)
             {
-                wr.Plan = _planner.Plan(wr.Chat, _cfg.Workers, _tracker, _health, _ledger);
+                wr.Plan = _planner.Plan(wr.Chat, wr.Type, _cfg.Workers, _tracker, _health, _ledger);
                 if (!wr.Plan.HasCapacity)
                     break; // no viable worker — wait for a slot release / health change
             }

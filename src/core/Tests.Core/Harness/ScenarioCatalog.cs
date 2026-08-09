@@ -25,6 +25,12 @@ internal sealed class ScenarioSpec
     /// RunItemPipeline / CreateWorkItem); the v2 differential driver skips these.</summary>
     public bool LegacyOnly { get; init; }
 
+    /// <summary>Scenario exercises the LEGACY (non-engine) scheduler mode —
+    /// <c>UseLlamaEngine=false</c>. v2's contract is the hydra model (engine mode),
+    /// so the differential gate skips these rather than chasing byte-parity with an
+    /// obsolete path.</summary>
+    public bool LegacyMode { get; init; }
+
     /// <summary>
     /// Documented legacy defect this scenario pins: the cross-model abort path
     /// (StatePut model_match=false → erase → decode-fallback lease on the
@@ -77,6 +83,9 @@ internal static class ScenarioCatalog
             Description = "Cold atomic request in legacy mode (UseLlamaEngine=false): ModelLoadDecode path, " +
                           "HTTP proxy owns prefill-style completion, no engine RPC at all.",
             Options = new ScenarioOptions { RunMode = "fast", UseLlamaEngine = false },
+            // Legacy-only mode: v2's contract is the hydra model (engine mode).
+            // By contract we do not chase parity with the obsolete non-engine path.
+            LegacyMode = true,
             Run = r => r.SubmitAsync(r.SessionId, 500, 100),
         },
 
