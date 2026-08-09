@@ -91,7 +91,8 @@ fluent-DSL state machine + differential parity harness). Branch: `epic/591-rewri
 | Differential/contract harness (WP0) | ✅ Implemented (21 golden scenarios, lease invariants, route matrix; 500/500 Tests.Core green) | `src/core/Tests.Core/Harness/` |
 | `Hydra.Core.Scheduling` executor core (WP1) | ✅ Implemented (SlotPool, PriorityWaiterQueue, MailboxExecutor, RpcConnectionPool, TimerWheel, OffloadPool; 75 tests) | `src/core/Hydra.Core.Scheduling/` + `src/core/Tests.Core.Scheduling/` |
 | `WorkerSchedulerV2` (WP2, SOLID) | ✅ Implemented — separate class on `IWorkerScheduler`; DI A/B toggle `HYDRA_SCHEDULER_IMPL=legacy\|v2` (default legacy); DSL machine + phase handlers + lease-managed concurrency; 13 tests | `src/core/Hydra.Core/Services/SchedulerV2/` + `src/core/Tests.Core/SchedulerV2Tests/` |
-| v2 behavior parity + multi-engine/streaming completeness | ⏳ Planned (WP3 — golden-trace diff gate) | — |
+| v2 behavior parity + multi-engine/streaming completeness | ⏳ In progress (WP3 — differential gate landed; parity matrix 0/20 byte-match; tranche-1 port pending) | — |
+| Differential gate (WP3) | ✅ Implemented — runs the 21-scenario catalog against v2 via `V2ScenarioDriver`, diffs vs legacy goldens, prints parity matrix | `src/core/Tests.Core/Harness/DifferentialGateTests.cs`, `IScenarioDriver.cs`, `V2ScenarioDriver.cs` |
 | Hydra.Core v2 integration (toggle + strangler swap) | ⏳ Planned (WP2/WP3) | — |
 
 ### Model Config (models.json)
