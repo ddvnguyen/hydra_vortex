@@ -2240,6 +2240,24 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return alias ?? routingAlias;
 	}
 
+	/// <summary>
+	/// #589: resolve the alias sent in the merged-decode RPC header
+	/// (<c>model</c> — consumed by the engine's DECODE Gate-A name fallback
+	/// and the DECODE_APPLY model-swap lookup). Model-agnostic workers
+	/// (e.g. P100, <see cref="WorkerConfig.ModelAlias"/> is null) fall back to
+	/// the request's routing identity — the same rule the HTTP-proxy decode
+	/// path applies (#479/S3 + #504). Decode role is honoured so a P/D-split
+	/// routing identity resolves to its decode quant (moe-35b-pd →
+	/// qwen3.6-35B-balanced).
+	/// </summary>
+	private static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w)
+	{
+		if (!string.IsNullOrEmpty(w.ModelAlias))
+			return TranslateModelAlias(w.ModelAlias, decodeRole: true);
+		var reqModel = item.Request.TryGetValue("model", out var m) && m is string ms ? ms : null;
+		return TranslateModelAlias(reqModel, decodeRole: true);
+	}
+
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
 	{
 		// HYDRA_COORD_NO_STORE_KV_RESTORE=true: skip saving KV to Store.
@@ -3267,7 +3285,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// TranslateModelAlias with decodeRole=true resolves routing
 						// identity to the correct GGUF-file alias for the engine's
 						// model-swap lookup.
-						modelAlias: TranslateModelAlias(w.ModelAlias, decodeRole: true),
+						modelAlias: ResolveMergedDecodeModelAlias(item, w),
 						messagesJson: messagesJson,
 						nPredict: nPredict,
 						// #576: sampling/stop now travel inside messagesJson
@@ -3430,7 +3448,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
 						modelCapabilities: modelIdentity.ModelCapabilities,
-						modelAlias: TranslateModelAlias(w.ModelAlias, decodeRole: true),
+						modelAlias: ResolveMergedDecodeModelAlias(item, w),
 						messagesJson: messagesJson,
 						nPredict: nPredict,
 						// #576: sampling/stop now travel inside messagesJson
