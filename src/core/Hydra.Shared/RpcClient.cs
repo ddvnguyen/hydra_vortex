@@ -75,6 +75,23 @@ public class RpcClient : IAsyncDisposable
                 throw NewTimeout(op);
             throw;
         }
+        catch (InvalidDataException)
+        {
+            // Framing error (e.g. response payload length out of range, #594): the
+            // frame was rejected without consuming its body, so the persistent
+            // socket is misaligned. Retrying on it reads garbage (observed: a
+            // 272728361713580032-byte bogus length on the retry). Drop it so the
+            // caller's retry logic re-requests on a fresh connection.
+            DropConnection();
+            throw;
+        }
+        catch (EndOfStreamException)
+        {
+            // Mid-response EOF: the peer closed after a partial frame, so socket
+            // state is untrustworthy. Drop it; callers retry on a fresh connection.
+            DropConnection();
+            throw;
+        }
         finally
         {
             _sync.Release();
@@ -98,6 +115,18 @@ public class RpcClient : IAsyncDisposable
             DropConnection(); // mid-request cancel — connection desynced
             if (!ct.IsCancellationRequested)
                 throw NewTimeout(op);
+            throw;
+        }
+        catch (InvalidDataException)
+        {
+            // Framing error — connection desynced, drop before rethrow (see RequestAsync).
+            DropConnection();
+            throw;
+        }
+        catch (EndOfStreamException)
+        {
+            // Mid-response EOF — connection state untrustworthy, drop before rethrow.
+            DropConnection();
             throw;
         }
         finally
@@ -433,7 +462,13 @@ public class RpcClient : IAsyncDisposable
 
     private static async Task<byte[]> ReadPayloadAsync(NetworkStream stream, long payloadLen, CancellationToken ct)
     {
-        if (payloadLen < 0 || payloadLen > 512 * 1024 * 1024)
+        // Sanity bound for a single RPC response payload. The PREFILL response
+        // (opcode 0x42) returns the KV state blob inline per specs/rpc-protocol.md,
+        // and that blob scales with context — ~800 MB at 60-80K tokens (CLAUDE.md),
+        // 827 MB measured at 7.3K tokens. The cap must sit above that: 2 GB. It
+        // still rejects garbage/malformed lengths (negative or absurd values).
+        const long maxPayloadLen = 2L * 1024 * 1024 * 1024;
+        if (payloadLen < 0 || payloadLen > maxPayloadLen)
             throw new InvalidDataException($"RPC payload length out of range: {payloadLen} bytes");
         var buf = new byte[payloadLen];
         await ReadExactAsync(stream, buf, ct);
@@ -649,6 +684,19 @@ public class RpcClient : IAsyncDisposable
             DropConnection();
             if (!ct.IsCancellationRequested)
                 throw NewTimeout(OpCode.EngineDecode);
+            throw;
+        }
+        catch (InvalidDataException)
+        {
+            // Framing error (e.g. response payload length out of range, #594) —
+            // connection desynced, drop before rethrow (see RequestAsync).
+            DropConnection();
+            throw;
+        }
+        catch (EndOfStreamException)
+        {
+            // Mid-response EOF — connection state untrustworthy, drop before rethrow.
+            DropConnection();
             throw;
         }
         finally

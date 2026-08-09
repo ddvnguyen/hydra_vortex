@@ -236,4 +236,98 @@ public class RpcClientTests : IAsyncLifetime
             await foreach (var _ in enumerable) { }
         });
     }
+
+    [Fact]
+    public async Task ReadPayload_CapRaisedTo2GB_AcceptsLargeKvStateBlobLengths()
+    {
+        // #594: the PREFILL response (0x42) carries the KV state blob inline —
+        // 827 MB measured at 7.3K tokens, ~800 MB at 60-80K tokens. The old
+        // 512 MB cap rejected it. A 600 MB declared length must now pass the
+        // sanity check; the read then hits EOF because the server closed without
+        // sending the body. Under the old cap this threw InvalidDataException
+        // ("out of range") instead of reaching the read at all.
+        Assert.NotNull(_server);
+        _server!.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, 600L * 1024 * 1024, ct);
+        };
+        _server.CloseAfterHandle = true;
+
+        var client = new RpcClient("127.0.0.1", _server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ex = await Assert.ThrowsAsync<EndOfStreamException>(() =>
+            client.RequestAsync(OpCode.Get, "big-kv", ReadOnlyMemory<byte>.Empty,
+                "trace-bigkv", cts.Token));
+
+        Assert.DoesNotContain("out of range", ex.Message);
+    }
+
+    [Fact]
+    public async Task MalformedFrame_PayloadLenOverCap_ThrowsInvalidData_AndDropsConnection()
+    {
+        // A declared length above the 2 GB sanity bound must be rejected as a
+        // framing error, and the desynced connection dropped: the follow-up
+        // request has to arrive on a fresh TCP connection (a connection-counting
+        // server proves it), not be replayed on the misaligned socket.
+        Assert.NotNull(_server);
+        var server = _server!;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, 3L * 1024 * 1024 * 1024, ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            client.RequestAsync(OpCode.Get, "huge", ReadOnlyMemory<byte>.Empty,
+                "trace-huge", cts.Token));
+        Assert.Contains("out of range", ex.Message);
+
+        // Same client, next request: must go over a brand-new connection.
+        server.OnHandle = null; // back to default echo
+        var before = server.ConnectionCount;
+        var r2 = await client.RequestAsync(
+            OpCode.Put, "after-drop", new byte[] { 1, 2 },
+            "trace-after", cts.Token);
+
+        Assert.Equal((byte)StatusCode.Ok, r2.Status);
+        Assert.True(server.ConnectionCount > before,
+            "expected a fresh connection after the framing error");
+    }
+
+    [Fact]
+    public async Task MalformedFrame_NegativePayloadLen_ThrowsInvalidData_AndDropsConnection()
+    {
+        // ulong.MaxValue header length casts to -1 on the client — the negative
+        // branch of the sanity check. Same contract: InvalidDataException + drop.
+        Assert.NotNull(_server);
+        var server = _server!;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, ulong.MaxValue, ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            client.RequestAsync(OpCode.Get, "negative", ReadOnlyMemory<byte>.Empty,
+                "trace-neg", cts.Token));
+        Assert.Contains("out of range", ex.Message);
+
+        server.OnHandle = null;
+        var before = server.ConnectionCount;
+        var r2 = await client.RequestAsync(
+            OpCode.Put, "after-drop-neg", new byte[] { 3, 4 },
+            "trace-after-neg", cts.Token);
+
+        Assert.Equal((byte)StatusCode.Ok, r2.Status);
+        Assert.True(server.ConnectionCount > before,
+            "expected a fresh connection after the framing error");
+    }
 }
