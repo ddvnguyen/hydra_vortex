@@ -92,6 +92,10 @@ public sealed record CoordinatorConfig
 	public int NPastGuardTolerance { get; init; } = EnvInt("HYDRA_COORD_N_PAST_GUARD_TOLERANCE", 50);
 	public int WorkerErrorThreshold { get; init; } = EnvInt("HYDRA_COORD_WORKER_ERROR_THRESHOLD", 3);
 	public string RunMode { get; init; } = Env("HYDRA_COORD_RUN_MODE", "concurrency");
+	/// <summary>Scheduler implementation for A/B: "legacy" (WorkerSchedulerService)
+	/// or "v2" (WorkerSchedulerV2). The legacy scheduler is always kept intact;
+	/// this flag only selects which one backs <c>IWorkerScheduler</c>.</summary>
+	public string SchedulerImplementation { get; init; } = Env("HYDRA_SCHEDULER_IMPL", "legacy");
 	public bool MixPrecisionEnabled { get; init; } = EnvBool("HYDRA_COORD_MIX_PRECISION_ENABLED", false);
 	/// <summary>
 	/// When true, allow a KV cache built with model A to be restored into a slot
