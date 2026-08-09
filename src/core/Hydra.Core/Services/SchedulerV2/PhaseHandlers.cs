@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Hydra.Core.Models;
+using Hydra.Core.Repositories;
 
 namespace Hydra.Core.Services.SchedulerV2;
 
@@ -73,7 +74,8 @@ public interface IPhaseHandler
     Task<PhaseResult> RunAsync(PhaseContext ctx, CancellationToken ct);
 }
 
-/// <summary>Records the routing decision onto the work item.</summary>
+/// <summary>Records the routing decision onto the work item. Solo (warm/decode-only)
+/// requests skip prefill entirely and go straight to decode.</summary>
 public sealed class RoutePhase : IPhaseHandler
 {
     private readonly IReadOnlyList<WorkerConfig> _workers;
@@ -84,12 +86,16 @@ public sealed class RoutePhase : IPhaseHandler
     public Task<PhaseResult> RunAsync(PhaseContext ctx, CancellationToken ct)
     {
         var plan = ctx.Plan;
-        ctx.Item.PrefillWorker = _workers.FirstOrDefault(w => w.Name == plan.PrefillWorker);
-        ctx.Item.DecodeWorker = _workers.FirstOrDefault(w => w.Name == (plan.DecodeWorker ?? plan.PrefillWorker));
+        ctx.Item.PrefillWorker = plan.PrefillWorker is null ? null : _workers.FirstOrDefault(w => w.Name == plan.PrefillWorker);
+        ctx.Item.DecodeWorker = plan.DecodeWorker is null ? null : _workers.FirstOrDefault(w => w.Name == plan.DecodeWorker);
         ctx.Item.RequestType = plan.RequestType;
         ctx.Item.PrefixCacheHit = plan.ReuseStoreState;
         ctx.Item.RecordPhase("route_ms");
-        return Task.FromResult(PhaseResult.Fire(SchedulerEvent.RouteSucceeded));
+
+        // Solo: KV already resident on the decode node — skip prefill + save.
+        return plan.PrefillWorker is null
+            ? Task.FromResult(PhaseResult.Fire(SchedulerEvent.SoloRouted))
+            : Task.FromResult(PhaseResult.Fire(SchedulerEvent.RouteSucceeded));
     }
 }
 
@@ -104,10 +110,13 @@ public sealed class PrefillPhase : IPhaseHandler
     public async Task<PhaseResult> RunAsync(PhaseContext ctx, CancellationToken ct)
     {
         var item = ctx.Item;
+        if (item.PrefillWorker is null)
+            return PhaseResult.Fire(SchedulerEvent.Failed);
+
         try
         {
             var sw = Stopwatch.StartNew();
-            var result = await _engine.PrefillAsync(ctx.Worker, ctx.Request.Chat, ct);
+            var result = await _engine.PrefillAsync(item.PrefillWorker.Name, ctx.Request.Chat, ct);
             sw.Stop();
             item.EnginePrefillMs = sw.ElapsedMilliseconds;
             item.NPastAfter = result.NPast;
@@ -172,16 +181,82 @@ public sealed class RestorePhase : IPhaseHandler
     public async Task<PhaseResult> RunAsync(PhaseContext ctx, CancellationToken ct)
     {
         var item = ctx.Item;
+        if (item.DecodeWorker is null)
+            return PhaseResult.Fire(SchedulerEvent.Failed);
+
         var kv = await _store.GetAsync(item.SessionId, ct);
         if (kv is null)
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
-        if (!await _engine.RestoreAsync(ctx.Worker, item.SessionId, kv, item.NPastAfter, ct))
+        if (!await _engine.RestoreAsync(item.DecodeWorker.Name, item.SessionId, kv, item.NPastAfter, ct))
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
         item.KvRestoredForDecode = true;
         item.RecordPhase("restore_kv_ms");
         return PhaseResult.Fire(SchedulerEvent.RestoreSucceeded);
+    }
+}
+
+/// <summary>
+/// The two-phase handoff: select the decode worker at DECODE time (GPU-utilization
+/// rule — the prefill slot is released before the decode slot is acquired, never
+/// two slots held at once). For atomic requests the decode worker is the same
+/// worker/slot, so no swap happens. Acquires the decode slot lease here.</summary>
+public sealed class PickDecodePhase : IPhaseHandler
+{
+    private readonly IRoutePlanner _planner;
+    private readonly ILeaseManager _leases;
+    private readonly ISessionLedger _ledger;
+    private readonly IReadOnlyList<WorkerConfig> _workers;
+    private readonly IWorkerTracker _tracker;
+    private readonly IHealthMonitorService _health;
+    public WorkItemState State => WorkItemState.PickDecode;
+
+    public PickDecodePhase(
+        IRoutePlanner planner,
+        ILeaseManager leases,
+        ISessionLedger ledger,
+        IReadOnlyList<WorkerConfig> workers,
+        IWorkerTracker tracker,
+        IHealthMonitorService health)
+    {
+        _planner = planner;
+        _leases = leases;
+        _ledger = ledger;
+        _workers = workers;
+        _tracker = tracker;
+        _health = health;
+    }
+
+    public Task<PhaseResult> RunAsync(PhaseContext ctx, CancellationToken ct)
+    {
+        var item = ctx.Item;
+
+        // Decode worker already known (atomic same-slot, or warm solo) → no swap.
+        if (item.DecodeWorker is not null)
+            return Task.FromResult(PhaseResult.Fire(SchedulerEvent.DecodePicked));
+
+        // Two-phase: pick the decode worker NOW, then swap slots.
+        var decodeNode = _planner.PlanDecode(
+            ctx.Request.Chat, _ledger.Lookup(item.SessionId), _workers, _tracker, _health);
+        if (decodeNode is null)
+            return Task.FromResult(PhaseResult.Fire(SchedulerEvent.Failed));
+
+        item.DecodeWorker = _workers.FirstOrDefault(w => w.Name == decodeNode);
+        if (item.DecodeWorker is null)
+            return Task.FromResult(PhaseResult.Fire(SchedulerEvent.Failed));
+
+        // GPU-utilization rule: release the prefill slot, then acquire the decode slot.
+        _leases.Release(item.PrefillLease);
+        item.PrefillLease = null;
+
+        var decodeLease = _leases.TryAcquire(item.DecodeWorker.Name, item.SessionId);
+        if (decodeLease is null)
+            return Task.FromResult(PhaseResult.Fire(SchedulerEvent.Failed));
+        item.DecodeLease = decodeLease;
+
+        item.RecordPhase("pick_decode_ms");
+        return Task.FromResult(PhaseResult.Fire(SchedulerEvent.DecodePicked));
     }
 }
 

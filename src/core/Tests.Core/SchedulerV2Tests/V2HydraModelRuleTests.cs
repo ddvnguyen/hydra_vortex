@@ -104,8 +104,24 @@ public sealed class V2HydraModelRuleTests
         var plan = new RoutePlanner().Plan(Req(500), RequestType.Solo, Topology, tracker, health, ledger);
 
         Assert.True(plan.HasCapacity);
-        Assert.Equal("p100", plan.PrefillWorker);
+        Assert.Null(plan.PrefillWorker); // decode-only
+        Assert.Equal("p100", plan.DecodeWorker);
         Assert.True(plan.ReuseStoreState);
+    }
+
+    [Fact]
+    public void Prefill_Two_Phase_Routes_Prefill_Then_Decode_Separately()
+    {
+        var (tracker, ledger, health) = State();
+
+        // Two-phase: prefill worker chosen up front; decode worker deferred.
+        var plan = new RoutePlanner().Plan(Req(100_000), RequestType.Prefill, Topology, tracker, health, ledger);
+        Assert.Equal("rtx", plan.PrefillWorker);
+        Assert.Null(plan.DecodeWorker);
+
+        // At decode time the dedicated decoder (p100) is chosen — NOT both held at once.
+        var decode = new RoutePlanner().PlanDecode(Req(100_000), ledger.Lookup("sess"), Topology, tracker, health);
+        Assert.Equal("p100", decode);
     }
 
     [Fact]

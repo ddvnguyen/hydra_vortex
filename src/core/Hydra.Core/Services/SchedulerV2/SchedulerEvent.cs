@@ -12,10 +12,14 @@ public enum SchedulerEvent
 {
     /// <summary>Route planning succeeded; move to the prefill phase.</summary>
     RouteSucceeded,
+    /// <summary>Warm/decode-only route (Solo): KV is resident — skip prefill, move straight to decode.</summary>
+    SoloRouted,
     /// <summary>Engine prefill succeeded (KV produced); move to save-KV.</summary>
     PrefillSucceeded,
-    /// <summary>KV persisted to Store; move to restore on the decode worker.</summary>
+    /// <summary>KV persisted to Store; move to the decode-worker handoff.</summary>
     SaveKvSucceeded,
+    /// <summary>Decode worker selected + its slot acquired; move to restore.</summary>
+    DecodePicked,
     /// <summary>KV restored onto the decode worker; move to decode.</summary>
     RestoreSucceeded,
     /// <summary>Decode completed; move to background save (stream teardown).</summary>

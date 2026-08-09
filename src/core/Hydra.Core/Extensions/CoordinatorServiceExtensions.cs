@@ -106,6 +106,7 @@ public static class CoordinatorServiceExtensions
                 new RoutePhase(cfg.Workers),
                 new PrefillPhase(engine),
                 new SaveKvPhase(store),
+                new PickDecodePhase(planner, leases, ledger, cfg.Workers, tracker, health),
                 new RestorePhase(store, engine),
                 new DecodePhase(proxy),
                 new BgSavePhase(),

@@ -8,8 +8,8 @@ public sealed class RoutePlannerTests
 {
     private static readonly IReadOnlyList<WorkerConfig> Workers = new List<WorkerConfig>
     {
-        new() { Name = "rtx", WorkerType = 3, Slots = 2, PrefillPriority = 1 },   // prefill + decode
-        new() { Name = "p100", WorkerType = 2, Slots = 1, PrefillPriority = 100 }, // decode only
+        new() { Name = "rtx", WorkerType = 3, Slots = 2, PrefillPriority = 1, DecodePriority = 2 },   // prefill + decode
+        new() { Name = "p100", WorkerType = 2, Slots = 1, PrefillPriority = 100, DecodePriority = 1 }, // decode only
     };
 
     private static readonly ChatRequest Req = ChatRequest.FromSubmit(
@@ -63,9 +63,53 @@ public sealed class RoutePlannerTests
         var plan = new RoutePlanner().Plan(Req, RequestType.Solo, Workers, tracker, health, ledger);
 
         Assert.True(plan.HasCapacity);
-        Assert.Equal("p100", plan.PrefillWorker);
+        Assert.Null(plan.PrefillWorker); // decode-only: no prefill worker
+        Assert.Equal("p100", plan.DecodeWorker);
         Assert.Equal(RequestType.Solo, plan.RequestType);
         Assert.True(plan.ReuseStoreState);
+    }
+
+    [Fact]
+    public void Prefill_Two_Phase_Picks_Prefill_Worker_Only()
+    {
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("rtx", 2);
+        tracker.InitWorker("p100", 1);
+        var health = new FakeHealthMonitor();
+        var ledger = new SessionLedger();
+
+        // GPU-utilization rule: the decode worker is NOT reserved up front.
+        var plan = new RoutePlanner().Plan(Req, RequestType.Prefill, Workers, tracker, health, ledger);
+
+        Assert.True(plan.HasCapacity);
+        Assert.Equal("rtx", plan.PrefillWorker);
+        Assert.Null(plan.DecodeWorker);
+    }
+
+    [Fact]
+    public void PlanDecode_Picks_Decode_Worker_At_Decode_Time()
+    {
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("rtx", 2);
+        tracker.InitWorker("p100", 1);
+        var health = new FakeHealthMonitor();
+        var ledger = new SessionLedger();
+
+        var planner = new RoutePlanner();
+
+        // No session yet → best decode-capable worker (p100 has lower DecodePriority).
+        var decode = planner.PlanDecode(Req, session: null, Workers, tracker, health);
+        Assert.Equal("p100", decode);
+
+        // Warm session on rtx → decode stays on rtx (affinity, KV resident).
+        ledger.Register("sess", "rtx", slotId: 0, nPast: 100);
+        var warmDecode = planner.PlanDecode(Req, ledger.Lookup("sess"), Workers, tracker, health);
+        Assert.Equal("rtx", warmDecode);
+
+        // Decode worker fully busy → next best.
+        Assert.True(tracker.TryAcquireSlot("p100", out _));
+        var busyDecode = planner.PlanDecode(Req, session: null, Workers, tracker, health);
+        Assert.Equal("rtx", busyDecode);
     }
 
     [Fact]

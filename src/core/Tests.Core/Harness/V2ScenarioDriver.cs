@@ -104,6 +104,7 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
             new RoutePhase(Cfg.Workers),
             new PrefillPhase(engine),
             new SaveKvPhase(store),
+            new PickDecodePhase(new RoutePlanner(), new LeaseManager(Tracker), Ledger, Cfg.Workers, Tracker, Health),
             new RestorePhase(store, engine),
             new DecodePhase(Proxy),
             new BgSavePhase(),

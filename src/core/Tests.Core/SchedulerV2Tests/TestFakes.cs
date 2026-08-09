@@ -48,9 +48,15 @@ internal sealed class FakeEngineRpcClient : IEngineRpcClient
 /// <summary>Stub completion proxy: returns a canned non-stream response; streams empty.</summary>
 internal sealed class FakeCompletionProxy : ICompletionProxyService
 {
+    /// <summary>URLs the non-streaming proxy was called with, in order (decode-target assertions).</summary>
+    public List<string> NonStreamingUrls { get; } = new();
+
     public Task<Dictionary<string, object>> ProxyCompletionAsync(string nodeUrl, Dictionary<string, object> body, string traceId, CancellationToken ct)
-        => Task.FromResult(JsonSerializer.Deserialize<Dictionary<string, object>>(
+    {
+        NonStreamingUrls.Add(nodeUrl);
+        return Task.FromResult(JsonSerializer.Deserialize<Dictionary<string, object>>(
             """{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":12,"total_tokens":15}}""")!);
+    }
 
     public IAsyncEnumerable<byte[]> ProxyCompletionStreamAsync(string nodeUrl, Dictionary<string, object> body, string traceId, CancellationToken ct)
         => AsyncEnumerable.Empty<byte[]>();

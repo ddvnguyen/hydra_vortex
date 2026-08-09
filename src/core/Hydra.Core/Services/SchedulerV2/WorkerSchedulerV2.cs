@@ -161,7 +161,19 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
     private async Task RunPipelineAsync(WorkRequest wr, CancellationToken ct)
     {
         var item = wr.Item;
-        var lease = _leases.TryAcquire(wr.Plan.PrefillWorker, item.SessionId);
+
+        // GPU-utilization rule: a Prefill-type request acquires the PREFILL slot
+        // only; the decode slot is acquired later at the PickDecode handoff. Solo
+        // (decode-only) acquires the decode slot directly.
+        var startWorker = wr.Plan.PrefillWorker ?? wr.Plan.DecodeWorker;
+        if (string.IsNullOrEmpty(startWorker))
+        {
+            _admission.Enqueue(wr, wr.Priority);
+            SignalEvaluator();
+            return;
+        }
+
+        var lease = _leases.TryAcquire(startWorker, item.SessionId);
         if (lease is null)
         {
             // Capacity lost between planning and acquisition — requeue.
@@ -170,13 +182,17 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             return;
         }
 
-        item.PrefillLease = lease;
+        if (wr.Plan.PrefillWorker is not null)
+            item.PrefillLease = lease;
+        else
+            item.DecodeLease = lease;
+
         item.State = WorkItemState.RouteDecision; // sync item with the machine's initial state
         var suspended = false;
         try
         {
             var machine = NewMachine(WorkItemState.RouteDecision);
-            suspended = await StepAsync(wr, wr.Plan.PrefillWorker, machine, ct);
+            suspended = await StepAsync(wr, startWorker, machine, ct);
         }
         finally
         {
@@ -304,6 +320,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
         m.Configure(WorkItemState.RouteDecision)
             .On(SchedulerEvent.RouteSucceeded, WorkItemState.Prefill)
+            .On(SchedulerEvent.SoloRouted, WorkItemState.Decode) // warm/decode-only: KV resident
             .On(SchedulerEvent.Failed, WorkItemState.Failed)
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
 
@@ -314,7 +331,13 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
 
         m.Configure(WorkItemState.SaveKv)
-            .On(SchedulerEvent.SaveKvSucceeded, WorkItemState.RestoreKv)
+            .On(SchedulerEvent.SaveKvSucceeded, WorkItemState.PickDecode)
+            .On(SchedulerEvent.Failed, WorkItemState.Failed)
+            .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
+
+        // Two-phase handoff: pick the decode worker + swap slots here.
+        m.Configure(WorkItemState.PickDecode)
+            .On(SchedulerEvent.DecodePicked, WorkItemState.RestoreKv)
             .On(SchedulerEvent.Failed, WorkItemState.Failed)
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
 
@@ -406,7 +429,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             {
                 if (!_phaseHandlers.TryGetValue(item.State, out var phase))
                     break;
-                var result = await phase.RunAsync(new PhaseContext(wr, item, wr.Plan.PrefillWorker), CancellationToken.None);
+                var result = await phase.RunAsync(new PhaseContext(wr, item, wr.Plan.PrefillWorker ?? wr.Plan.DecodeWorker ?? ""), CancellationToken.None);
                 if (result.Outcome != PhaseOutcome.Fire)
                     break;
                 await machine.FireAsync(result.Event, item, CancellationToken.None);

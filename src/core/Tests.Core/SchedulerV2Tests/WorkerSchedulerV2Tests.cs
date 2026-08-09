@@ -20,12 +20,13 @@ public sealed class WorkerSchedulerV2Tests
         LlamaRequestTimeoutS = 30, // fail fast instead of the 1800s default on a broken path
         Workers = new List<WorkerConfig>
         {
-            new() { Name = "rtx", LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 2, PrefillPriority = 1 },
-            new() { Name = "p100", LlamaUrl = "http://p100:8086", WorkerType = 2, Slots = 1, PrefillPriority = 100 },
+            new() { Name = "rtx", LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 2, PrefillPriority = 1, DecodePriority = 2 },
+            new() { Name = "p100", LlamaUrl = "http://p100:8086", WorkerType = 2, Slots = 1, PrefillPriority = 100, DecodePriority = 1 },
         },
     };
 
     private FakeEngineRpcClient _engine = null!;
+    private FakeCompletionProxy _proxy = null!;
     private WorkerTracker _tracker = null!;
     private SessionLedger _ledger = null!;
     private WorkerSchedulerV2 _scheduler = null!;
@@ -45,15 +46,16 @@ public sealed class WorkerSchedulerV2Tests
             ["rtx"] = _engine,
             ["p100"] = _engine,
         });
-        var proxy = new FakeCompletionProxy();
+        _proxy = new FakeCompletionProxy();
 
         var phases = new IPhaseHandler[]
         {
             new RoutePhase(_cfg.Workers),
             new PrefillPhase(engine),
             new SaveKvPhase(store),
+            new PickDecodePhase(new RoutePlanner(), new LeaseManager(_tracker), _ledger, _cfg.Workers, _tracker, health),
             new RestorePhase(store, engine),
-            new DecodePhase(proxy),
+            new DecodePhase(_proxy),
             new BgSavePhase(),
         };
 
@@ -115,6 +117,33 @@ public sealed class WorkerSchedulerV2Tests
         await _scheduler.NotifyStreamComplete("sess_v2");
 
         Assert.Equal(0d, _tracker.GetElapsedSeconds("rtx")); // released after stream teardown
+        _runCts.Cancel();
+    }
+
+    [Fact]
+    public async Task Prefill_Two_Phase_Splits_Prefill_And_Decode_Across_Workers()
+    {
+        await Setup();
+
+        // estimatedTokens >= AtomicThreshold → two-phase (Prefill) request.
+        var req = new Dictionary<string, object> { ["stream"] = false, ["max_tokens"] = 30, ["model"] = "nano" };
+        var msgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = new string('x', 5000) } };
+        var result = await _scheduler.SubmitAsync(
+            req, msgs, "sess_pd", estimatedTokens: 5000, maxTokens: 30, prefixHash: null,
+            CancellationToken.None, systemPromptTokens: 0);
+
+        Assert.NotNull(result);
+        Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.EnginePrefill);
+
+        // GPU-utilization rule: decode ran on the dedicated decoder (p100), NOT
+        // the prefill worker (rtx) — the decode worker was picked at decode time.
+        Assert.Equal("http://p100:8086", Assert.Single(_proxy.NonStreamingUrls));
+        Assert.Equal("p100", _scheduler.LastDispatchedNode);
+
+        // No slot is held after completion: prefill slot released at the handoff,
+        // decode slot released at finalize.
+        Assert.Equal(0d, _tracker.GetElapsedSeconds("rtx"));
+        Assert.Equal(0d, _tracker.GetElapsedSeconds("p100"));
         _runCts.Cancel();
     }
 }
