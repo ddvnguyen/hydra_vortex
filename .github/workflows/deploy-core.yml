@@ -80,6 +80,23 @@ jobs:
           HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true
           EOF
           cd infra
+          # Record the current core container so we can prove the recreate
+          # below actually happened (#590): `compose up --force-recreate` can
+          # print errors yet still exit 0, and the health check then passes
+          # against the OLD core — CI green, rig stale.
+          CORE_BEFORE=$(podman inspect hydra-system_core_1 --format '{{.Created}}' 2>/dev/null || echo none)
+          # Both heads declare `depends_on: core`, so podman tracks them as
+          # dependents of the core container and refuses to remove/recreate
+          # it while they exist ("has dependent containers which must be
+          # removed before it" — #590). Reap both before force-recreating.
+          # NOTE: docker-compose.hydra.yml sets x-podman.in_pod: false — the
+          # containers are NOT pod members, so match by name prefix (a
+          # `--filter pod=` would match nothing). The next step brings both
+          # heads back (deploy-hydra-head.sh rtx+rtx3060), so removing them
+          # here is safe.
+          for c in $(podman ps -a --filter name=hydra-system_head- --format '{{.Names}}'); do
+            podman rm -f "$c" 2>/dev/null || true
+          done
           # Strip the runner's job-end orphan-cleanup marker so core's conmon
           # isn't killed when the job ends (actions/runner kills every process
           # whose env carries RUNNER_TRACKING_ID, JobExtension.cs).
@@ -92,10 +109,41 @@ jobs:
           # compose-up (zombie heads are reaped/recreated there too).
           podman compose -f docker-compose.hydra.yml up -d --force-recreate core
           echo "Hydra core started"
+          # Wait for the NEW core to come up — the old container is gone, so
+          # a green health here means the fresh container actually serves.
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            sleep 3
+            if curl -sf http://localhost:9000/health >/dev/null 2>&1; then
+              echo "Hydra core healthy"
+              break
+            fi
+            if [ "$i" = "15" ]; then
+              echo "::warning::core health not green after 45s — continuing (Verify services healthy retries)"
+            fi
+          done
+          # #590 stale-deploy guard: if the core container was NOT recreated
+          # this run (identical Created timestamp), the deploy silently left
+          # the OLD core in place — fail loudly instead of reporting SUCCESS.
+          CORE_AFTER=$(podman inspect hydra-system_core_1 --format '{{.Created}}' 2>/dev/null || echo none)
+          if [ "$CORE_AFTER" = "none" ]; then
+            echo "::error::core container missing after compose up — deploy failed (#590)"
+            exit 1
+          fi
+          if [ "$CORE_BEFORE" != "none" ] && [ "$CORE_AFTER" = "$CORE_BEFORE" ]; then
+            echo "::error::core container was NOT recreated (stale deploy — #590)"
+            exit 1
+          fi
+          echo "Core recreated: $CORE_BEFORE -> $CORE_AFTER"
 
-      - name: Deploy Hydra Head RTX
+      - name: Deploy Hydra Heads (RTX + RTX3060)
+        # rtx+rtx3060 (not rtx): the core step reaps BOTH heads (#590) before
+        # force-recreating core, so both must be brought back here. The target
+        # runs deploy_shared_setup (idempotent `up -d core` — core already
+        # exists and the image is unchanged) once, then recreates
+        # head-rtx5060ti and head-rtx3060 concurrently, each marker-stripped
+        # and setsid/systemd-scoped (#575/#586).
         run: |
-          bash scripts/deploy-hydra-head.sh rtx
+          bash scripts/deploy-hydra-head.sh rtx+rtx3060
 
       - name: Verify services healthy
         run: |
