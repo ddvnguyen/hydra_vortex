@@ -2286,19 +2286,30 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	/// <summary>
-	/// #589: resolve the alias sent in the merged-decode RPC header
+	/// #589/#609: resolve the alias sent in the merged-decode RPC header
 	/// (<c>model</c> — consumed by the engine's DECODE Gate-A name fallback
 	/// and the DECODE_APPLY model-swap lookup). Model-agnostic workers
 	/// (e.g. P100, <see cref="WorkerConfig.ModelAlias"/> is null) fall back to
-	/// the request's routing identity — the same rule the HTTP-proxy decode
-	/// path applies (#479/S3 + #504). Decode role is honoured so a P/D-split
-	/// routing identity resolves to its decode quant (moe-35b-pd →
-	/// qwen3.6-35B-balanced).
+	/// <see cref="WorkItem.KvModelAlias"/> (the model the KV was actually
+	/// built with — stamped at prefill from the engine's reported alias, or
+	/// from the KV manifest on restore) and then to the request's routing
+	/// identity — the same rule the HTTP-proxy decode path applies
+	/// (#479/S3 + #504). For model-agnostic sessions (no <c>model</c> field)
+	/// the KV alias is the only identity available; without it the decode
+	/// engine's Gate-A fallback has nothing to match → name=0 reject.
+	/// Decode role is honoured so a P/D-split routing identity resolves to
+	/// its decode quant (moe-35b-pd → qwen3.6-35B-balanced).
+	/// <see cref="TranslateModelAlias"/> is idempotent for already-resolved
+	/// aliases (model templates are keyed by routing identities only), so the
+	/// KV alias passes through unchanged when the engine already reported the
+	/// GGUF alias.
 	/// </summary>
 	internal static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w)
 	{
 		if (!string.IsNullOrEmpty(w.ModelAlias))
 			return TranslateModelAlias(w.ModelAlias, decodeRole: true);
+		if (!string.IsNullOrEmpty(item.KvModelAlias))
+			return TranslateModelAlias(item.KvModelAlias, decodeRole: true);
 		var reqModel = item.Request.TryGetValue("model", out var m) && m is string ms ? ms : null;
 		return TranslateModelAlias(reqModel, decodeRole: true);
 	}

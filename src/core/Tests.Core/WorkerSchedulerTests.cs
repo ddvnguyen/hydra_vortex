@@ -786,4 +786,74 @@ public sealed class MergedDecodeModelAliasTests
                 "sess", "trace", null, 1, 10),
             worker));
     }
+
+    [Fact]
+    public void ModelAgnosticNoRequestModel_UsesKvModelAlias()
+    {
+        // #609: model-agnostic session (no request model, worker ModelAlias
+        // null) — the KV alias (the model the KV was actually built with,
+        // stamped from prefillResult.ModelAlias) must be sent so the p100
+        // Gate-A alias fallback has something to match. Already-resolved
+        // engine aliases pass through TranslateModelAlias unchanged.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = new WorkItem(
+            new Dictionary<string, object>(),
+            new List<Dictionary<string, object>>(),
+            "sess", "trace", null, 1, 10)
+        {
+            KvModelAlias = "qwen3.6-35B-mini",
+        };
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
+    }
+
+    [Fact]
+    public void ModelAgnosticNoRequestModel_KvModelAliasRoutingIdentity_ResolvesDecodeQuant()
+    {
+        // #609: if the KV alias ever holds a routing identity (e.g. HTTP
+        // prefill path before the slot META overwrite), decode role still
+        // resolves it to the decode quant (mini → balanced for moe-35b-pd).
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = new WorkItem(
+            new Dictionary<string, object>(),
+            new List<Dictionary<string, object>>(),
+            "sess", "trace", null, 1, 10)
+        {
+            KvModelAlias = "moe-35b-pd",
+        };
+
+        Assert.Equal("qwen3.6-35B-balanced",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
+    }
+
+    [Fact]
+    public void KvModelAlias_TakesPrecedenceOverRequestModel()
+    {
+        // #609: the KV alias describes the model that actually built the KV
+        // — it beats a request routing identity for model-agnostic workers.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
+    }
+
+    [Fact]
+    public void WorkerModelAlias_StillWinsOverKvModelAlias()
+    {
+        // #609: a worker with a static ModelAlias keeps precedence — the
+        // pre-#589 header behaviour for model-specific workers is unchanged.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "rtx", ModelAlias = "moe-35b-pd" };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+
+        Assert.Equal("qwen3.6-35B-balanced",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
+    }
 }
