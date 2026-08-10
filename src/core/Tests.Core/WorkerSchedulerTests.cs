@@ -673,3 +673,117 @@ public sealed class WorkItemIntegrationTests
     }
 
 }
+
+// ── #589: merged-decode model-agnostic alias fallback ──
+
+public sealed class MergedDecodeModelAliasTests
+{
+    private static void UseLoader()
+    {
+        // Production-like templates: moe-35b-pd decodes on P100 (balanced),
+        // moe-35b-solo decodes on RTX (mini).
+        var models = new Dictionary<string, ModelTemplate>
+        {
+            ["moe-35b-pd"] = new ModelTemplate
+            {
+                Description = "pd",
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-balanced",
+                LoadTimeS = 40,
+                QualityTier = 2,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = GpuCapabilities.FlashAttn,
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 2048,
+                    MaxPromptTokens = 999999,
+                    MaxContextTokens = 128000,
+                    RequiresWorkers = ["p100"],
+                },
+            },
+            ["moe-35b-solo"] = new ModelTemplate
+            {
+                Description = "solo",
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-mini",
+                LoadTimeS = 40,
+                QualityTier = 1,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = GpuCapabilities.FlashAttn,
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 0,
+                    MaxPromptTokens = 2048,
+                    MaxContextTokens = 128000,
+                },
+            },
+        };
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 3,
+            Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-35B-mini"]     = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                ["qwen3.6-35B-balanced"] = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+            },
+        };
+        ModelConfigLoader.Reset();
+        ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
+    }
+
+    private static WorkItem MakeItem(string requestModel) => new(
+        new Dictionary<string, object> { ["model"] = requestModel },
+        new List<Dictionary<string, object>>(),
+        "sess", "trace", null, 1, 10);
+
+    [Fact]
+    public void ModelAgnosticWorker_FallsBackToRequestRoutingIdentity_DecodeRole()
+    {
+        // P100-style worker: ModelAlias null (model-agnostic) — the #589 case.
+        // The request routing identity moe-35b-pd must resolve to its DECODE
+        // quant alias qwen3.6-35B-balanced, not the prefill alias (mini).
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+
+        Assert.Equal("qwen3.6-35B-balanced",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(MakeItem("moe-35b-pd"), worker));
+    }
+
+    [Fact]
+    public void WorkerModelAlias_TakesPrecedenceOverRequestModel()
+    {
+        // Worker with a static ModelAlias wins over the request's routing
+        // identity — the pre-#589 header behaviour is preserved for
+        // model-specific workers (e.g. RTX combined).
+        UseLoader();
+        WorkerConfig worker = new() { Name = "rtx", ModelAlias = "moe-35b-solo" };
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(MakeItem("moe-35b-pd"), worker));
+    }
+
+    [Fact]
+    public void NoAliasNoRequestModel_ReturnsNull()
+    {
+        // No worker alias and no request identity → no alias to send; the
+        // engine Gate A falls back to its default behaviour (exact name match).
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+
+        Assert.Null(WorkerSchedulerService.ResolveMergedDecodeModelAlias(
+            new WorkItem(
+                new Dictionary<string, object>(),
+                new List<Dictionary<string, object>>(),
+                "sess", "trace", null, 1, 10),
+            worker));
+    }
+}

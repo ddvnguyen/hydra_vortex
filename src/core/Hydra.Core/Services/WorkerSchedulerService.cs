@@ -2250,13 +2250,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// routing identity resolves to its decode quant (moe-35b-pd →
 	/// qwen3.6-35B-balanced).
 	/// </summary>
-	private static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w)
+	internal static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w)
 	{
 		if (!string.IsNullOrEmpty(w.ModelAlias))
 			return TranslateModelAlias(w.ModelAlias, decodeRole: true);
 		var reqModel = item.Request.TryGetValue("model", out var m) && m is string ms ? ms : null;
 		return TranslateModelAlias(reqModel, decodeRole: true);
 	}
+
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
 	{
