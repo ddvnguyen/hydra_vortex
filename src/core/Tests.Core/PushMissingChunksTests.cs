@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Hydra.Core;
+using Hydra.Core.Caching;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Services;
@@ -23,6 +24,9 @@ public sealed class PushMissingChunksTests
 	{
 		public List<(OpCode Op, string Key, int PayloadLen)> Calls { get; } = new();
 		public Dictionary<OpCode, (byte Status, string? Meta)> Responses { get; } = new();
+		/// <summary>Per-op response sequences (e.g. ENOSPC then Ok) — consumed
+		/// before <see cref="Responses"/> is consulted.</summary>
+		public Dictionary<OpCode, Queue<(byte Status, string? Meta)>> ResponseQueues { get; } = new();
 
 		public FakeStoreClient() : base("test", 0) { }
 
@@ -31,8 +35,13 @@ public sealed class PushMissingChunksTests
 			string traceId, CancellationToken ct)
 		{
 			Calls.Add((op, key, payload.Length));
-			if (Responses.TryGetValue(op, out var r))
-				return Task.FromResult(new RpcResponse(r.Status, r.Meta, []));
+			if (ResponseQueues.TryGetValue(op, out var q) && q.Count > 0)
+			{
+				var queued = q.Dequeue();
+				return Task.FromResult(new RpcResponse(queued.Status, queued.Meta, []));
+			}
+			if (Responses.TryGetValue(op, out var resp))
+				return Task.FromResult(new RpcResponse(resp.Status, resp.Meta, []));
 			return Task.FromResult(new RpcResponse(
 				(byte)StatusCode.Ok, JsonSerializer.Serialize(new { stored = true }), []));
 		}
@@ -57,7 +66,7 @@ public sealed class PushMissingChunksTests
 		},
 	};
 
-	private static WorkerSchedulerService MakeScheduler(RpcClient storeRpc)
+	private static WorkerSchedulerService MakeScheduler(RpcClient storeRpc, LocalChunkCache? chunkCache = null)
 	{
 		var cfg = MakeConfig();
 		var ledger = new SessionLedger();
@@ -66,7 +75,23 @@ public sealed class PushMissingChunksTests
 		var proxy = new CompletionProxyService();
 		var health = new TestHealthMonitor();
 		var sp = new ServiceCollection().BuildServiceProvider();
-		return new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, storeRpc, sp, Serilog.Log.Logger);
+		return new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, storeRpc, sp, Serilog.Log.Logger, chunkCache);
+	}
+
+	// Build a real L1 cache that is ALREADY over its byte cap (raw files
+	// seeded before the ctor so RebuildFromDisk counts them; the at-write
+	// eviction path never gets a chance to run). This is the stale-over-cap
+	// state the ENOSPC eviction must free bytes from.
+	private static LocalChunkCache MakeOverCapCache(out long usedBytes)
+	{
+		var dir = Path.Combine(Path.GetTempPath(), $"hydra-l1-enospc-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(dir);
+		var hash = new string('c', 64);
+		File.WriteAllBytes(Path.Combine(dir, $"sess_old.{hash}"), new byte[6 * 1024]);
+		File.WriteAllBytes(Path.Combine(dir, $"sess_new.{hash}"), new byte[6 * 1024]);
+		var l1 = new LocalFsChunkCache(dir, maxBytes: 10 * 1024);
+		usedBytes = l1.L1UsedBytes;
+		return new LocalChunkCache(l1);
 	}
 
 	// Build the test data by hand. The function under test only needs
@@ -145,6 +170,11 @@ public sealed class PushMissingChunksTests
 		// "error" reason must be at least 1 after the throw.
 		var labelled = CoordinatorMetrics.PushChunksFailures.WithLabels("error");
 		Assert.True(labelled.Value >= 1, $"expected PushChunksFailures{{reason=error}} >= 1, was {labelled.Value}");
+
+		// Issue #615: EIO is NOT ENOSPC — no eviction, no retry. Exactly one
+		// PUSH_CHUNKS call; the meta never contained "No space left on device".
+		var pushCalls = fake.Calls.Where(c => c.Op == OpCode.PushChunks).ToList();
+		Assert.Single(pushCalls);
 	}
 
 	[Fact]
@@ -183,5 +213,68 @@ public sealed class PushMissingChunksTests
 
 		Assert.Equal(0, pushed);
 		Assert.DoesNotContain(fake.Calls, c => c.Op == OpCode.PushChunks);
+	}
+
+	// ── Issue #615: evict-on-ENOSPC ─────────────────────────────────────
+	// The L1 tmpfs chunk cache and the Store's chunk dir share the
+	// /mnt/llm-ram mount, so when PUSH_CHUNKS is rejected with ENOSPC the
+	// coordinator must evict the L1 LRU immediately and retry the batch once.
+
+	private const string EnospcMeta =
+		"push_chunks failed: No space left on device : '/mnt/llm-ram/store/chunks/abcd.tmp'";
+
+	[Fact]
+	public async Task PushMissingChunks_Enospc_EvictsL1AndRetriesOnce_ThenThrows()
+	{
+		var fake = new FakeStoreClient
+		{
+			Responses = { [OpCode.PushChunks] = ((byte)StatusCode.Error, EnospcMeta) },
+		};
+		var cache = MakeOverCapCache(out var usedBefore);
+		try
+		{
+			var scheduler = MakeScheduler(fake, cache);
+			var (chunks, stateData) = MakeThreeChunks();
+			var missing = chunks.Select(c => c.Hash).ToList();
+
+			var ex = await Assert.ThrowsAsync<InvalidDataException>(
+				() => scheduler.PushMissingChunksAsync(
+					storeKey: "sess_615.kv", sessionId: "sess_615",
+					missing, chunks, stateData, traceId: "trace_615", ct: default));
+
+			Assert.Contains("No space left", ex.Message);
+
+			// Exactly ONE retry: 2 PUSH_CHUNKS calls total (evict + retry once).
+			var pushCalls = fake.Calls.Where(c => c.Op == OpCode.PushChunks).ToList();
+			Assert.Equal(2, pushCalls.Count);
+
+			// The eviction actually freed tmpfs bytes from the over-cap L1.
+			Assert.True(cache.L1UsedBytes < usedBefore,
+				$"expected L1 usage to drop below {usedBefore}, was {cache.L1UsedBytes}");
+		}
+		finally
+		{
+			cache.Dispose();
+		}
+	}
+
+	[Fact]
+	public async Task PushMissingChunks_Enospc_RetrySucceeds_ReturnsChunkCount()
+	{
+		var fake = new FakeStoreClient();
+		fake.ResponseQueues[OpCode.PushChunks] = new Queue<(byte Status, string? Meta)>();
+		fake.ResponseQueues[OpCode.PushChunks].Enqueue(((byte)StatusCode.Error, EnospcMeta));
+		fake.ResponseQueues[OpCode.PushChunks].Enqueue(((byte)StatusCode.Ok, null));
+		var scheduler = MakeScheduler(fake);
+		var (chunks, stateData) = MakeThreeChunks();
+		var missing = chunks.Select(c => c.Hash).ToList();
+
+		var pushed = await scheduler.PushMissingChunksAsync(
+			storeKey: "sess_615_ok.kv", sessionId: "sess_615_ok",
+			missing, chunks, stateData, traceId: "trace_615_ok", ct: default);
+
+		Assert.Equal(3, pushed);
+		var pushCalls = fake.Calls.Where(c => c.Op == OpCode.PushChunks).ToList();
+		Assert.Equal(2, pushCalls.Count); // original + one retry
 	}
 }

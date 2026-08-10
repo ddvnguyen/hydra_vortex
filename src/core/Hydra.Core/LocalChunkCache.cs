@@ -6,7 +6,8 @@ namespace Hydra.Core;
 /// Two-tier chunk cache facade. Preserves the legacy LocalChunkCache API
 /// (used by WorkerSchedulerService and StateHandler) on top of:
 ///   * L1 = <see cref="LocalFsChunkCache"/>: per-session, tmpfs, byte-LRU
-///     (default 20 GB), with at-write eviction and periodic sweep.
+///     (default 20 GB), with at-write eviction and a periodic sweep owned
+///     by <see cref="Services.ChunkCacheSweepService"/> (#615).
 ///   * L2 = <see cref="IContentChunkStore"/> (PgChunkCache): per-content-hash,
 ///     PG-backed, age×idle/use_count LRU (default 50 GB).
 ///
@@ -120,6 +121,10 @@ public sealed class LocalChunkCache : IChunkCache
     public Task ClearAsync(string sessionId) => _l1.ClearAsync(sessionId);
 
     public Task<int> EvictLRUAsync() => _l1.EvictLRUAsync();
+
+    /// <summary>Evict L1 LRU sessions to the byte-cap low-water mark, also
+    /// reporting the freed bytes for the periodic sweep log (#615).</summary>
+    public Task<ChunkEvictionResult> EvictLRUWithStatsAsync() => _l1.EvictLRUWithStatsAsync();
 
     public void Dispose()
     {

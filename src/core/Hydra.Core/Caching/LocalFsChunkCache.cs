@@ -6,7 +6,8 @@ namespace Hydra.Core.Caching;
 /// <summary>
 /// L1 chunk cache: per-session, in tmpfs (typically /mnt/llm-ram/chunk-cache-l1).
 /// Bounded by a byte budget (default 20 GB); LRU eviction is enforced both
-/// at-write (synchronous) and by a periodic background sweep. Closes
+/// at-write (synchronous) and by the periodic <see cref="Services.ChunkCacheSweepService"/>
+/// hosted loop (every 45 s, logged as chunk_cache_lru_sweep — #615). Closes
 /// M3-P1 #332's no-eviction bug — the L1 can no longer grow without bound.
 ///
 /// This class is L1-only; it does NOT know about the L2 durable store.
@@ -23,7 +24,6 @@ public sealed class LocalFsChunkCache : IChunkCache
     private readonly ConcurrentDictionary<string, SessionChunkCache> _caches = new();
     private long _usedBytes;
     private bool _disposed;
-    private readonly Timer _sweepTimer;
 
     public LocalFsChunkCache(string cacheDir, long maxBytes)
     {
@@ -47,15 +47,11 @@ public sealed class LocalFsChunkCache : IChunkCache
 
         ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
 
-        // Periodic background sweep every 60 s. Independent of the L2's
-        // soft sweep; this is L1-only and keeps the L1 under cap even if
-        // the only write activity is reads (which still bump LRU timestamps
-        // but don't trigger the at-write eviction path).
-        _sweepTimer = new Timer(
-            _ => SafeSweep(),
-            state: null,
-            dueTime: TimeSpan.FromSeconds(60),
-            period: TimeSpan.FromSeconds(60));
+        // The periodic sweep lives in ChunkCacheSweepService (#615): it calls
+        // EvictLRUWithStatsAsync every 45 s so the L1 stays under cap even
+        // when the only activity is reads (which bump LRU timestamps but
+        // don't trigger the at-write eviction path), and so the sweep is
+        // visible in the logs instead of a silent internal timer.
     }
 
     public long L1MaxBytes => _maxBytes;
@@ -226,17 +222,28 @@ public sealed class LocalFsChunkCache : IChunkCache
     {
         if (_disposed) return Task.FromResult(0);
         var lowWater = (long)(_maxBytes * 0.8);
-        var evicted = EvictUntilUnderBytes(lowWater);
-        return Task.FromResult(evicted);
+        return Task.FromResult(EvictUntilUnderBytes(lowWater).Evicted);
+    }
+
+    /// <summary>
+    /// Same eviction as <see cref="EvictLRUAsync"/> but also reports the
+    /// bytes freed from the tmpfs, so the periodic sweep can log
+    /// chunk_cache_lru_sweep evicted=N bytes=Freed (#615).
+    /// </summary>
+    public Task<ChunkEvictionResult> EvictLRUWithStatsAsync()
+    {
+        if (_disposed) return Task.FromResult(new ChunkEvictionResult(0, 0));
+        var lowWater = (long)(_maxBytes * 0.8);
+        return Task.FromResult(EvictUntilUnderBytes(lowWater));
     }
 
     /// <summary>
     /// Forcibly evict LRU sessions until the L1 is under <paramref name="targetBytes"/>.
-    /// Returns the number of sessions evicted.
+    /// Returns the number of sessions evicted and the bytes freed.
     /// </summary>
-    private int EvictUntilUnderBytes(long targetBytes)
+    private ChunkEvictionResult EvictUntilUnderBytes(long targetBytes)
     {
-        if (_disposed) return 0;
+        if (_disposed) return new ChunkEvictionResult(0, 0);
         var evicted = 0;
         long freedBytes = 0;
         while (Interlocked.Read(ref _usedBytes) > targetBytes && _caches.Count > 0)
@@ -269,21 +276,7 @@ public sealed class LocalFsChunkCache : IChunkCache
             ChunkCacheMetrics.L1EvictedBytes.Inc(freedBytes);
             ChunkCacheMetrics.L1Bytes.Set(Interlocked.Read(ref _usedBytes));
         }
-        return evicted;
-    }
-
-    private void SafeSweep()
-    {
-        try
-        {
-            if (_disposed) return;
-            var lowWater = (long)(_maxBytes * 0.8);
-            EvictUntilUnderBytes(lowWater);
-        }
-        catch
-        {
-            // Best-effort; the next tick retries.
-        }
+        return new ChunkEvictionResult(evicted, freedBytes);
     }
 
     private string CachePath(string sessionId)
@@ -366,7 +359,6 @@ public sealed class LocalFsChunkCache : IChunkCache
     public void Dispose()
     {
         _disposed = true;
-        _sweepTimer.Dispose();
         _caches.Clear();
     }
 

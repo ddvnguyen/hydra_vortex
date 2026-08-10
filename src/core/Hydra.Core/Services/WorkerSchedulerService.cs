@@ -4355,7 +4355,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// the operator the actual root cause. The throw happens BEFORE
 			// PutManifestAsync is called, so the manifest never sees a
 			// half-pushed state.
-			var resp = await StoreClient.RequestAsync(OpCode.PushChunks, storeKey, batch.ToArray(), traceId, ct);
+			var resp = await PushChunkBatchAsync(storeKey, batch.ToArray(), traceId, ct);
 			if (resp.Status != (byte)StatusCode.Ok)
 			{
 				var reason = StatusReason(resp.Status);
@@ -4441,8 +4441,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					pending++;
 					if (batch.Length >= BatchBytes)
 					{
-						var resp = await StoreClient.RequestAsync(OpCode.PushChunks,
-							storeKey, batch.ToArray(), traceId, ct);
+						var resp = await PushChunkBatchAsync(storeKey, batch.ToArray(), traceId, ct);
 						if (resp.Status != (byte)StatusCode.Ok)
 							throw new InvalidDataException($"PUSH_CHUNKS failed: 0x{resp.Status:X2}");
 						Interlocked.Add(ref pushedTotal, pending);
@@ -4452,8 +4451,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				if (batch.Length > 0)
 				{
-					var resp = await StoreClient.RequestAsync(OpCode.PushChunks,
-						storeKey, batch.ToArray(), traceId, ct);
+					var resp = await PushChunkBatchAsync(storeKey, batch.ToArray(), traceId, ct);
 					if (resp.Status != (byte)StatusCode.Ok)
 						throw new InvalidDataException($"PUSH_CHUNKS failed: 0x{resp.Status:X2}");
 					Interlocked.Add(ref pushedTotal, pending);
@@ -4471,6 +4469,38 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		return pushedTotal;
 	}
+
+	/// <summary>
+	/// One PUSH_CHUNKS batch, with evict-on-ENOSPC recovery (#615). The L1
+	/// tmpfs chunk cache and the Store's chunk dir share the /mnt/llm-ram
+	/// mount, so when the Store rejects a push with "No space left on device"
+	/// we evict the L1 byte-LRU immediately (frees the tmpfs) and retry the
+	/// batch ONCE. The caller still checks the returned status and throws on
+	/// final failure, so the failure path (counter + exception) is unchanged.
+	/// </summary>
+	private async Task<RpcResponse> PushChunkBatchAsync(string storeKey, byte[] batch, string traceId, CancellationToken ct)
+	{
+		var resp = await StoreClient.RequestAsync(OpCode.PushChunks, storeKey, batch, traceId, ct);
+		if (resp.Status == (byte)StatusCode.Ok || !IsEnospcFailure(resp.Meta))
+			return resp;
+
+		var evicted = 0;
+		if (_chunkCache != null)
+			evicted = await _chunkCache.EvictLRUAsync();
+
+		var retry = await StoreClient.RequestAsync(OpCode.PushChunks, storeKey, batch, traceId, ct);
+		_log.Warning("chunk_cache_evict_on_enospc evicted={Evicted} retry={Retry}",
+			evicted, retry.Status == (byte)StatusCode.Ok ? "ok" : "fail");
+		return retry;
+	}
+
+	/// <summary>True when a PUSH_CHUNKS rejection is a full-disk (ENOSPC) error
+	/// rather than any other store failure — only ENOSPC merits an eviction
+	/// + retry, because evicting the L1 frees space on the shared tmpfs.</summary>
+	private static bool IsEnospcFailure(string? meta)
+		=> meta is not null
+			&& (meta.Contains("No space left", StringComparison.OrdinalIgnoreCase)
+				|| meta.Contains("ENOSPC", StringComparison.OrdinalIgnoreCase));
 
 	private static string StatusReason(byte status) => status switch
 	{
