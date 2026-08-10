@@ -32,9 +32,9 @@ public sealed class V2ArchitectureTests
     {
         yield return new PlanRunner(new RoutePlanner(), new LeaseManager(tracker), ledger, Workers, tracker, health);
         yield return new PrefillRunner(engine);
-        yield return new SaveKvRunner(store);
-        yield return new RestoreRunner(store, engine);
-        yield return new DecodeRunner(proxy);
+        yield return new SaveKvRunner(store, ledger);
+        yield return new RestoreRunner(store, engine, ledger);
+        yield return new DecodeRunner(proxy, ledger);
         yield return new BgSaveRunner();
     }
 

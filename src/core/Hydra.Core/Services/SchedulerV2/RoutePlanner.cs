@@ -114,19 +114,12 @@ public sealed class RoutePlanner : IRoutePlanner
         IWorkerTracker tracker,
         IHealthMonitorService health)
     {
-        // Prefer the session's warm node when its KV is resident and it can serve.
-        if (session is { SlotFreed: false } && !string.IsNullOrEmpty(session.NodeName))
-        {
-            var warm = workers.FirstOrDefault(w =>
-                w.Name == session.NodeName
-                && w.CanDecode
-                && tracker.HasFreeSlot(w.Name)
-                && health.IsHealthy(w.Name));
-            if (warm is not null)
-                return warm.Name;
-        }
-
-        // Otherwise the best free decode-capable worker (lower DecodePriority wins).
+        // The decode worker is chosen by the GPU worker rules: the best free +
+        // healthy decode-capable worker (lower DecodePriority wins). Warm affinity
+        // is decided at INITIAL routing (Plan) from the COMPLETED session's node —
+        // during a P/D request the ledger's SlotFreed=false is a mid-request
+        // artifact on the prefill node and must not steer decode back there.
+        // (A stash-based warm preference lands with C2.)
         return workers
             .Where(w => w.CanDecode && tracker.HasFreeSlot(w.Name) && health.IsHealthy(w.Name))
             .OrderBy(w => w.DecodePriority)

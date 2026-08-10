@@ -17,7 +17,8 @@ public interface ILeaseManager
     /// <summary>Release a lease (idempotent; null-safe).</summary>
     void Release(SlotLease? lease);
 
-    /// <summary>True when the decision's target worker still has a free slot.</summary>
+    /// <summary>True when the decision's START worker (prefill, or decode for
+    /// Solo/warm) still has a free slot.</summary>
     bool HasCapacity(RouteDecision decision);
 }
 
@@ -28,7 +29,12 @@ public sealed class LeaseManager : ILeaseManager
     public LeaseManager(IWorkerTracker tracker) => _tracker = tracker;
 
     public bool HasCapacity(RouteDecision decision)
-        => decision.HasCapacity && _tracker.HasFreeSlot(decision.PrefillWorker);
+    {
+        if (!decision.HasCapacity)
+            return false;
+        var worker = decision.PrefillWorker ?? decision.DecodeWorker;
+        return !string.IsNullOrEmpty(worker) && _tracker.HasFreeSlot(worker);
+    }
 
     public SlotLease? TryAcquire(string worker, string sessionId)
         => _tracker.TryAcquireSlot(worker, out var slot, "prefill")

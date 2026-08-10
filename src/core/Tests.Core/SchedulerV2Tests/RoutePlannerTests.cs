@@ -87,7 +87,7 @@ public sealed class RoutePlannerTests
     }
 
     [Fact]
-    public void PlanDecode_Picks_Decode_Worker_At_Decode_Time()
+    public void PlanDecode_Picks_Decode_Worker_By_Worker_Rules()
     {
         var tracker = new WorkerTracker();
         tracker.InitWorker("rtx", 2);
@@ -97,14 +97,16 @@ public sealed class RoutePlannerTests
 
         var planner = new RoutePlanner();
 
-        // No session yet → best decode-capable worker (p100 has lower DecodePriority).
+        // Best free decode-capable worker by DecodePriority (p100 = 1 < rtx = 2).
         var decode = planner.PlanDecode(Req, session: null, Workers, tracker, health);
         Assert.Equal("p100", decode);
 
-        // Warm session on rtx → decode stays on rtx (affinity, KV resident).
+        // Decode-time choice is NOT steered by the ledger's mid-request SlotFreed
+        // (during P/D the prefill node shows SlotFreed=false; decode must go to
+        // the worker rules, not back to the prefill node).
         ledger.Register("sess", "rtx", slotId: 0, nPast: 100);
-        var warmDecode = planner.PlanDecode(Req, ledger.Lookup("sess"), Workers, tracker, health);
-        Assert.Equal("rtx", warmDecode);
+        var midRequest = planner.PlanDecode(Req, ledger.Lookup("sess"), Workers, tracker, health);
+        Assert.Equal("p100", midRequest);
 
         // Decode worker fully busy → next best.
         Assert.True(tracker.TryAcquireSlot("p100", out _));

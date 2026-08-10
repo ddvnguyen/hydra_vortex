@@ -82,7 +82,8 @@ public sealed class DifferentialGateTests
             if (!ExpectedParity.Contains(spec.Id))
             {
                 skipped++;
-                matrix.Add($"{spec.Id,-28} SKIP  (not in ExpectedParity)  v2_outcome={result.Outcome,-8} rpc={result.Trace.Rpc.Count,2} match={matches}");
+                var err = result.Error is null ? "" : $" err={result.Error.GetType().Name}:{result.Error.Message}";
+                matrix.Add($"{spec.Id,-28} SKIP  (not in ExpectedParity)  v2_outcome={result.Outcome,-8} rpc={result.Trace.Rpc.Count,2} match={matches}{err}");
                 continue;
             }
 

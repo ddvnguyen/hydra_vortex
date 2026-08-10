@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 
@@ -54,8 +55,12 @@ public sealed class PlanRunner : WorkerStateRunner
     private Task<PhaseResult> PlanInitialAsync(RunnerContext ctx)
     {
         var req = ctx.Request;
-        var plan = _planner.Plan(req.Chat, req.Type, _workers, _tracker, _health, _ledger);
-        req.Plan = plan;
+
+        // The plan is decided ONCE before dispatch (SubmitAsync for Solo; the
+        // evaluator otherwise) and must NOT be re-derived here: re-planning at
+        // RouteDecision sees the just-acquired start slot as busy (self-held),
+        // which would return "no capacity" for a valid Solo/warm route.
+        var plan = req.Plan;
         req.PrefillWorker = plan.PrefillWorker is null ? null : Resolve(plan.PrefillWorker);
         req.DecodeWorker = plan.DecodeWorker is null ? null : Resolve(plan.DecodeWorker);
         req.RecordPhase("plan_ms", 0);
@@ -68,6 +73,7 @@ public sealed class PlanRunner : WorkerStateRunner
     private Task<PhaseResult> PlanDecodeAsync(RunnerContext ctx)
     {
         var req = ctx.Request;
+        _ledger.UpdateLastUsed(req.SessionId); // keep the eviction TTL fresh at decode planning
 
         // Decode worker already known (atomic same-slot) → no swap, no new lease.
         if (req.DecodeWorker is not null)
@@ -107,7 +113,10 @@ public sealed class PrefillRunner : WorkerStateRunner
     {
         var req = ctx.Request;
         if (req.PrefillWorker is null)
+        {
+            req.Error = new InvalidOperationException("prefill state entered without a prefill worker");
             return PhaseResult.Fire(SchedulerEvent.Failed);
+        }
 
         try
         {
@@ -134,39 +143,54 @@ public sealed class PrefillRunner : WorkerStateRunner
     }
 }
 
-/// <summary>Persists the KV blob produced by prefill to the Store.</summary>
+/// <summary>Persists the KV blob produced by prefill to the Store and registers the
+/// session on the PREFILL node (C1 ledger timeline, point 1).</summary>
 public sealed class SaveKvRunner : WorkerStateRunner
 {
     private readonly IStoreGateway _store;
+    private readonly ISessionLedger _ledger;
     public override WorkItemState State => WorkItemState.SaveKv;
 
-    public SaveKvRunner(IStoreGateway store) => _store = store;
+    public SaveKvRunner(IStoreGateway store, ISessionLedger ledger)
+    {
+        _store = store;
+        _ledger = ledger;
+    }
 
     public override async Task<PhaseResult> RunAsync(RunnerContext ctx, CancellationToken ct)
     {
         var req = ctx.Request;
-        if (req.KvBlob is null)
+        if (req.KvBlob is null || req.PrefillWorker is null)
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
         var ok = await _store.PutAsync(req.SessionId, req.KvBlob, ct);
         if (!ok)
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
+        // C1: register on the prefill node with the post-prefill n_past, and stamp
+        // store state (the KV blob is now durable).
+        var entry = _ledger.Register(req.SessionId, req.PrefillWorker.Name, req.PrefillLease?.SlotId, req.NPastAfter, req.Chat.PrefixHash);
+        lock (entry) { entry.HasStoreState = true; }
+
         return PhaseResult.Fire(SchedulerEvent.SaveKvSucceeded);
     }
 }
 
-/// <summary>Restores the KV onto the DECODE worker before decoding.</summary>
+/// <summary>Restores the KV onto the DECODE worker before decoding, and RE-REGISTERS
+/// the session on the decode node (C1 ledger timeline, point 2 — the P/D goldens
+/// pin <c>Ledger.NodeName</c> = decode node).</summary>
 public sealed class RestoreRunner : WorkerStateRunner
 {
     private readonly IStoreGateway _store;
     private readonly IEngineRpcGateway _engine;
+    private readonly ISessionLedger _ledger;
     public override WorkItemState State => WorkItemState.RestoreKv;
 
-    public RestoreRunner(IStoreGateway store, IEngineRpcGateway engine)
+    public RestoreRunner(IStoreGateway store, IEngineRpcGateway engine, ISessionLedger ledger)
     {
         _store = store;
         _engine = engine;
+        _ledger = ledger;
     }
 
     public override async Task<PhaseResult> RunAsync(RunnerContext ctx, CancellationToken ct)
@@ -182,40 +206,111 @@ public sealed class RestoreRunner : WorkerStateRunner
         if (!await _engine.RestoreAsync(req.DecodeWorker.Name, req.SessionId, kv, req.NPastAfter, ct))
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
+        // C1: re-register the session on the decode node (its KV now lives here).
+        if (req.NPastAfter > 0)
+            _ledger.UpdateNPast(req.SessionId, req.NPastAfter);
+        _ledger.Register(
+            req.SessionId, req.DecodeWorker.Name, DecodeSlotId(req),
+            req.NPastAfter > 0 ? req.NPastAfter : (_ledger.Lookup(req.SessionId)?.NPast ?? 0),
+            req.Chat.PrefixHash);
+
         return PhaseResult.Fire(SchedulerEvent.RestoreSucceeded);
     }
+
+    /// <summary>The slot decode runs on: the decode lease, or the prefill lease
+    /// for atomic same-slot requests (decode reuses the held slot).</summary>
+    internal static int? DecodeSlotId(SchedulerRequest req)
+        => req.DecodeLease?.SlotId ?? req.PrefillLease?.SlotId;
 }
 
 /// <summary>
-/// Decodes via the shared HTTP completion proxy. Streaming hands the chunk
-/// stream to the caller and suspends until <c>NotifyStreamComplete</c>;
-/// non-streaming completes inline.
+/// Decodes via the shared HTTP completion proxy. Registers the session on the
+/// DECODE node when it has no ledger entry yet (C1 ledger timeline, point 3) and
+/// tracks the completion's usage into the ledger (NPast from total_tokens — the
+/// P/D + atomic goldens pin NPast=usage.total_tokens, not the prefill n_past).
+/// Streaming hands the chunk stream to the caller and suspends until
+/// <c>NotifyStreamComplete</c>; non-streaming completes inline.
 /// </summary>
 public sealed class DecodeRunner : WorkerStateRunner
 {
     private readonly ICompletionProxyService _proxy;
+    private readonly ISessionLedger _ledger;
     public override WorkItemState State => WorkItemState.Decode;
 
-    public DecodeRunner(ICompletionProxyService proxy) => _proxy = proxy;
+    public DecodeRunner(ICompletionProxyService proxy, ISessionLedger ledger)
+    {
+        _proxy = proxy;
+        _ledger = ledger;
+    }
 
     public override async Task<PhaseResult> RunAsync(RunnerContext ctx, CancellationToken ct)
     {
         var req = ctx.Request;
         var workerUrl = req.DecodeWorker?.LlamaUrl;
-        if (string.IsNullOrEmpty(workerUrl))
+        if (string.IsNullOrEmpty(workerUrl) || req.DecodeWorker is null)
+        {
+            req.Error = new InvalidOperationException($"decode entered without a decode worker (worker={req.DecodeWorker?.Name ?? "null"})");
             return PhaseResult.Fire(SchedulerEvent.Failed);
+        }
 
         if (req.IsStreaming)
         {
             var stream = _proxy.ProxyCompletionStreamAsync(workerUrl, req.Chat.Body, req.TraceId, ct);
             req.DecodeChunks = stream;
+            RegisterIfMissing(req, req.DecodeWorker.Name, RestoreRunner.DecodeSlotId(req), req.NPastAfter);
             req.StreamReady.TrySetResult(stream);
             return PhaseResult.Wait; // resumed by NotifyStreamComplete
         }
 
         req.Response = await _proxy.ProxyCompletionAsync(workerUrl, req.Chat.Body, req.TraceId, ct);
+        RegisterIfMissing(req, req.DecodeWorker.Name, RestoreRunner.DecodeSlotId(req), req.NPastAfter);
+        TrackAfterCompletion(req);
         return PhaseResult.Fire(SchedulerEvent.DecodeSucceeded);
     }
+
+    /// <summary>C1 point 3: register the session on the decode node if absent.</summary>
+    private void RegisterIfMissing(SchedulerRequest req, string worker, int? slotId, int nPast)
+    {
+        if (_ledger.Lookup(req.SessionId) == null)
+            _ledger.Register(req.SessionId, worker, slotId, nPast, req.Chat.PrefixHash);
+    }
+
+    /// <summary>Ledger NPast comes from the completion's usage.total_tokens
+    /// (TrackAfterCompletion in legacy).</summary>
+    private void TrackAfterCompletion(SchedulerRequest req)
+    {
+        var total = ExtractUsageInt(req.Response, "total_tokens");
+        if (total > 0)
+        {
+            _ledger.UpdateNPast(req.SessionId, total);
+            var prompt = ExtractUsageInt(req.Response, "prompt_tokens");
+            if (prompt > 0)
+                _ledger.UpdateNPromptTokens(req.SessionId, prompt);
+        }
+    }
+
+    private static int ExtractUsageInt(object? response, string field)
+    {
+        if (response is not Dictionary<string, object> dict || !dict.TryGetValue("usage", out var usage))
+            return 0;
+        // usage may be a Dictionary<string,object> (in-process fakes) or a
+        // JsonElement (responses deserialized as Dictionary<string,object>).
+        return usage switch
+        {
+            Dictionary<string, object> usageDict when usageDict.TryGetValue(field, out var value) => ToInt(value),
+            JsonElement je when je.ValueKind is JsonValueKind.Object
+                && je.TryGetProperty(field, out var prop) && prop.ValueKind == JsonValueKind.Number => prop.GetInt32(),
+            _ => 0,
+        };
+    }
+
+    private static int ToInt(object value) => value switch
+    {
+        int i => i,
+        long l => (int)l,
+        JsonElement je when je.ValueKind == JsonValueKind.Number => je.GetInt32(),
+        _ => 0,
+    };
 }
 
 /// <summary>Background save after a stream ends. No-op for the current tranche

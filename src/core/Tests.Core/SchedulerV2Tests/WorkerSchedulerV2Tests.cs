@@ -53,9 +53,9 @@ public sealed class WorkerSchedulerV2Tests
         {
             new PlanRunner(new RoutePlanner(), new LeaseManager(_tracker), _ledger, _cfg.Workers, _tracker, health),
             new PrefillRunner(engine),
-            new SaveKvRunner(store),
-            new RestoreRunner(store, engine),
-            new DecodeRunner(_proxy),
+            new SaveKvRunner(store, _ledger),
+            new RestoreRunner(store, engine, _ledger),
+            new DecodeRunner(_proxy, _ledger),
             new BgSaveRunner(),
         };
 
@@ -159,6 +159,68 @@ public sealed class WorkerSchedulerV2Tests
         // decode slot released at finalize.
         Assert.Equal(0d, _tracker.GetElapsedSeconds("rtx"));
         Assert.Equal(0d, _tracker.GetElapsedSeconds("p100"));
+        _runCts.Cancel();
+    }
+
+    [Fact]
+    public async Task Cold_Atomic_Registers_Ledger_On_The_Decode_Node()
+    {
+        await Setup();
+        await Submit();
+
+        var entry = _ledger.Lookup("sess_v2");
+        Assert.NotNull(entry);
+        Assert.Equal("rtx", entry.NodeName);        // atomic: decode on the same node
+        Assert.Equal(0, entry.SlotId);
+        Assert.True(entry.HasStoreState);
+        Assert.Equal(15, entry.NPast);              // usage.total_tokens, NOT the prefill n_past
+        _runCts.Cancel();
+    }
+
+    [Fact]
+    public async Task Prefill_Two_Phase_Registers_Ledger_On_The_Decode_Node()
+    {
+        await Setup();
+
+        // estimatedTokens >= AtomicThreshold → two-phase (Prefill) request.
+        var req = new Dictionary<string, object> { ["stream"] = false, ["max_tokens"] = 30, ["model"] = "nano" };
+        var msgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = new string('x', 5000) } };
+        await _scheduler.SubmitAsync(
+            req, msgs, "sess_pd", estimatedTokens: 5000, maxTokens: 30, prefixHash: null,
+            CancellationToken.None, systemPromptTokens: 0);
+
+        // C1 point 2: RestoreKv RE-REGISTERS the session on the decode node (p100) —
+        // this is what the P/D goldens pin (Ledger.NodeName = decode node).
+        var entry = _ledger.Lookup("sess_pd");
+        Assert.NotNull(entry);
+        Assert.Equal("p100", entry.NodeName);
+        Assert.Equal(0, entry.SlotId);
+        Assert.True(entry.HasStoreState);
+        Assert.Equal(15, entry.NPast);              // usage.total_tokens
+        _runCts.Cancel();
+    }
+
+    [Fact]
+    public async Task Warm_Affinity_Followup_Decodes_On_The_Warm_Node()
+    {
+        await Setup();
+
+        // Turn 1: two-phase P/D → session registered on p100 (the decode node).
+        var req = new Dictionary<string, object> { ["stream"] = false, ["max_tokens"] = 30, ["model"] = "nano" };
+        var msgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = new string('x', 5000) } };
+        await _scheduler.SubmitAsync(req, msgs, "sess_warm", estimatedTokens: 5000, maxTokens: 30, prefixHash: null, CancellationToken.None, systemPromptTokens: 0);
+        Assert.Equal("p100", _ledger.Lookup("sess_warm")?.NodeName);
+
+        _proxy.NonStreamingUrls.Clear();
+
+        // Turn 2: small follow-up on the same session → Solo (warm affinity) on p100.
+        var followup = new Dictionary<string, object> { ["stream"] = false, ["max_tokens"] = 30, ["model"] = "nano" };
+        var followupMsgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "hi" } };
+        await _scheduler.SubmitAsync(followup, followupMsgs, "sess_warm", estimatedTokens: 100, maxTokens: 30, prefixHash: null, CancellationToken.None, systemPromptTokens: 0);
+
+        // Warm affinity: decode on the session's node (p100), not rtx.
+        Assert.Equal("http://p100:8086", Assert.Single(_proxy.NonStreamingUrls));
+        Assert.Equal("p100", _scheduler.LastDispatchedNode);
         _runCts.Cancel();
     }
 }
