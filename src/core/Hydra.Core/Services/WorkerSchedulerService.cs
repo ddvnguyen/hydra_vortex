@@ -885,7 +885,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// but flagged unhealthy, run one bounded direct liveness probe before
 		// excluding it — on success the flag is cleared and every pick below
 		// (multi-engine plan, atomic, cold_concurrency) sees fresh health.
-		await ProbeStaleUnhealthyWorkersAsync(default);
+		await ProbeStaleUnhealthyWorkersAsync();
 
 		// Debug force-mode: bypass MultiEngineRouter.Select when the caller
 		// sets force_mode in the request body. Handy for testing COMBINED
@@ -1718,8 +1718,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	// #597: probes run in parallel (Task.WhenAll) so total added latency is
 	// bounded at ~5s regardless of how many workers are stale, and concurrent
 	// cold requests coalesce onto one shared probe per worker via _probeInFlight
-	// instead of each firing their own GET /health.
-	private async Task ProbeStaleUnhealthyWorkersAsync(CancellationToken ct)
+	// instead of each firing their own GET /health. The probe lifetime is tied
+	// to the scheduler-wide _cts, NOT to any caller's token: a cancellable
+	// caller must never abort the probe for every coalesced waiter.
+	private async Task ProbeStaleUnhealthyWorkersAsync()
 	{
 		var stale = _cfg.Workers.Where(w =>
 			w.CanPrefill && _tracker.IsFree(w.Name) && !_health.IsHealthy(w.Name)).ToList();
@@ -1728,23 +1730,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// One shared, bounded probe per stale worker: the first caller starts
 		// it, concurrent callers observe the same task (Lazy guarantees the
 		// probe factory runs at most once per in-flight window).
-		var probes = stale.Select(w => GetOrStartWorkerProbe(w, ct)).ToArray();
+		var probes = stale.Select(GetOrStartWorkerProbe).ToArray();
 		await Task.WhenAll(probes);
 	}
 
-	private Task GetOrStartWorkerProbe(WorkerConfig w, CancellationToken ct)
+	private Task GetOrStartWorkerProbe(WorkerConfig w)
 	{
 		var probe = _probeInFlight.GetOrAdd(w.Name,
-			_ => new Lazy<Task>(() => RunWorkerProbeAsync(w, ct),
+			_ => new Lazy<Task>(() => RunWorkerProbeAsync(w),
 				LazyThreadSafetyMode.ExecutionAndPublication));
 		return probe.Value;
 	}
 
-	private async Task RunWorkerProbeAsync(WorkerConfig w, CancellationToken ct)
+	private async Task RunWorkerProbeAsync(WorkerConfig w)
 	{
 		try
 		{
-			using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+			using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
 			probeCts.CancelAfter(LivenessProbeTimeout);
 			if (await GetLlamaClient(w).HealthAsync(probeCts.Token))
 			{
@@ -2300,7 +2302,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var reqModel = item.Request.TryGetValue("model", out var m) && m is string ms ? ms : null;
 		return TranslateModelAlias(reqModel, decodeRole: true);
 	}
-
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
 	{
@@ -4827,7 +4828,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	// ── Gap 7: migrate session (called from controller) ──
 
-	private readonly Dictionary<string, LlamaClient> _llamaClients = new();
+	/// <summary>
+	/// Cached per-worker LlamaClient (HTTP GET /health, /slots/{id}/state/meta…).
+	/// ConcurrentDictionary: the #597 stale-unhealthy liveness probe now calls
+	/// <see cref="GetLlamaClient"/> from parallel Task.WhenAll probes, so the
+	/// first-time cache population (read + write) must be thread-safe.
+	/// </summary>
+	private readonly ConcurrentDictionary<string, LlamaClient> _llamaClients = new();
 
 	private LlamaClient GetLlamaClient(WorkerConfig w)
 	{
