@@ -22,6 +22,18 @@ public sealed class LocalFsChunkCache : IChunkCache
     private readonly DirectoryInfo _cacheDir;
     private readonly long _maxBytes;
     private readonly ConcurrentDictionary<string, SessionChunkCache> _caches = new();
+    /// <summary>
+    /// Serializes the eviction critical section (#615 QA). Concurrent callers
+    /// exist today — the 45 s ChunkCacheSweepService, the ENOSPC retry path
+    /// in WorkerSchedulerService, and at-write eviction — and without a lock
+    /// two of them can pick the same LRU session: TryRemove succeeds for one,
+    /// the loser still enumerates the session's files and double-subtracts
+    /// their bytes, driving _usedBytes negative. The lock covers the whole
+    /// remove → enumerate → byte-subtract → delete sequence so a concurrent
+    /// SaveChunkDataAsync cannot re-add a session mid-eviction and have the
+    /// eviction delete its freshly written file.
+    /// </summary>
+    private readonly object _evictLock = new();
     private long _usedBytes;
     private bool _disposed;
 
@@ -246,29 +258,35 @@ public sealed class LocalFsChunkCache : IChunkCache
         if (_disposed) return new ChunkEvictionResult(0, 0);
         var evicted = 0;
         long freedBytes = 0;
-        while (Interlocked.Read(ref _usedBytes) > targetBytes && _caches.Count > 0)
+        // The whole select-LRU → TryRemove → enumerate → byte-subtract →
+        // delete sequence runs under the lock: local tmpfs IO, acceptable
+        // for a cache eviction path. See _evictLock for why (#615 QA).
+        lock (_evictLock)
         {
-            var oldest = _caches.Values
-                .OrderBy(c => c.SavedAt)
-                .FirstOrDefault();
-            if (oldest is null) break;
-
-            _caches.TryRemove(oldest.SessionId, out _);
-            var safe = SafeName(oldest.SessionId);
-            var path = CachePath(oldest.SessionId);
-            if (File.Exists(path)) File.Delete(path);
-            foreach (var file in _cacheDir.EnumerateFiles($"{safe}.*"))
+            while (Interlocked.Read(ref _usedBytes) > targetBytes && _caches.Count > 0)
             {
-                if (file.Name.EndsWith(".chunks.json")) continue;
-                try
+                var oldest = _caches.Values
+                    .OrderBy(c => c.SavedAt)
+                    .FirstOrDefault();
+                if (oldest is null) break;
+
+                _caches.TryRemove(oldest.SessionId, out _);
+                var safe = SafeName(oldest.SessionId);
+                var path = CachePath(oldest.SessionId);
+                if (File.Exists(path)) File.Delete(path);
+                foreach (var file in _cacheDir.EnumerateFiles($"{safe}.*"))
                 {
-                    Interlocked.Add(ref _usedBytes, -file.Length);
-                    freedBytes += file.Length;
-                    file.Delete();
+                    if (file.Name.EndsWith(".chunks.json")) continue;
+                    try
+                    {
+                        Interlocked.Add(ref _usedBytes, -file.Length);
+                        freedBytes += file.Length;
+                        file.Delete();
+                    }
+                    catch { /* ignore */ }
                 }
-                catch { /* ignore */ }
+                evicted++;
             }
-            evicted++;
         }
         if (evicted > 0)
         {
