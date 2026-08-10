@@ -2633,77 +2633,73 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			LastDispatchedNode = dw.Name;
 		}
 
+		// Same-node skip: when decode == prefill and no model switch,
+		// the KV state is already on the node — no restore needed.
+		//
+		// M-Perf.9 #289: the alias-equality check is necessary but not
+		// sufficient. The operator can swap the GGUF file behind a
+		// stable alias (e.g. rebuild Balanced.gguf on disk) — the alias
+		// stays "balanced" but the model identity changes. When the slot
+		// carries a different identity from the KV the prefill built,
+		// we must NOT skip — fall through to restore so the cross-model
+		// guard in RestoreKvAsync can catch it.
+		if (item.PrefillWorker?.Name == dw.Name
+			&& (!_cfg.MixPrecisionEnabled
+				|| Router.DecodeModel(dw) == null
+				|| Router.DecodeModel(dw) == Router.PrefillModel(item.PrefillWorker!)))
 		{
-			// Same-node skip: when decode == prefill and no model switch,
-			// the KV state is already on the node — no restore needed.
-			//
-			// M-Perf.9 #289: the alias-equality check is necessary but not
-			// sufficient. The operator can swap the GGUF file behind a
-			// stable alias (e.g. rebuild Balanced.gguf on disk) — the alias
-			// stays "balanced" but the model identity changes. When the slot
-			// carries a different identity from the KV the prefill built,
-			// we must NOT skip — fall through to restore so the cross-model
-			// guard in RestoreKvAsync can catch it.
-			if (item.PrefillWorker?.Name == dw.Name
-				&& (!_cfg.MixPrecisionEnabled
-					|| Router.DecodeModel(dw) == null
-					|| Router.DecodeModel(dw) == Router.PrefillModel(item.PrefillWorker!)))
+			// Alias says same; verify the model identity actually matches.
+			// Both-empty (pre-#470 or no metadata) skips the identity check
+			// for back-compat — falls back to the old alias-only skip.
+			bool aliasSaysSame = Router.DecodeModel(dw) == null
+				|| Router.DecodeModel(dw) == Router.PrefillModel(item.PrefillWorker!);
+			bool canCheckIdentity = !item.GetKvModelIdentity().IsEmpty;
+			if (!aliasSaysSame || !canCheckIdentity)
 			{
-				// Alias says same; verify the model identity actually matches.
-				// Both-empty (pre-#470 or no metadata) skips the identity check
-				// for back-compat — falls back to the old alias-only skip.
-				bool aliasSaysSame = Router.DecodeModel(dw) == null
-					|| Router.DecodeModel(dw) == Router.PrefillModel(item.PrefillWorker!);
-				bool canCheckIdentity = !item.GetKvModelIdentity().IsEmpty;
-				if (!aliasSaysSame || !canCheckIdentity)
-				{
-					_log.Information("same_node_skip Sid={Sid} Node={Node} — KV already resident (alias check)",
-						item.SessionId, dw.Name);
-					return WorkItemState.Decode;
-				}
-
-				try
-				{
-					// Item.PrefillSlot is the slot the prefill wrote to; same
-					// worker, possibly same slot. Query its META to read the
-					// current resident model identity.
-					var prefillSlotId = item.PrefillSlot ?? slot;
-					// CancellationToken.None: the META query is best-effort and
-					// the try-catch below swallows failures. Plumbing ct
-					// through PickDecodeAsync would cascade to 5+ call sites
-					// and the next-step state machine for a non-critical read.
-					var slotMeta = await GetLlamaClient(dw).GetStateMetaAsync(prefillSlotId, default);
-					var slotIdentity = new ModelIdentity
-					{
-						Tokenizer = slotMeta.Tokenizer ?? "",
-						ModelName = slotMeta.ModelName ?? "",
-						ModelQuant = slotMeta.ModelQuant ?? "",
-						ModelCapabilities = slotMeta.ModelCapabilities,
-					};
-					if (slotIdentity.IsEmpty
-						|| item.GetKvModelIdentity() == slotIdentity)
-					{
-						_log.Information("same_node_skip Sid={Sid} Node={Node} Slot={Slot} — KV already resident (identity match)",
-							item.SessionId, dw.Name, prefillSlotId);
-						return WorkItemState.Decode;
-					}
-					_log.Information("same_node_skip_identity_mismatch Sid={Sid} Node={Node} Slot={Slot} stored={Stored} resident={Resident} — falling through to restore for cross-model guard",
-						item.SessionId, dw.Name, prefillSlotId, item.KvModelName, slotMeta.ModelName);
-				}
-				catch (Exception ex)
-				{
-					// META query failed (older binary, transient error). Fall
-					// through to the old behaviour — the cross-model guard
-					// in RestoreKvAsync will catch mismatches if META is
-					// reachable there.
-					_log.Warning(ex, "same_node_skip_meta_failed Sid={Sid} Node={Node} — falling back to alias-only check",
-						item.SessionId, dw.Name);
-					return WorkItemState.Decode;
-				}
+				_log.Information("same_node_skip Sid={Sid} Node={Node} — KV already resident (alias check)",
+					item.SessionId, dw.Name);
+				return WorkItemState.Decode;
 			}
-
-			return WorkItemState.ModelLoadDecode;
+			try
+			{
+				// Item.PrefillSlot is the slot the prefill wrote to; same
+				// worker, possibly same slot. Query its META to read the
+				// current resident model identity.
+				var prefillSlotId = item.PrefillSlot ?? slot;
+				// CancellationToken.None: the META query is best-effort and
+				// the try-catch below swallows failures. Plumbing ct
+				// through PickDecodeAsync would cascade to 5+ call sites
+				// and the next-step state machine for a non-critical read.
+				var slotMeta = await GetLlamaClient(dw).GetStateMetaAsync(prefillSlotId, default);
+				var slotIdentity = new ModelIdentity
+				{
+					Tokenizer = slotMeta.Tokenizer ?? "",
+					ModelName = slotMeta.ModelName ?? "",
+					ModelQuant = slotMeta.ModelQuant ?? "",
+					ModelCapabilities = slotMeta.ModelCapabilities,
+				};
+				if (slotIdentity.IsEmpty
+					|| item.GetKvModelIdentity() == slotIdentity)
+				{
+					_log.Information("same_node_skip Sid={Sid} Node={Node} Slot={Slot} — KV already resident (identity match)",
+						item.SessionId, dw.Name, prefillSlotId);
+					return WorkItemState.Decode;
+				}
+				_log.Information("same_node_skip_identity_mismatch Sid={Sid} Node={Node} Slot={Slot} stored={Stored} resident={Resident} — falling through to restore for cross-model guard",
+					item.SessionId, dw.Name, prefillSlotId, item.KvModelName, slotMeta.ModelName);
+			}
+			catch (Exception ex)
+			{
+				// META query failed (older binary, transient error). Fall
+				// through to the old behaviour — the cross-model guard
+				// in RestoreKvAsync will catch mismatches if META is
+				// reachable there.
+				_log.Warning(ex, "same_node_skip_meta_failed Sid={Sid} Node={Node} — falling back to alias-only check",
+					item.SessionId, dw.Name);
+				return WorkItemState.Decode;
+			}
 		}
+		return WorkItemState.ModelLoadDecode;
 	}
 
 	private async Task<WorkItemState> RestoreKvAsync(WorkItem item, CancellationToken ct)
