@@ -68,12 +68,12 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
     }
 
     [SkippableTheory]
-    [InlineData(8_000, 2_000, 300)]
-    [InlineData(8_000, 4_000, 300)]
-    [InlineData(16_000, 2_000, 300)]
-    [InlineData(16_000, 4_000, 300)]
-    [InlineData(48_000, 2_000, 420)]
-    [InlineData(48_000, 4_000, 420)]
+    [InlineData(8_000, 2_000, 600)]
+    [InlineData(8_000, 4_000, 600)]
+    [InlineData(16_000, 2_000, 600)]
+    [InlineData(16_000, 4_000, 600)]
+    [InlineData(48_000, 2_000, 900)]
+    [InlineData(48_000, 4_000, 900)]
     public async Task LargePromptWithMetricsAndContinuation(int promptTokens, int continueTokens, int timeoutSec)
     {
         _fx.SkipIfUnreachable();

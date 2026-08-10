@@ -66,8 +66,11 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
         var serialTime = t0.Elapsed.TotalSeconds;
         Assert.True(refResp.TryGetProperty("choices", out _));
 
-        // ── Measure concurrent time (4 requests simultaneously) ───────────
-        var sessionIds = Enumerable.Range(0, 4)
+        // ── Measure concurrent time (2 requests simultaneously) ───────────
+        // 2 concurrent = the rig's RTX slot count. 4 would queue 2 slots deep:
+        // with uncapped verbose thinking each request holds a slot 90-120s, so
+        // the queued pair exceeded the 300s CTS (run 31370319546).
+        var sessionIds = Enumerable.Range(0, 2)
             .Select(_ => $"system-stress-{Guid.NewGuid():N}"[..20])
             .ToList();
 
@@ -117,6 +120,9 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
         };
 
         // ── Direct to RTX llama-server ─────────────────────────────────────
+        // Sequential by design: 1 direct call + 1 coordinator call, never more
+        // than one in flight — fits the 2-slot RTX budget (run 31370319546's
+        // 22ms failure was the direct call hitting a busy slot, not concurrency).
         {
             using var directCts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
             var directResp = await HttpHelpers.Client.PostAsJsonAsync(

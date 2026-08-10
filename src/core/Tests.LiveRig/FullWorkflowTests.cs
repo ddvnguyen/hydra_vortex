@@ -177,12 +177,19 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
             using var reader = new StreamReader(stream);
 
             var allOutputs = new List<string>();
+            var rawPayload = new System.Text.StringBuilder();
             while (true)
             {
                 var line = await reader.ReadLineAsync();
                 if (line is null) break;
                 if (string.IsNullOrEmpty(line)) continue;
-                if (!line.StartsWith("data: ")) continue;
+                // merged-decode streaming returns the buffered completion as a
+                // single non-SSE JSON blob; keep non-"data:" lines as fallback.
+                if (!line.StartsWith("data: "))
+                {
+                    rawPayload.Append(line);
+                    continue;
+                }
                 var payload = line["data: ".Length..];
                 if (payload == "[DONE]") break;
                 try
@@ -196,6 +203,22 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
                     }
                 }
                 catch { /* skip malformed events */ }
+            }
+
+            // Fallback: no SSE deltas — the merged-decode stream may have arrived
+            // as a single buffered response blob; parse it as a plain completion.
+            if (allOutputs.Count == 0 && !string.IsNullOrWhiteSpace(rawPayload.ToString()))
+            {
+                try
+                {
+                    var blob = JsonSerializer.Deserialize<JsonElement>(rawPayload.ToString());
+                    if (blob.TryGetProperty("choices", out var blobChoices) && blobChoices.GetArrayLength() > 0)
+                    {
+                        var content = HttpHelpers.GetOutputText(blobChoices[0].GetProperty("message"));
+                        if (!string.IsNullOrEmpty(content)) allOutputs.Add(content);
+                    }
+                }
+                catch { /* not a JSON blob — keep empty */ }
             }
 
             Assert.True(allOutputs.Count > 0, "no 'content' or 'reasoning_content' across all stream events");

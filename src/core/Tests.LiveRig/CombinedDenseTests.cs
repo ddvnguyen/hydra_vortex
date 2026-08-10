@@ -47,7 +47,7 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
         string sessionId,
         List<Dictionary<string, object?>> messages,
         int maxTokens = 4096,
-        int timeoutSec = 300)
+        int timeoutSec = 600)
     {
         var body = new Dictionary<string, object?>
         {
@@ -74,9 +74,11 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
     /// <summary>
     /// Dense 27B COMBINED single completion. The first request may pay the
     /// cold_atomic_prefill_swap reload cost (~60-120s), so the call CTS is
-    /// generous (300s) while the test itself is capped at 600s.
+    /// generous (600s — covers swap + 4K-token thinking-heavy decode; the
+    /// 300s CTS previously fired mid-generation, run 31370319546) while the
+    /// test itself is capped at 900s.
     /// </summary>
-    [SkippableFact(Timeout = 600_000)]
+    [SkippableFact(Timeout = 900_000)]
     public async Task Dense27bCombinedCompletion()
     {
         _fx.SkipIfUnreachable();
