@@ -3131,6 +3131,66 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return JsonSerializer.Serialize(segment);
 	}
 
+	/// <summary>
+	/// #470/#598: resolve everything the merged-decode (0x43) request needs
+	/// that is shared between the streaming and non-streaming decode paths:
+	/// the prompt segment (messages + tools/sampling/stop, #576), the
+	/// n_predict budget (#581), the decode node's own model identity from
+	/// STATE_META (the only independent source for Gate A, #470/A7), and the
+	/// GGUF-file alias for the engine's model-swap lookup (#589). Callers
+	/// still own the EngineMergedDecodeAsync RPC itself — it differs only in
+	/// the stream flag and cancellation token.
+	/// </summary>
+	private async Task<(string? MessagesJson, int NPredict, ModelIdentity Identity, string? ModelAlias)>
+		ResolveMergedDecodeRequestAsync(WorkItem item, WorkerConfig w, CancellationToken ct)
+	{
+		// #576: tools/tool_choice/response_format/sampling/stop travel
+		// inside the prompt-segment object (not the samplingJson
+		// parameter / 32 KiB control header).
+		var messagesJson = BuildMergedDecodePromptSegment(item);
+		var nPredict = GetMergedDecodeNPredict(item);
+
+		// #470/A7: model_metadata (what the decode node is actually running)
+		// comes from querying the decode node's own STATE_META — the only
+		// truly independent source. This avoids the tautology where both
+		// sides trace back to item.Kv* or HealthMonitor (which was stamped
+		// from item.Kv* during PrefillAsync).
+		var modelIdentity = ModelIdentity.Empty;
+		try
+		{
+			using var metaCts = new CancellationTokenSource(DecodeMetaQueryTimeout);
+			var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
+				item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
+			if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
+			{
+				modelIdentity = new ModelIdentity
+				{
+					Tokenizer = decodeSlotMeta.Tokenizer,
+					ModelName = decodeSlotMeta.ModelName,
+					ModelQuant = decodeSlotMeta.ModelQuant,
+					ModelCapabilities = decodeSlotMeta.ModelCapabilities,
+				};
+			}
+		}
+		catch (Exception ex)
+		{
+			// #470/A7: META query failed — send empty model_metadata so
+			// Gate A rejects on its own terms. Falling back to kvIdentity
+			// would recreate the tautology (comparing the same identity
+			// against itself), defeating the entire guard.
+			_log.Warning(ex, "gate_a_decode_meta_query_failed Sid={Sid} Worker={W} Slot={Slot}",
+				item.SessionId, w.Name, item.DecodeSlot ?? item.LastIdSlot ?? 0);
+		}
+
+		// #470: preset_alias_to_path is keyed by GGUF-file aliases
+		// (e.g. "balanced"), not routing aliases (e.g. "moe-35b-pd").
+		// ResolveMergedDecodeModelAlias translates the routing identity to
+		// the correct GGUF-file alias for the engine's model-swap lookup.
+		var modelAlias = ResolveMergedDecodeModelAlias(item, w);
+
+		return (messagesJson, nPredict, modelIdentity, modelAlias);
+	}
+
 	// ── Gap 4: n_past tracking from decode ──
 	private async Task<WorkItemState> DecodeAsync(WorkItem item, CancellationToken ct)
 	{
@@ -3229,45 +3289,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				bool gateRejected = false;
 				try
 				{
-					// #576: tools/tool_choice/response_format/sampling/stop travel
-					// inside the prompt-segment object (not the samplingJson
-					// parameter / 32 KiB control header).
-					var messagesJson = BuildMergedDecodePromptSegment(item);
-					var nPredict = GetMergedDecodeNPredict(item);
+					// #598: resolution shared with the non-streaming path —
+					// prompt segment, n_predict budget, STATE_META model
+					// identity (Gate A) and GGUF-file alias.
+					var (messagesJson, nPredict, modelIdentity, modelAlias) =
+						await ResolveMergedDecodeRequestAsync(item, w, cts.Token);
 
-					// #470/A7: kv_metadata (what built the KV) comes from the PREFILL
-					// response. model_metadata (what the decode node is actually running)
-					// comes from querying the decode node's own STATE_META — the only
-					// truly independent source. This avoids the tautology where both
-					// sides trace back to item.Kv* or HealthMonitor (which was stamped
-					// from item.Kv* during PrefillAsync).
+					// #470/A7: kv_metadata (what built the KV) comes from the
+					// PREFILL response — not queryable on the decode node.
 					var kvIdentity = item.GetKvModelIdentity();
-					var modelIdentity = ModelIdentity.Empty;
-					try
-					{
-						using var metaCts = new CancellationTokenSource(DecodeMetaQueryTimeout);
-						var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
-							item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
-						if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
-						{
-							modelIdentity = new ModelIdentity
-							{
-								Tokenizer = decodeSlotMeta.Tokenizer,
-								ModelName = decodeSlotMeta.ModelName,
-								ModelQuant = decodeSlotMeta.ModelQuant,
-								ModelCapabilities = decodeSlotMeta.ModelCapabilities,
-							};
-						}
-					}
-					catch (Exception ex)
-					{
-						// #470/A7: META query failed — send empty model_metadata so
-						// Gate A rejects on its own terms. Falling back to kvIdentity
-						// would recreate the tautology (comparing the same identity
-						// against itself), defeating the entire guard.
-						_log.Warning(ex, "gate_a_decode_meta_query_failed Sid={Sid} Worker={W} Slot={Slot}",
-							item.SessionId, w.Name, item.DecodeSlot ?? item.LastIdSlot ?? 0);
-					}
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
@@ -3281,12 +3311,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
 						modelCapabilities: modelIdentity.ModelCapabilities,
-						// #470: preset_alias_to_path is keyed by GGUF-file aliases
-						// (e.g. "balanced"), not routing aliases (e.g. "moe-35b-pd").
-						// TranslateModelAlias with decodeRole=true resolves routing
-						// identity to the correct GGUF-file alias for the engine's
-						// model-swap lookup.
-						modelAlias: ResolveMergedDecodeModelAlias(item, w),
+						modelAlias: modelAlias,
 						messagesJson: messagesJson,
 						nPredict: nPredict,
 						// #576: sampling/stop now travel inside messagesJson
@@ -3405,37 +3430,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				bool gateRejected = false;
 				try
 				{
-					// #576: tools/tool_choice/response_format/sampling/stop travel
-					// inside the prompt-segment object (not the samplingJson
-					// parameter / 32 KiB control header).
-					var messagesJson = BuildMergedDecodePromptSegment(item);
-					var nPredict = GetMergedDecodeNPredict(item);
+					// #598: resolution shared with the streaming path —
+					// prompt segment, n_predict budget, STATE_META model
+					// identity (Gate A) and GGUF-file alias.
+					var (messagesJson, nPredict, modelIdentity, modelAlias) =
+						await ResolveMergedDecodeRequestAsync(item, w, ct);
 
-					// #470/A7: kv_metadata from PREFILL, model_metadata from decode node's
-					// own STATE_META. See streaming path comment for rationale.
+					// #470/A7: kv_metadata (what built the KV) comes from the
+					// PREFILL response — not queryable on the decode node.
 					var kvIdentity = item.GetKvModelIdentity();
-					var modelIdentity = ModelIdentity.Empty;
-					try
-					{
-						using var metaCts = new CancellationTokenSource(DecodeMetaQueryTimeout);
-						var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
-							item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
-						if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
-						{
-							modelIdentity = new ModelIdentity
-							{
-								Tokenizer = decodeSlotMeta.Tokenizer,
-								ModelName = decodeSlotMeta.ModelName,
-								ModelQuant = decodeSlotMeta.ModelQuant,
-								ModelCapabilities = decodeSlotMeta.ModelCapabilities,
-							};
-						}
-					}
-					catch (Exception ex)
-					{
-						_log.Warning(ex, "gate_a_decode_meta_query_failed Sid={Sid} Worker={W} Slot={Slot}",
-							item.SessionId, w.Name, item.DecodeSlot ?? item.LastIdSlot ?? 0);
-					}
 
 					var llamaRpc = GetLlamaRpcClient(w);
 					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
@@ -3449,7 +3452,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						modelName: modelIdentity.ModelName,
 						modelQuant: modelIdentity.ModelQuant,
 						modelCapabilities: modelIdentity.ModelCapabilities,
-						modelAlias: ResolveMergedDecodeModelAlias(item, w),
+						modelAlias: modelAlias,
 						messagesJson: messagesJson,
 						nPredict: nPredict,
 						// #576: sampling/stop now travel inside messagesJson
