@@ -318,6 +318,43 @@ public sealed class HealthRecoveryTests
 			"no prefill may be dispatched to a worker whose direct probe failed");
 	}
 
+	// ── #597: probes run in parallel and coalesce across concurrent callers ──
+
+	[Fact]
+	public async Task ColdRoute_ConcurrentRequests_ShareOneInFlightProbe()
+	{
+		await using var f = new Fixture();
+		var health = f.Health;
+		health.SetHealthy("rtx", false);
+		// Probe #1 blocks on a gate; if a second probe ever fires for the same
+		// worker it would count and fail the assertion below. The probe timeout
+		// is widened so the gate (not the 5s production bound) governs release.
+		var probe = new GatedProbeLlamaClient();
+		f.Scheduler.LlamaClientFactory = _ => probe;
+		f.Scheduler.LivenessProbeTimeout = TimeSpan.FromSeconds(60);
+
+		var item1 = MakeItem("sess_coalesce_1");
+		var item2 = MakeItem("sess_coalesce_2");
+		var t1 = Task.Run(() => f.Scheduler.RunItemPipeline(item1, RequestType.Atomic, CancellationToken.None));
+		// Wait until probe #1 is actually in flight (blocked on the gate).
+		await probe.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+		var t2 = Task.Run(() => f.Scheduler.RunItemPipeline(item2, RequestType.Atomic, CancellationToken.None));
+		// Grace window for item2 to reach the shared probe. Probe #1 is held
+		// open on the gate, so while it is in the dictionary no probe #2 can
+		// start — item2 must observe the same in-flight task.
+		await Task.Delay(TimeSpan.FromSeconds(2));
+
+		probe.Release.TrySetResult();
+		await Task.WhenAll(t1, t2);
+
+		Assert.Equal(1, probe.HealthCalls);
+		Assert.True(health.IsHealthy("rtx"));
+		Assert.Equal(1, health.RecoveryFlips);
+		Assert.NotNull(await item1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+		Assert.NotNull(await item2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+	}
+
 	private static WorkItem MakeItem(string sessionId) => new(
 		new Dictionary<string, object>
 		{
@@ -340,5 +377,26 @@ public sealed class HealthRecoveryTests
 	private sealed class ProbeFailingLlamaClient : TestLlamaClient
 	{
 		public override Task<bool> HealthAsync(CancellationToken ct) => Task.FromResult(false);
+	}
+
+	/// <summary>
+	/// LlamaClient whose first liveness probe counts the call, signals
+	/// <see cref="FirstEntered"/> and then blocks until <see cref="Release"/> is
+	/// set — used to hold a probe in flight while a second cold request
+	/// arrives, so coalescing is observable (HealthCalls stays 1).
+	/// </summary>
+	private sealed class GatedProbeLlamaClient : TestLlamaClient
+	{
+		public int HealthCalls;
+		public readonly TaskCompletionSource FirstEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+		public override async Task<bool> HealthAsync(CancellationToken ct)
+		{
+			Interlocked.Increment(ref HealthCalls);
+			FirstEntered.TrySetResult();
+			await Release.Task.WaitAsync(ct);
+			return true;
+		}
 	}
 }
