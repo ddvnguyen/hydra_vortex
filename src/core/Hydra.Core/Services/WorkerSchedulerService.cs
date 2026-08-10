@@ -4823,17 +4823,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	internal Hydra.Shared.RpcClient GetLlamaRpcClient(WorkerConfig w)
-	{
-		if (_llamaRpcClients.TryGetValue(w.Name, out var c)) return c;
-		var rpcHost = w.LlamaRpcHost;
-		// Honor the injectable factory so tests never open real sockets.
-		var client = AgentClientFactory != null
-			? AgentClientFactory(rpcHost, w.LlamaRpcPort)
-			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
-		_llamaRpcClients[w.Name] = client;
-		_ = ConfigureStateChunkSizeAsync(client, w.Name);
-		return client;
-	}
+		=> GetOrCreateRpcClient(_llamaRpcClients, w, (client, name) => _ = ConfigureStateChunkSizeAsync(client, name));
 
 	/// <summary>
 	/// Per-worker RpcClient dedicated to large state transfers (STATE_GET /
@@ -4847,13 +4837,32 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// same fake.
 	/// </summary>
 	internal Hydra.Shared.RpcClient GetStateRpcClient(WorkerConfig w)
+		=> GetOrCreateRpcClient(_llamaStateRpcClients, w);
+
+	/// <summary>
+	/// Shared create-or-get for the per-worker RPC client caches (#600).
+	/// <see cref="GetLlamaRpcClient"/> and <see cref="GetStateRpcClient"/> only
+	/// differ in which cache they populate; construction and caching live here
+	/// so future client-creation changes can't drift out of sync. The caches
+	/// are plain dictionaries with the same lock-free check-then-set pattern
+	/// as <see cref="GetAgent"/> — an existing duplicate creation is simply
+	/// overwritten, which matches the pre-refactor behavior. <paramref
+	/// name="onCreated"/> fires only on first creation so per-cache one-time
+	/// side effects (e.g. the llama cache's state-chunk CONFIGURE) are kept.
+	/// </summary>
+	private Hydra.Shared.RpcClient GetOrCreateRpcClient(
+		Dictionary<string, Hydra.Shared.RpcClient> cache,
+		WorkerConfig w,
+		Action<Hydra.Shared.RpcClient, string>? onCreated = null)
 	{
-		if (_llamaStateRpcClients.TryGetValue(w.Name, out var c)) return c;
+		if (cache.TryGetValue(w.Name, out var c)) return c;
 		var rpcHost = w.LlamaRpcHost;
+		// Honor the injectable factory so tests never open real sockets.
 		var client = AgentClientFactory != null
 			? AgentClientFactory(rpcHost, w.LlamaRpcPort)
 			: new Hydra.Shared.RpcClient(rpcHost, w.LlamaRpcPort);
-		_llamaStateRpcClients[w.Name] = client;
+		cache[w.Name] = client;
+		onCreated?.Invoke(client, w.Name);
 		return client;
 	}
 
