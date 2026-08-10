@@ -23,8 +23,8 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
     private async Task<JsonElement> DoCompletion(
         List<Dictionary<string, object?>> messages,
         string? sessionId = null,
-        int maxTokens = 100,
-        int timeoutSec = 120)
+        int maxTokens = 4096,
+        int timeoutSec = 300)
     {
         var body = new Dictionary<string, object?>
         {
@@ -118,10 +118,10 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
 
         // ── Direct to RTX llama-server ─────────────────────────────────────
         {
-            using var directCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            using var directCts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
             var directResp = await HttpHelpers.Client.PostAsJsonAsync(
                 $"{_fx.LlamaRtxUrl}/v1/chat/completions",
-                new { messages, max_tokens = 100, temperature = 0 }, directCts.Token);
+                new { messages, max_tokens = 4096, temperature = 0 }, directCts.Token);
             Assert.True(directResp.IsSuccessStatusCode, $"Direct llama completion failed: {await directResp.Content.ReadAsStringAsync()}");
             var directBody = await directResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(directBody.TryGetProperty("choices", out var directChoices));

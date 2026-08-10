@@ -68,10 +68,10 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
     }
 
     [SkippableTheory]
-    [InlineData(8_000, 2_000, 120)]
-    [InlineData(8_000, 4_000, 120)]
-    [InlineData(16_000, 2_000, 180)]
-    [InlineData(16_000, 4_000, 180)]
+    [InlineData(8_000, 2_000, 300)]
+    [InlineData(8_000, 4_000, 300)]
+    [InlineData(16_000, 2_000, 300)]
+    [InlineData(16_000, 4_000, 300)]
     [InlineData(48_000, 2_000, 420)]
     [InlineData(48_000, 4_000, 420)]
     public async Task LargePromptWithMetricsAndContinuation(int promptTokens, int continueTokens, int timeoutSec)
@@ -95,7 +95,7 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
             var initResp = await DoCompletion(
                 [new() { ["role"] = "user", ["content"] = initPrompt }],
                 sessionId,
-                maxTokens: 100,
+                maxTokens: 4096,
                 timeoutSec: timeoutSec);
             Assert.True(initResp.TryGetProperty("choices", out var initChoices));
             Assert.True(initChoices.GetArrayLength() > 0);
@@ -137,7 +137,7 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
                 new() { ["role"] = "assistant", ["content"] = assistantReply },
                 new() { ["role"] = "user", ["content"] = continuePrompt },
             };
-            var contResp = await DoCompletion(continueMessages, sessionId, maxTokens: 100, timeoutSec: timeoutSec);
+            var contResp = await DoCompletion(continueMessages, sessionId, maxTokens: 4096, timeoutSec: timeoutSec);
             Assert.True(contResp.TryGetProperty("choices", out var contChoices));
             Assert.False(string.IsNullOrEmpty(HttpHelpers.GetOutputText(contChoices[0].GetProperty("message"))),
                 "Empty output in continuation");

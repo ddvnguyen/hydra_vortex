@@ -19,7 +19,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
 
     private const string Prompt = "What is the capital of France? Give a detailed answer.";
     private const string Continuation = "Now tell me about the Eiffel Tower's history and construction details.";
-    private const int MaxTokens = 100;
+    private const int MaxTokens = 4096;
 
     public FullWorkflowTests(LiveRigFixture fx) => _fx = fx;
 
@@ -292,7 +292,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         var sessionId = MakeSessionId();
         try
         {
-            var first = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 50);
+            var first = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 4096);
             var assistantReply = first.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()!;
 
             using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
@@ -439,7 +439,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         var sessionId = MakeSessionId();
         try
         {
-            var body = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 50);
+            var body = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 4096);
             var assistantReply = body.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()!;
 
             using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));

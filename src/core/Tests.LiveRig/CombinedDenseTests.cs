@@ -46,7 +46,7 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
         string model,
         string sessionId,
         List<Dictionary<string, object?>> messages,
-        int maxTokens = 150,
+        int maxTokens = 4096,
         int timeoutSec = 300)
     {
         var body = new Dictionary<string, object?>
@@ -90,7 +90,7 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
                 new() { ["role"] = "user", ["content"] = "Explain in 2 sentences how GPU KV cache migration works." },
             };
             var sw = Stopwatch.StartNew();
-            var resp = await SendCompletion(DenseModel, sessionId, messages, maxTokens: 150);
+            var resp = await SendCompletion(DenseModel, sessionId, messages, maxTokens: 4096);
             sw.Stop();
             Console.WriteLine($"Dense27bCombinedCompletion: elapsed={sw.Elapsed.TotalSeconds:F1}s");
 
@@ -154,7 +154,7 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
             new() { ["role"] = "user", ["content"] = userMessage },
         };
         var sw = Stopwatch.StartNew();
-        var resp = await SendCompletion(model, sessionId, messages, maxTokens: 150);
+        var resp = await SendCompletion(model, sessionId, messages, maxTokens: 4096);
         sw.Stop();
         var content = ExtractContent(resp);
         Console.WriteLine($"DynamicModelSwap: phase={phase} model={model} elapsed={sw.Elapsed.TotalSeconds:F1}s chars={content.Length}");
@@ -196,7 +196,7 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
                     new() { ["role"] = "user", ["content"] = turns[turn] },
                 };
                 var sw = Stopwatch.StartNew();
-                var resp = await SendCompletion(DenseModel, sessionId, messages, maxTokens: 120);
+                var resp = await SendCompletion(DenseModel, sessionId, messages, maxTokens: 4096);
                 sw.Stop();
                 var reply = ExtractContent(resp);
                 Console.WriteLine($"Dense27bMultiturn: turn={turn + 1} elapsed={sw.Elapsed.TotalSeconds:F1}s chars={reply.Length}");

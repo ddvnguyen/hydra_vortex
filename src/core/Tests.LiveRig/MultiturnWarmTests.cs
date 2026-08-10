@@ -61,7 +61,7 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
     private async Task<(HttpResponseMessage Response, List<JsonElement> Events)> DoCompletionStream(
         string sessionId,
         List<Dictionary<string, object?>> messages,
-        int maxTokens = 300,
+        int maxTokens = 4096,
         int timeoutSec = 600)
     {
         var body = new Dictionary<string, object?>
@@ -190,7 +190,7 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
             {
                 var messages = MakeHistory(SystemPrompt, history);
                 messages.Add(new() { ["role"] = "user", ["content"] = Turns[i % Turns.Length] });
-                var (_, events) = await DoCompletionStream(sid, messages, maxTokens: 150);
+                var (_, events) = await DoCompletionStream(sid, messages, maxTokens: 4096);
                 var reply = ExtractContent(events);
                 Assert.False(string.IsNullOrEmpty(reply), $"Session {sid} turn {i + 1} empty reply");
                 history.Add((Turns[i % Turns.Length], reply));
