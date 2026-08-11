@@ -3276,6 +3276,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			: "?";
 		var mt = item.Request.TryGetValue("max_tokens", out var mtv) ? mtv?.ToString() : "?";
 
+		// #616: snapshot the CLEAN client request body BEFORE id_slot /
+		// hydra_config / stream_options are injected, so the empty-content
+		// merged-decode fallback re-issues the ORIGINAL request (same
+		// messages/model/max_tokens). Only needed when the decode node may
+		// take the merged path; a JSON round-trip makes the clone immune to
+		// any later in-place mutation.
+		var decodeNodeMergedCapable = _cfg.UseLlamaEngine
+			&& _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true;
+		var cleanRequestBody = decodeNodeMergedCapable
+			? DeepCloneRequestBody(item.Request)
+			: null;
+
 		// Pin decode to the leased slot so llama-server doesn't pick a different one via LRU
 		if (item.DecodeSlot.HasValue)
 			item.Request["id_slot"] = item.DecodeSlot.Value;
@@ -3359,7 +3371,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// to get the decode_request_id and model identity match. On success,
 			// poll GET /v1/decode/{id} for the streaming result (skips HTTP proxy).
 			bool mergedDecodeOk = false;
-			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
+			if (decodeNodeMergedCapable)
 			{
 				bool gateRejected = false;
 				try
@@ -3438,9 +3450,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// #616: the merged stream arms the empty-content probe — if it
 						// ends with tokens>0 but no visible content (engine drops
 						// reasoning_content on merged DECODE, fix deferred), the stream
-						// is re-issued ONCE via the HTTP proxy.
+						// is re-issued ONCE via the HTTP proxy with the CLEAN client body.
 						item.DecodeChunks = TrackStreamNPast(mergedStream, item,
-							mergedPath: true, fallbackNodeUrl: w.LlamaUrl, fallbackCt: cts.Token);
+							mergedPath: true, fallbackRequestBody: cleanRequestBody!,
+							fallbackNodeUrl: w.LlamaUrl, fallbackCt: cts.Token);
 						_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
 						item.StreamCompletion.TrySetResult(item.DecodeChunks);
 						item.Response = new { streamed = true };
@@ -3505,7 +3518,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// to get the decode_request_id and model identity match. On success,
 			// poll GET /v1/decode/{id} for the synchronous result (skips HTTP proxy).
 			bool mergedDecodeOk = false;
-			if (_cfg.UseLlamaEngine && _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true)
+			if (decodeNodeMergedCapable)
 			{
 				bool gateRejected = false;
 				try
@@ -3573,8 +3586,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 						// #616: merged DECODE drops reasoning_content (engine bug, fix
 						// deferred) — reasoning models return n_decoded>0 but an empty
-						// final content. Re-issue ONCE via the HTTP proxy (same original
-						// body): /v1/chat/completions preserves reasoning_content
+						// final content. Re-issue ONCE via the HTTP proxy with the
+						// CLEAN client body (snapshot before id_slot / hydra_config
+						// injection): /v1/chat/completions preserves reasoning_content
 						// (server-chat.cpp emits message when only reasoning_content
 						// exists). Bounded to a single attempt — the HTTP path never
 						// re-enters merged decode, so there is no loop.
@@ -3583,7 +3597,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							_log.Warning("merged_decode_empty_content_fallback sid={Sid} tokens={N}",
 								item.SessionId, emptyTokens);
 							mergedResult = await _proxy.ProxyCompletionAsync(
-								w.LlamaUrl, item.Request, item.TraceId, ct);
+								w.LlamaUrl, cleanRequestBody!, item.TraceId, ct);
 							if (mergedResult.TryGetValue("id_slot", out var s2) && s2 is JsonElement se2)
 								item.LastIdSlot = se2.GetInt32();
 							if (item.MultiMode != MultiEngineMode.None)
@@ -4745,7 +4759,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async IAsyncEnumerable<byte[]> TrackStreamNPast(
 		IAsyncEnumerable<byte[]> source, WorkItem item,
-		bool mergedPath = false, string? fallbackNodeUrl = null,
+		bool mergedPath = false, Dictionary<string, object>? fallbackRequestBody = null,
+		string? fallbackNodeUrl = null,
 		CancellationToken fallbackCt = default)
 	{
 		string? lastUtf8 = null;
@@ -4925,9 +4940,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				try
 				{
+					// #616 QA: re-issue with the CLEAN client body, forced to
+					// non-stream and with stream_options stripped — the real
+					// engine answers SSE for stream:true bodies and the proxy
+					// deserializes a JSON dict (CompletionProxyService).
+					var fallbackBody = new Dictionary<string, object>(fallbackRequestBody)
+					{
+						["stream"] = false
+					};
+					fallbackBody.Remove("stream_options");
 					fallback = await _proxy.ProxyCompletionAsync(
 						fallbackNodeUrl ?? item.DecodeWorker?.LlamaUrl ?? "",
-						item.Request, item.TraceId, fallbackCt);
+						fallbackBody, item.TraceId, fallbackCt);
 					_log.Warning("merged_decode_empty_content_fallback sid={Sid} tokens={N}",
 						item.SessionId, item.TokensOut);
 					if (fallback.TryGetValue("id_slot", out var fId) && fId is JsonElement fEl)
@@ -4953,7 +4977,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				yield return heldChunk;
 			if (heldDone != null)
 				yield return heldDone;
-			else if (needFallback)
+			else
+				// #616 QA: synthetic terminator — the engine's DONE-state
+				// stream emits a single delta chunk and closes without
+				// `data: [DONE]`; streaming clients must always see one.
 				yield return Encoding.UTF8.GetBytes("data: [DONE]\n\n");
 		}
 	}
@@ -4986,6 +5013,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return "";
 	}
 
+	/// <summary>#616 QA: deep clone the client request body via a JSON
+	/// round-trip. The clone is a snapshot of the ORIGINAL request — immune to
+	/// later in-place mutation (id_slot / hydra_config / stream_options
+	/// injection) — so the empty-content fallback re-issues the same
+	/// messages/model/max_tokens the client sent.</summary>
+	private static Dictionary<string, object> DeepCloneRequestBody(Dictionary<string, object> request)
+		=> JsonSerializer.Deserialize<Dictionary<string, object>>(JsonSerializer.Serialize(request))!;
+
 	/// <summary>#616: true when an SSE data line carries a non-empty
 	/// choices[0].delta.content (visible text, not reasoning_content).</summary>
 	private static bool HasNonEmptyContentDelta(string sseLine)
@@ -5011,19 +5046,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	/// <summary>#616: build ONE SSE chat.completion.chunk from a buffered HTTP
 	/// proxy response so streaming clients receive the fallback's content
-	/// (and usage) as the stream's final event.</summary>
+	/// (and usage) as the stream's final event. reasoning_content is carried
+	/// into the delta when present — the whole point of the fallback is that
+	/// the HTTP path preserves it while merged DECODE drops it. Mirrors
+	/// server-chat.cpp:453-464: the message is emitted when EITHER content or
+	/// reasoning_content is non-empty.</summary>
 	private static byte[] BuildFallbackSseChunk(Dictionary<string, object> fallback)
 	{
 		string content = "";
+		string reasoningContent = "";
 		string? finishReason = "stop";
 		if (fallback.TryGetValue("choices", out var ch) && ch is JsonElement chEl
 			&& chEl.ValueKind == JsonValueKind.Array && chEl.GetArrayLength() > 0)
 		{
 			var choice = chEl[0];
-			if (choice.TryGetProperty("message", out var msg)
-				&& msg.TryGetProperty("content", out var ct)
-				&& ct.ValueKind == JsonValueKind.String)
-				content = ct.GetString() ?? "";
+			if (choice.TryGetProperty("message", out var msg))
+			{
+				if (msg.TryGetProperty("content", out var ct) && ct.ValueKind == JsonValueKind.String)
+					content = ct.GetString() ?? "";
+				if (msg.TryGetProperty("reasoning_content", out var rc) && rc.ValueKind == JsonValueKind.String)
+					reasoningContent = rc.GetString() ?? "";
+			}
 			if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
 				finishReason = fr.GetString();
 		}
@@ -5036,6 +5079,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			created = (long)crEl.GetDouble();
 		var usage = fallback.TryGetValue("usage", out var uV) ? uV : null;
 
+		var delta = new Dictionary<string, object?>
+		{
+			["role"] = "assistant",
+			["content"] = content,
+		};
+		if (!string.IsNullOrEmpty(reasoningContent))
+			delta["reasoning_content"] = reasoningContent;
+
 		var chunk = new Dictionary<string, object?>
 		{
 			["id"] = id,
@@ -5047,7 +5098,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				new Dictionary<string, object?>
 				{
 					["index"] = 0,
-					["delta"] = new Dictionary<string, object?> { ["role"] = "assistant", ["content"] = content },
+					["delta"] = delta,
 					["finish_reason"] = finishReason,
 				}
 			},

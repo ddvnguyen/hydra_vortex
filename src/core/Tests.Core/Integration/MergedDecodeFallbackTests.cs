@@ -43,14 +43,21 @@ public sealed class MergedDecodeFallbackTests
 
         var result = await f.SubmitAsync("sess_fb1", 500, 100, stream: false);
 
-        // The HTTP proxy was re-issued exactly ONCE with the original body.
+        // The HTTP proxy was re-issued exactly ONCE with the CLEAN original
+        // client body: same model/max_tokens/messages/stream, and NONE of the
+        // coordinator-injected fields (id_slot / hydra_config / stream_options).
         Assert.Single(f.Proxy.NonStreamingCalls);
         var (nodeUrl, body, _) = f.Proxy.NonStreamingCalls[0];
         Assert.Equal("http://localhost:8080", nodeUrl);
-        Assert.Equal("nano", body["model"]);
-        Assert.Equal(100, body["max_tokens"]);
-        Assert.True(body.ContainsKey("messages"), "fallback must carry the original messages");
-        Assert.False((bool)body["stream"], "fallback must keep the original non-streaming flag");
+        Assert.Equal("nano", ((JsonElement)body["model"]).GetString());
+        Assert.Equal(100, ((JsonElement)body["max_tokens"]).GetInt32());
+        Assert.True(body.TryGetValue("messages", out var msgs)
+            && ((JsonElement)msgs).ValueKind == JsonValueKind.Array,
+            "fallback must carry the original messages");
+        Assert.False(BodyBool(body, "stream"), "fallback must keep the original non-streaming flag");
+        Assert.DoesNotContain("id_slot", body.Keys);
+        Assert.DoesNotContain("hydra_config", body.Keys);
+        Assert.DoesNotContain("stream_options", body.Keys);
 
         // The fallback's response is what the caller receives.
         var dict = Assert.IsType<Dictionary<string, object>>(result);
@@ -108,9 +115,16 @@ public sealed class MergedDecodeFallbackTests
 
         var chunks = await CollectAsync(f, "sess_fs1");
 
-        // One HTTP re-issue with the original streaming request body.
+        // One HTTP re-issue. The mock engine REJECTS stream:true and
+        // stream_options bodies (they'd return SSE, not a JSON dict), so this
+        // asserts the fallback forced non-stream on the CLEAN client body.
         Assert.Single(f.Proxy.NonStreamingCalls);
-        Assert.True((bool)f.Proxy.NonStreamingCalls[0].Body["stream"]);
+        var fallbackBody = f.Proxy.NonStreamingCalls[0].Body;
+        Assert.False(BodyBool(fallbackBody, "stream"),
+            "streaming fallback must force stream:false");
+        Assert.DoesNotContain("stream_options", fallbackBody.Keys);
+        Assert.DoesNotContain("id_slot", fallbackBody.Keys);
+        Assert.DoesNotContain("hydra_config", fallbackBody.Keys);
 
         // The empty-content data chunks are relayed live (first chunk), the
         // final empty-content+usage chunk is REPLACED by the fallback's
@@ -151,6 +165,57 @@ public sealed class MergedDecodeFallbackTests
         Assert.Equal(expected, string.Join("", chunks.Select(c => Encoding.UTF8.GetString(c))));
     }
 
+    [Fact]
+    public async Task MergedDecode_Stream_FallbackCarriesReasoningContent()
+    {
+        // #616 QA: the fallback response may carry ONLY reasoning_content
+        // (content empty — the very bug the fallback fixes). The emitted SSE
+        // chunk must propagate delta.reasoning_content, mirroring
+        // server-chat.cpp's "emit message when either field exists".
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.FallbackResult = MergedDecodeResult(
+            content: "", completionTokens: 50, reasoningContent: "deep reasoning text");
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}],\"usage\":{\"completion_tokens\":50,\"prompt_tokens\":10,\"total_tokens\":60}}"),
+            Sse("data: [DONE]"),
+        ];
+
+        var chunks = await CollectAsync(f, "sess_fs3");
+
+        Assert.Single(f.Proxy.NonStreamingCalls);
+        var fallbackChunk = Encoding.UTF8.GetString(chunks[1]);
+        Assert.Contains("reasoning_content", fallbackChunk);
+        Assert.Contains("deep reasoning text", fallbackChunk);
+        Assert.Contains("\"content\":\"\"", fallbackChunk);
+    }
+
+    [Fact]
+    public async Task MergedDecode_Stream_EngineOmitsDone_YieldsSyntheticDone()
+    {
+        // #616 QA: the engine's DONE-state stream emits a single delta chunk
+        // and closes WITHOUT `data: [DONE]`. When no fallback fires, the
+        // coordinator must synthesize the terminator so streaming clients
+        // always see one.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}],\"usage\":{\"completion_tokens\":2,\"prompt_tokens\":10,\"total_tokens\":12}}"),
+        ];
+
+        var chunks = await CollectAsync(f, "sess_fs4");
+
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        Assert.Equal(3, chunks.Count);
+        Assert.Equal(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}",
+            Encoding.UTF8.GetString(chunks[0]).Trim());
+        Assert.Contains("\"content\":\"!\"", Encoding.UTF8.GetString(chunks[1]));
+        Assert.Equal("data: [DONE]", Encoding.UTF8.GetString(chunks[2]).Trim());
+    }
+
     private static async Task<List<byte[]>> CollectAsync(MergedDecodeFixture f, string sessionId)
     {
         var result = await f.SubmitAsync(sessionId, 500, 100, stream: true);
@@ -161,12 +226,23 @@ public sealed class MergedDecodeFallbackTests
         return chunks;
     }
 
+    /// <summary>Read a bool request-body field — the deep-cloned clean body
+    /// holds JsonElement values while the streaming fallback's forced
+    /// stream:false override is a plain bool.</summary>
+    private static bool BodyBool(Dictionary<string, object> body, string key)
+        => body[key] switch
+        {
+            bool b => b,
+            JsonElement je => je.GetBoolean(),
+            _ => throw new InvalidOperationException($"unexpected value type for body key '{key}'"),
+        };
+
     private static byte[] Sse(string dataLine)
         => Encoding.UTF8.GetBytes($"{dataLine}\n\n");
 
     /// <summary>Build an OpenAI-style completion result dictionary for the
     /// PollDecodeResultAsync double.</summary>
-    private static Dictionary<string, object> MergedDecodeResult(string content, int completionTokens)
+    private static Dictionary<string, object> MergedDecodeResult(string content, int completionTokens, string reasoningContent = "")
     {
         using var doc = JsonDocument.Parse(JsonSerializer.Serialize(new
         {
@@ -175,7 +251,7 @@ public sealed class MergedDecodeFallbackTests
                 new
                 {
                     index = 0,
-                    message = new { role = "assistant", content },
+                    message = new { role = "assistant", content, reasoning_content = reasoningContent },
                     finish_reason = completionTokens > 0 ? "stop" : "length",
                 }
             },
@@ -217,19 +293,38 @@ public sealed class MergedDecodeFallbackTests
     }
 
     /// <summary>Proxy double: injectable merged poll/stream results, recorded
-    /// HTTP proxy calls, and a fixed fallback response.</summary>
+    /// HTTP proxy calls, and a configurable fallback response. Realistic
+    /// engine behavior: a stream:true (or stream_options-carrying) body
+    /// returns SSE bytes, which ProxyCompletionAsync's JSON deserialization
+    /// would choke on — the mock rejects such bodies exactly like the real
+    /// engine would make the deserializer fail.</summary>
     private sealed class MergedDecodeTestProxy : ICompletionProxyService
     {
         public Dictionary<string, object> MergedResult { get; set; } = MergedDecodeResult(content: "", completionTokens: 0);
         public byte[][] MergedStreamChunks { get; set; } = [];
+        public Dictionary<string, object> FallbackResult { get; set; } = MergedDecodeResult(content: "Hello from fallback", completionTokens: 50);
         public List<(string NodeUrl, Dictionary<string, object> Body, string TraceId)> NonStreamingCalls { get; } = new();
 
         public Task<Dictionary<string, object>> ProxyCompletionAsync(
             string nodeUrl, Dictionary<string, object> body, string traceId, CancellationToken ct)
         {
+            // #616 QA: the fallback must force stream:false and strip
+            // stream_options — the real engine answers SSE for stream:true
+            // bodies (a JSON-dict parse would fail on those bytes).
+            if (IsTrue(body.TryGetValue("stream", out var st) ? st : null))
+                throw new InvalidOperationException("mock engine: stream:true body returns SSE, not a JSON dict");
+            if (body.ContainsKey("stream_options"))
+                throw new InvalidOperationException("mock engine: stream_options on a non-stream request");
             NonStreamingCalls.Add((nodeUrl, new Dictionary<string, object>(body), traceId));
-            return Task.FromResult(MergedDecodeResult(content: "Hello from fallback", completionTokens: 50));
+            return Task.FromResult(FallbackResult);
         }
+
+        private static bool IsTrue(object? v) => v switch
+        {
+            bool b => b,
+            JsonElement je => je.ValueKind == JsonValueKind.True,
+            _ => false,
+        };
 
         public async IAsyncEnumerable<byte[]> ProxyCompletionStreamAsync(
             string nodeUrl, Dictionary<string, object> body, string traceId,
