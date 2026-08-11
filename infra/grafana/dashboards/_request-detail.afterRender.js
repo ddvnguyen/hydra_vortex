@@ -79,6 +79,15 @@ try {
     if (prefixHit === 'true')    return { t: 'PREFIX', c: '#58a6ff', d: 'Prefix checkpoint reused, partial prefill' };
     return { t: 'COLD', c: '#db6d28', d: 'Fresh full prefill from scratch' };
   };
+  // requestModel is the resolved routing alias (what Hydra decided to route
+  // to); prefillModel/decodeModel are what's actually resident on the
+  // engine. A mismatch means the request fell back to a different model
+  // than the one it was routed to — worth flagging, not just logging.
+  const modelMismatch = function (row) {
+    if (!row.requestModel) return false;
+    const resident = [row.prefillModel, row.decodeModel].filter(Boolean);
+    return resident.length > 0 && resident.indexOf(row.requestModel) === -1;
+  };
 
   // ── Phase model ─────────────────────────────────────────────────────
   // M-Perf.10: split the save into two parts.
@@ -91,20 +100,25 @@ try {
   const PHASE = {
     queue:         { key: 'queue_wait_ms',    label: 'Queue',         color: '#6e7681' },
     prefill:       { key: 'prefill_ms',       label: 'Prefill',       color: '#388bfd' },
+    model_load:    { key: 'model_load_ms',    label: 'Model Switch',  color: '#FA6400' },
     save_kv_rpc:   { key: 'save_kv_rpc_ms',   label: 'Save RPC',      color: '#d29922' },
     save_kv_store: { key: 'save_kv_store_ms', label: 'Save store',    color: '#d29922', bg: true },
     restore_kv:    { key: 'restore_kv_ms',    label: 'Restore cache', color: '#a371f7' },
     decode:        { key: 'decode_ms',        label: 'Decode',        color: '#3fb950' },
   };
   // Main timeline order (Save RPC stays in the main row, Save store is
-  // pulled out for the background indicator).
-  const ORDER = ['queue', 'prefill', 'save_kv_rpc', 'restore_kv', 'decode'];
+  // pulled out for the background indicator). model_load sits between
+  // prefill and save_kv_rpc, matching hydra-timeline-bars.json's column
+  // order (queue, prefill, model switch, save kv, restore kv, decode).
+  const ORDER = ['queue', 'prefill', 'model_load', 'save_kv_rpc', 'restore_kv', 'decode'];
   // Background indicator (rendered below the row).
   const BG_ORDER = ['save_kv_store'];
 
   // Return the server name for a phase given the row's actual node data.
   const phaseServer = function (p, row) {
-    if (p.k === 'prefill') return (row.prefillNode || '?').toUpperCase();
+    // model_load (T3 rebuild) happens on the prefill node — see
+    // WorkerSchedulerService.PrefillAsync (prefillResult.ModelLoadMs).
+    if (p.k === 'prefill' || p.k === 'model_load') return (row.prefillNode || '?').toUpperCase();
     if (p.k === 'decode')  return (row.decodeNode || '?').toUpperCase();
     return 'HYDRA';
   };
@@ -162,6 +176,7 @@ try {
       decodeNode: String(d.decode_node || '-'),
       prefillModel: String(d.prefill_model || ''),
       decodeModel: String(d.decode_model || ''),
+      requestModel: String(d.request_model || ''),
       timestamp: fmtTime(tsMs),
       tokensIn: num(d.tokens_in),
       tokensOut: num(d.tokens_out),
@@ -225,8 +240,10 @@ try {
     // Fixed row height — stable across auto-refresh, no reflow jumps.
     // The row container is internally scrollable, so all rows in the
     // current time range are accessible without changing panel size.
-    const rowH = 36;
-    const headerH = 38;
+    // 44/42 (bumped from 36/38) so rows stay legible on smaller/HiDPI
+    // screens (e.g. MacBook Air) where the panel gets less width.
+    const rowH = 44;
+    const headerH = 42;
 
     let html = '<div style="display:flex;gap:0;font-family:-apple-system,system-ui,sans-serif;color:#e6edf3;background:#0d1117;box-sizing:border-box;height:100%;min-height:0;">';
 
@@ -234,7 +251,7 @@ try {
     html += '<div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;' + (S.detail ? 'border-right:1px solid #21262d;' : '') + '">';
 
     // Mini header — toggle only
-    html += '<div style="display:flex;align-items:center;gap:10px;padding:6px 12px;border-bottom:1px solid #21262d;flex:none;height:' + headerH + 'px;box-sizing:border-box;font-size:9px;color:#ffffff;overflow:hidden;">';
+    html += '<div style="display:flex;align-items:center;gap:10px;padding:6px 12px;border-bottom:1px solid #21262d;flex:none;height:' + headerH + 'px;box-sizing:border-box;font-size:10px;color:#ffffff;overflow:hidden;">';
     html += '<span style="font-size:11px;color:#ffffff;font-weight:600;">' + rows.length + ' requests</span>';
     html += '<div style="margin-left:auto;display:flex;gap:2px;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:2px;">';
     [['composition', 'Composition'], ['aligned', 'Aligned']].forEach(function (vv) {
@@ -254,7 +271,7 @@ try {
       const sel = ri === S.sel;
       html += '<div data-row="' + ri + '" style="display:flex;align-items:center;height:' + rowH + 'px;box-sizing:border-box;cursor:pointer;border-bottom:1px solid #161b22;border-left:2px solid ' + (sel ? '#388bfd' : 'transparent') + ';background:' + (sel ? 'rgba(56,139,253,0.07)' : 'transparent') + ';">';
       html += '<div style="width:180px;flex:none;padding:0 10px;min-width:0;">';
-      html += '<div style="display:flex;align-items:center;gap:5px;"><span style="font-family:monospace;font-size:11px;font-weight:600;color:#ffffff;">' + esc(r.id) + '</span><span style="font-size:8px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + tc.t + '</span>' + (r.prefixHit === 'true' ? '<span style="font-size:7px;font-weight:700;color:#3fb950;border:1px solid #3fb9504d;border-radius:2px;padding:1px 3px;font-family:monospace;">CACHE</span>' : '') + '</div>';
+      html += '<div style="display:flex;align-items:center;gap:5px;"><span style="font-family:monospace;font-size:11px;font-weight:600;color:#ffffff;">' + esc(r.id) + '</span><span style="font-size:9px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + tc.t + '</span>' + (r.prefixHit === 'true' ? '<span style="font-size:8px;font-weight:700;color:#3fb950;border:1px solid #3fb9504d;border-radius:2px;padding:1px 3px;font-family:monospace;">CACHE</span>' : '') + (modelMismatch(r) ? '<span title="requested model differs from resident prefill/decode model" style="font-size:8px;font-weight:700;color:#d29922;border:1px solid #d2992299;border-radius:2px;padding:1px 3px;font-family:monospace;">MODEL≠</span>' : '') + '</div>';
       html += '<div style="font-size:10px;color:#ffffff;font-family:monospace;">' + r.timestamp;
       if (r.status && r.status !== 'done') html += ' <span style="color:#d29922;">' + esc(r.status) + '</span>';
       else html += ' &middot; ' + ms(r.total) + 's';
@@ -270,8 +287,8 @@ try {
         if (wPct > 14) txt = esc(p.label) + ' ' + ms(p.dur) + 's';
         else if (wPct > 4) txt = ms(p.dur) + 's';
         const srv = phaseServer(p, r);
-        html += '<div title="' + esc(p.label) + ' ' + ms(p.dur) + 's" style="position:absolute;left:' + leftPct + '%;width:' + w + '%;top:8px;height:20px;background:' + p.color + ';border-radius:3px;display:flex;align-items:center;padding:0 4px;overflow:hidden;box-shadow:' + (srv !== 'HYDRA' ? 'inset 0 1px 0 rgba(255,255,255,0.3)' : 'inset 0 0 0 1px rgba(0,0,0,0.15)') + ';">';
-        if (txt) html += '<span style="font-size:9px;font-weight:600;color:#ffffff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + txt + '</span>';
+        html += '<div title="' + esc(p.label) + ' ' + ms(p.dur) + 's" style="position:absolute;left:' + leftPct + '%;width:' + w + '%;top:8px;height:24px;background:' + p.color + ';border-radius:3px;display:flex;align-items:center;padding:0 4px;overflow:hidden;box-shadow:' + (srv !== 'HYDRA' ? 'inset 0 1px 0 rgba(255,255,255,0.3)' : 'inset 0 0 0 1px rgba(0,0,0,0.15)') + ';">';
+        if (txt) html += '<span style="font-size:10px;font-weight:600;color:#ffffff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + txt + '</span>';
         html += '</div>';
       });
       // M-Perf.10: background indicator (e.g. save_kv_store) — hatched
@@ -288,7 +305,7 @@ try {
           // Diagonal-stripe pattern at lower opacity = "background work"
           html += '<div title="' + esc(p.label) + ' (background) ' + ms(p.dur) + 's" '
                 + 'style="position:absolute;left:' + leftPct + '%;width:' + w + '%;'
-                + 'top:30px;height:6px;'
+                + 'top:34px;height:8px;'
                 + 'background-image:repeating-linear-gradient(45deg,'
                 + 'rgba(210,153,34,0.55) 0,rgba(210,153,34,0.55) 3px,'
                 + 'rgba(210,153,34,0.18) 3px,rgba(210,153,34,0.18) 6px);'
@@ -312,14 +329,17 @@ try {
       const kvMiB = r.kvBytes > 0 ? (r.kvBytes / 1048576).toFixed(1) : '\u2014';
       const dom = r.phases.slice().sort(function (a, b) { return b.dur - a.dur; })[0] || { label: '\u2014', color: '#6e7681', dur: 0 };
 
-      html += '<div style="width:300px;flex:none;background:#0b0f14;overflow:hidden;box-sizing:border-box;">';
+      // clamp() keeps the detail panel from crowding out the phase-bar
+      // area on narrower viewports (e.g. a MacBook Air browser window)
+      // while staying at the original 300px on wide screens.
+      html += '<div style="width:clamp(220px, 28vw, 300px);flex:none;background:#0b0f14;overflow:hidden;box-sizing:border-box;">';
 
       // Header — trace_id (preferred) + session_id + route type badge + close button
       html += '<div style="display:flex;align-items:flex-start;gap:8px;padding:10px 14px;border-bottom:1px solid #21262d;">';
       html += '<div style="flex:1;min-width:0;">';
       html += '<div style="display:flex;align-items:center;gap:6px;">';
       html += '<span style="font-family:monospace;font-size:13px;font-weight:700;color:#ffffff;">' + esc(r.id) + '</span>';
-      html += '<span style="font-size:9px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:4px;padding:2px 6px;font-family:monospace;">' + tc.t + '</span>';
+      html += '<span style="font-size:10px;font-weight:700;color:#ffffff;background:' + tc.c + '1f;border:1px solid ' + tc.c + '4d;border-radius:4px;padding:2px 6px;font-family:monospace;">' + tc.t + '</span>';
       html += '<span style="font-size:10px;color:#ffffff;">' + tc.d + '</span>';
       html += '<button data-close-detail style="margin-left:auto;border:none;cursor:pointer;background:#21262d;color:#8b949e;border-radius:4px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;">\u00d7</button>';
       html += '</div>';
@@ -329,6 +349,10 @@ try {
       if (r.prefixHit === 'true' || r.prefixHit === 'false') {
         const phColor = r.prefixHit === 'true' ? '#3fb950' : '#db6d28';
         html += '<span style="color:' + phColor + ';">prefix_hit=' + esc(r.prefixHit) + '</span>';
+      }
+      if (r.requestModel) {
+        const rmColor = modelMismatch(r) ? '#d29922' : '#c9d1d9';
+        html += '<span title="resolved routing alias — the model Hydra decided to route this request to">requested: <span style="color:' + rmColor + ';">' + esc(r.requestModel) + '</span></span>';
       }
       html += '</div>';
       html += '</div></div>';
@@ -343,7 +367,7 @@ try {
         ['KV cache', kvMiB, kvMiB === '\u2014' ? '' : 'MiB', '#d29922'],
       ];
       html += '<div style="display:flex;gap:1px;background:#21262d;border-radius:6px;overflow:hidden;flex-wrap:wrap;margin:10px 14px;">';
-      tiles.forEach(function (t) { html += '<div style="flex:1;min-width:80px;background:#0d1117;padding:8px 10px;"><div style="font-size:9px;color:#ffffff;text-transform:uppercase;letter-spacing:0.05em;">' + t[0] + '</div><div style="font-family:monospace;font-size:13px;font-weight:600;color:' + t[3] + ';margin-top:3px;">' + t[1] + '<span style="font-size:10px;color:' + t[3] + ';margin-left:2px;">' + t[2] + '</span></div></div>'; });
+      tiles.forEach(function (t) { html += '<div style="flex:1;min-width:80px;background:#0d1117;padding:8px 10px;"><div style="font-size:10px;color:#ffffff;text-transform:uppercase;letter-spacing:0.05em;">' + t[0] + '</div><div style="font-family:monospace;font-size:13px;font-weight:600;color:' + t[3] + ';margin-top:3px;">' + t[1] + '<span style="font-size:10px;color:' + t[3] + ';margin-left:2px;">' + t[2] + '</span></div></div>'; });
       html += '</div>';
 
       // Phase breakdown
@@ -354,7 +378,7 @@ try {
         html += '<div style="padding:5px 0;border-top:1px solid #161b22;display:flex;align-items:center;gap:6px;">';
         html += '<span style="width:8px;height:8px;border-radius:2px;background:' + p.color + ';"></span>';
         html += '<span style="font-size:11px;color:#ffffff;">' + esc(p.label) + '</span>';
-        html += '<span style="font-size:8px;font-weight:600;color:#ffffff;border:1px solid #30363d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + srv + '</span>';
+        html += '<span style="font-size:9px;font-weight:600;color:#ffffff;border:1px solid #30363d;border-radius:3px;padding:1px 4px;font-family:monospace;">' + srv + '</span>';
         html += '<span style="margin-left:auto;font-family:monospace;font-size:11px;font-weight:600;color:#ffffff;">' + ms(p.dur) + ' s</span>';
         html += '<span style="font-family:monospace;font-size:10px;color:#ffffff;width:30px;text-align:right;">' + pct + '%</span>';
         html += '</div>';
@@ -372,7 +396,7 @@ try {
                 + 'rgba(210,153,34,0.18) 2px,rgba(210,153,34,0.18) 4px);'
                 + 'border:1px solid #d2992299;"></span>';
           html += '<span style="font-size:11px;color:#ffffff;">' + esc(p.label) + '</span>';
-          html += '<span style="font-size:7px;font-weight:700;color:#7d8590;border:1px solid #30363d;border-radius:3px;padding:1px 4px;font-family:monospace;letter-spacing:0.05em;">BG</span>';
+          html += '<span style="font-size:8px;font-weight:700;color:#7d8590;border:1px solid #30363d;border-radius:3px;padding:1px 4px;font-family:monospace;letter-spacing:0.05em;">BG</span>';
           html += '<span style="margin-left:auto;font-family:monospace;font-size:10px;color:#7d8590;">' + ms(p.dur) + ' s</span>';
           html += '<span style="font-family:monospace;font-size:10px;color:#7d8590;width:30px;text-align:right;">' + pct + '%</span>';
           html += '</div>';
@@ -386,14 +410,20 @@ try {
       const pNode = isAtomic ? r.decodeNode : r.prefillNode;
       const pModel = isAtomic ? r.decodeModel : r.prefillModel;
       html += '<div style="margin:10px 14px;padding:8px 10px;background:#161b22;border-radius:6px;">';
-      html += '<div style="font-size:9px;color:#ffffff;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Servers</div>';
+      html += '<div style="font-size:10px;color:#ffffff;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Servers</div>';
       html += '<div style="display:flex;gap:8px;font-size:11px;align-items:center;"><span style="color:#ffffff;font-weight:600;min-width:48px;">Prefill</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(pNode) + '</span>';
-      if (pModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:9px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(pModel) + '</span>';
-      if (isAtomic) html += '<span style="margin-left:6px;font-size:8px;font-weight:700;color:#d29922;background:#d299221f;border:1px solid #d299224d;border-radius:3px;padding:1px 5px;font-family:monospace;">ATOMIC</span>';
+      if (pModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:10px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(pModel) + '</span>';
+      if (isAtomic) html += '<span style="margin-left:6px;font-size:9px;font-weight:700;color:#d29922;background:#d299221f;border:1px solid #d299224d;border-radius:3px;padding:1px 5px;font-family:monospace;">ATOMIC</span>';
       html += '</div>';
       html += '<div style="display:flex;gap:8px;font-size:11px;margin-top:2px;align-items:center;"><span style="color:#ffffff;font-weight:600;min-width:48px;">Decode</span><span style="color:#ffffff;">:</span> <span style="color:#ffffff;">' + esc(r.decodeNode) + '</span>';
-      if (r.decodeModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:9px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(r.decodeModel) + '</span>';
+      if (r.decodeModel) html += '<span style="margin-left:6px;font-family:monospace;font-size:10px;color:#a371f7;background:#a371f71f;border:1px solid #a371f74d;border-radius:3px;padding:1px 5px;">' + esc(r.decodeModel) + '</span>';
       html += '</div>';
+      if (r.requestModel) {
+        const rmChipColor = modelMismatch(r) ? '#d29922' : '#a371f7';
+        html += '<div style="display:flex;gap:8px;font-size:11px;margin-top:2px;align-items:center;"><span style="color:#ffffff;font-weight:600;min-width:48px;">Requested</span><span style="color:#ffffff;">:</span> <span style="margin-left:-2px;font-family:monospace;font-size:10px;color:' + rmChipColor + ';background:' + rmChipColor + '1f;border:1px solid ' + rmChipColor + '4d;border-radius:3px;padding:1px 5px;">' + esc(r.requestModel) + '</span>';
+        if (modelMismatch(r)) html += '<span style="margin-left:4px;font-size:9px;font-weight:700;color:#d29922;">⚠ fallback</span>';
+        html += '</div>';
+      }
       html += '</div>';
 
       html += '</div>';
