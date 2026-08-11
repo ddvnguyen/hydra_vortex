@@ -339,6 +339,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), storeResp.Payload, traceId, ct);
 
+			// #617/A1: the blind StatePut's response status was NEVER checked
+			// (lines 339-347 pre-fix). A non-success means the target slot does
+			// not hold the session KV — registering it resident would send the
+			// next continuation into a doomed warm decode. Fail the migrate:
+			// no ledger register, no migrated=true to the caller.
+			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+			{
+				_log.Error("migrate_state_put_failed sid={Sid} status={Status} meta={Meta}",
+					sessionId, putResp.Status, putResp.Meta);
+				throw new InvalidOperationException(
+					$"StatePut failed during migration: status={putResp.Status} meta={putResp.Meta}");
+			}
+
 			nPastAfter = 0;
 			if (putResp.Meta != null)
 			{
@@ -351,7 +364,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			await migrateLease.DisposeAsync();
 		}
 
+		// #617/A2: keep the ledger pointing at the target node/slot, but mark
+		// the entry NON-RESIDENT (SlotFreed=true, exactly what MarkEvicted
+		// does on the evict path) so the NEXT request for this session skips
+		// warm affinity and re-enters the restore path (RestoreKvAsync —
+		// proven to carry blob+manifest metadata through merged DECODE, Gate A
+		// passes). A straight warm decode after migrate is a doomed
+		// continuation, so the migrate stays successful while the session is
+		// re-hydrated on its next turn.
 		_ledger.Register(sessionId, targetNodeName, slotId, nPastAfter, entry.PrefixHash);
+		_ledger.MarkEvicted(sessionId);
+		_log.Information("migrate_continuation_will_restore sid={Sid} node={Node} slot={Slot}",
+			sessionId, targetNodeName, slotId);
 		// C5: MigrationLatency was defined but never observed — record it now.
 		CoordinatorMetrics.MigrationLatency.WithLabels(fromNode, targetNodeName)
 			.Observe(migrateStart.Elapsed.TotalSeconds);
@@ -3411,7 +3435,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						IAsyncEnumerable<byte[]> mergedStream = _proxy.PollDecodeStreamAsync(
 							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token, item);
 
-						item.DecodeChunks = TrackStreamNPast(mergedStream, item);
+						// #616: the merged stream arms the empty-content probe — if it
+						// ends with tokens>0 but no visible content (engine drops
+						// reasoning_content on merged DECODE, fix deferred), the stream
+						// is re-issued ONCE via the HTTP proxy.
+						item.DecodeChunks = TrackStreamNPast(mergedStream, item,
+							mergedPath: true, fallbackNodeUrl: w.LlamaUrl, fallbackCt: cts.Token);
 						_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
 						item.StreamCompletion.TrySetResult(item.DecodeChunks);
 						item.Response = new { streamed = true };
@@ -3541,6 +3570,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							item.LastIdSlot = se.GetInt32();
 						if (item.MultiMode != MultiEngineMode.None)
 							mergedResult["hydra"] = MultiEngineStatus(item);
+
+						// #616: merged DECODE drops reasoning_content (engine bug, fix
+						// deferred) — reasoning models return n_decoded>0 but an empty
+						// final content. Re-issue ONCE via the HTTP proxy (same original
+						// body): /v1/chat/completions preserves reasoning_content
+						// (server-chat.cpp emits message when only reasoning_content
+						// exists). Bounded to a single attempt — the HTTP path never
+						// re-enters merged decode, so there is no loop.
+						if (MergedDecodeResultHasEmptyContent(mergedResult, out var emptyTokens))
+						{
+							_log.Warning("merged_decode_empty_content_fallback sid={Sid} tokens={N}",
+								item.SessionId, emptyTokens);
+							mergedResult = await _proxy.ProxyCompletionAsync(
+								w.LlamaUrl, item.Request, item.TraceId, ct);
+							if (mergedResult.TryGetValue("id_slot", out var s2) && s2 is JsonElement se2)
+								item.LastIdSlot = se2.GetInt32();
+							if (item.MultiMode != MultiEngineMode.None)
+								mergedResult["hydra"] = MultiEngineStatus(item);
+						}
+
 						item.Response = mergedResult;
 						item.TokensIn = ExtractUsageInt(mergedResult, "prompt_tokens");
 						item.TokensOut = ExtractUsageInt(mergedResult, "completion_tokens");
@@ -4695,19 +4744,52 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	private async IAsyncEnumerable<byte[]> TrackStreamNPast(
-		IAsyncEnumerable<byte[]> source, WorkItem item)
+		IAsyncEnumerable<byte[]> source, WorkItem item,
+		bool mergedPath = false, string? fallbackNodeUrl = null,
+		CancellationToken fallbackCt = default)
 	{
 		string? lastUtf8 = null;
+		// #616 merged path: one-chunk lookahead — hold the LAST data chunk and
+		// the trailing `data: [DONE]` (when present) so an empty-content stream
+		// can be re-issued via the HTTP proxy before the SSE ends. Everything
+		// else is relayed live, exactly as before.
+		byte[]? heldChunk = null;
+		byte[]? heldDone = null;
+		bool sawContent = false;
+
 		await foreach (var chunk in source)
 		{
-			yield return chunk;
-			// Skip [DONE] marker so lastUtf8 holds the actual usage/data chunk
+			var isDone = false;
 			if (chunk.Length > 0)
 			{
 				var s = Encoding.UTF8.GetString(chunk).Trim();
-				if (s != "data: [DONE]")
+				if (s == "data: [DONE]")
+				{
+					isDone = true;
+				}
+				else
+				{
 					lastUtf8 = s;
+					if (!sawContent && HasNonEmptyContentDelta(s))
+						sawContent = true;
+				}
 			}
+
+			if (!mergedPath)
+			{
+				// HTTP path: identical behavior to pre-#616 — relay as-is.
+				yield return chunk;
+				continue;
+			}
+
+			if (isDone)
+			{
+				heldDone = chunk;
+				continue;
+			}
+			if (heldChunk != null)
+				yield return heldChunk;
+			heldChunk = chunk;
 		}
 
 		if (lastUtf8 != null)
@@ -4829,6 +4911,149 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			catch { }
 			Console.Error.WriteLine($"track_stream_tokens Sid={item.SessionId} Trace={item.TraceId} TokensIn={item.TokensIn} TokensOut={item.TokensOut} LastUtf8={lastUtf8?[..Math.Min(200, lastUtf8?.Length ?? 0)]}");
 		}
+
+		// #616 merged path: the stream ended. If it produced tokens but no
+		// visible content (engine drops reasoning_content on merged DECODE,
+		// fix deferred), re-issue ONCE via the HTTP proxy (non-stream) and
+		// emit the fallback's content as the final SSE chunk, then [DONE].
+		// Bounded to a single attempt — no loops.
+		if (mergedPath)
+		{
+			var needFallback = item.TokensOut > 0 && !sawContent;
+			Dictionary<string, object>? fallback = null;
+			if (needFallback)
+			{
+				try
+				{
+					fallback = await _proxy.ProxyCompletionAsync(
+						fallbackNodeUrl ?? item.DecodeWorker?.LlamaUrl ?? "",
+						item.Request, item.TraceId, fallbackCt);
+					_log.Warning("merged_decode_empty_content_fallback sid={Sid} tokens={N}",
+						item.SessionId, item.TokensOut);
+					if (fallback.TryGetValue("id_slot", out var fId) && fId is JsonElement fEl)
+						item.LastIdSlot = fEl.GetInt32();
+					item.TokensIn = ExtractUsageInt(fallback, "prompt_tokens");
+					item.TokensOut = ExtractUsageInt(fallback, "completion_tokens");
+				}
+				catch (Exception ex)
+				{
+					// The fallback failed — log and emit the merged result as-is
+					// (the empty-content stream already went out live).
+					_log.Warning(ex, "merged_decode_empty_content_fallback_failed sid={Sid}",
+						item.SessionId);
+				}
+			}
+			// Happy path / fallback-completed: relay held chunks in original order.
+			// On a successful fallback the held final chunk (empty content +
+			// usage) is REPLACED by the fallback chunk — the fallback carries
+			// its own content and usage.
+			if (fallback != null)
+				yield return BuildFallbackSseChunk(fallback);
+			else if (heldChunk != null)
+				yield return heldChunk;
+			if (heldDone != null)
+				yield return heldDone;
+			else if (needFallback)
+				yield return Encoding.UTF8.GetBytes("data: [DONE]\n\n");
+		}
+	}
+
+	/// <summary>
+	/// #616: merged-decode responses drop reasoning_content (engine bug, fix
+	/// deferred) — a reasoning model returns n_decoded&gt;0 with an empty final
+	/// content. True when the result produced tokens but the visible
+	/// choices[0].message.content is blank.
+	/// </summary>
+	internal static bool MergedDecodeResultHasEmptyContent(
+		Dictionary<string, object> result, out int tokensOut)
+	{
+		tokensOut = ExtractUsageInt(result, "completion_tokens");
+		return tokensOut > 0 && string.IsNullOrWhiteSpace(ExtractChoiceContent(result));
+	}
+
+	/// <summary>Read choices[0].message.content from an OpenAI-style completion
+	/// dictionary ("" when absent).</summary>
+	private static string ExtractChoiceContent(Dictionary<string, object> result)
+	{
+		if (!result.TryGetValue("choices", out var c) || c is not JsonElement ce
+			|| ce.ValueKind != JsonValueKind.Array || ce.GetArrayLength() == 0)
+			return "";
+		var choice = ce[0];
+		if (choice.TryGetProperty("message", out var msg)
+			&& msg.TryGetProperty("content", out var ct)
+			&& ct.ValueKind == JsonValueKind.String)
+			return ct.GetString() ?? "";
+		return "";
+	}
+
+	/// <summary>#616: true when an SSE data line carries a non-empty
+	/// choices[0].delta.content (visible text, not reasoning_content).</summary>
+	private static bool HasNonEmptyContentDelta(string sseLine)
+	{
+		var trimmed = sseLine.Trim();
+		if (!trimmed.StartsWith("data: ") || trimmed == "data: [DONE]")
+			return false;
+		try
+		{
+			var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(trimmed[6..]);
+			if (data == null || !data.TryGetValue("choices", out var choices)
+				|| choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0)
+				return false;
+			var choice = choices[0];
+			if (choice.TryGetProperty("delta", out var delta)
+				&& delta.TryGetProperty("content", out var content)
+				&& content.ValueKind == JsonValueKind.String)
+				return !string.IsNullOrWhiteSpace(content.GetString());
+		}
+		catch { }
+		return false;
+	}
+
+	/// <summary>#616: build ONE SSE chat.completion.chunk from a buffered HTTP
+	/// proxy response so streaming clients receive the fallback's content
+	/// (and usage) as the stream's final event.</summary>
+	private static byte[] BuildFallbackSseChunk(Dictionary<string, object> fallback)
+	{
+		string content = "";
+		string? finishReason = "stop";
+		if (fallback.TryGetValue("choices", out var ch) && ch is JsonElement chEl
+			&& chEl.ValueKind == JsonValueKind.Array && chEl.GetArrayLength() > 0)
+		{
+			var choice = chEl[0];
+			if (choice.TryGetProperty("message", out var msg)
+				&& msg.TryGetProperty("content", out var ct)
+				&& ct.ValueKind == JsonValueKind.String)
+				content = ct.GetString() ?? "";
+			if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
+				finishReason = fr.GetString();
+		}
+		var id = fallback.TryGetValue("id", out var idV) && idV is string idS
+			? idS : "chatcmpl-fallback";
+		var model = fallback.TryGetValue("model", out var mV) && mV is string mS ? mS : "";
+		long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+		if (fallback.TryGetValue("created", out var crV) && crV is JsonElement crEl
+			&& crEl.ValueKind == JsonValueKind.Number)
+			created = (long)crEl.GetDouble();
+		var usage = fallback.TryGetValue("usage", out var uV) ? uV : null;
+
+		var chunk = new Dictionary<string, object?>
+		{
+			["id"] = id,
+			["object"] = "chat.completion.chunk",
+			["created"] = created,
+			["model"] = model,
+			["choices"] = new object?[]
+			{
+				new Dictionary<string, object?>
+				{
+					["index"] = 0,
+					["delta"] = new Dictionary<string, object?> { ["role"] = "assistant", ["content"] = content },
+					["finish_reason"] = finishReason,
+				}
+			},
+			["usage"] = usage,
+		};
+		return Encoding.UTF8.GetBytes($"data: {JsonSerializer.Serialize(chunk)}\n\n");
 	}
 
 	private void ResolveSlotFromHealth(string sessionId, int totalTokens)

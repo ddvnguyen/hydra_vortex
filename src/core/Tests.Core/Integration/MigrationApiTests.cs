@@ -48,7 +48,10 @@ public sealed class MigrationApiTests
         var entry = f.Ledger.Lookup("sess_mig")!;
         Assert.Equal("p100", entry.NodeName);
         Assert.NotNull(entry.SlotId);
-        Assert.False(entry.SlotFreed);
+        // #617/A2: a successful migrate marks the entry NON-RESIDENT (as if
+        // evicted) so the next request re-enters the KV restore path instead
+        // of a doomed warm decode on the migrated slot.
+        Assert.True(entry.SlotFreed, "migrated entry must be non-resident (SlotFreed=true)");
         Assert.Equal(2000, entry.NPast); // parsed from StatePut meta
 
         // A Store Get (fetch KV) and a llama StatePut (restore into the slot) happened.
@@ -131,6 +134,78 @@ public sealed class MigrationApiTests
         Assert.Equal(p100FreeBefore, tracker.FreeSlotCount("p100"));
     }
 
+    // #617/A1: the blind StatePut's response status was never checked. A
+    // non-success (engine reports the slot didn't restore) must FAIL the
+    // migrate — no ledger register, no migrated=true — so the request never
+    // proceeds into a doomed continuation.
+    [Fact]
+    public async Task Migrate_StatePutNonOkStatus_Fails_NotResident_NoMigratedTrue()
+    {
+        var cfg = MakeMigrationConfig();
+        var ledger = new SessionLedger();
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+        var sp = new ServiceCollection().BuildServiceProvider();
+
+        // Store Get succeeds; the llama StatePut returns a non-success status.
+        var rpc = new NonOkOnOpRpcClient(OpCode.StatePut);
+        var scheduler = new WorkerSchedulerService(cfg, ledger, tracker,
+            new TestCompletionProxy(), new TestHealthMonitor(), rpc, sp, Serilog.Log.Logger);
+        scheduler.AgentClientFactory = (_, _) => rpc;
+
+        ledger.Register("sess_mig", "rtx", slotId: 1, nPast: 100);
+        ledger.MarkStoreState("sess_mig");
+        var p100FreeBefore = tracker.FreeSlotCount("p100");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => scheduler.MigrateSessionAsync("sess_mig", "p100", default));
+
+        // The failed migrate must not register the session as resident on the
+        // target — the ledger still points at the source node.
+        var entry = ledger.Lookup("sess_mig")!;
+        Assert.Equal("rtx", entry.NodeName);
+        Assert.Equal(1, entry.SlotId);
+        Assert.False(entry.SlotFreed, "failed migrate must leave the source residency untouched");
+        Assert.True(entry.HasStoreState);
+
+        // The acquired slot was released despite the failure (no leak).
+        Assert.Equal(p100FreeBefore, tracker.FreeSlotCount("p100"));
+    }
+
+    // #617/A2: on SUCCESS the migrated ledger entry is marked NON-RESIDENT
+    // (as if SlotFreed/evicted) so the NEXT request for the session re-enters
+    // the restore path (Store Get → llama StatePut) instead of a warm
+    // straight-decode on the migrated slot (a doomed continuation).
+    [Fact]
+    public async Task Migrate_Success_NonResident_NextRequestRestores()
+    {
+        await using var f = new StreamingFixture(prefillTokens: 2000, decodeTokens: 150);
+        // Turn 1 (non-streaming): build a session with store state
+        // (prefill → save → decode) so it becomes migratable.
+        await f.SubmitAsync("sess_mig2", 2000, 100, stream: false);
+
+        // Migrate to p100 (StatePut via the RPC double returns Ok + n_past=2000).
+        f.Rpc.ClearCalls();
+        var result = await f.Scheduler.MigrateSessionAsync("sess_mig2", "p100", default);
+        Assert.Equal(true, ((dynamic)result).migrated);
+
+        // Migrated entry is non-resident but still points at the target node.
+        var e = f.Ledger.Lookup("sess_mig2")!;
+        Assert.Equal("p100", e.NodeName);
+        Assert.True(e.SlotFreed, "migrated entry must be marked non-resident");
+        Assert.True(e.HasStoreState);
+
+        // Turn 2: the continuation must re-enter the restore path — Store Get
+        // (KV fetch) + llama StatePut (KV push) — NOT a warm-affinity
+        // straight-decode (which would make zero RPC calls).
+        f.Rpc.ClearCalls();
+        await f.SubmitAsync("sess_mig2", 100, 50);
+        Assert.True(f.Rpc.HasCall(OpCode.Get, "sess_mig2"),
+            "continuation after migrate must fetch KV from the Store (restore path)");
+        Assert.True(f.Rpc.HasCall(OpCode.StatePut),
+            "continuation after migrate must push KV into the decode node (restore path)");
+    }
+
     private static CoordinatorConfig MakeMigrationConfig() => new()
     {
         PrefixCheckpointEnabled = false,
@@ -155,6 +230,24 @@ internal sealed class ThrowOnOpRpcClient : RpcClient
     {
         if (op == _throwOn)
             throw new InvalidOperationException($"injected RPC failure on {op}");
+        var meta = JsonSerializer.Serialize(new { n_past = 2000, restored = true, stored = true, model_match = true, tokenizer = "llama", model_name = "nano", model_quant = "Q4_K", model_capabilities = 0, model_alias = "nano", model_path = "/dev/null" });
+        return Task.FromResult(new RpcResponse((byte)StatusCode.Ok, meta, Array.Empty<byte>()));
+    }
+}
+
+// RPC double that returns Ok for every op except the one it is told to fail
+// on, where it returns a non-success status (no throw) — lets a test verify
+// the caller checks response STATUS, not just exceptions.
+internal sealed class NonOkOnOpRpcClient : RpcClient
+{
+    private readonly OpCode _nonOkOn;
+    public NonOkOnOpRpcClient(OpCode nonOkOn) : base("test", 0) => _nonOkOn = nonOkOn;
+
+    public override Task<RpcResponse> RequestAsync(
+        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+    {
+        if (op == _nonOkOn)
+            return Task.FromResult(new RpcResponse((byte)StatusCode.Error, "slot restore failed", Array.Empty<byte>()));
         var meta = JsonSerializer.Serialize(new { n_past = 2000, restored = true, stored = true, model_match = true, tokenizer = "llama", model_name = "nano", model_quant = "Q4_K", model_capabilities = 0, model_alias = "nano", model_path = "/dev/null" });
         return Task.FromResult(new RpcResponse((byte)StatusCode.Ok, meta, Array.Empty<byte>()));
     }
