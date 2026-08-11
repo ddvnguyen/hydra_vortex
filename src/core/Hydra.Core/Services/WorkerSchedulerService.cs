@@ -1583,7 +1583,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					else
 					{
 						_log.Warning("model_load_failed Model={M} Worker={W} DurationMs={Ms}", m, w.Name, sw.ElapsedMilliseconds);
-						CoordinatorMetrics.ModelLoadDuration.Observe(sw.Elapsed.TotalSeconds);
+						CoordinatorMetrics.ModelLoadDuration.WithLabels(m).Observe(sw.Elapsed.TotalSeconds);
 						if (item.State == WorkItemState.ModelLoadPrefill && item.PrefillLease != null)
 						{
 							await item.PrefillLease.DisposeAsync();
@@ -1601,7 +1601,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.State = WorkItemState.None;
 						return WorkItemState.None;
 					}
-					CoordinatorMetrics.ModelLoadDuration.Observe(sw.Elapsed.TotalSeconds);
+					CoordinatorMetrics.ModelLoadDuration.WithLabels(m).Observe(sw.Elapsed.TotalSeconds);
 				}
 			}
 		}
@@ -2106,7 +2106,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (prefillResult.PrefillMs > 0)
 					item.Phases["prefill_ms"] = (long)prefillResult.PrefillMs;
 				if (prefillResult.ModelLoadMs > 0)
+				{
 					item.Phases["model_load_ms"] = (long)prefillResult.ModelLoadMs;
+					CoordinatorMetrics.ModelLoadDuration
+						.WithLabels(prefillModel ?? "unknown")
+						.Observe(prefillResult.ModelLoadMs / 1000.0);
+				}
 				if (prefillResult.TokensPerSecond > 0)
 					item.Phases["tokens_per_second"] = (long)prefillResult.TokensPerSecond;
 
@@ -3426,6 +3431,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						mergedResp.TokenizerMatch, mergedResp.ModelNameMatch,
 						mergedResp.ModelCapabilitiesMatch, mergedResp.ModelQuantMatch,
 						mergedResp.ModelAliasMatch);
+					CoordinatorMetrics.RestoreSlotMs.WithLabels(w.Name).Observe(mergedResp.RestoreSlotMs);
+					CoordinatorMetrics.DecodeInitMs.WithLabels(w.Name).Observe(mergedResp.DecodeInitMs);
 
 					if (!mergedResp.Valid || mergedResp.DecodeRequestId <= 0)
 					{
@@ -3573,6 +3580,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						mergedResp.TokenizerMatch, mergedResp.ModelNameMatch,
 						mergedResp.ModelCapabilitiesMatch, mergedResp.ModelQuantMatch,
 						mergedResp.ModelAliasMatch);
+					CoordinatorMetrics.RestoreSlotMs.WithLabels(w.Name).Observe(mergedResp.RestoreSlotMs);
+					CoordinatorMetrics.DecodeInitMs.WithLabels(w.Name).Observe(mergedResp.DecodeInitMs);
 
 					if (mergedResp.Valid && mergedResp.DecodeRequestId > 0)
 					{
@@ -3613,6 +3622,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								item.SessionId, w.Name,
 								hmEl.TryGetProperty("t3_reloaded", out var tr) && tr.GetBoolean(),
 								hmEl.TryGetProperty("t3_reload_ms", out var rm) ? rm.GetDouble() : 0);
+							// #470 non-streaming: PrefillAsync was skipped for this route
+							// (engine did inline prefill+decode over 0x43 DECODE), so
+							// prefill_ms was never recorded. Backfill from the engine's
+							// own prompt_ms — mirrors the streaming hydra_metrics
+							// extraction (see the SSE loop below, ~prompt_ms/decode_ms).
+							if ((!item.Phases.ContainsKey("prefill_ms") || item.Phases["prefill_ms"] == 0)
+								&& hmEl.TryGetProperty("prompt_ms", out var prm) && prm.ValueKind == JsonValueKind.Number)
+							{
+								item.EnginePrefillMs = (long)prm.GetDouble();
+								item.Phases["prefill_ms"] = item.EnginePrefillMs;
+							}
 						}
 						if (_ledger.Lookup(item.SessionId) == null)
 							_ledger.Register(item.SessionId, w.Name,
@@ -3685,6 +3705,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.SessionId, w.Name,
 						hmEl.TryGetProperty("t3_reloaded", out var tr) && tr.GetBoolean(),
 						hmEl.TryGetProperty("t3_reload_ms", out var rm) ? rm.GetDouble() : 0);
+					// #470 non-streaming: PrefillAsync was skipped for this route
+					// (engine did inline prefill+decode over 0x43 DECODE), so
+					// prefill_ms was never recorded. Backfill from the engine's
+					// own prompt_ms — mirrors the streaming hydra_metrics
+					// extraction (see the SSE loop below, ~prompt_ms/decode_ms).
+					if ((!item.Phases.ContainsKey("prefill_ms") || item.Phases["prefill_ms"] == 0)
+						&& hmEl.TryGetProperty("prompt_ms", out var prm) && prm.ValueKind == JsonValueKind.Number)
+					{
+						item.EnginePrefillMs = (long)prm.GetDouble();
+						item.Phases["prefill_ms"] = item.EnginePrefillMs;
+					}
 				}
 
 				// Register in ledger so /status can find the session. The cold_atomic HTTP
@@ -3700,8 +3731,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				TrackAfterCompletion(item.SessionId, resp);
 			}
 		}
+		SplitInlinePrefillFromDecode(item, item.RecordPhase("decode_ms"));
 		CoordinatorMetrics.DecodeDuration.WithLabels(w.Name, RouteLabel(item))
-			.Observe(item.RecordPhase("decode_ms") / 1000.0);
+			.Observe(item.Phases.GetValueOrDefault("decode_ms") / 1000.0);
+		// #470: merged-decode route skipped PrefillAsync (which normally
+		// observes PrefillDuration itself, :2088) — EnginePrefillMs > 0 is
+		// the marker that SplitInlinePrefillFromDecode backfilled prefill_ms
+		// from the engine's own hydra_metrics.prompt_ms, so observe it here
+		// instead of leaving hydra_prefill_seconds silently unrecorded.
+		if (item.EnginePrefillMs > 0)
+			CoordinatorMetrics.PrefillDuration.WithLabels(w.Name, RouteLabel(item))
+				.Observe(item.Phases.GetValueOrDefault("prefill_ms") / 1000.0);
 		return WorkItemState.BgSave;
 	}
 
@@ -3840,6 +3880,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				CoordinatorMetrics.DecodeDuration
 					.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown", RouteLabel(timelineItem))
 					.Observe(timelineItem.Phases.GetValueOrDefault("decode_ms") / 1000.0);
+				// #470: merged-decode route skipped PrefillAsync (which normally
+				// observes PrefillDuration itself, :2088) — EnginePrefillMs > 0
+				// is the marker that FinalizeStreamPhases backfilled prefill_ms
+				// from the engine's own hydra_metrics.prompt_ms, so observe it
+				// here instead of leaving hydra_prefill_seconds silently unrecorded.
+				if (timelineItem.EnginePrefillMs > 0)
+					CoordinatorMetrics.PrefillDuration
+						.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown", RouteLabel(timelineItem))
+						.Observe(timelineItem.Phases.GetValueOrDefault("prefill_ms") / 1000.0);
 				EmitTimeline(timelineItem);
 			}
 
@@ -4115,12 +4164,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private static string RouteLabel(WorkItem item) =>
 		string.IsNullOrEmpty(item.RouteType) ? "unknown" : item.RouteType;
 
-	/// <summary>Set decode_ms/total_ms for a streaming item once the stream has finished.</summary>
-	private static void FinalizeStreamPhases(WorkItem item)
+	/// <summary>
+	/// Split a raw decode-phase duration into prefill_ms/decode_ms when the
+	/// engine did an inline prefill (RouteDecision→Decode skipped
+	/// PrefillAsync). item.EnginePrefillMs is only set via the hydra_metrics/
+	/// timings backfill on that path, so this silently no-ops for classic
+	/// P/D-split requests where PrefillAsync already ran and recorded its
+	/// own prefill_ms. Shared by the streaming (FinalizeStreamPhases) and
+	/// non-streaming (DecodeAsync) completion paths.
+	/// </summary>
+	private static void SplitInlinePrefillFromDecode(WorkItem item, long rawDecodeMs)
 	{
-		var rawDecodeMs = item.ElapsedMs - item.DecodeStartMs;
 		item.Phases["decode_ms"] = rawDecodeMs;
-		item.Phases["total_ms"] = item.ElapsedMs;
 		// Engine mode: when PrefillAsync was skipped (RouteDecision→Decode),
 		// decode_ms includes the engine's inline prefill. Subtract it so the
 		// Grafana stacked bars (prefill + decode) sum to ≈ total_ms.
@@ -4129,6 +4184,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.Phases["decode_ms"] = rawDecodeMs - item.EnginePrefillMs;
 			item.Phases["prefill_ms"] = item.EnginePrefillMs;
 		}
+	}
+
+	/// <summary>Set decode_ms/total_ms for a streaming item once the stream has finished.</summary>
+	private static void FinalizeStreamPhases(WorkItem item)
+	{
+		var rawDecodeMs = item.ElapsedMs - item.DecodeStartMs;
+		SplitInlinePrefillFromDecode(item, rawDecodeMs);
+		item.Phases["total_ms"] = item.ElapsedMs;
 	}
 
 	/// <summary>
@@ -4152,6 +4215,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var saveKvStoreMs = item.Phases.GetValueOrDefault("save_kv_store_ms");
 		var saveKvMs = saveKvRpcMs + saveKvStoreMs;
 		var modelLoadMs = item.Phases.GetValueOrDefault("model_load_ms");
+		// Resolved routing alias (AutoRouter's decision / TranslateModelAlias
+		// target) — distinct from prefill_model/decode_model (what's actually
+		// resident on the engine node). A mismatch is a fallback signal.
+		var requestModel = item.Request.GetValueOrDefault("model")?.ToString() ?? "";
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -4159,7 +4226,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"route_type={RouteLabel(item)} " +
 			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
-			$"prefill_model={prefillModel} decode_model={decodeModel} " +
+			$"prefill_model={prefillModel} decode_model={decodeModel} request_model={requestModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
 			$"model_load_ms={modelLoadMs} " +
 			$"save_kv_ms={saveKvMs} " +
@@ -4171,13 +4238,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status={status}"
 		);
-		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} model_load_ms={ModelLoadMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} request_model={RequestModel} prefill_ms={PrefillMs} model_load_ms={ModelLoadMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
 			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
 			RouteLabel(item),
 			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
-			prefillModel, decodeModel,
+			prefillModel, decodeModel, requestModel,
 			item.Phases.GetValueOrDefault("prefill_ms"), modelLoadMs, saveKvMs,
 			saveKvRpcMs, saveKvStoreMs,
 			item.Phases.GetValueOrDefault("restore_kv_ms"),
@@ -4246,6 +4313,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var saveKvStoreMs = item.Phases.GetValueOrDefault("save_kv_store_ms");
 		var saveKvMs = saveKvRpcMs + saveKvStoreMs;
 		var modelLoadMs = item.Phases.GetValueOrDefault("model_load_ms");
+		var requestModel = item.Request.GetValueOrDefault("model")?.ToString() ?? "";
 		Console.Error.WriteLine(
 			$"event=request_timeline timestamp_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} " +
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
@@ -4253,7 +4321,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"route_type={RouteLabel(item)} " +
 			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +
 			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
-			$"prefill_model={prefillModel} decode_model={decodeModel} " +
+			$"prefill_model={prefillModel} decode_model={decodeModel} request_model={requestModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
 			$"model_load_ms={modelLoadMs} " +
 			$"save_kv_ms={saveKvMs} " +
@@ -4266,13 +4334,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"prefix_hit={(item.PrefixCacheHit ? "true" : "false")} " +
 			$"status={status}"
 		);
-		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} prefill_ms={PrefillMs} model_load_ms={ModelLoadMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
+		Log.Information("event=request_timeline timestamp_ms={TimestampMs} trace_id={TraceId} session_id={SessionId} queue_wait_ms={QueueWaitMs} node={Node} route_type={RouteType} prefill_node={PrefillNode} decode_node={DecodeNode} prefill_model={PrefillModel} decode_model={DecodeModel} request_model={RequestModel} prefill_ms={PrefillMs} model_load_ms={ModelLoadMs} save_kv_ms={SaveKvMs} save_kv_rpc_ms={SaveKvRpcMs} save_kv_store_ms={SaveKvStoreMs} restore_kv_ms={RestoreKvMs} decode_ms={DecodeMs} total_ms={TotalMs} tokens_in={TokensIn} tokens_out={TokensOut} kv_bytes={KvBytes} prefix_hit={PrefixHit} status={Status}",
 			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
 			RouteLabel(item),
 			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
-			prefillModel, decodeModel,
+			prefillModel, decodeModel, requestModel,
 			item.Phases.GetValueOrDefault("prefill_ms"), modelLoadMs, saveKvMs,
 			saveKvRpcMs, saveKvStoreMs,
 			item.Phases.GetValueOrDefault("restore_kv_ms"),
