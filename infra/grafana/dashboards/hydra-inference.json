@@ -128,6 +128,31 @@
       "options": {
         "legend": { "calcs": ["mean"] }
       }
+    },
+    {
+      "type": "row",
+      "title": "Coordinator (Hydra.Core)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Model Load Duration (p50/p95)",
+      "description": "hydra_model_load_seconds — engine-side model swap/reload time (T3 rebuild), observed in WorkerSchedulerService.PrefillAsync. Aggregated across all models; see the request_timeline dashboards for per-request model_load_ms.",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(hydra_model_load_seconds_bucket{job=~\"hydra-core.*\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(hydra_model_load_seconds_bucket{job=~\"hydra-core.*\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "options": {
+        "legend": { "calcs": ["mean"] }
+      }
     }
   ],
   "templating": {

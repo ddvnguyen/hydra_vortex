@@ -53,8 +53,6 @@
               "node": true,
               "tsNs": true,
               "status": true,
-              "prefill_model": true,
-              "decode_model": true,
               "save_kv_rpc_ms": true,
               "save_kv_store_ms": true
             },
@@ -65,17 +63,23 @@
               "route_type": 3,
               "prefill_node": 4,
               "decode_node": 5,
-              "queue_wait_ms": 6,
-              "prefill_ms": 7,
-              "model_load_ms": 8,
-              "save_kv_ms": 9,
-              "restore_kv_ms": 10,
-              "decode_ms": 11,
-              "total_ms": 12
+              "request_model": 6,
+              "prefill_model": 7,
+              "decode_model": 8,
+              "queue_wait_ms": 9,
+              "prefill_ms": 10,
+              "model_load_ms": 11,
+              "save_kv_ms": 12,
+              "restore_kv_ms": 13,
+              "decode_ms": 14,
+              "total_ms": 15
             },
             "renameByName": {
               "prefill_node": "prefill node",
               "decode_node": "decode node",
+              "request_model": "requested model",
+              "prefill_model": "prefill model",
+              "decode_model": "decode model",
               "queue_wait_ms": "queue",
               "prefill_ms": "prefill",
               "model_load_ms": "model switch",
@@ -188,6 +192,18 @@
           {
             "matcher": { "id": "byName", "options": "decode node" },
             "properties": [{ "id": "custom.minWidth", "value": 60 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "requested model" },
+            "properties": [{ "id": "custom.minWidth", "value": 90 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "prefill model" },
+            "properties": [{ "id": "custom.minWidth", "value": 90 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "decode model" },
+            "properties": [{ "id": "custom.minWidth", "value": 90 }]
           }
         ]
       },
