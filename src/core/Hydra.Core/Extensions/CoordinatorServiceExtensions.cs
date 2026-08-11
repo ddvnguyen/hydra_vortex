@@ -104,10 +104,10 @@ public static class CoordinatorServiceExtensions
             var runners = new WorkerStateRunner[]
             {
                 new PlanRunner(planner, leases, ledger, cfg.Workers, tracker, health),
-                new PrefillRunner(engine),
-                new SaveKvRunner(store, ledger),
-                new RestoreRunner(store, engine, ledger),
-                new DecodeRunner(proxy, engine, ledger),
+                new PrefillRunner(engine, proxy),
+                new SaveKvRunner(store, ledger, engine),
+                new RestoreRunner(store, engine, ledger, leases, proxy, cfg),
+                new DecodeRunner(proxy, engine, ledger, cfg, health),
                 new BgSaveRunner(engine, store, ledger),
             };
 

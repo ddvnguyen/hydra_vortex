@@ -28,7 +28,11 @@ public sealed class DifferentialGateTests
     /// <summary>Scenarios the v2 scheduler must byte-match today. Grows with parity.</summary>
     private static readonly HashSet<string> ExpectedParity = new()
     {
-        // Tranche 1 (single-node, HTTP-decode): filled as v2 ports land.
+        // C4 (epic #591): merged-decode (0x43) wire + Gate A accept/reject are
+        // byte-identical to the legacy goldens (framed DECODE 0x43, polled result,
+        // BgSave StateGet+Put; Gate-A reject aborts with no HTTP fallback).
+        "merged_decode_accept",
+        "merged_decode_gate_a_reject",
     };
 
     private readonly ITestOutputHelper _output;

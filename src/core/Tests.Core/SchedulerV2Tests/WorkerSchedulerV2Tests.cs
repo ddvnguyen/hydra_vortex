@@ -49,14 +49,15 @@ public sealed class WorkerSchedulerV2Tests
             ["p100"] = _engine,
         });
         _proxy = new FakeCompletionProxy();
+        var leases = new LeaseManager(_tracker);
 
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), new LeaseManager(_tracker), _ledger, _cfg.Workers, _tracker, health),
-            new PrefillRunner(engine),
-            new SaveKvRunner(store, _ledger),
-            new RestoreRunner(store, engine, _ledger),
-            new DecodeRunner(_proxy, engine, _ledger),
+            new PlanRunner(new RoutePlanner(), leases, _ledger, _cfg.Workers, _tracker, health),
+            new PrefillRunner(engine, _proxy),
+            new SaveKvRunner(store, _ledger, engine),
+            new RestoreRunner(store, engine, _ledger, leases, _proxy, _cfg),
+            new DecodeRunner(_proxy, engine, _ledger, _cfg, health),
             new BgSaveRunner(engine, store, _ledger),
         };
 
