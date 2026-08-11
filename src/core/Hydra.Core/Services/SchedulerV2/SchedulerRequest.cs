@@ -38,6 +38,17 @@ public sealed class SchedulerRequest
     public int RetryCount { get; set; }
     public Exception? Error { get; set; }
 
+    /// <summary>C4 store-reuse flag: this request's KV comes from the STORE, not
+    /// from a fresh prefill in the held slot — RestoreRunner must NOT take the
+    /// same-node skip (the slot was never prefilled into).</summary>
+    public bool RestoreFromStore { get; set; }
+
+    /// <summary>UtcNow when the decode stream was handed to the caller (set by
+    /// DecodeRunner). The streaming reaper finalizes + releases any request whose
+    /// stream was handed off but <c>NotifyStreamComplete</c> never arrived within
+    /// the handoff timeout. Default (never set) requests are never reaped.</summary>
+    public DateTime StreamStartedAt { get; set; }
+
     private readonly Dictionary<string, long> _phaseMs = new();
 
     public string SessionId => Chat.SessionId;

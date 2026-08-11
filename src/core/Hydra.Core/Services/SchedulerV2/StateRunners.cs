@@ -59,13 +59,56 @@ public sealed class PlanRunner : WorkerStateRunner
         var req = ctx.Request;
 
         // The plan is decided ONCE before dispatch (SubmitAsync for Solo; the
-        // evaluator otherwise) and must NOT be re-derived here: re-planning at
-        // RouteDecision sees the just-acquired start slot as busy (self-held),
-        // which would return "no capacity" for a valid Solo/warm route.
+        // evaluator otherwise) and must NOT be re-derived here on the FIRST entry:
+        // re-planning at RouteDecision sees the just-acquired start slot as busy
+        // (self-held), which would return "no capacity" for a valid Solo/warm route.
+        //
+        // C4 retry re-plan: a Prefill retry (Prefill --Retry--> RouteDecision)
+        // re-enters with a STALE plan + the same held prefill lease — re-planning
+        // against LIVE capacity lets the request escape a failing worker (the held
+        // lease pins its worker as busy, so the planner picks a healthy free-slot
+        // alternate). The fresh plan is adopted only when it has capacity; the
+        // held lease stays valid only when the re-plan lands on the same worker.
         var plan = req.Plan;
+        if (req.RetryCount > 0)
+        {
+            var fresh = _planner.Plan(req.Chat, req.Type, _workers, _tracker, _health, _ledger);
+            if (fresh.HasCapacity)
+                plan = req.Plan = fresh;
+        }
+
         req.PrefillWorker = plan.PrefillWorker is null ? null : Resolve(plan.PrefillWorker);
         req.DecodeWorker = plan.DecodeWorker is null ? null : Resolve(plan.DecodeWorker);
         req.RecordPhase("plan_ms", 0);
+
+        // Retry lease swap: release the old prefill lease ONLY when the re-plan
+        // moved to a different worker (never two prefill slots held at once, and
+        // never a lease on a worker we no longer run on). A failed acquisition on
+        // the re-planned worker fails the request with the real reason.
+        if (req.RetryCount > 0 && req.PrefillLease is not null
+            && req.PrefillWorker is not null
+            && req.PrefillLease.WorkerName != req.PrefillWorker.Name)
+        {
+            _leases.Release(req.PrefillLease);
+            req.PrefillLease = null;
+            req.PrefillLease = _leases.TryAcquire(req.PrefillWorker.Name, req.SessionId);
+            if (req.PrefillLease is null)
+            {
+                req.Error = new InvalidOperationException(
+                    $"retry re-route: no free slot on new prefill worker {req.PrefillWorker.Name}");
+                return Task.FromResult(PhaseResult.Fire(SchedulerEvent.Failed));
+            }
+        }
+
+        // C4 ReuseStoreState consume: a cold route whose session has durable store
+        // KV skips the engine prefill — Route → RestoreKv restores the stored KV
+        // directly (legacy migration-path semantics). Solo (warm) routes keep the
+        // PrefillWorker=null shape and stay decode-only below.
+        if (plan.ReuseStoreState && plan.PrefillWorker is not null)
+        {
+            req.RestoreFromStore = true;
+            return Task.FromResult(PhaseResult.Fire(SchedulerEvent.ReuseStore));
+        }
 
         return plan.PrefillWorker is null
             ? Task.FromResult(PhaseResult.Fire(SchedulerEvent.SoloRouted))  // warm/decode-only
@@ -82,8 +125,28 @@ public sealed class PlanRunner : WorkerStateRunner
             return Task.FromResult(PhaseResult.Fire(SchedulerEvent.DecodePicked));
 
         var decodeNode = _planner.PlanDecode(req.Chat, _ledger.Lookup(req.SessionId), _workers, _tracker, _health);
-        if (decodeNode is null || (req.DecodeWorker = Resolve(decodeNode)) is null)
+        if (decodeNode is not null)
+            req.DecodeWorker = Resolve(decodeNode);
+
+        // C4 decode-handoff fallback (legacy no_pd_worker_free mirror): no
+        // decode-capable worker has a free slot at the handoff — decode ON THE
+        // PREFILL NODE instead of failing the request. The KV is still resident in
+        // the held prefill slot (SaveKv already persisted a durable copy), and
+        // RestoreKv's same-node skip decodes in place without a store round-trip.
+        if (req.DecodeWorker is null && req.PrefillWorker?.CanDecode == true)
+        {
+            req.DecodeWorker = req.PrefillWorker;
+            Serilog.Log.Warning("v2_pick_decode_fallback_no_pd_worker Sid={Sid} Node={Node}",
+                req.SessionId, req.DecodeWorker.Name);
+            req.RecordPhase("pick_decode_ms", 0);
+            return Task.FromResult(PhaseResult.Fire(SchedulerEvent.DecodePicked));
+        }
+        if (req.DecodeWorker is null)
+        {
+            req.Error = new InvalidOperationException(
+                $"pick-decode: no decode worker available (prefill node {req.PrefillWorker?.Name ?? "?"} cannot decode)");
             return Task.FromResult(PhaseResult.Fire(SchedulerEvent.Failed));
+        }
 
         // GPU-utilization rule: free the prefill slot, then take the decode slot —
         // never two slots held at once.
@@ -92,7 +155,27 @@ public sealed class PlanRunner : WorkerStateRunner
 
         var decodeLease = _leases.TryAcquire(req.DecodeWorker.Name, req.SessionId);
         if (decodeLease is null)
+        {
+            // C4 fallback: the decode slot vanished between planning and acquisition
+            // (a concurrent request took it). Re-keep the prefill slot — the LIFO
+            // pool returns the KV's own slot — and decode in place on the prefill
+            // node (RestoreKv's same-node skip applies: DecodeLease stays null).
+            // The request must NOT fail: the KV is durable in the Store and still
+            // resident in the re-kept prefill slot.
+            if (req.PrefillWorker?.CanDecode == true)
+            {
+                req.DecodeWorker = req.PrefillWorker;
+                req.PrefillLease = _leases.TryAcquire(req.PrefillWorker.Name, req.SessionId);
+                if (req.PrefillLease is not null)
+                {
+                    req.RecordPhase("pick_decode_ms", 0);
+                    return Task.FromResult(PhaseResult.Fire(SchedulerEvent.DecodePicked));
+                }
+            }
+            req.Error = new InvalidOperationException(
+                $"pick-decode: no decode slot free on {req.DecodeWorker.Name} and the prefill fallback is unavailable");
             return Task.FromResult(PhaseResult.Fire(SchedulerEvent.Failed));
+        }
         req.DecodeLease = decodeLease;
 
         req.RecordPhase("pick_decode_ms", 0);
@@ -339,8 +422,11 @@ public sealed class RestoreRunner : WorkerStateRunner
 
         // Same-node decode (true atomic, no slot swap): the KV is already resident
         // in the held prefill slot — no store Get + StatePut round-trip (wire
-        // parity: cold_atomic_engine golden has none).
-        if (req.DecodeLease is null && req.DecodeWorker.Name == req.PrefillWorker?.Name)
+        // parity: cold_atomic_engine golden has none). C4 store-reuse route
+        // (RouteDecision --ReuseStore--> RestoreKv) must NOT skip: its KV lives in
+        // the STORE, not in the freshly-acquired prefill slot (#469 would decode
+        // over an empty slot).
+        if (!req.RestoreFromStore && req.DecodeLease is null && req.DecodeWorker?.Name == req.PrefillWorker?.Name)
             return PhaseResult.Fire(SchedulerEvent.RestoreSucceeded);
 
         var kv = await _store.GetAsync(StoreKeys.KvKey(req.SessionId), ct);
@@ -539,6 +625,7 @@ public sealed class DecodeRunner : WorkerStateRunner
             var stream = _proxy.ProxyCompletionStreamAsync(workerUrl, req.Chat.Body, req.TraceId, ct);
             req.DecodeChunks = TrackStreamUsage(req, stream);
             RegisterIfMissing(req, req.DecodeWorker.Name, RestoreRunner.DecodeSlotId(req), req.NPastAfter);
+            req.StreamStartedAt = DateTime.UtcNow; // reaper clock: stream handed to the caller
             req.StreamReady.TrySetResult(req.DecodeChunks);
             return PhaseResult.Wait; // resumed by NotifyStreamComplete
         }
@@ -613,6 +700,7 @@ public sealed class DecodeRunner : WorkerStateRunner
                 var mergedStream = _proxy.PollDecodeStreamAsync(workerUrl, resp.DecodeRequestId!.Value, req.TraceId, ct);
                 req.DecodeChunks = TrackStreamUsage(req, mergedStream);
                 RegisterIfMissing(req, req.DecodeWorker.Name, RestoreRunner.DecodeSlotId(req), req.NPastAfter);
+                req.StreamStartedAt = DateTime.UtcNow; // reaper clock: stream handed to the caller
                 req.StreamReady.TrySetResult(req.DecodeChunks);
                 return PhaseResult.Wait; // resumed by NotifyStreamComplete
             }

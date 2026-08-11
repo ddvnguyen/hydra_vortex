@@ -29,6 +29,15 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 {
     private const int AdmissionCapacity = 4096;
 
+    /// <summary>Streaming reaper cadence: how often suspended streaming requests
+    /// are scanned for a missed <c>NotifyStreamComplete</c> (C4 resilience).</summary>
+    private static readonly TimeSpan StreamReaperInterval = TimeSpan.FromSeconds(10);
+
+    /// <summary>Streaming reaper timeout: a streamed request whose stream was
+    /// handed to the caller but <c>NotifyStreamComplete</c> never arrived within
+    /// this window is finalized (Cancelled) and its leases released.</summary>
+    private static readonly TimeSpan StreamHandoffTimeout = TimeSpan.FromMinutes(5);
+
     private readonly CoordinatorConfig _cfg;
     private readonly ISessionLedger _ledger;
     private readonly IWorkerTracker _tracker;
@@ -42,7 +51,13 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
     private readonly PriorityWaiterQueue<SchedulerRequest> _admission = new(AdmissionCapacity);
     private readonly MailboxExecutor _admissionExecutor = new();
-    private readonly ConcurrentDictionary<string, SchedulerRequest> _streaming = new();
+    // Streaming map keyed by TraceId (C4): two concurrent streaming turns on one
+    // session must not overwrite each other's entry (a SessionId key would orphan
+    // the first turn's lease). The session→traceId index resolves the LATEST turn
+    // for the one-arg NotifyStreamComplete contract; the reaper cleans up turns
+    // whose NotifyStreamComplete never arrives.
+    private readonly ConcurrentDictionary<string, SchedulerRequest> _streaming = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _sessionToTraceId = new(StringComparer.Ordinal);
 
     // ── IWorkerScheduler: last-dispatched telemetry (populated at decode start) ──
 
@@ -200,8 +215,12 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             if (suspended)
             {
                 // Streaming: the slot stays held until NotifyStreamComplete
-                // (which releases it — no warm lease for streaming turns).
-                _streaming[req.SessionId] = req;
+                // (which releases it — no warm lease for streaming turns). C4:
+                // keyed by TraceId so a second concurrent streaming turn on the
+                // same session cannot overwrite the first; the session→traceId
+                // index tracks the LATEST turn for the one-arg notify contract.
+                _streaming[req.TraceId] = req;
+                _sessionToTraceId[req.SessionId] = req.TraceId;
             }
             else if (req.State == WorkItemState.Done && !req.IsStreaming)
             {
@@ -356,6 +375,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         m.Configure(WorkItemState.RouteDecision)
             .On(SchedulerEvent.RouteSucceeded, WorkItemState.Prefill)
             .On(SchedulerEvent.SoloRouted, WorkItemState.Decode) // warm/decode-only: KV resident
+            .On(SchedulerEvent.ReuseStore, WorkItemState.RestoreKv) // C4: store KV reuse skips prefill
             .On(SchedulerEvent.Failed, WorkItemState.Failed)
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
 
@@ -421,8 +441,71 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         _admissionExecutor.Start();
         _health.HealthyChanged += SignalEvaluator;
         _tracker.SlotReleased += SignalEvaluator; // wake the evaluator on ANY slot release (review)
+        _ = ReapStreamsLoopAsync(ct); // C4: streaming reaper (missed NotifyStreamComplete)
         return AwaitShutdown(ct);
     }
+
+    /// <summary>Periodic streaming reaper: finalizes + releases any streamed
+    /// request whose stream was handed to the caller but <c>NotifyStreamComplete</c>
+    /// never arrived within <see cref="StreamHandoffTimeout"/>. Without this a
+    /// dropped SSE client would orphan the turn's slot lease forever.</summary>
+    private async Task ReapStreamsLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(StreamReaperInterval, ct);
+                try
+                {
+                    await ReapStreamedRequestsAsync(ct);
+                }
+                catch (Exception ex)
+                {
+                    _log.Warning(ex, "v2_stream_reaper_cycle_error");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // shutdown
+        }
+    }
+
+    /// <summary>One reaper pass over the streaming map. Internal so tests can
+    /// drive it deterministically without waiting on the 10s timer.</summary>
+    internal async Task ReapStreamedRequestsAsync(CancellationToken ct)
+    {
+        foreach (var (traceId, req) in _streaming.ToArray())
+        {
+            if (req.StreamStartedAt == default
+                || DateTime.UtcNow - req.StreamStartedAt < StreamHandoffTimeout)
+                continue;
+
+            if (!_streaming.TryRemove(traceId, out _))
+                continue; // NotifyStreamComplete won the race
+
+            if (_sessionToTraceId.TryGetValue(req.SessionId, out var current) && current == traceId)
+                _sessionToTraceId.TryRemove(req.SessionId, out _);
+
+            _log.Warning(
+                "v2_stream_reaped Sid={Sid} Trace={Trace} AgeS={AgeS:F0} — NotifyStreamComplete never arrived within {Timeout}",
+                req.SessionId, req.TraceId, (DateTime.UtcNow - req.StreamStartedAt).TotalSeconds, StreamHandoffTimeout);
+            req.Error = new TimeoutException(
+                $"streaming request {req.TraceId} reaped: NotifyStreamComplete never arrived within {StreamHandoffTimeout}");
+
+            var machine = NewMachine(WorkItemState.Decode);
+            await machine.FireAsync(SchedulerEvent.Cancelled, req, CancellationToken.None);
+            req.State = machine.State;
+            ReleaseLeases(req);
+            _ledger.MarkEvicted(req.SessionId); // reaped stream: no warm lease (golden SlotFreed=true)
+            await FinalizeAsync(req, req.State);
+        }
+    }
+
+    /// <summary>Streaming requests currently suspended awaiting NotifyStreamComplete
+    /// (internal — observable for tests).</summary>
+    internal IReadOnlyCollection<SchedulerRequest> StreamingRequests => _streaming.Values.ToArray();
 
     private async Task AwaitShutdown(CancellationToken ct)
     {
@@ -437,11 +520,25 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
     }
 
     /// <summary>Resumes a suspended streaming request and completes it: the stream
-    /// already delivered its chunks, so skip decode and run background-save to Done.</summary>
-    public async Task NotifyStreamComplete(string sessionId)
+    /// already delivered its chunks, so skip decode and run background-save to Done.
+    /// The streaming map is keyed by TraceId (C4), so the session's LATEST turn is
+    /// resolved via the session→traceId index; callers that know the exact turn can
+    /// pass its traceId via the overload.</summary>
+    public Task NotifyStreamComplete(string sessionId)
     {
-        if (!_streaming.TryRemove(sessionId, out var req))
+        _sessionToTraceId.TryGetValue(sessionId, out var traceId);
+        return NotifyStreamComplete(sessionId, traceId);
+    }
+
+    /// <summary>Resume the streaming request with the given traceId directly
+    /// (bypasses the session→latest-turn resolution).</summary>
+    public async Task NotifyStreamComplete(string sessionId, string? traceId)
+    {
+        if (string.IsNullOrEmpty(traceId) || !_streaming.TryRemove(traceId, out var req))
             return;
+
+        if (_sessionToTraceId.TryGetValue(sessionId, out var current) && current == traceId)
+            _sessionToTraceId.TryRemove(sessionId, out _);
 
         try
         {

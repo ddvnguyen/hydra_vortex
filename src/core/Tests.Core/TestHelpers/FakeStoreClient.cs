@@ -10,7 +10,7 @@ namespace Tests.Core.TestHelpers;
 /// </summary>
 public sealed class FakeStoreClient : RpcClient
 {
-	private readonly ConcurrentDictionary<OpCode, (byte Status, string? Meta)> _responses = new();
+	private readonly ConcurrentDictionary<OpCode, (byte Status, string? Meta, byte[] Payload)> _responses = new();
 	private readonly ConcurrentDictionary<OpCode, Exception?> _exceptions = new();
 	private readonly ConcurrentBag<(OpCode Op, string Key, int PayloadLen)> _calls = new();
 
@@ -23,9 +23,10 @@ public sealed class FakeStoreClient : RpcClient
 	public int CallCount(OpCode op) => _calls.Count(c => c.Op == op);
 
 	/// <summary>Set a fixed response for an op. When set, <see cref="RequestAsync"/>
-	/// returns this instead of the default Ok.</summary>
-	public void SetResponse(OpCode op, byte status, string? meta = null)
-		=> _responses[op] = (status, meta);
+	/// returns this instead of the default Ok. <paramref name="payload"/> is the
+	/// response payload (defaults to empty — e.g. a store Get KV blob).</summary>
+	public void SetResponse(OpCode op, byte status, string? meta = null, byte[]? payload = null)
+		=> _responses[op] = (status, meta, payload ?? Array.Empty<byte>());
 
 	/// <summary>Set an exception to throw for an op. When set, <see cref="RequestAsync"/>
 	/// throws instead of returning a response.</summary>
@@ -42,7 +43,7 @@ public sealed class FakeStoreClient : RpcClient
 			throw ex;
 
 		if (_responses.TryGetValue(op, out var r))
-			return Task.FromResult(new RpcResponse(r.Status, r.Meta, []));
+			return Task.FromResult(new RpcResponse(r.Status, r.Meta, r.Payload));
 
 		return Task.FromResult(new RpcResponse(
 			(byte)StatusCode.Ok, null, []));

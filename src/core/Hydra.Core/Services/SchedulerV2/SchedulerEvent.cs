@@ -14,6 +14,9 @@ public enum SchedulerEvent
     RouteSucceeded,
     /// <summary>Warm/decode-only route (Solo): KV is resident — skip prefill, move straight to decode.</summary>
     SoloRouted,
+    /// <summary>C4 store-reuse route: the session has durable store KV — skip the
+    /// engine prefill and restore the stored KV directly (Route → RestoreKv).</summary>
+    ReuseStore,
     /// <summary>Engine prefill succeeded (KV produced); move to save-KV.</summary>
     PrefillSucceeded,
     /// <summary>KV persisted to Store; move to the decode-worker handoff.</summary>

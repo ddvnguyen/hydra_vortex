@@ -31,6 +31,11 @@ internal sealed class FakeEngineRpcClient : IEngineRpcClient
     /// <summary>When true, EnginePrefill throws (simulates a transient engine fault).</summary>
     public bool FailPrefill { get; set; }
 
+    /// <summary>When true, EnginePrefill throws exactly ONCE, then succeeds —
+    /// simulates a single transient fault so a retry re-route can be observed.</summary>
+    public bool FailPrefillOnce { get; set; }
+    private int _prefillFailuresFired;
+
     /// <summary>When true, EnginePrefill returns NotImplemented (old binary, #279).</summary>
     public bool MakePrefillNotImplemented { get; set; }
 
@@ -51,6 +56,10 @@ internal sealed class FakeEngineRpcClient : IEngineRpcClient
         Calls.Add((op, key, payload.Length));
 
         if (op == OpCode.EnginePrefill && FailPrefill)
+            throw new InvalidOperationException("simulated engine prefill fault");
+
+        if (op == OpCode.EnginePrefill && FailPrefillOnce
+            && Interlocked.CompareExchange(ref _prefillFailuresFired, 1, 0) == 0)
             throw new InvalidOperationException("simulated engine prefill fault");
 
         if (op == OpCode.EnginePrefill && MakePrefillNotImplemented)
