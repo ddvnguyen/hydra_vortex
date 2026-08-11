@@ -307,6 +307,13 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
                 req.Completion.TrySetResult(new FinalCompletionResult(req.Response ?? new { status = "done" }));
                 break;
             case WorkItemState.Failed:
+                // Atomic (single-node) requests hold no warm slot: a failure releases
+                // the slot, so the ledger must reflect that the KV is store-only
+                // (SlotFreed=true + HasStoreState=true — the legacy atomic wire runs
+                // SaveKv → MarkEvicted before decode, so even a decode failure leaves
+                // the entry evicted; golden merged_decode_gate_a_reject pins this).
+                if (req.Type == RequestType.Atomic)
+                    _ledger.MarkEvicted(req.SessionId);
                 req.Completion.TrySetException(req.Error ?? new InvalidOperationException($"request failed in state {terminal}"));
                 break;
             case WorkItemState.Cancelled:
@@ -372,6 +379,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
         m.Configure(WorkItemState.RestoreKv)
             .On(SchedulerEvent.RestoreSucceeded, WorkItemState.Decode)
+            .On(SchedulerEvent.Reprefill, WorkItemState.Prefill) // #470 cross-model abort → re-prefill on the correct model
             .On(SchedulerEvent.Failed, WorkItemState.Failed)
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
 

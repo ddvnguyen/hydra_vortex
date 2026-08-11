@@ -16,6 +16,10 @@ public interface ICompletionProxyService
     Task<Dictionary<string, object>> PollDecodeResultAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
     // #470: DELETE /v1/decode/{decodeRequestId} to cancel orphaned generation.
     Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
+
+    /// <summary>#470: erase a slot's KV state (POST /slots/{id}?action=erase).
+    /// Best-effort — the engine tolerates missing slot-save support (404/501).</summary>
+    Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct);
 }
 
 /// <summary>Kind of a completed submission: a buffered final response, or a live SSE stream.</summary>

@@ -28,13 +28,15 @@ public sealed class V2ArchitectureTests
     }
 
     private static IEnumerable<WorkerStateRunner> BuildRunners(IStoreGateway store, IEngineRpcGateway engine, ICompletionProxyService proxy,
-        ISessionLedger ledger, IWorkerTracker tracker, IHealthMonitorService health)
+        ISessionLedger ledger, IWorkerTracker tracker, IHealthMonitorService health, CoordinatorConfig? cfg = null)
     {
-        yield return new PlanRunner(new RoutePlanner(), new LeaseManager(tracker), ledger, Workers, tracker, health);
-        yield return new PrefillRunner(engine);
-        yield return new SaveKvRunner(store, ledger);
-        yield return new RestoreRunner(store, engine, ledger);
-        yield return new DecodeRunner(proxy, engine, ledger);
+        var leases = new LeaseManager(tracker);
+        var config = cfg ?? new CoordinatorConfig();
+        yield return new PlanRunner(new RoutePlanner(), leases, ledger, Workers, tracker, health);
+        yield return new PrefillRunner(engine, proxy);
+        yield return new SaveKvRunner(store, ledger, engine);
+        yield return new RestoreRunner(store, engine, ledger, leases, proxy, config);
+        yield return new DecodeRunner(proxy, engine, ledger, config, health);
         yield return new BgSaveRunner(engine, store, ledger);
     }
 

@@ -89,6 +89,9 @@ internal sealed class TestCompletionProxy : ICompletionProxyService
 
 	public Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
 		=> Task.CompletedTask;
+
+	public Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct)
+		=> Task.CompletedTask;
 }
 
 internal sealed class TestRpcClient : RpcClient

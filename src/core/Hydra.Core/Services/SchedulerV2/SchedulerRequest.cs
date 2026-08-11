@@ -27,6 +27,12 @@ public sealed class SchedulerRequest
 
     public int NPastAfter { get; set; }
     public byte[]? KvBlob { get; set; }
+
+    /// <summary>Model identity of the slot that built the KV (from the engine's
+    /// PREFILL response meta). Gate A (DECODE 0x43) sends this as kv_metadata and
+    /// the cross-model guard compares it against the restore slot's identity.</summary>
+    public ModelIdentity KvIdentity { get; set; } = ModelIdentity.Empty;
+
     public object? Response { get; set; }
     public IAsyncEnumerable<byte[]>? DecodeChunks { get; set; }
     public int RetryCount { get; set; }

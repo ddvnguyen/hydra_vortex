@@ -98,14 +98,15 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
         };
         var store = new StoreGateway(Rpc);
         var engine = new EngineRpcGateway(channels);
+        var leases = new LeaseManager(Tracker);
 
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), new LeaseManager(Tracker), Ledger, Cfg.Workers, Tracker, Health),
-            new PrefillRunner(engine),
-            new SaveKvRunner(store, Ledger),
-            new RestoreRunner(store, engine, Ledger),
-            new DecodeRunner(Proxy, Ledger),
+            new PlanRunner(new RoutePlanner(), leases, Ledger, Cfg.Workers, Tracker, Health),
+            new PrefillRunner(engine, Proxy),
+            new SaveKvRunner(store, Ledger, engine),
+            new RestoreRunner(store, engine, Ledger, leases, Proxy, Cfg),
+            new DecodeRunner(Proxy, engine, Ledger, Cfg, Health),
             new BgSaveRunner(engine, store, Ledger),
         };
 

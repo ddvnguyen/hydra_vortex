@@ -25,6 +25,10 @@ public enum SchedulerEvent
     DecodePicked,
     /// <summary>KV restored onto the decode worker; move to decode.</summary>
     RestoreSucceeded,
+    /// <summary>StatePut rejected the KV on model-identity grounds (#470): the
+    /// restore is aborted, the slot erased, and the request re-prefills on the
+    /// correct model (RestoreKv → Prefill).</summary>
+    Reprefill,
     /// <summary>Decode completed; move to background save (stream teardown).</summary>
     DecodeSucceeded,
     /// <summary>Background save completed; move to Done.</summary>
