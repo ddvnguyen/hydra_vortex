@@ -33,7 +33,7 @@ public sealed class WorkerSchedulerV2Tests
     private WorkerSchedulerV2 _scheduler = null!;
     private CancellationTokenSource _runCts = null!;
 
-    private async Task Setup(FakeHealthMonitor? health = null)
+    private async Task Setup(FakeHealthMonitor? health = null, FakeStoreClient? storeClient = null)
     {
         _engine = new FakeEngineRpcClient();
         _tracker = new WorkerTracker();
@@ -41,7 +41,8 @@ public sealed class WorkerSchedulerV2Tests
         foreach (var w in _cfg.Workers) _tracker.InitWorker(w.Name, w.Slots);
         health ??= new FakeHealthMonitor();
 
-        var store = new StoreGateway(new FakeStoreClient());
+        storeClient ??= new FakeStoreClient();
+        var store = new StoreGateway(storeClient);
         var engine = new EngineRpcGateway(new Dictionary<string, IEngineRpcClient>
         {
             ["rtx"] = _engine,
@@ -56,7 +57,7 @@ public sealed class WorkerSchedulerV2Tests
             new SaveKvRunner(store, _ledger),
             new RestoreRunner(store, engine, _ledger),
             new DecodeRunner(_proxy, _ledger),
-            new BgSaveRunner(),
+            new BgSaveRunner(engine, store, _ledger),
         };
 
         _scheduler = new WorkerSchedulerV2(
@@ -236,6 +237,36 @@ public sealed class WorkerSchedulerV2Tests
 
         // C2: the warm slot was REUSED — still exactly one stashed lease (not two).
         Assert.Equal(1, _scheduler.WarmLeaseCount);
+        _runCts.Cancel();
+    }
+
+    [Fact]
+    public async Task Cold_Atomic_BgSaves_The_PostDecode_Kv()
+    {
+        await Setup();
+        await Submit();
+
+        // C3: after decode, the slot's FINAL KV is captured (StateGet) and persisted
+        // (Put {session}.kv) — the BgSave, while the slot is still held.
+        Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.StateGet);
+        Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.StatePut); // restore (atomic same-node)
+        _runCts.Cancel();
+    }
+
+    [Fact]
+    public async Task Store_Down_Falls_Back_To_SameNode_Decode_And_Completes()
+    {
+        // Golden store_exception: Store Put throws during SaveKv → fall back to
+        // same-node decode (KV stays in the prefill slot); the BgSave Put failure
+        // is swallowed — the request MUST complete.
+        var storeClient = new FakeStoreClient();
+        storeClient.SetException(Hydra.Shared.OpCode.Put, new IOException("store: tmpfs write failed"));
+        await Setup(storeClient: storeClient);
+
+        var result = await Submit();
+
+        Assert.NotNull(result);
+        Assert.Equal("rtx", _scheduler.LastDispatchedNode); // same-node decode fallback
         _runCts.Cancel();
     }
 }

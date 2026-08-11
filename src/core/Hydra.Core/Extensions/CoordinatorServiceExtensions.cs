@@ -105,10 +105,10 @@ public static class CoordinatorServiceExtensions
             {
                 new PlanRunner(planner, leases, ledger, cfg.Workers, tracker, health),
                 new PrefillRunner(engine),
-                new SaveKvRunner(store),
-                new RestoreRunner(store, engine),
-                new DecodeRunner(proxy),
-                new BgSaveRunner(),
+                new SaveKvRunner(store, ledger),
+                new RestoreRunner(store, engine, ledger),
+                new DecodeRunner(proxy, ledger),
+                new BgSaveRunner(engine, store, ledger),
             };
 
             return new WorkerSchedulerV2(

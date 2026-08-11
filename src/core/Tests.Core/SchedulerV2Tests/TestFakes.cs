@@ -41,6 +41,11 @@ internal sealed class FakeEngineRpcClient : IEngineRpcClient
                 JsonSerializer.Serialize(new { n_past = 7, state_size = 4096 }),
                 Enumerable.Range(0, 4096).Select(i => (byte)(i % 251)).ToArray()));
 
+        if (op == OpCode.StateGet) // BgSave capture: the slot's post-decode KV
+            return Task.FromResult(new RpcResponse(
+                (byte)StatusCode.Ok, null,
+                Enumerable.Range(0, 2048).Select(i => (byte)(i % 251)).ToArray()));
+
         return Task.FromResult(new RpcResponse((byte)StatusCode.Ok, null, []));
     }
 }

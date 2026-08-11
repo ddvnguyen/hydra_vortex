@@ -18,6 +18,9 @@ public enum SchedulerEvent
     PrefillSucceeded,
     /// <summary>KV persisted to Store; move to the decode-worker handoff.</summary>
     SaveKvSucceeded,
+    /// <summary>Store Put failed during SaveKv: fall back to same-node decode (the
+    /// KV stays in the prefill slot) — skip restore, decode in place.</summary>
+    SaveKvFallbackSucceeded,
     /// <summary>Decode worker selected + its slot acquired; move to restore.</summary>
     DecodePicked,
     /// <summary>KV restored onto the decode worker; move to decode.</summary>

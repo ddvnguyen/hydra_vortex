@@ -13,6 +13,13 @@ public interface IStoreGateway
     Task<byte[]?> GetAsync(string sessionId, CancellationToken ct);
 }
 
+public static class StoreKeys
+{
+    /// <summary>The store key for a session's KV blob (<c>{sessionId}.kv</c> — the
+    /// wire key the goldens pin).</summary>
+    public static string KvKey(string sessionId) => $"{sessionId}.kv";
+}
+
 public sealed class StoreGateway : IStoreGateway
 {
     private readonly RpcClient _store;

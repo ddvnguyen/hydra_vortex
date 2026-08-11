@@ -103,10 +103,10 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
         {
             new PlanRunner(new RoutePlanner(), new LeaseManager(Tracker), Ledger, Cfg.Workers, Tracker, Health),
             new PrefillRunner(engine),
-            new SaveKvRunner(store),
-            new RestoreRunner(store, engine),
-            new DecodeRunner(Proxy),
-            new BgSaveRunner(),
+            new SaveKvRunner(store, Ledger),
+            new RestoreRunner(store, engine, Ledger),
+            new DecodeRunner(Proxy, Ledger),
+            new BgSaveRunner(engine, store, Ledger),
         };
 
         Scheduler = new WorkerSchedulerV2(

@@ -342,6 +342,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
         m.Configure(WorkItemState.SaveKv)
             .On(SchedulerEvent.SaveKvSucceeded, WorkItemState.PickDecode)
+            .On(SchedulerEvent.SaveKvFallbackSucceeded, WorkItemState.Decode) // store-down: decode in place
             .On(SchedulerEvent.Failed, WorkItemState.Failed)
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
 

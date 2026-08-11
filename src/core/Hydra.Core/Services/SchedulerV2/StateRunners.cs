@@ -163,9 +163,25 @@ public sealed class SaveKvRunner : WorkerStateRunner
         if (req.KvBlob is null || req.PrefillWorker is null)
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
-        var ok = await _store.PutAsync(req.SessionId, req.KvBlob, ct);
-        if (!ok)
-            return PhaseResult.Fire(SchedulerEvent.Failed);
+        bool saved;
+        try
+        {
+            saved = await _store.PutAsync(StoreKeys.KvKey(req.SessionId), req.KvBlob, ct);
+        }
+        catch (Exception ex)
+        {
+            req.Error = ex;
+            saved = false;
+        }
+
+        if (!saved)
+        {
+            // C3 store-fallback (golden store_exception): the store write failed —
+            // keep the KV in the prefill slot and decode IN PLACE on the same node
+            // (skip restore). The request must NOT fail.
+            req.DecodeWorker = req.PrefillWorker;
+            return PhaseResult.Fire(SchedulerEvent.SaveKvFallbackSucceeded);
+        }
 
         // C1: register on the prefill node with the post-prefill n_past, and stamp
         // store state (the KV blob is now durable).
@@ -199,7 +215,7 @@ public sealed class RestoreRunner : WorkerStateRunner
         if (req.DecodeWorker is null)
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
-        var kv = await _store.GetAsync(req.SessionId, ct);
+        var kv = await _store.GetAsync(StoreKeys.KvKey(req.SessionId), ct);
         if (kv is null)
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
@@ -313,12 +329,53 @@ public sealed class DecodeRunner : WorkerStateRunner
     };
 }
 
-/// <summary>Background save after a stream ends. No-op for the current tranche
-/// (single-blob save already happened); write-behind is a later tranche.</summary>
+/// <summary>
+/// Background save (C3 core function): capture the slot's FINAL KV (StateGet)
+/// and persist it to the Store so the next turn / migration can restore the
+/// post-decode state.
+///
+/// <para><b>Rules (legacy #277/#286 + golden store_exception):</b> the capture
+/// runs while the slot is still HELD (the streaming resume drives this state
+/// before releasing the lease); the RPCs use <c>CancellationToken.None</c>; a
+/// failure is logged and SWALLOWED — a bg-save failure must not fail the request.
+/// The Store key is the pinned <c>{sessionId}.kv</c>.</para>
+/// </summary>
 public sealed class BgSaveRunner : WorkerStateRunner
 {
+    private readonly IEngineRpcGateway _engine;
+    private readonly IStoreGateway _store;
+    private readonly ISessionLedger _ledger;
     public override WorkItemState State => WorkItemState.BgSave;
 
-    public override Task<PhaseResult> RunAsync(RunnerContext ctx, CancellationToken ct)
-        => Task.FromResult(PhaseResult.Fire(SchedulerEvent.BgSaveSucceeded));
+    public BgSaveRunner(IEngineRpcGateway engine, IStoreGateway store, ISessionLedger ledger)
+    {
+        _engine = engine;
+        _store = store;
+        _ledger = ledger;
+    }
+
+    public override async Task<PhaseResult> RunAsync(RunnerContext ctx, CancellationToken ct)
+    {
+        var req = ctx.Request;
+        var worker = req.DecodeWorker?.Name ?? req.PrefillWorker?.Name;
+        if (worker is null)
+            return PhaseResult.Fire(SchedulerEvent.BgSaveSucceeded); // nothing to save
+
+        try
+        {
+            var slotKey = RestoreRunner.DecodeSlotId(req)?.ToString() ?? "0";
+            var kv = await _engine.CaptureAsync(worker, slotKey, CancellationToken.None);
+            if (kv is not null)
+            {
+                await _store.PutAsync(StoreKeys.KvKey(req.SessionId), kv, CancellationToken.None);
+                _ledger.MarkStoreState(req.SessionId);
+            }
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "v2_bg_save_failed Sid={Sid}", req.SessionId);
+        }
+
+        return PhaseResult.Fire(SchedulerEvent.BgSaveSucceeded);
+    }
 }

@@ -33,6 +33,11 @@ public interface IEngineRpcGateway
 {
     Task<EnginePrefillResult> PrefillAsync(string worker, ChatRequest chat, CancellationToken ct);
     Task<bool> RestoreAsync(string worker, string sessionId, ReadOnlyMemory<byte> kv, int nPast, CancellationToken ct);
+
+    /// <summary>Capture the slot's CURRENT KV (StateGet) — used by BgSave to keep
+    /// the Store in sync with the post-decode slot. Returns null when the engine
+    /// cannot produce it.</summary>
+    Task<byte[]?> CaptureAsync(string worker, string slotKey, CancellationToken ct);
 }
 
 public sealed class EngineRpcGateway : IEngineRpcGateway
@@ -69,6 +74,12 @@ public sealed class EngineRpcGateway : IEngineRpcGateway
         var body = JsonSerializer.SerializeToUtf8Bytes(new { n_past = nPast });
         var resp = await Channel(worker).RequestAsync(OpCode.StatePut, sessionId, kv, $"v2-restore-{sessionId}", ct);
         return resp.Status == (byte)StatusCode.Ok;
+    }
+
+    public async Task<byte[]?> CaptureAsync(string worker, string slotKey, CancellationToken ct)
+    {
+        var resp = await Channel(worker).RequestAsync(OpCode.StateGet, slotKey, ReadOnlyMemory<byte>.Empty, $"v2-stateget-{slotKey}", ct);
+        return resp.Status == (byte)StatusCode.Ok ? resp.Payload : null;
     }
 
     private IEngineRpcClient Channel(string worker)
