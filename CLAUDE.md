@@ -33,7 +33,7 @@ Details: `docs/combined-engine-mode.md`.
 
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host (CUDA0, primary)
-- RTX 3060 12 GB sm_86, CUDA 13.2 — host (CUDA1, SOLO + COMBINED peer, ggml-RPC :9504)
+- RTX 3060 12 GB sm_86, CUDA 13.2 — host (CUDA1, peer-only for COMBINED mode, ggml-RPC :9504)
 - Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM (192.168.122.21:8086, Q5_K-balanced)
 - tmpfs 30 GB at /mnt/llm-ram. Model: Qwopus3.6-35B-A3B (Q3_K-mini on host, Q5_K-balanced on P100)
 
