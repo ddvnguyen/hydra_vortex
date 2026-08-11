@@ -85,12 +85,19 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
 
     public int? GetIdleSlot(string name) { var info = GetNodeInfo(name); return info?.Slots.FirstOrDefault(s => !s.IsProcessing)?.Id; }
     public NodeInfo? GetNodeInfo(string name) { lock (_lock) return _nodes.TryGetValue(name, out var n) ? Clone(n) : null; }
-    public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
+    public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
     {
         lock (_lock)
         {
             if (_nodes.TryGetValue(nodeName, out var n))
             {
+                // CurrentModel is the GGUF-file alias of the model actually
+                // resident on the node (#479/S3). It feeds the request_timeline
+                // prefill_model/decode_model fields and AutoRouter's residency
+                // check. Only stamp when we have a real alias — don't clear a
+                // known-good value with an empty string.
+                if (!string.IsNullOrEmpty(modelAlias))
+                    n.CurrentModel = modelAlias;
                 n.ModelTokenizer = tokenizer;
                 n.ModelName = modelName;
                 n.ModelQuant = modelQuant;
@@ -231,6 +238,20 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         lock (_lock)
         {
             _nodes.TryGetValue(w.Name, out var prev);
+            // #479/S3: the resident model is stamped per-request by the worker
+            // scheduler (UpdateNodeModelIdentity). The poll doesn't know the
+            // model, so carry the last-known identity forward instead of
+            // replacing the node with a blank slate each cycle — otherwise the
+            // request_timeline prefill_model/decode_model fields go empty
+            // between the stamp and the next PREFILL.
+            if (prev != null)
+            {
+                info.CurrentModel = prev.CurrentModel;
+                info.ModelTokenizer = prev.ModelTokenizer;
+                info.ModelName = prev.ModelName;
+                info.ModelQuant = prev.ModelQuant;
+                info.ModelCapabilities = prev.ModelCapabilities;
+            }
             info.StuckSlots = StuckSlotDetector.Apply(prev?.Slots, info.Slots, _cfg.StuckSlotCycles);
             foreach (var slot in info.Slots)
                 if (slot.StuckPollCount == _cfg.StuckSlotCycles)  // log once, on the cycle it crosses

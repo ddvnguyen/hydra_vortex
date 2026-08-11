@@ -449,7 +449,7 @@ public sealed class MergedDecodeFallbackTests
         };
         public Dictionary<string, object> GetHealthSummary() => new();
         public event Action? HealthyChanged;
-        public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+        public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
         public void MarkHealthy(string nodeName) { }
     }
 

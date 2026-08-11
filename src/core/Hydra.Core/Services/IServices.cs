@@ -65,7 +65,7 @@ public interface IHealthMonitorService
     /// Called by the worker scheduler after a PREFILL response populates
     /// the KV model identity so Gate A can verify identity at DECODE time.
     /// </summary>
-    void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities);
+    void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities);
 
     /// <summary>
     /// #592: re-mark a node healthy based on positive liveness evidence that

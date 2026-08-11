@@ -115,11 +115,13 @@ try {
   const BG_ORDER = ['save_kv_store'];
 
   // Return the server name for a phase given the row's actual node data.
+  // Node labels are now display names from workers.json (e.g. "RTX 5060 Ti"),
+  // so they render as-is — no uppercasing.
   const phaseServer = function (p, row) {
     // model_load (T3 rebuild) happens on the prefill node — see
     // WorkerSchedulerService.PrefillAsync (prefillResult.ModelLoadMs).
-    if (p.k === 'prefill' || p.k === 'model_load') return (row.prefillNode || '?').toUpperCase();
-    if (p.k === 'decode')  return (row.decodeNode || '?').toUpperCase();
+    if (p.k === 'prefill' || p.k === 'model_load') return (row.prefillNode || '?');
+    if (p.k === 'decode')  return (row.decodeNode || '?');
     return 'HYDRA';
   };
 

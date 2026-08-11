@@ -1,6 +1,7 @@
 [
   {
     "name": "rtx",
+    "display_name": "RTX 5060 Ti",
     "host": "localhost",
     "rpc_port": 9601,
     "llama_rpc_port": 9503,
@@ -19,6 +20,7 @@
   },
   {
     "name": "rtx3060",
+    "display_name": "RTX 3060",
     "host": "localhost",
     "rpc_port": 9603,
     "llama_rpc_port": 9504,
@@ -35,6 +37,7 @@
   },
   {
     "name": "p100",
+    "display_name": "P100",
     "host": "localhost",
     "rpc_port": 9602,
     "llama_rpc_port": 9502,

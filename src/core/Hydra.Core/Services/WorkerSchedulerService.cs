@@ -2072,9 +2072,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// #470/A7: stamp the GGUF identity onto the HealthMonitor node
 				// so Gate A at DECODE time can compare kv_metadata (what built
 				// the KV) against model_metadata (what the decode node should
-				// be running) from a genuinely independent source.
-				_health.UpdateNodeModelIdentity(w.Name, item.KvTokenizer,
-					item.KvModelName, item.KvModelQuant, item.KvModelCapabilities);
+				// be running) from a genuinely independent source. CurrentModel
+				// (the resident alias) feeds the request_timeline model fields.
+				_health.UpdateNodeModelIdentity(w.Name, item.KvModelAlias ?? "",
+					item.KvTokenizer, item.KvModelName, item.KvModelQuant, item.KvModelCapabilities);
 				LastDispatchedModel     = item.KvModelAlias;
 				LastDispatchedTokenizer = item.KvTokenizer;
 				LastDispatchedModelName = item.KvModelName;
@@ -2963,6 +2964,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					? mp.GetString()
 					: null;
 
+				// #479/S3: the decode worker's resident model is only learned
+				// here (STATE_PUT meta) — stamp it so request_timeline's
+				// decode_model field and AutoRouter residency see it. Empty
+				// fields are ignored by UpdateNodeModelIdentity.
+				if (!string.IsNullOrEmpty(slotAlias))
+				{
+					_health.UpdateNodeModelIdentity(w.Name, slotAlias,
+						slotTokenizer ?? "", slotModelName ?? "", slotModelQuant ?? "", slotCapabilities);
+				}
+
 				// #470: model_match is the engine-side stub (always true for now).
 				// CrossModelGuard.Decide is the authoritative identity comparison —
 				// it covers the case where model_match=true but the stored KV's
@@ -3250,6 +3261,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					ModelQuant = decodeSlotMeta.ModelQuant,
 					ModelCapabilities = decodeSlotMeta.ModelCapabilities,
 				};
+				// #479/S3: stamp the decode node's resident identity so
+				// request_timeline decode_model reflects what the engine is
+				// actually running (META is the authoritative source).
+				if (!string.IsNullOrEmpty(decodeSlotMeta.ModelAlias))
+				{
+					_health.UpdateNodeModelIdentity(w.Name, decodeSlotMeta.ModelAlias,
+						decodeSlotMeta.Tokenizer, decodeSlotMeta.ModelName,
+						decodeSlotMeta.ModelQuant, decodeSlotMeta.ModelCapabilities);
+				}
 			}
 		}
 		catch (Exception ex)
@@ -4194,6 +4214,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		item.Phases["total_ms"] = item.ElapsedMs;
 	}
 
+	/// <summary>Resolve the dashboard-facing display label for a worker node.
+	/// Uses the worker config's DisplayName (e.g. "RTX 5060 Ti") when present,
+	/// falling back to the raw worker name — so dashboards show friendly GPU
+	/// labels sourced from Hydra.Core's workers.json, not hard-coded names.</summary>
+	private string NodeDisplayName(string workerName)
+		=> _cfg.Workers.FirstOrDefault(w => string.Equals(w.Name, workerName, StringComparison.OrdinalIgnoreCase))
+			?.DisplayName ?? workerName;
+
+	/// <summary>Quote a logfmt value that contains whitespace (e.g. a display
+	/// name like "RTX 5060 Ti") so Loki's kvp parser keeps it as one field.
+	/// Values without whitespace are returned untouched.</summary>
+	private static string KvpValue(string v)
+		=> v.IndexOfAny([' ', '\t', '\r', '\n']) >= 0 ? $"\"{v}\"" : v;
+
 	/// <summary>
 	/// Emit the per-request phase timeline as a raw logfmt stderr line. Grafana's
 	/// timeline dashboard parses this line via extractFields — keep keys stable.
@@ -4203,6 +4237,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private void EmitPartialTimeline(WorkItem item, string status)
 	{
 		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
+		var prefillNode = item.PrefillWorker != null ? NodeDisplayName(item.PrefillWorker.Name) : "-";
+		var decodeNode = item.DecodeWorker != null ? NodeDisplayName(item.DecodeWorker.Name) : "-";
 		var prefillModel = item.PrefillWorker != null
 			? (_health.GetNodeInfo(item.PrefillWorker.Name)?.CurrentModel ?? "")
 			: "";
@@ -4224,8 +4260,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
 			$"queue_wait_ms={item.Phases.GetValueOrDefault("queue_wait_ms")} node={node} " +
 			$"route_type={RouteLabel(item)} " +
-			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +
-			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
+			$"prefill_node={KvpValue(prefillNode)} decode_node={KvpValue(decodeNode)} " +
 			$"prefill_model={prefillModel} decode_model={decodeModel} request_model={requestModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
 			$"model_load_ms={modelLoadMs} " +
@@ -4243,7 +4278,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
 			RouteLabel(item),
-			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
+			KvpValue(prefillNode), KvpValue(decodeNode),
 			prefillModel, decodeModel, requestModel,
 			item.Phases.GetValueOrDefault("prefill_ms"), modelLoadMs, saveKvMs,
 			saveKvRpcMs, saveKvStoreMs,
@@ -4301,6 +4336,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var node = item.PrefillWorker?.Name ?? item.DecodeWorker?.Name ?? "unknown";
 		CoordinatorMetrics.RequestLatency.WithLabels(node, RouteLabel(item))
 			.Observe(item.Phases.GetValueOrDefault("total_ms") / 1000.0);
+		var prefillNode = item.PrefillWorker != null ? NodeDisplayName(item.PrefillWorker.Name) : "-";
+		var decodeNode = item.DecodeWorker != null ? NodeDisplayName(item.DecodeWorker.Name) : "-";
 		var prefillModel = item.PrefillWorker != null
 			? (_health.GetNodeInfo(item.PrefillWorker.Name)?.CurrentModel ?? "")
 			: "";
@@ -4319,8 +4356,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			$"trace_id={item.TraceId} session_id={item.SessionId} " +
 			$"queue_wait_ms={item.Phases.GetValueOrDefault("queue_wait_ms")} node={node} " +
 			$"route_type={RouteLabel(item)} " +
-			$"prefill_node={item.PrefillWorker?.Name ?? "-"} " +
-			$"decode_node={item.DecodeWorker?.Name ?? "-"} " +
+			$"prefill_node={KvpValue(prefillNode)} decode_node={KvpValue(decodeNode)} " +
 			$"prefill_model={prefillModel} decode_model={decodeModel} request_model={requestModel} " +
 			$"prefill_ms={item.Phases.GetValueOrDefault("prefill_ms")} " +
 			$"model_load_ms={modelLoadMs} " +
@@ -4339,7 +4375,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.TraceId, item.SessionId,
 			item.Phases.GetValueOrDefault("queue_wait_ms"), node,
 			RouteLabel(item),
-			item.PrefillWorker?.Name ?? "-", item.DecodeWorker?.Name ?? "-",
+			KvpValue(prefillNode), KvpValue(decodeNode),
 			prefillModel, decodeModel, requestModel,
 			item.Phases.GetValueOrDefault("prefill_ms"), modelLoadMs, saveKvMs,
 			saveKvRpcMs, saveKvStoreMs,
