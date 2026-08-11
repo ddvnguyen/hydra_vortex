@@ -105,7 +105,7 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
             new PrefillRunner(engine),
             new SaveKvRunner(store, Ledger),
             new RestoreRunner(store, engine, Ledger),
-            new DecodeRunner(Proxy, Ledger),
+            new DecodeRunner(Proxy, engine, Ledger),
             new BgSaveRunner(engine, store, Ledger),
         };
 

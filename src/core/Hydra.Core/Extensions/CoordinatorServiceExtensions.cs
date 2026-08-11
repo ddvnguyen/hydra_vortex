@@ -107,7 +107,7 @@ public static class CoordinatorServiceExtensions
                 new PrefillRunner(engine),
                 new SaveKvRunner(store, ledger),
                 new RestoreRunner(store, engine, ledger),
-                new DecodeRunner(proxy, ledger),
+                new DecodeRunner(proxy, engine, ledger),
                 new BgSaveRunner(engine, store, ledger),
             };
 
