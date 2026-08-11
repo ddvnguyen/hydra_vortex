@@ -49,9 +49,13 @@ internal sealed class FakeEngineRpcClient : IEngineRpcClient
     /// <summary>When true, the merged DECODE (0x43) throws (simulated transport fault).</summary>
     public bool MergedDecodeThrows { get; set; }
 
+    /// <summary>When set, EnginePrefill awaits this gate before returning — lets tests
+    /// hold a prefill in-flight and then cancel mid-pipeline (review #3/#8).</summary>
+    public TaskCompletionSource<bool>? BlockPrefill { get; set; }
+
     public int MergedDecodeCalls { get; private set; }
 
-    public Task<RpcResponse> RequestAsync(OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+    public async Task<RpcResponse> RequestAsync(OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
     {
         Calls.Add((op, key, payload.Length));
 
@@ -63,33 +67,37 @@ internal sealed class FakeEngineRpcClient : IEngineRpcClient
             throw new InvalidOperationException("simulated engine prefill fault");
 
         if (op == OpCode.EnginePrefill && MakePrefillNotImplemented)
-            return Task.FromResult(new RpcResponse((byte)StatusCode.NotImplemented, null, []));
+            return new RpcResponse((byte)StatusCode.NotImplemented, null, []);
 
         if (op == OpCode.EnginePrefill)
-            return Task.FromResult(new RpcResponse(
+        {
+            if (BlockPrefill is { } gate)
+                await gate.Task.WaitAsync(CancellationToken.None);
+            return new RpcResponse(
                 (byte)StatusCode.Ok,
                 JsonSerializer.Serialize(new { n_past = 2000, state_size = 4096, model_name = "nano", tokenizer = "llama", model_quant = "Q4_K", model_capabilities = 0 }),
-                Enumerable.Range(0, 4096).Select(i => (byte)(i % 251)).ToArray()));
+                Enumerable.Range(0, 4096).Select(i => (byte)(i % 251)).ToArray());
+        }
 
         if (op == OpCode.StatePut)
         {
             if (MakeStatePutMismatch && Interlocked.CompareExchange(ref _statePutMismatchFired, 1, 0) == 0)
-                return Task.FromResult(new RpcResponse(
+                return new RpcResponse(
                     (byte)StatusCode.Ok,
                     JsonSerializer.Serialize(new { n_past = 2000, model_match = false, tokenizer = "gpt2", model_name = "other_model", model_quant = "Q4_K", model_capabilities = 0 }),
-                    []));
-            return Task.FromResult(new RpcResponse(
+                    []);
+            return new RpcResponse(
                 (byte)StatusCode.Ok,
                 JsonSerializer.Serialize(new { n_past = 2000, model_match = true, tokenizer = "llama", model_name = "nano", model_quant = "Q4_K", model_capabilities = 0 }),
-                []));
+                []);
         }
 
         if (op == OpCode.StateGet) // BgSave capture: the slot's post-decode KV
-            return Task.FromResult(new RpcResponse(
+            return new RpcResponse(
                 (byte)StatusCode.Ok, null,
-                Enumerable.Range(0, 2048).Select(i => (byte)(i % 251)).ToArray()));
+                Enumerable.Range(0, 2048).Select(i => (byte)(i % 251)).ToArray());
 
-        return Task.FromResult(new RpcResponse((byte)StatusCode.Ok, null, []));
+        return new RpcResponse((byte)StatusCode.Ok, null, []);
     }
 
     public Task<MergedDecodeResponse> EngineMergedDecodeAsync(

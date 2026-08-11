@@ -670,8 +670,12 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         {
             await SaveAndEraseSlotAsync(sessionId, lease);
             _leases.Release(lease);
+            // Review #6: only mark evicted when we actually evicted the lease. If
+            // TakeWarm returned null, an in-flight turn already owns the slot — a
+            // MarkEvicted here would be silently UNDONE by that turn's later Stash
+            // (re-adding the warm lease against an evicted ledger entry, orphaning it).
+            _ledger.MarkEvicted(sessionId);
         }
-        _ledger.MarkEvicted(sessionId);
     }
 
     /// <summary>v1: not implemented — returns a clear payload (WP3 parity scope).</summary>

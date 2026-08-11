@@ -352,7 +352,10 @@ public sealed class SaveKvRunner : WorkerStateRunner
         {
             // C3 store-fallback (golden store_exception): the store write failed —
             // keep the KV in the prefill slot and decode IN PLACE on the same node
-            // (skip restore). The request must NOT fail.
+            // (skip restore). The request must NOT fail. Review #7: clear the caught
+            // error — this is a NON-terminal path, and a stale req.Error would
+            // surface as a false failure if later code inspects it.
+            req.Error = null;
             req.DecodeWorker = req.PrefillWorker;
             return PhaseResult.Fire(SchedulerEvent.SaveKvFallbackSucceeded);
         }

@@ -254,4 +254,104 @@ public sealed class C4ReviewFixTests
         Assert.Equal(1, scheduler.WarmLeaseCount); // sess_b is now warm; sess_a was evicted
         runCts.Cancel();
     }
+
+    // ── Fix #3/#8 (HIGH): a MID-FLIGHT caller cancellation aborts the running
+    //    pipeline and releases the slot (not just a pre-cancelled submit) ──
+
+    [Fact]
+    public async Task MidFlight_Caller_Cancel_Aborts_Pipeline_And_Releases_Slot()
+    {
+        var cfg = Config();
+        var engine = new FakeEngineRpcClient { BlockPrefill = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously) };
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+        var ledger = new SessionLedger();
+        var proxy = new FakeCompletionProxy();
+        var store = new StoreGateway(new FakeStoreClient());
+        var health = new FakeHealthMonitor();
+        var engineGateway = new EngineRpcGateway(new Dictionary<string, IEngineRpcClient> { ["rtx"] = engine, ["p100"] = engine });
+        var leases = new LeaseManager(tracker);
+        var runners = new WorkerStateRunner[]
+        {
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health),
+            new PrefillRunner(engineGateway, proxy),
+            new SaveKvRunner(store, ledger, engineGateway),
+            new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
+            new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
+            new BgSaveRunner(engineGateway, store, ledger),
+        };
+        var scheduler = new WorkerSchedulerV2(cfg, ledger, tracker, health,
+            new RequestClassifier(), new RoutePlanner(), leases, runners, new TimelineEmitter(),
+            engineGateway, store, proxy);
+        using var runCts = new CancellationTokenSource();
+        _ = scheduler.RunAsync(runCts.Token);
+        await Task.Delay(50);
+
+        using var callerCts = new CancellationTokenSource();
+        var submit = scheduler.SubmitAsync(Req(), Msgs(100), "sess_m", 100, 30, null, callerCts.Token);
+
+        // Hold until the prefill is genuinely in-flight (blocked on the gate).
+        await Task.Delay(300);
+        Assert.Contains(engine.Calls, c => c.Op == Hydra.Shared.OpCode.EnginePrefill);
+
+        callerCts.Cancel(); // client disconnects mid-pipeline
+        engine.BlockPrefill!.TrySetResult(true);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => submit);
+        await Task.Delay(100);
+        Assert.Equal(0d, tracker.GetElapsedSeconds("rtx")); // slot released after the abort
+        runCts.Cancel();
+    }
+
+    // ── Fix #6 (MEDIUM): an eviction must not orphan an in-flight warm turn's lease ──
+
+    [Fact]
+    public async Task Evict_After_Warm_Take_Does_Not_Orphan_The_InFlight_Turns_Lease()
+    {
+        var cfg = Config();
+        var engine = new FakeEngineRpcClient();
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+        var ledger = new SessionLedger();
+        var proxy = new FakeCompletionProxy();
+        var store = new StoreGateway(new FakeStoreClient());
+        var health = new FakeHealthMonitor();
+        var engineGateway = new EngineRpcGateway(new Dictionary<string, IEngineRpcClient> { ["rtx"] = engine, ["p100"] = engine });
+        var leases = new LeaseManager(tracker);
+        var runners = new WorkerStateRunner[]
+        {
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health),
+            new PrefillRunner(engineGateway, proxy),
+            new SaveKvRunner(store, ledger, engineGateway),
+            new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
+            new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
+            new BgSaveRunner(engineGateway, store, ledger),
+        };
+        var scheduler = new WorkerSchedulerV2(cfg, ledger, tracker, health,
+            new RequestClassifier(), new RoutePlanner(), leases, runners, new TimelineEmitter(),
+            engineGateway, store, proxy);
+        using var runCts = new CancellationTokenSource();
+        _ = scheduler.RunAsync(runCts.Token);
+        await Task.Delay(50);
+
+        // Turn 1: two-phase P/D → session registered on p100 (warm-routable,
+        // SlotFreed=false) with the decode slot stashed warm on p100.
+        await scheduler.SubmitAsync(Req(), Msgs(5000), "sess_a", 5000, 30, null, CancellationToken.None);
+        Assert.Equal(1, scheduler.WarmLeaseCount);
+        Assert.True(ledger.Lookup("sess_a") is { SlotFreed: false });
+
+        // Simulate an in-flight warm turn taking the lease, then the eviction fires:
+        // it must NOT MarkEvicted (the turn owns the slot) so the turn's later
+        // re-stash stays consistent with the ledger (no orphaned warm lease).
+        var inFlight = leases.TakeWarm("sess_a"); // in-flight warm turn took the lease
+        Assert.NotNull(inFlight);
+        await scheduler.EvictWarmSessionAsync("sess_a", "p100", CancellationToken.None);
+        Assert.Equal(0, scheduler.WarmLeaseCount);
+        // Re-stash by the in-flight turn keeps the warm lease; the ledger entry must
+        // NOT have been marked evicted (that would orphan the re-stash).
+        leases.Stash("sess_a", inFlight!);
+        Assert.Equal(1, scheduler.WarmLeaseCount);
+        Assert.True(ledger.Lookup("sess_a") is { SlotFreed: false }, "in-flight turn's re-stash must not be orphaned by the eviction");
+        runCts.Cancel();
+    }
 }
