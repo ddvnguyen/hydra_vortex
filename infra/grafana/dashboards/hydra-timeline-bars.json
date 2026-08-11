@@ -67,8 +67,8 @@
               "prefill_model": 7,
               "decode_model": 8,
               "queue_wait_ms": 9,
-              "prefill_ms": 10,
-              "model_load_ms": 11,
+              "model_load_ms": 10,
+              "prefill_ms": 11,
               "save_kv_ms": 12,
               "restore_kv_ms": 13,
               "decode_ms": 14,
@@ -282,8 +282,8 @@
             "indexByName": {
               "trace_id": 0,
               "queue_wait_ms": 1,
-              "prefill_ms": 2,
-              "model_load_ms": 3,
+              "model_load_ms": 2,
+              "prefill_ms": 3,
               "save_kv_ms": 4,
               "restore_kv_ms": 5,
               "decode_ms": 6
