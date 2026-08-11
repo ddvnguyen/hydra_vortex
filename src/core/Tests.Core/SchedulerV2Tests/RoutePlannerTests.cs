@@ -58,7 +58,8 @@ public sealed class RoutePlannerTests
         tracker.InitWorker("p100", 1);
         var health = new FakeHealthMonitor();
         var ledger = new SessionLedger();
-        ledger.Register("sess", "p100", slotId: 0, nPast: 100); // KV resident on p100
+        var warmEntry = ledger.Register("sess", "p100", slotId: 0, nPast: 100); // KV resident on p100
+        warmEntry.HasStoreState = true; // warm gate: resident slot + durable store state
 
         var plan = new RoutePlanner().Plan(Req, RequestType.Solo, Workers, tracker, health, ledger);
 

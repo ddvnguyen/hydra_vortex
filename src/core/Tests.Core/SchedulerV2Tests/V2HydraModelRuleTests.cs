@@ -99,7 +99,8 @@ public sealed class V2HydraModelRuleTests
     public void Warm_Affinity_Reuses_The_Session_Node()
     {
         var (tracker, ledger, health) = State();
-        ledger.Register("sess", "p100", slotId: 0, nPast: 100); // KV resident on p100
+        var warmEntry = ledger.Register("sess", "p100", slotId: 0, nPast: 100); // KV resident on p100
+        warmEntry.HasStoreState = true; // warm gate: resident slot + durable store state
 
         var plan = new RoutePlanner().Plan(Req(500), RequestType.Solo, Topology, tracker, health, ledger);
 

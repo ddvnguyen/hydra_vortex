@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
@@ -272,9 +273,9 @@ public sealed class DecodeRunner : WorkerStateRunner
         if (req.IsStreaming)
         {
             var stream = _proxy.ProxyCompletionStreamAsync(workerUrl, req.Chat.Body, req.TraceId, ct);
-            req.DecodeChunks = stream;
+            req.DecodeChunks = TrackStreamUsage(req, stream);
             RegisterIfMissing(req, req.DecodeWorker.Name, RestoreRunner.DecodeSlotId(req), req.NPastAfter);
-            req.StreamReady.TrySetResult(stream);
+            req.StreamReady.TrySetResult(req.DecodeChunks);
             return PhaseResult.Wait; // resumed by NotifyStreamComplete
         }
 
@@ -282,6 +283,33 @@ public sealed class DecodeRunner : WorkerStateRunner
         RegisterIfMissing(req, req.DecodeWorker.Name, RestoreRunner.DecodeSlotId(req), req.NPastAfter);
         TrackAfterCompletion(req);
         return PhaseResult.Fire(SchedulerEvent.DecodeSucceeded);
+    }
+
+    /// <summary>Wrap the SSE stream to track the last <c>total_tokens</c> usage
+    /// chunk and fold it into the ledger (TrackAfterStream equivalent — golden
+    /// streaming_cold_atomic pins NPast=usage.total_tokens).</summary>
+    private async IAsyncEnumerable<byte[]> TrackStreamUsage(SchedulerRequest req, IAsyncEnumerable<byte[]> source)
+    {
+        var lastTotal = 0;
+        await foreach (var chunk in source)
+        {
+            lastTotal = ExtractStreamUsageTotal(chunk, lastTotal);
+            yield return chunk;
+        }
+        if (lastTotal > 0)
+            _ledger.UpdateNPast(req.SessionId, lastTotal);
+    }
+
+    private static int ExtractStreamUsageTotal(byte[] chunk, int fallback)
+    {
+        var text = Encoding.UTF8.GetString(chunk);
+        var idx = text.IndexOf("\"total_tokens\"", StringComparison.Ordinal);
+        if (idx < 0) return fallback;
+        var colon = text.IndexOf(':', idx);
+        if (colon < 0) return fallback;
+        var end = text.IndexOfAny(new[] { ',', '}', ' ', '\n', '\r' }, colon + 1);
+        var num = end < 0 ? text[(colon + 1)..] : text[(colon + 1)..end];
+        return int.TryParse(num.Trim(), out var n) ? n : fallback;
     }
 
     /// <summary>C1 point 3: register the session on the decode node if absent.</summary>

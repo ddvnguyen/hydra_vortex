@@ -94,7 +94,11 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         int systemPromptTokens = 0)
     {
         var chat = ChatRequest.FromSubmit(request, messages, sessionId, estimatedTokens, maxTokens, prefixHash, systemPromptTokens);
-        var type = _classifier.Classify(chat, _cfg, hasWarmSession: _ledger.Lookup(sessionId) is { SlotFreed: false });
+        // Warm gate (review): a session is Solo-eligible only when it holds BOTH a
+        // resident slot (SlotFreed=false) AND store state — otherwise routing warm
+        // could decode on a node without the resident KV (#469 class).
+        var type = _classifier.Classify(chat, _cfg,
+            hasWarmSession: _ledger.Lookup(sessionId) is { SlotFreed: false, HasStoreState: true });
         var req = new SchedulerRequest(chat, type, _classifier.ComputePriority(type));
 
         if (type == RequestType.Solo)
@@ -283,6 +287,14 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
     private async Task FinalizeAsync(SchedulerRequest req, WorkItemState terminal)
     {
         _timeline.Emit(req, terminal);
+
+        // Streaming error surfacing (review): if the pipeline failed BEFORE the
+        // stream started, the caller (SubmitAsync) is waiting on StreamReady —
+        // surface the real error there instead of a timeout.
+        if (req.IsStreaming && !req.StreamReady.Task.IsCompleted
+            && terminal is WorkItemState.Failed or WorkItemState.Cancelled)
+            req.StreamReady.TrySetException(req.Error ?? new InvalidOperationException($"stream failed in state {terminal}"));
+
         switch (terminal)
         {
             case WorkItemState.Done:
@@ -394,6 +406,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
     {
         _admissionExecutor.Start();
         _health.HealthyChanged += SignalEvaluator;
+        _tracker.SlotReleased += SignalEvaluator; // wake the evaluator on ANY slot release (review)
         return AwaitShutdown(ct);
     }
 
@@ -404,6 +417,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         finally
         {
             _health.HealthyChanged -= SignalEvaluator;
+            _tracker.SlotReleased -= SignalEvaluator;
             await _admissionExecutor.StopAsync();
         }
     }
@@ -440,6 +454,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         finally
         {
             ReleaseLeases(req);
+            _ledger.MarkEvicted(req.SessionId); // streaming terminal: no warm lease (golden SlotFreed=true)
             await FinalizeAsync(req, req.State);
         }
     }

@@ -67,11 +67,12 @@ public sealed class RoutePlanner : IRoutePlanner
                 : new RouteDecision(RequestType.Combined, head.Name, head.Name, ReuseStoreState: false, Priority: 20);
         }
 
-        // 2) Warm affinity — session KV still resident on its node (SlotFreed == false).
-        //    Decode-only follow-up on the same node; the slot is ALREADY HELD warm
-        //    for the session (C2 stash), so no free-slot check here — reuse is
-        //    decided by the LeaseManager/evaluator via the stash.
-        if (session is { SlotFreed: false } && !string.IsNullOrEmpty(session.NodeName))
+        // 2) Warm affinity — session KV still resident on its node (SlotFreed == false)
+        //    WITH store state (warm gate, review: never warm-route a session that
+        //    has no durable KV). The slot is ALREADY HELD warm for the session (C2
+        //    stash), so no free-slot check here — reuse is decided by the
+        //    LeaseManager/evaluator via the stash.
+        if (session is { SlotFreed: false, HasStoreState: true } && !string.IsNullOrEmpty(session.NodeName))
         {
             var warm = workers.FirstOrDefault(w =>
                 w.Name == session.NodeName
