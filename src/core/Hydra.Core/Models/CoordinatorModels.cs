@@ -8,6 +8,12 @@ namespace Hydra.Core.Models;
 public sealed record WorkerConfig
 {
 	public string Name { get; init; } = "";
+	/// <summary>
+	/// Human-readable GPU label for dashboards, e.g. "RTX 5060 Ti" (workers.json
+	/// <c>display_name</c>). Falls back to <see cref="Name"/> when unset so the
+	/// request_timeline node labels stay meaningful for any config shape.
+	/// </summary>
+	public string? DisplayName { get; init; }
 	public string Host { get; init; } = "";
 	public int RpcPort { get; init; }
 	public int LlamaRpcPort { get; init; }
