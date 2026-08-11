@@ -113,7 +113,7 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
         Scheduler = new WorkerSchedulerV2(
             Cfg, Ledger, Tracker, Health,
             new RequestClassifier(), new RoutePlanner(), new LeaseManager(Tracker),
-            runners, new TimelineEmitter());
+            runners, new TimelineEmitter(), engine, store, Proxy);
 
         options.ConfigureRpc?.Invoke(Rpc);
         _ = Scheduler.RunAsync(_runCts.Token);

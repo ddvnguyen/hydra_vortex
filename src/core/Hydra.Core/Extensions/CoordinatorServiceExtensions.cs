@@ -114,6 +114,7 @@ public static class CoordinatorServiceExtensions
             return new WorkerSchedulerV2(
                 cfg, ledger, tracker, health,
                 classifier, planner, leases, runners, timeline,
+                engine, store, proxy,
                 Serilog.Log.ForContext("component", "coordinator-v2"));
         });
 

@@ -69,7 +69,7 @@ public sealed class C4DecodeGuardsTests
         _scheduler = new WorkerSchedulerV2(
             _cfg, _ledger, _tracker, _health,
             new RequestClassifier(), new RoutePlanner(), new LeaseManager(_tracker),
-            runners, new TimelineEmitter());
+            runners, new TimelineEmitter(), engine, store, _proxy);
 
         _runCts = new CancellationTokenSource();
         _ = _scheduler.RunAsync(_runCts.Token);

@@ -48,6 +48,11 @@ public interface ILeaseManager
     /// <summary>Release + remove the session's warm lease.</summary>
     void EvictWarm(string sessionId);
 
+    /// <summary>Remove + return the OLDEST warm lease (by <see cref="SlotLease.CreatedAt"/>),
+    /// or null when no warm lease is held. Used for on-demand eviction under slot
+    /// pressure (review #5) — the caller saves + erases the slot before disposing.</summary>
+    bool TryTakeOldestWarm(out string sessionId, out SlotLease lease);
+
     /// <summary>Number of currently stashed warm leases.</summary>
     int WarmLeaseCount { get; }
 }
@@ -105,5 +110,27 @@ public sealed class LeaseManager : ILeaseManager
     {
         if (_warm.TryRemove(sessionId, out var lease))
             _ = lease.DisposeAsync();
+    }
+
+    public bool TryTakeOldestWarm(out string sessionId, out SlotLease lease)
+    {
+        SlotLease? oldest = null;
+        string? oldestKey = null;
+        foreach (var (key, value) in _warm)
+        {
+            if (oldest is null || value.CreatedAt < oldest.CreatedAt)
+            {
+                oldest = value;
+                oldestKey = key;
+            }
+        }
+        if (oldest is not null && oldestKey is not null && _warm.TryRemove(oldestKey, out lease))
+        {
+            sessionId = oldestKey;
+            return true;
+        }
+        sessionId = "";
+        lease = null!;
+        return false;
     }
 }

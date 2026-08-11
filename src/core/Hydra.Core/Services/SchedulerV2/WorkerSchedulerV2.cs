@@ -46,6 +46,9 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
     private readonly IRoutePlanner _planner;
     private readonly ILeaseManager _leases;
     private readonly ITimelineEmitter _timeline;
+    private readonly IEngineRpcGateway _engine;
+    private readonly IStoreGateway _store;
+    private readonly ICompletionProxyService _proxy;
     private readonly ILogger _log;
     private readonly Dictionary<WorkItemState, WorkerStateRunner> _runners;
 
@@ -78,6 +81,9 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         ILeaseManager leases,
         IEnumerable<WorkerStateRunner> runners,
         ITimelineEmitter timeline,
+        IEngineRpcGateway engine,
+        IStoreGateway store,
+        ICompletionProxyService proxy,
         ILogger? log = null)
     {
         _cfg = cfg;
@@ -88,6 +94,9 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         _planner = planner;
         _leases = leases;
         _timeline = timeline;
+        _engine = engine;
+        _store = store;
+        _proxy = proxy;
         _log = log ?? Serilog.Log.ForContext("component", "coordinator-v2");
 
         // One runner per handled state (PlanRunner registers for RouteDecision + PickDecode).
@@ -114,7 +123,10 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         // could decode on a node without the resident KV (#469 class).
         var type = _classifier.Classify(chat, _cfg,
             hasWarmSession: _ledger.Lookup(sessionId) is { SlotFreed: false, HasStoreState: true });
-        var req = new SchedulerRequest(chat, type, _classifier.ComputePriority(type));
+        var req = new SchedulerRequest(chat, type, _classifier.ComputePriority(type))
+        {
+            CallerToken = ct, // review #3: the caller's token reaches the running pipeline
+        };
 
         if (type == RequestType.Solo)
             req.Plan = _planner.Plan(chat, type, _cfg.Workers, _tracker, _health, _ledger);
@@ -161,15 +173,76 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             if (!req.Plan.HasCapacity)
             {
                 req.Plan = _planner.Plan(req.Chat, req.Type, _cfg.Workers, _tracker, _health, _ledger);
+                if (!req.Plan.HasCapacity && _leases.WarmLeaseCount > 0)
+                {
+                    // Review #5: on-demand warm-lease eviction — the fresh plan found
+                    // no worker because warm-held slots are blocking; evict the OLDEST
+                    // warm lease (save + erase) and re-plan (mirrors legacy
+                    // WorkerSchedulerService.cs:986-1000, 2524-2536).
+                    await EvictOldestWarmAsync();
+                    req.Plan = _planner.Plan(req.Chat, req.Type, _cfg.Workers, _tracker, _health, _ledger);
+                }
                 if (!req.Plan.HasCapacity)
                     break; // no viable worker — wait for a slot release / health change
             }
 
             if (!_leases.HasCapacity(req.Plan, req.SessionId))
-                break;
+            {
+                if (_leases.WarmLeaseCount > 0)
+                {
+                    await EvictOldestWarmAsync();
+                    if (_leases.HasCapacity(req.Plan, req.SessionId))
+                    {
+                        _admission.TryDequeue(out _);
+                        _ = RunPipelineAsync(req, req.CallerToken);
+                        continue;
+                    }
+                }
+                break; // no viable worker — wait for a slot release / health change
+            }
 
             _admission.TryDequeue(out _);
-            _ = RunPipelineAsync(req, ct); // slot-bounded inside; signals on release
+            _ = RunPipelineAsync(req, req.CallerToken); // review #3: the caller's token, not None
+        }
+    }
+
+    /// <summary>Evict the oldest warm lease under slot pressure (review #5):
+    /// save-before-erase, release, mark the ledger evicted.</summary>
+    private async Task EvictOldestWarmAsync()
+    {
+        if (!_leases.TryTakeOldestWarm(out var sessionId, out var lease))
+            return;
+        await SaveAndEraseSlotAsync(sessionId, lease);
+        _leases.Release(lease);
+        _ledger.MarkEvicted(sessionId);
+    }
+
+    /// <summary>Save-before-erase for a warm slot (review #1, CRITICAL): capture the
+    /// slot's KV (StateGet) + persist it, then EraseSlot the engine slot. Best-effort —
+    /// failures are logged, never thrown (an eviction must not fail the caller).</summary>
+    private async Task SaveAndEraseSlotAsync(string sessionId, SlotLease lease)
+    {
+        var workerUrl = _cfg.Workers.FirstOrDefault(w => w.Name == lease.WorkerName)?.LlamaUrl;
+        try
+        {
+            var kv = await _engine.CaptureAsync(lease.WorkerName, lease.SlotId.ToString(), CancellationToken.None);
+            if (kv is not null)
+                await _store.PutAsync(StoreKeys.KvKey(sessionId), kv, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "v2_evict_save_failed Sid={Sid} Worker={W} Slot={S}", sessionId, lease.WorkerName, lease.SlotId);
+        }
+        if (!string.IsNullOrEmpty(workerUrl))
+        {
+            try
+            {
+                await _proxy.EraseSlotAsync(workerUrl, lease.SlotId, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "v2_evict_erase_failed Sid={Sid} Worker={W} Slot={S}", sessionId, lease.WorkerName, lease.SlotId);
+            }
         }
     }
 
@@ -560,7 +633,22 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         }
         catch (Exception ex)
         {
+            // Review #2 (HIGH): surface the failure — drive the machine to Failed so
+            // FinalizeAsync resolves the caller's Completion with the exception, NOT
+            // a silent success (req.State left at Decode would hit the default branch).
             req.Error = ex;
+            _log.Warning(ex, "v2_stream_resume_failed Sid={Sid}", req.SessionId);
+            try
+            {
+                var fail = NewMachine(req.State);
+                await fail.FireAsync(SchedulerEvent.Failed, req, CancellationToken.None);
+                req.State = fail.State;
+            }
+            catch (Exception machineEx)
+            {
+                _log.Warning(machineEx, "v2_stream_resume_failed_state_drive Sid={Sid}", req.SessionId);
+                req.State = WorkItemState.Failed; // fallback: force the terminal state
+            }
         }
         finally
         {
@@ -570,13 +658,20 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         }
     }
 
-    /// <summary>Evict a session's warm lease (release the slot) + mark the ledger
-    /// entry evicted. (Save-before-erase ordering lands with C3's StateGet.)</summary>
-    public Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct)
+    /// <summary>Evict a session's warm lease with SAVE-BEFORE-ERASE (review #1,
+    /// CRITICAL): capture the slot's KV (StateGet) + persist it, EraseSlot the
+    /// engine slot, then release the lease + mark the ledger evicted. Matches legacy
+    /// <c>SaveSlotStateBeforeEvictAsync</c> + the documented <c>SlotLease</c> contract —
+    /// a TTL-driven eviction must NOT silently drop the session's KV.</summary>
+    public async Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct)
     {
-        _leases.EvictWarm(sessionId);
+        var lease = _leases.TakeWarm(sessionId);
+        if (lease is not null)
+        {
+            await SaveAndEraseSlotAsync(sessionId, lease);
+            _leases.Release(lease);
+        }
         _ledger.MarkEvicted(sessionId);
-        return Task.CompletedTask;
     }
 
     /// <summary>v1: not implemented — returns a clear payload (WP3 parity scope).</summary>

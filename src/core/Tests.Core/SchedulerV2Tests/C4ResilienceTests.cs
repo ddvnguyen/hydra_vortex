@@ -89,7 +89,7 @@ public sealed class C4ResilienceTests
         _scheduler = new WorkerSchedulerV2(
             cfg, _ledger, _tracker, health,
             new RequestClassifier(), new RoutePlanner(), new LeaseManager(_tracker),
-            runners, new TimelineEmitter());
+            runners, new TimelineEmitter(), engine, store, _proxy);
 
         _runCts = new CancellationTokenSource();
         _ = _scheduler.RunAsync(_runCts.Token);

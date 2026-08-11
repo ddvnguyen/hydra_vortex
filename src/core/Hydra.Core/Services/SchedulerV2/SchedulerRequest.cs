@@ -28,6 +28,16 @@ public sealed class SchedulerRequest
     public int NPastAfter { get; set; }
     public byte[]? KvBlob { get; set; }
 
+    /// <summary>The PHYSICAL slot the prefill wrote the KV into (review #4): the
+    /// same-node decode skip is only safe when the held slot matches this — never
+    /// decode over a slot that does not hold this request's KV (#469).</summary>
+    public int? KvSlotId { get; set; }
+
+    /// <summary>The caller's CancellationToken (review #3): threaded through the
+    /// evaluator/pipeline so a client disconnect can abort in-flight RPCs and
+    /// release the slot, instead of CancellationToken.None.</summary>
+    public CancellationToken CallerToken { get; set; } = CancellationToken.None;
+
     /// <summary>Model identity of the slot that built the KV (from the engine's
     /// PREFILL response meta). Gate A (DECODE 0x43) sends this as kv_metadata and
     /// the cross-model guard compares it against the restore slot's identity.</summary>

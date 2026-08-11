@@ -229,6 +229,7 @@ public sealed class PrefillRunner : WorkerStateRunner
             }
             req.NPastAfter = result.NPast;
             req.KvBlob = result.KVPayload;
+            req.KvSlotId = req.PrefillLease?.SlotId; // the physical slot that holds this KV (review #4)
             req.KvIdentity = new ModelIdentity
             {
                 Tokenizer = result.Tokenizer,
@@ -425,8 +426,10 @@ public sealed class RestoreRunner : WorkerStateRunner
         // parity: cold_atomic_engine golden has none). C4 store-reuse route
         // (RouteDecision --ReuseStore--> RestoreKv) must NOT skip: its KV lives in
         // the STORE, not in the freshly-acquired prefill slot (#469 would decode
-        // over an empty slot).
-        if (!req.RestoreFromStore && req.DecodeLease is null && req.DecodeWorker?.Name == req.PrefillWorker?.Name)
+        // over an empty slot). Review #4: the skip is keyed on the PHYSICAL slot
+        // identity (KvSlotId), NOT the worker name — a decode-handoff fallback that
+        // re-acquired a different slot on the same worker must restore, not skip.
+        if (!req.RestoreFromStore && req.DecodeLease is null && req.PrefillLease?.SlotId == req.KvSlotId)
             return PhaseResult.Fire(SchedulerEvent.RestoreSucceeded);
 
         var kv = await _store.GetAsync(StoreKeys.KvKey(req.SessionId), ct);
