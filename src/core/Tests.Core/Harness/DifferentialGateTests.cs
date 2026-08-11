@@ -28,9 +28,13 @@ public sealed class DifferentialGateTests
     /// <summary>Scenarios the v2 scheduler must byte-match today. Grows with parity.</summary>
     private static readonly HashSet<string> ExpectedParity = new()
     {
-        // C4 (epic #591): merged-decode (0x43) wire + Gate A accept/reject are
-        // byte-identical to the legacy goldens (framed DECODE 0x43, polled result,
-        // BgSave StateGet+Put; Gate-A reject aborts with no HTTP fallback).
+        // C4 (epic #591): the engine wire contract. Byte-identical to the legacy
+        // goldens after the merged-decode (0x43) + Gate A + EngineConfigure work:
+        "cold_atomic_engine",
+        "cold_concurrency_pd",
+        "streaming_cold_atomic",
+        "busy_retry_then_success",
+        "busy_exhausted",
         "merged_decode_accept",
         "merged_decode_gate_a_reject",
     };
