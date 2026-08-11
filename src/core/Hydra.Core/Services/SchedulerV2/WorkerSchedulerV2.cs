@@ -146,7 +146,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
                     break; // no viable worker — wait for a slot release / health change
             }
 
-            if (!_leases.HasCapacity(req.Plan))
+            if (!_leases.HasCapacity(req.Plan, req.SessionId))
                 break;
 
             _admission.TryDequeue(out _);
@@ -167,7 +167,10 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             return;
         }
 
-        var lease = _leases.TryAcquire(startWorker, req.SessionId);
+        // Warm (Solo) turn: reuse the session's held warm slot instead of
+        // acquiring a new one (C2 — the slot is already warm for this session).
+        var warmLease = req.Type == RequestType.Solo ? _leases.TakeWarm(req.SessionId) : null;
+        var lease = warmLease ?? _leases.TryAcquire(startWorker, req.SessionId);
         if (lease is null)
         {
             // Capacity lost between planning and acquisition — requeue.
@@ -192,14 +195,29 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         {
             if (suspended)
             {
-                // Streaming: the slot stays held until NotifyStreamComplete.
+                // Streaming: the slot stays held until NotifyStreamComplete
+                // (which releases it — no warm lease for streaming turns).
                 _streaming[req.SessionId] = req;
+            }
+            else if (req.State == WorkItemState.Done && !req.IsStreaming)
+            {
+                StashWarm(req); // C2: hold the decode slot warm for the next turn
             }
             else
             {
                 ReleaseLeases(req);
             }
         }
+    }
+
+    /// <summary>Transfer the request's held slot lease into the session's warm stash.</summary>
+    private void StashWarm(SchedulerRequest req)
+    {
+        var warmLease = req.DecodeLease ?? req.PrefillLease;
+        if (warmLease is not null)
+            _leases.Stash(req.SessionId, warmLease);
+        req.PrefillLease = null;
+        req.DecodeLease = null;
     }
 
     /// <summary>Stepping driver: run the state's runner, fire its event, sync
@@ -369,17 +387,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
     // ── Remaining IWorkerScheduler members ──
 
-    public int WarmLeaseCount
-    {
-        get
-        {
-            var count = 0;
-            foreach (var entry in _ledger.AllSessions().Values)
-                if (entry is SessionEntry { SlotFreed: false })
-                    count++;
-            return count;
-        }
-    }
+    public int WarmLeaseCount => _leases.WarmLeaseCount;
 
     public Task RunAsync(CancellationToken ct)
     {
@@ -435,9 +443,11 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         }
     }
 
-    /// <summary>v1: evict the session's warm entry (KV erase over RPC is WP3 scope).</summary>
+    /// <summary>Evict a session's warm lease (release the slot) + mark the ledger
+    /// entry evicted. (Save-before-erase ordering lands with C3's StateGet.)</summary>
     public Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct)
     {
+        _leases.EvictWarm(sessionId);
         _ledger.MarkEvicted(sessionId);
         return Task.CompletedTask;
     }

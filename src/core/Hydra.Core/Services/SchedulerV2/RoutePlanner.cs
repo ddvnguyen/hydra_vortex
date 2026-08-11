@@ -68,13 +68,14 @@ public sealed class RoutePlanner : IRoutePlanner
         }
 
         // 2) Warm affinity — session KV still resident on its node (SlotFreed == false).
-        //    Decode-only follow-up on the same node; no prefill, no store round-trip.
+        //    Decode-only follow-up on the same node; the slot is ALREADY HELD warm
+        //    for the session (C2 stash), so no free-slot check here — reuse is
+        //    decided by the LeaseManager/evaluator via the stash.
         if (session is { SlotFreed: false } && !string.IsNullOrEmpty(session.NodeName))
         {
             var warm = workers.FirstOrDefault(w =>
                 w.Name == session.NodeName
                 && w.CanDecode
-                && tracker.HasFreeSlot(w.Name)
                 && health.IsHealthy(w.Name));
             return warm is null
                 ? new RouteDecision(RequestType.Solo, PrefillWorker: null, DecodeWorker: null, ReuseStoreState: true, Priority: 10)

@@ -87,8 +87,16 @@ public sealed class WorkerSchedulerV2Tests
         Assert.NotNull(result);
         Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.EnginePrefill);
         Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.StatePut);
-        Assert.Equal(0d, _tracker.GetElapsedSeconds("rtx")); // slot released after terminal
         Assert.Equal("rtx", _scheduler.LastDispatchedNode);
+
+        // C2: the decode slot stays WARM for the session (stashed, not released).
+        Assert.Equal(1, _scheduler.WarmLeaseCount);
+        Assert.True(_tracker.GetElapsedSeconds("rtx") > 0, "warm lease must hold the rtx slot");
+
+        // Eviction releases it.
+        await _scheduler.EvictWarmSessionAsync("sess_v2", "rtx", CancellationToken.None);
+        Assert.Equal(0, _scheduler.WarmLeaseCount);
+        Assert.Equal(0d, _tracker.GetElapsedSeconds("rtx"));
         _runCts.Cancel();
     }
 
@@ -155,9 +163,13 @@ public sealed class WorkerSchedulerV2Tests
         Assert.Equal("http://p100:8086", Assert.Single(_proxy.NonStreamingUrls));
         Assert.Equal("p100", _scheduler.LastDispatchedNode);
 
-        // No slot is held after completion: prefill slot released at the handoff,
-        // decode slot released at finalize.
+        // GPU-utilization rule: prefill slot freed at the handoff; the DECODE slot
+        // stays WARM for the session (C2) until evicted.
         Assert.Equal(0d, _tracker.GetElapsedSeconds("rtx"));
+        Assert.Equal(1, _scheduler.WarmLeaseCount);
+        Assert.True(_tracker.GetElapsedSeconds("p100") > 0, "warm decode lease must hold p100");
+
+        await _scheduler.EvictWarmSessionAsync("sess_pd", "p100", CancellationToken.None);
         Assert.Equal(0d, _tracker.GetElapsedSeconds("p100"));
         _runCts.Cancel();
     }
@@ -221,6 +233,9 @@ public sealed class WorkerSchedulerV2Tests
         // Warm affinity: decode on the session's node (p100), not rtx.
         Assert.Equal("http://p100:8086", Assert.Single(_proxy.NonStreamingUrls));
         Assert.Equal("p100", _scheduler.LastDispatchedNode);
+
+        // C2: the warm slot was REUSED — still exactly one stashed lease (not two).
+        Assert.Equal(1, _scheduler.WarmLeaseCount);
         _runCts.Cancel();
     }
 }
