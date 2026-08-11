@@ -856,4 +856,54 @@ public sealed class MergedDecodeModelAliasTests
         Assert.Equal("qwen3.6-35B-balanced",
             WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
     }
+
+    // ── #470 Fix 2: the META-returned resident alias takes precedence ──
+
+    [Fact]
+    public void ResidentMetaAlias_TakesPrecedenceOverWorkerAndKvAlias()
+    {
+        // #470 Fix 2: the decode node's STATE_META model_alias describes what
+        // the engine is ACTUALLY running — the same source that builds the
+        // frame's model_metadata. It must win over the worker's static alias
+        // and the KV alias so model + model_metadata always agree; a
+        // self-contradictory frame would make the engine swap on the alias
+        // while Gate A validates against the metadata.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "rtx", ModelAlias = "moe-35b-solo" };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+
+        Assert.Equal("qwen3.6-35B-balanced",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker, "qwen3.6-35B-balanced"));
+    }
+
+    [Fact]
+    public void ResidentMetaAlias_TakesPrecedenceOverRequestRoutingIdentity()
+    {
+        // #470 Fix 2: request says moe-35b-pd (decode quant = balanced) but
+        // the node's resident model is mini — the frame must claim mini, the
+        // model the metadata actually describes.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = MakeItem("moe-35b-pd");
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker, "qwen3.6-35B-mini"));
+    }
+
+    [Fact]
+    public void EmptyResidentMetaAlias_FallsBackToHistoricChain()
+    {
+        // #470 Fix 2: META absent/empty (query failed or alias unknown) —
+        // the historic precedence chain applies unchanged (KV alias wins).
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker, ""));
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker, null));
+    }
 }
