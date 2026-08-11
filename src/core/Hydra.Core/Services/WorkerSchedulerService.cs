@@ -191,6 +191,42 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 		}
 
+		// #470 Fix 1: model-agnostic sessions (no usable `model` field) must be
+		// pinned to the configured auto-routing default model (models.json
+		// auto_routing.default_model, e.g. "moe-35b-solo") instead of falling
+		// through to legacy routing. Legacy routing prefills with whatever
+		// model is currently RESIDENT on the picked worker — the PREFILL body
+		// carries no model, so the engine serves its resident model (e.g. a
+		// leftover dense-27b COMBINED session → the 27B-Coder-MTP GGUF instead
+		// of the default MoE). Pin only when the session has no conflicting
+		// binding: a session already bound to a DIFFERENT model (established
+		// by an earlier explicit request) must keep it — re-routing it
+		// mid-conversation would trip the merged-decode Gate A cross-model
+		// guard and abort the turn.
+		var hasUsableRequestModel = false;
+		if (request.TryGetValue("model", out var requestModelRaw))
+		{
+			hasUsableRequestModel = requestModelRaw is string ms
+				? !string.IsNullOrWhiteSpace(ms)
+				: requestModelRaw is System.Text.Json.JsonElement mje
+					&& mje.ValueKind == System.Text.Json.JsonValueKind.String
+					&& !string.IsNullOrWhiteSpace(mje.GetString());
+		}
+		if (!hasUsableRequestModel
+			&& ModelConfigLoader.InstanceOrNull?.GetAutoRoutingPolicy()
+				is { Enabled: true } autoPolicy
+			&& !string.IsNullOrWhiteSpace(autoPolicy.DefaultModel)
+			&& ModelRegistry.RegisteredAliases.Contains(autoPolicy.DefaultModel))
+		{
+			var boundModel = _ledger.Lookup(sessionId)?.BoundModel;
+			if (string.IsNullOrEmpty(boundModel) || boundModel == autoPolicy.DefaultModel)
+			{
+				item.Request["model"] = autoPolicy.DefaultModel;
+				_log.Information("model_agnostic_pinned_to_default Sid={Sid} Model={Model}",
+					sessionId, autoPolicy.DefaultModel);
+			}
+		}
+
 		// Model config routing: when the client sends "hydra-auto" or a known
 		// model alias, route through AutoRouter to select the best worker plan.
 		// Unknown models are rejected with 400.
@@ -2333,9 +2369,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// aliases (model templates are keyed by routing identities only), so the
 	/// KV alias passes through unchanged when the engine already reported the
 	/// GGUF alias.
+	///
+	/// #470 Fix 2: <paramref name="residentMetaAlias"/> — the decode slot's
+	/// STATE_META <c>model_alias</c> (what the engine is actually running,
+	/// the same source that builds the frame's model_metadata) — takes TOP
+	/// precedence. Deriving the decode <c>model</c> from the resident alias
+	/// guarantees the frame's <c>model</c> and <c>model_metadata</c> always
+	/// describe the same model; sending an alias that contradicts the
+	/// metadata (e.g. a KV alias the node no longer hosts) makes the engine
+	/// swap on the alias while Gate A validates against the metadata —
+	/// a self-contradictory frame. When META is unavailable (query failed or
+	/// no alias reported) the historic chain applies unchanged.
 	/// </summary>
-	internal static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w)
+	internal static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w,
+		string? residentMetaAlias = null)
 	{
+		if (!string.IsNullOrEmpty(residentMetaAlias))
+			return TranslateModelAlias(residentMetaAlias, decodeRole: true);
 		if (!string.IsNullOrEmpty(w.ModelAlias))
 			return TranslateModelAlias(w.ModelAlias, decodeRole: true);
 		if (!string.IsNullOrEmpty(item.KvModelAlias))
@@ -3247,10 +3297,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// sides trace back to item.Kv* or HealthMonitor (which was stamped
 		// from item.Kv* during PrefillAsync).
 		var modelIdentity = ModelIdentity.Empty;
+		SlotMeta? decodeSlotMeta = null;
 		try
 		{
 			using var metaCts = new CancellationTokenSource(DecodeMetaQueryTimeout);
-			var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
+			decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
 				item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
 			if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
 			{
@@ -3286,9 +3337,48 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// (e.g. "balanced"), not routing aliases (e.g. "moe-35b-pd").
 		// ResolveMergedDecodeModelAlias translates the routing identity to
 		// the correct GGUF-file alias for the engine's model-swap lookup.
-		var modelAlias = ResolveMergedDecodeModelAlias(item, w);
+		// Fix 2 (#470): the META-returned resident alias (the model the
+		// decode node is ACTUALLY running — the same source that built
+		// model_metadata above) takes precedence so the frame's `model`
+		// and `model_metadata` always describe the same model — the engine
+		// never receives a self-contradictory alias-vs-identity frame.
+		var modelAlias = ResolveMergedDecodeModelAlias(item, w, decodeSlotMeta?.ModelAlias);
 
 		return (messagesJson, nPredict, modelIdentity, modelAlias);
+	}
+
+	/// <summary>
+	/// #470 Fix 3: re-assert the session's decode lease after a
+	/// <c>merged_decode_transport_fault</c>. The HTTP-proxy fallback streams
+	/// (or buffers) the reply, but the session's slot binding must survive so
+	/// the slot is returned to the pool when the request completes — a lost
+	/// lease shows up as <c>stream_done_no_lease</c> in NotifyStreamComplete
+	/// and strands the slot, starving the next turn of this session (empty /
+	/// 503 replies). No-op when the lease is still held; otherwise acquires a
+	/// fresh Long lease on the decode worker and re-pins <c>id_slot</c> so the
+	/// fallback request and the eventual release use the same slot.
+	/// </summary>
+	private async Task ReassertDecodeLeaseAsync(WorkItem item, WorkerConfig w)
+	{
+		if (item.DecodeLease != null)
+			return;
+
+		var priorSlot = item.DecodeSlot ?? item.LastIdSlot ?? 0;
+		if (_tracker.TryAcquireSlot(w.Name, out var reSlot, "decode-fault"))
+		{
+			item.DecodeSlot = reSlot;
+			item.DecodeLease = new SlotLease(w.Name, reSlot, item.SessionId,
+				LeaseLifetime.Long, _tracker);
+			item.Request["id_slot"] = reSlot;
+			_log.Warning("merged_decode_fault_lease_reasserted Sid={Sid} Worker={W} PriorSlot={P} Slot={Slot}",
+				item.SessionId, w.Name, priorSlot, reSlot);
+			SignalEvaluator();
+		}
+		else
+		{
+			_log.Warning("merged_decode_fault_lease_reassert_failed Sid={Sid} Worker={W} — no free slot, HTTP fallback proceeds without a lease",
+				item.SessionId, w.Name);
+		}
 	}
 
 	// ── Gap 4: n_past tracking from decode ──
@@ -3493,6 +3583,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
+					// #470 Fix 3: a transport fault must never orphan the
+					// session's decode slot. If the lease was lost before the
+					// fallback streams, re-assert a Long lease on the decode
+					// node so the slot is released when the stream completes
+					// (NotifyStreamComplete → _warmLeases) instead of being
+					// stranded — a stranded slot 503/empties the NEXT turn
+					// (the stream_done_no_lease symptom class).
+					await ReassertDecodeLeaseAsync(item, w);
 				}
 			}
 
@@ -3672,6 +3770,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
+					// #470 Fix 3: same lease re-assertion as the streaming
+					// path — the non-streaming reply is assembled from the
+					// HTTP-proxy result below regardless of lease state, but
+					// the slot must still be held (and later released via the
+					// warm-lease path) so the next turn is not starved.
+					await ReassertDecodeLeaseAsync(item, w);
 				}
 			}
 
@@ -3967,6 +4071,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
 					sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
+				// #470 Fix 3: the lease must not be lost. When the warm-lease
+				// stash is empty for this session, the item's own DecodeLease
+				// may still be held (e.g. the pipeline finalized outside the
+				// warm-lease stash path after a merged_decode_transport_fault).
+				// Release it here so the slot returns to the pool instead of
+				// being stranded — a stranded slot 503/empties the NEXT turn
+				// of the same session. The streamed reply is unaffected: it is
+				// assembled from DecodeChunks and does not depend on the lease.
+				foreach (var kv in _pendingTimelines)
+				{
+					if (kv.Value.SessionId != sessionId || kv.Value.DecodeLease == null)
+						continue;
+					var orphanedLease = kv.Value.DecodeLease;
+					kv.Value.DecodeLease = null;
+					if (releaseNode is null) releaseNode = orphanedLease.WorkerName;
+					try { await orphanedLease.DisposeAsync(); }
+					catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
+					SignalEvaluator();
+					break;
+				}
 			}
 
 			// Release the peer lease (two-engine) once the stream is fully drained.

@@ -373,6 +373,161 @@ public sealed class MergedDecodeFallbackTests
         return chunks;
     }
 
+    // ── #470 Fix 1: model-agnostic sessions pin to auto_routing.default_model ──
+
+    /// <summary>Production-like loader: auto_routing default = moe-35b-solo,
+    /// rtx can host it as a head worker (mirrors infra models.json).</summary>
+    private static void UseDefaultModelLoader()
+    {
+        var models = new Dictionary<string, ModelTemplate>
+        {
+            ["moe-35b-solo"] = new ModelTemplate
+            {
+                Description = "solo",
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-mini",
+                LoadTimeS = 40,
+                QualityTier = 1,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = GpuCapabilities.FlashAttn,
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 0,
+                    MaxPromptTokens = 2048,
+                    MaxContextTokens = 128000,
+                },
+            },
+        };
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 3,
+            AutoRouting = new AutoRoutingPolicy { Enabled = true, DefaultModel = "moe-35b-solo", SwapCostBudgetS = 30 },
+            Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-35B-mini"] = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+            },
+        };
+        ModelConfigLoader.Reset();
+        ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
+    }
+
+    [Fact]
+    public async Task ModelAgnosticRequest_PinnedToDefaultModel()
+    {
+        // #470 Fix 1: a request with NO model field must be pinned to
+        // auto_routing.default_model (moe-35b-solo) — NOT prefilled with
+        // whatever model is left resident on the picked worker.
+        await using var f = new MergedDecodeFixture();
+        UseDefaultModelLoader();
+        try
+        {
+            var result = await f.SubmitModelAgnosticAsync("sess_pin1", 500, 100, stream: false);
+
+            Assert.Contains(f.Events,
+                e => e.MessageTemplate.Text.Contains("model_agnostic_pinned_to_default")
+                    && e.Properties.TryGetValue("Model", out var mv)
+                    && mv.ToString().Contains("moe-35b-solo"));
+            // The pinned request still completes through the pipeline.
+            var dict = Assert.IsType<Dictionary<string, object>>(result);
+            Assert.True(dict.ContainsKey("choices"), "pinned request must produce a completion");
+        }
+        finally { ModelConfigLoader.Reset(); }
+    }
+
+    [Fact]
+    public async Task ModelAgnosticRequest_BoundToDifferentModel_NotPinned()
+    {
+        // #470 Fix 1: a session already bound to a DIFFERENT model (e.g. an
+        // earlier explicit dense-27b-combined request) must NOT be re-routed
+        // to the default mid-conversation — that would trip the merged-decode
+        // Gate A cross-model guard on the next turn.
+        await using var f = new MergedDecodeFixture();
+        UseDefaultModelLoader();
+        try
+        {
+            f.Ledger.Register("sess_pin2", "rtx", 0, 0, null).BoundModel = "dense-27b-combined";
+            var result = await f.SubmitModelAgnosticAsync("sess_pin2", 500, 100, stream: false);
+
+            Assert.DoesNotContain(f.Events,
+                e => e.MessageTemplate.Text.Contains("model_agnostic_pinned_to_default"));
+            Assert.IsType<Dictionary<string, object>>(result);
+        }
+        finally { ModelConfigLoader.Reset(); }
+    }
+
+    [Fact]
+    public async Task ModelAgnosticRequest_BoundToDefaultModel_Pinned()
+    {
+        // #470 Fix 1: a session bound to the default model keeps getting the
+        // pin — re-asserting the session's own model is always safe.
+        await using var f = new MergedDecodeFixture();
+        UseDefaultModelLoader();
+        try
+        {
+            f.Ledger.Register("sess_pin3", "rtx", 0, 0, null).BoundModel = "moe-35b-solo";
+            var result = await f.SubmitModelAgnosticAsync("sess_pin3", 500, 100, stream: false);
+
+            Assert.Contains(f.Events,
+                e => e.MessageTemplate.Text.Contains("model_agnostic_pinned_to_default"));
+            Assert.IsType<Dictionary<string, object>>(result);
+        }
+        finally { ModelConfigLoader.Reset(); }
+    }
+
+    // ── #470 Fix 3: merged_decode_transport_fault must not lose the lease ──
+
+    [Fact]
+    public async Task MergedDecode_Stream_TransportFault_FallsBackToProxy_LeaseSurvives()
+    {
+        // #470 Fix 3: the merged DECODE RPC throws (channel drop) — the
+        // streaming request must fall back to the HTTP proxy with a NON-EMPTY
+        // reply, and the session lease must survive until NotifyStreamComplete
+        // releases it (no stream_done_no_lease orphaned slot).
+        await using var f = new MergedDecodeFixture();
+        f.Rpc.EngineMergedDecodeError = new InvalidOperationException("RPC channel dropped");
+
+        var result = await f.SubmitAsync("sess_ft1", 500, 100, stream: true);
+        var stream = Assert.IsAssignableFrom<IAsyncEnumerable<byte[]>>(result);
+        var chunks = new List<byte[]>();
+        await foreach (var c in stream)
+            chunks.Add(c);
+
+        Assert.Contains(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_transport_fault"));
+        Assert.NotEmpty(chunks);
+        Assert.Contains("Hi", Encoding.UTF8.GetString(chunks[0]));
+
+        // The lease is re-asserted/released on the normal path — no orphan.
+        await f.Scheduler.NotifyStreamComplete("sess_ft1");
+        for (var i = 0; i < 50 && f.Tracker.FreeSlotCount("rtx") != 2; i++)
+            await Task.Delay(50);
+        Assert.Equal(2, f.Tracker.FreeSlotCount("rtx"));
+        Assert.DoesNotContain(f.Scheduler.GetWarmLeasesSnapshot(), kv => kv.Key == "sess_ft1");
+    }
+
+    [Fact]
+    public async Task MergedDecode_Buffered_TransportFault_FallsBackToProxy()
+    {
+        // #470 Fix 3 (non-streaming): the merged DECODE RPC throws — the
+        // buffered reply is assembled from the HTTP-proxy result regardless
+        // of lease state, and the transport fault is logged + counted.
+        await using var f = new MergedDecodeFixture();
+        f.Rpc.EngineMergedDecodeError = new InvalidOperationException("RPC channel dropped");
+
+        var result = await f.SubmitAsync("sess_ft2", 500, 100, stream: false);
+
+        Assert.Contains(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_transport_fault"));
+        Assert.Single(f.Proxy.NonStreamingCalls);
+        var dict = Assert.IsType<Dictionary<string, object>>(result);
+        var choices = Assert.IsType<JsonElement>(dict["choices"]);
+        Assert.Equal("Hello from fallback",
+            choices[0].GetProperty("message").GetProperty("content").GetString());
+    }
+
     /// <summary>Read a bool request-body field — the deep-cloned clean body
     /// holds JsonElement values while the streaming fallback's forced
     /// stream:false override is a plain bool.</summary>
@@ -531,6 +686,11 @@ public sealed class MergedDecodeFallbackTests
     {
         public MergedDecodeRpcClient() : base("test", 0) { }
 
+        /// <summary>#470 Fix 3: when set, EngineMergedDecodeAsync throws —
+        /// simulates a merged_decode_transport_fault (RPC channel drop after
+        /// the engine may have accepted the decode).</summary>
+        public Exception? EngineMergedDecodeError { get; set; }
+
         public override Task<RpcResponse> RequestAsync(
             OpCode op, string key, ReadOnlyMemory<byte> payload,
             string traceId, CancellationToken ct)
@@ -564,6 +724,8 @@ public sealed class MergedDecodeFallbackTests
             ReadOnlyMemory<byte> kvBlob,
             string traceId, CancellationToken ct)
         {
+            if (EngineMergedDecodeError != null)
+                throw EngineMergedDecodeError;
             return Task.FromResult(new MergedDecodeResponse
             {
                 Status = (byte)StatusCode.Ok,
@@ -612,7 +774,7 @@ public sealed class MergedDecodeFallbackTests
                 AtomicThreshold = 2048,
                 Workers = new List<WorkerConfig>
                 {
-                    new() { Name = "rtx",  Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 2, PrefillPriority = 1, DecodePriority = 2 },
+                    new() { Name = "rtx",  Host = "localhost", RpcPort = 9601, LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 2, Role = "head", PrefillPriority = 1, DecodePriority = 2 },
                     new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://192.168.122.21:8086", WorkerType = 2, Slots = 1, PrefillPriority = 100, DecodePriority = 1 },
                 }
             };
@@ -661,6 +823,26 @@ public sealed class MergedDecodeFallbackTests
                 ["stream"] = stream,
                 ["max_tokens"] = maxTokens,
                 ["model"] = "nano",
+                ["messages"] = msgs
+            };
+            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+                maxTokens, null, _runCts.Token);
+        }
+
+        /// <summary>#470 Fix 1: submit a model-agnostic request — no `model`
+        /// field at all, the shape a plain OpenAI client (no hydra model
+        /// alias) sends. Routing must pin it to auto_routing.default_model.</summary>
+        public async Task<object?> SubmitModelAgnosticAsync(
+            string sessionId, int estimatedTokens, int maxTokens = 500, bool stream = false)
+        {
+            var msgs = new List<Dictionary<string, object>>
+            {
+                new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
+            };
+            var req = new Dictionary<string, object>
+            {
+                ["stream"] = stream,
+                ["max_tokens"] = maxTokens,
                 ["messages"] = msgs
             };
             return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
