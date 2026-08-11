@@ -37,7 +37,14 @@ panel = {
     "type": "marcusolsson-dynamictext-panel",
     "title": "Request Timeline — Composition / Aligned + detail",
     "datasource": {"type": "loki", "uid": "loki"},
-    "gridPos": {"h": 17, "w": 24, "x": 0, "y": 0},
+    # h=40 (~1200px at Grafana's default 30px/unit) so the panel fills most
+    # laptop/desktop viewport heights without needing "View panel" full-
+    # screen mode. Grafana's grid uses fixed units, not viewport-relative
+    # sizing, so this is a generous fixed default rather than truly
+    # per-screen responsive — the row list still scrolls internally
+    # (getBoundingClientRect-based sizing in the JS) if content overflows
+    # whatever height Grafana actually allocates.
+    "gridPos": {"h": 40, "w": 24, "x": 0, "y": 0},
     "targets": [loki_target],
     "transformations": transformations,
     "options": {
