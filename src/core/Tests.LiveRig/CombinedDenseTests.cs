@@ -16,7 +16,10 @@ namespace Tests.LiveRig;
 /// tests use generous per-call CancellationTokenSources. Verifies:
 ///   1. dense-27b-combined serves a completion over the COMBINED pair
 ///   2. moe → dense → moe swap cycle completes with the session intact
-///   3. multi-turn KV reuse on the COMBINED pair (n_past grows)
+///   3. multi-turn warm-slot verification on the COMBINED pair: turns 2+ must
+///      not reload the model (model_load_ms == 0) and must fit a
+///      self-calibrating timing budget (baseline_warm + 10s per expected
+///      state transition) — #470 FIX-3
 ///
 /// Requires live stack: Coordinator → Workers → llama-engines → Store.
 /// Live-rig tier — only runs via workflow_dispatch, not PR-gating.
@@ -167,12 +170,25 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
     }
 
     /// <summary>
-    /// Multi-turn KV reuse on the COMBINED pair. All turns run on
-    /// dense-27b-combined with the session accumulating history; n_past must
-    /// grow across turns (KV cache reuse, not full re-prefill). The node
-    /// assertion is deliberately loose — the session may report as the COMBINED
-    /// head (rtx) or a peer; non-empty replies + growing n_past are the core
-    /// assertions.
+    /// Multi-turn timing-budget verification on the COMBINED pair (epic #470,
+    /// FIX-3). All turns run on dense-27b-combined with the session
+    /// accumulating history. State expectations:
+    ///   Turn 1 → COLD + model load EXPECTED (baseline_loaded state).
+    ///   Turns 2+ → WARM slot expected, NO model swap, expected state
+    ///   transitions = 0.
+    /// Assertions (timing-based, per the FIX-3 directive — n_past is
+    /// informational only):
+    ///   (a) DIRECT: turns 2+ must report hydra_metrics.model_load_ms == 0 —
+    ///       an unexpected reload (the ~68s cold_atomic swap on continuation)
+    ///       fails immediately.
+    ///   (b) TIMING BUDGET: baseline_warm = turn1_duration − turn1_model_load_ms
+    ///       (self-calibrating, derived inside this run). Turns 2+ budget =
+    ///       baseline_warm + 10s × expected_transitions(=0); a warm turn
+    ///       exceeding its budget is a reload / slow-restore / prefill
+    ///       regression.
+    /// Every turn logs a metric table row (duration, model_load_ms,
+    /// restore_slot_ms, prompt_ms, decode_ms, n_past) so each run emits the
+    /// baseline metric per state.
     /// </summary>
     [SkippableFact(Timeout = 900_000)]
     public async Task Dense27bMultiturn()
@@ -181,7 +197,12 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
         var sessionId = MakeSessionId("dense-mt");
         Console.WriteLine($"Dense27bMultiturn: model={DenseModel} session={sessionId}");
         var history = new List<Dictionary<string, object?>>();
-        var prevNPast = 0;
+
+        // Self-calibrating baseline: the non-load portion of the cold turn 1
+        // duration. Turns 2+ must fit baseline_warm + 10s × expected
+        // transitions (0 for a warm slot with no model swap).
+        double? baselineWarmSec = null;
+        double? turn1ModelLoadMs = null;
 
         try
         {
@@ -200,26 +221,64 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
                 var sw = Stopwatch.StartNew();
                 var resp = await SendCompletion(DenseModel, sessionId, messages, maxTokens: 4096);
                 sw.Stop();
+                var durationSec = sw.Elapsed.TotalSeconds;
+
                 var reply = ExtractContent(resp);
-                Console.WriteLine($"Dense27bMultiturn: turn={turn + 1} elapsed={sw.Elapsed.TotalSeconds:F1}s chars={reply.Length}");
                 Assert.False(string.IsNullOrEmpty(reply), $"Turn {turn + 1}: empty reply");
                 history = [.. messages, new() { ["role"] = "assistant", ["content"] = reply }];
 
-                // KV-reuse verification: n_past must grow across turns. Best
-                // effort — if the session is not visible yet, defer to the
-                // next iteration.
-                var status = await _fx.GetStatusAsync();
-                var session = status.Sessions?.Sessions.FirstOrDefault(s => s.SessionId == sessionId);
-                if (session?.NPast is int np && np > 0)
+                var metrics = TryExtractTurnMetrics(resp);
+                var loadMs = metrics?.ModelLoadMs ?? -1;   // -1 = hydra_metrics absent
+                var restoreMs = metrics?.RestoreSlotMs ?? -1;
+                var promptMs = metrics?.PromptMs ?? -1;
+                var decodeMs = metrics?.DecodeMs ?? -1;
+                var nPast = metrics?.NPast ?? -1;
+
+                // Per-turn metric table — emitted before assertions so every
+                // run (pass or fail) records the baseline metric per state.
+                Console.WriteLine(
+                    $"Dense27bMultiturn: turn={turn + 1} duration_ms={sw.Elapsed.TotalMilliseconds:F0} " +
+                    $"model_load_ms={loadMs} restore_slot_ms={restoreMs} prompt_ms={promptMs} " +
+                    $"decode_ms={decodeMs} n_past={nPast} chars={reply.Length}");
+
+                if (turn == 0)
                 {
-                    Assert.True(np > prevNPast,
-                        $"Turn {turn + 1}: n_past did not grow ({prevNPast} → {np}) — KV cache was likely reset");
-                    prevNPast = np;
+                    // Turn 1 = COLD baseline: model load is expected here.
+                    // baseline_warm is the non-load portion of this turn,
+                    // derived in-run so no external calibration is needed.
+                    baselineWarmSec = Math.Max(0, durationSec - (metrics?.ModelLoadMs ?? 0) / 1000.0);
+                    turn1ModelLoadMs = metrics?.ModelLoadMs;
+                    continue;
                 }
-                if (session is not null)
+
+                // Turns 2+: WARM slot expected, 0 expected state transitions.
+                const int expectedTransitions = 0;
+                var budgetSec = baselineWarmSec!.Value + 10.0 * expectedTransitions;
+
+                // (a) DIRECT: an unexpected model reload on a warm turn is the
+                //     #470 continuation bug (no session-KV restore → full
+                //     reload + re-prefill). Skip only if hydra_metrics is
+                //     absent from the response (then (b) still guards).
+                if (metrics is not null)
                 {
-                    Console.WriteLine($"Dense27bMultiturn: node={session.Node} n_past={session.NPast}");
+                    Assert.True(loadMs == 0,
+                        $"Turn {turn + 1}: unexpected model reload — model_load_ms={loadMs:F0} (expected 0 on a warm slot; " +
+                        $"turn 1 baseline model_load_ms={turn1ModelLoadMs:F0}). KV session was not restored.");
                 }
+                else
+                {
+                    Console.WriteLine(
+                        $"Dense27bMultiturn: turn={turn + 1} hydra_metrics missing — direct reload check skipped; " +
+                        "wall-clock timing budget still enforced");
+                }
+
+                // (b) TIMING BUDGET: warm turn must fit baseline_warm plus 10s
+                //     per expected state transition (0). A reload (~68s), a
+                //     slow restore, or a full re-prefill blows this.
+                Assert.True(durationSec <= budgetSec,
+                    $"Turn {turn + 1}: duration {durationSec:F1}s exceeds budget {budgetSec:F1}s " +
+                    $"(baseline_warm={baselineWarmSec:F1}s, expected_transitions={expectedTransitions}, " +
+                    $"model_load_ms={loadMs:F0}) — reload, slow restore, or full re-prefill regression");
             }
         }
         finally
@@ -227,4 +286,28 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
             await _fx.DeleteSessionAsync(sessionId);
         }
     }
+
+    /// <summary>
+    /// Extract the per-turn timing metrics the COMBINED engine attaches to the
+    /// response body as hydra_metrics (decode path: model_load_ms,
+    /// restore_slot_ms, prompt_ms, decode_ms, n_past). Returns null when the
+    /// response lacks hydra_metrics (e.g. HTTP proxy fallback) — callers then
+    /// fall back to the wall-clock budget.
+    /// </summary>
+    private static TurnMetrics? TryExtractTurnMetrics(JsonElement responseJson)
+    {
+        if (!responseJson.TryGetProperty("hydra_metrics", out var hm) || hm.ValueKind != JsonValueKind.Object)
+            return null;
+        double GetNum(string name) =>
+            hm.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number ? p.GetDouble() : 0;
+        return new TurnMetrics(
+            ModelLoadMs: GetNum("model_load_ms"),
+            RestoreSlotMs: GetNum("restore_slot_ms"),
+            PromptMs: GetNum("prompt_ms"),
+            DecodeMs: GetNum("decode_ms"),
+            NPast: GetNum("n_past"));
+    }
+
+    private readonly record struct TurnMetrics(
+        double ModelLoadMs, double RestoreSlotMs, double PromptMs, double DecodeMs, double NPast);
 }
