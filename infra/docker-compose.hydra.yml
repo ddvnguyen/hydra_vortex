@@ -63,7 +63,13 @@ services:
     # write-behind chunks dir) makes the in-container
     # process able to write to it regardless.
     network_mode: host
-    user: "1000:1000"
+    # Run as root inside the container: rootless podman maps container
+    # root (uid 0) -> host uid 1000 (ddv). /mnt/SSD is mounted with the
+    # kernel ntfs driver (uid=1000,umask=022) where chmod is ignored, so
+    # the previous `user: "1000:1000"` (-> host subuid 100999 = "other")
+    # could never write the write-behind dir. Container root == ddv ==
+    # owner of /mnt/SSD -> write-behind works. (2026-08-11, epic #470)
+    user: "0:0"
     # Wrap the C# ENTRYPOINT with a one-liner that ensures
     # the write-behind target dir is mode 777 (writable by
     # the in-container subuid-mapped user). Without this,
