@@ -5015,6 +5015,55 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// and trigger ONE fallback re-issue — bounded (single attempt) and
 			// the HTTP proxy returns the truth.
 			var engineGenerated = item.Phases.TryGetValue("decode_ms", out var decodeMs) && decodeMs > 0;
+
+			// #622 follow-up (live retest 15:07): the relay-branch stream's
+			// terminal chunk carries NO hydra_metrics at all (relayed partials
+			// + bare [DONE] carry only content+timings), so decode_ms never
+			// reached Phases and the gate above can't arm — the empty response
+			// relays verbatim. When the stream ended content-less AND never
+			// reported decode_ms, issue ONE final GET to the DONE-state result
+			// endpoint (the buffered path's PollDecodeResultAsync, same decode
+			// id) as a SECOND signal source: its DONE JSON carries
+			// hydra_metrics.decode_ms. decode_ms > 0 → the engine generated →
+			// run the existing fallback. Bounded: one attempt, own 10s
+			// timeout, no loop, no change to the buffered path or wire
+			// protocol. The stream-present hydra_metrics gate above is
+			// untouched — this fires only when the stream lacked the signal.
+			if (!sawContent && !item.Phases.ContainsKey("decode_ms")
+				&& item.DecodeRequestId is > 0
+				&& !string.IsNullOrEmpty(fallbackNodeUrl ?? item.DecodeWorker?.LlamaUrl))
+			{
+				try
+				{
+					using var doneCts = CancellationTokenSource.CreateLinkedTokenSource(fallbackCt);
+					doneCts.CancelAfter(TimeSpan.FromSeconds(10));
+					var doneResult = await _proxy.PollDecodeResultAsync(
+						fallbackNodeUrl ?? item.DecodeWorker?.LlamaUrl ?? "",
+						item.DecodeRequestId.Value, item.TraceId, doneCts.Token);
+					if (doneResult.TryGetValue("hydra_metrics", out var hmRaw)
+						&& hmRaw is JsonElement hmEl)
+					{
+						if (hmEl.ValueKind == JsonValueKind.Object
+							&& hmEl.TryGetProperty("decode_ms", out var dm)
+							&& dm.ValueKind == JsonValueKind.Number
+							&& dm.GetDouble() > 0)
+						{
+							item.Phases["decode_ms"] = (long)dm.GetDouble();
+							engineGenerated = true;
+							_log.Information("merged_decode_done_state_metrics Sid={Sid} Did={Did} DecodeMs={Ms}",
+								item.SessionId, item.DecodeRequestId, (long)dm.GetDouble());
+						}
+					}
+				}
+				catch (Exception ex)
+				{
+					// Fetch failed (timeout / transport / 404 exhaustion) —
+					// the held chunks relay as today, no fallback.
+					_log.Warning(ex, "merged_decode_done_state_fetch_failed Sid={Sid} Did={Did}",
+						item.SessionId, item.DecodeRequestId);
+				}
+			}
+
 			var needFallback = engineGenerated && !sawContent;
 			Dictionary<string, object>? fallback = null;
 			if (needFallback)

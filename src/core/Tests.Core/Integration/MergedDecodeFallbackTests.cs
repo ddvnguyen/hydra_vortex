@@ -29,6 +29,16 @@ namespace Tests.Core.Integration;
 // merged COMPLETION), so TokensOut stays 0 and the fallback gate must arm on
 // decode_ms > 0 + empty content instead of TokensOut > 0.
 //
+// #622 follow-up (relay gap) — when the live SSE relay path is active the
+// stream's terminal chunk is content="" with NO hydra_metrics at all (relayed
+// partials + bare [DONE] carry only content+timings), so decode_ms never
+// reaches the coordinator and the stream-level gate can't arm. The coordinator
+// then issues ONE final GET to the DONE-state result endpoint (the buffered
+// path's PollDecodeResultAsync, same decode id) as a SECOND signal source; if
+// that DONE JSON reports hydra_metrics.decode_ms > 0 the engine generated and
+// the HTTP-proxy fallback fires. Fetch failure or decode_ms == 0 → held chunks
+// relay verbatim.
+//
 // These tests drive the full scheduler pipeline in engine mode with the
 // merged_decode capability advertised, so DecodeAsync really enters the
 // merged path (EngineMergedDecodeAsync mocked to succeed) and the poll /
@@ -254,6 +264,105 @@ public sealed class MergedDecodeFallbackTests
         Assert.Equal("data: [DONE]", Encoding.UTF8.GetString(chunks[2]).Trim());
     }
 
+    [Fact]
+    public async Task MergedDecode_Stream_NoMetrics_EmptyContent_DoneStateDecodeMsGtZero_FallsBack()
+    {
+        // #622 relay gap (live retest 15:07, engine 1d227f7b8): the relayed
+        // stream's terminal chunk is content="" with NO usage and NO
+        // hydra_metrics — the relay-branch chunks carry only content+timings,
+        // so decode_ms never reaches Phases and the stream-level gate can't
+        // arm. The coordinator must issue ONE final GET to the DONE-state
+        // result endpoint (same decode id) as a SECOND signal source; the
+        // DONE JSON carries hydra_metrics.decode_ms > 0 (the engine DID
+        // generate) → the existing HTTP-proxy fallback fires.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: [DONE]"),
+        ];
+        f.Proxy.MergedResult = MergedDecodeDoneState(decodeMs: 66866);
+
+        var chunks = await CollectAsync(f, "sess_fs6");
+
+        // Exactly ONE DONE-state GET against the decode worker with the merged
+        // decode id (7 from the mocked EngineMergedDecodeAsync)...
+        var pollCall = Assert.Single(f.Proxy.PollDecodeResultCalls);
+        Assert.Equal("http://localhost:8080", pollCall.NodeUrl);
+        Assert.Equal(7, pollCall.DecodeRequestId);
+        // ...then exactly ONE HTTP fallback re-issue, forced non-stream.
+        Assert.Single(f.Proxy.NonStreamingCalls);
+        Assert.False(BodyBool(f.Proxy.NonStreamingCalls[0].Body, "stream"),
+            "streaming fallback must force stream:false");
+
+        // Held chunks relay: first delta live, fallback chunk replaces the
+        // empty terminal delta, then [DONE].
+        Assert.Equal(3, chunks.Count);
+        Assert.Equal(
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}",
+            Encoding.UTF8.GetString(chunks[0]).Trim());
+        var fallbackChunk = Encoding.UTF8.GetString(chunks[1]);
+        Assert.Contains("Hello from fallback", fallbackChunk);
+        Assert.Contains("finish_reason", fallbackChunk);
+        Assert.Equal("data: [DONE]", Encoding.UTF8.GetString(chunks[2]).Trim());
+        Assert.Contains(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
+    }
+
+    [Fact]
+    public async Task MergedDecode_Stream_NoMetrics_EmptyContent_DoneStateDecodeMsZero_NoFallback()
+    {
+        // #622 follow-up: the DONE-state GET fires (the stream lacked the
+        // signal) but returns decode_ms == 0 — no engine-generation evidence
+        // → no fallback, the held chunks relay verbatim.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: [DONE]"),
+        ];
+        f.Proxy.MergedResult = MergedDecodeDoneState(decodeMs: 0);
+
+        var chunks = await CollectAsync(f, "sess_fs7");
+
+        Assert.Single(f.Proxy.PollDecodeResultCalls);
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        var expected = string.Concat(
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}")),
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\"}}]}")),
+            Encoding.UTF8.GetString(Sse("data: [DONE]")));
+        Assert.Equal(expected, string.Join("", chunks.Select(c => Encoding.UTF8.GetString(c))));
+        Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
+    }
+
+    [Fact]
+    public async Task MergedDecode_Stream_NoMetrics_EmptyContent_DoneStateFetchFails_NoFallback()
+    {
+        // #622 follow-up: the DONE-state GET itself fails (timeout / 404
+        // exhaustion / transport) → no fallback, the held chunks relay
+        // verbatim, and the fetch failure is logged.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: [DONE]"),
+        ];
+        f.Proxy.PollDecodeResultError = new TimeoutException("GET /v1/decode/7 timed out");
+
+        var chunks = await CollectAsync(f, "sess_fs8");
+
+        Assert.Single(f.Proxy.PollDecodeResultCalls);
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        Assert.Equal(
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}",
+            Encoding.UTF8.GetString(chunks[0]).Trim());
+        Assert.Equal("data: [DONE]", Encoding.UTF8.GetString(chunks[2]).Trim());
+        Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
+        Assert.Contains(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_done_state_fetch_failed"));
+    }
+
     private static async Task<List<byte[]>> CollectAsync(MergedDecodeFixture f, string sessionId)
     {
         var result = await f.SubmitAsync(sessionId, 500, 100, stream: true);
@@ -302,6 +411,20 @@ public sealed class MergedDecodeFallbackTests
         return JsonSerializer.Deserialize<Dictionary<string, object>>(doc.RootElement.GetRawText())!;
     }
 
+    /// <summary>#622 follow-up: the engine's DONE-state result JSON — the
+    /// shape the final GET returns when the relayed stream carried no
+    /// hydra_metrics. Only decode_ms matters to the streaming gate.</summary>
+    private static Dictionary<string, object> MergedDecodeDoneState(long decodeMs)
+    {
+        var result = MergedDecodeResult(content: "", completionTokens: 0);
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            hydra_metrics = new { decode_ms = decodeMs }
+        }));
+        result["hydra_metrics"] = doc.RootElement.GetProperty("hydra_metrics").Clone();
+        return result;
+    }
+
     // ── Doubles ─────────────────────────────────────────────────────────
 
     /// <summary>Health monitor advertising merged_decode capability so the
@@ -342,6 +465,8 @@ public sealed class MergedDecodeFallbackTests
         public byte[][] MergedStreamChunks { get; set; } = [];
         public Dictionary<string, object> FallbackResult { get; set; } = MergedDecodeResult(content: "Hello from fallback", completionTokens: 50);
         public List<(string NodeUrl, Dictionary<string, object> Body, string TraceId)> NonStreamingCalls { get; } = new();
+        public List<(string NodeUrl, int DecodeRequestId, string TraceId)> PollDecodeResultCalls { get; } = new();
+        public Exception? PollDecodeResultError { get; set; }
 
         public Task<Dictionary<string, object>> ProxyCompletionAsync(
             string nodeUrl, Dictionary<string, object> body, string traceId, CancellationToken ct)
@@ -389,7 +514,12 @@ public sealed class MergedDecodeFallbackTests
 
         public Task<Dictionary<string, object>> PollDecodeResultAsync(
             string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
-            => Task.FromResult(MergedResult);
+        {
+            PollDecodeResultCalls.Add((nodeUrl, decodeRequestId, traceId));
+            if (PollDecodeResultError != null)
+                return Task.FromException<Dictionary<string, object>>(PollDecodeResultError);
+            return Task.FromResult(MergedResult);
+        }
 
         public Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
             => Task.CompletedTask;
