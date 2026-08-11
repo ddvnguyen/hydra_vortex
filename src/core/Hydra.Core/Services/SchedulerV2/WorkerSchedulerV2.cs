@@ -214,7 +214,10 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         }
     }
 
-    /// <summary>Transfer the request's held slot lease into the session's warm stash.</summary>
+    /// <summary>Transfer the request's held slot lease into the session's warm stash.
+    /// Atomic (single-node) sessions are marked evicted in the ledger (SlotFreed=true)
+    /// even though the slot stays warm-held — wire parity: cold_atomic_engine golden
+    /// pins SlotFreed=true + rtx busy=1. P/D sessions stay warm-routable.</summary>
     private void StashWarm(SchedulerRequest req)
     {
         var warmLease = req.DecodeLease ?? req.PrefillLease;
@@ -222,6 +225,9 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             _leases.Stash(req.SessionId, warmLease);
         req.PrefillLease = null;
         req.DecodeLease = null;
+
+        if (req.Type == RequestType.Atomic)
+            _ledger.MarkEvicted(req.SessionId);
     }
 
     /// <summary>Stepping driver: run the state's runner, fire its event, sync

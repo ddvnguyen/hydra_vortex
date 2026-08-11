@@ -56,7 +56,7 @@ public sealed class WorkerSchedulerV2Tests
             new PrefillRunner(engine),
             new SaveKvRunner(store, _ledger),
             new RestoreRunner(store, engine, _ledger),
-            new DecodeRunner(_proxy, _ledger),
+            new DecodeRunner(_proxy, engine, _ledger),
             new BgSaveRunner(engine, store, _ledger),
         };
 
@@ -87,7 +87,8 @@ public sealed class WorkerSchedulerV2Tests
 
         Assert.NotNull(result);
         Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.EnginePrefill);
-        Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.StatePut);
+        Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.EngineConfigure); // lazy + decode-time 0x40
+        Assert.DoesNotContain(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.StatePut);  // same-node: no restore
         Assert.Equal("rtx", _scheduler.LastDispatchedNode);
 
         // C2: the decode slot stays WARM for the session (stashed, not released).
@@ -249,7 +250,8 @@ public sealed class WorkerSchedulerV2Tests
         // C3: after decode, the slot's FINAL KV is captured (StateGet) and persisted
         // (Put {session}.kv) — the BgSave, while the slot is still held.
         Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.StateGet);
-        Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.StatePut); // restore (atomic same-node)
+        Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.EngineConfigure); // decode-time 0x40
+        Assert.DoesNotContain(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.StatePut);  // same-node: no restore round-trip
         _runCts.Cancel();
     }
 

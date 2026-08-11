@@ -121,8 +121,10 @@ public sealed class PrefillRunner : WorkerStateRunner
 
         try
         {
+            await _engine.EnsureChunkConfiguredAsync(req.PrefillWorker.Name, ct); // lazy 0x40 (wire parity)
+            var slotKey = req.PrefillLease?.SlotId.ToString() ?? "0"; // engine keys prefill by slot id
             var sw = Stopwatch.StartNew();
-            var result = await _engine.PrefillAsync(req.PrefillWorker.Name, req.Chat, ct);
+            var result = await _engine.PrefillAsync(req.PrefillWorker.Name, slotKey, req.Chat, ct);
             req.NPastAfter = result.NPast;
             req.KvBlob = result.KVPayload;
             req.RecordPhase("prefill_ms", sw.ElapsedMilliseconds);
@@ -216,6 +218,13 @@ public sealed class RestoreRunner : WorkerStateRunner
         if (req.DecodeWorker is null)
             return PhaseResult.Fire(SchedulerEvent.Failed);
 
+        // Same-node decode (true atomic, no slot swap): the KV is already resident
+        // in the held prefill slot — no store Get + StatePut round-trip (wire
+        // parity: cold_atomic_engine golden has none).
+        if (req.DecodeLease is null && req.DecodeWorker.Name == req.PrefillWorker?.Name)
+            return PhaseResult.Fire(SchedulerEvent.RestoreSucceeded);
+
+        await _engine.EnsureChunkConfiguredAsync(req.DecodeWorker.Name, ct); // lazy 0x40 on the decode worker (P/D)
         var kv = await _store.GetAsync(StoreKeys.KvKey(req.SessionId), ct);
         if (kv is null)
             return PhaseResult.Fire(SchedulerEvent.Failed);
@@ -251,12 +260,14 @@ public sealed class RestoreRunner : WorkerStateRunner
 public sealed class DecodeRunner : WorkerStateRunner
 {
     private readonly ICompletionProxyService _proxy;
+    private readonly IEngineRpcGateway _engine;
     private readonly ISessionLedger _ledger;
     public override WorkItemState State => WorkItemState.Decode;
 
-    public DecodeRunner(ICompletionProxyService proxy, ISessionLedger ledger)
+    public DecodeRunner(ICompletionProxyService proxy, IEngineRpcGateway engine, ISessionLedger ledger)
     {
         _proxy = proxy;
+        _engine = engine;
         _ledger = ledger;
     }
 
@@ -269,6 +280,11 @@ public sealed class DecodeRunner : WorkerStateRunner
             req.Error = new InvalidOperationException($"decode entered without a decode worker (worker={req.DecodeWorker?.Name ?? "null"})");
             return PhaseResult.Fire(SchedulerEvent.Failed);
         }
+
+        // Decode-time CONFIGURE with the per-request n_predict override (wire
+        // parity: 17-byte 0x40 emitted before decode).
+        var slotKey = RestoreRunner.DecodeSlotId(req)?.ToString() ?? "0";
+        await _engine.ConfigureAsync(req.DecodeWorker.Name, slotKey, $"{{\"n_predict\":{req.Chat.MaxTokens}}}", ct);
 
         if (req.IsStreaming)
         {

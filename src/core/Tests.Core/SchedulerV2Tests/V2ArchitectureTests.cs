@@ -34,7 +34,7 @@ public sealed class V2ArchitectureTests
         yield return new PrefillRunner(engine);
         yield return new SaveKvRunner(store, ledger);
         yield return new RestoreRunner(store, engine, ledger);
-        yield return new DecodeRunner(proxy, ledger);
+        yield return new DecodeRunner(proxy, engine, ledger);
         yield return new BgSaveRunner(engine, store, ledger);
     }
 

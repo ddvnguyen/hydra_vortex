@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using Hydra.Shared;
 
@@ -31,31 +33,66 @@ public sealed record EnginePrefillResult(int NPast, long StateBytes, bool ModelF
 /// </summary>
 public interface IEngineRpcGateway
 {
-    Task<EnginePrefillResult> PrefillAsync(string worker, ChatRequest chat, CancellationToken ct);
+    /// <param name="slotKey">The engine keys prefill by SLOT id ("0"), not the session.</param>
+    Task<EnginePrefillResult> PrefillAsync(string worker, string slotKey, ChatRequest chat, CancellationToken ct);
     Task<bool> RestoreAsync(string worker, string sessionId, ReadOnlyMemory<byte> kv, int nPast, CancellationToken ct);
 
     /// <summary>Capture the slot's CURRENT KV (StateGet) — used by BgSave to keep
     /// the Store in sync with the post-decode slot. Returns null when the engine
     /// cannot produce it.</summary>
     Task<byte[]?> CaptureAsync(string worker, string slotKey, CancellationToken ct);
+
+    /// <summary>Lazily emit the engine-wide state_chunk_size CONFIGURE (0x40, 28-byte
+    /// payload) once per worker, before its first engine RPC (wire parity).</summary>
+    Task EnsureChunkConfiguredAsync(string worker, CancellationToken ct);
+
+    /// <summary>Emit a decode-time CONFIGURE (0x40) with per-request overrides,
+    /// e.g. <c>{"n_predict":N}</c> (17-byte payload) — wire parity.</summary>
+    Task ConfigureAsync(string worker, string slotKey, string json, CancellationToken ct);
 }
 
 public sealed class EngineRpcGateway : IEngineRpcGateway
 {
     private readonly IReadOnlyDictionary<string, IEngineRpcClient> _channels;
     private readonly string _fallbackModel;
+    private readonly string _stateChunkConfigJson;
+    private readonly ConcurrentDictionary<string, bool> _chunkConfigured = new(StringComparer.Ordinal);
 
-    public EngineRpcGateway(IReadOnlyDictionary<string, IEngineRpcClient> channels, string fallbackModel = "nano")
+    public EngineRpcGateway(IReadOnlyDictionary<string, IEngineRpcClient> channels, int stateChunkSizeBytes = 1_048_576, string fallbackModel = "nano")
     {
         _channels = channels;
         _fallbackModel = fallbackModel;
+        _stateChunkConfigJson = $"{{\"state_chunk_size\":{stateChunkSizeBytes}}}";
     }
 
-    public async Task<EnginePrefillResult> PrefillAsync(string worker, ChatRequest chat, CancellationToken ct)
+    public async Task EnsureChunkConfiguredAsync(string worker, CancellationToken ct)
+    {
+        if (_chunkConfigured.ContainsKey(worker))
+            return;
+        // First engine RPC on this worker: emit the lazy state_chunk_size CONFIGURE
+        // (key "0" — the config is engine-wide across slots, wire parity).
+        _chunkConfigured[worker] = true; // set BEFORE the RPC to avoid duplicate in-flight emits
+        try
+        {
+            await ConfigureAsync(worker, "0", _stateChunkConfigJson, ct);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "v2_engine_configure_chunk_failed Worker={Worker}", worker);
+        }
+    }
+
+    public async Task ConfigureAsync(string worker, string slotKey, string json, CancellationToken ct)
+    {
+        var payload = Encoding.UTF8.GetBytes(json);
+        await Channel(worker).RequestAsync(OpCode.EngineConfigure, slotKey, payload, $"v2-config-{slotKey}", ct);
+    }
+
+    public async Task<EnginePrefillResult> PrefillAsync(string worker, string slotKey, ChatRequest chat, CancellationToken ct)
     {
         var body = BuildPrefillBody(chat);
         var payload = JsonSerializer.SerializeToUtf8Bytes(body);
-        var resp = await Channel(worker).RequestAsync(OpCode.EnginePrefill, chat.SessionId, payload, chat.TraceId, ct);
+        var resp = await Channel(worker).RequestAsync(OpCode.EnginePrefill, slotKey, payload, chat.TraceId, ct);
 
         if (resp.Status != (byte)StatusCode.Ok)
             throw new InvalidOperationException($"engine prefill failed: status={resp.Status}");
