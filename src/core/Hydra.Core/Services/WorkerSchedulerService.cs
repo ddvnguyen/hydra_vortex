@@ -4995,14 +4995,27 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			Console.Error.WriteLine($"track_stream_tokens Sid={item.SessionId} Trace={item.TraceId} TokensIn={item.TokensIn} TokensOut={item.TokensOut} LastUtf8={lastUtf8?[..Math.Min(200, lastUtf8?.Length ?? 0)]}");
 		}
 
-		// #616 merged path: the stream ended. If it produced tokens but no
+		// #616 merged path: the stream ended. If the engine generated but no
 		// visible content (engine drops reasoning_content on merged DECODE,
 		// fix deferred), re-issue ONCE via the HTTP proxy (non-stream) and
 		// emit the fallback's content as the final SSE chunk, then [DONE].
 		// Bounded to a single attempt — no loops.
 		if (mergedPath)
 		{
-			var needFallback = item.TokensOut > 0 && !sawContent;
+			// #622: arm the gate on ENGINE-GENERATION evidence, not
+			// usage-based TokensOut. The merged COMPLETION DONE SSE delta
+			// carries hydra_metrics (decode_ms > 0 once the engine generated)
+			// but NO usage — include_usage never propagates through merged
+			// COMPLETION — so TokensOut stayed 0 and the old
+			// (TokensOut > 0 && !sawContent) gate never fired, relaying an
+			// empty response live (#31460310245). decode_ms > 0 is the
+			// generation signal (parsed above from hydra_metrics); !sawContent
+			// is the content check. Edge: a genuinely-zero-token valid reply
+			// (engine truly produced nothing) may still report decode_ms > 0
+			// and trigger ONE fallback re-issue — bounded (single attempt) and
+			// the HTTP proxy returns the truth.
+			var engineGenerated = item.Phases.TryGetValue("decode_ms", out var decodeMs) && decodeMs > 0;
+			var needFallback = engineGenerated && !sawContent;
 			Dictionary<string, object>? fallback = null;
 			if (needFallback)
 			{

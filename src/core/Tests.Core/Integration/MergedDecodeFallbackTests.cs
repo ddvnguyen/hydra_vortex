@@ -19,10 +19,15 @@ namespace Tests.Core.Integration;
 // Merged-decode (DECODE 0x43) responses drop reasoning_content (engine bug,
 // fix deferred): the coordinator receives tokens (n_decoded>0) but the final
 // visible content is empty for reasoning models. The interim coordinator fix
-// detects that condition (tokens>0 + empty content) in BOTH completion paths
-// and re-issues the ORIGINAL request body ONCE via the HTTP
-// /v1/chat/completions proxy (which preserves reasoning_content), bounded to
-// a single fallback attempt.
+// detects that condition and re-issues the ORIGINAL request body ONCE via the
+// HTTP /v1/chat/completions proxy (which preserves reasoning_content),
+// bounded to a single fallback attempt.
+//
+// #622 — the STREAMING detection signal is decode_ms, not usage: the merged
+// COMPLETION DONE SSE delta carries hydra_metrics (decode_ms > 0 once the
+// engine generated) but NO usage (include_usage never propagates through
+// merged COMPLETION), so TokensOut stays 0 and the fallback gate must arm on
+// decode_ms > 0 + empty content instead of TokensOut > 0.
 //
 // These tests drive the full scheduler pipeline in engine mode with the
 // merged_decode capability advertised, so DecodeAsync really enters the
@@ -103,13 +108,19 @@ public sealed class MergedDecodeFallbackTests
     // ── Streaming path ─────────────────────────────────────────────────
 
     [Fact]
-    public async Task MergedDecode_Stream_EmptyContentWithTokens_YieldsFallbackChunkThenDone()
+    public async Task MergedDecode_Stream_EmptyContentNoUsage_DecodeMsGtZero_FallsBack()
     {
+        // #622 regression (run #31460310245): the merged COMPLETION DONE SSE
+        // delta carries hydra_metrics (decode_ms > 0 — the engine generated,
+        // 66866 ms live) but NO usage — include_usage never propagates through
+        // merged COMPLETION — so TokensOut stays 0 and the pre-#622 gate
+        // (TokensOut > 0 && !sawContent) never fired, relaying an empty
+        // response. decode_ms > 0 must arm the gate instead.
         await using var f = new MergedDecodeFixture();
         f.Proxy.MergedStreamChunks =
         [
             Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
-            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}],\"usage\":{\"completion_tokens\":50,\"prompt_tokens\":10,\"total_tokens\":60}}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}],\"hydra_metrics\":{\"decode_ms\":66866,\"prompt_ms\":120,\"n_past\":2048,\"kv_bytes\":838860800,\"decode_request_id\":11373,\"id_slot\":0}}"),
             Sse("data: [DONE]"),
         ];
 
@@ -127,8 +138,8 @@ public sealed class MergedDecodeFallbackTests
         Assert.DoesNotContain("hydra_config", fallbackBody.Keys);
 
         // The empty-content data chunks are relayed live (first chunk), the
-        // final empty-content+usage chunk is REPLACED by the fallback's
-        // content chunk, then [DONE] closes the stream.
+        // final empty-content DONE delta (decode_ms>0, no usage) is REPLACED
+        // by the fallback's content chunk, then [DONE] closes the stream.
         Assert.Equal(3, chunks.Count);
         Assert.Equal(
             "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}",
@@ -144,13 +155,40 @@ public sealed class MergedDecodeFallbackTests
     }
 
     [Fact]
+    public async Task MergedDecode_Stream_EmptyContent_DecodeMsZero_NoFallback()
+    {
+        // #622: no engine-generation evidence (decode_ms == 0 in hydra_metrics)
+        // + no content → no fallback — the empty-but-nothing-generated stream
+        // relays verbatim, unchanged behavior.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}],\"hydra_metrics\":{\"decode_ms\":0}}"),
+            Sse("data: [DONE]"),
+        ];
+
+        var chunks = await CollectAsync(f, "sess_fs5");
+
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        var expected = string.Concat(
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}")),
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}],\"hydra_metrics\":{\"decode_ms\":0}}")),
+            Encoding.UTF8.GetString(Sse("data: [DONE]")));
+        Assert.Equal(expected, string.Join("", chunks.Select(c => Encoding.UTF8.GetString(c))));
+        Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
+    }
+
+    [Fact]
     public async Task MergedDecode_Stream_NonEmptyContent_NoFallback()
     {
+        // #622 shape: the DONE delta carries decode_ms > 0 (engine generated)
+        // but content WAS seen → the content check still applies, no fallback.
         await using var f = new MergedDecodeFixture();
         f.Proxy.MergedStreamChunks =
         [
             Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}"),
-            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}],\"usage\":{\"completion_tokens\":2,\"prompt_tokens\":10,\"total_tokens\":12}}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}],\"hydra_metrics\":{\"decode_ms\":1200}}"),
             Sse("data: [DONE]"),
         ];
 
@@ -160,7 +198,7 @@ public sealed class MergedDecodeFallbackTests
         Assert.Empty(f.Proxy.NonStreamingCalls);
         var expected = string.Concat(
             Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}")),
-            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}],\"usage\":{\"completion_tokens\":2,\"prompt_tokens\":10,\"total_tokens\":12}}")),
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}],\"hydra_metrics\":{\"decode_ms\":1200}}")),
             Encoding.UTF8.GetString(Sse("data: [DONE]")));
         Assert.Equal(expected, string.Join("", chunks.Select(c => Encoding.UTF8.GetString(c))));
     }
@@ -178,7 +216,7 @@ public sealed class MergedDecodeFallbackTests
         f.Proxy.MergedStreamChunks =
         [
             Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
-            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}],\"usage\":{\"completion_tokens\":50,\"prompt_tokens\":10,\"total_tokens\":60}}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}],\"hydra_metrics\":{\"decode_ms\":5000}}"),
             Sse("data: [DONE]"),
         ];
 
