@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Scheduling;
+using Hydra.Shared;
 using Hydra.StateMachine;
 using Serilog;
 
@@ -98,6 +99,16 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         _store = store;
         _proxy = proxy;
         _log = log ?? Serilog.Log.ForContext("component", "coordinator-v2");
+
+        // Sync the global chunk-size statics (legacy WorkerSchedulerService ctor
+        // parity, lines 117-120): ChunkEngine.ChunkAndHash + the store wire chunk
+        // size must use the CONFIGURED chunk size when chunked save is enabled.
+        // The harness drivers save/restore these statics around a scenario.
+        if (cfg.EnableChunks)
+        {
+            ChunkEngine.CHUNK_SIZE = cfg.ChunkSize;
+            ChunkConstants.ChunkSize = cfg.ChunkSize;
+        }
 
         // One runner per handled state (PlanRunner registers for RouteDecision + PickDecode).
         _runners = runners

@@ -61,7 +61,7 @@ public sealed class C4DecodeGuardsTests
             new PlanRunner(new RoutePlanner(), leases, _ledger, _cfg.Workers, _tracker, _health, _cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engine, _proxy),
             new PrefixRestoreRunner(_cfg, store, engine, _ledger),
-            new SaveKvRunner(store, _ledger, engine),
+            new SaveKvRunner(store, _ledger, engine, _cfg),
             new RestoreRunner(store, engine, _ledger, leases, _proxy, _cfg),
             new DecodeRunner(_proxy, engine, _ledger, _cfg, _health),
             new BgSaveRunner(engine, store, _ledger),

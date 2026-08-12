@@ -81,7 +81,7 @@ public sealed class C4ResilienceTests
             new PlanRunner(new RoutePlanner(), leases, _ledger, workerList, _tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engine, _proxy),
             new PrefixRestoreRunner(cfg, store, engine, _ledger),
-            new SaveKvRunner(store, _ledger, engine),
+            new SaveKvRunner(store, _ledger, engine, cfg),
             new RestoreRunner(store, engine, _ledger, leases, _proxy, cfg),
             new DecodeRunner(_proxy, engine, _ledger, cfg, health),
             new BgSaveRunner(engine, store, _ledger),

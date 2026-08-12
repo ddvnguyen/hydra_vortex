@@ -107,7 +107,7 @@ public static class CoordinatorServiceExtensions
                 new PlanRunner(planner, leases, ledger, cfg.Workers, tracker, health, cfg, warmVerifier),
                 new PrefillRunner(engine, proxy),
             new PrefixRestoreRunner(cfg, store, engine, ledger),
-                new SaveKvRunner(store, ledger, engine),
+                new SaveKvRunner(store, ledger, engine, cfg),
                 new RestoreRunner(store, engine, ledger, leases, proxy, cfg),
                 new DecodeRunner(proxy, engine, ledger, cfg, health),
                 new BgSaveRunner(engine, store, ledger),

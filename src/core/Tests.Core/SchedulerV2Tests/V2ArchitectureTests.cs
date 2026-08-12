@@ -35,7 +35,7 @@ public sealed class V2ArchitectureTests
         yield return new PlanRunner(new RoutePlanner(), leases, ledger, Workers, tracker, health, config, new FakeWarmSlotVerifier());
         yield return new PrefillRunner(engine, proxy);
         yield return new PrefixRestoreRunner(config, store, engine, ledger);
-        yield return new SaveKvRunner(store, ledger, engine);
+        yield return new SaveKvRunner(store, ledger, engine, config);
         yield return new RestoreRunner(store, engine, ledger, leases, proxy, config);
         yield return new DecodeRunner(proxy, engine, ledger, config, health);
         yield return new BgSaveRunner(engine, store, ledger);
