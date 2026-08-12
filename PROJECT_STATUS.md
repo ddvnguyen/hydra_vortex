@@ -114,6 +114,7 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
 | #617 migrate continuation re-enters KV restore | ✅ Landed | `16e537795` — StatePut status check + non-resident ledger |
 | FIX-3 Dense27bMultiturn timing-budget test | ✅ Landed | `ea49169f` — baseline + 10 s per expected state transition |
 | Ops: write-behind flush to SSD | ✅ Fixed | compose user 0:0 (rootless podman maps container root → host ddv = owner of ntfs-mounted `/mnt/SSD`); chunks flush to SSD backup, 0 errors |
+| #470 open item 3: p100 cold-expert warm-up | ✅ Landed (config-only) | `no-mmap: true` on p100 (`node-p100.yaml`) — eager expert load kills the +7446-majflt first-decode tax; warm-up prefill not config-hookable (head readiness is sentinel-driven, no post-load hook), so `--no-mmap` chosen as the deterministic fix |
 | #618/#619 follow-ups | 📌 Filed | FIX-3 hidden-load hole; store chunk dir byte cap |
 
 ## Worker Node Model
@@ -356,6 +357,7 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 | Head supervision             | ✅ Event-driven (stdout sentinel readiness + exit-event liveness), no HTTP poll (issue #538) |
 | Multiturn40kContext live rig (run #31405080406) | ✅ 13 min PASS (was 28 min FAIL) — KV restores working between turns |
 | KV restore latency           | ✅ Working up to 7.5 s for large blobs; cold prefills bounded (~4 total in suite) |
+| P100 cold-expert mmap tax    | ✅ Fixed (`no-mmap`, epic #470) — first decode prefill after cold start was 15.0 s / 29.6 s total (majflt 12952→20398, RSS +4.15 GB, Mapped 7.73 GB) vs 4.1 / 6.2 s warm; eager expert load at engine start removes the one-shot fault storm |
 | Store LRU sweep              | ✅ L1 sweep heartbeat every 45 s (`chunk_cache_lru_sweep`) |
 | Merged-decode result path    | ⚠️ Drops `reasoning_content` (engine bug, #616) — interim coordinator HTTP-proxy fallback; engine fix pending |
 | RTX 3060 role                | ✅ Peer-only by design (mainline #481, slots=0) — COMBINED peer, not SOLO |
