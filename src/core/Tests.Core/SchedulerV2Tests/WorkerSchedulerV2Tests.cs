@@ -53,7 +53,7 @@ public sealed class WorkerSchedulerV2Tests
 
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, _ledger, _cfg.Workers, _tracker, health),
+            new PlanRunner(new RoutePlanner(), leases, _ledger, _cfg.Workers, _tracker, health, _cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engine, _proxy),
             new SaveKvRunner(store, _ledger, engine),
             new RestoreRunner(store, engine, _ledger, leases, _proxy, _cfg),

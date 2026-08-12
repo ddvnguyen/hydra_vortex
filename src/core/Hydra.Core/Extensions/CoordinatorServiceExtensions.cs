@@ -99,11 +99,12 @@ public static class CoordinatorServiceExtensions
             var classifier = new RequestClassifier();
             var planner = new RoutePlanner();
             var leases = new LeaseManager(tracker);
+            var warmVerifier = new HttpWarmSlotVerifier();
             var timeline = new TimelineEmitter();
 
             var runners = new WorkerStateRunner[]
             {
-                new PlanRunner(planner, leases, ledger, cfg.Workers, tracker, health),
+                new PlanRunner(planner, leases, ledger, cfg.Workers, tracker, health, cfg, warmVerifier),
                 new PrefillRunner(engine, proxy),
                 new SaveKvRunner(store, ledger, engine),
                 new RestoreRunner(store, engine, ledger, leases, proxy, cfg),

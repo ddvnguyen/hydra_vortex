@@ -21,11 +21,12 @@ public sealed class C4ReviewFixTests
             => throw new InvalidOperationException("simulated bg-save failure");
     }
 
-    private static CoordinatorConfig Config(int rtxSlots = 2, int p100Slots = 1) => new()
+    private static CoordinatorConfig Config(int rtxSlots = 2, int p100Slots = 1, bool warmVerify = false) => new()
     {
         RunMode = "concurrency",
         AtomicThreshold = 2048,
         LlamaRequestTimeoutS = 15,
+        WarmSlotVerificationEnabled = warmVerify,
         Workers = new List<WorkerConfig>
         {
             new() { Name = "rtx", LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = rtxSlots, PrefillPriority = 1, DecodePriority = 2 },
@@ -62,7 +63,7 @@ public sealed class C4ReviewFixTests
 
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health),
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
@@ -107,7 +108,7 @@ public sealed class C4ReviewFixTests
 
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health),
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
@@ -152,7 +153,7 @@ public sealed class C4ReviewFixTests
         var leases = new LeaseManager(tracker);
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health),
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
@@ -228,7 +229,7 @@ public sealed class C4ReviewFixTests
         var leases = new LeaseManager(tracker);
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health),
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
@@ -273,7 +274,7 @@ public sealed class C4ReviewFixTests
         var leases = new LeaseManager(tracker);
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health),
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
@@ -320,7 +321,7 @@ public sealed class C4ReviewFixTests
         var leases = new LeaseManager(tracker);
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health),
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
@@ -352,6 +353,53 @@ public sealed class C4ReviewFixTests
         leases.Stash("sess_a", inFlight!);
         Assert.Equal(1, scheduler.WarmLeaseCount);
         Assert.True(ledger.Lookup("sess_a") is { SlotFreed: false }, "in-flight turn's re-stash must not be orphaned by the eviction");
+        runCts.Cancel();
+    }
+
+    // ── Review #8: warm-slot verification failure re-routes COLD (golden
+    //    warm_affinity_verify_on) instead of decoding over a dead slot ──
+
+    [Fact]
+    public async Task WarmVerification_Failure_ReRoutes_Cold_Instead_Of_Dead_Slot()
+    {
+        var cfg = Config(warmVerify: true);
+        var engine = new FakeEngineRpcClient();
+        var tracker = new WorkerTracker();
+        foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
+        var ledger = new SessionLedger();
+        var proxy = new FakeCompletionProxy();
+        var store = new StoreGateway(new FakeStoreClient());
+        var health = new FakeHealthMonitor();
+        var engineGateway = new EngineRpcGateway(new Dictionary<string, IEngineRpcClient> { ["rtx"] = engine, ["p100"] = engine });
+        var leases = new LeaseManager(tracker);
+        var warmVerifier = new FakeWarmSlotVerifier { Result = false }; // the warm slot is NOT verified
+        var runners = new WorkerStateRunner[]
+        {
+            new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, warmVerifier),
+            new PrefillRunner(engineGateway, proxy),
+            new SaveKvRunner(store, ledger, engineGateway),
+            new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
+            new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
+            new BgSaveRunner(engineGateway, store, ledger),
+        };
+        var scheduler = new WorkerSchedulerV2(cfg, ledger, tracker, health,
+            new RequestClassifier(), new RoutePlanner(), leases, runners, new TimelineEmitter(),
+            engineGateway, store, proxy);
+        using var runCts = new CancellationTokenSource();
+        _ = scheduler.RunAsync(runCts.Token);
+        await Task.Delay(50);
+
+        // Turn 1: two-phase P/D → session registered on p100 (warm) + warm lease stashed.
+        await scheduler.SubmitAsync(Req(), Msgs(5000), "sess_v", 5000, 30, null, CancellationToken.None);
+        Assert.Equal("p100", scheduler.LastDispatchedNode);
+        Assert.Equal(1, scheduler.WarmLeaseCount);
+        proxy.NonStreamingUrls.Clear();
+
+        // Turn 2: warm Solo — verification FAILS → evict + re-route COLD on rtx.
+        await scheduler.SubmitAsync(Req(), Msgs(100), "sess_v", 100, 30, null, CancellationToken.None);
+
+        Assert.Equal("rtx", scheduler.LastDispatchedNode); // cold re-route, not the dead warm node
+        Assert.Equal("http://localhost:8080", Assert.Single(proxy.NonStreamingUrls));
         runCts.Cancel();
     }
 }

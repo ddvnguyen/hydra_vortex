@@ -179,3 +179,13 @@ internal sealed class FakeCompletionProxy : ICompletionProxyService
         return Task.CompletedTask;
     }
 }
+
+/// <summary>Deterministic warm-slot verifier for v2 tests (review #8). Defaults to
+/// "verified" so warm routes proceed; set <see cref="Result"/> false to force a
+/// warm-verification failure (evict + re-route cold).</summary>
+internal sealed class FakeWarmSlotVerifier : IWarmSlotVerifier
+{
+    public bool Result { get; set; } = true;
+    public Task<bool> VerifyAsync(WorkerConfig worker, SessionEntry? entry, string traceId)
+        => Task.FromResult(Result);
+}

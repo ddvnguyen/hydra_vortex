@@ -32,7 +32,7 @@ public sealed class V2ArchitectureTests
     {
         var leases = new LeaseManager(tracker);
         var config = cfg ?? new CoordinatorConfig();
-        yield return new PlanRunner(new RoutePlanner(), leases, ledger, Workers, tracker, health);
+        yield return new PlanRunner(new RoutePlanner(), leases, ledger, Workers, tracker, health, config, new FakeWarmSlotVerifier());
         yield return new PrefillRunner(engine, proxy);
         yield return new SaveKvRunner(store, ledger, engine);
         yield return new RestoreRunner(store, engine, ledger, leases, proxy, config);
@@ -44,7 +44,7 @@ public sealed class V2ArchitectureTests
     public void PlanRunner_Is_One_Class_For_Both_Plan_States()
     {
         var tracker = Tracker();
-        var plan = new PlanRunner(new RoutePlanner(), new LeaseManager(tracker), new SessionLedger(), Workers, tracker, new FakeHealthMonitor());
+        var plan = new PlanRunner(new RoutePlanner(), new LeaseManager(tracker), new SessionLedger(), Workers, tracker, new FakeHealthMonitor(), new CoordinatorConfig(), new FakeWarmSlotVerifier());
 
         // The user's rule: Plan(Prefill) and PlanDecode are the SAME class — just
         // different states.

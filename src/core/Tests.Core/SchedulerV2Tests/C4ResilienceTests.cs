@@ -78,7 +78,7 @@ public sealed class C4ResilienceTests
 
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, _ledger, workerList, _tracker, health),
+            new PlanRunner(new RoutePlanner(), leases, _ledger, workerList, _tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engine, _proxy),
             new SaveKvRunner(store, _ledger, engine),
             new RestoreRunner(store, engine, _ledger, leases, _proxy, cfg),
@@ -212,7 +212,7 @@ public sealed class C4ResilienceTests
             PrefillLease = new SlotLease("rtx", prefillSlot, "sess_try", LeaseLifetime.Long, tracker),
         };
 
-        var runner = new PlanRunner(new StalePlanDecodePlanner(), leases, ledger, workers, tracker, health);
+        var runner = new PlanRunner(new StalePlanDecodePlanner(), leases, ledger, workers, tracker, health, new CoordinatorConfig(), new FakeWarmSlotVerifier());
         var result = await runner.RunAsync(new RunnerContext(req, "rtx"), CancellationToken.None);
 
         // The request survives: decode on the PREFILL node with the lease re-kept.

@@ -28,6 +28,8 @@ public sealed class PlanRunner : WorkerStateRunner
     private readonly IReadOnlyList<WorkerConfig> _workers;
     private readonly IWorkerTracker _tracker;
     private readonly IHealthMonitorService _health;
+    private readonly CoordinatorConfig _cfg;
+    private readonly IWarmSlotVerifier _warmVerifier;
 
     public PlanRunner(
         IRoutePlanner planner,
@@ -35,7 +37,9 @@ public sealed class PlanRunner : WorkerStateRunner
         ISessionLedger ledger,
         IReadOnlyList<WorkerConfig> workers,
         IWorkerTracker tracker,
-        IHealthMonitorService health)
+        IHealthMonitorService health,
+        CoordinatorConfig cfg,
+        IWarmSlotVerifier warmVerifier)
     {
         _planner = planner;
         _leases = leases;
@@ -43,6 +47,8 @@ public sealed class PlanRunner : WorkerStateRunner
         _workers = workers;
         _tracker = tracker;
         _health = health;
+        _cfg = cfg;
+        _warmVerifier = warmVerifier;
     }
 
     public override WorkItemState State => WorkItemState.RouteDecision;
@@ -54,7 +60,7 @@ public sealed class PlanRunner : WorkerStateRunner
             ? PlanInitialAsync(ctx)
             : PlanDecodeAsync(ctx);
 
-    private Task<PhaseResult> PlanInitialAsync(RunnerContext ctx)
+    private async Task<PhaseResult> PlanInitialAsync(RunnerContext ctx)
     {
         var req = ctx.Request;
 
@@ -77,6 +83,42 @@ public sealed class PlanRunner : WorkerStateRunner
                 plan = req.Plan = fresh;
         }
 
+        // Warm-slot verification (review #8): when enabled, a warm (Solo) route must
+        // VERIFY the warm slot holds the KV before decoding on it. On failure
+        // (unreachable / stuck / KV gone), release the warm lease, mark the ledger
+        // evicted, and re-route COLD — never decode over a dead slot (#469).
+        if (plan.PrefillWorker is null && plan.DecodeWorker is not null && _cfg.WarmSlotVerificationEnabled)
+        {
+            var warmWorker = Resolve(plan.DecodeWorker);
+            var entry = _ledger.Lookup(req.SessionId);
+            var isWarm = warmWorker is not null && await _warmVerifier.VerifyAsync(warmWorker, entry, req.TraceId);
+            if (!isWarm)
+            {
+                Serilog.Log.Warning("v2_warm_verify_failed Sid={Sid} Node={Node} — evicting + re-routing cold",
+                    req.SessionId, plan.DecodeWorker);
+                _leases.Release(req.DecodeLease);
+                req.DecodeLease = null;
+                _ledger.MarkEvicted(req.SessionId);
+
+                plan = req.Plan = _planner.Plan(req.Chat, req.Type, _workers, _tracker, _health, _ledger);
+                if (!plan.HasCapacity)
+                {
+                    req.Error = new InvalidOperationException($"warm verify failed and no cold capacity for session {req.SessionId}");
+                    return PhaseResult.Fire(SchedulerEvent.Failed);
+                }
+                req.PrefillWorker = plan.PrefillWorker is null ? null : Resolve(plan.PrefillWorker);
+                req.DecodeWorker = plan.DecodeWorker is null ? null : Resolve(plan.DecodeWorker);
+                req.PrefillLease = _leases.TryAcquire(plan.PrefillWorker, req.SessionId);
+                if (req.PrefillLease is null)
+                {
+                    req.Error = new InvalidOperationException($"warm verify failed: no prefill slot on {plan.PrefillWorker}");
+                    return PhaseResult.Fire(SchedulerEvent.Failed);
+                }
+                req.RecordPhase("plan_ms", 0);
+                return PhaseResult.Fire(SchedulerEvent.RouteSucceeded); // cold re-route
+            }
+        }
+
         req.PrefillWorker = plan.PrefillWorker is null ? null : Resolve(plan.PrefillWorker);
         req.DecodeWorker = plan.DecodeWorker is null ? null : Resolve(plan.DecodeWorker);
         req.RecordPhase("plan_ms", 0);
@@ -96,7 +138,7 @@ public sealed class PlanRunner : WorkerStateRunner
             {
                 req.Error = new InvalidOperationException(
                     $"retry re-route: no free slot on new prefill worker {req.PrefillWorker.Name}");
-                return Task.FromResult(PhaseResult.Fire(SchedulerEvent.Failed));
+                return PhaseResult.Fire(SchedulerEvent.Failed);
             }
         }
 
@@ -107,12 +149,12 @@ public sealed class PlanRunner : WorkerStateRunner
         if (plan.ReuseStoreState && plan.PrefillWorker is not null)
         {
             req.RestoreFromStore = true;
-            return Task.FromResult(PhaseResult.Fire(SchedulerEvent.ReuseStore));
+            return PhaseResult.Fire(SchedulerEvent.ReuseStore);
         }
 
         return plan.PrefillWorker is null
-            ? Task.FromResult(PhaseResult.Fire(SchedulerEvent.SoloRouted))  // warm/decode-only
-            : Task.FromResult(PhaseResult.Fire(SchedulerEvent.RouteSucceeded));
+            ? PhaseResult.Fire(SchedulerEvent.SoloRouted)  // warm/decode-only
+            : PhaseResult.Fire(SchedulerEvent.RouteSucceeded);
     }
 
     private Task<PhaseResult> PlanDecodeAsync(RunnerContext ctx)

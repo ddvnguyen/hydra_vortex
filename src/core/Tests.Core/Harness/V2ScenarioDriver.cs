@@ -102,7 +102,7 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
 
         var runners = new WorkerStateRunner[]
         {
-            new PlanRunner(new RoutePlanner(), leases, Ledger, Cfg.Workers, Tracker, Health),
+            new PlanRunner(new RoutePlanner(), leases, Ledger, Cfg.Workers, Tracker, Health, Cfg, new HttpWarmSlotVerifier()),
             new PrefillRunner(engine, Proxy),
             new SaveKvRunner(store, Ledger, engine),
             new RestoreRunner(store, engine, Ledger, leases, Proxy, Cfg),
