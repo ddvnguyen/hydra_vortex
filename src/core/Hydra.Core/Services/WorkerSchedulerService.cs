@@ -2380,12 +2380,43 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// swap on the alias while Gate A validates against the metadata —
 	/// a self-contradictory frame. When META is unavailable (query failed or
 	/// no alias reported) the historic chain applies unchanged.
+	///
+	/// #631: for a MIGRATED continuation (<see cref="WorkItem.RouteType"/> ==
+	/// "migration" — the session is non-resident on the decode worker), the
+	/// historic chain's <c>KvModelAlias</c> describes the model that built the
+	/// KV on the SOURCE node, which may not map through the TARGET's preset
+	/// table to the target's RESIDENT path (cross-quant: Mini blob →
+	/// Balanced resident). Prefer aliases that describe the TARGET's resident
+	/// model — <paramref name="healthResidentAlias"/> (the worker's
+	/// engine-reported resident alias stamped on the health monitor from
+	/// STATE_META/prefill, same source family as residentMetaAlias) and the
+	/// request routing identity's DECODE quant — before the source-model KV
+	/// alias, so Gate A's #589 fallback sees an alias that maps to the
+	/// target's resident path. Non-migrated sessions keep the historic chain
+	/// exactly as before.
 	/// </summary>
 	internal static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w,
-		string? residentMetaAlias = null)
+		string? residentMetaAlias = null, string? healthResidentAlias = null)
 	{
 		if (!string.IsNullOrEmpty(residentMetaAlias))
 			return TranslateModelAlias(residentMetaAlias, decodeRole: true);
+
+		// #631: migrated continuations — the KV alias is the SOURCE node's
+		// model, so it must not preempt target-resident-derived aliases.
+		if (item.RouteType == "migration")
+		{
+			if (!string.IsNullOrEmpty(healthResidentAlias))
+				return TranslateModelAlias(healthResidentAlias, decodeRole: true);
+			if (!string.IsNullOrEmpty(w.ModelAlias))
+				return TranslateModelAlias(w.ModelAlias, decodeRole: true);
+			var migReqModel = item.Request.TryGetValue("model", out var mm) && mm is string mms ? mms : null;
+			if (!string.IsNullOrEmpty(migReqModel))
+				return TranslateModelAlias(migReqModel, decodeRole: true);
+			// Fall through to the historic chain — KvModelAlias remains the
+			// last resort (same-model migration: source == target resident,
+			// so the KV alias DOES map to the resident path).
+		}
+
 		if (!string.IsNullOrEmpty(w.ModelAlias))
 			return TranslateModelAlias(w.ModelAlias, decodeRole: true);
 		if (!string.IsNullOrEmpty(item.KvModelAlias))
@@ -2768,6 +2799,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			LastDispatchedNode = dw.Name;
 		}
 
+		// #631: a MIGRATED session's PrefillWorker is derived from the LEDGER
+		// (the stale source-node entry), NOT from a prefill that ran this turn.
+		// Even when the decode worker lands back on the same node (primary pick
+		// busy → PickBestDecodeWorker fallback to item.PrefillWorker), the slot
+		// does NOT hold this session's KV — the migrate StatePut wrote it to the
+		// target slot and MarkEvicted freed it; the continuation must re-restore
+		// from Store. Skipping here would send the merged DECODE 0x43 with EMPTY
+		// kv_metadata (fresh WorkItem, Kv* never populated) and no KV blob →
+		// Gate A rejects (Tok=False Name=False) → 503 "KV not restored". Fall
+		// through to ModelLoadDecode → RestoreKvAsync so the blob-manifest
+		// repopulates the KV identity and the merged frame carries both.
+		if (item.PrefillWorker?.Name == dw.Name && item.RouteType == "migration")
+		{
+			_log.Information("same_node_migrated_restore_required Sid={Sid} Node={Node} Slot={Slot} — migrated continuation, KV restore required",
+				item.SessionId, dw.Name, slot);
+		}
 		// Same-node skip: when decode == prefill and no model switch,
 		// the KV state is already on the node — no restore needed.
 		//
@@ -2779,6 +2826,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// we must NOT skip — fall through to restore so the cross-model
 		// guard in RestoreKvAsync can catch it.
 		if (item.PrefillWorker?.Name == dw.Name
+			&& item.RouteType != "migration"
 			&& (!_cfg.MixPrecisionEnabled
 				|| Router.DecodeModel(dw) == null
 				|| Router.DecodeModel(dw) == Router.PrefillModel(item.PrefillWorker!)))
@@ -3342,7 +3390,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// model_metadata above) takes precedence so the frame's `model`
 		// and `model_metadata` always describe the same model — the engine
 		// never receives a self-contradictory alias-vs-identity frame.
-		var modelAlias = ResolveMergedDecodeModelAlias(item, w, decodeSlotMeta?.ModelAlias);
+		// #631: for MIGRATED continuations the health-stamped resident alias
+		// (CurrentModel — the worker's engine-reported resident, same source
+		// family as STATE_META) backs up the META alias, so a cross-quant
+		// migration still sends an alias that maps to the target's resident
+		// path even when the STATE_META query fails.
+		var modelAlias = ResolveMergedDecodeModelAlias(item, w, decodeSlotMeta?.ModelAlias,
+			healthResidentAlias: _health.GetNodeInfo(w.Name)?.CurrentModel);
 
 		return (messagesJson, nPredict, modelIdentity, modelAlias);
 	}
