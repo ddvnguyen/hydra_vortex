@@ -128,6 +128,42 @@ public sealed class MergedDecodeFallbackTests
     }
 
     [Fact]
+    public async Task MergedDecode_Buffered_FallbackCarriesToolCalls()
+    {
+        // #588 buffered-path twin: when the merged result has empty content
+        // + no reasoning_content (the fallback gate fires), but the HTTP-proxy
+        // fallback response carries message.tool_calls, the coordinator must
+        // relay those tool_calls verbatim to the caller — just as it does for
+        // the streaming path in MergedDecode_Stream_FallbackCarriesToolCalls.
+        await using var f = new MergedDecodeFixture();
+        // Empty content, non-zero tokens → fallback gate arms.
+        f.Proxy.MergedResult = MergedDecodeResult(content: "", completionTokens: 50);
+        // The fallback proxy returns a tool-call-only response.
+        f.Proxy.FallbackResult = MergedDecodeResult(
+            content: "", completionTokens: 50, toolCallsJson: ToolCallJson);
+
+        var result = await f.SubmitAsync("sess_fb588buf", 500, 100, stream: false);
+
+        // One HTTP re-issue with the original body.
+        Assert.Single(f.Proxy.NonStreamingCalls);
+
+        // The fallback's tool_calls are carried verbatim into the final result.
+        var dict = Assert.IsType<Dictionary<string, object>>(result);
+        var choices = Assert.IsType<JsonElement>(dict["choices"]);
+        var message = choices[0].GetProperty("message");
+        Assert.Equal("", message.GetProperty("content").GetString());
+        var toolCalls = message.GetProperty("tool_calls");
+        Assert.Equal(1, toolCalls.GetArrayLength());
+        Assert.Equal("calculator",
+            toolCalls[0].GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("{\"a\":1234,\"b\":5678}",
+            toolCalls[0].GetProperty("function").GetProperty("arguments").GetString());
+
+        // The fallback log fired.
+        Assert.Contains(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
+    }
+
+    [Fact]
     public async Task MergedDecode_Buffered_ReasoningContentOnly_NoFallback()
     {
         // #642 (buffered twin of the streaming regression, smoke #10 2026-08-12):
