@@ -21,7 +21,8 @@ infra:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server-sm60:f518cff16
+    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-7e9c7bf
+    image_digest: sha256:785ece43b4c2fb7a17be11f46a1069927fcbae2b6ca04de04eb0f3f626ab96bd
     binary: llama-server
     dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server
 
