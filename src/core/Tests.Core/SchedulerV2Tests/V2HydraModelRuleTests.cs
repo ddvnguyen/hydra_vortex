@@ -118,7 +118,9 @@ public sealed class V2HydraModelRuleTests
         Assert.True(plan.HasCapacity);
         Assert.Null(plan.PrefillWorker); // decode-only
         Assert.Equal("p100", plan.DecodeWorker);
-        Assert.True(plan.ReuseStoreState);
+        // Affinity reuse: the KV is RESIDENT in the warm-held slot — no Store
+        // restore (epic #591: ReuseStoreState=true now means CROSS-NODE restore).
+        Assert.False(plan.ReuseStoreState);
     }
 
     [Fact]

@@ -42,8 +42,9 @@ public interface ILeaseManager
     void ReleasePeer(IPeerReservation? lease);
 
     /// <summary>True when the decision's START worker (prefill, or decode for
-    /// Solo/warm) can serve: a warm-held slot for the session is reusable, else a
-    /// free slot is required.</summary>
+    /// Solo/warm) can serve: a free slot on that worker, or a warm-held slot for
+    /// the session ON that worker (the C2 stash). A stash on a different worker
+    /// grants nothing.</summary>
     bool HasCapacity(RouteDecision decision, string sessionId);
 
     /// <summary>Hold a slot warm for the session (C2). Replaces + disposes any
@@ -82,11 +83,16 @@ public sealed class LeaseManager : ILeaseManager
     {
         if (!decision.HasCapacity)
             return false;
-        // Warm reuse: the session's slot is already HELD by the stash — no free slot needed.
-        if (_warm.ContainsKey(sessionId))
-            return true;
         var worker = decision.PrefillWorker ?? decision.DecodeWorker;
-        return !string.IsNullOrEmpty(worker) && _tracker.HasFreeSlot(worker);
+        if (!string.IsNullOrEmpty(worker) && _tracker.HasFreeSlot(worker))
+            return true;
+        // Warm reuse: the session's slot is already HELD by the stash - no free
+        // slot needed, but only when the stash is on the plan's worker (a stash
+        // on a DIFFERENT worker grants nothing: the plan's worker must have a
+        // genuinely free slot, e.g. the cross-node fallback's alternate worker
+        // (epic #591) - otherwise the dispatch would TryAcquire-fail and requeue
+        // in a spin-wait).
+        return _warm.TryGetValue(sessionId, out var warm) && warm.WorkerName == worker;
     }
 
     public SlotLease? TryAcquire(string worker, string sessionId)

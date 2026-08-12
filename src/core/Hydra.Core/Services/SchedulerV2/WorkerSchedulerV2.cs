@@ -282,7 +282,14 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
         // Warm (Solo) turn: reuse the session's held warm slot instead of
         // acquiring a new one (C2 — the slot is already warm for this session).
-        var warmLease = req.Type == RequestType.Solo ? _leases.TakeWarm(req.SessionId) : null;
+        // CROSS-NODE fallback (epic #591): a Solo whose plan is a cross-node
+        // restore (ReuseStoreState=true — the affinity node had no free slot)
+        // must acquire a FRESH slot on the planned alternate decode worker, NOT
+        // reuse the session's warm stash on the affinity node (which is exactly
+        // the slot that made the affinity probe fail).
+        var warmLease = req.Type == RequestType.Solo && !req.Plan.ReuseStoreState
+            ? _leases.TakeWarm(req.SessionId)
+            : null;
         var lease = warmLease ?? _leases.TryAcquire(startWorker, req.SessionId);
         if (lease is null)
         {

@@ -219,6 +219,15 @@ public sealed class WorkerSchedulerV2Tests
     [Fact]
     public async Task Warm_Affinity_Followup_Decodes_On_The_Warm_Node()
     {
+        // p100 gets 2 slots so the session's warm lease (slot 0) does not starve
+        // the follow-up turn: the affinity probe finds a FREE slot → turn 2 is a
+        // genuine affinity route (decode + BgSave on p100, no store restore).
+        // (A 1-slot p100 is the CROSS-NODE fallback case — separate test.)
+        _cfg.Workers = new List<WorkerConfig>
+        {
+            new() { Name = "rtx", LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 2, PrefillPriority = 1, DecodePriority = 2 },
+            new() { Name = "p100", LlamaUrl = "http://p100:8086", WorkerType = 2, Slots = 2, PrefillPriority = 100, DecodePriority = 1 },
+        };
         await Setup();
 
         // Turn 1: two-phase P/D → session registered on p100 (the decode node).
@@ -240,6 +249,48 @@ public sealed class WorkerSchedulerV2Tests
 
         // C2: the warm slot was REUSED — still exactly one stashed lease (not two).
         Assert.Equal(1, _scheduler.WarmLeaseCount);
+        _runCts.Cancel();
+    }
+
+    [Fact]
+    public async Task Warm_CrossNode_Fallback_Restores_Kv_And_Decodes_On_Alternate_Worker()
+    {
+        await Setup();
+
+        // Turn 1: two-phase P/D → session registered on p100 (the decode node);
+        // p100 has ONE slot, and it is stashed WARM by the session itself.
+        var req = new Dictionary<string, object> { ["stream"] = false, ["max_tokens"] = 30, ["model"] = "nano" };
+        var msgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = new string('x', 5000) } };
+        await _scheduler.SubmitAsync(req, msgs, "sess_xn", estimatedTokens: 5000, maxTokens: 30, prefixHash: null, CancellationToken.None, systemPromptTokens: 0);
+        Assert.Equal("p100", _ledger.Lookup("sess_xn")?.NodeName);
+        Assert.Equal(1, _scheduler.WarmLeaseCount);
+        _proxy.NonStreamingUrls.Clear();
+
+        // Turn 2: same session, small follow-up → Solo (warm). The affinity probe
+        // fails (p100's only slot is warm-held by THIS session) → cross-node
+        // fallback to rtx: the KV is restored from the Store (StatePut on the
+        // alternate) before rtx decodes.
+        var followup = new Dictionary<string, object> { ["stream"] = false, ["max_tokens"] = 30, ["model"] = "nano" };
+        var followupMsgs = new List<Dictionary<string, object>> { new() { ["role"] = "user", ["content"] = "hi" } };
+        await _scheduler.SubmitAsync(followup, followupMsgs, "sess_xn", estimatedTokens: 100, maxTokens: 30, prefixHash: null, CancellationToken.None, systemPromptTokens: 0);
+
+        // Cross-node: decode on rtx (the alternate), NOT p100.
+        Assert.Equal("http://localhost:8080", Assert.Single(_proxy.NonStreamingUrls));
+        Assert.Equal("rtx", _scheduler.LastDispatchedNode);
+
+        // The restore path ran: a second-turn StatePut onto rtx (the turn-1
+        // prefill's StatePut was on p100) — the KV came from the Store, not from
+        // a warm resident slot.
+        var statePuts = _engine.Calls.Where(c => c.Op == Hydra.Shared.OpCode.StatePut).ToList();
+        Assert.Equal(2, statePuts.Count); // turn 1 p100 restore + turn 2 cross-node restore
+        Assert.Contains(_engine.Calls, c => c.Op == Hydra.Shared.OpCode.EnginePrefill); // turn 1 only
+        Assert.Equal(1, _engine.Calls.Count(c => c.Op == Hydra.Shared.OpCode.EnginePrefill)); // turn 2 skipped prefill
+
+        // The session re-registered on rtx (RestoreRunner point 2) and the rtx
+        // slot replaced the p100 stash — exactly one warm lease survives.
+        Assert.Equal("rtx", _ledger.Lookup("sess_xn")?.NodeName);
+        Assert.Equal(1, _scheduler.WarmLeaseCount);
+        Assert.True(_tracker.GetElapsedSeconds("rtx") > 0, "cross-node decode slot must be held warm");
         _runCts.Cancel();
     }
 

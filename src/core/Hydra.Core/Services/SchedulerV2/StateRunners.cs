@@ -181,8 +181,13 @@ public sealed class PlanRunner : WorkerStateRunner
         // C4 ReuseStoreState consume: a cold route whose session has durable store
         // KV skips the engine prefill — Route → RestoreKv restores the stored KV
         // directly (legacy migration-path semantics). Solo (warm) routes keep the
-        // PrefillWorker=null shape and stay decode-only below.
-        if (plan.ReuseStoreState && plan.PrefillWorker is not null)
+        // PrefillWorker=null shape and stay decode-only below. CROSS-NODE warm
+        // fallback (epic #591): a warm Solo whose affinity node has no free slot
+        // carries PrefillWorker=null + DecodeWorker=alt with ReuseStoreState=true
+        // — the machine must still fire ReuseStore so RestoreRunner fetches the
+        // KV from the Store (Get) and StatePuts it onto the alt worker before
+        // decoding (a plain SoloRouted would decode over an empty alt slot).
+        if (plan.ReuseStoreState && (plan.PrefillWorker is not null || plan.DecodeWorker is not null))
         {
             req.RestoreFromStore = true;
             return PhaseResult.Fire(SchedulerEvent.ReuseStore);

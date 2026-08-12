@@ -71,13 +71,48 @@ public sealed class RoutePlannerTests
         var warmEntry = ledger.Register("sess", "p100", slotId: 0, nPast: 100); // KV resident on p100
         warmEntry.HasStoreState = true; // warm gate: resident slot + durable store state
 
+        // p100's slot is FREE (no warm lease renting it in this unit-level probe)
+        // → the affinity probe passes → decode on p100, KV resident → NO store
+        // restore (ReuseStoreState=false; the machine routes Solo → Decode).
         var plan = new RoutePlanner().Plan(Req, RequestType.Solo, Workers, tracker, health, ledger, Cfg);
 
         Assert.True(plan.HasCapacity);
         Assert.Null(plan.PrefillWorker); // decode-only: no prefill worker
         Assert.Equal("p100", plan.DecodeWorker);
         Assert.Equal(RequestType.Solo, plan.RequestType);
-        Assert.True(plan.ReuseStoreState);
+        Assert.False(plan.ReuseStoreState);
+    }
+
+    [Fact]
+    public void Warm_CrossNode_Falls_Back_To_Alternate_Worker_When_Affinity_Node_Has_No_Free_Slot()
+    {
+        var tracker = new WorkerTracker();
+        tracker.InitWorker("rtx", 2);
+        tracker.InitWorker("p100", 1);
+        var health = new FakeHealthMonitor();
+        var ledger = new SessionLedger();
+        var warmEntry = ledger.Register("sess", "p100", slotId: 0, nPast: 100); // KV resident on p100
+        warmEntry.HasStoreState = true; // warm gate: resident slot + durable store state
+
+        // The session's OWN warm lease rents p100's ONLY slot (C2 stash never
+        // disposes it between turns) → the affinity probe (HasFreeSlot) fails →
+        // the plan falls back CROSS-NODE to the best free decode worker EXCLUDING
+        // p100 (rtx), restoring the KV from the Store (ReuseStoreState=true).
+        Assert.True(tracker.TryAcquireSlot("p100", out _, "warm-lease"));
+
+        var plan = new RoutePlanner().Plan(Req, RequestType.Solo, Workers, tracker, health, ledger, Cfg);
+
+        Assert.True(plan.HasCapacity);
+        Assert.Null(plan.PrefillWorker); // decode-only: no prefill worker
+        Assert.Equal("rtx", plan.DecodeWorker); // the alternate (legacy PickBestDecodeWorker exclude)
+        Assert.Equal(RequestType.Solo, plan.RequestType);
+        Assert.True(plan.ReuseStoreState); // cross-node: KV restored from Store before decode
+
+        // No alternate (rtx busy too) → no capacity decision (waits for a release).
+        Assert.True(tracker.TryAcquireSlot("rtx", out _));
+        Assert.True(tracker.TryAcquireSlot("rtx", out _));
+        var noCapacity = new RoutePlanner().Plan(Req, RequestType.Solo, Workers, tracker, health, ledger, Cfg);
+        Assert.False(noCapacity.HasCapacity);
     }
 
     [Fact]

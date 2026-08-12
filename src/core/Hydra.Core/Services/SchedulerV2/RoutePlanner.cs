@@ -96,18 +96,46 @@ public sealed class RoutePlanner : IRoutePlanner
 
         // 2) Warm affinity — session KV still resident on its node (SlotFreed == false)
         //    WITH store state (warm gate, review: never warm-route a session that
-        //    has no durable KV). The slot is ALREADY HELD warm for the session (C2
-        //    stash), so no free-slot check here — reuse is decided by the
-        //    LeaseManager/evaluator via the stash.
+        //    has no durable KV). The affinity node is usable ONLY when it has a FREE
+        //    slot AFTER accounting for the session's own warm lease already renting
+        //    one (C2 stash: LeaseManager.Stash never disposes the slot between turns,
+        //    so the tracker pool still counts it as rented — a 1-slot node whose only
+        //    slot is warm-held by THIS session therefore reads "no free slot").
+        //
+        //    When the affinity node cannot take the turn (legacy
+        //    WorkerSchedulerService.RouteAsync TryAcquireSlot probe failure), the
+        //    turn falls back CROSS-NODE (Gap 6): pick the best free + healthy
+        //    decode-capable worker EXCLUDING the affinity node (legacy
+        //    PickBestDecodeWorker exclude) and RESTORE the KV from the Store onto
+        //    it before decoding (ReuseStoreState=true).
         if (session is { SlotFreed: false, HasStoreState: true } && !string.IsNullOrEmpty(session.NodeName))
         {
-            var warm = workers.FirstOrDefault(w =>
+            var affinity = workers.FirstOrDefault(w =>
                 w.Name == session.NodeName
                 && w.CanDecode
                 && health.IsHealthy(w.Name));
-            return warm is null
-                ? new RouteDecision(RequestType.Solo, PrefillWorker: null, DecodeWorker: null, ReuseStoreState: true, Priority: 10)
-                : new RouteDecision(RequestType.Solo, PrefillWorker: null, DecodeWorker: warm.Name, ReuseStoreState: true, Priority: 10);
+            if (affinity is not null && tracker.HasFreeSlot(affinity.Name))
+            {
+                // Affinity reuse: the KV is resident in the session's warm-held
+                // slot — decode + BgSave only, NO Store restore round-trip.
+                return new RouteDecision(RequestType.Solo, PrefillWorker: null, DecodeWorker: affinity.Name,
+                    ReuseStoreState: false, Priority: 10);
+            }
+
+            // Cross-node fallback: restore the stored KV onto an alternate decode
+            // worker (Route → RestoreKv → Decode). Legacy refuses the cross-node
+            // route when NoStoreKvRestore is set (WorkerSchedulerService.cs:777).
+            var alt = workers
+                .Where(w => w.CanDecode && tracker.HasFreeSlot(w.Name) && health.IsHealthy(w.Name)
+                    && w.Name != session.NodeName)
+                .OrderBy(w => w.DecodePriority)
+                .FirstOrDefault();
+            if (alt is not null && !cfg.NoStoreKvRestore)
+                return new RouteDecision(RequestType.Solo, PrefillWorker: null, DecodeWorker: alt.Name,
+                    ReuseStoreState: true, Priority: 10);
+
+            // No alternate decode worker — the existing no-capacity decision.
+            return new RouteDecision(RequestType.Solo, PrefillWorker: null, DecodeWorker: null, ReuseStoreState: true, Priority: 10);
         }
 
         // 3) PREFILL (two-phase) — pick the prefill worker ONLY. The decode worker
