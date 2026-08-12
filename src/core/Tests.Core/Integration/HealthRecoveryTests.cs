@@ -355,6 +355,64 @@ public sealed class HealthRecoveryTests
 		Assert.NotNull(await item2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10)));
 	}
 
+	// ── #635 fix 3: queued/retry-pending items must re-dispatch on recovery ──
+	//
+	// Live repro (smoke #8): after pipeline_retry Retries=2 an item sat in the
+	// evaluator queue 04:26:48→04:31:48 while the engine was Free+Healthy from
+	// 04:28:28 → client 300s timeout. The item is gated on IsHealthy (accurate
+	// admission), so it can only be re-dispatched when the evaluator re-checks
+	// after capacity/health recovers. Two guarantees are under test here:
+	//   1. A health flip back to healthy fires HealthyChanged → re-signals the
+	//      evaluator → the queued item is re-snapshotted and dispatched.
+	//   2. The evaluator runs the #592 stale-unhealthy probe BEFORE the
+	//      admission gate, so a free-but-stale-unhealthy worker that a direct
+	//      probe clears is used without waiting for the poll cycle.
+
+	[Fact]
+	public async Task QueuedItem_GatedOnUnhealthy_DispatchesWhenHealthFlipsBack()
+	{
+		await using var f = new Fixture();
+		var health = f.Health;
+		// The #635 strand: the worker is flagged unhealthy and the direct probe
+		// also fails (engine genuinely down) — the item must WAIT, not fail or
+		// spin. The engine restarts → the monitor's next poll (or scheduler
+		// evidence) flips health back → HealthyChanged must wake the evaluator.
+		health.SetHealthy("rtx", false);
+		f.Scheduler.LlamaClientFactory = _ => new ProbeFailingLlamaClient();
+
+		var submit = f.SubmitAsync("sess_healthrecover", 500);
+		await Task.Delay(TimeSpan.FromMilliseconds(500));
+		Assert.False(submit.IsCompleted,
+			"item gated on an unhealthy worker must wait in the queue, not fail or dispatch");
+
+		// Engine restarted → mark healthy (fires HealthyChanged → evaluator wake).
+		health.MarkHealthy("rtx");
+		var result = await submit.WaitAsync(TimeSpan.FromSeconds(10));
+
+		Assert.NotNull(result);
+		Assert.True(health.IsHealthy("rtx"));
+	}
+
+	[Fact]
+	public async Task QueuedItem_StaleUnhealthy_DispatchedByProbeBeforeAdmission()
+	{
+		await using var f = new Fixture();
+		var health = f.Health;
+		// Worker flagged unhealthy (poll-cycle failure) but the engine is
+		// actually alive (direct probe succeeds). The evaluator's probe-before-
+		// admission (#635) must clear the flag and dispatch THIS wake — without
+		// waiting for the next poll cycle or an explicit flip.
+		health.SetHealthy("rtx", false);
+		f.Scheduler.LlamaClientFactory = _ => new TestLlamaClient(); // probe → true
+
+		var result = await f.SubmitAsync("sess_probeadmission", 500).WaitAsync(TimeSpan.FromSeconds(10));
+
+		Assert.NotNull(result);
+		Assert.True(health.IsHealthy("rtx"),
+			"a successful direct probe before the admission gate must clear the stale unhealthy flag");
+		Assert.True(health.RecoveryFlips >= 1, "the probe must have gone through MarkHealthy");
+	}
+
 	private static WorkItem MakeItem(string sessionId) => new(
 		new Dictionary<string, object>
 		{
