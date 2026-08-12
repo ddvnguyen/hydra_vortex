@@ -271,6 +271,14 @@ public sealed class NodeInfo
 	public int SlotsTotal { get; set; }
 	public int SlotsIdle { get; set; }
 	public int ConsecutiveFailures { get; set; }
+	/// <summary>
+	/// Consecutive health-poll cycles where the engine INFO (0x41) RPC failed
+	/// while the HTTP /slots poll succeeded. A dead RPC/prefill path (e.g. a
+	/// ggml_abort zombie still serving HTTP) must flip the node unhealthy
+	/// (#635) or the scheduler keeps dispatching prefill into a dying engine.
+	/// Reset to 0 on the first successful INFO RPC (engine restarted).
+	/// </summary>
+	public int RpcConsecutiveFailures { get; set; }
 	public DateTime LastCheck { get; set; }
 	public int StuckSlots { get; set; }
 	public List<SlotInfo> Slots { get; set; } = [];

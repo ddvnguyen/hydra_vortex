@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -60,6 +61,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// flight longer than the production 5s bound when exercising coalescing.
 	/// </summary>
 	internal TimeSpan LivenessProbeTimeout { get; set; } = TimeSpan.FromSeconds(5);
+	/// <summary>
+	/// #635 fix 2: override for the prefill RPC retry backoff. Tests use
+	/// near-zero so crash-retry loops fail fast; production defaults to
+	/// <see cref="PrefillRetryBackoff"/>. Signature: (retryCount, engineRestarting)
+	/// → delay before the next retry attempt.
+	/// </summary>
+	internal Func<int, bool, TimeSpan>? RetryBackoffOverride { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
@@ -520,6 +528,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			QueueItem[] snapshot;
 			lock (_queueLock) { snapshot = _requestQueue.ToArray(); }
 
+			// #635 fix 1/3: run the #592 stale-unhealthy liveness probe once per
+			// wake, BEFORE the admission gate, so a queued/retry-pending item is
+			// never excluded by a stale unhealthy flag that a direct probe would
+			// clear (a dead-engine flag that the engine has since recovered from).
+			// The probe is a no-op when nothing is stale-unhealthy (zero extra
+			// latency in the common case), coalesces concurrent cold routes, and
+			// is bounded by LivenessProbeTimeout. On success it calls MarkHealthy,
+			// which fires HealthyChanged → re-signals this loop, so a just-
+			// recovered worker is re-checked within this same wake.
+			if (snapshot.Length > 0)
+				await ProbeStaleUnhealthyWorkersAsync();
+
 			foreach (var qi in snapshot)
 			{
 				if (ct.IsCancellationRequested) break;
@@ -544,12 +564,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// to routing that can only fail (the old 30-retry spin).
 				if (!CanServeRequest(qi)) continue;
 
+				// #635 fix 3: acquire the pipeline-concurrency slot BEFORE
+				// removing the item from the queue. Previously the item was
+				// removed first and then blocked on sem.WaitAsync — when the
+				// semaphore was exhausted (Workers.Count pipelines in flight)
+				// the item was out of the queue but its pipeline had not
+				// started, and a retry re-enqueue of the same WorkItem (a new
+				// QueueItem) could leave the removed entry effectively
+				// stranded (the evaluator parked on the semaphore, the item
+				// invisible to every later wake's snapshot). Keeping the item
+				// in the queue until its pipeline actually starts means a
+				// retry/requeued item is ALWAYS re-snapshotted and re-checked
+				// on the next signal (health flip → HealthyChanged, slot
+				// release → SlotReleased, both subscribed below).
+				await sem.WaitAsync(ct);
 				lock (_queueLock) { _requestQueue.Remove(qi); }
 
 				_log.Information("evaluator_dispatch Sid={Sid} Type={Type} Priority={P}",
 					qi.WorkItem.SessionId, qi.Type, qi.Priority);
 
-				await sem.WaitAsync(ct);
 				var scope = _serviceProvider.CreateScope();
 				_ = Task.Run(async () =>
 				{
@@ -1769,6 +1802,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.SessionId, w.Name);
 	}
 
+	/// <summary>
+	/// Release every lease a prefill phase may hold before a failure/retry
+	/// re-routes the item. PrefillLease covers the cold_concurrency / PD-split
+	/// routes; the cold_atomic route holds the prefill slot via item.DecodeLease
+	/// (PrefillLease is deliberately null there — ColdRouteAsync). #635 fix 3:
+	/// a prefill failure MUST release BOTH, or the tracker keeps the slot busy
+	/// and a re-enqueued/retried item is gated on IsFree forever (observed:
+	/// pipeline_retry Retries=2 → queued while the engine was free).
+	/// </summary>
+	private async Task ReleasePrefillSlotAsync(WorkItem item)
+	{
+		if (item.PrefillLease != null)
+		{
+			await item.PrefillLease.DisposeAsync();
+			item.PrefillLease = null;
+		}
+		if (item.DecodeLease != null)
+		{
+			await item.DecodeLease.DisposeAsync();
+			item.DecodeLease = null;
+		}
+	}
+
 	// #592 router fallback liveness probe: a worker that is free + routable but
 	// flagged unhealthy (stale flag from the poll cycle) gets ONE bounded direct
 	// probe (GET /health, ≤5s) before being excluded. On success the flag is
@@ -1931,11 +1987,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// Terminal engine error — not retryable. Fail the request
 					// immediately so the routing layer can retry on another worker
 					// or surface the error to the client.
-					if (item.PrefillLease != null)
-					{
-						await item.PrefillLease.DisposeAsync();
-						item.PrefillLease = null;
-					}
+					await ReleasePrefillSlotAsync(item);
 					item.Error = new InvalidOperationException(
 						$"EnginePrefill returned terminal error on {w.Name} (slot={slotId})");
 					// #587: expose WHICH non-Ok status + engine meta so bursts
@@ -1952,11 +2004,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// re-enqueue. The evaluator loop (woken by SignalEvaluator()
 					// when any GPU releases a slot) will re-dispatch this item
 					// when a slot becomes available.
-					if (item.PrefillLease != null)
-					{
-						await item.PrefillLease.DisposeAsync();
-						item.PrefillLease = null;
-					}
+					await ReleasePrefillSlotAsync(item);
 					item.RetryCount++;
 
 					if (item.RetryCount >= WorkItem.MaxRetries)
@@ -2192,32 +2240,39 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			catch (OperationCanceledException) { throw; }
 			catch (Exception ex)
 			{
+				// #635 fix 2: a connection-refused on the worker's RPC port means
+				// the ENGINE process is down/restarting (the RpcClient already
+				// reconnected internally 3× before surfacing). Use the longer
+				// backoff so the retry budget covers the restart window.
+				var engineRestarting = IsEngineConnectionRefused(ex);
 				if (item.RetryCount >= WorkItem.MaxRetries)
 				{
 					_log.Error(ex,
 						"prefill_rpc_error_exhausted Sid={Sid} Worker={W} Slot={Slot} Retries={R}",
 						item.SessionId, w.Name, item.PrefillSlot, item.RetryCount);
-					if (item.PrefillLease != null)
-					{
-						await item.PrefillLease.DisposeAsync();
-						item.PrefillLease = null;
-					}
+					await ReleasePrefillSlotAsync(item);
 					item.Error = ex;
 					return WorkItemState.Failed;
 				}
 				_log.Warning(ex,
 					"prefill_rpc_error Sid={Sid} Worker={W} Slot={Slot} Retry={R}/{Max} — enqueuing retry",
 					item.SessionId, w.Name, item.PrefillSlot, item.RetryCount, WorkItem.MaxRetries);
-				if (item.PrefillLease != null)
-				{
-					await item.PrefillLease.DisposeAsync();
-					item.PrefillLease = null;
-				}
+				await ReleasePrefillSlotAsync(item);
 				item.PrefillWorker = null;
 				item.PrefillSlot = null;
 				item.LastBusyProgress = 0;
 				item.State = WorkItemState.None;
 				item.RetryCount++;
+				// #635 fix 2: back off before re-enqueueing — 3 retries at
+				// 500ms/2s/8s cover ~10.5s (or ~21s when the engine is
+				// restarting) instead of burning the whole budget in ~4s.
+				// Deliberately awaited on the pipeline task (holding the
+				// evaluator semaphore slot): the item is retrying the SAME
+				// worker, and this is what makes the wait-for-restart real.
+				var backoff = RetryBackoffOverride?.Invoke(item.RetryCount, engineRestarting)
+					?? PrefillRetryBackoff(item.RetryCount, engineRestarting);
+				if (backoff > TimeSpan.Zero)
+					await Task.Delay(backoff, ct);
 				return WorkItemState.Retry;
 			}
 		}
@@ -3934,33 +3989,31 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// sub-second) bg_save, but the response is already sent to the client so
 		// the user sees no extra latency. Only the next queued item is delayed.
 		var w = item.DecodeWorker!;
-		var storeKey = $"{item.SessionId}.kv";
 
 		try
 		{
-			if (_cfg.UseLlamaEngine && item.KvBlob != null)
+			// #635 fix 4: ALWAYS pull the current slot state via StateGet. The
+			// old engine-mode shortcut wrote item.KvBlob, which on merged-decode
+			// routes is the PRE-decode restore blob (RestoreKvAsync sets it) —
+			// persisting that regressed the stored KV to the pre-decode state.
+			// StateGet returns the true post-decode state, and PersistKvToStoreAsync
+			// keeps the chunk manifest in sync with it.
+			var slotId = item.LastIdSlot ?? item.DecodeSlot ?? 0;
+			var llamaRpc = GetStateRpcClient(w);
+			var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+				slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
+
+			if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
 			{
-				// Engine mode: KV blob already in memory from EngineDecode
-				await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-					storeKey, item.KvBlob, item.TraceId, CancellationToken.None);
-				item.KvBlob = null;
+				await PersistKvToStoreAsync(item.SessionId, stateResp.Payload, item, item.TraceId, CancellationToken.None);
 				_ledger.MarkStoreState(item.SessionId);
-				_log.Information("bg_saved Sid={Sid} (engine, KvBlob)", item.SessionId);
+				_log.Information("bg_saved Sid={Sid} Slot={Slot} bytes={Bytes} (engine state, post-decode)",
+					item.SessionId, slotId, stateResp.Payload.Length);
 			}
 			else
 			{
-				var slotId = item.LastIdSlot ?? 0;
-				var llamaRpc = GetStateRpcClient(w);
-				var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-					slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
-
-				if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
-				{
-					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-						storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
-					_ledger.MarkStoreState(item.SessionId);
-					_log.Information("bg_saved Sid={Sid}", item.SessionId);
-				}
+				_log.Warning("bg_save_busy Sid={Sid} Slot={Slot} Status={Status}",
+					item.SessionId, slotId, stateResp.Status);
 			}
 		}
 		catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
@@ -4211,8 +4264,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var saveStart = System.Diagnostics.Stopwatch.StartNew();
 		try
 		{
-			await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-				$"{sessionId}.kv", stateBlob, traceId, CancellationToken.None);
+			// #635 fix 4: persist the post-decode state AND (in chunk mode) keep
+			// the chunk manifest in sync so a migration continuation's restore
+			// reads the latest blob instead of the stale pre-decode manifest.
+			await PersistKvToStoreAsync(sessionId, stateBlob, timelineItem, traceId, CancellationToken.None);
 			_ledger.MarkStoreState(sessionId);
 			var storeMs = saveStart.ElapsedMilliseconds;
 			_log.Information("bg_saved Sid={Sid} bytes={Bytes} rpc_ms={RpcMs} store_ms={StoreMs} total_ms={Total}",
@@ -4473,6 +4528,47 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		=> CalculateBusyTimeouts(estimatedTokens, modelLoadTimeS: 0);
 
 	/// <summary>
+	/// #635 fix 2: delay before the next prefill RPC retry. The old instant
+	/// ~100ms retries burned the whole budget in ~4s — sized for transient
+	/// errors, not a crashed engine, and with no wait-for-restart. The backoff
+	/// table (500ms/2s/8s) spreads 3 retries over ~10.5s; when the worker's RPC
+	/// port refuses connections (<see cref="engineRestarting"/>) the longer
+	/// schedule (1s/4s/16s, ~21s) gives the engine time to come back before the
+	/// budget expires. <paramref name="retryCount"/> is the number of retries
+	/// already attempted (1-based after the first failure).
+	/// </summary>
+	internal static TimeSpan PrefillRetryBackoff(int retryCount, bool engineRestarting)
+	{
+		var normal = new[]
+		{
+			TimeSpan.FromMilliseconds(500),
+			TimeSpan.FromSeconds(2),
+			TimeSpan.FromSeconds(8),
+		};
+		var restarting = new[]
+		{
+			TimeSpan.FromSeconds(1),
+			TimeSpan.FromSeconds(4),
+			TimeSpan.FromSeconds(16),
+		};
+		var table = engineRestarting ? restarting : normal;
+		return table[Math.Clamp(retryCount - 1, 0, table.Length - 1)];
+	}
+
+	/// <summary>
+	/// #635 fix 2: true when the exception chain contains a connection-refused
+	/// socket error — the worker's RPC port is not accepting connections, i.e.
+	/// the engine process is down or restarting (not merely busy).
+	/// </summary>
+	private static bool IsEngineConnectionRefused(Exception ex)
+	{
+		for (var cur = ex; cur != null; cur = cur.InnerException)
+			if (cur is SocketException { SocketErrorCode: SocketError.ConnectionRefused })
+				return true;
+		return false;
+	}
+
+	/// <summary>
 	/// Calculate workload-aware BUSY timeouts with optional model-reload headroom.
 	/// When <paramref name="modelLoadTimeS"/> is positive, the documented load
 	/// time is added (with a safety multiplier) to account for T3 rebuilds that
@@ -4566,6 +4662,47 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	// ── Core KV save helpers (shared by SaveKvAsync + eviction sites) ──
+
+	/// <summary>
+	/// #635 fix 4: persist a KV blob to the Store from a background save (the
+	/// pipeline's BgSaveAsync and the streaming path's WriteStateToStoreAsync).
+	///
+	/// Root cause: the pre-decode save (SaveKvAsync) writes the chunked
+	/// manifest, but the post-decode bg_save wrote only a plain blob
+	/// (OpCode.Put) — the chunk manifest kept referencing the STALE pre-decode
+	/// chunks, so a migration continuation's GetManifest restored the old blob
+	/// (observed: 501-token pre-decode blob → ~1300 tokens re-prefilled →
+	/// prompt_ms=5094 &gt; 5000 budget).
+	///
+	/// Fix: in chunk mode, ALSO write the chunks + an updated manifest whose
+	/// n_past/identity reflect the POST-decode state (ledger NPast is the
+	/// post-decode total, updated by TrackAfterCompletion/TrackAfterStream).
+	/// The plain Put is retained in BOTH modes: non-chunk storage IS the full
+	/// blob, and in chunk mode it backs MigrateSessionAsync's Store Get (which
+	/// has no chunk-aware read path).
+	/// </summary>
+	private async Task PersistKvToStoreAsync(string sessionId, byte[] blob, WorkItem? item, string traceId, CancellationToken ct)
+	{
+		var storeKey = $"{sessionId}.kv";
+		if (_cfg.EnableChunks)
+		{
+		// Post-decode n_past: the ledger is updated by the decode paths
+		// (TrackAfterCompletion/Stream) BEFORE the bg_save runs, so prefer
+		// it over item.NPastAfter (which can still hold the PRE-decode
+		// prefill count on merged-decode routes).
+		var ledgerNPast = _ledger.Lookup(sessionId)?.NPast ?? 0;
+		var nPast = ledgerNPast > 0 ? ledgerNPast : (item?.NPastAfter ?? 0);
+			var chunks = ChunkEngine.ChunkAndHash(blob);
+			var orderedHashes = chunks.Select(c => c.Hash).ToList();
+			var missing = await SyncMissingAsync(storeKey, orderedHashes, traceId, ct);
+			await PushMissingChunksAsync(storeKey, sessionId, missing, chunks, blob, traceId, ct);
+			await PutManifestAsync(storeKey, nPast, blob.Length, chunks, traceId, ct,
+				item?.KvModelAlias ?? "", item?.KvTokenizer ?? "", item?.KvModelName ?? "",
+				item?.KvModelQuant ?? "", item?.KvModelCapabilities ?? 0, item?.KvModelPath ?? "");
+		}
+		// Plain Put in both modes — see XML doc above.
+		await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put, storeKey, blob, traceId, ct);
+	}
 
 	private async Task<byte[]?> SaveKvStateCoreAsync(
 		WorkerConfig worker, int slotId, string sessionId, int nPast, string traceId, CancellationToken ct)
