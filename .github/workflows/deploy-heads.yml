@@ -322,13 +322,40 @@ jobs:
 
           RTX_IMG="${{ steps.images.outputs.rtx }}"
           P100_IMG="${{ steps.images.outputs.p100 }}"
-          if [ -n "$RTX_IMG" ]; then
-            pin_image "$RTX_IMG" infra/hydra-head/config/node-rtx.yaml
-            pin_image "$RTX_IMG" infra/hydra-head/config/node-rtx3060.yaml
-          fi
-          if [ -n "$P100_IMG" ]; then
-            pin_image "$P100_IMG" infra/hydra-head/config/node-p100.yaml
-          fi
+
+          # Pin EVERY node config with a llama-server: engine block —
+          # discover infra/hydra-head/config/node-*.yaml dynamically so
+          # new configs (node-p100-mini, node-rtx-27b-combined-empty, …)
+          # are pinned without editing this workflow. The image is chosen
+          # from the arch marker in the config's source ref: sm60 → P100,
+          # sm86-sm120 → RTX. Configs without an engine block, or with an
+          # unrecognized ref, are skipped with a log line.
+          for config in infra/hydra-head/config/node-*.yaml; do
+            src=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config" | head -n1)
+            if [ -z "$src" ]; then
+              echo "Skipping $config: no llama-server: source line (no engine block)"
+              continue
+            fi
+            case "$src" in
+              *sm60*)
+                if [ -n "$P100_IMG" ]; then
+                  pin_image "$P100_IMG" "$config"
+                else
+                  echo "Skipping $config: sm60 (P100) source but P100_IMG empty (image-tag=current)"
+                fi
+                ;;
+              *sm86-sm120*)
+                if [ -n "$RTX_IMG" ]; then
+                  pin_image "$RTX_IMG" "$config"
+                else
+                  echo "Skipping $config: sm86-sm120 (RTX) source but RTX_IMG empty (image-tag=current)"
+                fi
+                ;;
+              *)
+                echo "Skipping $config: unrecognized source ref '$src'"
+                ;;
+            esac
+          done
 
       - name: Commit pinned images (PR)
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
