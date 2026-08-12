@@ -3673,10 +3673,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						IAsyncEnumerable<byte[]> mergedStream = _proxy.PollDecodeStreamAsync(
 							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token, item);
 
-						// #616: the merged stream arms the empty-content probe — if it
-						// ends with tokens>0 but no visible content (engine drops
-						// reasoning_content on merged DECODE, fix deferred), the stream
-						// is re-issued ONCE via the HTTP proxy with the CLEAN client body.
+						// #616/#642: the merged stream arms the empty-content probe —
+						// if the engine generated but NEITHER content NOR
+						// reasoning_content was seen (both are delivered in the merged
+						// DONE delta, engine 097d13e; a reasoning-only reply must NOT
+						// trigger the fallback), the stream is re-issued ONCE via the
+						// HTTP proxy with the CLEAN client body.
 						item.DecodeChunks = TrackStreamNPast(mergedStream, item,
 							mergedPath: true, fallbackRequestBody: cleanRequestBody!,
 							fallbackNodeUrl: w.LlamaUrl, fallbackCt: cts.Token);
@@ -3820,13 +3822,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						if (item.MultiMode != MultiEngineMode.None)
 							mergedResult["hydra"] = MultiEngineStatus(item);
 
-						// #616: merged DECODE drops reasoning_content (engine bug, fix
-						// deferred) — reasoning models return n_decoded>0 but an empty
-						// final content. Re-issue ONCE via the HTTP proxy with the
-						// CLEAN client body (snapshot before id_slot / hydra_config
-						// injection): /v1/chat/completions preserves reasoning_content
-						// (server-chat.cpp emits message when only reasoning_content
-						// exists). Bounded to a single attempt — the HTTP path never
+						// #616/#642: a merged result with tokens but NEITHER content
+						// NOR reasoning_content (both now delivered in the DONE result,
+						// engine 097d13e; a reasoning-only reply must NOT be re-issued)
+						// is re-issued ONCE via the HTTP proxy with the CLEAN client
+						// body (snapshot before id_slot / hydra_config injection).
+						// Bounded to a single attempt — the HTTP path never
 						// re-enters merged decode, so there is no loop.
 						if (MergedDecodeResultHasEmptyContent(mergedResult, out var emptyTokens))
 						{
@@ -5346,10 +5347,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			Console.Error.WriteLine($"track_stream_tokens Sid={item.SessionId} Trace={item.TraceId} TokensIn={item.TokensIn} TokensOut={item.TokensOut} LastUtf8={lastUtf8?[..Math.Min(200, lastUtf8?.Length ?? 0)]}");
 		}
 
-		// #616 merged path: the stream ended. If the engine generated but no
-		// visible content (engine drops reasoning_content on merged DECODE,
-		// fix deferred), re-issue ONCE via the HTTP proxy (non-stream) and
-		// emit the fallback's content as the final SSE chunk, then [DONE].
+		// #616/#642 merged path: the stream ended. If the engine generated but
+		// neither content NOR reasoning_content was seen (the engine 097d13e
+		// delivers both in the merged DONE delta — a reasoning-only reply must
+		// not pay a double run), re-issue ONCE via the HTTP proxy (non-stream)
+		// and emit the fallback's content as the final SSE chunk, then [DONE].
 		// Bounded to a single attempt — no loops.
 		if (mergedPath)
 		{
@@ -5467,16 +5469,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	/// <summary>
-	/// #616: merged-decode responses drop reasoning_content (engine bug, fix
-	/// deferred) — a reasoning model returns n_decoded&gt;0 with an empty final
-	/// content. True when the result produced tokens but the visible
-	/// choices[0].message.content is blank.
+	/// #616/#642: true when the merged-decode result produced tokens but BOTH
+	/// choices[0].message.content AND choices[0].message.reasoning_content are
+	/// blank — only then is the empty-content fallback re-issue needed. The
+	/// engine (097d13e) delivers reasoning_content in the merged result
+	/// (server-context.cpp DONE handler), so a reasoning-only reply (empty
+	/// content, non-empty reasoning_content) must NOT be re-issued — that
+	/// would run the completion a second time.
 	/// </summary>
 	internal static bool MergedDecodeResultHasEmptyContent(
 		Dictionary<string, object> result, out int tokensOut)
 	{
 		tokensOut = ExtractUsageInt(result, "completion_tokens");
-		return tokensOut > 0 && string.IsNullOrWhiteSpace(ExtractChoiceContent(result));
+		return tokensOut > 0
+			&& string.IsNullOrWhiteSpace(ExtractChoiceContent(result))
+			&& string.IsNullOrWhiteSpace(ExtractChoiceReasoningContent(result));
 	}
 
 	/// <summary>Read choices[0].message.content from an OpenAI-style completion
@@ -5494,6 +5501,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return "";
 	}
 
+	/// <summary>#642: read choices[0].message.reasoning_content from an
+	/// OpenAI-style completion dictionary ("" when absent). The engine
+	/// (097d13e) populates it in the merged DONE result.</summary>
+	private static string ExtractChoiceReasoningContent(Dictionary<string, object> result)
+	{
+		if (!result.TryGetValue("choices", out var c) || c is not JsonElement ce
+			|| ce.ValueKind != JsonValueKind.Array || ce.GetArrayLength() == 0)
+			return "";
+		var choice = ce[0];
+		if (choice.TryGetProperty("message", out var msg)
+			&& msg.TryGetProperty("reasoning_content", out var rc)
+			&& rc.ValueKind == JsonValueKind.String)
+			return rc.GetString() ?? "";
+		return "";
+	}
+
 	/// <summary>#616 QA: deep clone the client request body via a JSON
 	/// round-trip. The clone is a snapshot of the ORIGINAL request — immune to
 	/// later in-place mutation (id_slot / hydra_config / stream_options
@@ -5502,8 +5525,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private static Dictionary<string, object> DeepCloneRequestBody(Dictionary<string, object> request)
 		=> JsonSerializer.Deserialize<Dictionary<string, object>>(JsonSerializer.Serialize(request))!;
 
-	/// <summary>#616: true when an SSE data line carries a non-empty
-	/// choices[0].delta.content (visible text, not reasoning_content).</summary>
+	/// <summary>#616/#642: true when an SSE data line carries a non-empty
+	/// choices[0].delta.content OR choices[0].delta.reasoning_content — either
+	/// counts as content delivered, so a reasoning-only stream (content empty,
+	/// reasoning_content populated) does NOT trigger the empty-content fallback
+	/// re-issue. The engine (097d13e) delivers reasoning_content in the merged
+	/// DONE delta (server-context.cpp DONE handler).</summary>
 	private static bool HasNonEmptyContentDelta(string sseLine)
 	{
 		var trimmed = sseLine.Trim();
@@ -5516,22 +5543,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				|| choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0)
 				return false;
 			var choice = choices[0];
-			if (choice.TryGetProperty("delta", out var delta)
-				&& delta.TryGetProperty("content", out var content)
-				&& content.ValueKind == JsonValueKind.String)
-				return !string.IsNullOrWhiteSpace(content.GetString());
+			if (!choice.TryGetProperty("delta", out var delta))
+				return false;
+			if (delta.TryGetProperty("content", out var content)
+				&& content.ValueKind == JsonValueKind.String
+				&& !string.IsNullOrWhiteSpace(content.GetString()))
+				return true;
+			if (delta.TryGetProperty("reasoning_content", out var reasoning)
+				&& reasoning.ValueKind == JsonValueKind.String
+				&& !string.IsNullOrWhiteSpace(reasoning.GetString()))
+				return true;
 		}
 		catch { }
 		return false;
 	}
 
-	/// <summary>#616: build ONE SSE chat.completion.chunk from a buffered HTTP
-	/// proxy response so streaming clients receive the fallback's content
+	/// <summary>#616/#642: build ONE SSE chat.completion.chunk from a buffered
+	/// HTTP proxy response so streaming clients receive the fallback's content
 	/// (and usage) as the stream's final event. reasoning_content is carried
-	/// into the delta when present — the whole point of the fallback is that
-	/// the HTTP path preserves it while merged DECODE drops it. Mirrors
-	/// server-chat.cpp:453-464: the message is emitted when EITHER content or
-	/// reasoning_content is non-empty.</summary>
+	/// into the delta when present — when the fallback DOES fire (both fields
+	/// empty in the merged result), any reasoning content the HTTP proxy
+	/// returns must still reach the client. Mirrors server-chat.cpp:453-464:
+	/// the message is emitted when EITHER content or reasoning_content is
+	/// non-empty.</summary>
 	private static byte[] BuildFallbackSseChunk(Dictionary<string, object> fallback)
 	{
 		string content = "";

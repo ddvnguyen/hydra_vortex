@@ -16,12 +16,13 @@ namespace Tests.Core.Integration;
 // ═══════════════════════════════════════════════════════════════════════
 // #616 — merged-decode empty-content → HTTP proxy fallback.
 //
-// Merged-decode (DECODE 0x43) responses drop reasoning_content (engine bug,
-// fix deferred): the coordinator receives tokens (n_decoded>0) but the final
-// visible content is empty for reasoning models. The interim coordinator fix
-// detects that condition and re-issues the ORIGINAL request body ONCE via the
-// HTTP /v1/chat/completions proxy (which preserves reasoning_content),
-// bounded to a single fallback attempt.
+// Merged-decode (DECODE 0x43) responses with tokens but neither content nor
+// reasoning_content (both are now delivered in the DONE result, engine
+// 097d13e): the coordinator detects that condition and re-issues the ORIGINAL
+// request body ONCE via the HTTP /v1/chat/completions proxy, bounded to a
+// single fallback attempt. #642: a reasoning-only reply (empty content,
+// non-empty reasoning_content) must NOT trigger the fallback — re-issuing
+// would run the completion a second time and double decode_ms.
 //
 // #622 — the STREAMING detection signal is decode_ms, not usage: the merged
 // COMPLETION DONE SSE delta carries hydra_metrics (decode_ms > 0 once the
@@ -112,6 +113,32 @@ public sealed class MergedDecodeFallbackTests
         Assert.Empty(f.Proxy.NonStreamingCalls);
         var dict = Assert.IsType<Dictionary<string, object>>(result);
         Assert.Equal(0, WorkerSchedulerService.ExtractUsageInt(dict, "completion_tokens"));
+        Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
+    }
+
+    [Fact]
+    public async Task MergedDecode_Buffered_ReasoningContentOnly_NoFallback()
+    {
+        // #642 (buffered twin of the streaming regression, smoke #10 2026-08-12):
+        // a merged-decode result with empty content but non-empty
+        // reasoning_content (a reasoning-only completion — the model stopped
+        // mid-reasoning at max_tokens) must NOT be re-issued via the HTTP proxy.
+        // The engine (097d13e) delivers message.reasoning_content in the DONE
+        // result, so the empty-content gate must require BOTH fields blank;
+        // otherwise every reasoning-only reply would run the completion twice.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedResult = MergedDecodeResult(
+            content: "", completionTokens: 50, reasoningContent: "deep reasoning text");
+
+        var result = await f.SubmitAsync("sess_fb642", 500, 100, stream: false);
+
+        // No HTTP re-issue — the merged result is returned as-is, reasoning
+        // content intact.
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        var dict = Assert.IsType<Dictionary<string, object>>(result);
+        var choices = Assert.IsType<JsonElement>(dict["choices"]);
+        Assert.Equal("deep reasoning text",
+            choices[0].GetProperty("message").GetProperty("reasoning_content").GetString());
         Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
     }
 
@@ -211,6 +238,44 @@ public sealed class MergedDecodeFallbackTests
             Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}],\"hydra_metrics\":{\"decode_ms\":1200}}")),
             Encoding.UTF8.GetString(Sse("data: [DONE]")));
         Assert.Equal(expected, string.Join("", chunks.Select(c => Encoding.UTF8.GetString(c))));
+    }
+
+    [Fact]
+    public async Task MergedDecode_Stream_ReasoningContentOnly_DecodeMsGtZero_NoFallback()
+    {
+        // #642 regression (smoke #10, 2026-08-12): the "Reason step by step..."
+        // smoke prompt produced ALL reasoning tokens with empty final content
+        // (the model stopped mid-reasoning at max_tokens). HasNonEmptyContentDelta
+        // only inspected delta.content, so sawContent stayed false and the gate
+        // (engineGenerated && !sawContent) re-issued the whole request via the
+        // HTTP proxy → the engine ran the completion a second time → decode_ms
+        // was exactly 2× engine time (58965+58840≈118416, 11.9 t/s apparent vs
+        // 23.95 t/s engine). The engine (097d13e) delivers reasoning_content in
+        // the merged DONE delta, so a non-empty delta.reasoning_content must
+        // count as content seen and the fallback must NOT fire.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning_content\":\"Let me reason step by step about this.\"}}],\"hydra_metrics\":{\"decode_ms\":58965,\"prompt_ms\":120,\"n_past\":2048,\"decode_request_id\":11373,\"id_slot\":0}}"),
+            Sse("data: [DONE]"),
+        ];
+
+        var chunks = await CollectAsync(f, "sess_fs642");
+
+        // No re-issue: neither the HTTP-proxy fallback NOR the DONE-state GET
+        // probe fires (sawContent is true, decode_ms reached Phases from the
+        // stream itself). Every chunk relays in original order, reasoning text
+        // intact.
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        Assert.Empty(f.Proxy.PollDecodeResultCalls);
+        Assert.Contains("reasoning_content", Encoding.UTF8.GetString(chunks[1]));
+        var expected = string.Concat(
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}")),
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning_content\":\"Let me reason step by step about this.\"}}],\"hydra_metrics\":{\"decode_ms\":58965,\"prompt_ms\":120,\"n_past\":2048,\"decode_request_id\":11373,\"id_slot\":0}}")),
+            Encoding.UTF8.GetString(Sse("data: [DONE]")));
+        Assert.Equal(expected, string.Join("", chunks.Select(c => Encoding.UTF8.GetString(c))));
+        Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
     }
 
     [Fact]
