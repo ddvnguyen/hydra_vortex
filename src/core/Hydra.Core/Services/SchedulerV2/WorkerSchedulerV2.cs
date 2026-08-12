@@ -303,6 +303,14 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             {
                 ReleaseLeases(req);
             }
+
+            // Completion resolves AFTER the lease finalization (stash/release) —
+            // re-review finding: a caller whose SubmitAsync returned "done" must be
+            // able to rely on the warm lease being in place for an immediate
+            // follow-up turn (previously the completion fired before StashWarm,
+            // racing the warm-routing contract + flaking warm-lease assertions).
+            if (!suspended)
+                await FinalizeAsync(req, req.State);
         }
     }
 
@@ -373,11 +381,6 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             _log.Warning(ex, "v2_pipeline_error Sid={Sid}", req.SessionId);
             await machine.FireAsync(SchedulerEvent.Failed, req, CancellationToken.None);
             req.State = machine.State;
-        }
-        finally
-        {
-            if (!suspended)
-                await FinalizeAsync(req, req.State);
         }
         return suspended;
     }
