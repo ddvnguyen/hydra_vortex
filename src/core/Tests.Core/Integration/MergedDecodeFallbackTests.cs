@@ -228,6 +228,7 @@ public sealed class MergedDecodeFallbackTests
         Assert.Contains("Hello from fallback", fallbackChunk);
         Assert.Contains("finish_reason", fallbackChunk);
         Assert.Contains("usage", fallbackChunk);
+        Assert.DoesNotContain("tool_calls", fallbackChunk);
         Assert.Equal("data: [DONE]", Encoding.UTF8.GetString(chunks[2]).Trim());
         Assert.Contains(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
     }
@@ -378,6 +379,7 @@ public sealed class MergedDecodeFallbackTests
         Assert.Contains("reasoning_content", fallbackChunk);
         Assert.Contains("deep reasoning text", fallbackChunk);
         Assert.Contains("\"content\":\"\"", fallbackChunk);
+        Assert.DoesNotContain("tool_calls", fallbackChunk);
     }
 
     [Fact]
