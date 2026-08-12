@@ -33,9 +33,11 @@ public interface IStoreGateway
     /// <summary>PUSH_CHUNKS (0x13): upload the chunk bodies the Store reported
     /// missing, framed [4B size LE][body] and batched at 32 MB (peak memory
     /// bounded regardless of state size — legacy <c>PushMissingChunksAsync</c>,
-    /// WorkerSchedulerService.cs:4203). Returns the number of chunks pushed
-    /// (0 when nothing was missing).</summary>
-    Task<int> PushChunksAsync(string storeKey, IReadOnlyList<string> missing, IReadOnlyList<ChunkRef> allChunks, byte[] stateData, CancellationToken ct);
+    /// WorkerSchedulerService.cs:4203). <paramref name="chunkSize"/> is the chunk
+    /// size the chunk list was built with (ChunkRef.Index i ⇒ bytes
+    /// [i*chunkSize, …]). Returns the number of chunks pushed (0 when nothing
+    /// was missing).</summary>
+    Task<int> PushChunksAsync(string storeKey, IReadOnlyList<string> missing, IReadOnlyList<ChunkRef> allChunks, byte[] stateData, int chunkSize, CancellationToken ct);
 
     /// <summary>PUT_MANIFEST (0x15): write the authoritative ordered manifest
     /// (<c>{"n_past":N,"total_size":T, model identity...,"chunks":[{"index",...}]}</c>).
@@ -105,7 +107,7 @@ public sealed class StoreGateway : IStoreGateway
 
     public async Task<int> PushChunksAsync(
         string storeKey, IReadOnlyList<string> missing, IReadOnlyList<ChunkRef> allChunks,
-        byte[] stateData, CancellationToken ct)
+        byte[] stateData, int chunkSize, CancellationToken ct)
     {
         if (missing.Count == 0) return 0;
 
@@ -128,9 +130,9 @@ public sealed class StoreGateway : IStoreGateway
             batch.SetLength(0);
         }
 
-        // ChunkRef.Index i ⇒ bytes [i*CHUNK_SIZE, …] — exactly how ChunkAndHash
-        // built the list, so the offset/size math reconstructs each body.
-        var chunkSize = ChunkEngine.CHUNK_SIZE;
+        // ChunkRef.Index i ⇒ bytes [i*chunkSize, …] — the size the chunk list was
+        // built with (ChunkEngine.ChunkAndHash), so each body is reconstructed
+        // exactly as it was hashed.
         var header = new byte[4];
         foreach (var hash in missing)
         {

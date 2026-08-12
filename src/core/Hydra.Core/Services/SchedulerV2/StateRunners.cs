@@ -486,16 +486,18 @@ public sealed class SaveKvRunner : WorkerStateRunner
         {
             if (_cfg.EnableChunks)
             {
-                // Chunked save (legacy wire parity): chunk the blob with the synced
-                // ChunkEngine.CHUNK_SIZE, sync which hashes the Store lacks, push the
-                // missing bodies, then write the authoritative manifest. The manifest
-                // carries req.NPastAfter (the prefill n_past — golden PutManifest
-                // Len 540) + the KV's model identity (#289/#470).
+                // Chunked save (legacy wire parity): chunk the blob at the CONFIGURED
+                // chunk size (explicit — never the mutable ChunkEngine.CHUNK_SIZE
+                // static, which would race under parallel test execution), sync which
+                // hashes the Store lacks, push the missing bodies, then write the
+                // authoritative manifest. The manifest carries req.NPastAfter (the
+                // prefill n_past — golden PutManifest Len 540) + the KV's model
+                // identity (#289/#470).
                 var storeKey = StoreKeys.KvKey(req.SessionId);
-                var chunks = ChunkEngine.ChunkAndHash(kv);
+                var chunks = ChunkEngine.ChunkAndHash(kv, _cfg.ChunkSize);
                 var orderedHashes = chunks.Select(c => c.Hash).ToList();
                 var missing = await _store.SyncMissingAsync(storeKey, orderedHashes, ct);
-                await _store.PushChunksAsync(storeKey, missing, chunks, kv, ct);
+                await _store.PushChunksAsync(storeKey, missing, chunks, kv, _cfg.ChunkSize, ct);
                 await _store.PutManifestAsync(storeKey, req.NPastAfter, kv.Length, chunks, ct, req.KvIdentity);
                 saved = true;
             }

@@ -116,6 +116,18 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
             new RequestClassifier(), new RoutePlanner(), new LeaseManager(Tracker),
             runners, new TimelineEmitter(), engine, store, Proxy);
 
+        // Wire the chunk-size statics for chunked scenarios (legacy ctor parity;
+        // restored in DisposeAsync). The scenario catalog computes the injected
+        // SYNC_MISSING missing-hash response with ChunkEngine.ChunkAndHash BEFORE
+        // the request runs (ConfigureRpc below), so the statics must reflect the
+        // scenario's ChunkSize — otherwise the reported missing hash (computed at
+        // the ambient 8 MB) never matches a 1024-byte chunk and no PushChunks fires.
+        if (options.EnableChunks)
+        {
+            Hydra.Core.ChunkEngine.CHUNK_SIZE = options.ChunkSize;
+            Hydra.Shared.ChunkConstants.ChunkSize = options.ChunkSize;
+        }
+
         options.ConfigureRpc?.Invoke(Rpc);
         _ = Scheduler.RunAsync(_runCts.Token);
     }

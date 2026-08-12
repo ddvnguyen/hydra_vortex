@@ -55,8 +55,6 @@ public sealed class ChunkedSaveTests
         public WorkerSchedulerV2 Scheduler { get; }
 
         private readonly CancellationTokenSource _runCts = new();
-        private readonly int _savedChunkSize;
-        private readonly int _savedChunkConstantsSize;
 
         public Fixture(CoordinatorConfig cfg, Action<ScenarioRpcClient>? configureRpc = null)
         {
@@ -64,11 +62,11 @@ public sealed class ChunkedSaveTests
             Tracker = new WorkerTracker();
             foreach (var w in cfg.Workers) Tracker.InitWorker(w.Name, w.Slots);
 
-            // Preserve the global chunk-size statics (the scheduler ctor syncs them
-            // from cfg when EnableChunks — legacy ctor parity) and restore on dispose
-            // so a chunked test can't bleed a tiny chunk size into parallel suites.
-            _savedChunkSize = ChunkEngine.CHUNK_SIZE;
-            _savedChunkConstantsSize = ChunkConstants.ChunkSize;
+            // NB: no global chunk-size static syncing here — the v2 chunked save
+            // passes the configured chunk size EXPLICITLY (SaveKvRunner →
+            // ChunkEngine.ChunkAndHash(kv, cfg.ChunkSize)), so it neither reads
+            // nor mutates the ambient ChunkEngine.CHUNK_SIZE static (which other
+            // suites' legacy chunked scenarios mutate — a parallel-execution race).
 
             // The SAME recording fake serves as the per-worker engine channel AND the
             // store (harness pattern) so the ordered RPC stream is deterministic.
@@ -120,8 +118,6 @@ public sealed class ChunkedSaveTests
         {
             _runCts.Cancel();
             _runCts.Dispose();
-            ChunkEngine.CHUNK_SIZE = _savedChunkSize;
-            ChunkConstants.ChunkSize = _savedChunkConstantsSize;
             return ValueTask.CompletedTask;
         }
     }

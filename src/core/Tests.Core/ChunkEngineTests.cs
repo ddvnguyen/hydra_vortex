@@ -1,7 +1,19 @@
 using Hydra.Core;
+using Tests.Core.Harness;
 
 namespace Tests.Core;
 
+/// <summary>
+/// Serialized with the harness: these tests size their buffers from the mutable
+/// global <c>ChunkEngine.CHUNK_SIZE</c> static, then chunk with it again. The
+/// chunked-save scenarios (RouteMatrix chunked cases + the differential gate's
+/// chunked_save scenarios) pin that static to a tiny value (e.g. 1024) for the
+/// duration of their scenario — running in parallel with THIS class made the
+/// value flip between the test's two reads (an 8 MB buffer chunked at 1024
+/// yields 8193 chunks instead of 2). Joining the harness collection serializes
+/// the mutators with the reader.
+/// </summary>
+[Collection("HydraHarnessTests")]
 public sealed class ChunkEngineTests
 {
     [Fact]

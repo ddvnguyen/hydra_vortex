@@ -16,14 +16,25 @@ public static class ChunkEngine
     }
 
     public static List<ChunkRef> ChunkAndHash(byte[] data)
+        => ChunkAndHash(data, CHUNK_SIZE);
+
+    /// <summary>Chunk a blob with an EXPLICIT chunk size — the size the callers'
+    /// configured chunk size, not the mutable <see cref="CHUNK_SIZE"/> static
+    /// (which chunked-save scenarios mutate globally and can race under parallel
+    /// test execution). Throws when <paramref name="chunkSize"/> ≤ 0 rather than
+    /// looping forever.</summary>
+    public static List<ChunkRef> ChunkAndHash(byte[] data, int chunkSize)
     {
+        if (chunkSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(chunkSize), chunkSize, "chunk size must be positive");
+
         var chunks = new List<ChunkRef>();
         var offset = 0;
         var index = 0;
 
         while (offset < data.Length)
         {
-            var size = Math.Min(CHUNK_SIZE, data.Length - offset);
+            var size = Math.Min(chunkSize, data.Length - offset);
             var slice = data.AsSpan(offset, size);
             var hash = ComputeHash(slice);
             chunks.Add(new ChunkRef(index, hash, size));

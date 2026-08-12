@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Scheduling;
-using Hydra.Shared;
 using Hydra.StateMachine;
 using Serilog;
 
@@ -100,15 +99,13 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         _proxy = proxy;
         _log = log ?? Serilog.Log.ForContext("component", "coordinator-v2");
 
-        // Sync the global chunk-size statics (legacy WorkerSchedulerService ctor
-        // parity, lines 117-120): ChunkEngine.ChunkAndHash + the store wire chunk
-        // size must use the CONFIGURED chunk size when chunked save is enabled.
-        // The harness drivers save/restore these statics around a scenario.
-        if (cfg.EnableChunks)
-        {
-            ChunkEngine.CHUNK_SIZE = cfg.ChunkSize;
-            ChunkConstants.ChunkSize = cfg.ChunkSize;
-        }
+        // NOTE: v2 does NOT sync the global ChunkEngine.CHUNK_SIZE / ChunkConstants
+        // statics here (unlike the legacy ctor). The v2 chunked save passes the
+        // configured chunk size EXPLICITLY (SaveKvRunner → ChunkEngine.ChunkAndHash
+        // overload + StoreGateway.PushChunksAsync), so it never depends on — nor
+        // mutates — those global statics (which chunked-save scenarios otherwise
+        // race under parallel test execution). The legacy scheduler + DI wiring
+        // (CoordinatorServiceExtensions.AddCoordinator) keep syncing them.
 
         // One runner per handled state (PlanRunner registers for RouteDecision + PickDecode).
         _runners = runners
