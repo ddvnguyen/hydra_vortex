@@ -30,8 +30,8 @@ binaries:
     # crash-loop on 2026-07-18 (#453/#460). Do not fix a mismatch
     # like this by making the bind mount :rw when the opt-in override
     # is in use; the mount is intentionally read-only.
-    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-1d227f7
-    image_digest: sha256:924bc9098cae702c04fe0d8643f657219b2b51079de91f193f754eb7eb4ddfdb
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-7e9c7bf
+    image_digest: sha256:9012437ac98cfbb2a08e095069d04cec4edc4760d7eacf69baa5636e355b61f9
     binary: llama-engine
     dest: /llama/bin/llama-engine
   node_exporter:
