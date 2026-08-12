@@ -3673,11 +3673,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						IAsyncEnumerable<byte[]> mergedStream = _proxy.PollDecodeStreamAsync(
 							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token, item);
 
-						// #616/#642: the merged stream arms the empty-content probe —
+						// #616/#642/#588: the merged stream arms the empty-content probe —
 						// if the engine generated but NEITHER content NOR
-						// reasoning_content was seen (both are delivered in the merged
-						// DONE delta, engine 097d13e; a reasoning-only reply must NOT
-						// trigger the fallback), the stream is re-issued ONCE via the
+						// reasoning_content NOR tool_calls was seen (all three are
+						// delivered in the merged DONE delta, engine 097d13e/b95c228b;
+						// a reasoning- or tool-call-only reply must NOT trigger the
+						// fallback), the stream is re-issued ONCE via the
 						// HTTP proxy with the CLEAN client body.
 						item.DecodeChunks = TrackStreamNPast(mergedStream, item,
 							mergedPath: true, fallbackRequestBody: cleanRequestBody!,
@@ -3822,9 +3823,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						if (item.MultiMode != MultiEngineMode.None)
 							mergedResult["hydra"] = MultiEngineStatus(item);
 
-						// #616/#642: a merged result with tokens but NEITHER content
-						// NOR reasoning_content (both now delivered in the DONE result,
-						// engine 097d13e; a reasoning-only reply must NOT be re-issued)
+						// #616/#642/#588: a merged result with tokens but NEITHER
+						// content NOR reasoning_content NOR tool_calls (all three now
+						// delivered in the DONE result, engine 097d13e/b95c228b; a
+						// reasoning- or tool-call-only reply must NOT be re-issued)
 						// is re-issued ONCE via the HTTP proxy with the CLEAN client
 						// body (snapshot before id_slot / hydra_config injection).
 						// Bounded to a single attempt — the HTTP path never
@@ -5347,10 +5349,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			Console.Error.WriteLine($"track_stream_tokens Sid={item.SessionId} Trace={item.TraceId} TokensIn={item.TokensIn} TokensOut={item.TokensOut} LastUtf8={lastUtf8?[..Math.Min(200, lastUtf8?.Length ?? 0)]}");
 		}
 
-		// #616/#642 merged path: the stream ended. If the engine generated but
-		// neither content NOR reasoning_content was seen (the engine 097d13e
-		// delivers both in the merged DONE delta — a reasoning-only reply must
-		// not pay a double run), re-issue ONCE via the HTTP proxy (non-stream)
+		// #616/#642/#588 merged path: the stream ended. If the engine generated but
+		// neither content NOR reasoning_content NOR tool_calls was seen (the engine
+		// 097d13e/b95c228b delivers content, reasoning_content and tool_calls in the
+		// merged DONE delta — a reasoning- or tool-call-only reply must not pay a
+		// double run), re-issue ONCE via the HTTP proxy (non-stream)
 		// and emit the fallback's content as the final SSE chunk, then [DONE].
 		// Bounded to a single attempt — no loops.
 		if (mergedPath)
@@ -5475,7 +5478,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// engine (097d13e) delivers reasoning_content in the merged result
 	/// (server-context.cpp DONE handler), so a reasoning-only reply (empty
 	/// content, non-empty reasoning_content) must NOT be re-issued — that
-	/// would run the completion a second time.
+	/// would run the completion a second time. #588: a reply carrying
+	/// choices[0].message.tool_calls (the engine fix b95c228b emits it in the
+	/// merged DONE result) is likewise NOT re-issued — re-issuing would discard
+	/// the engine's tool_calls and run the completion a second time.
 	/// </summary>
 	internal static bool MergedDecodeResultHasEmptyContent(
 		Dictionary<string, object> result, out int tokensOut)
@@ -5483,7 +5489,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		tokensOut = ExtractUsageInt(result, "completion_tokens");
 		return tokensOut > 0
 			&& string.IsNullOrWhiteSpace(ExtractChoiceContent(result))
-			&& string.IsNullOrWhiteSpace(ExtractChoiceReasoningContent(result));
+			&& string.IsNullOrWhiteSpace(ExtractChoiceReasoningContent(result))
+			&& !ExtractChoiceHasToolCalls(result);
 	}
 
 	/// <summary>Read choices[0].message.content from an OpenAI-style completion
@@ -5517,6 +5524,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return "";
 	}
 
+	/// <summary>#588: true when choices[0].message.tool_calls is a non-empty
+	/// array. The engine fix (b95c228b) emits the tool_calls array in merged
+	/// DONE results; a tool-call reply (empty content, no reasoning) must be
+	/// returned verbatim, never discarded by the empty-content fallback.</summary>
+	private static bool ExtractChoiceHasToolCalls(Dictionary<string, object> result)
+	{
+		if (!result.TryGetValue("choices", out var c) || c is not JsonElement ce
+			|| ce.ValueKind != JsonValueKind.Array || ce.GetArrayLength() == 0)
+			return false;
+		var choice = ce[0];
+		if (!choice.TryGetProperty("message", out var msg))
+			return false;
+		return msg.TryGetProperty("tool_calls", out var tc)
+			&& tc.ValueKind == JsonValueKind.Array && tc.GetArrayLength() > 0;
+	}
+
 	/// <summary>#616 QA: deep clone the client request body via a JSON
 	/// round-trip. The clone is a snapshot of the ORIGINAL request — immune to
 	/// later in-place mutation (id_slot / hydra_config / stream_options
@@ -5530,7 +5553,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// counts as content delivered, so a reasoning-only stream (content empty,
 	/// reasoning_content populated) does NOT trigger the empty-content fallback
 	/// re-issue. The engine (097d13e) delivers reasoning_content in the merged
-	/// DONE delta (server-context.cpp DONE handler).</summary>
+	/// DONE delta (server-context.cpp DONE handler). #588: a non-empty
+	/// choices[0].delta.tool_calls array (the engine fix b95c228b emits it in
+	/// merged DONE deltas) counts as content delivered too — a tool-call-only
+	/// stream must relay verbatim, never re-issued via the HTTP proxy.</summary>
 	private static bool HasNonEmptyContentDelta(string sseLine)
 	{
 		var trimmed = sseLine.Trim();
@@ -5553,6 +5579,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				&& reasoning.ValueKind == JsonValueKind.String
 				&& !string.IsNullOrWhiteSpace(reasoning.GetString()))
 				return true;
+			if (delta.TryGetProperty("tool_calls", out var toolCalls)
+				&& toolCalls.ValueKind == JsonValueKind.Array
+				&& toolCalls.GetArrayLength() > 0)
+				return true;
 		}
 		catch { }
 		return false;
@@ -5565,11 +5595,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// empty in the merged result), any reasoning content the HTTP proxy
 	/// returns must still reach the client. Mirrors server-chat.cpp:453-464:
 	/// the message is emitted when EITHER content or reasoning_content is
-	/// non-empty.</summary>
+	/// non-empty. #588: message.tool_calls (the engine fix b95c228b emits it
+	/// in merged-decode results) is copied into the delta VERBATIM — the
+	/// coordinator never re-shapes the OpenAI tool-call schema.</summary>
 	private static byte[] BuildFallbackSseChunk(Dictionary<string, object> fallback)
 	{
 		string content = "";
 		string reasoningContent = "";
+		JsonElement? toolCalls = null;
 		string? finishReason = "stop";
 		if (fallback.TryGetValue("choices", out var ch) && ch is JsonElement chEl
 			&& chEl.ValueKind == JsonValueKind.Array && chEl.GetArrayLength() > 0)
@@ -5581,6 +5614,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					content = ct.GetString() ?? "";
 				if (msg.TryGetProperty("reasoning_content", out var rc) && rc.ValueKind == JsonValueKind.String)
 					reasoningContent = rc.GetString() ?? "";
+				if (msg.TryGetProperty("tool_calls", out var tc)
+					&& tc.ValueKind == JsonValueKind.Array && tc.GetArrayLength() > 0)
+					toolCalls = tc;
 			}
 			if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
 				finishReason = fr.GetString();
@@ -5601,6 +5637,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		};
 		if (!string.IsNullOrEmpty(reasoningContent))
 			delta["reasoning_content"] = reasoningContent;
+		if (toolCalls.HasValue)
+			delta["tool_calls"] = toolCalls.Value;
 
 		var chunk = new Dictionary<string, object?>
 		{
