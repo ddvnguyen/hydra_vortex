@@ -129,6 +129,34 @@ public sealed class PlanRunner : WorkerStateRunner
         req.MultiMode = plan.MultiMode;
         req.MultiEngineConfig = plan.MultiEngineConfig;
         req.PeerWorker = plan.PeerWorker is null ? null : Resolve(plan.PeerWorker);
+
+        // COMBINED retry re-plan (review #2): a Prefill --Retry--> RouteDecision
+        // re-plan can adopt a fresh plan whose PEER differs from the peer the
+        // orchestrator reserved in RunPipelineAsync. The stale PeerLease still
+        // pins the OLD peer (P1: one GPU = one task — but on the WRONG GPU) and
+        // the NEW peer was never reserved. Reconcile: release the old
+        // reservation and reserve the new peer; a failed reservation fails the
+        // request (a combined request must not run without its peer held).
+        if (req.RetryCount > 0 && req.MultiMode == MultiEngineMode.Combined)
+        {
+            var heldPeer = req.PeerLease?.WorkerName;
+            var wantedPeer = req.PeerWorker?.Name;
+            if (heldPeer != wantedPeer)
+            {
+                _leases.ReleasePeer(req.PeerLease);
+                req.PeerLease = null;
+                if (wantedPeer is not null && _leases.TryReservePeer(wantedPeer))
+                {
+                    req.PeerLease = new ExclusivePeerReservation(wantedPeer, _tracker);
+                }
+                else
+                {
+                    req.Error = new InvalidOperationException(
+                        $"combined retry re-plan: peer {wantedPeer ?? "?"} is not exclusively reservable");
+                    return PhaseResult.Fire(SchedulerEvent.Failed);
+                }
+            }
+        }
         req.RecordPhase("plan_ms", 0);
 
         // Retry lease swap: release the old prefill lease ONLY when the re-plan
@@ -1068,10 +1096,19 @@ public sealed class BgSaveRunner : WorkerStateRunner
             // COMBINED (epic #591): SaveKv was SKIPPED so the prefill KV blob is
             // still in memory — Put it DIRECTLY, no StateGet (legacy BgSaveAsync
             // engine-KvBlob path, wire parity: the combined golden pins Put 4096
-            // with no StateGet). Every OTHER path either nulls KvBlob in SaveKv
-            // or takes the store-fallback (which keeps the legacy StateGet capture),
-            // so they keep the StateGet + Put branch below.
-            if (req.MultiMode == MultiEngineMode.Combined && req.KvBlob is not null)
+            // with no StateGet). Gated on HydraConfigDelivered (review #5): a
+            // combined request that took the #279 HTTP-prefill fallback never
+            // delivered hydra_config AND nulls KvBlob, but a later cross-node
+            // RestoreKv can re-set req.KvBlob to the PRE-decode store blob — the
+            // direct-Put would then persist stale prefill state against the
+            // post-decode ledger NPast. Requiring a successful hydra_config
+            // delivery guarantees the blob is the real in-memory prefill KV.
+            // Every OTHER path either nulls KvBlob in SaveKv or takes the
+            // store-fallback (which keeps the legacy StateGet capture), so they
+            // keep the StateGet + Put branch below.
+            if (req.MultiMode == MultiEngineMode.Combined
+                && req.HydraConfigDelivered
+                && req.KvBlob is not null)
             {
                 await _store.PutAsync(StoreKeys.KvKey(req.SessionId), req.KvBlob, CancellationToken.None);
                 _ledger.MarkStoreState(req.SessionId);

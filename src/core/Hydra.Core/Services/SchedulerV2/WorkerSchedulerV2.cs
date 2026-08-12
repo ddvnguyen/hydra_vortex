@@ -300,10 +300,14 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         // COMBINED (epic #591): reserve the PEER GPU EXCLUSIVELY for the whole
         // request (one GPU = one task, P1) — AFTER the head slot is acquired
         // (legacy TryAcquireMultiEnginePrefill ordering). A failed peer
-        // reservation releases the head slot and fails the request with a clear
-        // message (the golden scenario's peer is always free — this path only
-        // fires under contention). The reservation is released at finalize via
-        // ReleaseLeases → ReleasePeer.
+        // reservation DEGRADES to a solo route on the head IN PLACE — legacy
+        // TryAcquireMultiEnginePrefill returns false and ColdRouteAsync falls
+        // through to the normal solo cold route (WorkerSchedulerService.cs:
+        // 904-913); it never hard-fails the request (review #4). The head slot
+        // stays held; clearing the multi-engine fields makes the pipeline run
+        // Prefill → SaveKv → decode as a normal single-GPU request (the
+        // CombinedPrefillSucceeded skip no longer fires). The reservation (when
+        // it succeeds) is released at finalize via ReleaseLeases → ReleasePeer.
         if (req.MultiMode == MultiEngineMode.Combined && req.PeerWorker is not null)
         {
             if (_leases.TryReservePeer(req.PeerWorker.Name))
@@ -312,13 +316,11 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             }
             else
             {
-                _leases.Release(lease);
-                req.PrefillLease = null;
-                req.DecodeLease = null;
-                req.Error = new InvalidOperationException(
-                    $"combined peer reservation failed: {req.PeerWorker.Name} is not exclusively reservable");
-                await FinalizeAsync(req, WorkItemState.Failed);
-                return;
+                Serilog.Log.Warning("v2_combined_peer_reserve_failed Sid={Sid} Peer={Peer} — degrading to solo",
+                    req.SessionId, req.PeerWorker.Name);
+                req.MultiMode = MultiEngineMode.None;
+                req.MultiEngineConfig = null;
+                req.PeerWorker = null;
             }
         }
 

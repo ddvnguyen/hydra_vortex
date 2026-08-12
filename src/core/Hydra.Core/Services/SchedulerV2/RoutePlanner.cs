@@ -69,7 +69,15 @@ public sealed class RoutePlanner : IRoutePlanner
         if (type == RequestType.Combined)
         {
 #pragma warning disable CS0618 // deliberate: reuse the tested legacy multi-engine gate (epic #591)
-            var me = MultiEngineRouter.Select(cfg, workers.ToList(), tracker, health, chat.EstimatedTokens);
+            // Review (deepseek #3): force-mode COMBINED bypasses the
+            // MultiEngineThreshold — legacy CanServeRequest/ForceMultiEnginePlan
+            // explicitly skip it (WorkerSchedulerService.cs:513-519, 903-905).
+            // Select's only use of estTokens is that threshold gate, so a forced
+            // request passes the sentinel and the rest of the legacy gate stands.
+            var estTokens = chat.ForceMode == "combined"
+                ? int.MaxValue
+                : chat.EstimatedTokens;
+            var me = MultiEngineRouter.Select(cfg, workers.ToList(), tracker, health, estTokens);
 #pragma warning restore CS0618
             if (me is { Mode: MultiEngineMode.Combined } plan)
             {
