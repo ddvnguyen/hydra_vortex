@@ -109,7 +109,7 @@ jobs:
   # <arch>-<binary>-<version>-<sha>[-pr<N>]; the PR id is passed
   # programmatically (never a user input).
   build-llama:
-    name: Build llama-engine + llama-server (fork)
+    name: Build llama-engine (fork)
     needs: [resolve-pr]
     # Reusable workflow must be referenced at the JOB level (jobs.*.uses),
     # not inside a step. hydra-build.yml@hydra-fork declares workflow_call
@@ -122,7 +122,12 @@ jobs:
     uses: ddvnguyen/llama.cpp/.github/workflows/hydra-build.yml@hydra-fork
     with:
       build_llama_engine: true
-      build_llama_server: true
+      # #632: only llama-engine images are consumed — production node configs
+      # (node-rtx.yaml, node-rtx3060.yaml, node-p100.yaml) all pin
+      # *-llama-engine-* tags, and P100 runs llama-engine (issue #577).
+      # Building llama-server here produced images nobody pulls. The fork's
+      # hydra-build.yml default is already false; keep this override explicit.
+      build_llama_server: false
       arch_sm86_sm120: ${{ inputs.gpu != 'p100' }}
       arch_sm60: ${{ inputs.gpu == 'all' || inputs.gpu == 'p100' }}
       runner_target: local
@@ -182,11 +187,13 @@ jobs:
           if [ "${{ inputs.build-from-fork }}" = "true" ]; then
             RTX="${{ needs.build-llama.outputs.rtx-image }}"
             P100="${{ needs.build-llama.outputs.p100-image }}"
-            # The fork's resolve-outputs (hydra-build.yml, #90) still prefers
-            # llama-server for sm60. P100 now runs llama-engine (issue #577),
-            # so remap to the -llama-engine- twin — the fork always builds
-            # both per arch. Long-term fix is reverting #90 in the fork so
-            # p100-image is natively the engine image.
+            # The fork's resolve-outputs (hydra-build.yml, #90) prefers
+            # llama-server for sm60, but with build_llama_server=false (this
+            # workflow only consumes llama-engine — #632) no llama-server
+            # image is built, so the sm60 fallback yields the
+            # -llama-engine- twin directly (P100 runs llama-engine, #577).
+            # The remap below is a defensive no-op, kept in case the input
+            # is ever flipped back to true.
             P100="${P100/-llama-server-/-llama-engine-}"
           elif [ "${{ inputs.image-tag }}" != "current" ]; then
             RTX="ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-${{ inputs.image-tag }}"
