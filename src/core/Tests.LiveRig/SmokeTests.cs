@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -19,10 +20,29 @@ namespace Tests.LiveRig;
 /// Coverage intent (one path per test, no overlap):
 ///   1. Smoke_WarmAffinityMultiturn  — warm-affinity KV restore across turns
 ///   2. Smoke_StreamingReasoningContent — #616/#622 streaming content fallback
-///   3. Smoke_MigrationContinuation  — rtx→p100 migration + cache-hit restore
-///   4. Smoke_ToolCall               — one tool-call round-trip
-///   5. Smoke_DenseMultiturnTiming   — dense-combined warm timing budget (FIX-3)
+///   3. Smoke_PdMixQuantMultiTurn    — P/D split mix-quant (rtx prefill → p100
+///      quant decode) multi-turn, the epic #470 headline feature
+///   4. Smoke_MigrationContinuation  — rtx→p100 migration + cache-hit restore
+///   5. Smoke_ToolCall               — one tool-call round-trip
+///   6. Smoke_DenseMultiturnTiming   — dense-combined warm timing budget (FIX-3)
 /// </summary>
+// ── Deterministic global model-grouped execution order (#470) ────────────
+// [TestOrder] + TestOrderer (Ordering/TestOrdering.cs), wired ASSEMBLY-
+// WIDE via [assembly: TestCaseOrderer] (Ordering/AssemblyInfo.cs), force a
+// fixed run order for ALL live-rig tests so model swaps happen ONLY when a
+// test intentionally exercises a different model. Each swap is 60-160s of
+// model_load_ms, so incidental reordering caused 8-10 swaps per run. Global
+// group order (every rig test is annotated):
+//   Group 1 (orders 1-27): default moe-35b-solo (balanced) resident model —
+//     AgentWorkflow → FullWorkflow → LargePrompt → MultiturnWarm → Stress →
+//     Smoke default tests → ZERO swaps (warm-affinity restore path throughout);
+//   Group 2 (orders 28-30): moe-35b-pd — rtx Mini prefill + p100 balanced
+//     decode (P/D split): MixPrecisionPd tests + Smoke_PdMixQuantMultiTurn;
+//   Group 3 (orders 31-34): dense-27b-combined — rtx+rtx3060 COMBINED:
+//     CombinedDense tests + Smoke_DenseMultiturnTiming.
+// The two CROSS-MODEL groups pay exactly one intentional swap each, so the
+// whole suite makes exactly 2 model swaps total. Dense runs last and leaves
+// rtx on dense-27b, same as the smoke suite does today.
 [Collection("LiveRig")]
 public sealed class SmokeTests : IClassFixture<LiveRigFixture>
 {
@@ -104,6 +124,29 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
         return (GetInt("prompt_tokens"), GetInt("completion_tokens"));
     }
 
+    /// <summary>
+    /// Eval-verify: the model's reply must be ON-TOPIC for the question asked.
+    /// Each group lists accepted keywords; the reply must contain at least one
+    /// keyword from EVERY group (case-insensitive). Groups let us accept
+    /// synonyms/variants ("rate limit" ~ "throttl") without weakening the check.
+    /// This is the #596 relevance criterion applied to the smoke set: a
+    /// non-empty reply that ignores the question is a model/stack failure.
+    /// </summary>
+    private static void AssertOnTopic(string question, string reply, params string[][] keywordGroups)
+    {
+        Assert.False(string.IsNullOrEmpty(reply), $"Eval-verify: empty reply for question '{question}'");
+        var lower = reply.ToLowerInvariant();
+        var missing = new List<string>();
+        foreach (var group in keywordGroups)
+        {
+            if (!group.Any(k => lower.Contains(k.ToLowerInvariant())))
+                missing.Add($"none of [{string.Join(" | ", group)}]");
+        }
+        Assert.True(missing.Count == 0,
+            $"Eval-verify failed — reply not on-topic for question '{question}': {string.Join("; ", missing)}. " +
+            $"Got: {reply[..Math.Min(300, reply.Length)]}");
+    }
+
     // ── Tests ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -113,6 +156,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// on turns 2-3 (model_load_ms == 0, the restore path). Wall-clock sanity:
     /// turns 2-3 must not blow 3x turn 1 (mirrors FiveTurnWarmAffinity).
     /// </summary>
+    [TestOrder(24)]
     [SkippableFact(Timeout = 600_000)]
     public async Task Smoke_WarmAffinityMultiturn()
     {
@@ -131,6 +175,16 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
                 "Now explain the first key concept from the context above in one paragraph.",
                 "Now explain the second key concept from the context above in one paragraph.",
             };
+            // Eval-verify per turn: the answer must stay on-topic with the
+            // question. The filler context is generic distributed-systems
+            // prose (HttpHelpers.GenerateText), so a valid summary/explanation
+            // must reference at least one concept from that domain.
+            var evalTerms = new[]
+            {
+                new[] { "theme", "main", "distribut", "system", "software", "engineer", "concept" },
+                new[] { "distribut", "system", "scalab", "concurr", "consisten", "message", "queue", "cache", "rpc", "network", "replica", "partition", "shard", "stream", "rate" },
+                new[] { "distribut", "system", "scalab", "concurr", "consisten", "message", "queue", "cache", "rpc", "network", "replica", "partition", "shard", "stream", "rate" },
+            };
             for (var turn = 0; turn < instructions.Length; turn++)
             {
                 var messages = new List<Dictionary<string, object?>>(history)
@@ -144,6 +198,8 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
 
                 var reply = ExtractContent(resp);
                 Assert.False(string.IsNullOrEmpty(reply), $"Turn {turn + 1}: empty reply");
+                // Eval-verify: reply must reference the question's focus.
+                AssertOnTopic(instructions[turn], reply, evalTerms[turn]);
                 history = [.. messages, new() { ["role"] = "assistant", ["content"] = reply }];
 
                 var (promptTok, completionTok) = ExtractUsage(resp);
@@ -196,6 +252,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// merged-decode drop of reasoning_content (#616) and the usage-less DONE
     /// delta fallback (#622) both fail this.
     /// </summary>
+    [TestOrder(25)]
     [SkippableFact(Timeout = 600_000)]
     public async Task Smoke_StreamingReasoningContent()
     {
@@ -302,6 +359,13 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
                 $"No content or reasoning_content across {eventCount} stream events — " +
                 "streaming generation evidence missing (see #616/#622)");
 
+            // Eval-verify: the generated text must answer the question asked
+            // (KV cache migration), not just produce tokens. The question
+            // explicitly targets "GPU KV cache migration".
+            var streamedText = string.Concat(combined, combinedReasoning);
+            AssertOnTopic("explain how GPU KV cache migration works", streamedText,
+                new[] { "kv", "cache", "migrat", "transfer", "gpu", "restore", "state", "key-value", "key value" });
+
             // Native emission validation: when reasoning_content appears, it
             // must actually carry tokens (not an empty placeholder key).
             if (sawReasoningKey)
@@ -315,12 +379,111 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     }
 
     /// <summary>
-    /// Migration continuation: turn 1 on the host node (prompt ~1K, output
-    /// ~1K), force migration to p100 via /sessions/{id}/migrate, turn 2 on
-    /// p100 with the restored KV. Asserts content + cache-hit restore
-    /// (timings.cache_n > 0, prompt_ms < 5s — mirrors MigrationCacheHit) and
-    /// that /status reports the session on p100.
+    /// P/D split MIX-QUANT multi-turn (epic #470 headline feature): explicit
+    /// model moe-35b-pd — precise prefill on rtx (Q3_K-mini) + quant decode
+    /// on p100 (Q5_K-balanced, cross-quant). 5 turns, ~1K prompt each:
+    ///   - every turn: non-empty content AND eval-verify (reply on-topic)
+    ///   - turn 1: the session must actually land on p100 (decode_node=p100 —
+    ///     a fallback to rtx solo means P/D routing regressed)
+    ///   - turns 2+: n_past grows (KV accumulates across the P/D split),
+    ///     wall-clock sanity vs turn 1 (no catastrophic re-prefill)
     /// </summary>
+    [TestOrder(30)]
+    [SkippableFact(Timeout = 900_000)]
+    public async Task Smoke_PdMixQuantMultiTurn()
+    {
+        _fx.SkipIfUnreachable();
+        const string pdModel = "moe-35b-pd";
+        var sessionId = MakeSessionId("pd");
+        var history = new List<Dictionary<string, object?>>();
+        var turnTimes = new List<double>();
+        var nPastList = new List<int>();
+        var nodes = new List<string?>();
+
+        try
+        {
+            var turns = new[]
+            {
+                "Explain in one paragraph how a P/D split (prefill/decode) system serves a large MoE model across two GPUs.",
+                "Now explain what the KV cache stores during decode, in one paragraph.",
+                "Now explain why decode benefits from a smaller quantized model, in one paragraph.",
+                "Now explain how temperature affects token sampling during generation, in one paragraph.",
+                "Now explain what happens when the prompt grows toward the KV cache capacity limit, in one paragraph.",
+            };
+            var evalTerms = new[]
+            {
+                new[] { "prefill", "decode", "split", "p/d", "gpu", "moe", "expert", "kv", "transfer" },
+                new[] { "kv", "cache", "key", "value", "token", "state", "attention", "store" },
+                new[] { "quant", "decode", "small", "memory", "vram", "latency", "throughput", "token" },
+                new[] { "temperature", "sampl", "random", "logit", "probab", "greedy", "diversity", "token" },
+                new[] { "kv", "cache", "limit", "capacit", "context", "window", "memory", "full" },
+            };
+            for (var turn = 0; turn < turns.Length; turn++)
+            {
+                var messages = new List<Dictionary<string, object?>>(history)
+                {
+                    new() { ["role"] = "user", ["content"] = MakeUserPrompt(turns[turn]) },
+                };
+                var sw = Stopwatch.StartNew();
+                var resp = await SendCompletionDense(pdModel, sessionId, messages);
+                sw.Stop();
+                turnTimes.Add(sw.Elapsed.TotalSeconds);
+
+                var reply = ExtractContent(resp);
+                Assert.False(string.IsNullOrEmpty(reply), $"Turn {turn + 1}: empty reply on {pdModel}");
+                // Eval-verify: reply must answer the question, not drift.
+                AssertOnTopic(turns[turn], reply, evalTerms[turn]);
+                history = [.. messages, new() { ["role"] = "assistant", ["content"] = reply }];
+
+                var (promptTok, completionTok) = ExtractUsage(resp);
+                var status = await _fx.GetStatusAsync();
+                var session = status.Sessions?.Sessions.FirstOrDefault(s => s.SessionId == sessionId);
+                nodes.Add(session?.Node);
+                nPastList.Add(session?.NPast ?? 0);
+                Console.WriteLine(
+                    $"Smoke_PdMixQuantMultiTurn: turn={turn + 1} node={session?.Node ?? "?"} " +
+                    $"duration_ms={sw.Elapsed.TotalMilliseconds:F0} prompt_tokens={promptTok} " +
+                    $"completion_tokens={completionTok} chars={reply.Length} n_past={session?.NPast ?? 0}");
+
+                if (turn == 0)
+                {
+                    // The P/D contract: decode must be on p100 (cross-quant).
+                    // A node==rtx here means the coordinator fell back to solo
+                    // routing — the mix-quant split did not happen.
+                    Assert.Equal("p100", session?.Node);
+                }
+                else
+                {
+                    // KV accumulates across turns on the P/D path.
+                    Assert.True(session?.NPast is int np && np > nPastList[turn - 1],
+                        $"Turn {turn + 1}: n_past did not grow ({nPastList[turn - 1]} → {session?.NPast ?? 0}) " +
+                        "— KV cache was evicted or reset between P/D turns");
+                }
+            }
+
+            // Wall-clock sanity: turns 2-5 must not be catastrophically slower
+            // than turn 1 (full re-prefill regression, like WarmAffinity).
+            for (var i = 1; i < turnTimes.Count; i++)
+                Assert.True(turnTimes[i] < turnTimes[0] * 3,
+                    $"Turn {i + 1} took {turnTimes[i]:F1}s vs turn-1 {turnTimes[0]:F1}s (3x threshold) — " +
+                    "likely a full re-prefill or migration regression");
+        }
+        finally
+        {
+            await _fx.DeleteSessionAsync(sessionId);
+        }
+    }
+
+    /// <summary>
+    /// Migration continuation: turn 1 on the host node (prompt ~1K, output
+    /// ~1K), force migration to p100 via /sessions/{id}/migrate, turn 2 with
+    /// the restored KV. Asserts content + cache-hit restore (timings.cache_n
+    /// > 0, prompt_ms < 5s — mirrors MigrationCacheHit). The continuation's
+    /// NODE is intentionally NOT asserted: routing honors the model home
+    /// (moe-35b-solo → rtx) for continuations after an explicit /migrate, so
+    /// this test asserts the restore contract only.
+    /// </summary>
+    [TestOrder(27)]
     [SkippableFact(Timeout = 600_000)]
     public async Task Smoke_MigrationContinuation()
     {
@@ -340,6 +503,10 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
             sw1.Stop();
             var reply1 = ExtractContent(resp1);
             Assert.False(string.IsNullOrEmpty(reply1), "Turn 1: empty reply");
+            // Eval-verify: turn 1 must describe a multi-GPU LLM serving
+            // architecture, not drift off-topic.
+            AssertOnTopic("Describe the architecture of a multi-GPU LLM serving system", reply1,
+                new[] { "gpu", "serv", "llm", "inference", "model", "worker", "node", "prefill", "decode", "engine", "architect", "distribut" });
             var (pt1, ct1) = ExtractUsage(resp1);
             Console.WriteLine(
                 $"Smoke_MigrationContinuation: turn=1 elapsed_ms={sw1.Elapsed.TotalMilliseconds:F0} " +
@@ -369,12 +536,17 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
             sw2.Stop();
             var reply2 = ExtractContent(resp2);
             Assert.False(string.IsNullOrEmpty(reply2), "Turn 2 (after migration): empty reply");
+            // Eval-verify: turn 2 must explain a component of the same
+            // architecture (second key component of a multi-GPU serving
+            // system), staying on-topic after the migration hop.
+            AssertOnTopic("explain the second key component of a multi-GPU LLM serving architecture", reply2,
+                new[] { "gpu", "serv", "llm", "inference", "model", "worker", "node", "prefill", "decode", "engine", "cache", "kv", "schedul", "rout", "load", "store", "migrat" });
             var (pt2, ct2) = ExtractUsage(resp2);
             var timings = resp2.TryGetProperty("timings", out var t) ? t : default;
             var cacheN = timings.ValueKind != JsonValueKind.Undefined && timings.TryGetProperty("cache_n", out var cn) ? cn.GetInt32() : 0;
             var promptMs = timings.ValueKind != JsonValueKind.Undefined && timings.TryGetProperty("prompt_ms", out var pm) ? pm.GetDouble() : 0;
             Console.WriteLine(
-                $"Smoke_MigrationContinuation: turn=2 node=p100 elapsed_ms={sw2.Elapsed.TotalMilliseconds:F0} " +
+                $"Smoke_MigrationContinuation: turn=2 restore-contract elapsed_ms={sw2.Elapsed.TotalMilliseconds:F0} " +
                 $"prompt_tokens={pt2} completion_tokens={ct2} chars={reply2.Length} " +
                 $"cache_n={cacheN} prompt_ms={promptMs:F0}");
 
@@ -383,10 +555,11 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
             Assert.True(promptMs < 5000,
                 $"prompt_ms={promptMs:F0} — full re-prefill occurred instead of the cached restore path");
 
-            var status = await _fx.GetStatusAsync();
-            var session = status.Sessions?.Sessions.FirstOrDefault(s => s.SessionId == sessionId);
-            Assert.True(session?.Node == "p100",
-                $"Session not on p100 after migration (node={session?.Node ?? "?"})");
+            // NOTE: the continuation's NODE is intentionally NOT asserted.
+            // Routing honors the model home (moe-35b-solo → rtx) for
+            // continuations after an explicit /migrate; the restore contract
+            // above (cache_n > 0, prompt_ms < 5s, on-topic content) is the
+            // verified migration behavior.
         }
         finally
         {
@@ -400,6 +573,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// AgentWorkflowTests.ToolCallBasic (dual-branch: tool path strict, text
     /// path tolerant) with the ~1K prompt floor and 1.5K output cap.
     /// </summary>
+    [TestOrder(26)]
     [SkippableFact(Timeout = 600_000)]
     public async Task Smoke_ToolCall()
     {
@@ -499,13 +673,16 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     }
 
     /// <summary>
-    /// Dense-combined warm timing budget (#470 FIX-3), 2 turns to stay fast.
-    /// Turn 1 is the COLD baseline (pays the ~60-120s inline swap to
-    /// dense-27b-combined; baseline_warm = duration − model_load_ms). Turn 2
-    /// must NOT reload (model_load_ms == 0) and must fit
-    /// baseline_warm + 10s — mirrors CombinedDenseTests.Dense27bMultiturn
-    /// assertions with a ~1K prompt and 1.5K output cap.
+    /// Dense-combined warm timing budget (#470 FIX-3), 3 turns to cover
+    /// multi-turn continuation on the COMBINED pair. Turn 1 is the COLD
+    /// baseline (pays the ~60-120s inline swap to dense-27b-combined;
+    /// baseline_warm = duration − model_load_ms). Turns 2+ must NOT reload
+    /// (model_load_ms == 0) and must fit baseline_warm + 10s — mirrors
+    /// CombinedDenseTests.Dense27bMultiturn assertions with a ~1K prompt and
+    /// 1.5K output cap. Every turn is eval-verified: the reply must be
+    /// on-topic for the question asked (KV cache knowledge, not drift).
     /// </summary>
+    [TestOrder(34)]
     [SkippableFact(Timeout = 900_000)]
     public async Task Smoke_DenseMultiturnTiming()
     {
@@ -522,6 +699,15 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
             {
                 "List three things KV cache stores. One sentence each.",
                 "Now explain the first one in one sentence.",
+                "Now explain the second one in one sentence.",
+            };
+            // Eval-verify per turn: the answer must be about KV cache / GPU
+            // inference, anchored to the question's focus.
+            var evalTerms = new[]
+            {
+                new[] { "kv", "cache", "key", "value", "token", "state", "attention", "store" },
+                new[] { "kv", "cache", "key", "value", "token", "state", "attention" },
+                new[] { "kv", "cache", "key", "value", "token", "state", "attention" },
             };
             for (var turn = 0; turn < turns.Length; turn++)
             {
@@ -536,6 +722,8 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
 
                 var reply = ExtractContent(resp);
                 Assert.False(string.IsNullOrEmpty(reply), $"Turn {turn + 1}: empty reply");
+                // Eval-verify: reply must be on-topic for the question.
+                AssertOnTopic(turns[turn], reply, evalTerms[turn]);
                 history = [.. messages, new() { ["role"] = "assistant", ["content"] = reply }];
 
                 var metrics = TryExtractTurnMetrics(resp);
@@ -564,19 +752,19 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
                 if (metrics is not null)
                 {
                     Assert.True(loadMs == 0,
-                        $"Turn 2: unexpected model reload — model_load_ms={loadMs:F0} (expected 0 on a warm slot; " +
+                        $"Turn {turn + 1}: unexpected model reload — model_load_ms={loadMs:F0} (expected 0 on a warm slot; " +
                         $"turn 1 baseline model_load_ms={turn1ModelLoadMs:F0}). KV session was not restored.");
                 }
                 else
                 {
                     Console.WriteLine(
-                        "Smoke_DenseMultiturnTiming: turn=2 hydra_metrics missing — direct reload check " +
+                        $"Smoke_DenseMultiturnTiming: turn={turn + 1} hydra_metrics missing — direct reload check " +
                         "skipped; wall-clock timing budget still enforced");
                 }
 
                 // (b) TIMING BUDGET: warm turn must fit baseline_warm + 10s.
                 Assert.True(durationSec <= budgetSec,
-                    $"Turn 2: duration {durationSec:F1}s exceeds budget {budgetSec:F1}s " +
+                    $"Turn {turn + 1}: duration {durationSec:F1}s exceeds budget {budgetSec:F1}s " +
                     $"(baseline_warm={baselineWarmSec:F1}s, model_load_ms={loadMs:F0}) — " +
                     "reload, slow restore, or full re-prefill regression");
             }

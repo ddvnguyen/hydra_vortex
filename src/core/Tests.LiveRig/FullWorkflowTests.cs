@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -93,7 +94,11 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         [new() { ["role"] = "user", ["content"] = prompt }];
 
     // ── Tests ────────────────────────────────────────────────────────────
+    // All tests in this class run on the default moe-35b-solo (balanced)
+    // resident model — group 1 (orders 1-27), zero model swaps. Global order
+    // via [TestOrder] + assembly-wide TestCaseOrderer (Ordering/, #470).
 
+    [TestOrder(7)]
     [SkippableFact]
     public async Task HealthEndpoint()
     {
@@ -109,6 +114,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         Assert.True(body.TryGetProperty("store", out _));
     }
 
+    [TestOrder(8)]
     [SkippableFact]
     public async Task StatusEndpoint()
     {
@@ -124,6 +130,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         Assert.True(rt.GetProperty("total").GetInt32() >= 0);
     }
 
+    [TestOrder(9)]
     [SkippableFact]
     public async Task CompletionNonStream()
     {
@@ -155,6 +162,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(10)]
     [SkippableFact]
     public async Task CompletionStream()
     {
@@ -229,6 +237,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(11)]
     [SkippableFact]
     public async Task SessionLifecycle()
     {
@@ -263,6 +272,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(12)]
     [Fact(Skip = "Prefix checkpoint has no dedicated HTTP endpoints — it is driven implicitly through the normal /v1/chat/completions flow via PrefixCheckpointEnabled config. No HTTP-observable way to test save/restore directly.")]
     public void PrefixCheckpoint()
     {
@@ -272,6 +282,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         // There are no HTTP-observable save/restore endpoints.
     }
 
+    [TestOrder(13)]
     [SkippableFact]
     public async Task MigrateSession()
     {
@@ -308,6 +319,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(14)]
     [SkippableFact]
     public async Task MigrationCacheHit()
     {
@@ -346,6 +358,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(15)]
     [SkippableFact]
     public async Task EvictionWithSave()
     {
@@ -373,6 +386,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(16)]
     [SkippableFact]
     public async Task SlotIdResolvedAfterFirstCompletion()
     {
@@ -420,6 +434,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(17)]
     [SkippableFact]
     public async Task SlotIdPersistsAcrossSessionLifecycle()
     {
@@ -455,6 +470,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(18)]
     [SkippableFact]
     public async Task FullCycleCompletionMigrationContinuation()
     {
