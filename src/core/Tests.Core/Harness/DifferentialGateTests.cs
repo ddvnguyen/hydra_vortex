@@ -40,6 +40,9 @@ public sealed class DifferentialGateTests
         // Prefix-checkpoint restore (feature follow-up): byte-identical.
         "prefix_hit",
         "prefix_miss",
+        // Chunked save (feature follow-up): byte-identical.
+        "chunked_save",
+        "chunked_save_with_pushes",
     };
 
     private readonly ITestOutputHelper _output;
