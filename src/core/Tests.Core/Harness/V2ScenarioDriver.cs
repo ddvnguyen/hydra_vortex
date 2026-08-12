@@ -103,7 +103,7 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
         var runners = new WorkerStateRunner[]
         {
             new PlanRunner(new RoutePlanner(), leases, Ledger, Cfg.Workers, Tracker, Health, Cfg, new HttpWarmSlotVerifier()),
-            new PrefillRunner(engine, Proxy),
+            new PrefillRunner(engine, Proxy, Cfg.Workers),
             new PrefixRestoreRunner(Cfg, store, engine, Ledger),
             new SaveKvRunner(store, Ledger, engine, Cfg),
             new RestoreRunner(store, engine, Ledger, leases, Proxy, Cfg),
@@ -115,6 +115,32 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
             Cfg, Ledger, Tracker, Health,
             new RequestClassifier(), new RoutePlanner(), new LeaseManager(Tracker),
             runners, new TimelineEmitter(), engine, store, Proxy);
+
+        // Upsert model registrations (RegisterForTest overwrites) so the harness
+        // never WIPES another fixture's registrations mid-flight (ModelRegistry is
+        // a process-wide static). The COMBINED planner resolves the head's
+        // ModelAlias ("nano") via MultiEngineRouter.Select → ModelRegistry.Resolve,
+        // so the aliases MUST be registered here (legacy driver parity).
+        foreach (var alias in options.ModelAliases)
+        {
+            ModelRegistry.RegisterForTest(new EngineConfig(
+                ModelAlias: alias,
+                ModelPath: "/dev/null",
+                NGpuLayers: 0, NCtx: 2048,
+                ContBatching: true, Fit: false, UbatchSize: 512,
+                SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
+        }
+        // The head worker's ModelAlias must resolve for combined/pipeline plans.
+        if (multi && !options.ModelAliases.Contains("moe-35b-solo"))
+        {
+            ModelRegistry.RegisterForTest(new EngineConfig(
+                ModelAlias: "moe-35b-solo",
+                ModelPath: "/dev/null",
+                NGpuLayers: 99, NCpuMoe: 8, NCtx: 320000,
+                OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" },
+                ContBatching: true, Fit: false, UbatchSize: 512,
+                SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
+        }
 
         // Wire the chunk-size statics for chunked scenarios (legacy ctor parity;
         // restored in DisposeAsync). The scenario catalog computes the injected

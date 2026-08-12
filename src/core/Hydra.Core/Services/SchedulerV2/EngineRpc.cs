@@ -14,6 +14,17 @@ public interface IEngineRpcClient
 {
     Task<RpcResponse> RequestAsync(OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct);
 
+    /// <summary>Engine PREFILL (0x42) with optional hydra_config injection (epic
+    /// #591 COMBINED). <paramref name="payloadJson"/> already carries the top-level
+    /// <c>hydra_config</c> key when non-null (the gateway's <c>BuildPrefillBody</c>
+    /// injects it) — this overload transports the bytes verbatim to the shared
+    /// <see cref="RpcClient.EnginePrefillAsync"/> (the harness ScenarioRpcClient
+    /// records the exact payload length via its RequestAsync override) and parses
+    /// the response into <see cref="EnginePrefillResult"/>.</summary>
+    Task<EnginePrefillResult> EnginePrefillAsync(
+        string slotKey, string payloadJson, string traceId, CancellationToken ct,
+        Dictionary<string, object>? hydraConfig);
+
     /// <summary>Framed DECODE (0x43) — the merged decode path (#470): the control
     /// header carries kv_metadata + model_metadata + generation config, followed
     /// by prompt + KV segments. Delegates to <see cref="RpcClient.EngineMergedDecodeAsync"/>.</summary>
@@ -32,6 +43,14 @@ public sealed class EngineRpcClientAdapter : IEngineRpcClient
     public EngineRpcClientAdapter(RpcClient inner) => _inner = inner;
     public Task<RpcResponse> RequestAsync(OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
         => _inner.RequestAsync(op, key, payload, traceId, ct);
+
+    public async Task<EnginePrefillResult> EnginePrefillAsync(
+        string slotKey, string payloadJson, string traceId, CancellationToken ct,
+        Dictionary<string, object>? hydraConfig)
+    {
+        var resp = await _inner.EnginePrefillAsync(slotKey, payloadJson, traceId, ct);
+        return EnginePrefillResponseParser.Parse(resp);
+    }
 
     public Task<MergedDecodeResponse> EngineMergedDecodeAsync(
         string slotKey, int nPast,
@@ -83,7 +102,12 @@ public sealed record StatePutResult(
 public interface IEngineRpcGateway
 {
     /// <param name="slotKey">The engine keys prefill by SLOT id ("0"), not the session.</param>
-    Task<EnginePrefillResult> PrefillAsync(string worker, string slotKey, ChatRequest chat, CancellationToken ct);
+    /// <param name="hydraConfig">COMBINED (epic #591): when non-null, injected as the
+    /// top-level <c>hydra_config</c> key of the PREFILL body (byte parity with legacy
+    /// <c>HydraEngineClient.EnginePrefillAsync</c>). Null for solo/atomic/P-D.</param>
+    Task<EnginePrefillResult> PrefillAsync(
+        string worker, string slotKey, ChatRequest chat, CancellationToken ct,
+        Dictionary<string, object>? hydraConfig = null);
 
     /// <summary>Push the KV blob onto the decode worker's slot (STATE_PUT 0x31).
     /// Returns the parsed response — transport status AND the slot's model
@@ -151,33 +175,13 @@ public sealed class EngineRpcGateway : IEngineRpcGateway
         await Channel(worker).RequestAsync(OpCode.EngineConfigure, slotKey, payload, $"v2-config-{slotKey}", ct);
     }
 
-    public async Task<EnginePrefillResult> PrefillAsync(string worker, string slotKey, ChatRequest chat, CancellationToken ct)
+    public Task<EnginePrefillResult> PrefillAsync(
+        string worker, string slotKey, ChatRequest chat, CancellationToken ct,
+        Dictionary<string, object>? hydraConfig = null)
     {
-        var body = BuildPrefillBody(chat);
-        var payload = JsonSerializer.SerializeToUtf8Bytes(body);
-        var resp = await Channel(worker).RequestAsync(OpCode.EnginePrefill, slotKey, payload, chat.TraceId, ct);
-
-        // #279: the engine's binary predates PREFILL (0x42) — report the fallback
-        // signal instead of failing; the caller routes to the HTTP prefill.
-        if (resp.Status == (byte)StatusCode.NotImplemented)
-            return new EnginePrefillResult(NPast: 0, StateBytes: 0, ModelFallback: false, KVPayload: null, NotImplemented: true);
-
-        if (resp.Status != (byte)StatusCode.Ok)
-            throw new InvalidOperationException($"engine prefill failed: status={resp.Status}");
-
-        // Meta: JSON { n_past, state_size, model_fallback, tokenizer, model_name, ... };
-        // Payload: the KV blob.
-        var meta = ParseMeta(resp.Meta);
-        return new EnginePrefillResult(
-            meta.NPast,
-            resp.Payload?.LongLength ?? 0,
-            meta.ModelFallback,
-            resp.Payload,
-            NotImplemented: false,
-            Tokenizer: meta.Tokenizer,
-            ModelName: meta.ModelName,
-            ModelQuant: meta.ModelQuant,
-            ModelCapabilities: meta.ModelCapabilities);
+        var body = BuildPrefillBody(chat, hydraConfig);
+        var payloadJson = JsonSerializer.Serialize(body);
+        return Channel(worker).EnginePrefillAsync(slotKey, payloadJson, chat.TraceId, ct, hydraConfig);
     }
 
     public async Task<StatePutResult> RestoreAsync(string worker, string slotKey, ReadOnlyMemory<byte> kv, int nPast, CancellationToken ct)
@@ -213,35 +217,24 @@ public sealed class EngineRpcGateway : IEngineRpcGateway
             ? c
             : throw new InvalidOperationException($"no engine channel configured for worker '{worker}'");
 
-    private static Dictionary<string, object> BuildPrefillBody(ChatRequest chat) => new(chat.Body)
+    private static Dictionary<string, object> BuildPrefillBody(ChatRequest chat, Dictionary<string, object>? hydraConfig)
     {
-        // Wire parity with the legacy EnginePrefill body: the raw request (stream,
-        // max_tokens, model) plus n_predict=0 (prefill generates no tokens) and
-        // the messages array (the goldens pin the exact payload length).
-        ["stream"] = false,
-        ["n_predict"] = 0,
-        ["messages"] = chat.Messages,
-    };
-
-    private static EnginePrefillMeta ParseMeta(string? meta)
-    {
-        if (string.IsNullOrEmpty(meta)) return default;
-        try
+        var body = new Dictionary<string, object>(chat.Body)
         {
-            using var doc = JsonDocument.Parse(meta);
-            var root = doc.RootElement;
-            return new EnginePrefillMeta(
-                root.TryGetProperty("n_past", out var n) ? n.GetInt32() : 0,
-                root.TryGetProperty("model_fallback", out var f) && f.ValueKind == JsonValueKind.True,
-                root.TryGetProperty("tokenizer", out var t) ? t.GetString() ?? "" : "",
-                root.TryGetProperty("model_name", out var mn) ? mn.GetString() ?? "" : "",
-                root.TryGetProperty("model_quant", out var mq) ? mq.GetString() ?? "" : "",
-                root.TryGetProperty("model_capabilities", out var mc) && mc.ValueKind == JsonValueKind.Number ? mc.GetUInt32() : 0);
-        }
-        catch (JsonException)
-        {
-            return default; // malformed engine meta — callers guard on status
-        }
+            // Wire parity with the legacy EnginePrefill body: the raw request (stream,
+            // max_tokens, model) plus n_predict=0 (prefill generates no tokens) and
+            // the messages array (the goldens pin the exact payload length).
+            ["stream"] = false,
+            ["n_predict"] = 0,
+            ["messages"] = chat.Messages,
+        };
+        // COMBINED (epic #591): inject hydra_config as the LAST key. The value is a
+        // JsonNode so System.Text.Json emits its raw JSON verbatim — byte parity with
+        // the legacy HydraEngineClient.EnginePrefillAsync
+        // (node["hydra_config"] = JsonSerializer.SerializeToNode(hydraConfig); ToJsonString()).
+        if (hydraConfig is { Count: > 0 })
+            body["hydra_config"] = JsonSerializer.SerializeToNode(hydraConfig);
+        return body;
     }
 
     /// <summary>Parse the STATE_PUT response meta: model_match (absent → true,
@@ -268,6 +261,63 @@ public sealed class EngineRpcGateway : IEngineRpcGateway
         catch (JsonException)
         {
             return new StatePutResult(Ok: true, ModelMatch: true, NPast: fallbackNPast, Tokenizer: "", ModelName: "", ModelQuant: "", ModelCapabilities: 0);
+        }
+    }
+}
+
+/// <summary>
+/// Shared parse of an EnginePrefill (0x42) response into <see cref="EnginePrefillResult"/>
+/// (epic #591) — used by both the channel adapter (<see cref="EngineRpcClientAdapter"/>)
+/// and test fakes so the response handling is exactly one implementation. Mirrors the
+/// legacy <c>HydraEngineClient.EnginePrefillAsync</c>: the #279 NotImplemented signal
+/// (caller falls back to the HTTP prefill), a terminal throw on any other non-Ok
+/// status, and the meta/payload mapping.
+/// </summary>
+internal static class EnginePrefillResponseParser
+{
+    public static EnginePrefillResult Parse(RpcResponse resp)
+    {
+        // #279: the engine's binary predates PREFILL (0x42) — report the fallback
+        // signal instead of failing; the caller routes to the HTTP prefill.
+        if (resp.Status == (byte)StatusCode.NotImplemented)
+            return new EnginePrefillResult(NPast: 0, StateBytes: 0, ModelFallback: false, KVPayload: null, NotImplemented: true);
+
+        if (resp.Status != (byte)StatusCode.Ok)
+            throw new InvalidOperationException($"engine prefill failed: status={resp.Status}");
+
+        // Meta: JSON { n_past, state_size, model_fallback, tokenizer, model_name, ... };
+        // Payload: the KV blob.
+        var meta = ParseMeta(resp.Meta);
+        return new EnginePrefillResult(
+            meta.NPast,
+            resp.Payload?.LongLength ?? 0,
+            meta.ModelFallback,
+            resp.Payload,
+            NotImplemented: false,
+            Tokenizer: meta.Tokenizer,
+            ModelName: meta.ModelName,
+            ModelQuant: meta.ModelQuant,
+            ModelCapabilities: meta.ModelCapabilities);
+    }
+
+    private static EnginePrefillMeta ParseMeta(string? meta)
+    {
+        if (string.IsNullOrEmpty(meta)) return default;
+        try
+        {
+            using var doc = JsonDocument.Parse(meta);
+            var root = doc.RootElement;
+            return new EnginePrefillMeta(
+                root.TryGetProperty("n_past", out var n) ? n.GetInt32() : 0,
+                root.TryGetProperty("model_fallback", out var f) && f.ValueKind == JsonValueKind.True,
+                root.TryGetProperty("tokenizer", out var t) ? t.GetString() ?? "" : "",
+                root.TryGetProperty("model_name", out var mn) ? mn.GetString() ?? "" : "",
+                root.TryGetProperty("model_quant", out var mq) ? mq.GetString() ?? "" : "",
+                root.TryGetProperty("model_capabilities", out var mc) && mc.ValueKind == JsonValueKind.Number ? mc.GetUInt32() : 0);
+        }
+        catch (JsonException)
+        {
+            return default; // malformed engine meta — callers guard on status
         }
     }
 

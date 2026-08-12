@@ -105,7 +105,7 @@ public static class CoordinatorServiceExtensions
             var runners = new WorkerStateRunner[]
             {
                 new PlanRunner(planner, leases, ledger, cfg.Workers, tracker, health, cfg, warmVerifier),
-                new PrefillRunner(engine, proxy),
+                new PrefillRunner(engine, proxy, cfg.Workers),
             new PrefixRestoreRunner(cfg, store, engine, ledger),
                 new SaveKvRunner(store, ledger, engine, cfg),
                 new RestoreRunner(store, engine, ledger, leases, proxy, cfg),

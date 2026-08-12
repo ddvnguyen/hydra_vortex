@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Hydra.Core.Models;
 using Hydra.Core.Services;
@@ -98,6 +99,17 @@ internal sealed class FakeEngineRpcClient : IEngineRpcClient
                 Enumerable.Range(0, 2048).Select(i => (byte)(i % 251)).ToArray());
 
         return new RpcResponse((byte)StatusCode.Ok, null, []);
+    }
+
+    public async Task<Hydra.Core.Services.SchedulerV2.EnginePrefillResult> EnginePrefillAsync(
+        string slotKey, string payloadJson, string traceId, CancellationToken ct,
+        Dictionary<string, object>? hydraConfig)
+    {
+        // Route through RequestAsync so every failure switch (FailPrefill /
+        // FailPrefillOnce / MakePrefillNotImplemented / BlockPrefill) + the Calls
+        // recording behave identically to the adapter's wire path.
+        var resp = await RequestAsync(OpCode.EnginePrefill, slotKey, Encoding.UTF8.GetBytes(payloadJson), traceId, ct);
+        return EnginePrefillResponseParser.Parse(resp);
     }
 
     public Task<MergedDecodeResponse> EngineMergedDecodeAsync(

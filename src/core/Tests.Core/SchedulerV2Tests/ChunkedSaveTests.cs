@@ -82,7 +82,7 @@ public sealed class ChunkedSaveTests
             var runners = new WorkerStateRunner[]
             {
                 new PlanRunner(new RoutePlanner(), leases, Ledger, cfg.Workers, Tracker, health, cfg, new FakeWarmSlotVerifier()),
-                new PrefillRunner(engine, Proxy),
+                new PrefillRunner(engine, Proxy, cfg.Workers),
                 new PrefixRestoreRunner(cfg, store, engine, Ledger),
                 new SaveKvRunner(store, Ledger, engine, cfg),
                 new RestoreRunner(store, engine, Ledger, leases, Proxy, cfg),

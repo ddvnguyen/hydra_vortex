@@ -79,7 +79,7 @@ public sealed class C4ResilienceTests
         var runners = new WorkerStateRunner[]
         {
             new PlanRunner(new RoutePlanner(), leases, _ledger, workerList, _tracker, health, cfg, new FakeWarmSlotVerifier()),
-            new PrefillRunner(engine, _proxy),
+            new PrefillRunner(engine, _proxy, workerList),
             new PrefixRestoreRunner(cfg, store, engine, _ledger),
             new SaveKvRunner(store, _ledger, engine, cfg),
             new RestoreRunner(store, engine, _ledger, leases, _proxy, cfg),
@@ -176,7 +176,7 @@ public sealed class C4ResilienceTests
     private sealed class StalePlanDecodePlanner : IRoutePlanner
     {
         public RouteDecision Plan(ChatRequest chat, RequestType type, IReadOnlyList<WorkerConfig> workers,
-            IWorkerTracker tracker, IHealthMonitorService health, ISessionLedger ledger)
+            IWorkerTracker tracker, IHealthMonitorService health, ISessionLedger ledger, CoordinatorConfig cfg)
             => new(type, PrefillWorker: "rtx", DecodeWorker: null, ReuseStoreState: false, Priority: 40);
 
         public string? PlanDecode(ChatRequest chat, SessionEntry? session, IReadOnlyList<WorkerConfig> workers,

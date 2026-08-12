@@ -1,5 +1,6 @@
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
+using Hydra.Core.Services;
 using Hydra.Core.Services.SchedulerV2;
 
 namespace Tests.Core.SchedulerV2Tests;
@@ -10,13 +11,15 @@ namespace Tests.Core.SchedulerV2Tests;
 /// and route planner obey the model rules:
 /// <list type="bullet">
 /// <item>atomic-vs-prefill split at the coordinator's AtomicThreshold,</item>
-/// <item>COMBINED mode (force_mode) requires a CombinedCapable head (worker rule),</item>
+/// <item>COMBINED mode (force_mode) requires a CombinedCapable head (worker rule),
+/// a free+healthy configured peer, and a ModelRegistry-resolvable alias,</item>
 /// <item>warm affinity reuses the node holding the session KV,</item>
 /// <item>a cold request is never routed to a worker that cannot both prefill and decode,</item>
 /// <item>no capacity → the request waits (HasCapacity=false).</item>
 /// </list>
-/// Worker topology mirrors production: rtx = prefill+decode head (2 slots),
-/// p100 = decode-only (1 slot). Model aliases are the production hydra models.
+/// Worker topology mirrors production: rtx = prefill+decode head (2 slots, peers
+/// with p100), p100 = decode-only (1 slot). Model aliases are the production hydra
+/// models.
 /// </summary>
 public sealed class V2HydraModelRuleTests
 {
@@ -25,6 +28,7 @@ public sealed class V2HydraModelRuleTests
         new()
         {
             Name = "rtx", WorkerType = 3, Slots = 2, PrefillPriority = 1, DecodePriority = 2,
+            Role = "head", PeerWorker = "p100",
             CombinedCapable = true, PipelineCapable = true, ModelAlias = "moe-35b-solo",
         },
         new()
@@ -34,7 +38,14 @@ public sealed class V2HydraModelRuleTests
         },
     };
 
-    private static readonly CoordinatorConfig Cfg = new() { AtomicThreshold = 2048, CombinedEnabled = true };
+    private static readonly CoordinatorConfig Cfg = new()
+    {
+        AtomicThreshold = 2048,
+        UseLlamaEngine = true,
+        CombinedEnabled = true,
+        MultiEnginePolicy = "combined",
+        MultiEngineThreshold = 10,
+    };
 
     private static ChatRequest Req(int estimatedTokens, string model = "moe-35b-solo", string? forceMode = null) => new(
         SessionId: "sess",
@@ -88,7 +99,7 @@ public sealed class V2HydraModelRuleTests
     public void Cold_Request_Routes_Only_To_Prefill_And_Decode_Worker()
     {
         var (tracker, ledger, health) = State();
-        var plan = new RoutePlanner().Plan(Req(500), RequestType.Atomic, Topology, tracker, health, ledger);
+        var plan = new RoutePlanner().Plan(Req(500), RequestType.Atomic, Topology, tracker, health, ledger, Cfg);
 
         Assert.True(plan.HasCapacity);
         Assert.Equal("rtx", plan.PrefillWorker); // p100 cannot prefill → excluded by the worker rule
@@ -102,7 +113,7 @@ public sealed class V2HydraModelRuleTests
         var warmEntry = ledger.Register("sess", "p100", slotId: 0, nPast: 100); // KV resident on p100
         warmEntry.HasStoreState = true; // warm gate: resident slot + durable store state
 
-        var plan = new RoutePlanner().Plan(Req(500), RequestType.Solo, Topology, tracker, health, ledger);
+        var plan = new RoutePlanner().Plan(Req(500), RequestType.Solo, Topology, tracker, health, ledger, Cfg);
 
         Assert.True(plan.HasCapacity);
         Assert.Null(plan.PrefillWorker); // decode-only
@@ -116,7 +127,7 @@ public sealed class V2HydraModelRuleTests
         var (tracker, ledger, health) = State();
 
         // Two-phase: prefill worker chosen up front; decode worker deferred.
-        var plan = new RoutePlanner().Plan(Req(100_000), RequestType.Prefill, Topology, tracker, health, ledger);
+        var plan = new RoutePlanner().Plan(Req(100_000), RequestType.Prefill, Topology, tracker, health, ledger, Cfg);
         Assert.Equal("rtx", plan.PrefillWorker);
         Assert.Null(plan.DecodeWorker);
 
@@ -129,14 +140,22 @@ public sealed class V2HydraModelRuleTests
     public void Combined_Request_Requires_A_CombinedCapable_Head()
     {
         var (tracker, ledger, health) = State();
-        // rtx is CombinedCapable in the production topology.
-        var plan = new RoutePlanner().Plan(Req(20000, "dense-27b-combined", "combined"), RequestType.Combined, Topology, tracker, health, ledger);
+        // rtx is the CombinedCapable head in the production topology; its
+        // ModelAlias must resolve via ModelRegistry for the plan to apply.
+        ModelRegistry.RegisterForTest(new EngineConfig(
+            ModelAlias: "moe-35b-solo", ModelPath: "/dev/null", NGpuLayers: 99, NCpuMoe: 8, NCtx: 320000,
+            OverrideTensors: new[] { "blk.*.ffn_*_exps.weight=CPU" },
+            ContBatching: true, Fit: false, UbatchSize: 512,
+            SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
+        var plan = new RoutePlanner().Plan(Req(20000, "dense-27b-combined", "combined"), RequestType.Combined, Topology, tracker, health, ledger, Cfg);
         Assert.True(plan.HasCapacity);
         Assert.Equal("rtx", plan.PrefillWorker);
+        Assert.Equal("p100", plan.PeerWorker); // the peer is reserved for the whole request
+        Assert.Equal(MultiEngineMode.Combined, plan.MultiMode);
 
         // Remove the combined-capable head → no capacity (the request waits).
         var noCombined = new List<WorkerConfig> { Topology[1] }; // p100 only
-        var plan2 = new RoutePlanner().Plan(Req(20000, "dense-27b-combined", "combined"), RequestType.Combined, noCombined, tracker, health, ledger);
+        var plan2 = new RoutePlanner().Plan(Req(20000, "dense-27b-combined", "combined"), RequestType.Combined, noCombined, tracker, health, ledger, Cfg);
         Assert.False(plan2.HasCapacity);
     }
 
@@ -148,7 +167,7 @@ public sealed class V2HydraModelRuleTests
         Assert.True(tracker.TryAcquireSlot("rtx", out _)); // rtx fully busy
 
         // p100 (decode-only) cannot satisfy an atomic → no capacity.
-        var plan = new RoutePlanner().Plan(Req(500), RequestType.Atomic, Topology, tracker, health, ledger);
+        var plan = new RoutePlanner().Plan(Req(500), RequestType.Atomic, Topology, tracker, health, ledger, Cfg);
         Assert.False(plan.HasCapacity);
     }
 }

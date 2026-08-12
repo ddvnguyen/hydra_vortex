@@ -1,5 +1,6 @@
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
+using Hydra.Core.Services;
 using Hydra.Core.Services.SchedulerV2;
 
 namespace Tests.Core.SchedulerV2Tests;
@@ -10,6 +11,15 @@ public sealed class RoutePlannerTests
     {
         new() { Name = "rtx", WorkerType = 3, Slots = 2, PrefillPriority = 1, DecodePriority = 2 },   // prefill + decode
         new() { Name = "p100", WorkerType = 2, Slots = 1, PrefillPriority = 100, DecodePriority = 1 }, // decode only
+    };
+
+    /// <summary>Engine-mode cfg for COMBINED planning (MultiEngineRouter.Select gates).</summary>
+    private static readonly CoordinatorConfig Cfg = new()
+    {
+        UseLlamaEngine = true,
+        CombinedEnabled = true,
+        MultiEnginePolicy = "combined",
+        MultiEngineThreshold = 10,
     };
 
     private static readonly ChatRequest Req = ChatRequest.FromSubmit(
@@ -26,7 +36,7 @@ public sealed class RoutePlannerTests
         var health = new FakeHealthMonitor();
         var ledger = new SessionLedger();
 
-        var plan = new RoutePlanner().Plan(Req, RequestType.Atomic, Workers, tracker, health, ledger);
+        var plan = new RoutePlanner().Plan(Req, RequestType.Atomic, Workers, tracker, health, ledger, Cfg);
 
         Assert.True(plan.HasCapacity);
         Assert.Equal("rtx", plan.PrefillWorker);
@@ -45,7 +55,7 @@ public sealed class RoutePlannerTests
         var health = new FakeHealthMonitor();
         var ledger = new SessionLedger();
 
-        var plan = new RoutePlanner().Plan(Req, RequestType.Atomic, Workers, tracker, health, ledger);
+        var plan = new RoutePlanner().Plan(Req, RequestType.Atomic, Workers, tracker, health, ledger, Cfg);
 
         Assert.False(plan.HasCapacity); // p100 is decode-only and cannot satisfy a cold atomic
     }
@@ -61,7 +71,7 @@ public sealed class RoutePlannerTests
         var warmEntry = ledger.Register("sess", "p100", slotId: 0, nPast: 100); // KV resident on p100
         warmEntry.HasStoreState = true; // warm gate: resident slot + durable store state
 
-        var plan = new RoutePlanner().Plan(Req, RequestType.Solo, Workers, tracker, health, ledger);
+        var plan = new RoutePlanner().Plan(Req, RequestType.Solo, Workers, tracker, health, ledger, Cfg);
 
         Assert.True(plan.HasCapacity);
         Assert.Null(plan.PrefillWorker); // decode-only: no prefill worker
@@ -80,7 +90,7 @@ public sealed class RoutePlannerTests
         var ledger = new SessionLedger();
 
         // GPU-utilization rule: the decode worker is NOT reserved up front.
-        var plan = new RoutePlanner().Plan(Req, RequestType.Prefill, Workers, tracker, health, ledger);
+        var plan = new RoutePlanner().Plan(Req, RequestType.Prefill, Workers, tracker, health, ledger, Cfg);
 
         Assert.True(plan.HasCapacity);
         Assert.Equal("rtx", plan.PrefillWorker);
@@ -116,7 +126,7 @@ public sealed class RoutePlannerTests
     }
 
     [Fact]
-    public void Combined_Requires_A_CombinedCapable_Head()
+    public void Combined_Requires_A_CombinedCapable_Head_With_Free_Healthy_Peer()
     {
         var tracker = new WorkerTracker();
         tracker.InitWorker("rtx", 2);
@@ -124,20 +134,58 @@ public sealed class RoutePlannerTests
         var health = new FakeHealthMonitor();
         var ledger = new SessionLedger();
 
-        // Neither worker is CombinedCapable in this topology → no capacity.
-        var plan = new RoutePlanner().Plan(Req, RequestType.Combined, Workers, tracker, health, ledger);
+        // No worker is a CombinedCapable head with a configured peer → no capacity
+        // (the legacy MultiEngineRouter.Select gate: IsHead + PeerWorker + alias).
+        var plan = new RoutePlanner().Plan(Req, RequestType.Combined, Workers, tracker, health, ledger, Cfg);
         Assert.False(plan.HasCapacity);
 
-        // With a CombinedCapable head available, the combined request routes to it.
+        // With a CombinedCapable head (Role=head, PeerWorker=p100, resolvable
+        // ModelAlias) + a healthy free peer, the combined request routes to the
+        // head AND carries the peer reservation + mode + engine config.
         var combinedWorkers = new List<WorkerConfig>
         {
-            new() { Name = "rtx-combined", WorkerType = 3, Slots = 2, PrefillPriority = 1, CombinedCapable = true, PipelineCapable = true },
+            new()
+            {
+                Name = "rtx-combined", WorkerType = 3, Slots = 2, PrefillPriority = 1,
+                Role = "head", PeerWorker = "p100", CombinedCapable = true, PipelineCapable = true,
+                ModelAlias = "nano",
+            },
+            new() { Name = "p100", WorkerType = 2, Slots = 1, PrefillPriority = 100, DecodePriority = 1 },
         };
-        combinedWorkers.AddRange(Workers);
         tracker.InitWorker("rtx-combined", 2);
-        var plan2 = new RoutePlanner().Plan(Req, RequestType.Combined, combinedWorkers, tracker, health, ledger);
+        ModelRegistry.RegisterForTest(new EngineConfig(
+            ModelAlias: "nano", ModelPath: "/dev/null", NGpuLayers: 0, NCtx: 2048,
+            ContBatching: true, Fit: false, UbatchSize: 512,
+            SpecType: "draft-mtp", SpecDraftNMax: 3, SpecDraftPMin: 0.75f, SpecDraftNgl: 0));
+
+        var plan2 = new RoutePlanner().Plan(Req, RequestType.Combined, combinedWorkers, tracker, health, ledger, Cfg);
         Assert.True(plan2.HasCapacity);
         Assert.Equal("rtx-combined", plan2.PrefillWorker);
+        Assert.Equal("rtx-combined", plan2.DecodeWorker); // decode stays on the head
+        Assert.Equal("p100", plan2.PeerWorker);
+        Assert.Equal(MultiEngineMode.Combined, plan2.MultiMode);
+        Assert.NotNull(plan2.MultiEngineConfig);
         Assert.Equal(RequestType.Combined, plan2.RequestType);
+
+        // Peer already exclusively reserved (another COMBINED in flight) → no capacity.
+        Assert.True(tracker.TryReserveWorkerExclusive("p100"));
+        var plan3 = new RoutePlanner().Plan(Req, RequestType.Combined, combinedWorkers, tracker, health, ledger, Cfg);
+        Assert.False(plan3.HasCapacity);
+
+        // Head ModelAlias unresolvable via ModelRegistry → the plan is refused.
+        tracker.ReleaseWorkerExclusive("p100");
+        var unresolvedWorkers = new List<WorkerConfig>
+        {
+            new()
+            {
+                Name = "rtx-nomodel", WorkerType = 3, Slots = 2, PrefillPriority = 1,
+                Role = "head", PeerWorker = "p100", CombinedCapable = true, PipelineCapable = true,
+                ModelAlias = "alias-never-registered",
+            },
+            combinedWorkers[1],
+        };
+        tracker.InitWorker("rtx-nomodel", 2);
+        var plan4 = new RoutePlanner().Plan(Req, RequestType.Combined, unresolvedWorkers, tracker, health, ledger, Cfg);
+        Assert.False(plan4.HasCapacity);
     }
 }

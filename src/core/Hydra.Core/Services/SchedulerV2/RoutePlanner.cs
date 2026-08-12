@@ -22,14 +22,17 @@ namespace Hydra.Core.Services.SchedulerV2;
 public interface IRoutePlanner
 {
     /// <summary>Pick the worker(s) to START the request. For Prefill-type only the
-    /// prefill worker is chosen; DecodeWorker stays null until decode time.</summary>
+    /// prefill worker is chosen; DecodeWorker stays null until decode time.
+    /// <paramref name="cfg"/> feeds the COMBINED multi-engine selection
+    /// (<see cref="MultiEngineRouter.Select"/>).</summary>
     RouteDecision Plan(
         ChatRequest chat,
         RequestType type,
         IReadOnlyList<WorkerConfig> workers,
         IWorkerTracker tracker,
         IHealthMonitorService health,
-        ISessionLedger ledger);
+        ISessionLedger ledger,
+        CoordinatorConfig cfg);
 
     /// <summary>Pick the DECODE worker at decode time. Prefers the session's warm
     /// node (KV resident) when it is available, else the best free decode-capable
@@ -50,21 +53,37 @@ public sealed class RoutePlanner : IRoutePlanner
         IReadOnlyList<WorkerConfig> workers,
         IWorkerTracker tracker,
         IHealthMonitorService health,
-        ISessionLedger ledger)
+        ISessionLedger ledger,
+        CoordinatorConfig cfg)
     {
         var session = ledger.Lookup(chat.SessionId);
 
-        // 1) COMBINED/PIPELINE — worker rule: only a CombinedCapable head may serve.
+        // 1) COMBINED/PIPELINE — legacy multi-engine selection (epic #591): reuse
+        // MultiEngineRouter.Select VERBATIM — the tested legacy gate. AutoRouter is
+        // not wired into v2, so this is the single source of the two-engine plan.
+        // It applies only when engine mode + COMBINED are enabled, estTokens exceeds
+        // the MultiEngineThreshold, the head is a free+healthy IsHead with a
+        // resolvable ModelAlias and a free+healthy configured peer, and the mode is
+        // usable (Combined = CombinedEnabled + head.CombinedCapable). When no plan
+        // applies the request WAITS (no capacity).
         if (type == RequestType.Combined)
         {
-            var head = workers.FirstOrDefault(w =>
-                w.CombinedCapable
-                && w.CanPrefill && w.CanDecode
-                && tracker.HasFreeSlot(w.Name)
-                && health.IsHealthy(w.Name));
-            return head is null
-                ? new RouteDecision(RequestType.Combined, PrefillWorker: null, DecodeWorker: null, ReuseStoreState: false, Priority: 20)
-                : new RouteDecision(RequestType.Combined, head.Name, head.Name, ReuseStoreState: false, Priority: 20);
+#pragma warning disable CS0618 // deliberate: reuse the tested legacy multi-engine gate (epic #591)
+            var me = MultiEngineRouter.Select(cfg, workers.ToList(), tracker, health, chat.EstimatedTokens);
+#pragma warning restore CS0618
+            if (me is { Mode: MultiEngineMode.Combined } plan)
+            {
+                return new RouteDecision(
+                    RequestType.Combined,
+                    PrefillWorker: plan.Head.Name,   // decode stays on the head (KV resident)
+                    DecodeWorker: plan.Head.Name,
+                    ReuseStoreState: false,
+                    Priority: 20,
+                    PeerWorker: plan.Peer.Name,
+                    MultiMode: plan.Mode,
+                    MultiEngineConfig: plan.EngineConfig);
+            }
+            return new RouteDecision(RequestType.Combined, PrefillWorker: null, DecodeWorker: null, ReuseStoreState: false, Priority: 20);
         }
 
         // 2) Warm affinity — session KV still resident on its node (SlotFreed == false)

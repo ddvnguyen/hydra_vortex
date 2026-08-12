@@ -29,6 +29,18 @@ public interface ILeaseManager
     /// <summary>Release a lease (idempotent; null-safe).</summary>
     void Release(SlotLease? lease);
 
+    /// <summary>Reserve a worker EXCLUSIVELY (no slot) as a COMBINED peer (epic
+    /// #591) — the peer GPU may not serve any other request while the reservation
+    /// is held (P1: one GPU = one task). Backed by the tracker's
+    /// <see cref="IWorkerTracker.TryReserveWorkerExclusive"/>. Succeeds only when
+    /// the peer is healthy, has NO slots in use, and is not already reserved.</summary>
+    bool TryReservePeer(string worker);
+
+    /// <summary>Release a peer reservation (idempotent; null-safe). Disposing the
+    /// <see cref="ExclusivePeerReservation"/> releases the tracker's exclusive
+    /// flag, returning the peer GPU to service.</summary>
+    void ReleasePeer(IPeerReservation? lease);
+
     /// <summary>True when the decision's START worker (prefill, or decode for
     /// Solo/warm) can serve: a warm-held slot for the session is reusable, else a
     /// free slot is required.</summary>
@@ -86,6 +98,14 @@ public sealed class LeaseManager : ILeaseManager
     {
         if (lease is not null)
             _ = lease.DisposeAsync(); // tracker slot returns to the pool
+    }
+
+    public bool TryReservePeer(string worker) => _tracker.TryReserveWorkerExclusive(worker);
+
+    public void ReleasePeer(IPeerReservation? lease)
+    {
+        if (lease is not null)
+            _ = lease.DisposeAsync(); // ExclusivePeerReservation.DisposeAsync releases the exclusive flag
     }
 
     public void Stash(string sessionId, SlotLease lease)

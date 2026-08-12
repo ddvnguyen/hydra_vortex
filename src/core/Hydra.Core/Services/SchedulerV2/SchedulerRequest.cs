@@ -25,6 +25,28 @@ public sealed class SchedulerRequest
     public SlotLease? PrefillLease { get; set; }
     public SlotLease? DecodeLease { get; set; }
 
+    /// <summary>COMBINED (epic #591): the exclusively-reserved peer worker (the
+    /// head's configured <c>PeerWorker</c>). Held for the WHOLE request (one GPU =
+    /// one task, P1) and released at finalize.</summary>
+    public WorkerConfig? PeerWorker { get; set; }
+
+    /// <summary>COMBINED (epic #591): the peer's exclusive reservation, acquired in
+    /// <c>RunPipelineAsync</c> after the head lease, released via
+    /// <see cref="ILeaseManager.ReleasePeer"/> at finalize.</summary>
+    public IPeerReservation? PeerLease { get; set; }
+
+    /// <summary>COMBINED (epic #591): the two-engine mode the plan selected
+    /// (<c>None</c> for solo/atomic/P-D requests).</summary>
+    public MultiEngineMode MultiMode { get; set; } = MultiEngineMode.None;
+
+    /// <summary>COMBINED (epic #591): the model <see cref="EngineConfig"/> whose
+    /// hydra_config dict rides the EnginePrefill (0x42) body.</summary>
+    public EngineConfig? MultiEngineConfig { get; set; }
+
+    /// <summary>COMBINED (epic #591): true once the prefill delivered hydra_config
+    /// to the head engine (legacy <c>HydraConfigDeliveredSucceeded</c> parity).</summary>
+    public bool HydraConfigDelivered { get; set; }
+
     public int NPastAfter { get; set; }
     public byte[]? KvBlob { get; set; }
 

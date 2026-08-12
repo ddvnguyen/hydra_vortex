@@ -137,7 +137,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         };
 
         if (type == RequestType.Solo)
-            req.Plan = _planner.Plan(chat, type, _cfg.Workers, _tracker, _health, _ledger);
+            AdoptPlan(req, _planner.Plan(chat, type, _cfg.Workers, _tracker, _health, _ledger, _cfg));
 
         if (!_admission.TryEnqueue(req, req.Priority))
         {
@@ -164,6 +164,19 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
     private void SignalEvaluator()
         => _ = _admissionExecutor.PostAsync(() => EvaluateAsync(CancellationToken.None));
 
+    /// <summary>Adopt a routing decision onto the request: the plan itself PLUS the
+    /// COMBINED multi-engine fields (peer worker, mode, engine config) the pipeline
+    /// reads later — <see cref="RunPipelineAsync"/> reserves the peer from
+    /// <c>MultiMode</c>/<c>PeerWorker</c>; <see cref="PrefillRunner"/> builds the
+    /// hydra_config from <c>MultiEngineConfig</c>.</summary>
+    private void AdoptPlan(SchedulerRequest req, RouteDecision plan)
+    {
+        req.Plan = plan;
+        req.MultiMode = plan.MultiMode;
+        req.MultiEngineConfig = plan.MultiEngineConfig;
+        req.PeerWorker = plan.PeerWorker is null ? null : _cfg.Workers.FirstOrDefault(w => w.Name == plan.PeerWorker);
+    }
+
     private async Task EvaluateAsync(CancellationToken ct)
     {
         while (_admission.TryPeek(out var req, out _))
@@ -180,7 +193,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
             // Plan lazily (once) so warm-affinity/cold decisions reflect live capacity.
             if (!req.Plan.HasCapacity)
             {
-                req.Plan = _planner.Plan(req.Chat, req.Type, _cfg.Workers, _tracker, _health, _ledger);
+                AdoptPlan(req, _planner.Plan(req.Chat, req.Type, _cfg.Workers, _tracker, _health, _ledger, _cfg));
                 if (!req.Plan.HasCapacity && _leases.WarmLeaseCount > 0)
                 {
                     // Review #5: on-demand warm-lease eviction — the fresh plan found
@@ -188,7 +201,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
                     // warm lease (save + erase) and re-plan (mirrors legacy
                     // WorkerSchedulerService.cs:986-1000, 2524-2536).
                     await EvictOldestWarmAsync();
-                    req.Plan = _planner.Plan(req.Chat, req.Type, _cfg.Workers, _tracker, _health, _ledger);
+                    AdoptPlan(req, _planner.Plan(req.Chat, req.Type, _cfg.Workers, _tracker, _health, _ledger, _cfg));
                 }
                 if (!req.Plan.HasCapacity)
                     break; // no viable worker — wait for a slot release / health change
@@ -284,6 +297,31 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         else
             req.DecodeLease = lease;
 
+        // COMBINED (epic #591): reserve the PEER GPU EXCLUSIVELY for the whole
+        // request (one GPU = one task, P1) — AFTER the head slot is acquired
+        // (legacy TryAcquireMultiEnginePrefill ordering). A failed peer
+        // reservation releases the head slot and fails the request with a clear
+        // message (the golden scenario's peer is always free — this path only
+        // fires under contention). The reservation is released at finalize via
+        // ReleaseLeases → ReleasePeer.
+        if (req.MultiMode == MultiEngineMode.Combined && req.PeerWorker is not null)
+        {
+            if (_leases.TryReservePeer(req.PeerWorker.Name))
+            {
+                req.PeerLease = new ExclusivePeerReservation(req.PeerWorker.Name, _tracker);
+            }
+            else
+            {
+                _leases.Release(lease);
+                req.PrefillLease = null;
+                req.DecodeLease = null;
+                req.Error = new InvalidOperationException(
+                    $"combined peer reservation failed: {req.PeerWorker.Name} is not exclusively reservable");
+                await FinalizeAsync(req, WorkItemState.Failed);
+                return;
+            }
+        }
+
         req.State = WorkItemState.RouteDecision; // sync request with the machine's initial state
         var suspended = false;
         try
@@ -303,7 +341,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
                 _streaming[req.TraceId] = req;
                 _sessionToTraceId[req.SessionId] = req.TraceId;
             }
-            else if (req.State == WorkItemState.Done && !req.IsStreaming)
+            else if (req.State == WorkItemState.Done && !req.IsStreaming && req.MultiMode != MultiEngineMode.Combined)
             {
                 StashWarm(req); // C2: hold the decode slot warm for the next turn
             }
@@ -435,6 +473,11 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         req.PrefillLease = null;
         _leases.Release(req.DecodeLease);
         req.DecodeLease = null;
+        // COMBINED (epic #591): release the peer's exclusive reservation so the
+        // peer GPU returns to service (disposing ExclusivePeerReservation clears
+        // the tracker's exclusive flag).
+        _leases.ReleasePeer(req.PeerLease);
+        req.PeerLease = null;
     }
 
     private void UpdateLastDispatched(WorkerConfig? worker)
@@ -471,6 +514,9 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
         m.Configure(WorkItemState.Prefill)
             .On(SchedulerEvent.PrefillSucceeded, WorkItemState.SaveKv)
+            // COMBINED (epic #591): prefill delivered hydra_config + the KV is
+            // resident on the head — skip SaveKv/PickDecode/RestoreKv, decode in place.
+            .On(SchedulerEvent.CombinedPrefillSucceeded, WorkItemState.Decode)
             .On(SchedulerEvent.Retry, ctx => ((SchedulerRequest)ctx.Payload!).RetryCount < SchedulerRequest.MaxRetries, WorkItemState.RouteDecision)
             .On(SchedulerEvent.Failed, WorkItemState.Failed)
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);

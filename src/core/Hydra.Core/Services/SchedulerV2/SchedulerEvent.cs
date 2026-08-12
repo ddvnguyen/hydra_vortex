@@ -25,6 +25,10 @@ public enum SchedulerEvent
     ReuseStore,
     /// <summary>Engine prefill succeeded (KV produced); move to save-KV.</summary>
     PrefillSucceeded,
+    /// <summary>COMBINED (epic #591): prefill delivered hydra_config to the head
+    /// engine and the KV stays RESIDENT in the head slot — SKIP SaveKv and move
+    /// straight to Decode on the head (decode worker = prefill worker).</summary>
+    CombinedPrefillSucceeded,
     /// <summary>KV persisted to Store; move to the decode-worker handoff.</summary>
     SaveKvSucceeded,
     /// <summary>Store Put failed during SaveKv: fall back to same-node decode (the

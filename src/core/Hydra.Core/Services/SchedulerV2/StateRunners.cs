@@ -78,7 +78,7 @@ public sealed class PlanRunner : WorkerStateRunner
         var plan = req.Plan;
         if (req.RetryCount > 0)
         {
-            var fresh = _planner.Plan(req.Chat, req.Type, _workers, _tracker, _health, _ledger);
+            var fresh = _planner.Plan(req.Chat, req.Type, _workers, _tracker, _health, _ledger, _cfg);
             if (fresh.HasCapacity)
                 plan = req.Plan = fresh;
         }
@@ -100,7 +100,7 @@ public sealed class PlanRunner : WorkerStateRunner
                 req.DecodeLease = null;
                 _ledger.MarkEvicted(req.SessionId);
 
-                plan = req.Plan = _planner.Plan(req.Chat, req.Type, _workers, _tracker, _health, _ledger);
+                plan = req.Plan = _planner.Plan(req.Chat, req.Type, _workers, _tracker, _health, _ledger, _cfg);
                 if (!plan.HasCapacity)
                 {
                     req.Error = new InvalidOperationException($"warm verify failed and no cold capacity for session {req.SessionId}");
@@ -121,6 +121,14 @@ public sealed class PlanRunner : WorkerStateRunner
 
         req.PrefillWorker = plan.PrefillWorker is null ? null : Resolve(plan.PrefillWorker);
         req.DecodeWorker = plan.DecodeWorker is null ? null : Resolve(plan.DecodeWorker);
+        // COMBINED (epic #591): carry the plan's multi-engine selection onto the
+        // request — PrefillRunner reads MultiMode/MultiEngineConfig to build the
+        // hydra_config dict, and the orchestrator reserved the peer from these
+        // fields in RunPipelineAsync. (Non-combined plans carry None/null and just
+        // clear any stale fields from a re-plan.)
+        req.MultiMode = plan.MultiMode;
+        req.MultiEngineConfig = plan.MultiEngineConfig;
+        req.PeerWorker = plan.PeerWorker is null ? null : Resolve(plan.PeerWorker);
         req.RecordPhase("plan_ms", 0);
 
         // Retry lease swap: release the old prefill lease ONLY when the re-plan
@@ -322,17 +330,27 @@ public sealed class PrefixRestoreRunner : WorkerStateRunner
 /// When the engine's binary predates the PREFILL opcode (#279, NotImplemented), falls
 /// back to the HTTP prefill — an n_predict=0 completion that builds the KV in the slot —
 /// and the request continues via the normal path (SaveKv captures the slot KV via
-/// StateGet).</summary>
+/// StateGet).
+///
+/// <para><b>COMBINED (epic #591):</b> the prefill carries the hydra_config dict
+/// (from <see cref="SchedulerRequest.MultiEngineConfig"/> via
+/// <see cref="EngineConfig.ToHydraConfigDict"/>, rpc_servers resolved to reachable
+/// endpoints) and, on success, fires <see cref="SchedulerEvent.CombinedPrefillSucceeded"/>
+/// — the KV stays resident in the head slot and decode runs IN PLACE (no SaveKv,
+/// no PickDecode/RestoreKv).</para>
+/// </summary>
 public sealed class PrefillRunner : WorkerStateRunner
 {
     private readonly IEngineRpcGateway _engine;
     private readonly ICompletionProxyService _proxy;
+    private readonly IReadOnlyList<WorkerConfig> _workers;
     public override WorkItemState State => WorkItemState.Prefill;
 
-    public PrefillRunner(IEngineRpcGateway engine, ICompletionProxyService proxy)
+    public PrefillRunner(IEngineRpcGateway engine, ICompletionProxyService proxy, IReadOnlyList<WorkerConfig> workers)
     {
         _engine = engine;
         _proxy = proxy;
+        _workers = workers;
     }
 
     public override async Task<PhaseResult> RunAsync(RunnerContext ctx, CancellationToken ct)
@@ -349,7 +367,8 @@ public sealed class PrefillRunner : WorkerStateRunner
             await _engine.EnsureChunkConfiguredAsync(req.PrefillWorker.Name, ct); // lazy 0x40 (wire parity)
             var slotKey = req.PrefillLease?.SlotId.ToString() ?? "0"; // engine keys prefill by slot id
             var sw = Stopwatch.StartNew();
-            var result = await _engine.PrefillAsync(req.PrefillWorker.Name, slotKey, req.Chat, ct);
+            var result = await _engine.PrefillAsync(req.PrefillWorker.Name, slotKey, req.Chat, ct,
+                hydraConfig: BuildHydraConfig(req));
             if (result.NotImplemented)
             {
                 // #279: old binary without PREFILL 0x42 — fall through to the HTTP
@@ -370,6 +389,18 @@ public sealed class PrefillRunner : WorkerStateRunner
                 ModelCapabilities = result.ModelCapabilities,
             };
             req.RecordPhase("prefill_ms", sw.ElapsedMilliseconds);
+
+            // COMBINED (epic #591): the prefill delivered hydra_config and the KV
+            // stays RESIDENT in the head slot — skip SaveKv entirely and decode IN
+            // PLACE on the head (decode worker = prefill worker; legacy
+            // WorkerSchedulerService.cs:2136-2148). The in-memory KvBlob survives
+            // to BgSave, which direct-Puts it (wire parity: combined golden).
+            if (req.MultiMode == MultiEngineMode.Combined)
+            {
+                req.HydraConfigDelivered = true;
+                req.DecodeWorker = req.PrefillWorker;
+                return PhaseResult.Fire(SchedulerEvent.CombinedPrefillSucceeded);
+            }
             return PhaseResult.Fire(SchedulerEvent.PrefillSucceeded);
         }
         catch (OperationCanceledException)
@@ -385,6 +416,24 @@ public sealed class PrefillRunner : WorkerStateRunner
                 ? PhaseResult.Fire(SchedulerEvent.Retry)
                 : PhaseResult.Fire(SchedulerEvent.Failed);
         }
+    }
+
+    /// <summary>COMBINED (epic #591): build the hydra_config dict that rides the
+    /// PREFILL body — <see cref="EngineConfig.ToHydraConfigDict"/> with rpc_servers
+    /// translated from logical worker names to reachable host:port endpoints
+    /// (legacy <c>TranslateToWirePayloadAsync</c>, MultiEngineRouter.ResolveRpcServerEndpoints).
+    /// Null for solo/atomic/P-D requests (no config injection).</summary>
+    private Dictionary<string, object>? BuildHydraConfig(SchedulerRequest req)
+    {
+        if (req.MultiMode != MultiEngineMode.Combined || req.MultiEngineConfig is null)
+            return null;
+        var dict = req.MultiEngineConfig.ToHydraConfigDict();
+        // Gap-1 fix: models.json rpc_servers name workers by logical name
+        // ("rtx3060:9504") — translate to the reachable host:port from workers.json
+        // so the fork's apply_t3_rebuild() can register the split peer device.
+        if (dict.TryGetValue("rpc_servers", out var raw) && raw is string[] endpoints)
+            dict["rpc_servers"] = MultiEngineRouter.ResolveRpcServerEndpoints(endpoints, _workers);
+        return dict;
     }
 
     /// <summary>#279 HTTP prefill fallback (legacy ~2054-2131): an n_predict=0
@@ -984,7 +1033,8 @@ public sealed class DecodeRunner : WorkerStateRunner
 /// <summary>
 /// Background save (C3 core function): capture the slot's FINAL KV (StateGet)
 /// and persist it to the Store so the next turn / migration can restore the
-/// post-decode state.
+/// post-decode state. COMBINED (epic #591) skips SaveKv, so the in-memory prefill
+/// blob survives to here and is Put DIRECTLY (no StateGet — legacy KvBlob path).
 ///
 /// <para><b>Rules (legacy #277/#286 + golden store_exception):</b> the capture
 /// runs while the slot is still HELD (the streaming resume drives this state
@@ -1015,12 +1065,27 @@ public sealed class BgSaveRunner : WorkerStateRunner
 
         try
         {
-            var slotKey = RestoreRunner.DecodeSlotId(req)?.ToString() ?? "0";
-            var kv = await _engine.CaptureAsync(worker, slotKey, CancellationToken.None);
-            if (kv is not null)
+            // COMBINED (epic #591): SaveKv was SKIPPED so the prefill KV blob is
+            // still in memory — Put it DIRECTLY, no StateGet (legacy BgSaveAsync
+            // engine-KvBlob path, wire parity: the combined golden pins Put 4096
+            // with no StateGet). Every OTHER path either nulls KvBlob in SaveKv
+            // or takes the store-fallback (which keeps the legacy StateGet capture),
+            // so they keep the StateGet + Put branch below.
+            if (req.MultiMode == MultiEngineMode.Combined && req.KvBlob is not null)
             {
-                await _store.PutAsync(StoreKeys.KvKey(req.SessionId), kv, CancellationToken.None);
+                await _store.PutAsync(StoreKeys.KvKey(req.SessionId), req.KvBlob, CancellationToken.None);
                 _ledger.MarkStoreState(req.SessionId);
+                req.KvBlob = null;
+            }
+            else
+            {
+                var slotKey = RestoreRunner.DecodeSlotId(req)?.ToString() ?? "0";
+                var kv = await _engine.CaptureAsync(worker, slotKey, CancellationToken.None);
+                if (kv is not null)
+                {
+                    await _store.PutAsync(StoreKeys.KvKey(req.SessionId), kv, CancellationToken.None);
+                    _ledger.MarkStoreState(req.SessionId);
+                }
             }
         }
         catch (Exception ex)
