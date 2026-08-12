@@ -43,6 +43,9 @@ public sealed class DifferentialGateTests
         // Chunked save (feature follow-up): byte-identical.
         "chunked_save",
         "chunked_save_with_pushes",
+        // COMBINED multi-engine (feature follow-up): byte-identical — head slot +
+        // peer exclusive, hydra_config prefill, skip SaveKv, direct-Put BgSave.
+        "combined",
     };
 
     private readonly ITestOutputHelper _output;
