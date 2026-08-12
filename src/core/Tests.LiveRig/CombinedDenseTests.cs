@@ -75,6 +75,28 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
     }
 
     /// <summary>
+    /// Eval-verify (#596 relevance criterion): the model's reply must be
+    /// ON-TOPIC for the question asked. Each group lists accepted keywords;
+    /// the reply must contain at least one keyword from EVERY group
+    /// (case-insensitive). A non-empty reply that ignores the question is a
+    /// model/stack failure.
+    /// </summary>
+    private static void AssertOnTopic(string question, string reply, params string[][] keywordGroups)
+    {
+        Assert.False(string.IsNullOrEmpty(reply), $"Eval-verify: empty reply for question '{question}'");
+        var lower = reply.ToLowerInvariant();
+        var missing = new List<string>();
+        foreach (var group in keywordGroups)
+        {
+            if (!group.Any(k => lower.Contains(k.ToLowerInvariant())))
+                missing.Add($"none of [{string.Join(" | ", group)}]");
+        }
+        Assert.True(missing.Count == 0,
+            $"Eval-verify failed — reply not on-topic for question '{question}': {string.Join("; ", missing)}. " +
+            $"Got: {reply[..Math.Min(300, reply.Length)]}");
+    }
+
+    /// <summary>
     /// Dense 27B COMBINED single completion. The first request may pay the
     /// cold_atomic_prefill_swap reload cost (~60-120s), so the call CTS is
     /// generous (600s — covers swap + 4K-token thinking-heavy decode; the
@@ -212,6 +234,14 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
                 "Now explain the first one in one sentence.",
                 "Now explain the second one in one sentence.",
             };
+            // Eval-verify per turn: the reply must be on-topic for the
+            // question (KV cache knowledge) — not just non-empty.
+            var evalTerms = new[]
+            {
+                new[] { "kv", "cache", "key", "value", "token", "state", "attention", "store" },
+                new[] { "kv", "cache", "key", "value", "token", "state", "attention" },
+                new[] { "kv", "cache", "key", "value", "token", "state", "attention" },
+            };
             for (var turn = 0; turn < turns.Length; turn++)
             {
                 var messages = new List<Dictionary<string, object?>>(history)
@@ -225,6 +255,8 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
 
                 var reply = ExtractContent(resp);
                 Assert.False(string.IsNullOrEmpty(reply), $"Turn {turn + 1}: empty reply");
+                // Eval-verify: reply must answer the question, not drift.
+                AssertOnTopic(turns[turn], reply, evalTerms[turn]);
                 history = [.. messages, new() { ["role"] = "assistant", ["content"] = reply }];
 
                 var metrics = TryExtractTurnMetrics(resp);
