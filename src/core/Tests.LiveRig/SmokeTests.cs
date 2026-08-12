@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -25,6 +26,18 @@ namespace Tests.LiveRig;
 ///   5. Smoke_ToolCall               — one tool-call round-trip
 ///   6. Smoke_DenseMultiturnTiming   — dense-combined warm timing budget (FIX-3)
 /// </summary>
+// ── Deterministic model-grouped execution order (#470) ──────────────────
+// [TestOrder(n)] + TestOrderer (Ordering/TestOrdering.cs) force a fixed
+// run order so model swaps happen ONLY when a test intentionally exercises
+// a different model. Each swap is 60-160s of model_load_ms, so incidental
+// reordering caused 8-10 swaps per run. Grouping:
+//   tests 1-4 share the default (balanced) resident model → ZERO swaps
+//     between them (warm-affinity restore path throughout);
+//   test 5 (moe-35b-pd — rtx Mini prefill + p100 balanced decode) and
+//   test 6 (dense-27b-combined — rtx+rtx3060 COMBINED) are CROSS-MODEL
+//     tests; their swaps are intentional and they run LAST so each pays
+//     exactly one swap and no balanced-model test remains behind.
+[TestCaseOrderer("Tests.LiveRig.Ordering.TestOrderer", "Tests.LiveRig")]
 [Collection("LiveRig")]
 public sealed class SmokeTests : IClassFixture<LiveRigFixture>
 {
@@ -138,6 +151,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// on turns 2-3 (model_load_ms == 0, the restore path). Wall-clock sanity:
     /// turns 2-3 must not blow 3x turn 1 (mirrors FiveTurnWarmAffinity).
     /// </summary>
+    [TestOrder(1)]
     [SkippableFact(Timeout = 600_000)]
     public async Task Smoke_WarmAffinityMultiturn()
     {
@@ -233,6 +247,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// merged-decode drop of reasoning_content (#616) and the usage-less DONE
     /// delta fallback (#622) both fail this.
     /// </summary>
+    [TestOrder(2)]
     [SkippableFact(Timeout = 600_000)]
     public async Task Smoke_StreamingReasoningContent()
     {
@@ -368,6 +383,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     ///   - turns 2+: n_past grows (KV accumulates across the P/D split),
     ///     wall-clock sanity vs turn 1 (no catastrophic re-prefill)
     /// </summary>
+    [TestOrder(5)]
     [SkippableFact(Timeout = 900_000)]
     public async Task Smoke_PdMixQuantMultiTurn()
     {
@@ -458,6 +474,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// (moe-35b-solo → rtx) for continuations after an explicit /migrate, so
     /// this test asserts the restore contract only.
     /// </summary>
+    [TestOrder(4)]
     [SkippableFact(Timeout = 600_000)]
     public async Task Smoke_MigrationContinuation()
     {
@@ -547,6 +564,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// AgentWorkflowTests.ToolCallBasic (dual-branch: tool path strict, text
     /// path tolerant) with the ~1K prompt floor and 1.5K output cap.
     /// </summary>
+    [TestOrder(3)]
     [SkippableFact(Timeout = 600_000)]
     public async Task Smoke_ToolCall()
     {
@@ -655,6 +673,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// 1.5K output cap. Every turn is eval-verified: the reply must be
     /// on-topic for the question asked (KV cache knowledge, not drift).
     /// </summary>
+    [TestOrder(6)]
     [SkippableFact(Timeout = 900_000)]
     public async Task Smoke_DenseMultiturnTiming()
     {
