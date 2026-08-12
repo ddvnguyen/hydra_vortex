@@ -450,8 +450,14 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
 
         m.Configure(WorkItemState.RouteDecision)
             .On(SchedulerEvent.RouteSucceeded, WorkItemState.Prefill)
+            .On(SchedulerEvent.PrefixRestoreRouted, WorkItemState.PrefixRestore)
             .On(SchedulerEvent.SoloRouted, WorkItemState.Decode) // warm/decode-only: KV resident
             .On(SchedulerEvent.ReuseStore, WorkItemState.RestoreKv) // C4: store KV reuse skips prefill
+            .On(SchedulerEvent.Failed, WorkItemState.Failed)
+            .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
+
+        m.Configure(WorkItemState.PrefixRestore)
+            .On(SchedulerEvent.PrefixRestoreSucceeded, WorkItemState.Prefill) // hit or miss → prefill
             .On(SchedulerEvent.Failed, WorkItemState.Failed)
             .On(SchedulerEvent.Cancelled, WorkItemState.Cancelled);
 

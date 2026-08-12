@@ -152,6 +152,11 @@ public sealed class PlanRunner : WorkerStateRunner
             return PhaseResult.Fire(SchedulerEvent.ReuseStore);
         }
 
+        // Prefix checkpoint: a request with a prefixHash + prefill worker may restore
+        // a cached prefix KV before prefill (golden prefix_hit/prefix_miss).
+        if (_cfg.PrefixCheckpointEnabled && req.Chat.PrefixHash is not null && plan.PrefillWorker is not null)
+            return PhaseResult.Fire(SchedulerEvent.PrefixRestoreRouted);
+
         return plan.PrefillWorker is null
             ? PhaseResult.Fire(SchedulerEvent.SoloRouted)  // warm/decode-only
             : PhaseResult.Fire(SchedulerEvent.RouteSucceeded);
@@ -226,6 +231,91 @@ public sealed class PlanRunner : WorkerStateRunner
 
     private WorkerConfig? Resolve(string? name)
         => name is null ? null : _workers.FirstOrDefault(w => w.Name == name);
+}
+
+/// <summary>
+/// Prefix-checkpoint restore (golden prefix_hit / prefix_miss): when a request
+/// carries a <c>prefixHash</c> and the coordinator has prefix checkpoints enabled,
+/// restore the cached prefix KV into the prefill slot before prefill. A Store hit
+/// alone is not enough — the prefix is only a "hit" after the StatePut succeeds.
+/// An n_past guard skips the restore when the cached prefix already covers ≥85% of
+/// the request (restoring a stale/large prefix wastes the StatePut).
+/// </summary>
+public sealed class PrefixRestoreRunner : WorkerStateRunner
+{
+    private readonly CoordinatorConfig _cfg;
+    private readonly IStoreGateway _store;
+    private readonly IEngineRpcGateway _engine;
+    private readonly ISessionLedger _ledger;
+    public override WorkItemState State => WorkItemState.PrefixRestore;
+
+    public PrefixRestoreRunner(
+        CoordinatorConfig cfg,
+        IStoreGateway store,
+        IEngineRpcGateway engine,
+        ISessionLedger ledger)
+    {
+        _cfg = cfg;
+        _store = store;
+        _engine = engine;
+        _ledger = ledger;
+    }
+
+    public override async Task<PhaseResult> RunAsync(RunnerContext ctx, CancellationToken ct)
+    {
+        var req = ctx.Request;
+        if (!_cfg.PrefixCheckpointEnabled || req.Chat.PrefixHash is null || req.PrefillWorker is null)
+            return PhaseResult.Fire(SchedulerEvent.PrefixRestoreSucceeded); // miss → straight to prefill
+
+        var prefixKey = $"prefix/{req.Chat.PrefixHash}.kv";
+        var blob = await _store.GetRawAsync(prefixKey, ct);
+        if (blob is null)
+        {
+            req.PrefixCacheHit = false;
+            return PhaseResult.Fire(SchedulerEvent.PrefixRestoreSucceeded); // miss → prefill
+        }
+
+        // n_past guard (legacy 0.85): skip the restore when the cached prefix
+        // already covers ≥85% of the request's estimated tokens.
+        var prefixNPast = await ReadPrefixNPastAsync(prefixKey, ct);
+        req.PrefixNPast = prefixNPast;
+        if (prefixNPast > 0 && req.Chat.EstimatedTokens > 0 && prefixNPast >= req.Chat.EstimatedTokens * 0.85)
+        {
+            req.PrefixCacheHit = false;
+            return PhaseResult.Fire(SchedulerEvent.PrefixRestoreSucceeded); // guard → miss
+        }
+
+        var slotKey = req.PrefillLease?.SlotId.ToString() ?? "0";
+        var put = await _engine.RestoreAsync(req.PrefillWorker.Name, slotKey, blob, prefixNPast, ct);
+        if (put.Ok)
+        {
+            req.PrefixCacheHit = true; // hit only when the StatePut actually installed the KV
+            if (put.NPast > 0)
+                _ledger.UpdateNPast(req.SessionId, put.NPast);
+        }
+        else
+        {
+            req.PrefixCacheHit = false;
+        }
+
+        return PhaseResult.Fire(SchedulerEvent.PrefixRestoreSucceeded);
+    }
+
+    private async Task<int> ReadPrefixNPastAsync(string prefixKey, CancellationToken ct)
+    {
+        try
+        {
+            var manifest = await _store.GetManifestAsync(prefixKey, ct);
+            if (manifest is null || manifest.Length == 0) return 0;
+            using var doc = JsonDocument.Parse(manifest);
+            return doc.RootElement.TryGetProperty("n_past", out var np) && np.ValueKind == JsonValueKind.Number
+                ? np.GetInt32() : 0;
+        }
+        catch (JsonException)
+        {
+            return 0; // non-fatal: the guard is skipped
+        }
+    }
 }
 
 /// <summary>Runs engine prefill on the prefill worker, captures the KV blob + n_past.

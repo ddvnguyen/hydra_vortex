@@ -12,6 +12,12 @@ public enum SchedulerEvent
 {
     /// <summary>Route planning succeeded; move to the prefill phase.</summary>
     RouteSucceeded,
+    /// <summary>Route planning succeeded and a prefix checkpoint may exist — move to
+    /// PrefixRestore (which restores it into the slot, or reports a miss and falls
+    /// through to prefill).</summary>
+    PrefixRestoreRouted,
+    /// <summary>Prefix restore finished (hit or miss); move to prefill.</summary>
+    PrefixRestoreSucceeded,
     /// <summary>Warm/decode-only route (Solo): KV is resident — skip prefill, move straight to decode.</summary>
     SoloRouted,
     /// <summary>C4 store-reuse route: the session has durable store KV — skip the

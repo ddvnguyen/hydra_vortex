@@ -65,6 +65,7 @@ public sealed class C4ReviewFixTests
         {
             new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
+            new PrefixRestoreRunner(cfg, store, engineGateway, ledger),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
             new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
@@ -110,6 +111,7 @@ public sealed class C4ReviewFixTests
         {
             new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
+            new PrefixRestoreRunner(cfg, store, engineGateway, ledger),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
             new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
@@ -155,6 +157,7 @@ public sealed class C4ReviewFixTests
         {
             new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
+            new PrefixRestoreRunner(cfg, store, engineGateway, ledger),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
             new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
@@ -231,6 +234,7 @@ public sealed class C4ReviewFixTests
         {
             new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
+            new PrefixRestoreRunner(cfg, store, engineGateway, ledger),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
             new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
@@ -276,6 +280,7 @@ public sealed class C4ReviewFixTests
         {
             new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
+            new PrefixRestoreRunner(cfg, store, engineGateway, ledger),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
             new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
@@ -323,6 +328,7 @@ public sealed class C4ReviewFixTests
         {
             new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, new FakeWarmSlotVerifier()),
             new PrefillRunner(engineGateway, proxy),
+            new PrefixRestoreRunner(cfg, store, engineGateway, ledger),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
             new DecodeRunner(proxy, engineGateway, ledger, cfg, health),
@@ -377,6 +383,7 @@ public sealed class C4ReviewFixTests
         {
             new PlanRunner(new RoutePlanner(), leases, ledger, cfg.Workers, tracker, health, cfg, warmVerifier),
             new PrefillRunner(engineGateway, proxy),
+            new PrefixRestoreRunner(cfg, store, engineGateway, ledger),
             new SaveKvRunner(store, ledger, engineGateway),
             new RestoreRunner(store, engineGateway, ledger, leases, proxy, cfg),
             new DecodeRunner(proxy, engineGateway, ledger, cfg, health),

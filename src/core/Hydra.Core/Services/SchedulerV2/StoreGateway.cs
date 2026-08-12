@@ -11,6 +11,13 @@ public interface IStoreGateway
 {
     Task<bool> PutAsync(string sessionId, ReadOnlyMemory<byte> kv, CancellationToken ct);
     Task<byte[]?> GetAsync(string sessionId, CancellationToken ct);
+
+    /// <summary>Raw store Get by exact key (prefix checkpoints use <c>prefix/{hash}.kv</c>).</summary>
+    Task<byte[]?> GetRawAsync(string key, CancellationToken ct);
+
+    /// <summary>Raw store GET_MANIFEST by exact key — the JSON payload carries
+    /// <c>{"n_past":N, "chunks":[...]}</c> for the prefix n_past guard.</summary>
+    Task<byte[]?> GetManifestAsync(string key, CancellationToken ct);
 }
 
 public static class StoreKeys
@@ -35,6 +42,18 @@ public sealed class StoreGateway : IStoreGateway
     public async Task<byte[]?> GetAsync(string sessionId, CancellationToken ct)
     {
         var resp = await _store.RequestAsync(OpCode.Get, sessionId, ReadOnlyMemory<byte>.Empty, "v2-store", ct);
+        return resp.Status == (byte)StatusCode.Ok ? resp.Payload : null;
+    }
+
+    public Task<byte[]?> GetRawAsync(string key, CancellationToken ct)
+        => GetRawAsyncCore(key, OpCode.Get, ct);
+
+    public Task<byte[]?> GetManifestAsync(string key, CancellationToken ct)
+        => GetRawAsyncCore(key, OpCode.GetManifest, ct);
+
+    private async Task<byte[]?> GetRawAsyncCore(string key, OpCode op, CancellationToken ct)
+    {
+        var resp = await _store.RequestAsync(op, key, ReadOnlyMemory<byte>.Empty, "v2-store", ct);
         return resp.Status == (byte)StatusCode.Ok ? resp.Payload : null;
     }
 }

@@ -34,6 +34,7 @@ public sealed class V2ArchitectureTests
         var config = cfg ?? new CoordinatorConfig();
         yield return new PlanRunner(new RoutePlanner(), leases, ledger, Workers, tracker, health, config, new FakeWarmSlotVerifier());
         yield return new PrefillRunner(engine, proxy);
+        yield return new PrefixRestoreRunner(config, store, engine, ledger);
         yield return new SaveKvRunner(store, ledger, engine);
         yield return new RestoreRunner(store, engine, ledger, leases, proxy, config);
         yield return new DecodeRunner(proxy, engine, ledger, config, health);

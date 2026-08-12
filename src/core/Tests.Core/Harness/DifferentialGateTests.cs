@@ -37,6 +37,9 @@ public sealed class DifferentialGateTests
         "busy_exhausted",
         "merged_decode_accept",
         "merged_decode_gate_a_reject",
+        // Prefix-checkpoint restore (feature follow-up): byte-identical.
+        "prefix_hit",
+        "prefix_miss",
     };
 
     private readonly ITestOutputHelper _output;

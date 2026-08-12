@@ -28,6 +28,13 @@ public sealed class SchedulerRequest
     public int NPastAfter { get; set; }
     public byte[]? KvBlob { get; set; }
 
+    /// <summary>n_past of the restored prefix checkpoint (0 = none / not found).</summary>
+    public int PrefixNPast { get; set; }
+
+    /// <summary>True when a prefix checkpoint was restored into the prefill slot
+    /// (only set on a successful StatePut — a Store hit alone does not count).</summary>
+    public bool PrefixCacheHit { get; set; }
+
     /// <summary>The PHYSICAL slot the prefill wrote the KV into (review #4): the
     /// same-node decode skip is only safe when the held slot matches this — never
     /// decode over a slot that does not hold this request's KV (#469).</summary>

@@ -104,6 +104,7 @@ internal sealed class V2ScenarioDriver : IScenarioDriver
         {
             new PlanRunner(new RoutePlanner(), leases, Ledger, Cfg.Workers, Tracker, Health, Cfg, new HttpWarmSlotVerifier()),
             new PrefillRunner(engine, Proxy),
+            new PrefixRestoreRunner(Cfg, store, engine, Ledger),
             new SaveKvRunner(store, Ledger, engine),
             new RestoreRunner(store, engine, Ledger, leases, Proxy, Cfg),
             new DecodeRunner(Proxy, engine, Ledger, Cfg, Health),
