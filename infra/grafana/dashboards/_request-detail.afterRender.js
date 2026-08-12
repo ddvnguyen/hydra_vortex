@@ -108,9 +108,11 @@ try {
   };
   // Main timeline order (Save RPC stays in the main row, Save store is
   // pulled out for the background indicator). model_load sits between
-  // prefill and save_kv_rpc, matching hydra-timeline-bars.json's column
-  // order (queue, prefill, model switch, save kv, restore kv, decode).
-  const ORDER = ['queue', 'prefill', 'model_load', 'save_kv_rpc', 'restore_kv', 'decode'];
+  // queue and prefill — the engine loads/swaps the model BEFORE it can
+  // run prefill against it (both prefill_ms and model_load_ms come off
+  // the same EnginePrefill RPC response), so this reflects the real
+  // chronological order.
+  const ORDER = ['queue', 'model_load', 'prefill', 'save_kv_rpc', 'restore_kv', 'decode'];
   // Background indicator (rendered below the row).
   const BG_ORDER = ['save_kv_store'];
 

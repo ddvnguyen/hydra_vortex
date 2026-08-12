@@ -109,7 +109,7 @@ jobs:
   # <arch>-<binary>-<version>-<sha>[-pr<N>]; the PR id is passed
   # programmatically (never a user input).
   build-llama:
-    name: Build llama-engine + llama-server (fork)
+    name: Build llama-engine (fork)
     needs: [resolve-pr]
     # Reusable workflow must be referenced at the JOB level (jobs.*.uses),
     # not inside a step. hydra-build.yml@hydra-fork declares workflow_call
@@ -122,7 +122,12 @@ jobs:
     uses: ddvnguyen/llama.cpp/.github/workflows/hydra-build.yml@hydra-fork
     with:
       build_llama_engine: true
-      build_llama_server: true
+      # #632: only llama-engine images are consumed — production node configs
+      # (node-rtx.yaml, node-rtx3060.yaml, node-p100.yaml) all pin
+      # *-llama-engine-* tags, and P100 runs llama-engine (issue #577).
+      # Building llama-server here produced images nobody pulls. The fork's
+      # hydra-build.yml default is already false; keep this override explicit.
+      build_llama_server: false
       arch_sm86_sm120: ${{ inputs.gpu != 'p100' }}
       arch_sm60: ${{ inputs.gpu == 'all' || inputs.gpu == 'p100' }}
       runner_target: local
@@ -182,11 +187,13 @@ jobs:
           if [ "${{ inputs.build-from-fork }}" = "true" ]; then
             RTX="${{ needs.build-llama.outputs.rtx-image }}"
             P100="${{ needs.build-llama.outputs.p100-image }}"
-            # The fork's resolve-outputs (hydra-build.yml, #90) still prefers
-            # llama-server for sm60. P100 now runs llama-engine (issue #577),
-            # so remap to the -llama-engine- twin — the fork always builds
-            # both per arch. Long-term fix is reverting #90 in the fork so
-            # p100-image is natively the engine image.
+            # The fork's resolve-outputs (hydra-build.yml, #90) prefers
+            # llama-server for sm60, but with build_llama_server=false (this
+            # workflow only consumes llama-engine — #632) no llama-server
+            # image is built, so the sm60 fallback yields the
+            # -llama-engine- twin directly (P100 runs llama-engine, #577).
+            # The remap below is a defensive no-op, kept in case the input
+            # is ever flipped back to true.
             P100="${P100/-llama-server-/-llama-engine-}"
           elif [ "${{ inputs.image-tag }}" != "current" ]; then
             RTX="ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-${{ inputs.image-tag }}"
@@ -315,13 +322,40 @@ jobs:
 
           RTX_IMG="${{ steps.images.outputs.rtx }}"
           P100_IMG="${{ steps.images.outputs.p100 }}"
-          if [ -n "$RTX_IMG" ]; then
-            pin_image "$RTX_IMG" infra/hydra-head/config/node-rtx.yaml
-            pin_image "$RTX_IMG" infra/hydra-head/config/node-rtx3060.yaml
-          fi
-          if [ -n "$P100_IMG" ]; then
-            pin_image "$P100_IMG" infra/hydra-head/config/node-p100.yaml
-          fi
+
+          # Pin EVERY node config with a llama-server: engine block —
+          # discover infra/hydra-head/config/node-*.yaml dynamically so
+          # new configs (node-p100-mini, node-rtx-27b-combined-empty, …)
+          # are pinned without editing this workflow. The image is chosen
+          # from the arch marker in the config's source ref: sm60 → P100,
+          # sm86-sm120 → RTX. Configs without an engine block, or with an
+          # unrecognized ref, are skipped with a log line.
+          for config in infra/hydra-head/config/node-*.yaml; do
+            src=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config" | head -n1)
+            if [ -z "$src" ]; then
+              echo "Skipping $config: no llama-server: source line (no engine block)"
+              continue
+            fi
+            case "$src" in
+              *sm60*)
+                if [ -n "$P100_IMG" ]; then
+                  pin_image "$P100_IMG" "$config"
+                else
+                  echo "Skipping $config: sm60 (P100) source but P100_IMG empty (image-tag=current)"
+                fi
+                ;;
+              *sm86-sm120*)
+                if [ -n "$RTX_IMG" ]; then
+                  pin_image "$RTX_IMG" "$config"
+                else
+                  echo "Skipping $config: sm86-sm120 (RTX) source but RTX_IMG empty (image-tag=current)"
+                fi
+                ;;
+              *)
+                echo "Skipping $config: unrecognized source ref '$src'"
+                ;;
+            esac
+          done
 
       - name: Commit pinned images (PR)
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''

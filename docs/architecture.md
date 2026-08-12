@@ -90,6 +90,43 @@ Flow for a new session in `concurrency` mode:
 
 The `X-Hydra-Prefill-Node` and `X-Hydra-Node` response headers name the two GPUs used.
 
+### P100 cold-expert page-fault fix (epic #470 — `no-mmap`)
+
+`infra/hydra-head/config/node-p100.yaml` sets `no-mmap: true`. The P100
+(Qwopus3.6-35B-Balanced, `n-cpu-moe: 26`) previously mmap'd the GGUF and faulted
+the 26 CPU-resident MoE expert weights in lazily on first touch. After a cold
+engine start, the **first** cross-node KV restore + decode prefill paid a one-shot
+page-fault tax on the slow virtio disk (instrumented 2026-08-12: `majflt`
+12952→20398, `VmRSS` +4.15 GB, `Mapped` 3.77→7.73 GB; turn-3 decode prefill
+15.0 s / total 29.6 s cold vs 4.1 s / 6.2 s warm in the same process). `no-mmap`
+reads all CPU expert weights eagerly during model load — inside the existing
+235-300 s load window (readiness budget 480 s) — so decode prefills never
+page-fault, warm or cold. RAM is fine: VM has 16 GB total, the CPU-resident
+expert set is ~8 GB (measured), 27 GB swap as backstop.
+
+How to verify (live rig, after a cold p100 head restart):
+
+```bash
+# 1. Engine arg surface — /proc cmdline should contain --no-mmap
+ssh hydra-p100 "tr '\0' ' ' < /proc/\$(pgrep -f llama-engine)/cmdline | grep -o -- '--no-mmap'"
+
+# 2. majflt probe — major-fault counter on the llama-engine process
+ssh hydra-p100 "grep -E 'VmRSS|Mapped|majflt' /proc/\$(pgrep -f llama-engine)/status"
+#    (before) majflt baseline after load, (after) run a P/D turn; delta should be ~0,
+#    vs +7446 major faults pre-fix
+
+# 3. Timing probe — first cross-node continuation prefill after cold start
+#    (P/D smoke: prefill on RTX → KV restore → decode on p100), e.g. the
+#    PdMixQuantMultiTurn live-rig smoke (tests/LiveRig, #470): the turn-3
+#    decode prefill should be <8 s (was 15.0 s cold)
+```
+
+Rollback: remove the `no-mmap: true` line from `node-p100.yaml` and redeploy
+(`bash scripts/deploy-hydra-head.sh p100`) — the mmap behavior and its cold-tax
+return.
+
+---
+
 **Engine-mode decode path (post-#273):** In engine mode (`HYDRA_LLAMA_ENGINE=true`),
 the control-RPC plane (opcodes 0x40–0x45) is used **only for prefill and KV state
 transfer** (`EnginePrefill` 0x42 → KV blob inline, `StateGet` 0x30, `StatePut` 0x31).
