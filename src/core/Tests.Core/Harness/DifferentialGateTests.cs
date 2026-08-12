@@ -46,6 +46,10 @@ public sealed class DifferentialGateTests
         // COMBINED multi-engine (feature follow-up): byte-identical — head slot +
         // peer exclusive, hydra_config prefill, skip SaveKv, direct-Put BgSave.
         "combined",
+        // Cross-node warm fallback (feature follow-up): byte-identical — a warm
+        // turn whose affinity node's only slot is warm-held falls back to an
+        // alternate worker and restores the KV from Store (Get + StatePut).
+        "cross_node_fallback",
     };
 
     private readonly ITestOutputHelper _output;
