@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -60,6 +61,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// flight longer than the production 5s bound when exercising coalescing.
 	/// </summary>
 	internal TimeSpan LivenessProbeTimeout { get; set; } = TimeSpan.FromSeconds(5);
+	/// <summary>
+	/// #635 fix 2: override for the prefill RPC retry backoff. Tests use
+	/// near-zero so crash-retry loops fail fast; production defaults to
+	/// <see cref="PrefillRetryBackoff"/>. Signature: (retryCount, engineRestarting)
+	/// → delay before the next retry attempt.
+	/// </summary>
+	internal Func<int, bool, TimeSpan>? RetryBackoffOverride { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
@@ -188,6 +196,42 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					"request_overrides_applied Sid={Sid} Temp={Temp} TopP={TopP} TopK={TopK} NPredict={NP} Seed={Seed}",
 					sessionId, overrides.Temperature, overrides.TopP, overrides.TopK,
 					overrides.NPredict, overrides.Seed);
+			}
+		}
+
+		// #470 Fix 1: model-agnostic sessions (no usable `model` field) must be
+		// pinned to the configured auto-routing default model (models.json
+		// auto_routing.default_model, e.g. "moe-35b-solo") instead of falling
+		// through to legacy routing. Legacy routing prefills with whatever
+		// model is currently RESIDENT on the picked worker — the PREFILL body
+		// carries no model, so the engine serves its resident model (e.g. a
+		// leftover dense-27b COMBINED session → the 27B-Coder-MTP GGUF instead
+		// of the default MoE). Pin only when the session has no conflicting
+		// binding: a session already bound to a DIFFERENT model (established
+		// by an earlier explicit request) must keep it — re-routing it
+		// mid-conversation would trip the merged-decode Gate A cross-model
+		// guard and abort the turn.
+		var hasUsableRequestModel = false;
+		if (request.TryGetValue("model", out var requestModelRaw))
+		{
+			hasUsableRequestModel = requestModelRaw is string ms
+				? !string.IsNullOrWhiteSpace(ms)
+				: requestModelRaw is System.Text.Json.JsonElement mje
+					&& mje.ValueKind == System.Text.Json.JsonValueKind.String
+					&& !string.IsNullOrWhiteSpace(mje.GetString());
+		}
+		if (!hasUsableRequestModel
+			&& ModelConfigLoader.InstanceOrNull?.GetAutoRoutingPolicy()
+				is { Enabled: true } autoPolicy
+			&& !string.IsNullOrWhiteSpace(autoPolicy.DefaultModel)
+			&& ModelRegistry.RegisteredAliases.Contains(autoPolicy.DefaultModel))
+		{
+			var boundModel = _ledger.Lookup(sessionId)?.BoundModel;
+			if (string.IsNullOrEmpty(boundModel) || boundModel == autoPolicy.DefaultModel)
+			{
+				item.Request["model"] = autoPolicy.DefaultModel;
+				_log.Information("model_agnostic_pinned_to_default Sid={Sid} Model={Model}",
+					sessionId, autoPolicy.DefaultModel);
 			}
 		}
 
@@ -484,6 +528,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			QueueItem[] snapshot;
 			lock (_queueLock) { snapshot = _requestQueue.ToArray(); }
 
+			// #635 fix 1/3: run the #592 stale-unhealthy liveness probe once per
+			// wake, BEFORE the admission gate, so a queued/retry-pending item is
+			// never excluded by a stale unhealthy flag that a direct probe would
+			// clear (a dead-engine flag that the engine has since recovered from).
+			// The probe is a no-op when nothing is stale-unhealthy (zero extra
+			// latency in the common case), coalesces concurrent cold routes, and
+			// is bounded by LivenessProbeTimeout. On success it calls MarkHealthy,
+			// which fires HealthyChanged → re-signals this loop, so a just-
+			// recovered worker is re-checked within this same wake.
+			if (snapshot.Length > 0)
+				await ProbeStaleUnhealthyWorkersAsync();
+
 			foreach (var qi in snapshot)
 			{
 				if (ct.IsCancellationRequested) break;
@@ -508,12 +564,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// to routing that can only fail (the old 30-retry spin).
 				if (!CanServeRequest(qi)) continue;
 
+				// #635 fix 3: acquire the pipeline-concurrency slot BEFORE
+				// removing the item from the queue. Previously the item was
+				// removed first and then blocked on sem.WaitAsync — when the
+				// semaphore was exhausted (Workers.Count pipelines in flight)
+				// the item was out of the queue but its pipeline had not
+				// started, and a retry re-enqueue of the same WorkItem (a new
+				// QueueItem) could leave the removed entry effectively
+				// stranded (the evaluator parked on the semaphore, the item
+				// invisible to every later wake's snapshot). Keeping the item
+				// in the queue until its pipeline actually starts means a
+				// retry/requeued item is ALWAYS re-snapshotted and re-checked
+				// on the next signal (health flip → HealthyChanged, slot
+				// release → SlotReleased, both subscribed below).
+				await sem.WaitAsync(ct);
 				lock (_queueLock) { _requestQueue.Remove(qi); }
 
 				_log.Information("evaluator_dispatch Sid={Sid} Type={Type} Priority={P}",
 					qi.WorkItem.SessionId, qi.Type, qi.Priority);
 
-				await sem.WaitAsync(ct);
 				var scope = _serviceProvider.CreateScope();
 				_ = Task.Run(async () =>
 				{
@@ -1733,6 +1802,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.SessionId, w.Name);
 	}
 
+	/// <summary>
+	/// Release every lease a prefill phase may hold before a failure/retry
+	/// re-routes the item. PrefillLease covers the cold_concurrency / PD-split
+	/// routes; the cold_atomic route holds the prefill slot via item.DecodeLease
+	/// (PrefillLease is deliberately null there — ColdRouteAsync). #635 fix 3:
+	/// a prefill failure MUST release BOTH, or the tracker keeps the slot busy
+	/// and a re-enqueued/retried item is gated on IsFree forever (observed:
+	/// pipeline_retry Retries=2 → queued while the engine was free).
+	/// </summary>
+	private async Task ReleasePrefillSlotAsync(WorkItem item)
+	{
+		if (item.PrefillLease != null)
+		{
+			await item.PrefillLease.DisposeAsync();
+			item.PrefillLease = null;
+		}
+		if (item.DecodeLease != null)
+		{
+			await item.DecodeLease.DisposeAsync();
+			item.DecodeLease = null;
+		}
+	}
+
 	// #592 router fallback liveness probe: a worker that is free + routable but
 	// flagged unhealthy (stale flag from the poll cycle) gets ONE bounded direct
 	// probe (GET /health, ≤5s) before being excluded. On success the flag is
@@ -1895,11 +1987,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// Terminal engine error — not retryable. Fail the request
 					// immediately so the routing layer can retry on another worker
 					// or surface the error to the client.
-					if (item.PrefillLease != null)
-					{
-						await item.PrefillLease.DisposeAsync();
-						item.PrefillLease = null;
-					}
+					await ReleasePrefillSlotAsync(item);
 					item.Error = new InvalidOperationException(
 						$"EnginePrefill returned terminal error on {w.Name} (slot={slotId})");
 					// #587: expose WHICH non-Ok status + engine meta so bursts
@@ -1916,11 +2004,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// re-enqueue. The evaluator loop (woken by SignalEvaluator()
 					// when any GPU releases a slot) will re-dispatch this item
 					// when a slot becomes available.
-					if (item.PrefillLease != null)
-					{
-						await item.PrefillLease.DisposeAsync();
-						item.PrefillLease = null;
-					}
+					await ReleasePrefillSlotAsync(item);
 					item.RetryCount++;
 
 					if (item.RetryCount >= WorkItem.MaxRetries)
@@ -2156,32 +2240,39 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			catch (OperationCanceledException) { throw; }
 			catch (Exception ex)
 			{
+				// #635 fix 2: a connection-refused on the worker's RPC port means
+				// the ENGINE process is down/restarting (the RpcClient already
+				// reconnected internally 3× before surfacing). Use the longer
+				// backoff so the retry budget covers the restart window.
+				var engineRestarting = IsEngineConnectionRefused(ex);
 				if (item.RetryCount >= WorkItem.MaxRetries)
 				{
 					_log.Error(ex,
 						"prefill_rpc_error_exhausted Sid={Sid} Worker={W} Slot={Slot} Retries={R}",
 						item.SessionId, w.Name, item.PrefillSlot, item.RetryCount);
-					if (item.PrefillLease != null)
-					{
-						await item.PrefillLease.DisposeAsync();
-						item.PrefillLease = null;
-					}
+					await ReleasePrefillSlotAsync(item);
 					item.Error = ex;
 					return WorkItemState.Failed;
 				}
 				_log.Warning(ex,
 					"prefill_rpc_error Sid={Sid} Worker={W} Slot={Slot} Retry={R}/{Max} — enqueuing retry",
 					item.SessionId, w.Name, item.PrefillSlot, item.RetryCount, WorkItem.MaxRetries);
-				if (item.PrefillLease != null)
-				{
-					await item.PrefillLease.DisposeAsync();
-					item.PrefillLease = null;
-				}
+				await ReleasePrefillSlotAsync(item);
 				item.PrefillWorker = null;
 				item.PrefillSlot = null;
 				item.LastBusyProgress = 0;
 				item.State = WorkItemState.None;
 				item.RetryCount++;
+				// #635 fix 2: back off before re-enqueueing — 3 retries at
+				// 500ms/2s/8s cover ~10.5s (or ~21s when the engine is
+				// restarting) instead of burning the whole budget in ~4s.
+				// Deliberately awaited on the pipeline task (holding the
+				// evaluator semaphore slot): the item is retrying the SAME
+				// worker, and this is what makes the wait-for-restart real.
+				var backoff = RetryBackoffOverride?.Invoke(item.RetryCount, engineRestarting)
+					?? PrefillRetryBackoff(item.RetryCount, engineRestarting);
+				if (backoff > TimeSpan.Zero)
+					await Task.Delay(backoff, ct);
 				return WorkItemState.Retry;
 			}
 		}
@@ -2333,9 +2424,54 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// aliases (model templates are keyed by routing identities only), so the
 	/// KV alias passes through unchanged when the engine already reported the
 	/// GGUF alias.
+	///
+	/// #470 Fix 2: <paramref name="residentMetaAlias"/> — the decode slot's
+	/// STATE_META <c>model_alias</c> (what the engine is actually running,
+	/// the same source that builds the frame's model_metadata) — takes TOP
+	/// precedence. Deriving the decode <c>model</c> from the resident alias
+	/// guarantees the frame's <c>model</c> and <c>model_metadata</c> always
+	/// describe the same model; sending an alias that contradicts the
+	/// metadata (e.g. a KV alias the node no longer hosts) makes the engine
+	/// swap on the alias while Gate A validates against the metadata —
+	/// a self-contradictory frame. When META is unavailable (query failed or
+	/// no alias reported) the historic chain applies unchanged.
+	///
+	/// #631: for a MIGRATED continuation (<see cref="WorkItem.RouteType"/> ==
+	/// "migration" — the session is non-resident on the decode worker), the
+	/// historic chain's <c>KvModelAlias</c> describes the model that built the
+	/// KV on the SOURCE node, which may not map through the TARGET's preset
+	/// table to the target's RESIDENT path (cross-quant: Mini blob →
+	/// Balanced resident). Prefer aliases that describe the TARGET's resident
+	/// model — <paramref name="healthResidentAlias"/> (the worker's
+	/// engine-reported resident alias stamped on the health monitor from
+	/// STATE_META/prefill, same source family as residentMetaAlias) and the
+	/// request routing identity's DECODE quant — before the source-model KV
+	/// alias, so Gate A's #589 fallback sees an alias that maps to the
+	/// target's resident path. Non-migrated sessions keep the historic chain
+	/// exactly as before.
 	/// </summary>
-	internal static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w)
+	internal static string? ResolveMergedDecodeModelAlias(WorkItem item, WorkerConfig w,
+		string? residentMetaAlias = null, string? healthResidentAlias = null)
 	{
+		if (!string.IsNullOrEmpty(residentMetaAlias))
+			return TranslateModelAlias(residentMetaAlias, decodeRole: true);
+
+		// #631: migrated continuations — the KV alias is the SOURCE node's
+		// model, so it must not preempt target-resident-derived aliases.
+		if (item.RouteType == "migration")
+		{
+			if (!string.IsNullOrEmpty(healthResidentAlias))
+				return TranslateModelAlias(healthResidentAlias, decodeRole: true);
+			if (!string.IsNullOrEmpty(w.ModelAlias))
+				return TranslateModelAlias(w.ModelAlias, decodeRole: true);
+			var migReqModel = item.Request.TryGetValue("model", out var mm) && mm is string mms ? mms : null;
+			if (!string.IsNullOrEmpty(migReqModel))
+				return TranslateModelAlias(migReqModel, decodeRole: true);
+			// Fall through to the historic chain — KvModelAlias remains the
+			// last resort (same-model migration: source == target resident,
+			// so the KV alias DOES map to the resident path).
+		}
+
 		if (!string.IsNullOrEmpty(w.ModelAlias))
 			return TranslateModelAlias(w.ModelAlias, decodeRole: true);
 		if (!string.IsNullOrEmpty(item.KvModelAlias))
@@ -2718,6 +2854,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			LastDispatchedNode = dw.Name;
 		}
 
+		// #631: a MIGRATED session's PrefillWorker is derived from the LEDGER
+		// (the stale source-node entry), NOT from a prefill that ran this turn.
+		// Even when the decode worker lands back on the same node (primary pick
+		// busy → PickBestDecodeWorker fallback to item.PrefillWorker), the slot
+		// does NOT hold this session's KV — the migrate StatePut wrote it to the
+		// target slot and MarkEvicted freed it; the continuation must re-restore
+		// from Store. Skipping here would send the merged DECODE 0x43 with EMPTY
+		// kv_metadata (fresh WorkItem, Kv* never populated) and no KV blob →
+		// Gate A rejects (Tok=False Name=False) → 503 "KV not restored". Fall
+		// through to ModelLoadDecode → RestoreKvAsync so the blob-manifest
+		// repopulates the KV identity and the merged frame carries both.
+		if (item.PrefillWorker?.Name == dw.Name && item.RouteType == "migration")
+		{
+			_log.Information("same_node_migrated_restore_required Sid={Sid} Node={Node} Slot={Slot} — migrated continuation, KV restore required",
+				item.SessionId, dw.Name, slot);
+		}
 		// Same-node skip: when decode == prefill and no model switch,
 		// the KV state is already on the node — no restore needed.
 		//
@@ -2729,6 +2881,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// we must NOT skip — fall through to restore so the cross-model
 		// guard in RestoreKvAsync can catch it.
 		if (item.PrefillWorker?.Name == dw.Name
+			&& item.RouteType != "migration"
 			&& (!_cfg.MixPrecisionEnabled
 				|| Router.DecodeModel(dw) == null
 				|| Router.DecodeModel(dw) == Router.PrefillModel(item.PrefillWorker!)))
@@ -3247,10 +3400,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// sides trace back to item.Kv* or HealthMonitor (which was stamped
 		// from item.Kv* during PrefillAsync).
 		var modelIdentity = ModelIdentity.Empty;
+		SlotMeta? decodeSlotMeta = null;
 		try
 		{
 			using var metaCts = new CancellationTokenSource(DecodeMetaQueryTimeout);
-			var decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
+			decodeSlotMeta = await GetLlamaClient(w).GetStateMetaAsync(
 				item.DecodeSlot ?? item.LastIdSlot ?? 0, metaCts.Token);
 			if (!string.IsNullOrEmpty(decodeSlotMeta.ModelName))
 			{
@@ -3286,9 +3440,54 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// (e.g. "balanced"), not routing aliases (e.g. "moe-35b-pd").
 		// ResolveMergedDecodeModelAlias translates the routing identity to
 		// the correct GGUF-file alias for the engine's model-swap lookup.
-		var modelAlias = ResolveMergedDecodeModelAlias(item, w);
+		// Fix 2 (#470): the META-returned resident alias (the model the
+		// decode node is ACTUALLY running — the same source that built
+		// model_metadata above) takes precedence so the frame's `model`
+		// and `model_metadata` always describe the same model — the engine
+		// never receives a self-contradictory alias-vs-identity frame.
+		// #631: for MIGRATED continuations the health-stamped resident alias
+		// (CurrentModel — the worker's engine-reported resident, same source
+		// family as STATE_META) backs up the META alias, so a cross-quant
+		// migration still sends an alias that maps to the target's resident
+		// path even when the STATE_META query fails.
+		var modelAlias = ResolveMergedDecodeModelAlias(item, w, decodeSlotMeta?.ModelAlias,
+			healthResidentAlias: _health.GetNodeInfo(w.Name)?.CurrentModel);
 
 		return (messagesJson, nPredict, modelIdentity, modelAlias);
+	}
+
+	/// <summary>
+	/// #470 Fix 3: re-assert the session's decode lease after a
+	/// <c>merged_decode_transport_fault</c>. The HTTP-proxy fallback streams
+	/// (or buffers) the reply, but the session's slot binding must survive so
+	/// the slot is returned to the pool when the request completes — a lost
+	/// lease shows up as <c>stream_done_no_lease</c> in NotifyStreamComplete
+	/// and strands the slot, starving the next turn of this session (empty /
+	/// 503 replies). No-op when the lease is still held; otherwise acquires a
+	/// fresh Long lease on the decode worker and re-pins <c>id_slot</c> so the
+	/// fallback request and the eventual release use the same slot.
+	/// </summary>
+	private async Task ReassertDecodeLeaseAsync(WorkItem item, WorkerConfig w)
+	{
+		if (item.DecodeLease != null)
+			return;
+
+		var priorSlot = item.DecodeSlot ?? item.LastIdSlot ?? 0;
+		if (_tracker.TryAcquireSlot(w.Name, out var reSlot, "decode-fault"))
+		{
+			item.DecodeSlot = reSlot;
+			item.DecodeLease = new SlotLease(w.Name, reSlot, item.SessionId,
+				LeaseLifetime.Long, _tracker);
+			item.Request["id_slot"] = reSlot;
+			_log.Warning("merged_decode_fault_lease_reasserted Sid={Sid} Worker={W} PriorSlot={P} Slot={Slot}",
+				item.SessionId, w.Name, priorSlot, reSlot);
+			SignalEvaluator();
+		}
+		else
+		{
+			_log.Warning("merged_decode_fault_lease_reassert_failed Sid={Sid} Worker={W} — no free slot, HTTP fallback proceeds without a lease",
+				item.SessionId, w.Name);
+		}
 	}
 
 	// ── Gap 4: n_past tracking from decode ──
@@ -3474,10 +3673,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						IAsyncEnumerable<byte[]> mergedStream = _proxy.PollDecodeStreamAsync(
 							w.LlamaUrl, mergedResp.DecodeRequestId!.Value, item.TraceId, cts.Token, item);
 
-						// #616: the merged stream arms the empty-content probe — if it
-						// ends with tokens>0 but no visible content (engine drops
-						// reasoning_content on merged DECODE, fix deferred), the stream
-						// is re-issued ONCE via the HTTP proxy with the CLEAN client body.
+						// #616/#642: the merged stream arms the empty-content probe —
+						// if the engine generated but NEITHER content NOR
+						// reasoning_content was seen (both are delivered in the merged
+						// DONE delta, engine 097d13e; a reasoning-only reply must NOT
+						// trigger the fallback), the stream is re-issued ONCE via the
+						// HTTP proxy with the CLEAN client body.
 						item.DecodeChunks = TrackStreamNPast(mergedStream, item,
 							mergedPath: true, fallbackRequestBody: cleanRequestBody!,
 							fallbackNodeUrl: w.LlamaUrl, fallbackCt: cts.Token);
@@ -3493,6 +3694,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
+					// #470 Fix 3: a transport fault must never orphan the
+					// session's decode slot. If the lease was lost before the
+					// fallback streams, re-assert a Long lease on the decode
+					// node so the slot is released when the stream completes
+					// (NotifyStreamComplete → _warmLeases) instead of being
+					// stranded — a stranded slot 503/empties the NEXT turn
+					// (the stream_done_no_lease symptom class).
+					await ReassertDecodeLeaseAsync(item, w);
 				}
 			}
 
@@ -3613,13 +3822,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						if (item.MultiMode != MultiEngineMode.None)
 							mergedResult["hydra"] = MultiEngineStatus(item);
 
-						// #616: merged DECODE drops reasoning_content (engine bug, fix
-						// deferred) — reasoning models return n_decoded>0 but an empty
-						// final content. Re-issue ONCE via the HTTP proxy with the
-						// CLEAN client body (snapshot before id_slot / hydra_config
-						// injection): /v1/chat/completions preserves reasoning_content
-						// (server-chat.cpp emits message when only reasoning_content
-						// exists). Bounded to a single attempt — the HTTP path never
+						// #616/#642: a merged result with tokens but NEITHER content
+						// NOR reasoning_content (both now delivered in the DONE result,
+						// engine 097d13e; a reasoning-only reply must NOT be re-issued)
+						// is re-issued ONCE via the HTTP proxy with the CLEAN client
+						// body (snapshot before id_slot / hydra_config injection).
+						// Bounded to a single attempt — the HTTP path never
 						// re-enters merged decode, so there is no loop.
 						if (MergedDecodeResultHasEmptyContent(mergedResult, out var emptyTokens))
 						{
@@ -3672,6 +3880,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
+					// #470 Fix 3: same lease re-assertion as the streaming
+					// path — the non-streaming reply is assembled from the
+					// HTTP-proxy result below regardless of lease state, but
+					// the slot must still be held (and later released via the
+					// warm-lease path) so the next turn is not starved.
+					await ReassertDecodeLeaseAsync(item, w);
 				}
 			}
 
@@ -3776,33 +3990,31 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// sub-second) bg_save, but the response is already sent to the client so
 		// the user sees no extra latency. Only the next queued item is delayed.
 		var w = item.DecodeWorker!;
-		var storeKey = $"{item.SessionId}.kv";
 
 		try
 		{
-			if (_cfg.UseLlamaEngine && item.KvBlob != null)
+			// #635 fix 4: ALWAYS pull the current slot state via StateGet. The
+			// old engine-mode shortcut wrote item.KvBlob, which on merged-decode
+			// routes is the PRE-decode restore blob (RestoreKvAsync sets it) —
+			// persisting that regressed the stored KV to the pre-decode state.
+			// StateGet returns the true post-decode state, and PersistKvToStoreAsync
+			// keeps the chunk manifest in sync with it.
+			var slotId = item.LastIdSlot ?? item.DecodeSlot ?? 0;
+			var llamaRpc = GetStateRpcClient(w);
+			var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+				slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
+
+			if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
 			{
-				// Engine mode: KV blob already in memory from EngineDecode
-				await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-					storeKey, item.KvBlob, item.TraceId, CancellationToken.None);
-				item.KvBlob = null;
+				await PersistKvToStoreAsync(item.SessionId, stateResp.Payload, item, item.TraceId, CancellationToken.None);
 				_ledger.MarkStoreState(item.SessionId);
-				_log.Information("bg_saved Sid={Sid} (engine, KvBlob)", item.SessionId);
+				_log.Information("bg_saved Sid={Sid} Slot={Slot} bytes={Bytes} (engine state, post-decode)",
+					item.SessionId, slotId, stateResp.Payload.Length);
 			}
 			else
 			{
-				var slotId = item.LastIdSlot ?? 0;
-				var llamaRpc = GetStateRpcClient(w);
-				var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-					slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
-
-				if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
-				{
-					await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-						storeKey, stateResp.Payload, item.TraceId, CancellationToken.None);
-					_ledger.MarkStoreState(item.SessionId);
-					_log.Information("bg_saved Sid={Sid}", item.SessionId);
-				}
+				_log.Warning("bg_save_busy Sid={Sid} Slot={Slot} Status={Status}",
+					item.SessionId, slotId, stateResp.Status);
 			}
 		}
 		catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
@@ -3967,6 +4179,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
 					sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
+				// #470 Fix 3: the lease must not be lost. When the warm-lease
+				// stash is empty for this session, the item's own DecodeLease
+				// may still be held (e.g. the pipeline finalized outside the
+				// warm-lease stash path after a merged_decode_transport_fault).
+				// Release it here so the slot returns to the pool instead of
+				// being stranded — a stranded slot 503/empties the NEXT turn
+				// of the same session. The streamed reply is unaffected: it is
+				// assembled from DecodeChunks and does not depend on the lease.
+				foreach (var kv in _pendingTimelines)
+				{
+					if (kv.Value.SessionId != sessionId || kv.Value.DecodeLease == null)
+						continue;
+					var orphanedLease = kv.Value.DecodeLease;
+					kv.Value.DecodeLease = null;
+					if (releaseNode is null) releaseNode = orphanedLease.WorkerName;
+					try { await orphanedLease.DisposeAsync(); }
+					catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
+					SignalEvaluator();
+					break;
+				}
 			}
 
 			// Release the peer lease (two-engine) once the stream is fully drained.
@@ -4033,8 +4265,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var saveStart = System.Diagnostics.Stopwatch.StartNew();
 		try
 		{
-			await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put,
-				$"{sessionId}.kv", stateBlob, traceId, CancellationToken.None);
+			// #635 fix 4: persist the post-decode state AND (in chunk mode) keep
+			// the chunk manifest in sync so a migration continuation's restore
+			// reads the latest blob instead of the stale pre-decode manifest.
+			await PersistKvToStoreAsync(sessionId, stateBlob, timelineItem, traceId, CancellationToken.None);
 			_ledger.MarkStoreState(sessionId);
 			var storeMs = saveStart.ElapsedMilliseconds;
 			_log.Information("bg_saved Sid={Sid} bytes={Bytes} rpc_ms={RpcMs} store_ms={StoreMs} total_ms={Total}",
@@ -4295,6 +4529,47 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		=> CalculateBusyTimeouts(estimatedTokens, modelLoadTimeS: 0);
 
 	/// <summary>
+	/// #635 fix 2: delay before the next prefill RPC retry. The old instant
+	/// ~100ms retries burned the whole budget in ~4s — sized for transient
+	/// errors, not a crashed engine, and with no wait-for-restart. The backoff
+	/// table (500ms/2s/8s) spreads 3 retries over ~10.5s; when the worker's RPC
+	/// port refuses connections (<see cref="engineRestarting"/>) the longer
+	/// schedule (1s/4s/16s, ~21s) gives the engine time to come back before the
+	/// budget expires. <paramref name="retryCount"/> is the number of retries
+	/// already attempted (1-based after the first failure).
+	/// </summary>
+	internal static TimeSpan PrefillRetryBackoff(int retryCount, bool engineRestarting)
+	{
+		var normal = new[]
+		{
+			TimeSpan.FromMilliseconds(500),
+			TimeSpan.FromSeconds(2),
+			TimeSpan.FromSeconds(8),
+		};
+		var restarting = new[]
+		{
+			TimeSpan.FromSeconds(1),
+			TimeSpan.FromSeconds(4),
+			TimeSpan.FromSeconds(16),
+		};
+		var table = engineRestarting ? restarting : normal;
+		return table[Math.Clamp(retryCount - 1, 0, table.Length - 1)];
+	}
+
+	/// <summary>
+	/// #635 fix 2: true when the exception chain contains a connection-refused
+	/// socket error — the worker's RPC port is not accepting connections, i.e.
+	/// the engine process is down or restarting (not merely busy).
+	/// </summary>
+	private static bool IsEngineConnectionRefused(Exception ex)
+	{
+		for (var cur = ex; cur != null; cur = cur.InnerException)
+			if (cur is SocketException { SocketErrorCode: SocketError.ConnectionRefused })
+				return true;
+		return false;
+	}
+
+	/// <summary>
 	/// Calculate workload-aware BUSY timeouts with optional model-reload headroom.
 	/// When <paramref name="modelLoadTimeS"/> is positive, the documented load
 	/// time is added (with a safety multiplier) to account for T3 rebuilds that
@@ -4388,6 +4663,47 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	// ── Core KV save helpers (shared by SaveKvAsync + eviction sites) ──
+
+	/// <summary>
+	/// #635 fix 4: persist a KV blob to the Store from a background save (the
+	/// pipeline's BgSaveAsync and the streaming path's WriteStateToStoreAsync).
+	///
+	/// Root cause: the pre-decode save (SaveKvAsync) writes the chunked
+	/// manifest, but the post-decode bg_save wrote only a plain blob
+	/// (OpCode.Put) — the chunk manifest kept referencing the STALE pre-decode
+	/// chunks, so a migration continuation's GetManifest restored the old blob
+	/// (observed: 501-token pre-decode blob → ~1300 tokens re-prefilled →
+	/// prompt_ms=5094 &gt; 5000 budget).
+	///
+	/// Fix: in chunk mode, ALSO write the chunks + an updated manifest whose
+	/// n_past/identity reflect the POST-decode state (ledger NPast is the
+	/// post-decode total, updated by TrackAfterCompletion/TrackAfterStream).
+	/// The plain Put is retained in BOTH modes: non-chunk storage IS the full
+	/// blob, and in chunk mode it backs MigrateSessionAsync's Store Get (which
+	/// has no chunk-aware read path).
+	/// </summary>
+	private async Task PersistKvToStoreAsync(string sessionId, byte[] blob, WorkItem? item, string traceId, CancellationToken ct)
+	{
+		var storeKey = $"{sessionId}.kv";
+		if (_cfg.EnableChunks)
+		{
+		// Post-decode n_past: the ledger is updated by the decode paths
+		// (TrackAfterCompletion/Stream) BEFORE the bg_save runs, so prefer
+		// it over item.NPastAfter (which can still hold the PRE-decode
+		// prefill count on merged-decode routes).
+		var ledgerNPast = _ledger.Lookup(sessionId)?.NPast ?? 0;
+		var nPast = ledgerNPast > 0 ? ledgerNPast : (item?.NPastAfter ?? 0);
+			var chunks = ChunkEngine.ChunkAndHash(blob);
+			var orderedHashes = chunks.Select(c => c.Hash).ToList();
+			var missing = await SyncMissingAsync(storeKey, orderedHashes, traceId, ct);
+			await PushMissingChunksAsync(storeKey, sessionId, missing, chunks, blob, traceId, ct);
+			await PutManifestAsync(storeKey, nPast, blob.Length, chunks, traceId, ct,
+				item?.KvModelAlias ?? "", item?.KvTokenizer ?? "", item?.KvModelName ?? "",
+				item?.KvModelQuant ?? "", item?.KvModelCapabilities ?? 0, item?.KvModelPath ?? "");
+		}
+		// Plain Put in both modes — see XML doc above.
+		await StoreClient.RequestAsync(Hydra.Shared.OpCode.Put, storeKey, blob, traceId, ct);
+	}
 
 	private async Task<byte[]?> SaveKvStateCoreAsync(
 		WorkerConfig worker, int slotId, string sessionId, int nPast, string traceId, CancellationToken ct)
@@ -5031,10 +5347,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			Console.Error.WriteLine($"track_stream_tokens Sid={item.SessionId} Trace={item.TraceId} TokensIn={item.TokensIn} TokensOut={item.TokensOut} LastUtf8={lastUtf8?[..Math.Min(200, lastUtf8?.Length ?? 0)]}");
 		}
 
-		// #616 merged path: the stream ended. If the engine generated but no
-		// visible content (engine drops reasoning_content on merged DECODE,
-		// fix deferred), re-issue ONCE via the HTTP proxy (non-stream) and
-		// emit the fallback's content as the final SSE chunk, then [DONE].
+		// #616/#642 merged path: the stream ended. If the engine generated but
+		// neither content NOR reasoning_content was seen (the engine 097d13e
+		// delivers both in the merged DONE delta — a reasoning-only reply must
+		// not pay a double run), re-issue ONCE via the HTTP proxy (non-stream)
+		// and emit the fallback's content as the final SSE chunk, then [DONE].
 		// Bounded to a single attempt — no loops.
 		if (mergedPath)
 		{
@@ -5152,16 +5469,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	/// <summary>
-	/// #616: merged-decode responses drop reasoning_content (engine bug, fix
-	/// deferred) — a reasoning model returns n_decoded&gt;0 with an empty final
-	/// content. True when the result produced tokens but the visible
-	/// choices[0].message.content is blank.
+	/// #616/#642: true when the merged-decode result produced tokens but BOTH
+	/// choices[0].message.content AND choices[0].message.reasoning_content are
+	/// blank — only then is the empty-content fallback re-issue needed. The
+	/// engine (097d13e) delivers reasoning_content in the merged result
+	/// (server-context.cpp DONE handler), so a reasoning-only reply (empty
+	/// content, non-empty reasoning_content) must NOT be re-issued — that
+	/// would run the completion a second time.
 	/// </summary>
 	internal static bool MergedDecodeResultHasEmptyContent(
 		Dictionary<string, object> result, out int tokensOut)
 	{
 		tokensOut = ExtractUsageInt(result, "completion_tokens");
-		return tokensOut > 0 && string.IsNullOrWhiteSpace(ExtractChoiceContent(result));
+		return tokensOut > 0
+			&& string.IsNullOrWhiteSpace(ExtractChoiceContent(result))
+			&& string.IsNullOrWhiteSpace(ExtractChoiceReasoningContent(result));
 	}
 
 	/// <summary>Read choices[0].message.content from an OpenAI-style completion
@@ -5179,6 +5501,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return "";
 	}
 
+	/// <summary>#642: read choices[0].message.reasoning_content from an
+	/// OpenAI-style completion dictionary ("" when absent). The engine
+	/// (097d13e) populates it in the merged DONE result.</summary>
+	private static string ExtractChoiceReasoningContent(Dictionary<string, object> result)
+	{
+		if (!result.TryGetValue("choices", out var c) || c is not JsonElement ce
+			|| ce.ValueKind != JsonValueKind.Array || ce.GetArrayLength() == 0)
+			return "";
+		var choice = ce[0];
+		if (choice.TryGetProperty("message", out var msg)
+			&& msg.TryGetProperty("reasoning_content", out var rc)
+			&& rc.ValueKind == JsonValueKind.String)
+			return rc.GetString() ?? "";
+		return "";
+	}
+
 	/// <summary>#616 QA: deep clone the client request body via a JSON
 	/// round-trip. The clone is a snapshot of the ORIGINAL request — immune to
 	/// later in-place mutation (id_slot / hydra_config / stream_options
@@ -5187,8 +5525,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private static Dictionary<string, object> DeepCloneRequestBody(Dictionary<string, object> request)
 		=> JsonSerializer.Deserialize<Dictionary<string, object>>(JsonSerializer.Serialize(request))!;
 
-	/// <summary>#616: true when an SSE data line carries a non-empty
-	/// choices[0].delta.content (visible text, not reasoning_content).</summary>
+	/// <summary>#616/#642: true when an SSE data line carries a non-empty
+	/// choices[0].delta.content OR choices[0].delta.reasoning_content — either
+	/// counts as content delivered, so a reasoning-only stream (content empty,
+	/// reasoning_content populated) does NOT trigger the empty-content fallback
+	/// re-issue. The engine (097d13e) delivers reasoning_content in the merged
+	/// DONE delta (server-context.cpp DONE handler).</summary>
 	private static bool HasNonEmptyContentDelta(string sseLine)
 	{
 		var trimmed = sseLine.Trim();
@@ -5201,22 +5543,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				|| choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0)
 				return false;
 			var choice = choices[0];
-			if (choice.TryGetProperty("delta", out var delta)
-				&& delta.TryGetProperty("content", out var content)
-				&& content.ValueKind == JsonValueKind.String)
-				return !string.IsNullOrWhiteSpace(content.GetString());
+			if (!choice.TryGetProperty("delta", out var delta))
+				return false;
+			if (delta.TryGetProperty("content", out var content)
+				&& content.ValueKind == JsonValueKind.String
+				&& !string.IsNullOrWhiteSpace(content.GetString()))
+				return true;
+			if (delta.TryGetProperty("reasoning_content", out var reasoning)
+				&& reasoning.ValueKind == JsonValueKind.String
+				&& !string.IsNullOrWhiteSpace(reasoning.GetString()))
+				return true;
 		}
 		catch { }
 		return false;
 	}
 
-	/// <summary>#616: build ONE SSE chat.completion.chunk from a buffered HTTP
-	/// proxy response so streaming clients receive the fallback's content
+	/// <summary>#616/#642: build ONE SSE chat.completion.chunk from a buffered
+	/// HTTP proxy response so streaming clients receive the fallback's content
 	/// (and usage) as the stream's final event. reasoning_content is carried
-	/// into the delta when present — the whole point of the fallback is that
-	/// the HTTP path preserves it while merged DECODE drops it. Mirrors
-	/// server-chat.cpp:453-464: the message is emitted when EITHER content or
-	/// reasoning_content is non-empty.</summary>
+	/// into the delta when present — when the fallback DOES fire (both fields
+	/// empty in the merged result), any reasoning content the HTTP proxy
+	/// returns must still reach the client. Mirrors server-chat.cpp:453-464:
+	/// the message is emitted when EITHER content or reasoning_content is
+	/// non-empty.</summary>
 	private static byte[] BuildFallbackSseChunk(Dictionary<string, object> fallback)
 	{
 		string content = "";

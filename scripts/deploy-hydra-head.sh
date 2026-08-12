@@ -412,6 +412,15 @@ deploy_rtx_only() {
     podman rm hydra-head-rtx 2>/dev/null || true
   fi
 
+  # Force a fresh container so the (idempotent) compose up actually applies
+  # the new engine pin. Mirrors deploy_rtx3060_only — a healthy container
+  # would otherwise make `compose up -d` no-op and silently skip the swap
+  # (observed in Deploy Heads run 31552059620).
+  if podman container exists hydra-system_head-rtx5060ti_1 2>/dev/null; then
+    podman stop hydra-system_head-rtx5060ti_1 2>/dev/null || true
+    podman rm hydra-system_head-rtx5060ti_1 2>/dev/null || true
+  fi
+
   reap_zombie_container hydra-system_head-rtx5060ti_1
 
   # Service-scoped — only touches head-rtx5060ti. `core` is already up

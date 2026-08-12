@@ -856,4 +856,133 @@ public sealed class MergedDecodeModelAliasTests
         Assert.Equal("qwen3.6-35B-balanced",
             WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
     }
+
+    // ── #470 Fix 2: the META-returned resident alias takes precedence ──
+
+    [Fact]
+    public void ResidentMetaAlias_TakesPrecedenceOverWorkerAndKvAlias()
+    {
+        // #470 Fix 2: the decode node's STATE_META model_alias describes what
+        // the engine is ACTUALLY running — the same source that builds the
+        // frame's model_metadata. It must win over the worker's static alias
+        // and the KV alias so model + model_metadata always agree; a
+        // self-contradictory frame would make the engine swap on the alias
+        // while Gate A validates against the metadata.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "rtx", ModelAlias = "moe-35b-solo" };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+
+        Assert.Equal("qwen3.6-35B-balanced",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker, "qwen3.6-35B-balanced"));
+    }
+
+    [Fact]
+    public void ResidentMetaAlias_TakesPrecedenceOverRequestRoutingIdentity()
+    {
+        // #470 Fix 2: request says moe-35b-pd (decode quant = balanced) but
+        // the node's resident model is mini — the frame must claim mini, the
+        // model the metadata actually describes.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = MakeItem("moe-35b-pd");
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker, "qwen3.6-35B-mini"));
+    }
+
+    [Fact]
+    public void EmptyResidentMetaAlias_FallsBackToHistoricChain()
+    {
+        // #470 Fix 2: META absent/empty (query failed or alias unknown) —
+        // the historic precedence chain applies unchanged (KV alias wins).
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker, ""));
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker, null));
+    }
+
+    // ── #631: migrated continuations — alias must describe the TARGET's ──
+    // ── resident model, not the SOURCE node's KV model ─────────────────
+
+    [Fact]
+    public void MigratedContinuation_HealthResidentAlias_WinsOverKvAlias()
+    {
+        // #631: a MIGRATED session's KvModelAlias is the SOURCE node's model
+        // (e.g. mini — the quant that built the KV on rtx). When the target
+        // worker (p100) reports its own resident alias (balanced), that is the
+        // alias which maps through the target's preset to its resident path —
+        // it must win so Gate A's #589 fallback fires on cross-quant restore.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+        item.RouteType = "migration";
+
+        Assert.Equal("qwen3.6-35B-balanced",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker,
+                healthResidentAlias: "qwen3.6-35B-balanced"));
+    }
+
+    [Fact]
+    public void MigratedContinuation_NoHealthAlias_UsesRequestDecodeQuant_OverKvAlias()
+    {
+        // #631: no META alias, no health stamp — the request's routing identity
+        // resolved to its DECODE quant (moe-35b-pd → balanced) still describes
+        // the target's resident side and must be preferred over the source-node
+        // KV alias (mini) — the decode alias is what maps to the target's
+        // resident path (mirrors the P/D alias mechanism).
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+        item.RouteType = "migration";
+
+        Assert.Equal("qwen3.6-35B-balanced",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
+    }
+
+    [Fact]
+    public void MigratedContinuation_NoAliases_KvAliasLastResort()
+    {
+        // #631: model-agnostic migrated session — no health stamp, no request
+        // model. The KV alias is the only identity left; it is the last resort
+        // (same-model migration: source == target resident, so it DOES map to
+        // the resident path and Gate A's fallback can still fire).
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = new WorkItem(
+            new Dictionary<string, object>(),
+            new List<Dictionary<string, object>>(),
+            "sess", "trace", null, 1, 10)
+        {
+            KvModelAlias = "qwen3.6-35B-mini",
+            RouteType = "migration",
+        };
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
+    }
+
+    [Fact]
+    public void NonMigrated_KvAliasStillBeatsRequestModel()
+    {
+        // #631 guard: the migrated reordering must NOT leak into non-migrated
+        // sessions — for a warm/affinity continuation the KV alias (the model
+        // the KV was actually built with) keeps its historic precedence over
+        // the request routing identity.
+        UseLoader();
+        WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+        var item = MakeItem("moe-35b-pd");
+        item.KvModelAlias = "qwen3.6-35B-mini";
+        item.RouteType = "affinity";
+
+        Assert.Equal("qwen3.6-35B-mini",
+            WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker));
+    }
 }
