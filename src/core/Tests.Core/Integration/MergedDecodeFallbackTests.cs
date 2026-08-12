@@ -24,6 +24,17 @@ namespace Tests.Core.Integration;
 // non-empty reasoning_content) must NOT trigger the fallback — re-issuing
 // would run the completion a second time and double decode_ms.
 //
+// #588 — tool_calls passthrough (engine fix b95c228b): the engine emits the
+// OpenAI tool_calls array in merged DONE results (buffered message.tool_calls
+// and streamed delta.tool_calls). The coordinator never re-shapes it — it is
+// JSON passthrough. Three requirements are covered here: (1) a tool-call-only
+// merged result must NOT trigger the empty-content fallback re-issue (it must
+// relay verbatim — re-issuing would discard the engine's tool_calls and run
+// the completion a second time); (2) a stream whose DONE delta carries only
+// tool_calls must NOT trigger the fallback either (delta.tool_calls counts as
+// content seen); (3) when the fallback DOES fire, BuildFallbackSseChunk must
+// carry the fallback's message.tool_calls into the emitted SSE delta verbatim.
+//
 // #622 — the STREAMING detection signal is decode_ms, not usage: the merged
 // COMPLETION DONE SSE delta carries hydra_metrics (decode_ms > 0 once the
 // engine generated) but NO usage (include_usage never propagates through
@@ -142,6 +153,36 @@ public sealed class MergedDecodeFallbackTests
         Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
     }
 
+    [Fact]
+    public async Task MergedDecode_Buffered_ToolCallsOnly_NoFallback()
+    {
+        // #588: a merged-decode result with empty content but a non-empty
+        // message.tool_calls array (a tool-call reply — the model requests the
+        // calculator instead of answering) must NOT be re-issued via the HTTP
+        // proxy: that would discard the engine's tool_calls and run the
+        // completion a second time. The engine (b95c228b) delivers
+        // message.tool_calls in the DONE result, so the empty-content gate
+        // must treat tool_calls as content delivered.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedResult = MergedDecodeResult(
+            content: "", completionTokens: 50, toolCallsJson: ToolCallJson);
+
+        var result = await f.SubmitAsync("sess_fb588", 500, 100, stream: false);
+
+        // No HTTP re-issue — the merged result is returned as-is, tool_calls
+        // intact (verbatim JSON passthrough, nothing re-shaped).
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        var dict = Assert.IsType<Dictionary<string, object>>(result);
+        var choices = Assert.IsType<JsonElement>(dict["choices"]);
+        var toolCalls = choices[0].GetProperty("message").GetProperty("tool_calls");
+        Assert.Equal(1, toolCalls.GetArrayLength());
+        Assert.Equal("calculator",
+            toolCalls[0].GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("{\"a\":1234,\"b\":5678}",
+            toolCalls[0].GetProperty("function").GetProperty("arguments").GetString());
+        Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
+    }
+
     // ── Streaming path ─────────────────────────────────────────────────
 
     [Fact]
@@ -187,6 +228,7 @@ public sealed class MergedDecodeFallbackTests
         Assert.Contains("Hello from fallback", fallbackChunk);
         Assert.Contains("finish_reason", fallbackChunk);
         Assert.Contains("usage", fallbackChunk);
+        Assert.DoesNotContain("tool_calls", fallbackChunk);
         Assert.Equal("data: [DONE]", Encoding.UTF8.GetString(chunks[2]).Trim());
         Assert.Contains(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
     }
@@ -279,6 +321,41 @@ public sealed class MergedDecodeFallbackTests
     }
 
     [Fact]
+    public async Task MergedDecode_Stream_ToolCallsOnly_DecodeMsGtZero_NoFallback()
+    {
+        // #588: a merged stream whose DONE delta carries ONLY tool_calls
+        // (content "" — a tool-call reply, the model requests the calculator)
+        // must NOT trigger the empty-content fallback re-issue: the engine
+        // (b95c228b) delivers delta.tool_calls in the merged DONE delta, so
+        // HasNonEmptyContentDelta must count it as content seen — otherwise
+        // the gate (engineGenerated && !sawContent) would run the completion
+        // a second time. The tool_calls deltas relay verbatim.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"call_abc123\",\"type\":\"function\",\"function\":{\"name\":\"calculator\",\"arguments\":\"{\\\"a\\\":1234,\\\"b\\\":5678}\"}}]}}],\"hydra_metrics\":{\"decode_ms\":58965,\"prompt_ms\":120,\"n_past\":2048,\"decode_request_id\":11373,\"id_slot\":0}}"),
+            Sse("data: [DONE]"),
+        ];
+
+        var chunks = await CollectAsync(f, "sess_fs588");
+
+        // No re-issue: neither the HTTP-proxy fallback NOR the DONE-state GET
+        // probe fires (sawContent is true from the tool_calls delta). Every
+        // chunk relays in original order, tool_calls intact.
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        Assert.Empty(f.Proxy.PollDecodeResultCalls);
+        Assert.Contains("tool_calls", Encoding.UTF8.GetString(chunks[1]));
+        Assert.Contains("calculator", Encoding.UTF8.GetString(chunks[1]));
+        var expected = string.Concat(
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}")),
+            Encoding.UTF8.GetString(Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"call_abc123\",\"type\":\"function\",\"function\":{\"name\":\"calculator\",\"arguments\":\"{\\\"a\\\":1234,\\\"b\\\":5678}\"}}]}}],\"hydra_metrics\":{\"decode_ms\":58965,\"prompt_ms\":120,\"n_past\":2048,\"decode_request_id\":11373,\"id_slot\":0}}")),
+            Encoding.UTF8.GetString(Sse("data: [DONE]")));
+        Assert.Equal(expected, string.Join("", chunks.Select(c => Encoding.UTF8.GetString(c))));
+        Assert.DoesNotContain(f.Events, e => e.MessageTemplate.Text.Contains("merged_decode_empty_content_fallback"));
+    }
+
+    [Fact]
     public async Task MergedDecode_Stream_FallbackCarriesReasoningContent()
     {
         // #616 QA: the fallback response may carry ONLY reasoning_content
@@ -302,6 +379,44 @@ public sealed class MergedDecodeFallbackTests
         Assert.Contains("reasoning_content", fallbackChunk);
         Assert.Contains("deep reasoning text", fallbackChunk);
         Assert.Contains("\"content\":\"\"", fallbackChunk);
+        Assert.DoesNotContain("tool_calls", fallbackChunk);
+    }
+
+    [Fact]
+    public async Task MergedDecode_Stream_FallbackCarriesToolCalls()
+    {
+        // #588: when the empty-content fallback DOES fire, the HTTP-proxy
+        // response may carry message.tool_calls (the engine's tool-call reply
+        // — re-issued exactly because the merged result had neither content
+        // nor reasoning_content). BuildFallbackSseChunk must copy
+        // message.tool_calls into the emitted delta VERBATIM — JSON
+        // passthrough, nothing re-shaped — mirroring the reasoning_content
+        // handling.
+        await using var f = new MergedDecodeFixture();
+        f.Proxy.FallbackResult = MergedDecodeResult(
+            content: "", completionTokens: 50, toolCallsJson: ToolCallJson);
+        f.Proxy.MergedStreamChunks =
+        [
+            Sse("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}"),
+            Sse("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}],\"hydra_metrics\":{\"decode_ms\":5000}}"),
+            Sse("data: [DONE]"),
+        ];
+
+        var chunks = await CollectAsync(f, "sess_fs588fb");
+
+        Assert.Single(f.Proxy.NonStreamingCalls);
+        var fallbackChunk = Encoding.UTF8.GetString(chunks[1]);
+        Assert.Contains("chat.completion.chunk", fallbackChunk);
+        Assert.Contains("\"content\":\"\"", fallbackChunk);
+        using var chunkDoc = JsonDocument.Parse(fallbackChunk[6..]);
+        var delta = chunkDoc.RootElement.GetProperty("choices")[0].GetProperty("delta");
+        Assert.True(delta.TryGetProperty("tool_calls", out var toolCalls),
+            "fallback chunk delta must carry the fallback's tool_calls");
+        Assert.Equal(1, toolCalls.GetArrayLength());
+        Assert.Equal("calculator",
+            toolCalls[0].GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("{\"a\":1234,\"b\":5678}",
+            toolCalls[0].GetProperty("function").GetProperty("arguments").GetString());
     }
 
     [Fact]
@@ -607,28 +722,48 @@ public sealed class MergedDecodeFallbackTests
     private static byte[] Sse(string dataLine)
         => Encoding.UTF8.GetBytes($"{dataLine}\n\n");
 
+    /// <summary>#588: OpenAI-shaped tool_calls array, the exact shape the
+    /// engine (b95c228b) emits in merged DONE results.</summary>
+    private const string ToolCallJson =
+        "[{\"id\":\"call_abc123\",\"type\":\"function\",\"function\":{\"name\":\"calculator\",\"arguments\":\"{\\\"a\\\":1234,\\\"b\\\":5678}\"}}]";
+
     /// <summary>Build an OpenAI-style completion result dictionary for the
-    /// PollDecodeResultAsync double.</summary>
-    private static Dictionary<string, object> MergedDecodeResult(string content, int completionTokens, string reasoningContent = "")
+    /// PollDecodeResultAsync double. toolCallsJson is copied into
+    /// message.tool_calls VERBATIM when provided — the shape the engine
+    /// (b95c228b) emits in merged DONE results.</summary>
+    private static Dictionary<string, object> MergedDecodeResult(
+        string content, int completionTokens, string reasoningContent = "",
+        string? toolCallsJson = null)
     {
-        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(new
+        var message = new Dictionary<string, object?>
         {
-            choices = new[]
+            ["role"] = "assistant",
+            ["content"] = content,
+            ["reasoning_content"] = reasoningContent,
+        };
+        if (toolCallsJson != null)
+        {
+            using var tcDoc = JsonDocument.Parse(toolCallsJson);
+            message["tool_calls"] = tcDoc.RootElement.Clone();
+        }
+        var payload = new Dictionary<string, object?>
+        {
+            ["choices"] = new object?[]
             {
-                new
+                new Dictionary<string, object?>
                 {
-                    index = 0,
-                    message = new { role = "assistant", content, reasoning_content = reasoningContent },
-                    finish_reason = completionTokens > 0 ? "stop" : "length",
+                    ["index"] = 0,
+                    ["message"] = message,
+                    ["finish_reason"] = completionTokens > 0 ? "stop" : "length",
                 }
             },
-            usage = new { prompt_tokens = 10, completion_tokens = completionTokens, total_tokens = 10 + completionTokens },
-            id_slot = 0,
-            id = "chatcmpl-merged",
-            model = "nano",
-            created = 0,
-        }));
-        return JsonSerializer.Deserialize<Dictionary<string, object>>(doc.RootElement.GetRawText())!;
+            ["usage"] = new { prompt_tokens = 10, completion_tokens = completionTokens, total_tokens = 10 + completionTokens },
+            ["id_slot"] = 0,
+            ["id"] = "chatcmpl-merged",
+            ["model"] = "nano",
+            ["created"] = 0,
+        };
+        return JsonSerializer.Deserialize<Dictionary<string, object>>(JsonSerializer.Serialize(payload))!;
     }
 
     /// <summary>#622 follow-up: the engine's DONE-state result JSON — the
