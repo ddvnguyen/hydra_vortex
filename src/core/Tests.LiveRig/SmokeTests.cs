@@ -381,7 +381,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
     /// <summary>
     /// P/D split MIX-QUANT multi-turn (epic #470 headline feature): explicit
     /// model moe-35b-pd — precise prefill on rtx (Q3_K-mini) + quant decode
-    /// on p100 (Q5_K-balanced, cross-quant). 3 turns, ~1K prompt each:
+    /// on p100 (Q5_K-balanced, cross-quant). 5 turns, ~1K prompt each:
     ///   - every turn: non-empty content AND eval-verify (reply on-topic)
     ///   - turn 1: the session must actually land on p100 (decode_node=p100 —
     ///     a fallback to rtx solo means P/D routing regressed)
@@ -407,12 +407,16 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
                 "Explain in one paragraph how a P/D split (prefill/decode) system serves a large MoE model across two GPUs.",
                 "Now explain what the KV cache stores during decode, in one paragraph.",
                 "Now explain why decode benefits from a smaller quantized model, in one paragraph.",
+                "Now explain how temperature affects token sampling during generation, in one paragraph.",
+                "Now explain what happens when the prompt grows toward the KV cache capacity limit, in one paragraph.",
             };
             var evalTerms = new[]
             {
                 new[] { "prefill", "decode", "split", "p/d", "gpu", "moe", "expert", "kv", "transfer" },
                 new[] { "kv", "cache", "key", "value", "token", "state", "attention", "store" },
                 new[] { "quant", "decode", "small", "memory", "vram", "latency", "throughput", "token" },
+                new[] { "temperature", "sampl", "random", "logit", "probab", "greedy", "diversity", "token" },
+                new[] { "kv", "cache", "limit", "capacit", "context", "window", "memory", "full" },
             };
             for (var turn = 0; turn < turns.Length; turn++)
             {
@@ -457,7 +461,7 @@ public sealed class SmokeTests : IClassFixture<LiveRigFixture>
                 }
             }
 
-            // Wall-clock sanity: turns 2-3 must not be catastrophically slower
+            // Wall-clock sanity: turns 2-5 must not be catastrophically slower
             // than turn 1 (full re-prefill regression, like WarmAffinity).
             for (var i = 1; i < turnTimes.Count; i++)
                 Assert.True(turnTimes[i] < turnTimes[0] * 3,
