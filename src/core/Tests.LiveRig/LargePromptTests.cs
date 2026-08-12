@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -67,6 +68,12 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
         return (slotsDict, metrics);
     }
 
+    /// <summary>
+    /// Runs on the default moe-35b-solo (balanced) resident model — group 1
+    /// (orders 1-27), zero model swaps. Global order via [TestOrder] +
+    /// assembly-wide TestCaseOrderer (Ordering/, #470).
+    /// </summary>
+    [TestOrder(19)]
     [SkippableTheory]
     [InlineData(8_000, 2_000, 600)]
     [InlineData(8_000, 4_000, 600)]

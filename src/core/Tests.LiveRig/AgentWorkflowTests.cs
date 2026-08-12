@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -126,7 +127,11 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
     }
 
     // ── Tests: tool calls ─────────────────────────────────────────────────
+    // All tests in this class run on the default moe-35b-solo (balanced)
+    // resident model — group 1 (orders 1-27), zero model swaps. Global order
+    // via [TestOrder] + assembly-wide TestCaseOrderer (Ordering/, #470).
 
+    [TestOrder(1)]
     [SkippableFact]
     public async Task ToolCallBasic()
     {
@@ -192,6 +197,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(2)]
     [SkippableFact]
     public async Task ToolCallMultiStep()
     {
@@ -269,6 +275,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
 
     // ── Tests: multi-turn context accumulation ────────────────────────────
 
+    [TestOrder(3)]
     [SkippableTheory]
     [InlineData(8_000, 6, 4096, 300)]
     [InlineData(16_000, 10, 8192, 480)]
@@ -338,6 +345,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(4)]
     [SkippableFact]
     public async Task Multiturn40kContext()
     {
@@ -393,6 +401,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
 
     // ── Test: tool calls during a growing-context session ────────────────
 
+    [TestOrder(5)]
     [SkippableFact]
     public async Task ToolCallWithGrowingContext()
     {
@@ -467,6 +476,7 @@ public sealed class AgentWorkflowTests : IClassFixture<LiveRigFixture>
     // Note: warm-affinity routing may auto-migrate the session to p100 during
     // Phase 1, so the session is not guaranteed to still be on RTX here.
 
+    [TestOrder(6)]
     [SkippableFact]
     public async Task SessionMigrationMidWorkflow()
     {

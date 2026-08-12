@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -128,6 +129,13 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
     ///      that re-enables the legacy STATE_PUT on merged engines fires the
     ///      guard (Proceed for same-model) and fails this test.
     /// </summary>
+    /// <summary>
+    /// P/D cross-model KV restore contract tests — group 2 (orders 28-30,
+    /// moe-35b-pd), one intentional model swap into the P/D split (rtx Mini
+    /// prefill + p100 balanced decode). Global order via [TestOrder] +
+    /// assembly-wide TestCaseOrderer (Ordering/, #470).
+    /// </summary>
+    [TestOrder(28)]
     [SkippableFact]
     public async Task CrossModelMergedRestoreSameModelNoGuardFire()
     {
@@ -193,6 +201,7 @@ public sealed class MixPrecisionPdTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(29)]
     [SkippableFact]
     public async Task CrossModelMetricExposed()
     {

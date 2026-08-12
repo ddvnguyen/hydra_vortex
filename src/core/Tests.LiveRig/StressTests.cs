@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -48,6 +49,11 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    // Both tests run on the default moe-35b-solo (balanced) resident model —
+    // group 1 (orders 1-27), zero model swaps. Global order via [TestOrder]
+    // + assembly-wide TestCaseOrderer (Ordering/, #470).
+
+    [TestOrder(22)]
     [SkippableFact]
     public async Task FourConcurrentCompletions()
     {
@@ -109,6 +115,7 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
             await _fx.DeleteSessionAsync(sid);
     }
 
+    [TestOrder(23)]
     [SkippableFact]
     public async Task CrossSessionConsistency()
     {

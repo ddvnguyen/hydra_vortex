@@ -5,9 +5,12 @@ using Xunit.Sdk;
 namespace Tests.LiveRig.Ordering;
 
 /// <summary>
-/// Explicit per-method execution order for a test class. Combined with
-/// <see cref="TestOrderer"/> this makes the live-rig smoke tests run in a
-/// deterministic, model-grouped sequence (see SmokeTests for the rationale).
+/// Explicit per-method execution order for the whole live-rig assembly.
+/// Combined with <see cref="TestOrderer"/> (wired assembly-wide via
+/// Ordering/AssemblyInfo.cs) every test method in Tests.LiveRig runs in a
+/// deterministic, model-grouped sequence (see SmokeTests / AssemblyInfo for
+/// the rationale). Each method must carry exactly one [TestOrder(n)] with a
+/// globally unique n.
 /// </summary>
 [AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
 public sealed class TestOrderAttribute : Attribute
@@ -20,10 +23,11 @@ public sealed class TestOrderAttribute : Attribute
 
 /// <summary>
 /// xUnit ITestCaseOrderer: sorts test cases by <see cref="TestOrderAttribute"/>
-/// value ascending (stable), ties broken by method name. Applied via
-/// [TestCaseOrderer] on the SmokeTests class only — LiveRig assembly-wide
-/// ordering is deliberately NOT enabled so other test classes keep xUnit's
-/// default execution.
+/// value ascending (stable), ties broken by method name. Applied assembly-wide
+/// via [assembly: TestCaseOrderer(...)] (Ordering/AssemblyInfo.cs) so ALL
+/// Tests.LiveRig test cases — across every class in the "LiveRig" collection —
+/// sort by the global sequence number. A method without the attribute sorts
+/// last (int.MaxValue), so every rig test must be annotated.
 /// </summary>
 public sealed class TestOrderer : ITestCaseOrderer
 {

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -143,6 +144,11 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
         catch { return null; }
     }
 
+    // Both tests run on the default moe-35b-solo (balanced) resident model —
+    // group 1 (orders 1-27), zero model swaps. Global order via [TestOrder]
+    // + assembly-wide TestCaseOrderer (Ordering/, #470).
+
+    [TestOrder(20)]
     [SkippableFact]
     public async Task FiveTurnWarmAffinity()
     {
@@ -198,6 +204,7 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(21)]
     [SkippableFact]
     public async Task NoSlotLeak()
     {

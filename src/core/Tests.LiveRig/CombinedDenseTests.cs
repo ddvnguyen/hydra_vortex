@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -102,7 +103,13 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
     /// generous (600s — covers swap + 4K-token thinking-heavy decode; the
     /// 300s CTS previously fired mid-generation, run 31370319546) while the
     /// test itself is capped at 900s.
+    /// All tests in this class run on dense-27b-combined — group 3 (orders
+    /// 31-34), the LAST intentional model swap (leaves rtx on dense, matching
+    /// the smoke suite). Global order via [TestOrder] + assembly-wide
+    /// TestCaseOrderer (Ordering/, #470). Note DynamicModelSwap additionally
+    /// exercises its own moe→dense→moe swap hops in-test by design.
     /// </summary>
+    [TestOrder(31)]
     [SkippableFact(Timeout = 900_000)]
     public async Task Dense27bCombinedCompletion()
     {
@@ -143,6 +150,7 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
     /// request uses a 300s CTS. Success = the coordinator survived a full
     /// swap cycle and the session stayed usable across model changes.
     /// </summary>
+    [TestOrder(32)]
     [SkippableFact(Timeout = 900_000)]
     public async Task DynamicModelSwap_MoeToDenseAndBack()
     {
@@ -212,6 +220,7 @@ public sealed class CombinedDenseTests : IClassFixture<LiveRigFixture>
     /// restore_slot_ms, prompt_ms, decode_ms, n_past) so each run emits the
     /// baseline metric per state.
     /// </summary>
+    [TestOrder(33)]
     [SkippableFact(Timeout = 900_000)]
     public async Task Dense27bMultiturn()
     {
