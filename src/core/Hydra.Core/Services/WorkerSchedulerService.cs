@@ -927,10 +927,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (!string.IsNullOrEmpty(entry.NodeName))
 			{
 				item.PrefillWorker = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
-				var reqAlias = TranslateModelAlias(
-					item.Request.TryGetValue("model", out var mv) && mv is string ms ? ms : null);
-				var reqIsCombined = reqAlias != null
-					&& reqAlias.Contains("combined", StringComparison.OrdinalIgnoreCase);
+				// #470 wedge fix (2026-08-13): check the RAW requested model string for
+				// "combined", not the translated prefill alias. TranslateModelAlias maps
+				// dense-27b-combined → prefill_alias "qwen3.6-27B-coder" (models.json),
+				// which drops the "combined" suffix → reqIsCombined=false → MultiMode
+				// stays None → PickDecodeAsync's COMBINED guard never fires →
+				// PickBestDecodeWorker wanders to P100 → 27B KV decoded on the 35B
+				// engine (wrong-model migration, observed live: trace 4717737069544794,
+				// decode_model=Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf, stream_done_no_lease).
+				var rawReqModel = item.Request.TryGetValue("model", out var mv) && mv is string ms ? ms : null;
+				var reqIsCombined = rawReqModel != null
+					&& rawReqModel.Contains("combined", StringComparison.OrdinalIgnoreCase);
 				if (item.PrefillWorker != null
 					&& item.PrefillWorker.CombinedCapable
 					&& reqIsCombined)
