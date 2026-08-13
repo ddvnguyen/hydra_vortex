@@ -678,6 +678,22 @@ public class RpcClient : IAsyncDisposable
             DropConnection();
             throw;
         }
+        catch (IOException)
+        {
+            // #470: a mid-payload IOException (e.g. the caller's onChunk hitting
+            // ENOSPC on the L1 tmpfs cache write) must drop the connection — the
+            // wire holds a half-consumed frame, and a retry reusing this socket
+            // would misread the leftover bytes as a response header (garbage 12B
+            // length → ValidatePayloadLen → engine EPIPE → prefill_rpc_error_
+            // exhausted). Parity with RequestAsync's transport-error handling;
+            // here there is no replayable retry, so drop + rethrow. No
+            // ObjectDisposedException catch, mirroring RequestAsync: requests
+            // are serialized by _sync, and a concurrent DropConnection already
+            // closed the socket (DropConnection is idempotent), so ODE needs no
+            // extra hygiene here.
+            DropConnection();
+            throw;
+        }
         finally
         {
             _sync.Release();

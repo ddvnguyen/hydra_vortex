@@ -2656,11 +2656,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						{
 							var hash = ChunkEngine.ComputeHash(chunkBuffer.AsSpan());
 							chunks.Add(new ChunkRef(chunks.Count, hash, chunkSize));
-							if (_chunkCache != null)
-							{
-								await _chunkCache.SaveChunkDataAsync(
-									item.SessionId, hash, chunkBuffer.ToArray(), token);
-							}
+							await SaveChunkToL1BestEffortAsync(
+								item.SessionId, hash, chunkBuffer.ToArray(), token);
 							await pipe!.Writer.WriteAsync(chunkBuffer.AsMemory(), token);
 							chunkPos = 0;
 						}
@@ -2688,10 +2685,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var tailBytes = chunkBuffer.AsSpan(0, chunkPos).ToArray();
 			var hash = ChunkEngine.ComputeHash(tailBytes.AsSpan());
 			chunks.Add(new ChunkRef(chunks.Count, hash, tailBytes.Length));
-			if (_chunkCache != null)
-			{
-				await _chunkCache.SaveChunkDataAsync(item.SessionId, hash, tailBytes, ct);
-			}
+			await SaveChunkToL1BestEffortAsync(item.SessionId, hash, tailBytes, ct);
 			if (pipe != null)
 				await pipe.Writer.WriteAsync(tailBytes, ct);
 			chunkPos = 0;
@@ -2718,6 +2712,46 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		_log.Information("prefill_streamed_to_store Sid={Sid} Node={Node} Slot={Slot} Bytes={Bytes} Chunks={Chunks}",
 			item.SessionId, w.Name, slotId, totalSize, chunks.Count);
 		return result;
+	}
+
+	/// <summary>
+	/// Best-effort L1 chunk-cache save with evict-on-ENOSPC recovery (#470).
+	/// The L1 tmpfs cache shares /mnt/llm-ram with the Store's chunk dir, so
+	/// a full mount surfaces here as an IOException from the L1 write. The L1
+	/// save is a cache optimization, NOT a correctness requirement — an L1
+	/// miss falls back to L2/Store via GetChunkDataAsync — so a failed save
+	/// must never abort the prefill stream (pre-#470 an ENOSPC here propagated
+	/// out of onChunk, left the RPC socket mid-frame, and killed the turn with
+	/// prefill_rpc_error_exhausted). On IOException: evict L1 LRU sessions
+	/// (frees the shared tmpfs, the same recovery as PushChunkBatchAsync's
+	/// #615 fix) and retry once; if the retry still fails, log a warning and
+	/// continue without throwing. Cancellation still propagates.
+	/// </summary>
+	internal async Task SaveChunkToL1BestEffortAsync(
+		string sessionId, string hash, byte[] chunkData, CancellationToken ct)
+	{
+		if (_chunkCache == null) return;
+		try
+		{
+			await _chunkCache.SaveChunkDataAsync(sessionId, hash, chunkData, ct);
+		}
+		catch (IOException)
+		{
+			var evicted = 0;
+			try { evicted = await _chunkCache.EvictLRUAsync(); }
+			catch { /* eviction is best-effort too: a throwing evict still
+					   removes the LRU session from the index before it fails,
+					   and the retry save can succeed without it */ }
+			try
+			{
+				await _chunkCache.SaveChunkDataAsync(sessionId, hash, chunkData, ct);
+			}
+			catch (IOException)
+			{
+				_log.Warning("chunk_cache_l1_save_failed sid={Sid} hash={Hash} bytes={Bytes} evicted={Evicted}",
+					sessionId, hash, chunkData.Length, evicted);
+			}
+		}
 	}
 
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
