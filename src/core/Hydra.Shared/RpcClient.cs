@@ -559,7 +559,16 @@ public class RpcClient : IAsyncDisposable
         var offset = 0;
         while (offset < buf.Length)
         {
-            var read = await stream.ReadAsync(buf.AsMemory(offset, buf.Length - offset), ct);
+            // #470: read on timeoutCts.Token (NOT caller ct) so the re-armed
+            // idle deadline is actually enforceable — previously a stalled
+            // engine (no bytes for a full idle period) kept the read blocked
+            // until the caller's own cancellation fired (~300s HTTP deadline),
+            // which is how head-side workers parked on unbounded sends while
+            // the coordinator never failed fast. The initial CancelAfter
+            // (whole-exchange ceiling, compute included) set by RequestAsync
+            // covers the first read; each successful chunk re-arms the idle
+            // budget for the next one.
+            var read = await stream.ReadAsync(buf.AsMemory(offset, buf.Length - offset), timeoutCts.Token);
             if (read == 0)
                 throw new EndOfStreamException("Connection closed by peer");
             offset += read;
@@ -589,7 +598,12 @@ public class RpcClient : IAsyncDisposable
         while (remaining > 0)
         {
             var toRead = (int)Math.Min(buf.Length, remaining);
-            var read = await stream.ReadAsync(buf.AsMemory(0, toRead), ct);
+            // #470: read on timeoutCts.Token so the re-armed idle deadline is
+            // enforceable (see ReadPayloadIdleAsync). A stalled peer now fails
+            // fast after a full idle period instead of blocking until the
+            // caller's cancellation — this is what bounds the head-side
+            // send_all park (SO_SNDTIMEO there + cancellable read here).
+            var read = await stream.ReadAsync(buf.AsMemory(0, toRead), timeoutCts.Token);
             if (read == 0)
                 throw new EndOfStreamException("Connection closed by peer");
             remaining -= read;
