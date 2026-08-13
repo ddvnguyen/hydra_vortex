@@ -1,4 +1,7 @@
+using System.Buffers.Binary;
 using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
 using Hydra.Shared;
 
 namespace Tests.Shared;
@@ -275,7 +278,8 @@ public class RpcClientTests : IAsyncLifetime
         var server = _server!;
         server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
         {
-            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, 3L * 1024 * 1024 * 1024, ct);
+            // 5 GB sits above the 4 GB cap (raised from 2 GB in #470-79fdd3c21).
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, 5L * 1024 * 1024 * 1024, ct);
         };
 
         var client = new RpcClient("127.0.0.1", server.Port);
@@ -329,5 +333,117 @@ public class RpcClientTests : IAsyncLifetime
         Assert.Equal((byte)StatusCode.Ok, r2.Status);
         Assert.True(server.ConnectionCount > before,
             "expected a fresh connection after the framing error");
+    }
+
+    [Fact]
+    public async Task EngineMergedDecodeStreamKvAsync_StreamsChunksToWire()
+    {
+        // #470 Phase 2: the framed DECODE kv segment is streamed chunk-by-chunk
+        // (no full blob) — the server must receive the exact concatenation with
+        // the kv_len declared in the segments table.
+        Assert.NotNull(_server);
+        var server = _server!;
+
+        var chunk1 = Enumerable.Range(0, 64 * 1024).Select(i => (byte)(i % 251)).ToArray();
+        var chunk2 = Enumerable.Range(0, 32 * 1024).Select(i => (byte)((i * 7) % 251)).ToArray();
+        var expected = chunk1.Concat(chunk2).ToArray();
+
+        byte[]? kvReceived = null;
+        long? declaredKvLen = null;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            Assert.Equal(OpCode.EngineDecode, op);
+
+            var hdrLen = BinaryPrimitives.ReadUInt32LittleEndian(
+                await RpcServer.ReadPayloadAsync(reader, 4, ct));
+            var hdrHash = BinaryPrimitives.ReadUInt64LittleEndian(
+                await RpcServer.ReadPayloadAsync(reader, 8, ct));
+            Assert.NotEqual(0UL, hdrHash);
+            var hdrJson = await RpcServer.ReadPayloadAsync(reader, hdrLen, ct);
+
+            long promptLen = 0, kvLen = 0;
+            using (var doc = JsonDocument.Parse(hdrJson))
+            {
+                foreach (var seg in doc.RootElement.GetProperty("segments").EnumerateArray())
+                {
+                    if (seg.GetProperty("id").GetString() == "prompt")
+                        promptLen = seg.GetProperty("len").GetInt64();
+                    else if (seg.GetProperty("id").GetString() == "kv")
+                        kvLen = seg.GetProperty("len").GetInt64();
+                }
+            }
+            declaredKvLen = kvLen;
+            Assert.Equal(0L, promptLen);
+            await RpcServer.ReadPayloadAsync(reader, promptLen, ct);
+
+            kvReceived = await RpcServer.ReadPayloadAsync(reader, kvLen, ct);
+
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, 0, ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        async IAsyncEnumerable<ReadOnlyMemory<byte>> Chunks()
+        {
+            yield return chunk1;
+            yield return chunk2;
+        }
+
+        var resp = await client.EngineMergedDecodeStreamKvAsync(
+            "0", nPast: 123,
+            kvTokenizer: null, kvModelName: null, kvModelQuant: null, kvModelCapabilities: 0,
+            modelTokenizer: null, modelName: null, modelQuant: null, modelCapabilities: 0,
+            modelAlias: "nano",
+            messagesJson: null, nPredict: 16, samplingJson: null, stream: false,
+            kvChunks: Chunks(), kvTotalSize: expected.Length,
+            "trace-streamkv", CancellationToken.None);
+
+        Assert.Equal((byte)StatusCode.Ok, resp.Status);
+        Assert.Equal(expected.Length, declaredKvLen);
+        Assert.Equal(expected, kvReceived);
+    }
+
+    [Fact]
+    public async Task RequestChunkedPayloadAsync_StreamsChunksWithoutBuffering()
+    {
+        // #470 Phase 2: large payloads are delivered via onChunk — the client
+        // must never materialize the full response as one byte[].
+        Assert.NotNull(_server);
+        var server = _server!;
+
+        var payload = new byte[3 * 1024 * 1024 + 17];
+        for (var i = 0; i < payload.Length; i++)
+            payload[i] = (byte)(i % 253);
+
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            var meta = $$"""{"len":{{payload.Length}}}""";
+            var metaBytes = Encoding.UTF8.GetBytes(meta);
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok,
+                (uint)metaBytes.Length, (ulong)payload.Length, ct);
+            await RpcServer.WriteMetaAsync(writer, meta, ct);
+            await RpcServer.WritePayloadAsync(writer, payload, ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        long declaredLen = -1;
+        var received = new List<byte>();
+        var resp = await client.RequestChunkedPayloadAsync(
+            OpCode.GetChunked, "kv/x", Encoding.UTF8.GetBytes("[]"), "trace-chunked", CancellationToken.None,
+            onPayloadLen: len => declaredLen = len,
+            onChunk: (mem, _) =>
+            {
+                received.AddRange(mem.Span.ToArray());
+                return ValueTask.CompletedTask;
+            });
+
+        Assert.Equal((byte)StatusCode.Ok, resp.Status);
+        Assert.Equal(payload.Length, declaredLen);
+        Assert.Equal(payload.Length, received.Count);
+        Assert.Equal(payload, received.ToArray());
+        Assert.True(received.Count > 4, "expected multiple chunks for a >3 MB payload");
     }
 }

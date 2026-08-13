@@ -1,7 +1,9 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.IO.Pipelines;
 using System.Linq;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -1988,8 +1990,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// merge it into the request body under the hydra_config key.
 				// SOLO/ATOMIC prefills pass null (no config injection).
 				var hydraConfig = TranslateToWirePayloadAsync(item);
-				var prefillResult = await engine.EnginePrefillAsync(slotId, prefillModel, requestJson, item.TraceId, ct,
-					hydraConfig: hydraConfig);
+				EnginePrefillResult? prefillResult;
+				if (_cfg.EnableChunks)
+				{
+					// #470 Phase 2: stream the PREFILL response straight into the
+					// Store (PutChunked, chunked pipe) — the KV blob (2.3 GB today,
+					// 10 GB target) is never materialized in coordinator RAM. The
+					// store dedups per chunk and writes the manifest; model identity
+					// is stamped afterwards via PutManifestAsync. KvBlob stays null.
+					prefillResult = await EnginePrefillChunkedAndStoreAsync(
+						item, w, slotId, engine, requestJson, prefillModel, hydraConfig, ct);
+				}
+				else
+				{
+					prefillResult = await engine.EnginePrefillAsync(slotId, prefillModel, requestJson, item.TraceId, ct,
+						hydraConfig: hydraConfig);
+				}
 				// Mark whether hydra_config was delivered and the PREFILL succeeded.
 				// ApplyMultiEngineAsync checks this to (a) skip a redundant empty-body
 				// PREFILL that risks invalidating the KV cache, and (b) record the
@@ -2537,6 +2553,143 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return TranslateModelAlias(reqModel, decodeRole: true);
 	}
 
+	/// <summary>
+	/// #470 Phase 2: chunked PREFILL whose response payload is streamed straight
+	/// into the Store via PUT_CHUNKED (0x10) — no full-blob byte[] in coordinator
+	/// RAM (2.3 GB today, 10 GB target). Chunks are assembled at
+	/// <see cref="ChunkEngine.CHUNK_SIZE"/> boundaries from offset 0 (the same
+	/// boundaries the Store's chunker uses, so dedup + manifest stay consistent),
+	/// hashed for the L1 chunk cache, and written into a Pipe consumed by the
+	/// Store RPC (backpressure throttles the engine read naturally). The Store
+	/// dedups per chunk and writes the manifest; model identity + n_past are
+	/// stamped afterwards via <see cref="PutManifestAsync"/>. On success
+	/// <see cref="WorkItem.KvStreamedToStore"/> is set so SaveKvAsync skips the
+	/// buffered push; KvBlob stays null.
+	/// </summary>
+	private async Task<EnginePrefillResult?> EnginePrefillChunkedAndStoreAsync(
+		WorkItem item, WorkerConfig w, int slotId, HydraEngineClient engine,
+		string requestJson, string? prefillModel, Dictionary<string, object>? hydraConfig,
+		CancellationToken ct)
+	{
+		var storeKey = $"{item.SessionId}.kv";
+		var chunkSize = ChunkEngine.CHUNK_SIZE;
+		var chunks = new List<ChunkRef>();
+		var chunkBuffer = new byte[chunkSize];
+		var chunkPos = 0;
+		var totalSize = 0L;
+		Pipe? pipe = null;
+		Task? pushTask = null;
+		Exception? pushError = null;
+
+		EnginePrefillResult? result = null;
+		try
+		{
+			result = await engine.EnginePrefillChunkedAsync(
+				slotId, prefillModel, requestJson, item.TraceId, ct, hydraConfig,
+				onPayloadLen: len =>
+				{
+					// Fires once, before the first chunk: start the Store push with
+					// the exact frame size. A fresh pipe per attempt (no retries
+					// inside the chunked read, so this runs at most once).
+					totalSize = len;
+					pipe = new Pipe(new PipeOptions(
+						pauseWriterThreshold: 4 * 1024 * 1024,
+						resumeWriterThreshold: 1 * 1024 * 1024));
+					pushTask = Task.Run(async () =>
+					{
+						try
+						{
+							var resp = await StoreClient.RequestStreamBodyAsync(
+								OpCode.PutChunked, storeKey, pipe.Reader.AsStream(),
+								totalSize, item.TraceId, ct);
+							if (resp.Status != (byte)StatusCode.Ok)
+								throw new InvalidDataException(
+									$"PUT_CHUNKED failed (status=0x{resp.Status:X2}): {resp.Meta}");
+						}
+						catch (Exception ex)
+						{
+							pushError = ex;
+							throw;
+						}
+					});
+				},
+				onChunk: async (mem, token) =>
+				{
+					var off = 0;
+					while (off < mem.Length)
+					{
+						var n = Math.Min(chunkSize - chunkPos, mem.Length - off);
+						mem.Slice(off, n).CopyTo(chunkBuffer.AsMemory(chunkPos));
+						chunkPos += n;
+						off += n;
+						if (chunkPos == chunkSize)
+						{
+							var hash = ChunkEngine.ComputeHash(chunkBuffer.AsSpan());
+							chunks.Add(new ChunkRef(chunks.Count, hash, chunkSize));
+							if (_chunkCache != null)
+							{
+								await _chunkCache.SaveChunkDataAsync(
+									item.SessionId, hash, chunkBuffer.ToArray(), token);
+							}
+							await pipe!.Writer.WriteAsync(chunkBuffer.AsMemory(), token);
+							chunkPos = 0;
+						}
+					}
+				});
+		}
+		catch (Exception)
+		{
+			// Engine stream aborted mid-payload: fault the pipe so the Store push
+			// unblocks with the same failure instead of hanging on EOF.
+			if (pipe != null)
+			{
+				await pipe.Writer.CompleteAsync(
+					new IOException("engine prefill stream aborted mid-payload"));
+				try { if (pushTask != null) await pushTask; } catch { /* pushError already set */ }
+			}
+			throw;
+		}
+
+		// The response was fully consumed (Ok, Busy, Error, ...) — the payload
+		// stream ran to completion, so the tail chunk is valid and the pipe can
+		// be closed cleanly.
+		if (chunkPos > 0)
+		{
+			var tailBytes = chunkBuffer.AsSpan(0, chunkPos).ToArray();
+			var hash = ChunkEngine.ComputeHash(tailBytes.AsSpan());
+			chunks.Add(new ChunkRef(chunks.Count, hash, tailBytes.Length));
+			if (_chunkCache != null)
+			{
+				await _chunkCache.SaveChunkDataAsync(item.SessionId, hash, tailBytes, ct);
+			}
+			if (pipe != null)
+				await pipe.Writer.WriteAsync(tailBytes, ct);
+			chunkPos = 0;
+		}
+
+		if (pipe != null)
+		{
+			await pipe.Writer.CompleteAsync(pushError);
+			if (pushTask != null)
+				await pushTask; // rethrows the Store error when the push failed
+		}
+
+		if (result == null || result.IsError || result.NotImplemented)
+			return result;
+
+		// Stamp n_past + model identity onto the manifest the Store wrote during
+		// PutChunked (it carries chunks + sizes only). Total size == payload len.
+		await PutManifestAsync(storeKey, result.NPast, totalSize, chunks,
+			item.TraceId, ct,
+			result.ModelAlias ?? "", result.Tokenizer ?? "", result.ModelName ?? "",
+			result.ModelQuant ?? "", result.ModelCapabilities, result.ModelPath ?? "");
+		item.KvBytes = totalSize;
+		item.KvStreamedToStore = true;
+		_log.Information("prefill_streamed_to_store Sid={Sid} Node={Node} Slot={Slot} Bytes={Bytes} Chunks={Chunks}",
+			item.SessionId, w.Name, slotId, totalSize, chunks.Count);
+		return result;
+	}
+
 	private async Task<WorkItemState> SaveKvAsync(WorkItem item, CancellationToken ct)
 	{
 		// HYDRA_COORD_NO_STORE_KV_RESTORE=true: skip saving KV to Store.
@@ -2563,7 +2716,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// ── Phase 1: Engine RPC — pull KV blob + model identity ──
 			// Only this phase needs the GPU slot.
 			byte[]? payload;
-			if (_cfg.UseLlamaEngine && item.KvBlob != null)
+			if (_cfg.EnableChunks && item.KvStreamedToStore)
+			{
+				// #470 Phase 2: the prefill response was already streamed into the
+				// Store (chunked pipe) — there is no blob to pull and nothing to
+				// push. Release the GPU slot and proceed straight to decode.
+				payload = null;
+			}
+			else if (_cfg.UseLlamaEngine && item.KvBlob != null)
 			{
 				var rpcMs = item.RecordPhase("save_kv_rpc_ms");
 				CoordinatorMetrics.SaveKvRpcDuration.WithLabels(w.Name, RouteLabel(item))
@@ -2579,13 +2739,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					.Observe(rpcMs / 1000.0);
 			}
 
-			if (payload == null)
+			if (payload == null && !item.KvStreamedToStore)
 				throw new InvalidOperationException($"StateGet RPC failed for save");
 
-			item.KvBytes = payload.Length;
+			if (payload != null)
+				item.KvBytes = payload.Length;
 
 			// ── Release GPU slot immediately ──────────────────────────
-			// KV blob is in Coordinator memory — GPU no longer needed.
+			// KV blob is in Coordinator memory (or the Store) — GPU no longer needed.
 			// Store writes below run in parallel but don't need the GPU.
 			if (item.PrefillLease != null)
 			{
@@ -2598,9 +2759,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			// ── Phase 2: Store writes (parallel, no GPU needed) ───────
 			var storeKey = $"{item.SessionId}.kv";
-			if (_cfg.EnableChunks)
+			if (_cfg.EnableChunks && item.KvStreamedToStore)
 			{
-				var chunks = ChunkEngine.ChunkAndHash(payload);
+				// Already streamed during the prefill response (PutChunked +
+				// manifest identity stamp) — nothing to do.
+				_log.Debug("save_kv_streamed_already Sid={Sid} Bytes={Bytes}",
+					item.SessionId, item.KvBytes);
+			}
+			else if (_cfg.EnableChunks)
+			{
+				var chunks = ChunkEngine.ChunkAndHash(payload!);
 				var orderedHashes = chunks.Select(c => c.Hash).ToList();
 				var missing = await SyncMissingAsync(storeKey, orderedHashes, item.TraceId, ct);
 				await PushMissingChunksParallelAsync(storeKey, item.SessionId, missing, chunks, payload, item.TraceId, ct);
@@ -3080,7 +3248,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		try
 		{
 			var restoreSw = System.Diagnostics.Stopwatch.StartNew();
-			byte[] restoreBlob;
+			// #470 Phase 2: null when the KV is streamed from the Store instead
+			// of assembled (merged-capable decode, chunks mode).
+			byte[]? restoreBlob = null;
 			if (_cfg.EnableChunks)
 			{
 				// ── Restore Phase 1: GetManifest ──────────────────────
@@ -3121,14 +3291,31 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (item.NPastAfter > 0) nPast = item.NPastAfter;
 				else item.NPastAfter = nPast;
 
-				// ── Restore Phase 2: Assemble chunks ─────────────────
-				var assembleSw = System.Diagnostics.Stopwatch.StartNew();
-				restoreBlob = await AssembleFromChunksAsync(null, storeKey, manifestChunks, item.TraceId, ct);
-				assembleSw.Stop();
-				item.KvBytes = restoreBlob.Length;
-				_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count} manifest_ms={ManifestMs} assemble_ms={AssembleMs}",
-					item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count,
-					manifestSw.ElapsedMilliseconds, assembleSw.ElapsedMilliseconds);
+				// ── Restore Phase 2: chunks (streamed) or assembled blob ──
+				// #470 Phase 2: when the decode engine is merged-capable, the KV
+				// is streamed from the Store into the framed DECODE — the full
+				// blob is never assembled in RAM. Only the non-merged StatePut
+				// path needs the assembled byte[].
+				var mergedCapableForRestore = _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true;
+				if (mergedCapableForRestore)
+				{
+					item.KvChunks = manifestChunks;
+					item.KvTotalSize = totalSize;
+					item.KvBytes = totalSize;
+					_log.Information("restore_kv_stream_planned Sid={Sid} SizeMB={Size} Chunks={Count} manifest_ms={ManifestMs}",
+						item.SessionId, totalSize / 1024 / 1024, manifestChunks.Count,
+						manifestSw.ElapsedMilliseconds);
+				}
+				else
+				{
+					var assembleSw = System.Diagnostics.Stopwatch.StartNew();
+					restoreBlob = await AssembleFromChunksAsync(null, storeKey, manifestChunks, item.TraceId, ct);
+					assembleSw.Stop();
+					item.KvBytes = restoreBlob.Length;
+					_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count} manifest_ms={ManifestMs} assemble_ms={AssembleMs}",
+						item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count,
+						manifestSw.ElapsedMilliseconds, assembleSw.ElapsedMilliseconds);
+				}
 			}
 			else
 			{
@@ -3154,11 +3341,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var mergedCapable = _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true;
 			if (mergedCapable)
 			{
-				// Carry the assembled KV blob forward to DecodeAsync so the
-				// framed DECODE 0x43 can send it as part of the merged RPC.
-				item.KvBlob = restoreBlob;
-				_log.Information("restore_kv_merged_skip_state_put Sid={Sid} Node={Node} Slot={Slot} BlobMB={MB}",
-					item.SessionId, w.Name, slotId, restoreBlob.Length / 1024 / 1024);
+				if (restoreBlob != null)
+				{
+					// Carry the assembled KV blob forward to DecodeAsync so the
+					// framed DECODE 0x43 can send it as part of the merged RPC.
+					item.KvBlob = restoreBlob;
+					_log.Information("restore_kv_merged_skip_state_put Sid={Sid} Node={Node} Slot={Slot} BlobMB={MB}",
+						item.SessionId, w.Name, slotId, restoreBlob.Length / 1024 / 1024);
+				}
+				else
+				{
+					// #470 Phase 2: no blob assembled — DecodeAsync streams the
+					// KV from the Store (item.KvChunks) inside the framed DECODE.
+					_log.Information("restore_kv_merged_stream_from_store Sid={Sid} Node={Node} Slot={Slot} Bytes={Bytes}",
+						item.SessionId, w.Name, slotId, item.KvTotalSize);
+				}
 			}
 			else
 			{
@@ -3724,29 +3921,63 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								item.SessionId, w.Name, busyAttempt + 1, busyMaxAttempts, backoffMs);
 							await Task.Delay(backoffMs, cts.Token);
 						}
-						mergedResp = await llamaRpc.EngineMergedDecodeAsync(
-							slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
-							nPast: item.NPastAfter,
-							kvTokenizer: kvIdentity.Tokenizer,
-							kvModelName: kvIdentity.ModelName,
-							kvModelQuant: kvIdentity.ModelQuant,
-							kvModelCapabilities: kvIdentity.ModelCapabilities,
-							modelTokenizer: modelIdentity.Tokenizer,
-							modelName: modelIdentity.ModelName,
-							modelQuant: modelIdentity.ModelQuant,
-							modelCapabilities: modelIdentity.ModelCapabilities,
-							modelAlias: modelAlias,
-							messagesJson: messagesJson,
-							nPredict: nPredict,
-							// #576: sampling/stop now travel inside messagesJson
-							// (the prompt segment), so the separate samplingJson
-							// channel stays empty — the engine's generation-header
-							// merge only fills keys the prompt object lacks.
-							samplingJson: null,
-							stream: true,
-							kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
-							traceId: item.TraceId,
-							ct: cts.Token);
+						if (item.KvChunks is { Count: > 0 })
+						{
+							// #470 Phase 2: KV streamed from the Store (no full
+							// blob in RAM). The enumerable re-fetches the chunks
+							// on every BUSY retry attempt.
+							mergedResp = await llamaRpc.EngineMergedDecodeStreamKvAsync(
+								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+								nPast: item.NPastAfter,
+								kvTokenizer: kvIdentity.Tokenizer,
+								kvModelName: kvIdentity.ModelName,
+								kvModelQuant: kvIdentity.ModelQuant,
+								kvModelCapabilities: kvIdentity.ModelCapabilities,
+								modelTokenizer: modelIdentity.Tokenizer,
+								modelName: modelIdentity.ModelName,
+								modelQuant: modelIdentity.ModelQuant,
+								modelCapabilities: modelIdentity.ModelCapabilities,
+								modelAlias: modelAlias,
+								messagesJson: messagesJson,
+								nPredict: nPredict,
+								// #576: sampling/stop now travel inside messagesJson
+								// (the prompt segment), so the separate samplingJson
+								// channel stays empty — the engine's generation-header
+								// merge only fills keys the prompt object lacks.
+								samplingJson: null,
+								stream: true,
+								kvChunks: StreamKvChunksFromStoreAsync(
+									$"{item.SessionId}.kv", item.KvChunks, item.TraceId, cts.Token),
+								kvTotalSize: item.KvTotalSize,
+								traceId: item.TraceId,
+								ct: cts.Token);
+						}
+						else
+						{
+							mergedResp = await llamaRpc.EngineMergedDecodeAsync(
+								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+								nPast: item.NPastAfter,
+								kvTokenizer: kvIdentity.Tokenizer,
+								kvModelName: kvIdentity.ModelName,
+								kvModelQuant: kvIdentity.ModelQuant,
+								kvModelCapabilities: kvIdentity.ModelCapabilities,
+								modelTokenizer: modelIdentity.Tokenizer,
+								modelName: modelIdentity.ModelName,
+								modelQuant: modelIdentity.ModelQuant,
+								modelCapabilities: modelIdentity.ModelCapabilities,
+								modelAlias: modelAlias,
+								messagesJson: messagesJson,
+								nPredict: nPredict,
+								// #576: sampling/stop now travel inside messagesJson
+								// (the prompt segment), so the separate samplingJson
+								// channel stays empty — the engine's generation-header
+								// merge only fills keys the prompt object lacks.
+								samplingJson: null,
+								stream: true,
+								kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
+								traceId: item.TraceId,
+								ct: cts.Token);
+						}
 						if (mergedResp.Status != (byte)StatusCode.Busy)
 							break; // Ok or terminal reject — no more retries
 						busyAttempt++;
@@ -3904,29 +4135,63 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								item.SessionId, w.Name, busyAttempt + 1, busyMaxAttempts, backoffMs);
 							await Task.Delay(backoffMs, ct);
 						}
-						mergedResp = await llamaRpc.EngineMergedDecodeAsync(
-							slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
-							nPast: item.NPastAfter,
-							kvTokenizer: kvIdentity.Tokenizer,
-							kvModelName: kvIdentity.ModelName,
-							kvModelQuant: kvIdentity.ModelQuant,
-							kvModelCapabilities: kvIdentity.ModelCapabilities,
-							modelTokenizer: modelIdentity.Tokenizer,
-							modelName: modelIdentity.ModelName,
-							modelQuant: modelIdentity.ModelQuant,
-							modelCapabilities: modelIdentity.ModelCapabilities,
-							modelAlias: modelAlias,
-							messagesJson: messagesJson,
-							nPredict: nPredict,
-							// #576: sampling/stop now travel inside messagesJson
-							// (the prompt segment), so the separate samplingJson
-							// channel stays empty — the engine's generation-header
-							// merge only fills keys the prompt object lacks.
-							samplingJson: null,
-							stream: false,
-							kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
-							traceId: item.TraceId,
-							ct: ct);
+						if (item.KvChunks is { Count: > 0 })
+						{
+							// #470 Phase 2: KV streamed from the Store (no full
+							// blob in RAM). The enumerable re-fetches the chunks
+							// on every BUSY retry attempt.
+							mergedResp = await llamaRpc.EngineMergedDecodeStreamKvAsync(
+								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+								nPast: item.NPastAfter,
+								kvTokenizer: kvIdentity.Tokenizer,
+								kvModelName: kvIdentity.ModelName,
+								kvModelQuant: kvIdentity.ModelQuant,
+								kvModelCapabilities: kvIdentity.ModelCapabilities,
+								modelTokenizer: modelIdentity.Tokenizer,
+								modelName: modelIdentity.ModelName,
+								modelQuant: modelIdentity.ModelQuant,
+								modelCapabilities: modelIdentity.ModelCapabilities,
+								modelAlias: modelAlias,
+								messagesJson: messagesJson,
+								nPredict: nPredict,
+								// #576: sampling/stop now travel inside messagesJson
+								// (the prompt segment), so the separate samplingJson
+								// channel stays empty — the engine's generation-header
+								// merge only fills keys the prompt object lacks.
+								samplingJson: null,
+								stream: false,
+								kvChunks: StreamKvChunksFromStoreAsync(
+									$"{item.SessionId}.kv", item.KvChunks, item.TraceId, ct),
+								kvTotalSize: item.KvTotalSize,
+								traceId: item.TraceId,
+								ct: ct);
+						}
+						else
+						{
+							mergedResp = await llamaRpc.EngineMergedDecodeAsync(
+								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+								nPast: item.NPastAfter,
+								kvTokenizer: kvIdentity.Tokenizer,
+								kvModelName: kvIdentity.ModelName,
+								kvModelQuant: kvIdentity.ModelQuant,
+								kvModelCapabilities: kvIdentity.ModelCapabilities,
+								modelTokenizer: modelIdentity.Tokenizer,
+								modelName: modelIdentity.ModelName,
+								modelQuant: modelIdentity.ModelQuant,
+								modelCapabilities: modelIdentity.ModelCapabilities,
+								modelAlias: modelAlias,
+								messagesJson: messagesJson,
+								nPredict: nPredict,
+								// #576: sampling/stop now travel inside messagesJson
+								// (the prompt segment), so the separate samplingJson
+								// channel stays empty — the engine's generation-header
+								// merge only fills keys the prompt object lacks.
+								samplingJson: null,
+								stream: false,
+								kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
+								traceId: item.TraceId,
+								ct: ct);
+						}
 						if (mergedResp.Status != (byte)StatusCode.Busy)
 							break; // Ok or terminal reject — no more retries
 						busyAttempt++;
@@ -5161,6 +5426,84 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		var resp = await StoreClient.RequestAsync(OpCode.PutManifest, storeKey, payload, traceId, ct);
 		if (resp.Status != (byte)StatusCode.Ok)
 			throw new InvalidDataException($"PUT_MANIFEST failed (status=0x{resp.Status:X2}): {resp.Meta}");
+	}
+
+	/// <summary>
+	/// #470 Phase 2: ordered KV byte stream from the Store's GET_CHUNKED response.
+	/// An empty known-hash list makes the Store return ALL chunks in manifest
+	/// order, streamed per-chunk (sendfile) — this reads the response CHUNKED, so
+	/// no full blob is ever materialized in coordinator RAM. Framed entries
+	/// ([4B index][4B size][data]) are parsed and yielded in order; the consumer
+	/// (framed DECODE) writes them straight to the engine socket. Producer errors
+	/// (store failure / cancellation) propagate through the enumerable.
+	/// </summary>
+	private async IAsyncEnumerable<ReadOnlyMemory<byte>> StreamKvChunksFromStoreAsync(
+		string storeKey, List<ChunkRef> chunks, string traceId,
+		[EnumeratorCancellation] CancellationToken ct)
+	{
+		var channel = Channel.CreateBounded<ReadOnlyMemory<byte>>(new BoundedChannelOptions(4)
+		{
+			FullMode = BoundedChannelFullMode.Wait
+		});
+
+		// One frame (8 + chunk data) plus one read window — grows if ever exceeded.
+		var frameBuf = new byte[ChunkEngine.CHUNK_SIZE + 8 + 1024 * 1024];
+		var frameLen = 0;
+
+		var producer = Task.Run(async () =>
+		{
+			try
+			{
+				var knownJson = Encoding.UTF8.GetBytes("[]");
+				var resp = await StoreClient.RequestChunkedPayloadAsync(
+					OpCode.GetChunked, storeKey, knownJson, traceId, ct,
+					onPayloadLen: _ => { },
+					onChunk: async (mem, token) =>
+					{
+						if (frameLen + mem.Length > frameBuf.Length)
+							Array.Resize(ref frameBuf, frameLen + mem.Length);
+						mem.Span.CopyTo(frameBuf.AsSpan(frameLen));
+						frameLen += mem.Length;
+
+						var head = 0;
+						while (frameLen - head >= 8)
+						{
+							// [4B index][4B size][data] — index is informational;
+							// ordering is guaranteed by the Store (manifest order).
+							var size = BinaryPrimitives.ReadInt32LittleEndian(
+								frameBuf.AsSpan(head + 4, 4));
+							if (size < 0 || frameLen - head < 8 + size)
+								break;
+							var data = frameBuf.AsMemory(head + 8, size).ToArray();
+							head += 8 + size;
+							await channel.Writer.WriteAsync(data, token);
+						}
+						if (head > 0)
+						{
+							Buffer.BlockCopy(frameBuf, head, frameBuf, 0, frameLen - head);
+							frameLen -= head;
+						}
+					});
+				if (resp.Status != (byte)StatusCode.Ok)
+					throw new InvalidDataException(
+						$"GET_CHUNKED failed (status=0x{resp.Status:X2}): {resp.Meta}");
+				channel.Writer.Complete();
+			}
+			catch (Exception ex)
+			{
+				channel.Writer.Complete(ex);
+			}
+		});
+
+		try
+		{
+			await foreach (var data in channel.Reader.ReadAllAsync(ct))
+				yield return data;
+		}
+		finally
+		{
+			await producer; // surface producer failures / cancellation
+		}
 	}
 
 	/// <summary>Create a blob from chunk-index-ordered data by reading the

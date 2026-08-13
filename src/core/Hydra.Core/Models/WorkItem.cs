@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
+using Hydra.Shared;
 
 namespace Hydra.Core.Models;
 
@@ -154,6 +155,18 @@ public sealed class WorkItem
 	public long KvBytes { get; set; }
 	/// <summary>KV state blob held in memory between Prefill→SaveKv and RestoreKv→Decode (engine mode).</summary>
 	public byte[]? KvBlob { get; set; }
+	/// <summary>#470 Phase 2: true when the prefill response was streamed straight
+	/// into the Store (chunked pipe) — no full blob ever existed; KvBlob stays
+	/// null and the SaveKv chunk phase must not re-push.</summary>
+	public bool KvStreamedToStore { get; set; }
+	/// <summary>#470 Phase 2: chunk list (index/hash/size) of the session KV in the
+	/// Store manifest, used to stream the KV into the framed DECODE instead of
+	/// assembling the full blob in RAM. Set by RestoreKvAsync when merged-capable
+	/// decode will stream from the Store.</summary>
+	public List<ChunkRef>? KvChunks { get; set; }
+	/// <summary>#470 Phase 2: total KV payload size (v2 header + state + logits)
+	/// matching <see cref="KvChunks"/> — the kv_len of the framed DECODE.</summary>
+	public long KvTotalSize { get; set; }
 	/// <summary>True when RestoreKv loaded KV into the slot before Decode (engine mode cross-GPU).</summary>
 	public bool KvRestoredForDecode { get; set; }
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>

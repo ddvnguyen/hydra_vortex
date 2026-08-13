@@ -224,6 +224,62 @@ public sealed class MigratedContinuationTests
             string? messagesJson, int nPredict, string? samplingJson, bool stream,
             ReadOnlyMemory<byte> kvBlob,
             string traceId, CancellationToken ct)
+            => Task.FromResult(EmulateMergedDecode(slotKey, nPast,
+                kvTokenizer, kvModelName, kvModelQuant, kvModelCapabilities,
+                modelTokenizer, modelName, modelQuant, modelCapabilities,
+                modelAlias, kvBlob.ToArray()));
+
+        /// <summary>#470 Phase 2: the streaming DECODE variant — the KV arrives
+        /// as an ordered chunk stream instead of one blob; buffered here (test
+        /// double) so assertions can inspect the exact bytes the coordinator
+        /// streamed.</summary>
+        public override async Task<MergedDecodeResponse> EngineMergedDecodeStreamKvAsync(
+            string slotKey, int nPast,
+            string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
+            string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+            string? modelAlias,
+            string? messagesJson, int nPredict, string? samplingJson, bool stream,
+            IAsyncEnumerable<ReadOnlyMemory<byte>> kvChunks, long kvTotalSize,
+            string traceId, CancellationToken ct)
+        {
+            using var ms = new MemoryStream((int)kvTotalSize);
+            await foreach (var chunk in kvChunks.WithCancellation(ct))
+                await ms.WriteAsync(chunk, ct);
+            return EmulateMergedDecode(slotKey, nPast,
+                kvTokenizer, kvModelName, kvModelQuant, kvModelCapabilities,
+                modelTokenizer, modelName, modelQuant, modelCapabilities,
+                modelAlias, ms.ToArray());
+        }
+
+        /// <summary>#470 Phase 2: the chunked-payload request twin (the Store's
+        /// GET_CHUNKED for decode-side KV streaming) — serves the framed chunk
+        /// payload through onChunk, recording the call like RequestAsync.</summary>
+        public override Task<RpcResponse> RequestChunkedPayloadAsync(
+            OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct,
+            Action<long> onPayloadLen,
+            Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+            TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
+        {
+            Calls.Add((op, key));
+            var chunked = op switch
+            {
+                OpCode.GetChunked => ChunkedPayload(),
+                _ => Array.Empty<byte>(),
+            };
+            onPayloadLen(chunked.Length);
+            if (chunked.Length > 0)
+                onChunk(chunked, ct).GetAwaiter().GetResult();
+            return Task.FromResult(new RpcResponse(
+                (byte)StatusCode.Ok,
+                JsonSerializer.Serialize(new { n_past = 2000, stored = true }),
+                []));
+        }
+
+        private MergedDecodeResponse EmulateMergedDecode(
+            string slotKey, int nPast,
+            string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
+            string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+            string? modelAlias, byte[] kvBlob)
         {
             MergedDecodeCalls.Add(new MergedDecodeCall(
                 slotKey, nPast,
@@ -245,7 +301,7 @@ public sealed class MigratedContinuationTests
             var capsXor = kvModelCapabilities ^ modelCapabilities;
             var valid = tokenizerMatch && nameMatch && (capsXor & 0x3) == 0;
 
-            return Task.FromResult(new MergedDecodeResponse
+            return new MergedDecodeResponse
             {
                 Status = (byte)StatusCode.Ok,
                 Valid = valid,
@@ -257,7 +313,7 @@ public sealed class MigratedContinuationTests
                 CapabilitiesXor = capsXor,
                 ModelQuantMatch = string.Equals(kvModelQuant, modelQuant, StringComparison.Ordinal),
                 ModelAliasMatch = true,
-            });
+            };
         }
     }
 
