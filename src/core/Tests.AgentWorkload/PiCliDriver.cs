@@ -17,11 +17,13 @@ public sealed class PiCliDriver : IAgentCliDriver
 
     public PiCliDriver(
         string provider = "hydra",
-        string model = "moe-35b-solo",
+        string? model = null,
         string binPath = "pi")
     {
         _provider = provider;
-        _model = model;
+        // #470: AGENT_WORKLOAD_MODEL env override (e.g. dense-27b-combined)
+        // lets CI target the combined 27B rig session instead of the default.
+        _model = model ?? Environment.GetEnvironmentVariable("AGENT_WORKLOAD_MODEL") ?? "moe-35b-solo";
         _binPath = binPath;
     }
 

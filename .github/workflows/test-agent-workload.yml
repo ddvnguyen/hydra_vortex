@@ -8,7 +8,23 @@ on:
         required: false
         default: "none"
         type: string
+      model:
+        description: "Agent model to drive (e.g. moe-35b-solo, dense-27b-combined). Defaults to moe-35b-solo when unset."
+        required: false
+        default: "moe-35b-solo"
+        type: string
   workflow_dispatch:
+    inputs:
+      run-tests:
+        description: "run-tests dispatch value (none|system|agent-workload|both); the job runs only when this includes 'agent-workload' or 'both'"
+        required: false
+        default: "agent-workload"
+        type: string
+      model:
+        description: "Agent model to drive (e.g. moe-35b-solo, dense-27b-combined). Defaults to moe-35b-solo when unset."
+        required: false
+        default: "moe-35b-solo"
+        type: string
 
 permissions:
   contents: read
@@ -57,6 +73,7 @@ jobs:
           P100_AGENT_PORT: "9602"
           STORE_HOST: "127.0.0.1"
           STORE_PORT: "9500"
+          AGENT_WORKLOAD_MODEL: ${{ inputs.model }}
 
       - name: Publish results
         uses: dorny/test-reporter@v1
