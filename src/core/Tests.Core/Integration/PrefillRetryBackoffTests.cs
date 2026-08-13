@@ -124,7 +124,7 @@ public sealed class PrefillRetryBackoffTests
 
 		public override Task<RpcResponse> RequestAsync(
 			OpCode op, string key, ReadOnlyMemory<byte> payload,
-			string traceId, CancellationToken ct)
+			string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
 		{
 			if (op == OpCode.EnginePrefill)
 				Interlocked.Increment(ref PrefillCalls);
@@ -139,7 +139,7 @@ public sealed class PrefillRetryBackoffTests
 
 		public override Task<RpcResponse> RequestAsync(
 			OpCode op, string key, ReadOnlyMemory<byte> payload,
-			string traceId, CancellationToken ct)
+			string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
 			=> throw _ex;
 	}
 

@@ -56,14 +56,34 @@ public class RpcClient : IAsyncDisposable
     public virtual async Task<RpcResponse> RequestAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
         string traceId, CancellationToken ct)
+        => await RequestAsync(op, key, payload, traceId, ct,
+            requestTimeoutOverride: null, payloadIdleBudget: null);
+
+    /// <summary>
+    /// #470: overload with a raised ceiling + idle-based payload budget for
+    /// PREFILL (large KV responses). VIRTUAL on purpose: the 5-arg virtual above
+    /// delegates here, so test doubles override THIS signature — a single
+    /// interception point covers both call paths (EnginePrefillAsync goes
+    /// straight through here; every other caller funnels through the 5-arg).
+    /// </summary>
+    public virtual async Task<RpcResponse> RequestAsync(
+        OpCode op, string key, ReadOnlyMemory<byte> payload,
+        string traceId, CancellationToken ct,
+        TimeSpan? requestTimeoutOverride,
+        TimeSpan? payloadIdleBudget)
     {
+        // #470: PREFILL needs a raised ceiling (compute ~175s at 28K tokens +
+        // multi-GB KV transfer) AND an idle-based payload budget (see
+        // ReadPayloadIdleAsync). All other callers keep the default 180s.
+        var effectiveTimeout = requestTimeoutOverride ?? _requestTimeout;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_requestTimeout);
+        timeoutCts.CancelAfter(effectiveTimeout);
 
         await WaitForTurnAsync(op, timeoutCts.Token, ct);
         try
         {
-            return await SendAndReceiveAsync(op, key, payload, traceId, timeoutCts.Token);
+            return await SendAndReceiveAsync(op, key, payload, traceId,
+                timeoutCts, effectiveTimeout, payloadIdleBudget, ct);
         }
         catch (OperationCanceledException)
         {
@@ -72,7 +92,7 @@ public class RpcClient : IAsyncDisposable
             // so the next request starts on a fresh socket instead of misframing.
             DropConnection();
             if (!ct.IsCancellationRequested)
-                throw NewTimeout(op);
+                throw NewTimeout(op, effectiveTimeout);
             throw;
         }
         catch (InvalidDataException)
@@ -149,8 +169,11 @@ public class RpcClient : IAsyncDisposable
         }
     }
 
-    private TimeoutException NewTimeout(OpCode op) =>
-        new($"RPC {op} to {_host}:{_port} timed out after {_requestTimeout.TotalSeconds:F0}s");
+    private TimeoutException NewTimeout(OpCode op, TimeSpan? effective = null)
+    {
+        var timeout = effective ?? _requestTimeout;
+        return new($"RPC {op} to {_host}:{_port} timed out after {timeout.TotalSeconds:F0}s");
+    }
 
     public async IAsyncEnumerable<byte[]> RequestStreamAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
@@ -248,7 +271,8 @@ public class RpcClient : IAsyncDisposable
 
     private async Task<RpcResponse> SendAndReceiveAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
-        string traceId, CancellationToken ct)
+        string traceId, CancellationTokenSource timeoutCts, TimeSpan effectiveTimeout,
+        TimeSpan? payloadIdleBudget, CancellationToken ct)
     {
         var attempts = 0;
 
@@ -268,7 +292,10 @@ public class RpcClient : IAsyncDisposable
                     : null;
 
                 var payloadBytes = header.PayloadLen > 0
-                    ? await ReadPayloadAsync(_stream!, (long)header.PayloadLen, ct)
+                    ? payloadIdleBudget.HasValue
+                        ? await ReadPayloadIdleAsync(_stream!, (long)header.PayloadLen,
+                            timeoutCts, payloadIdleBudget.Value, ct)
+                        : await ReadPayloadAsync(_stream!, (long)header.PayloadLen, ct)
                     : [];
 
                 return new RpcResponse(header.Status, meta, payloadBytes);
@@ -460,21 +487,59 @@ public class RpcClient : IAsyncDisposable
         return Encoding.UTF8.GetString(buf);
     }
 
+    /// <summary>Sanity bound for a single RPC response payload. The PREFILL response
+    /// (opcode 0x42) returns the KV state blob inline per specs/rpc-protocol.md,
+    /// and that blob scales with context — ~800 MB at 60-80K tokens (CLAUDE.md),
+    /// 827 MB measured at 7.3K tokens. The cap must sit above that. Raised to
+    /// 4 GB (2026-08-13, epic #470): the blob is KV + MTP checkpoint (≈2× KV),
+    /// so real agent workloads (~43K context → 3.3 GB) exceeded the old 2 GB
+    /// cap and every agent turn failed with "RPC payload length out of range".
+    /// It still rejects garbage/malformed lengths (negative or absurd values).
+    /// NOTE (#470 follow-up): the 10 GB target exceeds this cap — raising it is
+    /// a separate change from the timeout fix landed here.</summary>
+    private const long MaxPayloadLen = 4L * 1024 * 1024 * 1024;
+
+    private static void ValidatePayloadLen(long payloadLen)
+    {
+        if (payloadLen < 0 || payloadLen > MaxPayloadLen)
+            throw new InvalidDataException($"RPC payload length out of range: {payloadLen} bytes");
+    }
+
     private static async Task<byte[]> ReadPayloadAsync(NetworkStream stream, long payloadLen, CancellationToken ct)
     {
-        // Sanity bound for a single RPC response payload. The PREFILL response
-        // (opcode 0x42) returns the KV state blob inline per specs/rpc-protocol.md,
-        // and that blob scales with context — ~800 MB at 60-80K tokens (CLAUDE.md),
-        // 827 MB measured at 7.3K tokens. The cap must sit above that. Raised to
-        // 4 GB (2026-08-13, epic #470): the blob is KV + MTP checkpoint (≈2× KV),
-        // so real agent workloads (~43K context → 3.3 GB) exceeded the old 2 GB
-        // cap and every agent turn failed with "RPC payload length out of range".
-        // It still rejects garbage/malformed lengths (negative or absurd values).
-        const long maxPayloadLen = 4L * 1024 * 1024 * 1024;
-        if (payloadLen < 0 || payloadLen > maxPayloadLen)
-            throw new InvalidDataException($"RPC payload length out of range: {payloadLen} bytes");
+        ValidatePayloadLen(payloadLen);
         var buf = new byte[payloadLen];
         await ReadExactAsync(stream, buf, ct);
+        return buf;
+    }
+
+    /// <summary>
+    /// #470: payload read with an idle-based deadline instead of a fixed total
+    /// budget. The default RequestAsync budget (180s) races long PREFILL reads:
+    /// compute (~175s at 28K tokens) + a multi-GB KV transfer can exceed it, and
+    /// cancelling mid-transfer drops the connection — the peer then sees garbage
+    /// framing ('RPC payload length out of range: 272728361719849728' = a
+    /// misaligned 12B header read). Here the caller's timeout CTS is re-armed to
+    /// <paramref name="idleBudget"/> on every successful chunk read: any progress
+    /// keeps the exchange alive, while a genuinely wedged engine (no bytes for a
+    /// full idle period) still fails fast. The initial <c>CancelAfter</c> set by
+    /// RequestAsync remains the ceiling for the whole exchange (compute included).
+    /// </summary>
+    private static async Task<byte[]> ReadPayloadIdleAsync(
+        NetworkStream stream, long payloadLen,
+        CancellationTokenSource timeoutCts, TimeSpan idleBudget, CancellationToken ct)
+    {
+        ValidatePayloadLen(payloadLen);
+        var buf = new byte[payloadLen];
+        var offset = 0;
+        while (offset < buf.Length)
+        {
+            var read = await stream.ReadAsync(buf.AsMemory(offset, buf.Length - offset), ct);
+            if (read == 0)
+                throw new EndOfStreamException("Connection closed by peer");
+            offset += read;
+            timeoutCts.CancelAfter(idleBudget);
+        }
         return buf;
     }
 
@@ -490,7 +555,14 @@ public class RpcClient : IAsyncDisposable
     public async Task<RpcResponse> EnginePrefillAsync(string slotKey, string requestJson, string traceId, CancellationToken ct)
     {
         var payload = Encoding.UTF8.GetBytes(requestJson);
-        return await RequestAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct);
+        // #470: prefill compute (~175s at 28K tokens, scales past the old 180s
+        // budget) + multi-GB KV transfer needs a raised ceiling, and the payload
+        // read is idle-based so transfer progress keeps the deadline alive — a
+        // fixed total budget dropped the connection mid-frame (coordinator read
+        // garbage 12B headers afterwards). 600s ceiling / 120s per-chunk idle.
+        return await RequestAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct,
+            requestTimeoutOverride: TimeSpan.FromSeconds(600),
+            payloadIdleBudget: TimeSpan.FromSeconds(120));
     }
 
     /// <summary>

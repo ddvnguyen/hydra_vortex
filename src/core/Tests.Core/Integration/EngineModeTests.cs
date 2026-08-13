@@ -66,7 +66,7 @@ public sealed class EngineModeTests
 
         public override Task<RpcResponse> RequestAsync(
             OpCode op, string key, ReadOnlyMemory<byte> payload,
-            string traceId, CancellationToken ct)
+            string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
         {
             Calls.Add((op, key, payload.ToArray()));
 

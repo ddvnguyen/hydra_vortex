@@ -99,7 +99,7 @@ internal sealed class TestRpcClient : RpcClient
 	public TestRpcClient() : base("test", 0) { }
 
 	public override async Task<RpcResponse> RequestAsync(
-		OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+		OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
 	{
 		Calls.Add((op, key));
 		var meta = JsonSerializer.Serialize(new

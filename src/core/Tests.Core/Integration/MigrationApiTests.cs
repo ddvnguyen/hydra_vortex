@@ -226,7 +226,7 @@ internal sealed class ThrowOnOpRpcClient : RpcClient
     public ThrowOnOpRpcClient(OpCode throwOn) : base("test", 0) => _throwOn = throwOn;
 
     public override Task<RpcResponse> RequestAsync(
-        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
     {
         if (op == _throwOn)
             throw new InvalidOperationException($"injected RPC failure on {op}");
@@ -244,7 +244,7 @@ internal sealed class NonOkOnOpRpcClient : RpcClient
     public NonOkOnOpRpcClient(OpCode nonOkOn) : base("test", 0) => _nonOkOn = nonOkOn;
 
     public override Task<RpcResponse> RequestAsync(
-        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
     {
         if (op == _nonOkOn)
             return Task.FromResult(new RpcResponse((byte)StatusCode.Error, "slot restore failed", Array.Empty<byte>()));
