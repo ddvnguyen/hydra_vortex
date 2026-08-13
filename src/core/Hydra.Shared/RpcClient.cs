@@ -465,9 +465,12 @@ public class RpcClient : IAsyncDisposable
         // Sanity bound for a single RPC response payload. The PREFILL response
         // (opcode 0x42) returns the KV state blob inline per specs/rpc-protocol.md,
         // and that blob scales with context — ~800 MB at 60-80K tokens (CLAUDE.md),
-        // 827 MB measured at 7.3K tokens. The cap must sit above that: 2 GB. It
-        // still rejects garbage/malformed lengths (negative or absurd values).
-        const long maxPayloadLen = 2L * 1024 * 1024 * 1024;
+        // 827 MB measured at 7.3K tokens. The cap must sit above that. Raised to
+        // 4 GB (2026-08-13, epic #470): the blob is KV + MTP checkpoint (≈2× KV),
+        // so real agent workloads (~43K context → 3.3 GB) exceeded the old 2 GB
+        // cap and every agent turn failed with "RPC payload length out of range".
+        // It still rejects garbage/malformed lengths (negative or absurd values).
+        const long maxPayloadLen = 4L * 1024 * 1024 * 1024;
         if (payloadLen < 0 || payloadLen > maxPayloadLen)
             throw new InvalidDataException($"RPC payload length out of range: {payloadLen} bytes");
         var buf = new byte[payloadLen];
