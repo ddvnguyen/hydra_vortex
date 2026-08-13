@@ -1168,6 +1168,27 @@ public class RpcClient : IAsyncDisposable
         }
     }
 
+    /// <summary>#470 forwarding overload without an explicit whole-segment KV
+    /// hash — the empty hash skips whole-segment verification (chunk integrity
+    /// is guaranteed by the Store's content-addressed chunks).</summary>
+    public virtual Task<MergedDecodeResponse> EngineMergedDecodeStreamKvAsync(
+        string slotKey,
+        int nPast,
+        string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
+        string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+        string? modelAlias,
+        string? messagesJson, int nPredict, string? samplingJson, bool stream,
+        IAsyncEnumerable<ReadOnlyMemory<byte>> kvChunks, long kvTotalSize,
+        string traceId, CancellationToken ct)
+        => EngineMergedDecodeStreamKvAsync(
+            slotKey, nPast,
+            kvTokenizer, kvModelName, kvModelQuant, kvModelCapabilities,
+            modelTokenizer, modelName, modelQuant, modelCapabilities,
+            modelAlias,
+            messagesJson, nPredict, samplingJson, stream,
+            kvChunks, kvTotalSize,
+            "", traceId, ct);
+
     public async Task<RpcResponse> EngineSetExpertModeAsync(string slotKey, string mode, string traceId, CancellationToken ct)
     {
         var payload = Encoding.UTF8.GetBytes(mode);
