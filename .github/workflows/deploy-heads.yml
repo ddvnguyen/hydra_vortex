@@ -247,15 +247,25 @@ jobs:
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
         run: |
           set -euo pipefail
+          # #470: build-from-fork re-pushes the same tag with a fresh digest
+          # moments before this step runs; GHCR's manifest endpoint has
+          # eventual-consistency on replaced tags and can 404 for tens of
+          # seconds. Retry with backoff instead of failing the deploy on a
+          # propagation lag.
           validate_ref() {
             local ref="$1"
-            if podman pull "$ref" >/dev/null 2>&1; then
-              echo "OK: $ref"
-            else
-              echo "::error::Image ref not found or not pullable: $ref"
-              echo "::error::Run scripts/ci/list-llama-image-tags.sh for the current valid image-tag list."
-              exit 1
-            fi
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if podman pull "$ref" >/dev/null 2>&1; then
+                echo "OK: $ref (attempt $attempt)"
+                return 0
+              fi
+              echo "retry $attempt/5: $ref not visible yet — GHCR propagation, waiting 30s"
+              sleep 30
+            done
+            echo "::error::Image ref not found or not pullable after 5 attempts: $ref"
+            echo "::error::Run scripts/ci/list-llama-image-tags.sh for the current valid image-tag list."
+            exit 1
           }
           [ -n "${{ steps.images.outputs.rtx }}" ] && validate_ref "${{ steps.images.outputs.rtx }}"
           [ -n "${{ steps.images.outputs.p100 }}" ] && validate_ref "${{ steps.images.outputs.p100 }}"
