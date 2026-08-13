@@ -635,6 +635,21 @@ public class RpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Overload without <paramref name="onMeta"/> for callers that only need
+    /// the streamed payload (the meta comes back in the final response).
+    /// Forwards to the full overload with a null meta sink.
+    /// </summary>
+    public virtual async Task<RpcResponse> EnginePrefillChunkedAsync(
+        string slotKey, string requestJson, string traceId, CancellationToken ct,
+        Action<long> onPayloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
+    {
+        return await EnginePrefillChunkedAsync(slotKey, requestJson, traceId, ct,
+            onMeta: null, onPayloadLen, onChunk, requestTimeoutOverride, payloadIdleBudget);
+    }
+
+    /// <summary>
     /// #470 (Phase 2): PREFILL whose response payload is streamed chunk-by-chunk
     /// via <paramref name="onChunk"/> — the full blob (2.3 GB today, 10 GB
     /// target) is NEVER materialized in coordinator RAM. The response header's
