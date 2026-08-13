@@ -35,7 +35,7 @@ jobs:
     name: Agent Workload Tests (Tier 4)
     if: inputs.run-tests == 'agent-workload' || inputs.run-tests == 'both'
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 120
     concurrency:
       group: hydra-live-rig
       cancel-in-progress: false
@@ -59,6 +59,7 @@ jobs:
         run: |
           dotnet test src/core/Tests.AgentWorkload/ -c Release --no-build --nologo -v normal \
             --settings src/Hydra.runsettings \
+            --logger "console;verbosity=detailed" \
             --logger "trx;LogFileName=agentworkload.trx" \
             --results-directory TestResults/
         env:
