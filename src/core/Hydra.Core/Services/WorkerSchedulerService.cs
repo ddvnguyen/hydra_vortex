@@ -3704,29 +3704,53 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					var kvIdentity = item.GetKvModelIdentity();
 
 					var llamaRpc = GetLlamaRpcClient(w);
-					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
-						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
-						nPast: item.NPastAfter,
-						kvTokenizer: kvIdentity.Tokenizer,
-						kvModelName: kvIdentity.ModelName,
-						kvModelQuant: kvIdentity.ModelQuant,
-						kvModelCapabilities: kvIdentity.ModelCapabilities,
-						modelTokenizer: modelIdentity.Tokenizer,
-						modelName: modelIdentity.ModelName,
-						modelQuant: modelIdentity.ModelQuant,
-						modelCapabilities: modelIdentity.ModelCapabilities,
-						modelAlias: modelAlias,
-						messagesJson: messagesJson,
-						nPredict: nPredict,
-						// #576: sampling/stop now travel inside messagesJson
-						// (the prompt segment), so the separate samplingJson
-						// channel stays empty — the engine's generation-header
-						// merge only fills keys the prompt object lacks.
-						samplingJson: null,
-						stream: true,
-						kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
-						traceId: item.TraceId,
-						ct: cts.Token);
+					// #470 BUSY-retry (2026-08-13): an engine slot busy with a
+					// concurrent decode returns HYDRA_STATUS_BUSY (0x04) and the
+					// merged decode frame carries Status=Busy with Valid=false.
+					// Previously ANY non-Ok status hit the gate → 503 "KV not
+					// restored" — even though the slot merely needs a moment.
+					// Retry bounded (3 attempts, 500ms/1s/2s backoff) BEFORE the
+					// gate; only persistent Busy falls through to the abort.
+					// Non-Busy rejects (identity mismatch etc.) stay terminal.
+					MergedDecodeResponse? mergedResp = null;
+					var busyAttempt = 0;
+					const int busyMaxAttempts = 3;
+					while (busyAttempt < busyMaxAttempts)
+					{
+						if (busyAttempt > 0)
+						{
+							var backoffMs = busyAttempt switch { 1 => 500, 2 => 1000, _ => 2000 };
+							_log.Warning("merged_decode_busy_retry Sid={Sid} Node={Node} Attempt={A}/{Max} — slot busy, retrying in {Ms}ms",
+								item.SessionId, w.Name, busyAttempt + 1, busyMaxAttempts, backoffMs);
+							await Task.Delay(backoffMs, cts.Token);
+						}
+						mergedResp = await llamaRpc.EngineMergedDecodeAsync(
+							slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+							nPast: item.NPastAfter,
+							kvTokenizer: kvIdentity.Tokenizer,
+							kvModelName: kvIdentity.ModelName,
+							kvModelQuant: kvIdentity.ModelQuant,
+							kvModelCapabilities: kvIdentity.ModelCapabilities,
+							modelTokenizer: modelIdentity.Tokenizer,
+							modelName: modelIdentity.ModelName,
+							modelQuant: modelIdentity.ModelQuant,
+							modelCapabilities: modelIdentity.ModelCapabilities,
+							modelAlias: modelAlias,
+							messagesJson: messagesJson,
+							nPredict: nPredict,
+							// #576: sampling/stop now travel inside messagesJson
+							// (the prompt segment), so the separate samplingJson
+							// channel stays empty — the engine's generation-header
+							// merge only fills keys the prompt object lacks.
+							samplingJson: null,
+							stream: true,
+							kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
+							traceId: item.TraceId,
+							ct: cts.Token);
+						if (mergedResp.Status != (byte)StatusCode.Busy)
+							break; // Ok or terminal reject — no more retries
+						busyAttempt++;
+					}
 
 					item.DecodeRequestId = mergedResp.DecodeRequestId;
 					item.Match = new DecodeMatch(
@@ -3864,29 +3888,49 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					var kvIdentity = item.GetKvModelIdentity();
 
 					var llamaRpc = GetLlamaRpcClient(w);
-					var mergedResp = await llamaRpc.EngineMergedDecodeAsync(
-						slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
-						nPast: item.NPastAfter,
-						kvTokenizer: kvIdentity.Tokenizer,
-						kvModelName: kvIdentity.ModelName,
-						kvModelQuant: kvIdentity.ModelQuant,
-						kvModelCapabilities: kvIdentity.ModelCapabilities,
-						modelTokenizer: modelIdentity.Tokenizer,
-						modelName: modelIdentity.ModelName,
-						modelQuant: modelIdentity.ModelQuant,
-						modelCapabilities: modelIdentity.ModelCapabilities,
-						modelAlias: modelAlias,
-						messagesJson: messagesJson,
-						nPredict: nPredict,
-						// #576: sampling/stop now travel inside messagesJson
-						// (the prompt segment), so the separate samplingJson
-						// channel stays empty — the engine's generation-header
-						// merge only fills keys the prompt object lacks.
-						samplingJson: null,
-						stream: false,
-						kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
-						traceId: item.TraceId,
-						ct: ct);
+					// #470 BUSY-retry (2026-08-13) — non-streaming twin of the
+					// streaming path: retry bounded (3 attempts, 500ms/1s/2s)
+					// when the engine slot is busy (Status 0x04) instead of
+					// letting the gate below turn a transient Busy into a 503.
+					MergedDecodeResponse? mergedResp = null;
+					var busyAttempt = 0;
+					const int busyMaxAttempts = 3;
+					while (busyAttempt < busyMaxAttempts)
+					{
+						if (busyAttempt > 0)
+						{
+							var backoffMs = busyAttempt switch { 1 => 500, 2 => 1000, _ => 2000 };
+							_log.Warning("merged_decode_busy_retry_nonstream Sid={Sid} Node={Node} Attempt={A}/{Max} — slot busy, retrying in {Ms}ms",
+								item.SessionId, w.Name, busyAttempt + 1, busyMaxAttempts, backoffMs);
+							await Task.Delay(backoffMs, ct);
+						}
+						mergedResp = await llamaRpc.EngineMergedDecodeAsync(
+							slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+							nPast: item.NPastAfter,
+							kvTokenizer: kvIdentity.Tokenizer,
+							kvModelName: kvIdentity.ModelName,
+							kvModelQuant: kvIdentity.ModelQuant,
+							kvModelCapabilities: kvIdentity.ModelCapabilities,
+							modelTokenizer: modelIdentity.Tokenizer,
+							modelName: modelIdentity.ModelName,
+							modelQuant: modelIdentity.ModelQuant,
+							modelCapabilities: modelIdentity.ModelCapabilities,
+							modelAlias: modelAlias,
+							messagesJson: messagesJson,
+							nPredict: nPredict,
+							// #576: sampling/stop now travel inside messagesJson
+							// (the prompt segment), so the separate samplingJson
+							// channel stays empty — the engine's generation-header
+							// merge only fills keys the prompt object lacks.
+							samplingJson: null,
+							stream: false,
+							kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
+							traceId: item.TraceId,
+							ct: ct);
+						if (mergedResp.Status != (byte)StatusCode.Busy)
+							break; // Ok or terminal reject — no more retries
+						busyAttempt++;
+					}
 
 					item.DecodeRequestId = mergedResp.DecodeRequestId;
 					item.Match = new DecodeMatch(

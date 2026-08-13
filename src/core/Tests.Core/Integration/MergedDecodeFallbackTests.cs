@@ -708,6 +708,49 @@ public sealed class MergedDecodeFallbackTests
             choices[0].GetProperty("message").GetProperty("content").GetString());
     }
 
+    [Fact]
+    public async Task MergedDecode_BusyOnce_ThenOk_Succeeds()
+    {
+        // #470 BUSY-retry (2026-08-13): the engine slot is transiently busy
+        // (HYDRA_STATUS_BUSY 0x04 — a concurrent decode in progress). The
+        // coordinator must retry (bounded, with backoff) instead of treating
+        // the first Busy as a terminal Gate-A rejection → the request succeeds.
+        await using var f = new MergedDecodeFixture();
+        f.Rpc.BusyThenOkCount = 1; // first merged decode returns Busy, second Ok
+
+        var result = await f.SubmitAsync("sess_busy1", 500, 100, stream: false);
+
+        // The request succeeded through the merged-decode path (no HTTP-proxy
+        // fallback — the gate accepted the retried Ok response).
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+        Assert.Contains(f.Events,
+            e => e.MessageTemplate.Text.Contains("merged_decode_busy_retry"));
+        Assert.DoesNotContain(f.Events,
+            e => e.MessageTemplate.Text.Contains("KV not restored, aborting"));
+        var dict = Assert.IsType<Dictionary<string, object>>(result);
+        Assert.True(dict.ContainsKey("choices"), "retried busy request must produce a completion");
+    }
+
+    [Fact]
+    public async Task MergedDecode_BusyAlways_StillFails()
+    {
+        // #470 BUSY-retry: a slot that stays busy past the bounded retry
+        // budget (3 attempts) must still fail via the Gate-A abort — the retry
+        // loop must NOT loop forever nor fall through to a wrong decode.
+        await using var f = new MergedDecodeFixture();
+        f.Rpc.BusyThenOkCount = 99; // busy on every attempt (beyond the 3-attempt budget)
+
+        // Retries exhausted → the gate abort path throws.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => f.SubmitAsync("sess_busy2", 500, 100, stream: false));
+        Assert.Contains("KV not restored, aborting", ex.Message);
+
+        // The HTTP-proxy fallback must NOT have produced a happy completion —
+        // the gate rejects the request (transport-fault fallback is for RPC
+        // faults; a Gate-A reject is terminal by design).
+        Assert.Empty(f.Proxy.NonStreamingCalls);
+    }
+
     /// <summary>Read a bool request-body field — the deep-cloned clean body
     /// holds JsonElement values while the streaming fallback's forced
     /// stream:false override is a plain bool.</summary>
@@ -891,6 +934,10 @@ public sealed class MergedDecodeFallbackTests
         /// the engine may have accepted the decode).</summary>
         public Exception? EngineMergedDecodeError { get; set; }
 
+        /// <summary>#470 BUSY-retry: number of consecutive Busy (0x04) responses
+        /// to emit before returning Ok. 0 = never busy (default).</summary>
+        public int BusyThenOkCount { get; set; }
+
         public override Task<RpcResponse> RequestAsync(
             OpCode op, string key, ReadOnlyMemory<byte> payload,
             string traceId, CancellationToken ct)
@@ -926,6 +973,17 @@ public sealed class MergedDecodeFallbackTests
         {
             if (EngineMergedDecodeError != null)
                 throw EngineMergedDecodeError;
+            if (BusyThenOkCount > 0)
+            {
+                BusyThenOkCount--;
+                return Task.FromResult(new MergedDecodeResponse
+                {
+                    Status = (byte)StatusCode.Busy,
+                    Valid = false,
+                    DecodeRequestId = null,
+                    NPastAfterRestore = 0,
+                });
+            }
             return Task.FromResult(new MergedDecodeResponse
             {
                 Status = (byte)StatusCode.Ok,
