@@ -72,6 +72,11 @@ on:
           - "system"
           - "agent-workload"
           - "both"
+      model:
+        description: "Agent model to drive in Tier-4 (e.g. moe-35b-solo, dense-27b-combined). Defaults to moe-35b-solo when unset."
+        required: false
+        default: "moe-35b-solo"
+        type: string
 
 permissions:
   contents: write
@@ -573,3 +578,4 @@ jobs:
     uses: ./.github/workflows/test-agent-workload.yml
     with:
       run-tests: ${{ github.event.inputs.run-tests || inputs.run-tests || 'none' }}
+      model: ${{ github.event.inputs.model || inputs.model || 'moe-35b-solo' }}
