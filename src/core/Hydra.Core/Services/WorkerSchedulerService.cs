@@ -869,8 +869,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 
 			// Affinity worker busy — try cross-node (Gap 6)
+			// #470 (L3): a COMBINED session must never cross-node to a
+			// non-CombinedCapable worker (p100) — the KV is layer-split 27B-Coder
+			// and p100 would decode it on the 35B engine. Skip the fallback.
+			var combinedAff = RequestModelString(item) is { } cam
+				&& cam.Contains("combined", StringComparison.OrdinalIgnoreCase);
 			var alt = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
 				exclude: entry.NodeName, allowedModels: _cfg.AllowedModels);
+			if (combinedAff && alt is { CombinedCapable: false })
+			{
+				_log.Warning("cross_node_affinity_skip_combined Sid={Sid} From={From} To={To} — combined session refused non-combined cross-node target",
+					item.SessionId, entry.NodeName, alt.Name);
+				CoordinatorMetrics.CrossNodeAffinitySkipped.WithLabels(alt.Name, "combined").Inc();
+				alt = null;
+			}
 			if (alt != null && _tracker.TryAcquireSlot(alt.Name, out var altSlot, "decode"))
 			{
 				// NoStoreKvRestore=true: KV state cannot be transferred between
@@ -924,6 +936,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// moe-35b-solo session got MultiMode=Combined → the coordinator
 			// sent PIPELINE_ATTACH to the peer → fork stub (#287) → peer
 			// declined → fallback crashed with "KV not restored".
+			// #470 (L2, investigator 0ef8f152): startup restores the ledger from
+			// the Store with EMPTY NodeName (RestoreFromStoreAsync), so an empty
+			// NodeName must NOT skip the combined guard — that leaves
+			// PrefillWorker=null and PickDecodeAsync's combined guard dead →
+			// p100 wins. For a combined request, fall back to the combined head.
+			var reqIsCombined = RequestModelString(item) is { } rm
+				&& rm.Contains("combined", StringComparison.OrdinalIgnoreCase);
+			if (reqIsCombined && string.IsNullOrEmpty(entry.NodeName))
+			{
+				item.PrefillWorker = _cfg.Workers.FirstOrDefault(w => w.CombinedCapable && w.IsHead);
+				if (item.PrefillWorker != null)
+					_log.Information("migration_combined_empty_node Sid={Sid} — empty NodeName, pinned PrefillWorker to combined head {Node}",
+						item.SessionId, item.PrefillWorker.Name);
+			}
 			if (!string.IsNullOrEmpty(entry.NodeName))
 			{
 				item.PrefillWorker = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
@@ -935,9 +961,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// PickBestDecodeWorker wanders to P100 → 27B KV decoded on the 35B
 				// engine (wrong-model migration, observed live: trace 4717737069544794,
 				// decode_model=Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf, stream_done_no_lease).
-				var rawReqModel = item.Request.TryGetValue("model", out var mv) && mv is string ms ? ms : null;
-				var reqIsCombined = rawReqModel != null
-					&& rawReqModel.Contains("combined", StringComparison.OrdinalIgnoreCase);
+				//
+				// v2 (investigator 0ef8f152): item.Request["model"] is a JsonElement
+				// (raw HTTP body) whenever AutoRouter FAILED — which is exactly when
+				// ForceMode stays empty and this migration branch runs. `is string`
+				// fails for JsonElement, so use RequestModelString() which unwraps both.
 				if (item.PrefillWorker != null
 					&& item.PrefillWorker.CombinedCapable
 					&& reqIsCombined)
@@ -2414,6 +2442,28 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	/// <summary>
+	/// #470: read the request's "model" field as a string regardless of the
+	/// runtime storage type. The HTTP body is deserialized with default options
+	/// (CoordinatorControllers.cs) so values are <see cref="System.Text.Json.JsonElement"/>
+	/// — AutoRouter success overwrites "model" with a C# string (line 277) and sets
+	/// ForceMode, but when AutoRouter FAILS the field remains a JsonElement while
+	/// ForceMode stays empty, which is exactly when the migration/cold paths run.
+	/// Unwrap both shapes so the "combined" marker is never silently lost.
+	/// </summary>
+	private static string? RequestModelString(WorkItem item)
+	{
+		if (!item.Request.TryGetValue("model", out var mv))
+			return null;
+		return mv switch
+		{
+			string s => s,
+			System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } je
+				when je.GetString() is { } js => js,
+			_ => null,
+		};
+	}
+
+	/// <summary>
 	/// #589/#609: resolve the alias sent in the merged-decode RPC header
 	/// (<c>model</c> — consumed by the engine's DECODE Gate-A name fallback
 	/// and the DECODE_APPLY model-swap lookup). Model-agnostic workers
@@ -2805,9 +2855,45 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		else
 		{
-			dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
-				item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels);
-			if (dw == null && item.PrefillWorker?.CanDecode == true)
+			// #470 chokepoint (investigator 0ef8f152, L1/L3/L5): a COMBINED-model
+			// request must NEVER resolve to a non-CombinedCapable decode worker
+			// (e.g. p100 — DecodePriority=1, model 35B-Balanced, would decode a
+			// 27B-Coder KV → wrong-model → stream_done_no_lease wedge, observed
+			// live trace 4717737069544794). PickBestDecodeWorker is priority-only
+			// and model-agnostic; gate on the request marker (raw string, handles
+			// JsonElement) here — the funnel all leak paths converge on.
+			var combinedReq = RequestModelString(item) is { } crm
+				&& crm.Contains("combined", StringComparison.OrdinalIgnoreCase);
+			if (combinedReq)
+			{
+				// Combined decode must stay on a CombinedCapable head. Prefer the
+				// prefill worker (rtx) when it qualifies; otherwise fall back to
+				// another CombinedCapable head; NEVER a plain decode worker.
+				if (item.PrefillWorker?.CombinedCapable == true)
+				{
+					dw = item.PrefillWorker;
+					_log.Information("combined_pickdecode_head Sid={Sid} Node={Node} — combined decode pinned to prefill head",
+						item.SessionId, dw.Name);
+				}
+				else
+				{
+					dw = _cfg.Workers.FirstOrDefault(w => w.CombinedCapable && w.IsHead
+						&& _tracker.IsFree(w.Name) && _health.IsHealthy(w.Name));
+					if (dw != null)
+						_log.Information("combined_pickdecode_alt_head Sid={Sid} Node={Node} — combined decode pinned to alternate head",
+							item.SessionId, dw.Name);
+					else
+						_log.Warning("combined_pickdecode_no_head Sid={Sid} — no CombinedCapable head free for combined decode (refusing to fall back to non-combined worker)",
+							item.SessionId);
+				}
+			}
+			else
+			{
+				dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
+					item.PrefillWorker?.Name, allowedModels: _cfg.AllowedModels);
+			}
+			if (dw == null && item.PrefillWorker?.CanDecode == true
+				&& (item.PrefillWorker.CombinedCapable || !combinedReq))
 			{
 				dw = item.PrefillWorker;
 				CoordinatorMetrics.DecodeFallbackTotal.WithLabels("no_pd_worker_free").Inc();
