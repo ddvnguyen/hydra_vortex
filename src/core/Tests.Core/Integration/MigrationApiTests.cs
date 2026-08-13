@@ -216,6 +216,105 @@ public sealed class MigrationApiTests
             new() { Name = "p100", Host = "localhost", RpcPort = 9602, LlamaUrl = "http://192.168.122.21:8086", WorkerType = 2, Slots = 1, PrefillPriority = 100, DecodePriority = 1 },
         }
     };
+
+    // ── #470 canonical identity: migrated turn with a JsonElement model ──
+
+    /// <summary>Loader where the P/D-split routing identity maps prefill to
+    /// the mini quant and decode to the balanced quant — the decode alias is
+    /// what the DECODE frame must carry, never the raw routing key.</summary>
+    private static void UsePdLoader()
+    {
+        var models = new Dictionary<string, ModelTemplate>
+        {
+            ["moe-35b-pd"] = new ModelTemplate
+            {
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-balanced",
+            },
+        };
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 3,
+            Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-35B-mini"]     = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                ["qwen3.6-35B-balanced"] = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+            },
+        };
+        ModelConfigLoader.Reset();
+        ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
+    }
+
+    /// <summary>Build a migrated-continuation item whose request model is a
+    /// JsonElement (the shape AutoRouter failure leaves in the body) with the
+    /// canonical identity stamped the way SubmitAsync does at ingress.</summary>
+    private static WorkItem MakeJsonElementItem(string requestModel, ModelConfigLoader loader)
+    {
+        var item = new WorkItem(
+            new Dictionary<string, object>(),
+            new List<Dictionary<string, object>>(),
+            "sess", "trace", null, 1, 10);
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(requestModel));
+        item.Request["model"] = doc.RootElement.Clone();
+        item.ModelIdentity = RequestedModelIdentity.Resolve(requestModel, loader);
+        return item;
+    }
+
+    [Fact]
+    public void MigrationContinuation_DecodeFrameModel_IsEngineAlias()
+    {
+        // #470 canonical identity: a migrated turn (RouteType="migration")
+        // whose request model is a JsonElement (AutoRouter failed) must
+        // resolve the DECODE frame model to the engine's decode alias
+        // (moe-35b-pd → qwen3.6-35B-balanced) — NOT the raw routing key.
+        // The last `is string` read at :2552 silently returned null on the
+        // JsonElement shape and fell through to the historic chain.
+        UsePdLoader();
+        try
+        {
+            var loader = ModelConfigLoader.InstanceOrNull!;
+            WorkerConfig worker = new() { Name = "p100", ModelAlias = null };
+
+            // KvModelAlias absent: the frame model is the identity's decode
+            // alias, never the routing key.
+            var item = MakeJsonElementItem("moe-35b-pd", loader);
+            item.RouteType = "migration";
+            var alias = WorkerSchedulerService.ResolveMergedDecodeModelAlias(item, worker);
+            Assert.Equal("qwen3.6-35B-balanced", alias);
+            Assert.DoesNotContain("moe-35b-pd", alias);
+
+            // Legacy item without ModelIdentity (constructed outside
+            // SubmitAsync): RequestModelString unwraps the JsonElement and the
+            // decode-role translation still fires.
+            var legacy = new WorkItem(
+                new Dictionary<string, object>(),
+                new List<Dictionary<string, object>>(),
+                "sess", "trace", null, 1, 10)
+            {
+                RouteType = "migration",
+            };
+            using (var doc = JsonDocument.Parse(JsonSerializer.Serialize("moe-35b-pd")))
+                legacy.Request["model"] = doc.RootElement.Clone();
+            Assert.Equal("qwen3.6-35B-balanced",
+                WorkerSchedulerService.ResolveMergedDecodeModelAlias(legacy, worker));
+
+            // The source-node KV alias (mini — what actually built the KV on
+            // the source node) must NOT win: the migrated branch prefers the
+            // request's decode quant — the alias that maps to the target's
+            // resident path. Pre-fix the `is string` null fall-through sent
+            // the source quant on a cross-quant restore.
+            var withKvAlias = MakeJsonElementItem("moe-35b-pd", loader);
+            withKvAlias.RouteType = "migration";
+            withKvAlias.KvModelAlias = "qwen3.6-35B-mini";
+            Assert.Equal("qwen3.6-35B-balanced",
+                WorkerSchedulerService.ResolveMergedDecodeModelAlias(withKvAlias, worker));
+        }
+        finally
+        {
+            ModelConfigLoader.Reset();
+        }
+    }
 }
 
 // RPC double that returns Ok for every op except the one it is told to fail on,

@@ -659,6 +659,91 @@ public sealed class MergedDecodeFallbackTests
         finally { ModelConfigLoader.Reset(); }
     }
 
+    // ── #470 canonical identity: raw routing key never reaches the engine wire ──
+
+    /// <summary>Loader for the combined routing identity: dense-27b-combined
+    /// maps to the GGUF-file alias qwen3.6-27B-coder. The template requires
+    /// Combined capability, which neither fixture worker has (no
+    /// CombinedCapable / Gpu block) — so AutoRouter.Resolve returns null
+    /// (no feasible head) and Request["model"] stays a JsonElement.</summary>
+    private static void UseDenseCombinedLoader()
+    {
+        var models = new Dictionary<string, ModelTemplate>
+        {
+            ["dense-27b-combined"] = new ModelTemplate
+            {
+                Description = "combined",
+                PrefillAlias = "qwen3.6-27B-coder",
+                DecodeAlias  = "qwen3.6-27B-coder",
+                LoadTimeS = 100,
+                QualityTier = 3,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = GpuCapabilities.Combined,
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 0,
+                    MaxPromptTokens = 999999,
+                    MaxContextTokens = 128000,
+                },
+            },
+        };
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 3,
+            Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-27B-coder"] = "Qwopus3.6-27B-Coder-v1-APEX-I.gguf",
+            },
+        };
+        ModelConfigLoader.Reset();
+        ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
+    }
+
+    [Fact]
+    public async Task AutoRouterFailure_JsonElementModel_IsTranslatedOnPrefillWire()
+    {
+        // #470 canonical identity: when AutoRouter FAILS (no feasible head —
+        // the fixture workers are not CombinedCapable), Request["model"]
+        // stays a JsonElement("dense-27b-combined"). The `is string` checks
+        // all failed on that shape, so the raw routing key used to ride the
+        // PREFILL 0x42 body copy to the engine → "preset has 3 alias(es)" →
+        // model_fallback → broken pipe → prefill_rpc_error_exhausted. The
+        // identity record resolves the translated GGUF-file alias at ingress.
+        await using var f = new MergedDecodeFixture();
+        UseDenseCombinedLoader();
+        ModelRegistry.RegisterForTest(new EngineConfig(ModelAlias: "dense-27b-combined"));
+        try
+        {
+            var result = await f.SubmitWithJsonElementModelAsync(
+                "sess_jel1", "dense-27b-combined", 500, 100, stream: false);
+
+            // The PREFILL 0x42 body carries the translated GGUF-file alias —
+            // the alias the engine's --models-preset actually knows.
+            Assert.NotEmpty(f.Rpc.PrefillPayloadJsons);
+            using var doc = JsonDocument.Parse(f.Rpc.PrefillPayloadJsons[0]);
+            Assert.Equal("qwen3.6-27B-coder", doc.RootElement.GetProperty("model").GetString());
+
+            // The raw routing key never appears in ANY engine payload
+            // (0x42 body or 0x43 frame model alias).
+            Assert.All(f.Rpc.PrefillPayloadJsons,
+                p => Assert.DoesNotContain("dense-27b-combined", p));
+            Assert.All(f.Rpc.MergedDecodeModelAliases,
+                a => Assert.DoesNotContain("dense-27b-combined", a));
+            Assert.Contains(f.Rpc.MergedDecodeModelAliases, a => a == "qwen3.6-27B-coder");
+
+            Assert.IsType<Dictionary<string, object>>(result);
+        }
+        finally
+        {
+            ModelConfigLoader.Reset();
+        }
+    }
+
     // ── #470 Fix 3: merged_decode_transport_fault must not lose the lease ──
 
     [Fact]
@@ -929,6 +1014,15 @@ public sealed class MergedDecodeFallbackTests
     {
         public MergedDecodeRpcClient() : base("test", 0) { }
 
+        /// <summary>#470 canonical identity: raw PREFILL (0x42) payload JSONs
+        /// as sent to the engine — asserts the translated GGUF-file alias rides
+        /// the wire and the raw routing key never does.</summary>
+        public List<string> PrefillPayloadJsons { get; } = new();
+
+        /// <summary>#470 canonical identity: model aliases sent in the DECODE
+        /// (0x43) frame header.</summary>
+        public List<string> MergedDecodeModelAliases { get; } = new();
+
         /// <summary>#470 Fix 3: when set, EngineMergedDecodeAsync throws —
         /// simulates a merged_decode_transport_fault (RPC channel drop after
         /// the engine may have accepted the decode).</summary>
@@ -942,6 +1036,8 @@ public sealed class MergedDecodeFallbackTests
             OpCode op, string key, ReadOnlyMemory<byte> payload,
             string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
         {
+            if (op == OpCode.EnginePrefill)
+                PrefillPayloadJsons.Add(Encoding.UTF8.GetString(payload.Span));
             var response = op switch
             {
                 OpCode.EnginePrefill => new RpcResponse(
@@ -971,6 +1067,7 @@ public sealed class MergedDecodeFallbackTests
             ReadOnlyMemory<byte> kvBlob,
             string traceId, CancellationToken ct)
         {
+            MergedDecodeModelAliases.Add(modelAlias ?? "");
             if (EngineMergedDecodeError != null)
                 throw EngineMergedDecodeError;
             if (BusyThenOkCount > 0)
@@ -1101,6 +1198,28 @@ public sealed class MergedDecodeFallbackTests
             {
                 ["stream"] = stream,
                 ["max_tokens"] = maxTokens,
+                ["messages"] = msgs
+            };
+            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+                maxTokens, null, _runCts.Token);
+        }
+
+        /// <summary>#470 canonical identity: submit with the `model` field as a
+        /// JsonElement — the shape the HTTP body deserializer produces when
+        /// AutoRouter FAILS (the field is never overwritten with a C# string).</summary>
+        public async Task<object?> SubmitWithJsonElementModelAsync(
+            string sessionId, string model, int estimatedTokens, int maxTokens = 500, bool stream = false)
+        {
+            var msgs = new List<Dictionary<string, object>>
+            {
+                new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
+            };
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(model));
+            var req = new Dictionary<string, object>
+            {
+                ["stream"] = stream,
+                ["max_tokens"] = maxTokens,
+                ["model"] = doc.RootElement.Clone(),
                 ["messages"] = msgs
             };
             return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,

@@ -193,6 +193,15 @@ public sealed class WorkItem
 	public string? KvModelPath { get; set; }
 	/// <summary>True when the engine received a `model` value it could not resolve and fell back to the resident model.</summary>
 	public bool KvModelFallback { get; set; }
+	/// <summary>#470: canonical requested-model identity, resolved ONCE at
+	/// ingress (<c>WorkerSchedulerService.SubmitAsync</c>) from the raw
+	/// <c>Request["model"]</c> field (string or JsonElement) +
+	/// <see cref="Hydra.Core.Services.ModelConfigLoader"/>. Every payload builder
+	/// (PREFILL 0x42 body, DECODE 0x43 frame, HTTP-proxy body, cold-atomic
+	/// swap check) consumes this — the raw routing key never reaches the
+	/// engine wire. Null on legacy/unit paths that construct a WorkItem
+	/// without SubmitAsync (callers fall back to the raw request read).</summary>
+	public RequestedModelIdentity? ModelIdentity { get; set; }
 
 	/// <summary>Build a <see cref="ModelIdentity"/> from the per-field KV identity properties.</summary>
 	public ModelIdentity GetKvModelIdentity() => new()

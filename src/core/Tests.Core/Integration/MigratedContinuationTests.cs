@@ -107,6 +107,109 @@ public sealed class MigratedContinuationTests
 
     // ── Doubles ─────────────────────────────────────────────────────────
 
+    /// <summary>Health monitor advertising merged_decode but reporting NO
+    /// resident CurrentModel and no STATE_META alias — so the #470 canonical
+    /// identity's DECODE alias is the only source left for the frame's model.</summary>
+    private sealed class NoResidentHealthMonitor : IHealthMonitorService
+    {
+        public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+        public bool IsHealthy(string nodeName) => true;
+        public bool IsStoreHealthy => true;
+        public int? GetIdleSlot(string nodeName) => 0;
+
+        public NodeInfo? GetNodeInfo(string nodeName) => new()
+        {
+            NodeName = nodeName,
+            Healthy = true,
+            SlotsTotal = nodeName == "rtx" ? 2 : 1,
+            SlotsIdle = nodeName == "rtx" ? 2 : 1,
+            EngineCapabilities = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                Protocol.CapMergedDecode
+            },
+            CurrentModel = "",
+        };
+
+        public Dictionary<string, object> GetHealthSummary() => new();
+        public event Action? HealthyChanged;
+        public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+        public void MarkHealthy(string nodeName) { }
+    }
+
+    // ── #470 canonical identity: JsonElement model on a migrated turn ────
+
+    /// <summary>Loader where the P/D-split routing identity maps prefill to
+    /// the mini quant and decode to the balanced quant.</summary>
+    private static void UsePdLoader()
+    {
+        var models = new Dictionary<string, ModelTemplate>
+        {
+            ["moe-35b-pd"] = new ModelTemplate
+            {
+                PrefillAlias = "qwen3.6-35B-mini",
+                DecodeAlias  = "qwen3.6-35B-balanced",
+            },
+        };
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 3,
+            Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-35B-mini"]     = "Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf",
+                ["qwen3.6-35B-balanced"] = "Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf",
+            },
+        };
+        ModelConfigLoader.Reset();
+        ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
+    }
+
+    [Fact]
+    public async Task MigratedContinuation_JsonElementModel_DecodeFrameCarriesEngineAlias()
+    {
+        // #470 canonical identity: a migrated continuation whose request
+        // model is a JsonElement (AutoRouter failed). Pre-fix, the `is string`
+        // read at :2552 returned null → the frame model fell back to the
+        // SOURCE-node KV alias (qwen3.6-35B-mini) → Gate A's name fallback
+        // had no target-resident alias to match → "KV not restored, aborting".
+        // Post-fix the identity's DECODE alias (qwen3.6-35B-balanced — the
+        // alias that maps to the target's resident path) rides the 0x43 frame.
+        await using var f = new MigratedContinuationFixture(health: new NoResidentHealthMonitor());
+        f.Ledger.Register("sess_mig_jel", "p100", slotId: 0, nPast: 2000, prefixHash: null);
+        f.Ledger.MarkStoreState("sess_mig_jel");
+        f.Ledger.MarkEvicted("sess_mig_jel"); // post-/migrate state: non-resident on target
+        UsePdLoader();
+        ModelRegistry.RegisterForTest(new EngineConfig(ModelAlias: "moe-35b-pd"));
+        try
+        {
+            var result = await f.SubmitWithJsonElementModelAsync(
+                "sess_mig_jel", "moe-35b-pd", 3000, 50, stream: false);
+
+            // The continuation completed — Gate A accepted (the balanced
+            // alias maps to the target's resident path).
+            var dict = Assert.IsType<Dictionary<string, object>>(result);
+            Assert.True(dict.ContainsKey("choices"), "migrated continuation must produce a completion");
+
+            // The DECODE 0x43 frame model is the decode alias — the raw
+            // routing key never rides the frame.
+            var call = Assert.Single(f.Rpc.MergedDecodeCalls);
+            Assert.Equal("qwen3.6-35B-balanced", call.ModelAlias);
+            Assert.DoesNotContain("moe-35b-pd", call.ModelAlias);
+
+            // The raw routing key never appears in ANY engine payload
+            // (0x42 body or 0x43 frame).
+            Assert.All(f.Rpc.PrefillPayloadJsons,
+                p => Assert.DoesNotContain("moe-35b-pd", p));
+        }
+        finally
+        {
+            ModelConfigLoader.Reset();
+        }
+    }
+
+    // ── Doubles ─────────────────────────────────────────────────────────
+
     /// <summary>Health monitor advertising merged_decode on every worker and a
     /// pre-stamped CurrentModel for p100 — the target's resident alias as the
     /// health monitor knows it from prior engine STATE_META/prefill reports.
@@ -154,6 +257,9 @@ public sealed class MigratedContinuationTests
 
         public List<(OpCode Op, string Key)> Calls { get; } = new();
         public List<MergedDecodeCall> MergedDecodeCalls { get; } = new();
+        /// <summary>#470 canonical identity: raw PREFILL (0x42) payload JSONs
+        /// as sent to the engine — the raw routing key must never appear.</summary>
+        public List<string> PrefillPayloadJsons { get; } = new();
 
         public MigratedContinuationRpcClient() : base("test", 0) { }
 
@@ -165,6 +271,8 @@ public sealed class MigratedContinuationTests
             string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
         {
             Calls.Add((op, key));
+            if (op == OpCode.EnginePrefill)
+                PrefillPayloadJsons.Add(Encoding.UTF8.GetString(payload.Span));
             var response = op switch
             {
                 // The KV blob manifest written by SaveKvAsync on the source
@@ -386,16 +494,17 @@ public sealed class MigratedContinuationTests
         public SessionLedger Ledger { get; }
         public WorkerTracker Tracker { get; }
         public MigratedContinuationProxy Proxy { get; } = new();
-        public IHealthMonitorService Health { get; } = new MigratedContinuationHealthMonitor();
+        public IHealthMonitorService Health { get; }
         public MigratedContinuationRpcClient Rpc { get; } = new();
         public WorkerSchedulerService Scheduler { get; }
         private readonly CancellationTokenSource _runCts = new();
         private readonly Task _runTask;
 
-        public MigratedContinuationFixture()
+        public MigratedContinuationFixture(IHealthMonitorService? health = null)
         {
             Ledger = new SessionLedger();
             Tracker = new WorkerTracker();
+            Health = health ?? new MigratedContinuationHealthMonitor();
 
             Cfg = new CoordinatorConfig
             {
@@ -472,6 +581,28 @@ public sealed class MigratedContinuationTests
                 ["stream"] = stream,
                 ["max_tokens"] = maxTokens,
                 ["model"] = "nano",
+                ["messages"] = msgs
+            };
+            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+                maxTokens, null, _runCts.Token);
+        }
+
+        /// <summary>#470 canonical identity: submit with the `model` field as a
+        /// JsonElement — the shape the HTTP body deserializer produces when
+        /// AutoRouter FAILS (the field is never overwritten with a C# string).</summary>
+        public async Task<object?> SubmitWithJsonElementModelAsync(
+            string sessionId, string model, int estimatedTokens, int maxTokens = 500, bool stream = false)
+        {
+            var msgs = new List<Dictionary<string, object>>
+            {
+                new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
+            };
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(model));
+            var req = new Dictionary<string, object>
+            {
+                ["stream"] = stream,
+                ["max_tokens"] = maxTokens,
+                ["model"] = doc.RootElement.Clone(),
                 ["messages"] = msgs
             };
             return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,

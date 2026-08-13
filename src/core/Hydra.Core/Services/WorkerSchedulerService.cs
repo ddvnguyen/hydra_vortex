@@ -312,6 +312,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 		}
 
+		// #470 canonical identity: resolve the requested model identity ONCE
+		// at ingress — raw routing key + role-aware prefill/decode GGUF-file
+		// aliases — so every payload builder (PREFILL 0x42 body, DECODE 0x43
+		// frame, HTTP-proxy body, cold-atomic swap check) consumes the SAME
+		// translated aliases and the raw routing key (e.g. "dense-27b-combined")
+		// never reaches the engine wire. Request["model"] stays frozen as the
+		// raw routing key — no downstream path mutates it (body-level
+		// substitution instead). RequestModelString unwraps the JsonElement
+		// shape the HTTP body deserializer produces when AutoRouter failed.
+		item.ModelIdentity = RequestedModelIdentity.Resolve(
+			RequestModelString(item), ModelConfigLoader.InstanceOrNull);
+
 		_log.Information("request_received Sid={Sid} Stream={Stream}", sessionId, item.IsStreaming);
 
 		// Classify the request type based on estimated tokens and session state.
@@ -1094,8 +1106,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (_cfg.UseLlamaEngine)
 				{
 					var nodeInfo = _health.GetNodeInfo(aw.Name);
-					var requestedAlias = TranslateModelAlias(
-						item.Request.TryGetValue("model", out var cmv) && cmv is string cms ? cms : null);
+					// #470: the canonical identity's DECODE alias drives the
+					// swap check (what the engine is running is a GGUF-file
+					// alias). The old `is string` read silently returned null
+					// for the JsonElement shape (AutoRouter failed) — this
+					// never needs the raw request dict at all.
+					var requestedAlias = item.ModelIdentity?.DecodeAlias;
 					// #470 merged-decode: Gate A validates kv_metadata (what
 					// built the KV) against the decode node's model_metadata
 					// BEFORE the KV lands. With no PREFILL the KV blob AND the
@@ -1226,7 +1242,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// #513: prefer ModelConfigLoader (fresh data-driven config) over
 			// ModelRegistry (static hardcoded entries) to avoid stale paths
 			// after coordinator restart.
-			var requestedAlias = item.Request.TryGetValue("model", out var rm) && rm is string rma ? rma : null;
+			// #470: the canonical identity's routing key replaces the raw
+			// request-dict read — the JsonElement shape (AutoRouter failed)
+			// previously fell through to head.ModelAlias and could misresolve
+			// the plan's engine config.
+			var requestedAlias = item.ModelIdentity?.RoutingKey;
 			var resolveAlias = requestedAlias ?? head.ModelAlias ?? "";
 			if (string.IsNullOrEmpty(resolveAlias)) continue;
 			try
@@ -1960,15 +1980,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// engine can swap to it (or fall back to the resident model if the
 			// alias is unknown / no preset is configured). When null, the
 			// engine uses the current resident model — pre-feature behavior.
-			// Read the routing identity directly from the `model` field
-			// (set by AutoRouter or the client request). Translate to
-			// GGUF-file alias so the engine's inline reload fires.
-			var routingAlias = item.Request.TryGetValue("model", out var modelVal) && modelVal is string mVal
-				? mVal
-				: Router.PrefillModel(w);
-			var prefillModel = TranslateModelAlias(routingAlias);
-			if (prefillModel != null)
-				body["model"] = prefillModel;
+			// #470: the canonical identity (resolved ONCE at ingress) drives
+			// the wire — the raw routing key never reaches the engine. The
+			// body copy is OVERWRITTEN unconditionally: BuildPrefillRequestJson
+			// only injects `model` when the key is ABSENT (the caller's value
+			// wins), so a JsonElement or raw routing key left in the copied
+			// body would ride the 0x42 payload untouched.
+			var routingAlias = item.ModelIdentity?.RoutingKey;
+			var prefillModel = item.ModelIdentity?.PrefillAlias;
+			// null is deliberate: the engine falls back to its resident model.
+			body["model"] = prefillModel!;
 				if (item.PrefillSlot == null)
 					item.PrefillSlot = slotId;
 				var requestJson = JsonSerializer.Serialize(body);
@@ -2537,7 +2558,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				return TranslateModelAlias(healthResidentAlias, decodeRole: true);
 			if (!string.IsNullOrEmpty(w.ModelAlias))
 				return TranslateModelAlias(w.ModelAlias, decodeRole: true);
-			var migReqModel = item.Request.TryGetValue("model", out var mm) && mm is string mms ? mms : null;
+			// #470: the canonical identity's DECODE alias (already translated
+			// at ingress) replaces the raw `is string` request read — the
+			// JsonElement shape (AutoRouter failed) previously fell through
+			// to the historic chain and could send the source-node quant.
+			var migReqModel = item.ModelIdentity?.DecodeAlias ?? RequestModelString(item);
 			if (!string.IsNullOrEmpty(migReqModel))
 				return TranslateModelAlias(migReqModel, decodeRole: true);
 			// Fall through to the historic chain — KvModelAlias remains the
@@ -2549,7 +2574,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			return TranslateModelAlias(w.ModelAlias, decodeRole: true);
 		if (!string.IsNullOrEmpty(item.KvModelAlias))
 			return TranslateModelAlias(item.KvModelAlias, decodeRole: true);
-		var reqModel = item.Request.TryGetValue("model", out var m) && m is string ms ? ms : null;
+		// #470: last `is string` fixed — the identity record's DECODE alias
+		// is the single source for the request's model; RequestModelString
+		// backs legacy/unit items constructed without SubmitAsync. The
+		// result stays idempotent through TranslateModelAlias (already-
+		// resolved GGUF aliases pass through unchanged).
+		var reqModel = item.ModelIdentity?.DecodeAlias ?? RequestModelString(item);
 		return TranslateModelAlias(reqModel, decodeRole: true);
 	}
 
@@ -4317,18 +4347,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				// request to the GGUF-file alias so the engine's inline reload fires
 				// instead of silently falling back to its resident model.
 				// For model-agnostic workers (e.g. RTX), w.ModelAlias is null —
-				// translate the routing identity from the request field instead.
+				// the canonical identity's DECODE alias is the source (#470).
+				// Body-level substitution: the proxy body copy gets the translated
+				// alias; Request["model"] itself stays frozen as the raw routing
+				// key (never mutated in place).
+				var proxyBody = new Dictionary<string, object>(item.Request);
 				if (_cfg.UseLlamaEngine)
 				{
 					var decodeAlias = !string.IsNullOrEmpty(w.ModelAlias)
 						? TranslateModelAlias(w.ModelAlias, decodeRole: true)
-						: TranslateModelAlias(
-							item.Request.TryGetValue("model", out var dmv) && dmv is string dms ? dms : null);
+						: item.ModelIdentity?.DecodeAlias ?? TranslateModelAlias(RequestModelString(item), decodeRole: true);
 					if (!string.IsNullOrEmpty(decodeAlias))
-						item.Request["model"] = decodeAlias;
+						proxyBody["model"] = decodeAlias;
 				}
 				var resp = await _proxy.ProxyCompletionAsync(
-						w.LlamaUrl, item.Request, item.TraceId, syncCts.Token);
+						w.LlamaUrl, proxyBody, item.TraceId, syncCts.Token);
 				if (resp.TryGetValue("id_slot", out var s2) && s2 is JsonElement se2)
 					item.LastIdSlot = se2.GetInt32();
 				if (item.MultiMode != MultiEngineMode.None)
