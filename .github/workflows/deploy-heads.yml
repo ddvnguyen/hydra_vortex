@@ -268,7 +268,12 @@ jobs:
             exit 1
           }
           [ -n "${{ steps.images.outputs.rtx }}" ] && validate_ref "${{ steps.images.outputs.rtx }}"
-          [ -n "${{ steps.images.outputs.p100 }}" ] && validate_ref "${{ steps.images.outputs.p100 }}"
+          # #470: an EMPTY p100 ref (rtx+rtx3060 deploys) must not let the
+          # short-circuit && leave a failing exit status and kill the step
+          # after RTX validated OK.
+          if [ -n "${{ steps.images.outputs.p100 }}" ]; then
+            validate_ref "${{ steps.images.outputs.p100 }}"
+          fi
 
       - name: Validate current pins in node configs
         if: steps.images.outputs.rtx == '' && steps.images.outputs.p100 == ''
