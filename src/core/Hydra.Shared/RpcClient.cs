@@ -38,6 +38,18 @@ public class RpcClient : IAsyncDisposable
         var client = new TcpClient();
         await client.ConnectAsync(_host, _port, ct);
 
+        // #470: aggressive TCP keepalive bounds half-open socket detection to
+        // ~15s when the connection is idle (head container redeploys replace the
+        // peer without FIN/RST through pasta forwarding). Data flow resets the
+        // idle timer, so long prefill streams are unaffected.
+        client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        if (OperatingSystem.IsLinux())
+        {
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 5);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 2);
+        }
+
         lock (_connectLock)
         {
             if (_disposed)
@@ -163,8 +175,15 @@ public class RpcClient : IAsyncDisposable
         }
         catch (OperationCanceledException) when (!callerCt.IsCancellationRequested)
         {
-            // Timed out waiting for the in-flight request on this connection —
-            // no I/O of ours started, so the connection itself is left alone.
+            // #470: timed out waiting behind the in-flight request. The holder may
+            // itself be wedged on a dead/half-open socket; if it never errors, the
+            // shared connection stays poisoned and every waiter times out in turn
+            // (observed: 6x EnginePrefill timeouts, zero reconnects). Drop the
+            // connection NOW: the holder's next I/O throws ODE, its finally
+            // releases _sync, and the next request reconnects fresh. Trade-off: a
+            // legitimately long concurrent request (cold prefill >180s) may be
+            // aborted once and retried by its caller — cheap vs a permanent wedge.
+            DropConnection();
             throw NewTimeout(op);
         }
     }
@@ -443,7 +462,13 @@ public class RpcClient : IAsyncDisposable
 
     private async Task EnsureConnectedAsync(CancellationToken ct)
     {
-        if (_client is { Connected: true })
+        // #470: Socket.Connected returns true for a half-open socket (peer replaced
+        // without FIN/RST — e.g. head container redeploy through pasta forwarding),
+        // so it is NOT a liveness signal. Additionally, a non-zero Available at
+        // request start means leftover unread bytes on the wire (requests are
+        // serialized by _sync, so no legit response can be mid-flight here) — the
+        // connection is desynced and must be rebuilt. Both cases reconnect fresh.
+        if (_client is { Connected: true } && _client.Available == 0)
             return;
         await ConnectAsync(ct);
     }
@@ -610,14 +635,16 @@ public class RpcClient : IAsyncDisposable
     /// </summary>
     public virtual async Task<RpcResponse> EnginePrefillChunkedAsync(
         string slotKey, string requestJson, string traceId, CancellationToken ct,
+        Action<string>? onMeta,
         Action<long> onPayloadLen,
-        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk)
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
     {
         var payload = Encoding.UTF8.GetBytes(requestJson);
         return await RequestChunkedAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct,
-            requestTimeoutOverride: TimeSpan.FromSeconds(600),
-            payloadIdleBudget: TimeSpan.FromSeconds(120),
-            onPayloadLen, onChunk);
+            requestTimeoutOverride ?? TimeSpan.FromSeconds(600),
+            payloadIdleBudget ?? TimeSpan.FromSeconds(120),
+            onMeta, onPayloadLen, onChunk);
     }
 
     /// <summary><see cref="RequestAsync"/> twin for streaming payload reads.</summary>
@@ -635,12 +662,13 @@ public class RpcClient : IAsyncDisposable
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
         TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
         => await RequestChunkedAsync(op, key, payload, traceId, ct,
-            requestTimeoutOverride, payloadIdleBudget, onPayloadLen, onChunk);
+            requestTimeoutOverride, payloadIdleBudget, onMeta: null, onPayloadLen, onChunk);
 
     private async Task<RpcResponse> RequestChunkedAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
         string traceId, CancellationToken ct,
         TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget,
+        Action<string>? onMeta,
         Action<long> onPayloadLen,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk)
     {
@@ -652,7 +680,7 @@ public class RpcClient : IAsyncDisposable
         try
         {
             return await SendAndReceiveChunkedAsync(op, key, payload, traceId,
-                timeoutCts, payloadIdleBudget, onPayloadLen, onChunk, ct);
+                timeoutCts, payloadIdleBudget, onMeta, onPayloadLen, onChunk, ct);
         }
         catch (OperationCanceledException)
         {
@@ -703,7 +731,7 @@ public class RpcClient : IAsyncDisposable
     private async Task<RpcResponse> SendAndReceiveChunkedAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
         string traceId, CancellationTokenSource timeoutCts,
-        TimeSpan? payloadIdleBudget, Action<long> onPayloadLen,
+        TimeSpan? payloadIdleBudget, Action<string>? onMeta, Action<long> onPayloadLen,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk, CancellationToken ct)
     {
         await EnsureConnectedAsync(ct);
@@ -716,6 +744,15 @@ public class RpcClient : IAsyncDisposable
         var meta = header.MetaLen > 0
             ? await ReadMetaAsync(_stream!, header.MetaLen, ct)
             : null;
+
+        // The response meta (n_past, state_size, kv_hash_str, model identity)
+        // arrives BEFORE the first payload byte — surface it early (OK status
+        // only) so the caller can start the DECODE frame (or a relay) without
+        // buffering.
+        if (onMeta != null && meta != null && header.Status == (byte)StatusCode.Ok)
+        {
+            onMeta(meta);
+        }
 
         onPayloadLen((long)header.PayloadLen);
         if (header.PayloadLen > 0)
@@ -962,6 +999,7 @@ public class RpcClient : IAsyncDisposable
         string? modelAlias,
         string? messagesJson, int nPredict, string? samplingJson, bool stream,
         IAsyncEnumerable<ReadOnlyMemory<byte>> kvChunks, long kvTotalSize,
+        string kvHash,
         string traceId, CancellationToken ct)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -1024,7 +1062,7 @@ public class RpcClient : IAsyncDisposable
                         ["id"] = "kv",
                         ["offset"] = promptBytes.Length,
                         ["len"] = kvLen,
-                        ["hash"] = "" // streaming: whole-segment hash unknown pre-write (see XML doc)
+                        ["hash"] = kvHash // #470: PREFILL engine's whole-segment xxh3 ("xxh3:HEX") — verify live; "" skips
                     }
                 }
             };
