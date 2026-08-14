@@ -586,6 +586,18 @@ public class RpcClient : IAsyncDisposable
     /// <paramref name="idleBudget"/> on every successful read. The chunk handler
     /// is invoked synchronously inside the connection's locked section, so
     /// backpressure propagates naturally (a slow consumer throttles the socket).
+    /// #470 (run 31760361575): the consumer itself can be the slow side — a
+    /// relay channel (decode leg preparing — model load, slot acquisition) or a
+    /// Store pipe can fill up, parking this loop inside <paramref name="onChunk"/>.
+    /// onChunk MUST be cancellable by the SAME re-armed timeout CTS (not the
+    /// caller token): the idle budget/ceiling is the coordinator's authoritative
+    /// bound on that park. Pre-fix, onChunk only observed the caller's ct, so a
+    /// backpressured read loop sat parked with no deadline — the engine's 30s
+    /// SO_SNDTIMEO then killed the stream first (send EAGAIN -> coordinator EOF
+    /// -> zero-token turn) even though the coordinator was willing to wait the
+    /// full budget. Passing timeoutCts.Token lets the coordinator's own idle
+    /// budget decide: it either drains (stream completes) or fails fast and
+    /// drops the connection for a clean retry.
     /// </summary>
     private static async Task ReadPayloadChunkedAsync(
         NetworkStream stream, long payloadLen,
@@ -607,7 +619,12 @@ public class RpcClient : IAsyncDisposable
             if (read == 0)
                 throw new EndOfStreamException("Connection closed by peer");
             remaining -= read;
-            await onChunk(buf.AsMemory(0, read), ct);
+            // #470: await onChunk on timeoutCts.Token (NOT the caller ct) so a
+            // consumer that stalls (relay channel full / Store pipe full) is
+            // cancelled by the coordinator's own idle budget/ceiling instead of
+            // holding this loop open past the engine's send-side park. A slow
+            // but progressing consumer still resets the timer each iteration.
+            await onChunk(buf.AsMemory(0, read), timeoutCts.Token);
             timeoutCts.CancelAfter(idleBudget);
         }
     }
