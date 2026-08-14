@@ -9,7 +9,8 @@ node:
 
 binaries:
   llama-server:
-    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-engine
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-990f194
+    image_digest: sha256:a3fb0d0f50a40af71f9d24a8b49f6d441dd7ca1df9ef218c4f884cf3ecbb9724
     binary: llama-server
     dest: /llama/bin/llama-server
   node_exporter:
