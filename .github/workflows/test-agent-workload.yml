@@ -43,8 +43,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Reset stale .NET build servers
+        # This runner is also the host for the live GPU inference stack, so
+        # it can be under enough memory pressure to abort the CLR mid-startup
+        # (exit 134). A poisoned VBCSCompiler/MSBuild server socket from a
+        # prior abort then fails the *next* build too. Clear it before we start.
+        run: dotnet build-server shutdown || true
+
       - name: Restore & build (.NET)
-        run: dotnet build src/Hydra.sln -c Release --nologo -v minimal
+        run: |
+          for attempt in 1 2; do
+            if dotnet build src/Hydra.sln -c Release --nologo -v minimal; then
+              exit 0
+            fi
+            code=$?
+            if [ "$code" != "134" ] || [ "$attempt" == "2" ]; then
+              exit "$code"
+            fi
+            echo "::warning::dotnet build aborted (exit 134, CLR fatal error) on attempt $attempt — likely runner memory pressure. Resetting build servers, clearing stale outputs, and retrying."
+            dotnet build-server shutdown || true
+            # A CLR abort mid-write can leave a corrupt DLL whose timestamp is
+            # newer than its sources; an incremental build then treats it as
+            # up-to-date and the `--no-build` test steps load garbage. Force a
+            # clean tree so the retry actually rewrites every output.
+            find src -type d \( -name bin -o -name obj \) -prune -exec rm -rf {} + 2>/dev/null || true
+            sleep 5
+          done
 
       - name: Verify coordinator healthy
         run: |
