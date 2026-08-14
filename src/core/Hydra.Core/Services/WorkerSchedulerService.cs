@@ -4336,6 +4336,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						await item.RelayTask;
 
 					item.DecodeRequestId = mergedResp.DecodeRequestId;
+					CoordinatorMetrics.DecodeRequestIdsIssued.Inc();
 					item.Match = new DecodeMatch(
 						mergedResp.TokenizerMatch,
 						mergedResp.ModelNameMatch,
@@ -4587,6 +4588,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						await item.RelayTask;
 
 					item.DecodeRequestId = mergedResp.DecodeRequestId;
+					CoordinatorMetrics.DecodeRequestIdsIssued.Inc();
 					item.Match = new DecodeMatch(
 						mergedResp.TokenizerMatch,
 						mergedResp.ModelNameMatch,
@@ -6250,6 +6252,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// kv_bytes, decode_ms, prompt_ms, model_identity, and match.
 						if (data.TryGetValue("hydra_metrics", out var hmEl) && hmEl.ValueKind == JsonValueKind.Object)
 						{
+							CoordinatorMetrics.StreamingHydraMetricsReceived.Inc();
 							if (hmEl.TryGetProperty("decode_request_id", out var dri) && dri.ValueKind == JsonValueKind.Number)
 								item.DecodeRequestId = dri.GetInt32();
 							if (hmEl.TryGetProperty("id_slot", out var ids) && ids.ValueKind == JsonValueKind.Number)
