@@ -97,6 +97,35 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	private readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
 	internal readonly ConcurrentDictionary<string, WorkItem> _pendingTimelines = new();
 
+	/// <summary>
+	/// #470 Tier-4: scheduler-side registry of sessions whose KV chunks were
+	/// written to the L1 chunk cache by this scheduler, keyed to the write
+	/// time (Stopwatch ticks). The L1's own byte-budget LRU
+	/// (LocalFsChunkCache.EvictLRUAsync) is a NO-OP when the L1 is under its
+	/// cap — but the L1 shares /mnt/llm-ram with the Store's chunk dir, and a
+	/// full mount is exactly when L1 bytes must be freed so a save/push retry
+	/// can succeed. This registry lets the ENOSPC path drop the OLDEST
+	/// non-in-flight sessions explicitly (LocalChunkCache.ClearAsync) instead
+	/// of relying on that no-op. Entries are removed as they are force-evicted;
+	/// the dict is size-capped so a long-lived coordinator never leaks.
+	/// </summary>
+	private readonly ConcurrentDictionary<string, long> _l1SessionSavedAt = new();
+	private const int MaxL1TrackedSessions = 1024;
+	/// <summary>Upper bound on sessions force-evicted per ENOSPC pass. The L1
+	/// is pure cache (~1 GB per session) and the pass runs inside the prefill
+	/// stream / store push, so it must stay bounded — evicting the oldest
+	/// non-in-flight sessions is normally enough to unblock the retry.</summary>
+	private const int MaxL1EnospcEvictions = 8;
+
+	/// <summary>
+	/// #470 Tier-4: sessions currently executing a pipeline phase (dispatched
+	/// by the evaluator). ENOSPC forced L1 eviction must never clear a session
+	/// that is mid-request — its chunks are being written/read right now. Added
+	/// at dispatch, removed when the pipeline invocation completes (including
+	/// re-enqueue: the item returns to the queue and re-registers on dispatch).
+	/// </summary>
+	private readonly ConcurrentDictionary<string, byte> _activePipelineSessions = new();
+
 	// ── Unified GPU-aware request queue ──
 	// All requests enter here. The evaluator checks GPU availability and
 	// dispatches when enough workers are free. Priority ordering ensures
@@ -597,6 +626,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				_log.Information("evaluator_dispatch Sid={Sid} Type={Type} Priority={P}",
 					qi.WorkItem.SessionId, qi.Type, qi.Priority);
 
+				// #470 Tier-4: mark the session in-flight for the duration of
+				// this pipeline invocation so ENOSPC forced L1 eviction never
+				// clears a session that is mid-request. Removed in the finally
+				// below — a re-enqueue returns from RunItemPipeline, so the
+				// item leaves the active set while queued and re-registers on
+				// its next dispatch (the lease it may hold across the handoff
+				// is not L1-critical: the Store has the durable chunks).
+				_activePipelineSessions[qi.WorkItem.SessionId] = 0;
+
 				var scope = _serviceProvider.CreateScope();
 				_ = Task.Run(async () =>
 				{
@@ -606,6 +644,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					}
 					finally
 					{
+						_activePipelineSessions.TryRemove(qi.WorkItem.SessionId, out _);
 						scope.Dispose();
 						sem.Release();
 						SignalEvaluator();
@@ -2881,6 +2920,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		string sessionId, string hash, byte[] chunkData, CancellationToken ct)
 	{
 		if (_chunkCache == null) return;
+		// #470 Tier-4: track this session in the scheduler-side L1 registry
+		// (write-order) so a later ENOSPC can force-evict the OLDEST
+		// non-in-flight sessions even when the L1's own byte-LRU is a no-op.
+		RegisterL1Session(sessionId);
 		try
 		{
 			await _chunkCache.SaveChunkDataAsync(sessionId, hash, chunkData, ct);
@@ -2892,6 +2935,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			catch { /* eviction is best-effort too: a throwing evict still
 					   removes the LRU session from the index before it fails,
 					   and the retry save can succeed without it */ }
+			// #470 Tier-4: the L1 byte-budget LRU is a no-op when the L1 is
+			// UNDER its own cap — but the L1 shares /mnt/llm-ram with the
+			// Store's chunk dir, and a full mount is exactly when bytes must
+			// be freed for the retry to succeed. When the LRU freed nothing,
+			// force-evict the OLDEST non-in-flight sessions tracked by this
+			// scheduler (a fallen-back / parked session must not hold its
+			// chunks hostage).
+			if (evicted == 0)
+				evicted += await EvictL1OnEnospcAsync(sessionId);
 			try
 			{
 				await _chunkCache.SaveChunkDataAsync(sessionId, hash, chunkData, ct);
@@ -3020,6 +3072,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					{
 						try
 						{
+							// #470 Tier-4: track this session in the L1
+							// registry so ENOSPC can force-evict it if it is
+							// ever the oldest non-in-flight candidate.
+							RegisterL1Session(sid);
 							await cache.SaveHashesAsync(sid, hashesCopy, CancellationToken.None);
 							foreach (var c in chunks)
 							{
@@ -3048,7 +3104,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var entry = _ledger.Register(item.SessionId, w.Name, slotId, item.NPastAfter, item.PrefixHash);
 			lock (entry) { entry.HasStoreState = true; }
 			item.Entry = entry;
-			_log.Information("state_saved Sid={Sid} SizeMB={Size}", item.SessionId, payload.Length / 1024 / 1024);
+			_log.Information("state_saved Sid={Sid} SizeMB={Size}", item.SessionId, (payload?.Length ?? item.KvBytes) / 1024 / 1024);
 
 			if (item.PrefixHash != null && _cfg.PrefixCheckpointEnabled)
 			{
@@ -3122,6 +3178,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		catch (Exception ex)
 		{
 			_log.Warning(ex, "save_failed_fallback Sid={Sid} — falling back to same-node decode", item.SessionId);
+			// #470 Tier-4: a save failure leaves this session's chunks pinned in
+			// the L1 chunk cache forever (they are never released, evicted=0) and
+			// the shared /mnt/llm-ram never drains — the cascade the whole suite
+			// hits. Release them on the fallback so the space returns to the pool.
+			// The same-node decode below runs off the KV resident in the engine
+			// slot, so the L1 (a future-read cache) is not needed for this turn.
+			// Best-effort: a clear failure logs and must not block the fallback.
+			if (_chunkCache != null)
+			{
+				try { await _chunkCache.ClearAsync(item.SessionId); }
+				catch (Exception clearEx)
+				{
+					_log.Warning(clearEx, "save_fallback_l1_clear_failed Sid={Sid}", item.SessionId);
+				}
+			}
 			if (item.Entry != null) { lock (item.Entry) { item.Entry.HasStoreState = false; } }
 			if (item.DecodeLease != null) { await item.DecodeLease.DisposeAsync(); item.DecodeLease = null; SignalEvaluator(); }
 			if (item.PrefillWorker?.CanDecode == true
@@ -5482,6 +5553,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				modelAlias, tokenizer, modelName, modelQuant, modelCapabilities, modelPath);
 			if (_chunkCache != null)
 			{
+				// #470 Tier-4: track this session in the L1 registry (see
+				// SaveChunkToL1BestEffortAsync) so a later ENOSPC can
+				// force-evict it as the oldest non-in-flight candidate.
+				RegisterL1Session(sessionId);
 				await _chunkCache.SaveHashesAsync(sessionId, orderedHashes, ct);
 				foreach (var c in chunks)
 					await _chunkCache.SaveChunkDataAsync(sessionId, c.Hash,
@@ -5566,7 +5641,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// the operator the actual root cause. The throw happens BEFORE
 			// PutManifestAsync is called, so the manifest never sees a
 			// half-pushed state.
-			var resp = await PushChunkBatchAsync(storeKey, batch.ToArray(), traceId, ct);
+			var resp = await PushChunkBatchAsync(storeKey, sessionId, batch.ToArray(), traceId, ct);
 			if (resp.Status != (byte)StatusCode.Ok)
 			{
 				var reason = StatusReason(resp.Status);
@@ -5652,7 +5727,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					pending++;
 					if (batch.Length >= BatchBytes)
 					{
-						var resp = await PushChunkBatchAsync(storeKey, batch.ToArray(), traceId, ct);
+						var resp = await PushChunkBatchAsync(storeKey, sessionId, batch.ToArray(), traceId, ct);
 						if (resp.Status != (byte)StatusCode.Ok)
 							throw new InvalidDataException($"PUSH_CHUNKS failed: 0x{resp.Status:X2}");
 						Interlocked.Add(ref pushedTotal, pending);
@@ -5662,7 +5737,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				if (batch.Length > 0)
 				{
-					var resp = await PushChunkBatchAsync(storeKey, batch.ToArray(), traceId, ct);
+					var resp = await PushChunkBatchAsync(storeKey, sessionId, batch.ToArray(), traceId, ct);
 					if (resp.Status != (byte)StatusCode.Ok)
 						throw new InvalidDataException($"PUSH_CHUNKS failed: 0x{resp.Status:X2}");
 					Interlocked.Add(ref pushedTotal, pending);
@@ -5688,8 +5763,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// we evict the L1 byte-LRU immediately (frees the tmpfs) and retry the
 	/// batch ONCE. The caller still checks the returned status and throws on
 	/// final failure, so the failure path (counter + exception) is unchanged.
+	/// <paramref name="sessionId"/> identifies the writing session so forced
+	/// ENOSPC eviction (#470 Tier-4) never clears a session that is mid-request.
 	/// </summary>
-	private async Task<RpcResponse> PushChunkBatchAsync(string storeKey, byte[] batch, string traceId, CancellationToken ct)
+	private async Task<RpcResponse> PushChunkBatchAsync(string storeKey, string sessionId, byte[] batch, string traceId, CancellationToken ct)
 	{
 		var resp = await StoreClient.RequestAsync(OpCode.PushChunks, storeKey, batch, traceId, ct);
 		if (resp.Status == (byte)StatusCode.Ok || !IsEnospcFailure(resp.Meta))
@@ -5697,12 +5774,86 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		var evicted = 0;
 		if (_chunkCache != null)
+		{
+			// The L1 byte-budget LRU is a no-op when the L1 is under its own
+			// cap — but the L1 shares /mnt/llm-ram with the Store, and a full
+			// mount is exactly when bytes must be freed for the retry to
+			// succeed. When the LRU freed nothing, force-evict the OLDEST
+			// non-in-flight sessions tracked by this scheduler (#470 Tier-4).
 			evicted = await _chunkCache.EvictLRUAsync();
+			if (evicted == 0)
+				evicted += await EvictL1OnEnospcAsync(sessionId);
+		}
 
 		var retry = await StoreClient.RequestAsync(OpCode.PushChunks, storeKey, batch, traceId, ct);
 		_log.Warning("chunk_cache_evict_on_enospc evicted={Evicted} retry={Retry}",
 			evicted, retry.Status == (byte)StatusCode.Ok ? "ok" : "fail");
 		return retry;
+	}
+
+	/// <summary>
+	/// #470 Tier-4: record that this scheduler wrote the session's chunks to
+	/// the L1 cache, keyed by write time (Stopwatch ticks). The ENOSPC forced
+	/// eviction picks candidates oldest-first from this registry. Idempotent;
+	/// re-saving a session bumps it to the front of the eviction order (most
+	/// recently written = least likely to be evicted first). Size-capped so a
+	/// long-lived coordinator never leaks entries.
+	/// </summary>
+	private void RegisterL1Session(string sessionId)
+	{
+		if (string.IsNullOrEmpty(sessionId)) return;
+		_l1SessionSavedAt[sessionId] = System.Diagnostics.Stopwatch.GetTimestamp();
+		if (_l1SessionSavedAt.Count > MaxL1TrackedSessions)
+		{
+			foreach (var kv in _l1SessionSavedAt.OrderBy(kv => kv.Value).Take(_l1SessionSavedAt.Count / 2))
+				_l1SessionSavedAt.TryRemove(kv.Key, out _);
+		}
+	}
+
+	/// <summary>
+	/// #470 Tier-4: forced L1 eviction on a shared-tmpfs ENOSPC. The L1's own
+	/// byte-budget LRU (<see cref="LocalChunkCache.EvictLRUAsync"/>) evicts
+	/// nothing when the L1 is under its cap — but the L1 shares /mnt/llm-ram
+	/// with the Store's chunk dir, and a full mount is exactly when bytes must
+	/// be freed for the save/push retry to succeed. Drop the OLDEST sessions
+	/// tracked by this scheduler that are NOT part of an actively-in-flight
+	/// request (a session that has already fallen back / parked must not hold
+	/// its chunks hostage). Best-effort: each ClearAsync is individually
+	/// guarded and the pass is bounded, because the L1 is pure cache (~1 GB per
+	/// session) and this runs inside the engine prefill stream / store push.
+	/// </summary>
+	private async Task<int> EvictL1OnEnospcAsync(string currentSessionId)
+	{
+		if (_chunkCache == null) return 0;
+
+		// Sessions currently executing a pipeline phase must not be cleared —
+		// the caller of the failing write is in-flight by definition.
+		var inFlight = _activePipelineSessions.Keys.ToHashSet();
+		if (!string.IsNullOrEmpty(currentSessionId)) inFlight.Add(currentSessionId);
+
+		var evicted = 0;
+		var candidates = _l1SessionSavedAt
+			.OrderBy(kv => kv.Value)      // oldest-first
+			.Select(kv => kv.Key)
+			.Where(s => !inFlight.Contains(s))
+			.Take(MaxL1EnospcEvictions)
+			.ToList();
+
+		foreach (var sid in candidates)
+		{
+			try
+			{
+				await _chunkCache.ClearAsync(sid);
+				_l1SessionSavedAt.TryRemove(sid, out _);
+				evicted++;
+				_log.Information("chunk_cache_evict_enospc_forced Sid={Sid}", sid);
+			}
+			catch (Exception ex)
+			{
+				_log.Warning(ex, "chunk_cache_evict_enospc_clear_failed Sid={Sid}", sid);
+			}
+		}
+		return evicted;
 	}
 
 	/// <summary>True when a PUSH_CHUNKS rejection is a full-disk (ENOSPC) error

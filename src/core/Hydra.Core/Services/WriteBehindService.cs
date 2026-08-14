@@ -76,11 +76,28 @@ public sealed class WriteBehindService
             }
             catch (IOException) when (File.Exists(dstPath))
             {
-                await _metadata.MarkBackedUpAsync(hash, dstPath, ct);
+                // A previous cycle copied the chunk but crashed before marking
+                // it backed up — the destination already holds the bytes. Record
+                // it and move on; guarded so a metadata failure here can't abort
+                // the rest of the cycle either.
+                try { await _metadata.MarkBackedUpAsync(hash, dstPath, ct); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { _log.Warning(ex, "Write-behind: mark-backed-up failed {Hash} — continuing flush cycle", hash); }
             }
-            catch (IOException)
+            catch (OperationCanceledException)
             {
-                _log.Warning("Write-behind: failed to copy {Hash} (source likely deleted)", hash);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // #470 Tier-4: ONE bad file must not abort the whole flush cycle.
+                // The backup dir is ntfs3-backed (SATA SSD) where stale files throw
+                // UnauthorizedAccessException (EPERM), and a source deleted between
+                // the metadata snapshot and the copy throws IOException. Either way
+                // the remaining chunks still drain — otherwise the tmpfs backlog
+                // grows until the mount fills. The file stays unbacked and is
+                // retried on the next cycle.
+                _log.Warning(ex, "Write-behind: skipped chunk {Hash} ({Reason}) — continuing flush cycle", hash, ex.GetType().Name);
             }
         }
 
