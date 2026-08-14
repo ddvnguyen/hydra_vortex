@@ -81,11 +81,30 @@ jobs:
 
       - name: Run agent workload tests (Tier 4)
         run: |
-          dotnet test src/core/Tests.AgentWorkload/ -c Release --no-build --nologo -v normal \
-            --settings src/Hydra.runsettings \
-            --logger "console;verbosity=detailed" \
-            --logger "trx;LogFileName=agentworkload.trx" \
-            --results-directory TestResults/
+          for attempt in 1 2; do
+            if dotnet test src/core/Tests.AgentWorkload/ -c Release --no-build --nologo -v normal \
+              --settings src/Hydra.runsettings \
+              --logger "console;verbosity=detailed" \
+              --logger "trx;LogFileName=agentworkload.trx" \
+              --results-directory TestResults/ \
+              -- RunConfiguration.MaxCpuCount=1; then
+              exit 0
+            fi
+            code=$?
+            if [ "$code" != "134" ] || [ "$attempt" == "2" ]; then
+              exit "$code"
+            fi
+            echo "::warning::dotnet test aborted (exit 134, CLR fatal error) on attempt $attempt — runner memory pressure. Resetting build servers, clearing stale outputs, retrying."
+            dotnet build-server shutdown || true
+            # A CLR abort mid-write can leave a corrupt DLL whose timestamp is
+            # newer than its sources; an incremental build then treats it as
+            # up-to-date and the --no-build retry would load garbage. Force a
+            # clean tree and rebuild before retrying.
+            find src -type d \( -name bin -o -name obj \) -prune -exec rm -rf {} + 2>/dev/null || true
+            rm -rf TestResults || true
+            sleep 5
+            dotnet build src/Hydra.sln -c Release --nologo -v minimal || exit $?
+          done
         env:
           COORD_URL: http://localhost:9000
           RTX_LLAMA_URL: http://localhost:8080
