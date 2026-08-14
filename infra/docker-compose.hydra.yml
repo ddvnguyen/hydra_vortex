@@ -105,7 +105,7 @@ services:
     # the mkdir -m 777 sets the subdirs the C# code needs.
     entrypoint: ["/bin/sh", "-c", "mkdir -m 777 -p \"$${HYDRA_STORE_BACKUP_DIR}/chunks\" \"$${HYDRA_STORE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_L1_DIR}\" && exec dotnet Hydra.Core.dll"]
     tmpfs:
-      - /mnt/llm-ram:size=30G,mode=1777
+      - /mnt/llm-ram:size=40G,mode=1777
     volumes:
       - ./hydra-core/config:/etc/hydra/config:ro
       - /mnt/SSD/hydra-backup:/mnt/SSD/hydra-backup:rw

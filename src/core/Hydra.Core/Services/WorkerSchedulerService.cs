@@ -2014,6 +2014,30 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				EnginePrefillResult? prefillResult;
 				if (_cfg.EnableChunks)
 				{
+					if (IsRelayEligible(item, w))
+					{
+						// #470 Increment 2: direct 0x42→0x43 KV relay. The PREFILL
+						// response stream (v2_hdr + state + logits) is drained in the
+						// background into a bounded channel consumed by the DECODE
+						// RPC — no Store round trip on the hot path (2-4 s saved at
+						// 2 GB). The item proceeds to PickDecode while the stream is
+						// still flowing; channel backpressure paces the engine send
+						// to the decode leg. onMeta captures n_past / kv hash /
+						// model identity the moment they arrive (before any KV byte),
+						// so the DECODE frame needs no buffering.
+						// Persistence: relay turns ride the existing post-decode
+						// BgSaveAsync; the store tee is a documented follow-up.
+						item.RelayChannel = Channel.CreateBounded<(byte[], int)>(
+							new BoundedChannelOptions(4)
+							{
+								SingleReader = true,
+								SingleWriter = true,
+								FullMode = BoundedChannelFullMode.Wait
+							});
+						item.RelayTask = StartRelayPrefillAsync(
+							item, w, slotId, engine, requestJson, prefillModel, hydraConfig, ct);
+						return WorkItemState.PickDecode;
+					}
 					// #470 Phase 2: stream the PREFILL response straight into the
 					// Store (PutChunked, chunked pipe) — the KV blob (2.3 GB today,
 					// 10 GB target) is never materialized in coordinator RAM. The
@@ -2709,9 +2733,135 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			result.ModelQuant ?? "", result.ModelCapabilities, result.ModelPath ?? "");
 		item.KvBytes = totalSize;
 		item.KvStreamedToStore = true;
-		_log.Information("prefill_streamed_to_store Sid={Sid} Node={Node} Slot={Slot} Bytes={Bytes} Chunks={Chunks}",
-			item.SessionId, w.Name, slotId, totalSize, chunks.Count);
+		item.KvHash = result.KvHash; // engine-computed xxh3 over v2_hdr+state+logits ("" when old binary)
+		_log.Information("prefill_streamed_to_store Sid={Sid} Node={Node} Slot={Slot} Bytes={Bytes} Chunks={Chunks} KvHash={Hash}",
+			item.SessionId, w.Name, slotId, totalSize, chunks.Count, string.IsNullOrEmpty(item.KvHash) ? "-" : item.KvHash);
 		return result;
+	}
+
+	/// <summary>
+	/// #470 Increment 2 (relay): true when this turn should use the direct
+	/// 0x42→0x43 KV relay instead of the Store round trip. Requires a decode
+	/// node distinct from the prefill node that advertises merged_decode —
+	/// a same-node relay would deadlock (the decode task queues behind the
+	/// still-streaming prefill task on the engine's single queue). Same-node
+	/// routes (COMBINED, cold_atomic, fallback picks) keep the existing
+	/// store/no-restore paths.
+	/// </summary>
+	private bool IsRelayEligible(WorkItem item, WorkerConfig prefillWorker)
+	{
+		if (item.RouteType == "cold_atomic")
+			return false;
+		if (item.MultiMode == MultiEngineMode.Combined)
+			return false;
+		if (!item.IsStreaming)
+			return false;
+		var combinedReq = RequestModelString(item) is { } crm
+			&& crm.Contains("combined", StringComparison.OrdinalIgnoreCase);
+		if (combinedReq)
+			return false;
+		var dw = Router.PickBestDecodeWorker(_cfg.Workers, _tracker, _health,
+			prefillWorker.Name, allowedModels: _cfg.AllowedModels);
+		if (dw == null || dw.Name == prefillWorker.Name)
+			return false;
+		if (!dw.CanDecode)
+			return false;
+		return _health.GetNodeInfo(dw.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true;
+	}
+
+	/// <summary>
+	/// #470 Increment 2 (relay): drains the PREFILL response stream in the
+	/// background. Each chunk is copied into a rented array and written to the
+	/// bounded relay channel (the RPC read loop reuses its 1 MiB buffer, so a
+	/// copy is mandatory); the decode consumer returns the array to the pool.
+	/// onMeta captures the decode-frame inputs (n_past, whole-segment xxh3,
+	/// kv model identity) before the first KV byte arrives. The channel is
+	/// completed (with the failure, if any) when the stream ends; the RTX
+	/// prefill slot is released in finally (the stream ends exactly when the
+	/// decode leg consumed it all — or the RPC failed).
+	/// </summary>
+	private async Task<EnginePrefillResult?> StartRelayPrefillAsync(
+		WorkItem item, WorkerConfig w, int slotId, HydraEngineClient engine,
+		string requestJson, string? prefillModel, Dictionary<string, object>? hydraConfig,
+		CancellationToken ct)
+	{
+		var channel = item.RelayChannel!;
+		try
+		{
+			// Idle budget == ceiling: while the bounded channel is full (decode
+			// side preparing — model load, slot acquisition), the read loop is
+			// parked inside onChunk and no chunks reset the idle timer; only the
+			// total ceiling must bound the RPC.
+			var result = await engine.EnginePrefillChunkedAsync(
+				slotId, prefillModel, requestJson, item.TraceId, ct, hydraConfig,
+				onPayloadLen: len => item.RelayKvTotalSize = len,
+				onChunk: async (mem, token) =>
+				{
+					var buf = System.Buffers.ArrayPool<byte>.Shared.Rent(mem.Length);
+					mem.Span.CopyTo(buf);
+					await channel.Writer.WriteAsync((buf, mem.Length), token);
+				},
+				onMeta: meta =>
+				{
+					item.NPastAfter = meta.NPast;
+					item.KvHash = meta.KvHash;
+					item.KvBytes = meta.StateSize;
+					if (!string.IsNullOrEmpty(meta.ModelAlias)) item.KvModelAlias = meta.ModelAlias;
+					if (!string.IsNullOrEmpty(meta.Tokenizer)) item.KvTokenizer = meta.Tokenizer;
+					if (!string.IsNullOrEmpty(meta.ModelName)) item.KvModelName = meta.ModelName;
+					if (!string.IsNullOrEmpty(meta.ModelQuant)) item.KvModelQuant = meta.ModelQuant;
+					if (!string.IsNullOrEmpty(meta.ModelPath)) item.KvModelPath = meta.ModelPath;
+					if (meta.ModelCapabilities != 0) item.KvModelCapabilities = meta.ModelCapabilities;
+				},
+				requestTimeoutOverride: TimeSpan.FromSeconds(600),
+				payloadIdleBudget: TimeSpan.FromSeconds(600));
+			channel.Writer.TryComplete();
+			_log.Information("relay_prefill_done Sid={Sid} Node={Node} Slot={Slot} Bytes={Bytes} NPast={N} KvHash={Hash}",
+				item.SessionId, w.Name, slotId, item.RelayKvTotalSize, item.NPastAfter,
+				string.IsNullOrEmpty(item.KvHash) ? "-" : item.KvHash);
+			return result;
+		}
+		catch (Exception ex)
+		{
+			channel.Writer.TryComplete(ex); // unblocks the decode writer with the failure
+			throw;
+		}
+		finally
+		{
+			// The prefill RPC completed — the stream was fully consumed by the
+			// decode leg (or failed) — the RTX slot is free again (mirrors
+			// SaveKvAsync's "Release GPU slot immediately").
+			if (item.PrefillLease != null)
+			{
+				await item.PrefillLease.DisposeAsync();
+				item.PrefillLease = null;
+				SignalEvaluator();
+				_log.Information("relay_prefill_slot_released Sid={Sid} Node={Node} Slot={Slot}",
+					item.SessionId, w.Name, slotId);
+			}
+		}
+	}
+
+	/// <summary>
+	/// #470 Increment 2 (relay): adapter from the bounded relay channel to the
+	/// DECODE RPC's kvChunks enumerable. Returns each rented array to
+	/// ArrayPool after the consumer finished writing it to the socket.
+	/// </summary>
+	private static async IAsyncEnumerable<ReadOnlyMemory<byte>> RelayKvChunksAsync(
+		Channel<(byte[] Buffer, int Length)> channel,
+		[EnumeratorCancellation] CancellationToken ct)
+	{
+		await foreach (var (buf, len) in channel.Reader.ReadAllAsync(ct))
+		{
+			try
+			{
+				yield return buf.AsMemory(0, len);
+			}
+			finally
+			{
+				System.Buffers.ArrayPool<byte>.Shared.Return(buf);
+			}
+		}
 	}
 
 	/// <summary>
@@ -3137,6 +3287,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (dw == null)
 			return WorkItemState.None;
 
+		// #470 Increment 2 (relay): the KV stream is consumed ONCE by the decode
+		// RPC. A same-node pick would deadlock — the DECODE task queues behind
+		// the still-streaming PREFILL task on the engine's single queue, and the
+		// prefill stream can't finish until the decode consumes the channel.
+		// Fail with a precise error instead of wedging the session.
+		if (item.RelayChannel != null && item.PrefillWorker != null && dw.Name == item.PrefillWorker.Name)
+		{
+			_log.Error("relay_same_node_fallback Sid={Sid} Node={Node} — relay requires a decode node distinct from the prefill node, aborting",
+				item.SessionId, dw.Name);
+			item.Error = new InvalidOperationException(
+				$"KV relay requires a decode node distinct from the prefill node (prefill={item.PrefillWorker.Name}, decode={dw.Name})");
+			return WorkItemState.Failed;
+		}
+
 		// Atomic reuse path: the cold_atomic route already holds the slot via
 		// item.DecodeLease (PrefillLease is null by design). Re-acquiring via
 		// TryAcquireSlot would fail against our own lease; skip re-acquisition
@@ -3273,6 +3437,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.DecodeSlot ?? item.PrefillSlot ?? entry?.SlotId ?? 0,
 			w.Slots - 1);
 		item.DecodeSlot = slotId; // Sync clamped slot so DecodeAsync pins the same one
+
+		// #470 Increment 2 (relay): the KV is streaming live from the PREFILL
+		// RPC (bounded channel) — no Store manifest / GET_CHUNKED on this path.
+		// kv_len + whole-segment hash + model identity were captured by the
+		// relay task's onMeta/onPayloadLen callbacks; the decode frame is fully
+		// determined without touching the Store.
+		if (item.RelayChannel != null)
+		{
+			item.KvTotalSize = item.RelayKvTotalSize;
+			item.KvChunks = null;
+			item.KvRestoredForDecode = true;
+			_log.Information("restore_kv_relay Sid={Sid} Node={Node} Slot={Slot} Bytes={Bytes}",
+				item.SessionId, w.Name, slotId, item.KvTotalSize);
+			return WorkItemState.Decode;
+		}
 
 		// HYDRA_COORD_NO_STORE_KV_RESTORE=true: skip Store KV restore entirely.
 		// The session slot already has KV from the prefill; we go straight to
@@ -3985,6 +4164,36 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								item.SessionId, w.Name, busyAttempt + 1, busyMaxAttempts, backoffMs);
 							await Task.Delay(backoffMs, cts.Token);
 						}
+						if (item.RelayChannel != null)
+						{
+							// #470 Increment 2 (relay): KV streams live from the
+							// PREFILL RPC — no Store read. The stream is consumed
+							// ONCE: a BUSY reject cannot be retried (re-enumeration
+							// would yield zero bytes and a kv_len mismatch), so
+							// break out of the retry loop immediately.
+							mergedResp = await llamaRpc.EngineMergedDecodeStreamKvAsync(
+								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+								nPast: item.NPastAfter,
+								kvTokenizer: kvIdentity.Tokenizer,
+								kvModelName: kvIdentity.ModelName,
+								kvModelQuant: kvIdentity.ModelQuant,
+								kvModelCapabilities: kvIdentity.ModelCapabilities,
+								modelTokenizer: modelIdentity.Tokenizer,
+								modelName: modelIdentity.ModelName,
+								modelQuant: modelIdentity.ModelQuant,
+								modelCapabilities: modelIdentity.ModelCapabilities,
+								modelAlias: modelAlias,
+								messagesJson: messagesJson,
+								nPredict: nPredict,
+								samplingJson: null,
+								stream: true,
+								kvChunks: RelayKvChunksAsync(item.RelayChannel, cts.Token),
+								kvTotalSize: item.KvTotalSize,
+								kvHash: item.KvHash,
+								traceId: item.TraceId,
+								ct: cts.Token);
+							break;
+						}
 						if (item.KvChunks is { Count: > 0 })
 						{
 							// #470 Phase 2: KV streamed from the Store (no full
@@ -4013,6 +4222,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								kvChunks: StreamKvChunksFromStoreAsync(
 									$"{item.SessionId}.kv", item.KvChunks, item.TraceId, cts.Token),
 								kvTotalSize: item.KvTotalSize,
+								kvHash: item.KvHash,
 								traceId: item.TraceId,
 								ct: cts.Token);
 						}
@@ -4046,6 +4256,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							break; // Ok or terminal reject — no more retries
 						busyAttempt++;
 					}
+
+					// #470 Increment 2 (relay): the PREFILL stream drained into
+					// the decode leg — await the background prefill RPC so a
+					// stream failure surfaces with the prefill RPC's error
+					// (the decode write would have failed first in that case).
+					if (item.RelayTask != null)
+						await item.RelayTask;
 
 					item.DecodeRequestId = mergedResp.DecodeRequestId;
 					item.Match = new DecodeMatch(
@@ -4103,8 +4320,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						mergedDecodeOk = true;
 					}
 				}
-				catch (Exception ex) when (!gateRejected)
+				catch (Exception ex) when (!gateRejected && item.RelayChannel == null)
 				{
+					// #470 Increment 2 (relay): no HTTP-proxy fallback — the KV
+					// stream was consumed once and cannot be replayed; a fault
+					// fails the turn with the root error (no-fallback rule).
 					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
 					// #470 Fix 3: a transport fault must never orphan the
@@ -4199,6 +4419,34 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								item.SessionId, w.Name, busyAttempt + 1, busyMaxAttempts, backoffMs);
 							await Task.Delay(backoffMs, ct);
 						}
+						if (item.RelayChannel != null)
+						{
+							// #470 Increment 2 (relay): KV streams live from the
+							// PREFILL RPC — no Store read. Consumed ONCE: a BUSY
+							// reject cannot be retried, break out immediately.
+							mergedResp = await llamaRpc.EngineMergedDecodeStreamKvAsync(
+								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
+								nPast: item.NPastAfter,
+								kvTokenizer: kvIdentity.Tokenizer,
+								kvModelName: kvIdentity.ModelName,
+								kvModelQuant: kvIdentity.ModelQuant,
+								kvModelCapabilities: kvIdentity.ModelCapabilities,
+								modelTokenizer: modelIdentity.Tokenizer,
+								modelName: modelIdentity.ModelName,
+								modelQuant: modelIdentity.ModelQuant,
+								modelCapabilities: modelIdentity.ModelCapabilities,
+								modelAlias: modelAlias,
+								messagesJson: messagesJson,
+								nPredict: nPredict,
+								samplingJson: null,
+								stream: false,
+								kvChunks: RelayKvChunksAsync(item.RelayChannel, ct),
+								kvTotalSize: item.KvTotalSize,
+								kvHash: item.KvHash,
+								traceId: item.TraceId,
+								ct: ct);
+							break;
+						}
 						if (item.KvChunks is { Count: > 0 })
 						{
 							// #470 Phase 2: KV streamed from the Store (no full
@@ -4227,6 +4475,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								kvChunks: StreamKvChunksFromStoreAsync(
 									$"{item.SessionId}.kv", item.KvChunks, item.TraceId, ct),
 								kvTotalSize: item.KvTotalSize,
+								kvHash: item.KvHash,
 								traceId: item.TraceId,
 								ct: ct);
 						}
@@ -4260,6 +4509,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							break; // Ok or terminal reject — no more retries
 						busyAttempt++;
 					}
+
+					// #470 Increment 2 (relay): await the background prefill RPC
+					// so a stream failure surfaces with its own error.
+					if (item.RelayTask != null)
+						await item.RelayTask;
 
 					item.DecodeRequestId = mergedResp.DecodeRequestId;
 					item.Match = new DecodeMatch(
@@ -4344,8 +4598,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							$"DECODE 0x43 rejected Sid={item.SessionId} Valid={mergedResp.Valid} DecodeId={mergedResp.DecodeRequestId} — KV not restored, aborting");
 					}
 				}
-				catch (Exception ex) when (!gateRejected)
+				catch (Exception ex) when (!gateRejected && item.RelayChannel == null)
 				{
+					// #470 Increment 2 (relay): no HTTP-proxy fallback — the KV
+					// stream was consumed once and cannot be replayed; a fault
+					// fails the turn with the root error (no-fallback rule).
 					_log.Warning(ex, "merged_decode_transport_fault Sid={Sid} — falling back to HTTP proxy",
 						item.SessionId);
 					// #470 Fix 3: same lease re-assertion as the streaming

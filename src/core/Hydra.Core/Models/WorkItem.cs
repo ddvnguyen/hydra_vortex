@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
+using Hydra.Core.Services;
 using Hydra.Shared;
 
 namespace Hydra.Core.Models;
@@ -167,6 +168,28 @@ public sealed class WorkItem
 	/// <summary>#470 Phase 2: total KV payload size (v2 header + state + logits)
 	/// matching <see cref="KvChunks"/> — the kv_len of the framed DECODE.</summary>
 	public long KvTotalSize { get; set; }
+	/// <summary>#470: engine-computed xxh3-64 wire hash of the whole kv segment
+	/// ("xxh3:HEX", from the PREFILL response meta). Forwarded into the DECODE
+	/// frame's segments[].kv.hash so the decode engine verifies the streamed
+	/// restore end-to-end. Empty when unavailable (old binary / M1 path).</summary>
+	public string KvHash { get; set; } = "";
+
+	/// <summary>#470 Increment 2 (relay): bounded channel carrying the live
+	/// PREFILL response stream (v2_hdr + state + logits) to the DECODE RPC.
+	/// Each item is a rented byte[] + length; the decode consumer returns it
+	/// to ArrayPool. Null when the turn uses the store round trip.</summary>
+	public Channel<(byte[] Buffer, int Length)>? RelayChannel { get; set; }
+
+	/// <summary>#470 Increment 2 (relay): background task draining the PREFILL
+	/// response into <see cref="RelayChannel"/> (backpressure paces the engine
+	/// send to the decode leg). Awaited by DecodeAsync after the DECODE RPC so
+	/// a prefill-stream failure surfaces precisely. Null when not relaying.</summary>
+	public Task<EnginePrefillResult?>? RelayTask { get; set; }
+
+	/// <summary>#470 Increment 2 (relay): total KV payload length (payload_len
+	/// from the PREFILL response header) — the kv_len of the framed DECODE.
+	/// Captured by the relay task's onPayloadLen callback.</summary>
+	public long RelayKvTotalSize { get; set; }
 	/// <summary>True when RestoreKv loaded KV into the slot before Decode (engine mode cross-GPU).</summary>
 	public bool KvRestoredForDecode { get; set; }
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>

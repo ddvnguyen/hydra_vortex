@@ -397,6 +397,7 @@ public class RpcClientTests : IAsyncLifetime
             modelAlias: "nano",
             messagesJson: null, nPredict: 16, samplingJson: null, stream: false,
             kvChunks: Chunks(), kvTotalSize: expected.Length,
+            kvHash: "",
             "trace-streamkv", CancellationToken.None);
 
         Assert.Equal((byte)StatusCode.Ok, resp.Status);

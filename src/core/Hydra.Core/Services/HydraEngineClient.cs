@@ -98,11 +98,24 @@ public sealed class HydraEngineClient
         int slotId, string? model, string requestJson, string traceId,
         CancellationToken ct, Dictionary<string, object>? hydraConfig,
         Action<long> onPayloadLen,
-        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk)
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        Action<EnginePrefillResult>? onMeta = null,
+        TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
     {
         var payloadJson = BuildPrefillRequestJson(requestJson, model, hydraConfig);
         var resp = await _rpc.EnginePrefillChunkedAsync(
-            slotId.ToString(), payloadJson, traceId, ct, onPayloadLen, onChunk);
+            slotId.ToString(), payloadJson, traceId, ct,
+            meta =>
+            {
+                if (onMeta == null || string.IsNullOrEmpty(meta)) return;
+                try
+                {
+                    var m = JsonSerializer.Deserialize<EnginePrefillResult>(meta);
+                    if (m != null) onMeta(m);
+                }
+                catch { /* non-fatal: the final ParsePrefillResponse still runs */ }
+            },
+            onPayloadLen, onChunk, requestTimeoutOverride, payloadIdleBudget);
         return ParsePrefillResponse(resp, includeBlob: false);
     }
 
@@ -376,6 +389,14 @@ public sealed class EnginePrefillResult
     public long KvSize { get; init; }
     [JsonPropertyName("logits_size")]
     public long LogitsSize { get; init; }
+
+    /// <summary>M2 (#470): engine-computed xxh3-64 wire hash of the whole kv
+    /// segment (v2 header + [magic][seq_id] + state + logits), emitted in the
+    /// PREFILL response meta as "xxh3:HEX". Forwarded into the DECODE frame's
+    /// segments[].kv.hash so the decode engine can verify the streamed restore
+    /// end-to-end. Empty when the engine did not emit it (M1 path, old binary).</summary>
+    [JsonPropertyName("kv_hash_str")]
+    public string KvHash { get; init; } = "";
 
     /// <summary>Raw KV state blob returned by the engine (caller takes ownership).</summary>
     [JsonIgnore]

@@ -348,6 +348,7 @@ public sealed class MigratedContinuationTests
             string? modelAlias,
             string? messagesJson, int nPredict, string? samplingJson, bool stream,
             IAsyncEnumerable<ReadOnlyMemory<byte>> kvChunks, long kvTotalSize,
+            string kvHash,
             string traceId, CancellationToken ct)
         {
             using var ms = new MemoryStream((int)kvTotalSize);
