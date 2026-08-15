@@ -94,7 +94,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	private static readonly TimeSpan DecodeMetaQueryTimeout = TimeSpan.FromSeconds(15);
 	internal readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
-	private readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
+	// #613: keyed by TraceId (per-request), NOT SessionId — with concurrent
+	// requests on one session, a session key lets one request's completion
+	// dispose the pipeline cts of another, killing its disconnect-abort path.
+	internal readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
 	internal readonly ConcurrentDictionary<string, WorkItem> _pendingTimelines = new();
 
 	/// <summary>
@@ -4180,7 +4183,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// running when this state returns Done.
 			item.DecodeStartMs = item.ElapsedMs;
 			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
-			_pipelineCts[item.SessionId] = cts;
+			// #613: the linked source is stored per-request (item + TraceId key)
+			// so a client disconnect aborts THIS decode's stream, and one
+			// request's completion can never cancel/dispose another request's
+			// pipeline on the same session. WorkItem.Cancel() cancels it too
+			// (disconnect before the stream is produced).
+			item.PipelineCts = cts;
+			_pipelineCts[item.TraceId] = cts;
 
 			// Phase 2b: emit 0x40 EngineConfigure with per-request T1 overrides
 			// (sampling, n_predict, seed) before activating the peer. T1 keys
@@ -4978,9 +4987,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				EmitTimeline(timelineItem);
 			}
 
-			// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct)
-			if (_pipelineCts.TryRemove(sessionId, out var pipelineCts))
-				pipelineCts.Dispose();
+			// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct).
+			// #613: dispose THIS request's source — via the finalized item's own cts
+			// (per-request, keyed by TraceId). A session-keyed map entry could belong
+			// to a concurrent request on the same session; disposing it would kill that
+			// request's disconnect-abort path (its linked token is disposed before it
+			// can fire → the engine decode keeps generating → slot busy → 503 cascade).
+			if (timelineItem?.PipelineCts is { } itemPipelineCts)
+			{
+				itemPipelineCts.Dispose();
+				if (_pipelineCts.TryGetValue(timelineItem.TraceId, out var mapCts)
+					&& ReferenceEquals(mapCts, itemPipelineCts))
+					_pipelineCts.TryRemove(timelineItem.TraceId, out _);
+			}
+			else if (traceId is { Length: > 0 } && _pipelineCts.TryRemove(traceId, out var orphanCts))
+			{
+				// No timeline entry yet (early disconnect — the pipeline is still
+				// mid-DecodeAsync): release the in-flight decode's linked source.
+				orphanCts.Dispose();
+			}
 
 			// Capture the KV blob from the engine. This RPC must hold the slot
 			// (it reads from the engine's slot buffer), but it's a single round
@@ -6193,8 +6218,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		IAsyncEnumerable<byte[]> source, WorkItem item,
 		bool mergedPath = false, Dictionary<string, object>? fallbackRequestBody = null,
 		string? fallbackNodeUrl = null,
-		CancellationToken fallbackCt = default)
+		CancellationToken fallbackCt = default,
+		[EnumeratorCancellation] CancellationToken ct = default)
 	{
+		// #613: the coordinator's own SSE generation loop must observe the
+		// client-disconnect token, not rely on the consumer disposing the
+		// enumerator. [EnumeratorCancellation] wires the controller's
+		// WithCancellation(ct) (RequestAborted) into this parameter, so a
+		// disconnect aborts the loop deterministically on every decode path
+		// (merged + HTTP proxy). The underlying source streams observe the same
+		// linked token and abort their engine reads (HTTP request close /
+		// merged-decode DELETE) in turn.
 		string? lastUtf8 = null;
 		// #616 merged path: one-chunk lookahead — hold the LAST data chunk and
 		// the trailing `data: [DONE]` (when present) so an empty-content stream
@@ -6204,8 +6238,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		byte[]? heldDone = null;
 		bool sawContent = false;
 
-		await foreach (var chunk in source)
+		await foreach (var chunk in source.WithCancellation(ct))
 		{
+			ct.ThrowIfCancellationRequested();
 			var isDone = false;
 			if (chunk.Length > 0)
 			{
@@ -6238,6 +6273,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				yield return heldChunk;
 			heldChunk = chunk;
 		}
+
+		// #613: a client-disconnect abort skips the token-accounting tail and the
+		// merged empty-content fallback — re-issuing the completion for a dead
+		// request would double-run the generation. (The consumer's WithCancellation
+		// normally aborts the loop before reaching here; this guards the edge where
+		// the source ends exactly as the token fires.)
+		if (ct.IsCancellationRequested)
+			yield break;
 
 		if (lastUtf8 != null)
 		{
