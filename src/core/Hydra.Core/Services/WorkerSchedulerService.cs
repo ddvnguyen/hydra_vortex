@@ -4242,6 +4242,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							// ONCE: a BUSY reject cannot be retried (re-enumeration
 							// would yield zero bytes and a kv_len mismatch), so
 							// break out of the retry loop immediately.
+							// #620 Task 2/3: time the actual 0x43 DECODE RPC engine call only
+							// (excludes queue wait and KV restore, both separately observable).
+							var decodeRpcSw = System.Diagnostics.Stopwatch.StartNew();
 							mergedResp = await llamaRpc.EngineMergedDecodeStreamKvAsync(
 								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 								nPast: item.NPastAfter,
@@ -4263,6 +4266,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								kvHash: item.KvHash,
 								traceId: item.TraceId,
 								ct: cts.Token);
+							CoordinatorMetrics.DecodeRpcDuration.WithLabels(w.Name).Observe(decodeRpcSw.Elapsed.TotalSeconds);
 							break;
 						}
 						if (item.KvChunks is { Count: > 0 })
@@ -4270,6 +4274,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							// #470 Phase 2: KV streamed from the Store (no full
 							// blob in RAM). The enumerable re-fetches the chunks
 							// on every BUSY retry attempt.
+							// #620 Task 2/3: time the actual 0x43 DECODE RPC engine call only.
+							var decodeRpcSw = System.Diagnostics.Stopwatch.StartNew();
 							mergedResp = await llamaRpc.EngineMergedDecodeStreamKvAsync(
 								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 								nPast: item.NPastAfter,
@@ -4296,9 +4302,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								kvHash: item.KvHash,
 								traceId: item.TraceId,
 								ct: cts.Token);
+							CoordinatorMetrics.DecodeRpcDuration.WithLabels(w.Name).Observe(decodeRpcSw.Elapsed.TotalSeconds);
 						}
 						else
 						{
+							// #620 Task 2/3: time the actual 0x43 DECODE RPC engine call only.
+							var decodeRpcSw = System.Diagnostics.Stopwatch.StartNew();
 							mergedResp = await llamaRpc.EngineMergedDecodeAsync(
 								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 								nPast: item.NPastAfter,
@@ -4322,6 +4331,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
 								traceId: item.TraceId,
 								ct: cts.Token);
+							CoordinatorMetrics.DecodeRpcDuration.WithLabels(w.Name).Observe(decodeRpcSw.Elapsed.TotalSeconds);
 						}
 						if (mergedResp.Status != (byte)StatusCode.Busy)
 							break; // Ok or terminal reject — no more retries
@@ -4496,6 +4506,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							// #470 Increment 2 (relay): KV streams live from the
 							// PREFILL RPC — no Store read. Consumed ONCE: a BUSY
 							// reject cannot be retried, break out immediately.
+							// #620 Task 2/3: time the actual 0x43 DECODE RPC engine call only.
+							var decodeRpcSw = System.Diagnostics.Stopwatch.StartNew();
 							mergedResp = await llamaRpc.EngineMergedDecodeStreamKvAsync(
 								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 								nPast: item.NPastAfter,
@@ -4517,6 +4529,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								kvHash: item.KvHash,
 								traceId: item.TraceId,
 								ct: ct);
+							CoordinatorMetrics.DecodeRpcDuration.WithLabels(w.Name).Observe(decodeRpcSw.Elapsed.TotalSeconds);
 							break;
 						}
 						if (item.KvChunks is { Count: > 0 })
@@ -4524,6 +4537,8 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							// #470 Phase 2: KV streamed from the Store (no full
 							// blob in RAM). The enumerable re-fetches the chunks
 							// on every BUSY retry attempt.
+							// #620 Task 2/3: time the actual 0x43 DECODE RPC engine call only.
+							var decodeRpcSw = System.Diagnostics.Stopwatch.StartNew();
 							mergedResp = await llamaRpc.EngineMergedDecodeStreamKvAsync(
 								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 								nPast: item.NPastAfter,
@@ -4550,9 +4565,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								kvHash: item.KvHash,
 								traceId: item.TraceId,
 								ct: ct);
+							CoordinatorMetrics.DecodeRpcDuration.WithLabels(w.Name).Observe(decodeRpcSw.Elapsed.TotalSeconds);
 						}
 						else
 						{
+							// #620 Task 2/3: time the actual 0x43 DECODE RPC engine call only.
+							var decodeRpcSw = System.Diagnostics.Stopwatch.StartNew();
 							mergedResp = await llamaRpc.EngineMergedDecodeAsync(
 								slotKey: (item.DecodeSlot ?? item.LastIdSlot ?? 0).ToString(),
 								nPast: item.NPastAfter,
@@ -4576,6 +4594,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 								kvBlob: item.KvBlob ?? ReadOnlyMemory<byte>.Empty,
 								traceId: item.TraceId,
 								ct: ct);
+							CoordinatorMetrics.DecodeRpcDuration.WithLabels(w.Name).Observe(decodeRpcSw.Elapsed.TotalSeconds);
 						}
 						if (mergedResp.Status != (byte)StatusCode.Busy)
 							break; // Ok or terminal reject — no more retries
@@ -4655,6 +4674,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							{
 								item.EnginePrefillMs = (long)prm.GetDouble();
 								item.Phases["prefill_ms"] = item.EnginePrefillMs;
+							}
+							// #620 Task 3/3a: engine-reported decode_ms from the merged
+							// non-streaming result's hydra_metrics (authoritative engine field).
+							if (hmEl.TryGetProperty("decode_ms", out var dm) && dm.ValueKind == JsonValueKind.Number)
+							{
+								item.Phases["engine_decode_ms"] = (long)dm.GetDouble();
+								CoordinatorMetrics.EngineDecodeMs.WithLabels(w.Name)
+									.Observe(item.Phases["engine_decode_ms"]);
 							}
 						}
 						if (_ledger.Lookup(item.SessionId) == null)
@@ -4751,6 +4778,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						item.EnginePrefillMs = (long)prm.GetDouble();
 						item.Phases["prefill_ms"] = item.EnginePrefillMs;
 					}
+					// #620 Task 3/3a: engine-reported decode_ms from the HTTP-proxy
+					// non-streaming result's hydra_metrics (authoritative engine field).
+					if (hmEl.TryGetProperty("decode_ms", out var dm) && dm.ValueKind == JsonValueKind.Number)
+					{
+						item.Phases["engine_decode_ms"] = (long)dm.GetDouble();
+						CoordinatorMetrics.EngineDecodeMs.WithLabels(w.Name)
+							.Observe(item.Phases["engine_decode_ms"]);
+					}
 				}
 
 				// Register in ledger so /status can find the session. The cold_atomic HTTP
@@ -4769,6 +4804,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		SplitInlinePrefillFromDecode(item, item.RecordPhase("decode_ms"));
 		CoordinatorMetrics.DecodeDuration.WithLabels(w.Name, RouteLabel(item))
 			.Observe(item.Phases.GetValueOrDefault("decode_ms") / 1000.0);
+		// #620 Task 3/3b: engine decode_ms − coordinator-measured decode_ms.
+		// Positive = engine claims more time than the coordinator observed.
+		// Observe only when both sources are present (engine value parsed from
+		// hydra_metrics at the 3a site; coordinator decode_ms finalized above).
+		if (item.Phases.TryGetValue("engine_decode_ms", out var engineDecodeMs)
+			&& item.Phases.TryGetValue("decode_ms", out var coordDecodeMs))
+			CoordinatorMetrics.EngineVsCoordinatorDecodeMs.WithLabels(w.Name)
+				.Observe(engineDecodeMs - coordDecodeMs);
 		// #470: merged-decode route skipped PrefillAsync (which normally
 		// observes PrefillDuration itself, :2088) — EnginePrefillMs > 0 is
 		// the marker that SplitInlinePrefillFromDecode backfilled prefill_ms
@@ -4913,6 +4956,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				CoordinatorMetrics.DecodeDuration
 					.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown", RouteLabel(timelineItem))
 					.Observe(timelineItem.Phases.GetValueOrDefault("decode_ms") / 1000.0);
+				// #620 Task 3/3b: engine decode_ms − coordinator-measured decode_ms.
+				// Positive = engine claims more time than the coordinator observed.
+				// Observe only when both sources are present (engine value parsed
+				// from hydra_metrics during the stream; coordinator decode_ms
+				// finalized by FinalizeStreamPhases above).
+				if (timelineItem.Phases.TryGetValue("engine_decode_ms", out var engineDecodeMs)
+					&& timelineItem.Phases.TryGetValue("decode_ms", out var coordDecodeMs))
+					CoordinatorMetrics.EngineVsCoordinatorDecodeMs
+						.WithLabels(timelineItem.DecodeWorker?.Name ?? "unknown")
+						.Observe(engineDecodeMs - coordDecodeMs);
 				// #470: merged-decode route skipped PrefillAsync (which normally
 				// observes PrefillDuration itself, :2088) — EnginePrefillMs > 0
 				// is the marker that FinalizeStreamPhases backfilled prefill_ms
@@ -6265,7 +6318,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							if (hmEl.TryGetProperty("kv_bytes", out var kv) && kv.ValueKind == JsonValueKind.Number)
 								item.KvBytes = kv.GetInt64();
 							if (hmEl.TryGetProperty("decode_ms", out var dm) && dm.ValueKind == JsonValueKind.Number)
+							{
 								item.Phases["decode_ms"] = (long)dm.GetDouble();
+								// #620 Task 3/3a: engine-reported decode duration from
+								// hydra_metrics.decode_ms (authoritative engine field).
+								item.Phases["engine_decode_ms"] = item.Phases["decode_ms"];
+								CoordinatorMetrics.EngineDecodeMs
+									.WithLabels(item.DecodeWorker?.Name ?? "unknown")
+									.Observe(item.Phases["engine_decode_ms"]);
+							}
 							if (hmEl.TryGetProperty("prompt_ms", out var prm) && prm.ValueKind == JsonValueKind.Number)
 								item.Phases["prefill_ms"] = (long)prm.GetDouble();
 
@@ -6363,6 +6424,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							&& dm.GetDouble() > 0)
 						{
 							item.Phases["decode_ms"] = (long)dm.GetDouble();
+							// #620 Task 3/3a: DONE-state result carries the same
+							// authoritative hydra_metrics.decode_ms as the stream.
+							item.Phases["engine_decode_ms"] = item.Phases["decode_ms"];
+							CoordinatorMetrics.EngineDecodeMs
+								.WithLabels(item.DecodeWorker?.Name ?? "unknown")
+								.Observe(item.Phases["engine_decode_ms"]);
 							engineGenerated = true;
 							_log.Information("merged_decode_done_state_metrics Sid={Sid} Did={Did} DecodeMs={Ms}",
 								item.SessionId, item.DecodeRequestId, (long)dm.GetDouble());
