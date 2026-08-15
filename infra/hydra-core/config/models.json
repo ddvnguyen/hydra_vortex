@@ -74,7 +74,7 @@
       "quality_tier": 3,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 7, "peer_requirements": { "min_vram_mb": 12000, "required_capabilities": 7 } },
       "routing": { "auto_eligible": true, "default_eligible": false, "min_prompt_tokens": 0, "max_prompt_tokens": 999999, "max_context_tokens": 65536, "requires_workers": ["rtx3060"] },
-      "engine_config": { "n_gpu_layers": 65, "n_ctx": 65536, "split_mode": "layer", "tensor_split": [25.0, 40.0], "override_tensors": ["token_embd.weight=CPU"], "rope_scaling": "yarn", "rope_scale": 4.0, "yarn_orig_ctx": 32768, "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0, "rpc_servers": ["rtx3060:9504"] }
+      "engine_config": { "n_gpu_layers": 65, "n_ctx": 65536, "split_mode": "layer", "tensor_split": [25.0, 40.0], "override_tensors": ["token_embd.weight=CPU"], "rope_scaling": "yarn", "rope_scale": 4.0, "yarn_orig_ctx": 32768, "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "rpc_servers": ["rtx3060:9504"] }
     }
   }
 }
