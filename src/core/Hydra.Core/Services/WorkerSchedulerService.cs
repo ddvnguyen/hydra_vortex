@@ -193,9 +193,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	public async Task<object> SubmitAsync(
 		Dictionary<string, object> request,
 		List<Dictionary<string, object>> messages,
-		string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0)
+		string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0, string? traceId = null)
 	{
-		var traceId = Router.NewTraceId();
+		// #613-followup: when the caller (controller) supplies its per-request
+		// traceId, the item uses it — so the same identity is later passed to
+		// NotifyStreamComplete and the pipeline-cts disposal is exact.
+		traceId ??= Router.NewTraceId();
 		var item = new WorkItem(request, messages, sessionId, traceId, prefixHash, estimatedTokens, maxTokens);
 		item.SystemPromptTokens = systemPromptTokens;
 		item.HttpCancellationToken = ct;
@@ -4912,7 +4915,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			sessionId, nodeName, lease.SlotId);
 	}
 
-	public async Task NotifyStreamComplete(string sessionId)
+	public async Task NotifyStreamComplete(string sessionId, string? traceId = null)
 	{
 		// Issue #284 + #286: two related bugs fixed together.
 		//
@@ -4936,26 +4939,45 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		string? releaseNode = null;
 		try
 		{
-			// Search _pendingTimelines (keyed by TraceId) for an entry matching
-			// this session whose stream has ACTUALLY completed. When two streaming
-			// requests share the same sessionId, this prevents NotifyStreamComplete
-			// from removing the wrong entry (the other request's still-streaming item).
+			// #613-followup: with two CONCURRENT streaming requests on one
+			// session, a session-keyed scan of _pendingTimelines is ambiguous —
+			// both items have a completed StreamCompletion (the TCS is set when
+			// the stream is PRODUCED, not when it is drained), so the scan can
+			// pick the still-streaming sibling and dispose ITS pipeline cts,
+			// killing the sibling's disconnect-abort path (the #613 race
+			// resurfacing at the disposal site). The controller knows exactly
+			// which request it is finishing — it passes the per-request TraceId
+			// (the same one it gave SubmitAsync) — so finalize exactly that item.
 			WorkItem? timelineItem = null;
-			foreach (var kv in _pendingTimelines)
+			if (traceId is { Length: > 0 })
 			{
-				if (kv.Value.SessionId == sessionId
-					&& kv.Value.StreamCompletion.Task.IsCompleted
-					&& _pendingTimelines.TryRemove(kv.Key, out timelineItem))
-					break;
+				_pendingTimelines.TryRemove(traceId, out timelineItem);
+			}
+			else
+			{
+				// Legacy callers (no per-request identity): fall back to the
+				// session scan. Correct when at most one request per session is
+				// streaming — ambiguous only in the concurrent same-session case,
+				// which must always supply the traceId.
+				foreach (var kv in _pendingTimelines)
+				{
+					if (kv.Value.SessionId == sessionId
+						&& kv.Value.StreamCompletion.Task.IsCompleted
+						&& _pendingTimelines.TryRemove(kv.Key, out timelineItem))
+						break;
+				}
 			}
 
 			_pendingBgSaves.TryGetValue(sessionId, out var bgInfo);
-			var traceId = bgInfo.TraceId;
+			// #613-followup: use the caller's per-request traceId when provided —
+			// _pendingBgSaves is session-keyed, so its TraceId is the LAST
+			// writer's under concurrency (the wrong request for stream cleanup).
+			var effectiveTraceId = traceId ?? bgInfo.TraceId;
 
 			// Key _streamCompleted by TraceId (per-turn) to avoid stale entries
 			// from failed requests leaking into subsequent turns for the same session.
-			if (traceId is { Length: > 0 })
-				_streamCompleted.TryAdd(traceId, 0);
+			if (effectiveTraceId is { Length: > 0 })
+				_streamCompleted.TryAdd(effectiveTraceId, 0);
 
 			// Emit the deferred timeline now that the stream is done — decode_ms/total_ms
 			// cover the full stream duration.
@@ -5000,7 +5022,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					&& ReferenceEquals(mapCts, itemPipelineCts))
 					_pipelineCts.TryRemove(timelineItem.TraceId, out _);
 			}
-			else if (traceId is { Length: > 0 } && _pipelineCts.TryRemove(traceId, out var orphanCts))
+			else if (effectiveTraceId is { Length: > 0 } && _pipelineCts.TryRemove(effectiveTraceId, out var orphanCts))
 			{
 				// No timeline entry yet (early disconnect — the pipeline is still
 				// mid-DecodeAsync): release the in-flight decode's linked source.

@@ -314,10 +314,14 @@ internal sealed class DisconnectFixture : IAsyncDisposable
 
 	/// <summary>Submit a streaming request and return the SSE chunk stream. The
 	/// caller owns the http ct — cancelling it simulates a client disconnect
-	/// (RequestAborted). Blocks until the decode phase produces the stream.</summary>
-	public async Task<IAsyncEnumerable<byte[]>> SubmitStreamingAsync(
-		string sessionId, int estimatedTokens, int maxTokens, CancellationToken httpCt)
+	/// (RequestAborted). Blocks until the decode phase produces the stream.
+	/// Returns the per-request TraceId alongside the stream so the test can pass
+	/// it back to NotifyStreamComplete — the scheduler must finalize EXACTLY this
+	/// request under concurrency (a session-keyed lookup would be ambiguous).</summary>
+	public async Task<(string TraceId, IAsyncEnumerable<byte[]> Stream)> SubmitStreamingAsync(
+		string sessionId, int estimatedTokens, int maxTokens, CancellationToken httpCt, string? traceId = null)
 	{
+		traceId ??= "t-" + Guid.NewGuid().ToString("N")[..12];
 		var msgs = new List<Dictionary<string, object>>
 		{
 			new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
@@ -330,8 +334,8 @@ internal sealed class DisconnectFixture : IAsyncDisposable
 			["messages"] = msgs,
 		};
 		var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
-			maxTokens, null, httpCt);
-		return Assert.IsAssignableFrom<IAsyncEnumerable<byte[]>>(result);
+			maxTokens, null, httpCt, traceId: traceId);
+		return (traceId, Assert.IsAssignableFrom<IAsyncEnumerable<byte[]>>(result));
 	}
 }
 
@@ -368,7 +372,7 @@ public sealed class ClientDisconnectCancelTests
 	{
 		await using var f = new DisconnectFixture(mergedCapable: false);
 		var httpCts = new CancellationTokenSource();
-		var stream = await f.SubmitStreamingAsync("sess_dc1", 2000, 100, httpCts.Token);
+		var (traceId, stream) = await f.SubmitStreamingAsync("sess_dc1", 2000, 100, httpCts.Token);
 
 		// Mid-generation: the coordinator is draining the (gated) engine stream.
 		var drain = Task.Run(() => DrainRawAsync(stream));
@@ -384,7 +388,7 @@ public sealed class ClientDisconnectCancelTests
 		Assert.True(aborted == drain, "HTTP-path SSE stream must abort on client disconnect");
 
 		// Controller finally: NotifyStreamComplete releases the slot lease.
-		await f.Scheduler.NotifyStreamComplete("sess_dc1");
+		await f.Scheduler.NotifyStreamComplete("sess_dc1", traceId);
 		await WaitForLeaseReleaseAsync(f);
 
 		Assert.Equal(0, f.Scheduler.WarmLeaseCount);
@@ -397,7 +401,7 @@ public sealed class ClientDisconnectCancelTests
 	{
 		await using var f = new DisconnectFixture(mergedCapable: true);
 		var httpCts = new CancellationTokenSource();
-		var stream = await f.SubmitStreamingAsync("sess_dc2", 2000, 100, httpCts.Token);
+		var (traceId, stream) = await f.SubmitStreamingAsync("sess_dc2", 2000, 100, httpCts.Token);
 
 		var drain = Task.Run(() => DrainRawAsync(stream));
 		await f.Proxy.WaitForPollStreamsAsync(1, httpCts.Token);
@@ -411,7 +415,7 @@ public sealed class ClientDisconnectCancelTests
 		// The merged-path engine abort fired: DELETE /v1/decode/{id} on the 1st poll stream.
 		Assert.Contains(1, f.Proxy.CancelledPollStreams);
 
-		await f.Scheduler.NotifyStreamComplete("sess_dc2");
+		await f.Scheduler.NotifyStreamComplete("sess_dc2", traceId);
 		await WaitForLeaseReleaseAsync(f);
 
 		Assert.Equal(0, f.Scheduler.WarmLeaseCount);
@@ -428,32 +432,44 @@ public sealed class ClientDisconnectCancelTests
 		// could never fire on ITS client disconnect, so its engine decode kept
 		// generating (slot busy → 503 cascade for minutes). With the per-request
 		// (TraceId) key, one request's completion can never kill another's abort.
+		//
+		// #613-followup: NotifyStreamComplete must ALSO be told which request
+		// it is finishing. A session-keyed lookup is ambiguous here — both
+		// requests have a completed StreamCompletion (set when the stream is
+		// produced, not when it is drained), so a scan could finalize the wrong
+		// (still-streaming) item and dispose ITS pipeline cts, killing its
+		// disconnect-abort path. Each completion passes its own TraceId.
 		await using var f = new DisconnectFixture(mergedCapable: true);
 
 		var aCts = new CancellationTokenSource();
 		var bCts = new CancellationTokenSource();
-		var streamA = await f.SubmitStreamingAsync("sess_dc3", 2000, 100, aCts.Token);
+		var (traceA, streamA) = await f.SubmitStreamingAsync("sess_dc3", 2000, 100, aCts.Token);
 		var drainA = Task.Run(() => DrainRawAsync(streamA));
 		await f.Proxy.WaitForPollStreamsAsync(1, aCts.Token);
 
 		// Second concurrent request on the SAME session — B takes the free rtx
-		// slot (2-slot head) while A still streams on its gated decode.
-		var streamB = await f.SubmitStreamingAsync("sess_dc3", 2000, 100, bCts.Token);
+		// slot (2-slot head) while A still streams on its gated decode. The gate
+		// handshake (not a sleep) guarantees B is mid-decode and blocked.
+		var (traceB, streamB) = await f.SubmitStreamingAsync("sess_dc3", 2000, 100, bCts.Token);
 		var drainB = Task.Run(() => DrainRawAsync(streamB));
 		await f.Proxy.WaitForPollStreamsAsync(2, aCts.Token);
-		await Task.Delay(100);
 
 		// Both requests hold their own per-request pipeline cts.
 		Assert.Equal(2, f.Scheduler._pipelineCts.Count);
+		Assert.True(f.Scheduler._pipelineCts.ContainsKey(traceA));
+		Assert.True(f.Scheduler._pipelineCts.ContainsKey(traceB));
 
-		// A's client disconnects; the controller runs NotifyStreamComplete.
+		// A's client disconnects; the controller runs NotifyStreamComplete for A.
 		aCts.Cancel();
 		var doneA = await Task.WhenAny(drainA, Task.Delay(AbortTimeout));
 		Assert.True(doneA == drainA, "request A's stream must abort on its disconnect");
-		await f.Scheduler.NotifyStreamComplete("sess_dc3");
+		await f.Scheduler.NotifyStreamComplete("sess_dc3", traceA);
 
 		// A's completion must NOT have disposed B's pipeline cts — B's abort
-		// path stays live, keyed by its own TraceId.
+		// path stays live, keyed by ITS OWN TraceId.
+		Assert.DoesNotContain(traceA, f.Scheduler._pipelineCts.Keys);
+		Assert.True(f.Scheduler._pipelineCts.ContainsKey(traceB),
+			"B's pipeline cts must survive A's completion — keyed by its own TraceId");
 		Assert.Equal(1, f.Scheduler._pipelineCts.Count);
 
 		// B's client disconnects → B's stream must abort (its decode cts still fires).
@@ -462,7 +478,7 @@ public sealed class ClientDisconnectCancelTests
 		Assert.True(doneB == drainB,
 			"request B's decode must abort when ITS client disconnects — a sibling request's completion must not kill its abort path");
 
-		await f.Scheduler.NotifyStreamComplete("sess_dc3");
+		await f.Scheduler.NotifyStreamComplete("sess_dc3", traceB);
 		await WaitForLeaseReleaseAsync(f);
 		Assert.Equal(0, f.Scheduler.WarmLeaseCount);
 	}
