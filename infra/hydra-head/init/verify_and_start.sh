@@ -42,12 +42,17 @@ for f in /opt/hydra/config/global.yaml; do
   fi
 done
 NODE_CONFIG=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-node" ] && [ -n "$2" ]; then
-    NODE_CONFIG="$2"
+# Parse args WITHOUT consuming $@ — the exec below must receive the
+# FULL original argument list (including -global etc.). Indexing into
+# "$@" preserves it for the exec.
+i=1
+while [ "$i" -le "$#" ]; do
+  if [ "${!i}" = "-node" ] && [ "$i" -lt "$#" ]; then
+    j=$((i+1))
+    NODE_CONFIG="${!j}"
     break
   fi
-  shift
+  i=$((i+1))
 done
 if [ -n "$NODE_CONFIG" ]; then
   if [ -f "$NODE_CONFIG" ]; then
