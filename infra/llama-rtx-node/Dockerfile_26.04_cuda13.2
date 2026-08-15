@@ -16,11 +16,13 @@ RUN curl -fSsL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu24
     && dpkg -i cuda-keyring.deb \
     && rm cuda-keyring.deb
 
-# Install the exact CUDA 13.2 runtime components
-# Pinned to 13-2 to guarantee you don't accidentally pull newer versions
+# Install the exact CUDA 13.2.2 runtime components
+# (owner: exact version 13.2.2 — pin the runtime release + hold its
+# component micro-versions via apt preferences so transitive deps cannot
+# float past 13.2.2)
+COPY infra/hydra-head/init/cuda-pin.conf /etc/apt/preferences.d/cuda-13-2-2
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cuda-cudart-13-2 \
-    libcublas-13-2 \
+    cuda-runtime-13-2=13.2.2-1 \
     libnccl2 \
     libgomp1 \
     libibverbs1 \
