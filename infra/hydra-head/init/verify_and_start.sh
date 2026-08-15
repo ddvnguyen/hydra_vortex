@@ -28,9 +28,12 @@ else
   exit 1
 fi
 
-# Verify config files exist
+# Verify config files exist (config is mounted at runtime from the host —
+# nothing is baked into the image at build time). The node config path
+# comes from the command line (-node ...); verify it exists rather than
+# hardcoding a name, since the 3060 container runs node-rtx3060.yaml.
 echo 'Checking config files:'
-for f in /opt/hydra/config/global.yaml /opt/hydra/config/node-rtx.yaml; do
+for f in /opt/hydra/config/global.yaml; do
   if [ -f "$f" ]; then
     echo "  $f -- OK"
   else
@@ -38,6 +41,22 @@ for f in /opt/hydra/config/global.yaml /opt/hydra/config/node-rtx.yaml; do
     exit 1
   fi
 done
+NODE_CONFIG=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-node" ] && [ -n "$2" ]; then
+    NODE_CONFIG="$2"
+    break
+  fi
+  shift
+done
+if [ -n "$NODE_CONFIG" ]; then
+  if [ -f "$NODE_CONFIG" ]; then
+    echo "  $NODE_CONFIG -- OK"
+  else
+    echo "  $NODE_CONFIG -- MISSING"
+    exit 1
+  fi
+fi
 
 echo '========================================'
 echo 'LAUNCHING HYDRA HEAD'

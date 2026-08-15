@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Add NVIDIA's CUDA repository keyring (Ubuntu 24.04 stable path)
+# Add NVIDIA's CUDA repository keyring (owner: use 24.04 keyring + CUDA 13.2.2
+# packages — the 26.04 repo only ships 13.3, so the 24.04 repo path is used)
 RUN curl -fSsL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -o cuda-keyring.deb \
     && dpkg -i cuda-keyring.deb \
     && rm cuda-keyring.deb
@@ -46,12 +47,10 @@ RUN chmod +x /init/verify_and_start.sh
 # Copy hydra-head binary
 COPY bin/hydra-head /usr/local/bin/hydra-head
 
-# Copy config files
-COPY infra/hydra-head/config/global.yaml /opt/hydra/config/global.yaml
-COPY infra/hydra-head/config/node-rtx.yaml /opt/hydra/config/node-rtx.yaml
-COPY infra/hydra-head/config/node-rtx3060.yaml /opt/hydra/config/node-rtx3060.yaml
-COPY infra/hydra-head/config/preset-rtx5060ti.ini /opt/hydra/config/preset-rtx5060ti.ini
-COPY infra/hydra-head/config/preset-rtx3060.ini /opt/hydra/config/preset-rtx3060.ini
+# Config files are NOT baked into the image — they are mounted at runtime
+# from the host (see docker-compose.hydra.yml: ./hydra-head/config:/opt/hydra/config:ro).
+# This keeps the image build-time immutable and lets node configs (engine
+# pins, model presets) change without an image rebuild.
 
 # Download the 2 monitoring sidecar binaries (baked into the image so
 # hydra-head can spawn them as child processes inside this container).
