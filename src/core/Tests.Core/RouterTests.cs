@@ -17,7 +17,9 @@ internal sealed class TestHealthMonitor : IHealthMonitorService
 	public int? GetIdleSlot(string nodeName) => null;
 	public NodeInfo? GetNodeInfo(string nodeName) => null;
 	public Dictionary<string, object> GetHealthSummary() => new();
-	public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public void MarkHealthy(string nodeName) { }
+	public event Action? HealthyChanged;
 }
 
 public sealed class RouterTests
@@ -313,6 +315,11 @@ public sealed class RouterTests
 	[Fact]
 	public void PickBestAtomicWorker_Falls_Back_To_DecodeOnly()
 	{
+		// #470: atomic = single-GPU prefill+decode on ONE worker. A decode-only
+		// worker (WorkerType=2, e.g. P100 classic llama-server) cannot serve the
+		// Hydra RPC prefill the atomic route requires — picking it makes the
+		// request hang on "prefill_rpc_error ... Connection refused". The
+		// fallback must NOT select it.
 		var workers = new List<WorkerConfig>
 		{
 			new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
@@ -321,8 +328,25 @@ public sealed class RouterTests
 		foreach (var w in workers) tracker.InitWorker(w.Name);
 
 		var picked = Router.PickBestAtomicWorker(workers, tracker, Health);
+		Assert.Null(picked);
+	}
+
+	[Fact]
+	public void PickBestAtomicWorker_Falls_Back_To_Any_PrefillCapable()
+	{
+		// With a decode-only worker and a prefill-capable worker both present,
+		// the fallback must pick the prefill-capable one (never decode-only).
+		var workers = new List<WorkerConfig>
+		{
+			new() { Name = "p100", WorkerType = 2, DecodePriority = 1 },
+			new() { Name = "rtx", WorkerType = 3, PrefillPriority = 1 },
+		};
+		var tracker = new WorkerTracker();
+		foreach (var w in workers) tracker.InitWorker(w.Name);
+
+		var picked = Router.PickBestAtomicWorker(workers, tracker, Health);
 		Assert.NotNull(picked);
-		Assert.Equal("p100", picked!.Name);
+		Assert.Equal("rtx", picked!.Name);
 	}
 
 	[Fact]
@@ -368,16 +392,20 @@ public sealed class IsModelAllowedTests
 		public int? GetIdleSlot(string nodeName) => null;
 		public NodeInfo? GetNodeInfo(string nodeName) => _nodes.TryGetValue(nodeName, out var n) ? n : null;
 		public Dictionary<string, object> GetHealthSummary() => new();
-		public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
+		public event Action? HealthyChanged;
+		public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
 		{
 			if (_nodes.TryGetValue(nodeName, out var n))
 			{
+				if (!string.IsNullOrEmpty(modelAlias))
+					n.CurrentModel = modelAlias;
 				n.ModelTokenizer = tokenizer;
 				n.ModelName = modelName;
 				n.ModelQuant = modelQuant;
 				n.ModelCapabilities = modelCapabilities;
 			}
 		}
+		public void MarkHealthy(string nodeName) { }
 	}
 
 	[Fact]

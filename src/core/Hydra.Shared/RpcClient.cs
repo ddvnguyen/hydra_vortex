@@ -38,6 +38,18 @@ public class RpcClient : IAsyncDisposable
         var client = new TcpClient();
         await client.ConnectAsync(_host, _port, ct);
 
+        // #470: aggressive TCP keepalive bounds half-open socket detection to
+        // ~15s when the connection is idle (head container redeploys replace the
+        // peer without FIN/RST through pasta forwarding). Data flow resets the
+        // idle timer, so long prefill streams are unaffected.
+        client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        if (OperatingSystem.IsLinux())
+        {
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 5);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 2);
+        }
+
         lock (_connectLock)
         {
             if (_disposed)
@@ -56,14 +68,34 @@ public class RpcClient : IAsyncDisposable
     public virtual async Task<RpcResponse> RequestAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
         string traceId, CancellationToken ct)
+        => await RequestAsync(op, key, payload, traceId, ct,
+            requestTimeoutOverride: null, payloadIdleBudget: null);
+
+    /// <summary>
+    /// #470: overload with a raised ceiling + idle-based payload budget for
+    /// PREFILL (large KV responses). VIRTUAL on purpose: the 5-arg virtual above
+    /// delegates here, so test doubles override THIS signature — a single
+    /// interception point covers both call paths (EnginePrefillAsync goes
+    /// straight through here; every other caller funnels through the 5-arg).
+    /// </summary>
+    public virtual async Task<RpcResponse> RequestAsync(
+        OpCode op, string key, ReadOnlyMemory<byte> payload,
+        string traceId, CancellationToken ct,
+        TimeSpan? requestTimeoutOverride,
+        TimeSpan? payloadIdleBudget)
     {
+        // #470: PREFILL needs a raised ceiling (compute ~175s at 28K tokens +
+        // multi-GB KV transfer) AND an idle-based payload budget (see
+        // ReadPayloadIdleAsync). All other callers keep the default 180s.
+        var effectiveTimeout = requestTimeoutOverride ?? _requestTimeout;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_requestTimeout);
+        timeoutCts.CancelAfter(effectiveTimeout);
 
         await WaitForTurnAsync(op, timeoutCts.Token, ct);
         try
         {
-            return await SendAndReceiveAsync(op, key, payload, traceId, timeoutCts.Token);
+            return await SendAndReceiveAsync(op, key, payload, traceId,
+                timeoutCts, effectiveTimeout, payloadIdleBudget, ct);
         }
         catch (OperationCanceledException)
         {
@@ -72,7 +104,24 @@ public class RpcClient : IAsyncDisposable
             // so the next request starts on a fresh socket instead of misframing.
             DropConnection();
             if (!ct.IsCancellationRequested)
-                throw NewTimeout(op);
+                throw NewTimeout(op, effectiveTimeout);
+            throw;
+        }
+        catch (InvalidDataException)
+        {
+            // Framing error (e.g. response payload length out of range, #594): the
+            // frame was rejected without consuming its body, so the persistent
+            // socket is misaligned. Retrying on it reads garbage (observed: a
+            // 272728361713580032-byte bogus length on the retry). Drop it so the
+            // caller's retry logic re-requests on a fresh connection.
+            DropConnection();
+            throw;
+        }
+        catch (EndOfStreamException)
+        {
+            // Mid-response EOF: the peer closed after a partial frame, so socket
+            // state is untrustworthy. Drop it; callers retry on a fresh connection.
+            DropConnection();
             throw;
         }
         finally
@@ -100,6 +149,18 @@ public class RpcClient : IAsyncDisposable
                 throw NewTimeout(op);
             throw;
         }
+        catch (InvalidDataException)
+        {
+            // Framing error — connection desynced, drop before rethrow (see RequestAsync).
+            DropConnection();
+            throw;
+        }
+        catch (EndOfStreamException)
+        {
+            // Mid-response EOF — connection state untrustworthy, drop before rethrow.
+            DropConnection();
+            throw;
+        }
         finally
         {
             _sync.Release();
@@ -114,14 +175,24 @@ public class RpcClient : IAsyncDisposable
         }
         catch (OperationCanceledException) when (!callerCt.IsCancellationRequested)
         {
-            // Timed out waiting for the in-flight request on this connection —
-            // no I/O of ours started, so the connection itself is left alone.
+            // #470: timed out waiting behind the in-flight request. The holder may
+            // itself be wedged on a dead/half-open socket; if it never errors, the
+            // shared connection stays poisoned and every waiter times out in turn
+            // (observed: 6x EnginePrefill timeouts, zero reconnects). Drop the
+            // connection NOW: the holder's next I/O throws ODE, its finally
+            // releases _sync, and the next request reconnects fresh. Trade-off: a
+            // legitimately long concurrent request (cold prefill >180s) may be
+            // aborted once and retried by its caller — cheap vs a permanent wedge.
+            DropConnection();
             throw NewTimeout(op);
         }
     }
 
-    private TimeoutException NewTimeout(OpCode op) =>
-        new($"RPC {op} to {_host}:{_port} timed out after {_requestTimeout.TotalSeconds:F0}s");
+    private TimeoutException NewTimeout(OpCode op, TimeSpan? effective = null)
+    {
+        var timeout = effective ?? _requestTimeout;
+        return new($"RPC {op} to {_host}:{_port} timed out after {timeout.TotalSeconds:F0}s");
+    }
 
     public async IAsyncEnumerable<byte[]> RequestStreamAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
@@ -219,7 +290,8 @@ public class RpcClient : IAsyncDisposable
 
     private async Task<RpcResponse> SendAndReceiveAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
-        string traceId, CancellationToken ct)
+        string traceId, CancellationTokenSource timeoutCts, TimeSpan effectiveTimeout,
+        TimeSpan? payloadIdleBudget, CancellationToken ct)
     {
         var attempts = 0;
 
@@ -239,7 +311,10 @@ public class RpcClient : IAsyncDisposable
                     : null;
 
                 var payloadBytes = header.PayloadLen > 0
-                    ? await ReadPayloadAsync(_stream!, (long)header.PayloadLen, ct)
+                    ? payloadIdleBudget.HasValue
+                        ? await ReadPayloadIdleAsync(_stream!, (long)header.PayloadLen,
+                            timeoutCts, payloadIdleBudget.Value, ct)
+                        : await ReadPayloadAsync(_stream!, (long)header.PayloadLen, ct)
                     : [];
 
                 return new RpcResponse(header.Status, meta, payloadBytes);
@@ -387,7 +462,13 @@ public class RpcClient : IAsyncDisposable
 
     private async Task EnsureConnectedAsync(CancellationToken ct)
     {
-        if (_client is { Connected: true })
+        // #470: Socket.Connected returns true for a half-open socket (peer replaced
+        // without FIN/RST — e.g. head container redeploy through pasta forwarding),
+        // so it is NOT a liveness signal. Additionally, a non-zero Available at
+        // request start means leftover unread bytes on the wire (requests are
+        // serialized by _sync, so no legit response can be mid-flight here) — the
+        // connection is desynced and must be rebuilt. Both cases reconnect fresh.
+        if (_client is { Connected: true } && _client.Available == 0)
             return;
         await ConnectAsync(ct);
     }
@@ -431,13 +512,121 @@ public class RpcClient : IAsyncDisposable
         return Encoding.UTF8.GetString(buf);
     }
 
+    /// <summary>Sanity bound for a single RPC response payload. The PREFILL response
+    /// (opcode 0x42) returns the KV state blob inline per specs/rpc-protocol.md,
+    /// and that blob scales with context — ~800 MB at 60-80K tokens (CLAUDE.md),
+    /// 827 MB measured at 7.3K tokens. The cap must sit above that. Raised to
+    /// 4 GB (2026-08-13, epic #470): the blob is KV + MTP checkpoint (≈2× KV),
+    /// so real agent workloads (~43K context → 3.3 GB) exceeded the old 2 GB
+    /// cap and every agent turn failed with "RPC payload length out of range".
+    /// It still rejects garbage/malformed lengths (negative or absurd values).
+    /// NOTE (#470 follow-up): the 10 GB target exceeds this cap — raising it is
+    /// a separate change from the timeout fix landed here.</summary>
+    private const long MaxPayloadLen = 4L * 1024 * 1024 * 1024;
+
+    private static void ValidatePayloadLen(long payloadLen)
+    {
+        if (payloadLen < 0 || payloadLen > MaxPayloadLen)
+            throw new InvalidDataException($"RPC payload length out of range: {payloadLen} bytes");
+    }
+
     private static async Task<byte[]> ReadPayloadAsync(NetworkStream stream, long payloadLen, CancellationToken ct)
     {
-        if (payloadLen < 0 || payloadLen > 512 * 1024 * 1024)
-            throw new InvalidDataException($"RPC payload length out of range: {payloadLen} bytes");
+        ValidatePayloadLen(payloadLen);
         var buf = new byte[payloadLen];
         await ReadExactAsync(stream, buf, ct);
         return buf;
+    }
+
+    /// <summary>
+    /// #470: payload read with an idle-based deadline instead of a fixed total
+    /// budget. The default RequestAsync budget (180s) races long PREFILL reads:
+    /// compute (~175s at 28K tokens) + a multi-GB KV transfer can exceed it, and
+    /// cancelling mid-transfer drops the connection — the peer then sees garbage
+    /// framing ('RPC payload length out of range: 272728361719849728' = a
+    /// misaligned 12B header read). Here the caller's timeout CTS is re-armed to
+    /// <paramref name="idleBudget"/> on every successful chunk read: any progress
+    /// keeps the exchange alive, while a genuinely wedged engine (no bytes for a
+    /// full idle period) still fails fast. The initial <c>CancelAfter</c> set by
+    /// RequestAsync remains the ceiling for the whole exchange (compute included).
+    /// </summary>
+    private static async Task<byte[]> ReadPayloadIdleAsync(
+        NetworkStream stream, long payloadLen,
+        CancellationTokenSource timeoutCts, TimeSpan idleBudget, CancellationToken ct)
+    {
+        ValidatePayloadLen(payloadLen);
+        var buf = new byte[payloadLen];
+        var offset = 0;
+        while (offset < buf.Length)
+        {
+            // #470: read on timeoutCts.Token (NOT caller ct) so the re-armed
+            // idle deadline is actually enforceable — previously a stalled
+            // engine (no bytes for a full idle period) kept the read blocked
+            // until the caller's own cancellation fired (~300s HTTP deadline),
+            // which is how head-side workers parked on unbounded sends while
+            // the coordinator never failed fast. The initial CancelAfter
+            // (whole-exchange ceiling, compute included) set by RequestAsync
+            // covers the first read; each successful chunk re-arms the idle
+            // budget for the next one.
+            var read = await stream.ReadAsync(buf.AsMemory(offset, buf.Length - offset), timeoutCts.Token);
+            if (read == 0)
+                throw new EndOfStreamException("Connection closed by peer");
+            offset += read;
+            timeoutCts.CancelAfter(idleBudget);
+        }
+        return buf;
+    }
+
+    /// <summary>
+    /// #470 (Phase 2): streaming payload read — the full blob is NEVER
+    /// materialized. Bytes are read into a 1 MiB window and handed to
+    /// <paramref name="onChunk"/> as they arrive; the callback must consume the
+    /// memory before returning (e.g. write into a Pipe / hash / push to the
+    /// Store). Idle-based deadline: the caller's timeout CTS is re-armed to
+    /// <paramref name="idleBudget"/> on every successful read. The chunk handler
+    /// is invoked synchronously inside the connection's locked section, so
+    /// backpressure propagates naturally (a slow consumer throttles the socket).
+    /// #470 (run 31760361575): the consumer itself can be the slow side — a
+    /// relay channel (decode leg preparing — model load, slot acquisition) or a
+    /// Store pipe can fill up, parking this loop inside <paramref name="onChunk"/>.
+    /// onChunk MUST be cancellable by the SAME re-armed timeout CTS (not the
+    /// caller token): the idle budget/ceiling is the coordinator's authoritative
+    /// bound on that park. Pre-fix, onChunk only observed the caller's ct, so a
+    /// backpressured read loop sat parked with no deadline — the engine's 30s
+    /// SO_SNDTIMEO then killed the stream first (send EAGAIN -> coordinator EOF
+    /// -> zero-token turn) even though the coordinator was willing to wait the
+    /// full budget. Passing timeoutCts.Token lets the coordinator's own idle
+    /// budget decide: it either drains (stream completes) or fails fast and
+    /// drops the connection for a clean retry.
+    /// </summary>
+    private static async Task ReadPayloadChunkedAsync(
+        NetworkStream stream, long payloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        CancellationTokenSource timeoutCts, TimeSpan idleBudget, CancellationToken ct)
+    {
+        ValidatePayloadLen(payloadLen);
+        var buf = new byte[1024 * 1024];
+        long remaining = payloadLen;
+        while (remaining > 0)
+        {
+            var toRead = (int)Math.Min(buf.Length, remaining);
+            // #470: read on timeoutCts.Token so the re-armed idle deadline is
+            // enforceable (see ReadPayloadIdleAsync). A stalled peer now fails
+            // fast after a full idle period instead of blocking until the
+            // caller's cancellation — this is what bounds the head-side
+            // send_all park (SO_SNDTIMEO there + cancellable read here).
+            var read = await stream.ReadAsync(buf.AsMemory(0, toRead), timeoutCts.Token);
+            if (read == 0)
+                throw new EndOfStreamException("Connection closed by peer");
+            remaining -= read;
+            // #470: await onChunk on timeoutCts.Token (NOT the caller ct) so a
+            // consumer that stalls (relay channel full / Store pipe full) is
+            // cancelled by the coordinator's own idle budget/ceiling instead of
+            // holding this loop open past the engine's send-side park. A slow
+            // but progressing consumer still resets the timer each iteration.
+            await onChunk(buf.AsMemory(0, read), timeoutCts.Token);
+            timeoutCts.CancelAfter(idleBudget);
+        }
     }
 
     public async Task<RpcResponse> EngineInfoAsync(string slotKey, string traceId, CancellationToken ct)
@@ -452,7 +641,172 @@ public class RpcClient : IAsyncDisposable
     public async Task<RpcResponse> EnginePrefillAsync(string slotKey, string requestJson, string traceId, CancellationToken ct)
     {
         var payload = Encoding.UTF8.GetBytes(requestJson);
-        return await RequestAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct);
+        // #470: prefill compute (~175s at 28K tokens, scales past the old 180s
+        // budget) + multi-GB KV transfer needs a raised ceiling, and the payload
+        // read is idle-based so transfer progress keeps the deadline alive — a
+        // fixed total budget dropped the connection mid-frame (coordinator read
+        // garbage 12B headers afterwards). 600s ceiling / 120s per-chunk idle.
+        return await RequestAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct,
+            requestTimeoutOverride: TimeSpan.FromSeconds(600),
+            payloadIdleBudget: TimeSpan.FromSeconds(120));
+    }
+
+    /// <summary>
+    /// Overload without <paramref name="onMeta"/> for callers that only need
+    /// the streamed payload (the meta comes back in the final response).
+    /// Forwards to the full overload with a null meta sink.
+    /// </summary>
+    public virtual async Task<RpcResponse> EnginePrefillChunkedAsync(
+        string slotKey, string requestJson, string traceId, CancellationToken ct,
+        Action<long> onPayloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
+    {
+        return await EnginePrefillChunkedAsync(slotKey, requestJson, traceId, ct,
+            onMeta: null, onPayloadLen, onChunk, requestTimeoutOverride, payloadIdleBudget);
+    }
+
+    /// <summary>
+    /// #470 (Phase 2): PREFILL whose response payload is streamed chunk-by-chunk
+    /// via <paramref name="onChunk"/> — the full blob (2.3 GB today, 10 GB
+    /// target) is NEVER materialized in coordinator RAM. The response header's
+    /// payload_len is known before the first chunk, so
+    /// <paramref name="onPayloadLen"/> (invoked exactly once per attempt, before
+    /// the stream) lets the caller start a Store PutChunked push with the exact
+    /// frame size. Same 600s ceiling / 120s per-chunk idle as
+    /// <see cref="EnginePrefillAsync"/>. Returns the response meta (Payload empty).
+    /// NO mid-stream retries: a partial stream cannot be replayed safely (the
+    /// caller's store push already started) — transport errors fail the call and
+    /// the caller's own retry layer re-prefills the turn.
+    /// </summary>
+    public virtual async Task<RpcResponse> EnginePrefillChunkedAsync(
+        string slotKey, string requestJson, string traceId, CancellationToken ct,
+        Action<string>? onMeta,
+        Action<long> onPayloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
+    {
+        var payload = Encoding.UTF8.GetBytes(requestJson);
+        return await RequestChunkedAsync(OpCode.EnginePrefill, slotKey, payload, traceId, ct,
+            requestTimeoutOverride ?? TimeSpan.FromSeconds(600),
+            payloadIdleBudget ?? TimeSpan.FromSeconds(120),
+            onMeta, onPayloadLen, onChunk);
+    }
+
+    /// <summary><see cref="RequestAsync"/> twin for streaming payload reads.</summary>
+    /// <summary>
+    /// #470 Phase 2: generic streaming-payload request (e.g. the Store's
+    /// GET_CHUNKED for decode-side KV streaming). Same semantics as
+    /// <see cref="EnginePrefillChunkedAsync"/>: <paramref name="onPayloadLen"/>
+    /// fires once before the first chunk; <paramref name="onChunk"/> receives the
+    /// payload as it arrives; NO full-blob byte[] is materialized. Returns the
+    /// response meta (Payload empty). No mid-stream retries.
+    /// </summary>
+    public virtual async Task<RpcResponse> RequestChunkedPayloadAsync(
+        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct,
+        Action<long> onPayloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
+        => await RequestChunkedAsync(op, key, payload, traceId, ct,
+            requestTimeoutOverride, payloadIdleBudget, onMeta: null, onPayloadLen, onChunk);
+
+    private async Task<RpcResponse> RequestChunkedAsync(
+        OpCode op, string key, ReadOnlyMemory<byte> payload,
+        string traceId, CancellationToken ct,
+        TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget,
+        Action<string>? onMeta,
+        Action<long> onPayloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk)
+    {
+        var effectiveTimeout = requestTimeoutOverride ?? _requestTimeout;
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(effectiveTimeout);
+
+        await WaitForTurnAsync(op, timeoutCts.Token, ct);
+        try
+        {
+            return await SendAndReceiveChunkedAsync(op, key, payload, traceId,
+                timeoutCts, payloadIdleBudget, onMeta, onPayloadLen, onChunk, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled mid-request — the wire may hold a half-read response
+            // (and the caller's store push aborts via its own cancellation).
+            DropConnection();
+            if (!ct.IsCancellationRequested)
+                throw NewTimeout(op, effectiveTimeout);
+            throw;
+        }
+        catch (InvalidDataException)
+        {
+            DropConnection();
+            throw;
+        }
+        catch (EndOfStreamException)
+        {
+            DropConnection();
+            throw;
+        }
+        catch (SocketException)
+        {
+            DropConnection();
+            throw;
+        }
+        catch (IOException)
+        {
+            // #470: a mid-payload IOException (e.g. the caller's onChunk hitting
+            // ENOSPC on the L1 tmpfs cache write) must drop the connection — the
+            // wire holds a half-consumed frame, and a retry reusing this socket
+            // would misread the leftover bytes as a response header (garbage 12B
+            // length → ValidatePayloadLen → engine EPIPE → prefill_rpc_error_
+            // exhausted). Parity with RequestAsync's transport-error handling;
+            // here there is no replayable retry, so drop + rethrow. No
+            // ObjectDisposedException catch, mirroring RequestAsync: requests
+            // are serialized by _sync, and a concurrent DropConnection already
+            // closed the socket (DropConnection is idempotent), so ODE needs no
+            // extra hygiene here.
+            DropConnection();
+            throw;
+        }
+        finally
+        {
+            _sync.Release();
+        }
+    }
+
+    private async Task<RpcResponse> SendAndReceiveChunkedAsync(
+        OpCode op, string key, ReadOnlyMemory<byte> payload,
+        string traceId, CancellationTokenSource timeoutCts,
+        TimeSpan? payloadIdleBudget, Action<string>? onMeta, Action<long> onPayloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk, CancellationToken ct)
+    {
+        await EnsureConnectedAsync(ct);
+        await SendRequestAsync(op, key, payload, traceId, ct);
+
+        var headerBuf = new byte[Protocol.RESPONSE_HEADER_SIZE];
+        await ReadExactAsync(_stream!, headerBuf, ct);
+
+        var header = Protocol.ReadResponse(headerBuf);
+        var meta = header.MetaLen > 0
+            ? await ReadMetaAsync(_stream!, header.MetaLen, ct)
+            : null;
+
+        // The response meta (n_past, state_size, kv_hash_str, model identity)
+        // arrives BEFORE the first payload byte — surface it early (OK status
+        // only) so the caller can start the DECODE frame (or a relay) without
+        // buffering.
+        if (onMeta != null && meta != null && header.Status == (byte)StatusCode.Ok)
+        {
+            onMeta(meta);
+        }
+
+        onPayloadLen((long)header.PayloadLen);
+        if (header.PayloadLen > 0)
+        {
+            await ReadPayloadChunkedAsync(_stream!, (long)header.PayloadLen,
+                onChunk, timeoutCts, payloadIdleBudget ?? TimeSpan.FromSeconds(60), ct);
+        }
+        return new RpcResponse(header.Status, meta, []);
     }
 
     /// <summary>
@@ -523,10 +877,12 @@ public class RpcClient : IAsyncDisposable
             var promptHash = XxHash3.HashToUInt64(promptBytes);
             var promptHashStr = $"xxh3:{promptHash:x16}";
 
-            // Build KV segment
-            var kvBytes = kvBlob.Length > 0 ? kvBlob.ToArray() : Array.Empty<byte>();
-            var kvHash = kvBytes.Length > 0 ? XxHash3.HashToUInt64(kvBytes) : 0UL;
-            var kvHashStr = kvBytes.Length > 0 ? $"xxh3:{kvHash:x16}" : "";
+            // Build KV segment — hash the memory in place, NO ToArray() copy
+            // (#470: the blob is 2.3 GB today, 10 GB target; the old copy
+            // doubled coordinator peak RAM during decode).
+            var kvLen = kvBlob.Length;
+            var kvHash = kvLen > 0 ? XxHash3.HashToUInt64(kvBlob.Span) : 0UL;
+            var kvHashStr = kvLen > 0 ? $"xxh3:{kvHash:x16}" : "";
 
             // Build control header (v3) — 32 KiB cap applies here only.
             // This carries control data, not user content.
@@ -573,7 +929,7 @@ public class RpcClient : IAsyncDisposable
                     {
                         ["id"] = "kv",
                         ["offset"] = promptBytes.Length,
-                        ["len"] = kvBytes.Length,
+                        ["len"] = kvLen,
                         ["hash"] = kvHashStr
                     }
                 }
@@ -594,7 +950,7 @@ public class RpcClient : IAsyncDisposable
             // payload_len = 4 + 8 + hdr_len + prompt_len + kv_len
             var keyBytes = Encoding.UTF8.GetBytes(slotKey);
             var traceBytes = Encoding.UTF8.GetBytes(traceId);
-            var totalPayloadLen = 4 + 8 + hdrJsonBytes.Length + promptBytes.Length + kvBytes.Length;
+            var totalPayloadLen = 4 + 8 + hdrJsonBytes.Length + promptBytes.Length + kvLen;
 
             var header = Protocol.CreateRequestHeader(
                 OpCode.EngineDecode, (ushort)keyBytes.Length, (ulong)totalPayloadLen, (ushort)traceBytes.Length);
@@ -625,7 +981,7 @@ public class RpcClient : IAsyncDisposable
                 await _stream.WriteAsync(promptBytes, timeoutCts.Token);
 
             // Write KV segment
-            if (kvBytes.Length > 0)
+            if (kvLen > 0)
                 await _stream.WriteAsync(kvBlob, timeoutCts.Token);
 
             await _stream.FlushAsync(timeoutCts.Token);
@@ -651,11 +1007,219 @@ public class RpcClient : IAsyncDisposable
                 throw NewTimeout(OpCode.EngineDecode);
             throw;
         }
+        catch (InvalidDataException)
+        {
+            // Framing error (e.g. response payload length out of range, #594) —
+            // connection desynced, drop before rethrow (see RequestAsync).
+            DropConnection();
+            throw;
+        }
+        catch (EndOfStreamException)
+        {
+            // Mid-response EOF — connection state untrustworthy, drop before rethrow.
+            DropConnection();
+            throw;
+        }
         finally
         {
             _sync.Release();
         }
     }
+
+    /// <summary>
+    /// #470 Phase 2: merged DECODE whose KV segment is streamed from
+    /// <paramref name="kvChunks"/> (an ordered byte stream, e.g. the Store's
+    /// GET_CHUNKED response) instead of one buffered blob — no full-blob byte[]
+    /// anywhere on the decode path (2.3 GB today, 10 GB target). Same v3 frame
+    /// as <see cref="EngineMergedDecodeAsync"/> with kv_len =
+    /// <paramref name="kvTotalSize"/>. The whole-segment xxh3 cannot be computed
+    /// before the header goes out, so the segments table carries an EMPTY kv
+    /// hash — the engine's M2 restore skips whole-segment verification (chunk
+    /// integrity is guaranteed by the Store's content-addressed chunks).
+    /// </summary>
+    public virtual async Task<MergedDecodeResponse> EngineMergedDecodeStreamKvAsync(
+        string slotKey,
+        int nPast,
+        string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
+        string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+        string? modelAlias,
+        string? messagesJson, int nPredict, string? samplingJson, bool stream,
+        IAsyncEnumerable<ReadOnlyMemory<byte>> kvChunks, long kvTotalSize,
+        string kvHash,
+        string traceId, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_requestTimeout);
+
+        await WaitForTurnAsync(OpCode.EngineDecode, timeoutCts.Token, ct);
+        try
+        {
+            await EnsureConnectedAsync(timeoutCts.Token);
+
+            var promptBytes = messagesJson != null
+                ? Encoding.UTF8.GetBytes(messagesJson)
+                : Array.Empty<byte>();
+            var promptHash = XxHash3.HashToUInt64(promptBytes);
+            var promptHashStr = $"xxh3:{promptHash:x16}";
+
+            var kvLen = kvTotalSize;
+
+            var headerObj = new Dictionary<string, object>
+            {
+                ["v"] = 3,
+                ["model"] = modelAlias ?? "",
+                ["kv_metadata"] = new Dictionary<string, object>
+                {
+                    ["n_past"] = nPast,
+                    ["tokenizer"] = kvTokenizer ?? "",
+                    ["model_name"] = kvModelName ?? "",
+                    ["model_quant"] = kvModelQuant ?? "",
+                    ["model_capabilities"] = kvModelCapabilities
+                },
+                ["model_metadata"] = new Dictionary<string, object>
+                {
+                    ["tokenizer"] = modelTokenizer ?? "",
+                    ["model_name"] = modelName ?? "",
+                    ["model_quant"] = modelQuant ?? "",
+                    ["model_capabilities"] = modelCapabilities
+                },
+                ["generation"] = new Dictionary<string, object>
+                {
+                    ["n_predict"] = nPredict,
+                    ["sampling"] = samplingJson != null
+                        ? JsonSerializer.Deserialize<object>(samplingJson)
+                        : new Dictionary<string, object>(),
+                    ["stop"] = Array.Empty<string>(),
+                    ["stream"] = stream,
+                    ["chat_syntax"] = "",
+                    ["oaicompat_model"] = modelAlias ?? ""
+                },
+                ["segments"] = new List<Dictionary<string, object>>
+                {
+                    new()
+                    {
+                        ["id"] = "prompt",
+                        ["offset"] = 0,
+                        ["len"] = promptBytes.Length,
+                        ["hash"] = promptHashStr
+                    },
+                    new()
+                    {
+                        ["id"] = "kv",
+                        ["offset"] = promptBytes.Length,
+                        ["len"] = kvLen,
+                        ["hash"] = kvHash // #470: PREFILL engine's whole-segment xxh3 ("xxh3:HEX") — verify live; "" skips
+                    }
+                }
+            };
+            var hdrJsonBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(headerObj));
+
+            if (hdrJsonBytes.Length > 32768)
+                throw new InvalidOperationException(
+                    $"Merged DECODE control header exceeds 32 KiB ({hdrJsonBytes.Length} bytes)");
+            if (hdrJsonBytes.Length == 0)
+                throw new InvalidOperationException("Merged DECODE control header is empty");
+
+            var hdrHash = XxHash3.HashToUInt64(hdrJsonBytes);
+
+            var keyBytes = Encoding.UTF8.GetBytes(slotKey);
+            var traceBytes = Encoding.UTF8.GetBytes(traceId);
+            var totalPayloadLen = 4 + 8 + hdrJsonBytes.Length + promptBytes.Length + kvLen;
+
+            var header = Protocol.CreateRequestHeader(
+                OpCode.EngineDecode, (ushort)keyBytes.Length, (ulong)totalPayloadLen, (ushort)traceBytes.Length);
+            var headerBuf = new byte[Protocol.REQUEST_HEADER_SIZE];
+            Protocol.WriteRequest(headerBuf, header);
+
+            await _stream!.WriteAsync(headerBuf, timeoutCts.Token);
+            if (keyBytes.Length > 0)
+                await _stream.WriteAsync(keyBytes, timeoutCts.Token);
+            if (traceBytes.Length > 0)
+                await _stream.WriteAsync(traceBytes, timeoutCts.Token);
+
+            var hdrLenBuf = new byte[4];
+            BinaryPrimitives.WriteUInt32LittleEndian(hdrLenBuf, (uint)hdrJsonBytes.Length);
+            await _stream.WriteAsync(hdrLenBuf, timeoutCts.Token);
+
+            var hdrHashBuf = new byte[8];
+            BinaryPrimitives.WriteUInt64LittleEndian(hdrHashBuf, hdrHash);
+            await _stream.WriteAsync(hdrHashBuf, timeoutCts.Token);
+
+            await _stream.WriteAsync(hdrJsonBytes, timeoutCts.Token);
+
+            if (promptBytes.Length > 0)
+                await _stream.WriteAsync(promptBytes, timeoutCts.Token);
+
+            // Stream the KV segment chunk-by-chunk (backpressure propagates
+            // to the Store read).
+            var expectedBytes = 0L;
+            await foreach (var chunk in kvChunks.WithCancellation(timeoutCts.Token))
+            {
+                await _stream.WriteAsync(chunk, timeoutCts.Token);
+                expectedBytes += chunk.Length;
+            }
+            if (expectedBytes != kvLen)
+                throw new InvalidDataException(
+                    $"Merged DECODE KV stream short: expected {kvLen} bytes, got {expectedBytes}");
+
+            await _stream.FlushAsync(timeoutCts.Token);
+
+            var respHeaderBuf = new byte[Protocol.RESPONSE_HEADER_SIZE];
+            await ReadExactAsync(_stream, respHeaderBuf, timeoutCts.Token);
+            var respHeader = Protocol.ReadResponse(respHeaderBuf);
+
+            var meta = respHeader.MetaLen > 0
+                ? await ReadMetaAsync(_stream, respHeader.MetaLen, timeoutCts.Token)
+                : null;
+
+            if (respHeader.PayloadLen > 0)
+                await ReadPayloadAsync(_stream, (long)respHeader.PayloadLen, timeoutCts.Token);
+
+            return MergedDecodeResponse.Parse(respHeader.Status, meta);
+        }
+        catch (OperationCanceledException)
+        {
+            DropConnection();
+            if (!ct.IsCancellationRequested)
+                throw NewTimeout(OpCode.EngineDecode);
+            throw;
+        }
+        catch (InvalidDataException)
+        {
+            DropConnection();
+            throw;
+        }
+        catch (EndOfStreamException)
+        {
+            DropConnection();
+            throw;
+        }
+        finally
+        {
+            _sync.Release();
+        }
+    }
+
+    /// <summary>#470 forwarding overload without an explicit whole-segment KV
+    /// hash — the empty hash skips whole-segment verification (chunk integrity
+    /// is guaranteed by the Store's content-addressed chunks).</summary>
+    public virtual Task<MergedDecodeResponse> EngineMergedDecodeStreamKvAsync(
+        string slotKey,
+        int nPast,
+        string? kvTokenizer, string? kvModelName, string? kvModelQuant, uint kvModelCapabilities,
+        string? modelTokenizer, string? modelName, string? modelQuant, uint modelCapabilities,
+        string? modelAlias,
+        string? messagesJson, int nPredict, string? samplingJson, bool stream,
+        IAsyncEnumerable<ReadOnlyMemory<byte>> kvChunks, long kvTotalSize,
+        string traceId, CancellationToken ct)
+        => EngineMergedDecodeStreamKvAsync(
+            slotKey, nPast,
+            kvTokenizer, kvModelName, kvModelQuant, kvModelCapabilities,
+            modelTokenizer, modelName, modelQuant, modelCapabilities,
+            modelAlias,
+            messagesJson, nPredict, samplingJson, stream,
+            kvChunks, kvTotalSize,
+            "", traceId, ct);
 
     public async Task<RpcResponse> EngineSetExpertModeAsync(string slotKey, string mode, string traceId, CancellationToken ct)
     {

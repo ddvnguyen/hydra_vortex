@@ -17,6 +17,26 @@ public sealed class AgentTurnResult
     /// <summary>Presence of reasoning_content in the response JSON.</summary>
     public bool ReasoningContentPresent { get; init; }
 
+    /// <summary>
+    /// Text of the last reasoning (thinking) block in the response.
+    /// Null when the model produced no reasoning. Used for relevance checks:
+    /// reasoning must engage with the question's topic.
+    /// </summary>
+    public string? ReasoningContent { get; init; }
+
+    /// <summary>Whether the response contained at least one tool_call block.</summary>
+    public bool ToolCallsPresent { get; init; }
+
+    /// <summary>Name of the first tool_call in the response (null when none).</summary>
+    public string? ToolCallName { get; init; }
+
+    /// <summary>
+    /// Raw arguments (JSON text) of the first tool_call in the response
+    /// (null when none). Used for relevance checks: args must match the
+    /// question's operands.
+    /// </summary>
+    public string? ToolCallArgs { get; init; }
+
     /// <summary>Prompt tokens from usage.input (pi) / part.tokens.input (opencode).</summary>
     public int PromptTokens { get; init; }
 
@@ -72,6 +92,21 @@ public sealed record CrashRestartEvent
     public string Details { get; init; } = string.Empty;
     public string RawLine { get; init; } = string.Empty;
     public DateTimeOffset Timestamp { get; init; }
+}
+
+/// <summary>
+/// Parsed event from the autoroute_resolved log pattern emitted by the
+/// coordinator when a hydra-auto request is resolved to a concrete plan.
+/// </summary>
+public sealed record AutoRouteEvent
+{
+    public required string Sid { get; init; }
+    public string Model { get; init; } = string.Empty;
+    public string Head { get; init; } = string.Empty;
+    public string Peer { get; init; } = string.Empty;
+    public string Decode { get; init; } = string.Empty;
+    public string Mode { get; init; } = string.Empty;
+    public string RawLine { get; init; } = string.Empty;
 }
 
 /// <summary>

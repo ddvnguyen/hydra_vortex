@@ -187,6 +187,10 @@ public sealed class EngineClientTests
 
         Assert.NotNull(result);
         Assert.True(result!.IsError);
+        // #587: the raw status byte + engine meta must survive so the caller
+        // can log WHICH non-Ok status the engine returned.
+        Assert.Equal((byte)StatusCode.Error, result.StatusByte);
+        Assert.Equal("nope", result.StatusMeta);
     }
 
     [Fact]
@@ -378,7 +382,7 @@ internal sealed class CapturingRpcClient : RpcClient
     public CapturingRpcClient() : base("127.0.0.1", 0) { }
 
     public override async Task<RpcResponse> RequestAsync(
-        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
     {
         LastRequest = (op, key, payload, traceId);
         return await Task.FromResult(NextResponse);

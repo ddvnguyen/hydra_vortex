@@ -22,7 +22,7 @@ transformations = [
     {"id": "extractFields", "options": {"source": "Line", "format": "kvp"}},
     {"id": "convertFieldType", "options": {"conversions": [
         {"targetField": f, "destinationType": "number"} for f in [
-            "queue_wait_ms", "prefill_ms",
+            "queue_wait_ms", "prefill_ms", "model_load_ms",
             "save_kv_ms", "save_kv_rpc_ms", "save_kv_store_ms",
             "restore_kv_ms", "decode_ms", "total_ms",
             "tokens_in", "tokens_out", "kv_bytes",
@@ -37,7 +37,14 @@ panel = {
     "type": "marcusolsson-dynamictext-panel",
     "title": "Request Timeline — Composition / Aligned + detail",
     "datasource": {"type": "loki", "uid": "loki"},
-    "gridPos": {"h": 17, "w": 24, "x": 0, "y": 0},
+    # h=40 (~1200px at Grafana's default 30px/unit) so the panel fills most
+    # laptop/desktop viewport heights without needing "View panel" full-
+    # screen mode. Grafana's grid uses fixed units, not viewport-relative
+    # sizing, so this is a generous fixed default rather than truly
+    # per-screen responsive — the row list still scrolls internally
+    # (getBoundingClientRect-based sizing in the JS) if content overflows
+    # whatever height Grafana actually allocates.
+    "gridPos": {"h": 40, "w": 24, "x": 0, "y": 0},
     "targets": [loki_target],
     "transformations": transformations,
     "options": {

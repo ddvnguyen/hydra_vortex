@@ -58,7 +58,15 @@ public abstract class RpcServer : IAsyncDisposable
 				_connections.Add(connTask);
 			}
 			_ = connTask.ContinueWith(_ => CleanConnections(), TaskScheduler.Default);
+			OnConnectionAccepted();
 		}
+	}
+
+	/// <summary>Called once per accepted TCP connection. Empty hook for
+	/// test observability (e.g. asserting the client opened a fresh
+	/// connection after a framing error).</summary>
+	protected virtual void OnConnectionAccepted()
+	{
 	}
 
 	private void CleanConnections()

@@ -2,7 +2,29 @@ name: Agent Workload Tests
 
 on:
   workflow_call:
+    inputs:
+      run-tests:
+        description: "run-tests dispatch value (none|system|agent-workload|both); the job runs only when this includes 'agent-workload' or 'both'"
+        required: false
+        default: "none"
+        type: string
+      model:
+        description: "Agent model to drive (e.g. moe-35b-solo, dense-27b-combined). Defaults to moe-35b-solo when unset."
+        required: false
+        default: "moe-35b-solo"
+        type: string
   workflow_dispatch:
+    inputs:
+      run-tests:
+        description: "run-tests dispatch value (none|system|agent-workload|both); the job runs only when this includes 'agent-workload' or 'both'"
+        required: false
+        default: "agent-workload"
+        type: string
+      model:
+        description: "Agent model to drive (e.g. moe-35b-solo, dense-27b-combined). Defaults to moe-35b-solo when unset."
+        required: false
+        default: "moe-35b-solo"
+        type: string
 
 permissions:
   contents: read
@@ -11,8 +33,9 @@ permissions:
 jobs:
   agent-workload:
     name: Agent Workload Tests (Tier 4)
+    if: inputs.run-tests == 'agent-workload' || inputs.run-tests == 'both'
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 120
     concurrency:
       group: hydra-live-rig
       cancel-in-progress: false
@@ -20,8 +43,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Reset stale .NET build servers
+        # This runner is also the host for the live GPU inference stack, so
+        # it can be under enough memory pressure to abort the CLR mid-startup
+        # (exit 134). A poisoned VBCSCompiler/MSBuild server socket from a
+        # prior abort then fails the *next* build too. Clear it before we start.
+        run: dotnet build-server shutdown || true
+
       - name: Restore & build (.NET)
-        run: dotnet build src/Hydra.sln -c Release --nologo -v minimal
+        run: |
+          for attempt in 1 2; do
+            if dotnet build src/Hydra.sln -c Release --nologo -v minimal; then
+              exit 0
+            fi
+            code=$?
+            if [ "$code" != "134" ] || [ "$attempt" == "2" ]; then
+              exit "$code"
+            fi
+            echo "::warning::dotnet build aborted (exit 134, CLR fatal error) on attempt $attempt — likely runner memory pressure. Resetting build servers, clearing stale outputs, and retrying."
+            dotnet build-server shutdown || true
+            # A CLR abort mid-write can leave a corrupt DLL whose timestamp is
+            # newer than its sources; an incremental build then treats it as
+            # up-to-date and the `--no-build` test steps load garbage. Force a
+            # clean tree so the retry actually rewrites every output.
+            find src -type d \( -name bin -o -name obj \) -prune -exec rm -rf {} + 2>/dev/null || true
+            sleep 5
+          done
 
       - name: Verify coordinator healthy
         run: |
@@ -34,10 +81,30 @@ jobs:
 
       - name: Run agent workload tests (Tier 4)
         run: |
-          dotnet test src/core/Tests.AgentWorkload/ -c Release --no-build --nologo -v normal \
-            --settings src/Hydra.runsettings \
-            --logger "trx;LogFileName=agentworkload.trx" \
-            --results-directory TestResults/
+          for attempt in 1 2; do
+            if dotnet test src/core/Tests.AgentWorkload/ -c Release --no-build --nologo -v normal \
+              --settings src/Hydra.runsettings \
+              --logger "console;verbosity=detailed" \
+              --logger "trx;LogFileName=agentworkload.trx" \
+              --results-directory TestResults/ \
+              -- RunConfiguration.MaxCpuCount=1; then
+              exit 0
+            fi
+            code=$?
+            if [ "$code" != "134" ] || [ "$attempt" == "2" ]; then
+              exit "$code"
+            fi
+            echo "::warning::dotnet test aborted (exit 134, CLR fatal error) on attempt $attempt — runner memory pressure. Resetting build servers, clearing stale outputs, retrying."
+            dotnet build-server shutdown || true
+            # A CLR abort mid-write can leave a corrupt DLL whose timestamp is
+            # newer than its sources; an incremental build then treats it as
+            # up-to-date and the --no-build retry would load garbage. Force a
+            # clean tree and rebuild before retrying.
+            find src -type d \( -name bin -o -name obj \) -prune -exec rm -rf {} + 2>/dev/null || true
+            rm -rf TestResults || true
+            sleep 5
+            dotnet build src/Hydra.sln -c Release --nologo -v minimal || exit $?
+          done
         env:
           COORD_URL: http://localhost:9000
           RTX_LLAMA_URL: http://localhost:8080
@@ -50,6 +117,7 @@ jobs:
           P100_AGENT_PORT: "9602"
           STORE_HOST: "127.0.0.1"
           STORE_PORT: "9500"
+          AGENT_WORKLOAD_MODEL: ${{ inputs.model }}
 
       - name: Publish results
         uses: dorny/test-reporter@v1

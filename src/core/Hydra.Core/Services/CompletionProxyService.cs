@@ -14,6 +14,13 @@ public sealed class CompletionProxyService : ICompletionProxyService
 		_http = new HttpClient { Timeout = TimeSpan.FromSeconds(readTimeoutSeconds) };
 	}
 
+	/// <summary>Test-injectable transport. Production callers use the
+	/// readTimeoutSeconds ctor; this overload only swaps the HttpClient.</summary>
+	public CompletionProxyService(HttpClient http)
+	{
+		_http = http;
+	}
+
 	public async Task<bool> LoadModelAsync(string nodeUrl, string modelName, string traceId, CancellationToken ct)
 	{
 		var body = JsonSerializer.Serialize(new { model = modelName });
@@ -70,7 +77,10 @@ public sealed class CompletionProxyService : ICompletionProxyService
 	// #470: Poll GET /v1/decode/{id} for streaming merged-decode result.
 	// The engine generates asynchronously after DECODE 0x43 returns Gate A validation.
 	// GET /v1/decode/{id} returns:
-	//   404 → not found or expired (terminal, abort)
+	//   404 → decode entry absent mid-generation (NORMAL — entry is absent while
+	//          GENERATING, re-inserted at DONE) or truly expired. Retry with
+	//          backoff like the non-streaming path (#587); only a poll loop that
+	//          exhausts maxAttempts is terminal (TimeoutException).
 	//   202 → {state:"loading"|"restoring", model_load_ms?, restore_slot_ms?, model_alias}
 	//          keep polling; record phase fields as they appear
 	//   400 → {error, error_code, match{}} (terminal, abort — must never fall through
@@ -99,10 +109,15 @@ public sealed class CompletionProxyService : ICompletionProxyService
 
 				if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
 				{
-					// 404: not found or expired — terminal. Abort the request.
+					// #587: 404 is NOT terminal. The engine's decode entry is
+					// absent while GENERATING and re-inserted at DONE, so a
+					// mid-generation 404 must be retried with backoff exactly
+					// like the non-streaming path (PollDecodeResultAsync).
+					// Only exhausting maxAttempts is terminal (TimeoutException).
 					resp.Dispose();
-					throw new InvalidOperationException(
-						$"GET /v1/decode/{decodeRequestId} returned 404 — decode request not found or expired");
+					await Task.Delay(delay, ct);
+					delay = Math.Min(delay * 2, maxDelayMs);
+					continue;
 				}
 
 				if (resp.StatusCode == System.Net.HttpStatusCode.Accepted)
@@ -199,7 +214,24 @@ public sealed class CompletionProxyService : ICompletionProxyService
 				}
 				resp.EnsureSuccessStatusCode();
 				var json = await resp.Content.ReadAsStringAsync(ct);
-				return JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
+				var body = JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
+				// #470: the engine serves 202-style LOADING bodies (state=loading)
+				// while the async DECODE_APPLY is still generating. Only a
+				// terminal state (done, or an error field) is the real result —
+				// returning the loading body as the completion makes the
+				// coordinator reply `{"state":"loading"}` instead of the text.
+				var state = body.TryGetValue("state", out var sv) && sv is JsonElement se && se.ValueKind == JsonValueKind.String
+					? se.GetString()
+					: null;
+				var hasError = body.ContainsKey("error");
+				if (state == "done" || state == "error" || hasError || state == null)
+				{
+					return body;
+				}
+				// Still generating — retry with backoff.
+				resp.Dispose();
+				await Task.Delay(delay, ct);
+				delay = Math.Min(delay * 2, maxDelayMs);
 			}
 			throw new TimeoutException($"GET /v1/decode/{decodeRequestId} timed out after {maxAttempts} attempts");
 		}

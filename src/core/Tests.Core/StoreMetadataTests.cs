@@ -31,7 +31,8 @@ public sealed class StoreMetadataTests : IAsyncLifetime
         // Clean any leftover test data from previous runs
         await using var conn = await _meta.DataSource.OpenConnectionAsync();
         await using var cleanup = conn.CreateCommand();
-        cleanup.CommandText = "DELETE FROM session_chunks; DELETE FROM sessions; DELETE FROM chunks";
+        cleanup.CommandText =
+            "DELETE FROM session_chunks; DELETE FROM kv_manifests; DELETE FROM sessions; DELETE FROM chunks";
         await cleanup.ExecuteNonQueryAsync();
     }
 
@@ -218,6 +219,164 @@ public sealed class StoreMetadataTests : IAsyncLifetime
 
         // Referenced chunk should remain in PG
         Assert.True(await _meta.HasChunkAsync("gc_ref_chunk"));
+    }
+
+    [Fact]
+    public async Task GcStaleSessions_RemovesStaleSessionsAndTheirChunks()
+    {
+        // Retention GC must evict stale saved-KV sessions (and the chunks they
+        // reference) from tmpfs + SSD backup + PG, while fresh sessions survive.
+        var chunksDir = new DirectoryInfo(Path.Combine(_storeDir.FullName, "retention-chunks"));
+        var backupDir = new DirectoryInfo(Path.Combine(_storeDir.FullName, "retention-backup"));
+        chunksDir.Create();
+        backupDir.Create();
+
+        // Fresh session (recently updated): must survive the GC.
+        await _meta!.RegisterChunkAsync("fresh_chunk", 128);
+        await _meta.UpsertManifestAsync("sess_fresh", 0, 128,
+            [new ChunkRef(0, "fresh_chunk", 128)]);
+
+        // Stale session (updated 2h ago) referencing chunks that are also
+        // backed up on the SSD dir: must be evicted, including its files.
+        await _meta.RegisterChunkAsync("stale_chunk_a", 64);
+        await _meta.RegisterChunkAsync("stale_chunk_b", 128);
+        await _meta.UpsertManifestAsync("sess_stale", 10, 192,
+            [new ChunkRef(0, "stale_chunk_a", 64), new ChunkRef(1, "stale_chunk_b", 128)]);
+        await _meta.MarkBackedUpAsync("stale_chunk_a", "/backup/stale_chunk_a");
+        await File.WriteAllBytesAsync(Path.Combine(chunksDir.FullName, "stale_chunk_a"), new byte[64]);
+        await File.WriteAllBytesAsync(Path.Combine(chunksDir.FullName, "stale_chunk_b"), new byte[128]);
+        await File.WriteAllBytesAsync(Path.Combine(backupDir.FullName, "stale_chunk_a"), new byte[64]);
+
+        // Age the sessions: stale = 2h old, fresh = 1min old.
+        await using (var conn = await _meta.DataSource.OpenConnectionAsync())
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                UPDATE sessions SET updated_at = now() - interval '2 hours'
+                WHERE session_id = 'sess_stale';
+                UPDATE sessions SET updated_at = now() - interval '1 minute'
+                WHERE session_id = 'sess_fresh';
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        var removed = await _meta.GcStaleSessionsAsync(TimeSpan.FromHours(1), chunksDir, backupDir);
+
+        // Stale session gone: manifest, chunk rows, tmpfs files, backup file.
+        Assert.True(removed >= 2);
+        Assert.Null(await _meta.GetManifestAsync("sess_stale"));
+        Assert.False(await _meta.HasChunkAsync("stale_chunk_a"));
+        Assert.False(await _meta.HasChunkAsync("stale_chunk_b"));
+        Assert.False(File.Exists(Path.Combine(chunksDir.FullName, "stale_chunk_a")));
+        Assert.False(File.Exists(Path.Combine(chunksDir.FullName, "stale_chunk_b")));
+        Assert.False(File.Exists(Path.Combine(backupDir.FullName, "stale_chunk_a")));
+
+        // Fresh session and its chunk survive.
+        Assert.NotNull(await _meta.GetManifestAsync("sess_fresh"));
+        Assert.True(await _meta.HasChunkAsync("fresh_chunk"));
+    }
+
+    [Fact]
+    public async Task KvMarkBackedUp_And_GetUnbackedKv_RoundTrip()
+    {
+        // A .kv blob written via OpCode.Put never registers a PG row; the
+        // write-behind discovers it by enumerating the StoreDir root. Before
+        // marking, it must appear unbacked; after KvMarkBackedUpAsync it must not.
+        const string sid = "sess_meta_kv";
+        var kvPath = Path.Combine(_storeDir.FullName, $"{sid}.kv");
+        await File.WriteAllBytesAsync(kvPath, new byte[2048]);
+
+        var unbacked = await _meta!.GetUnbackedKvAsync(_storeDir, 100);
+        Assert.Contains(unbacked, u => u.SessionId == sid && u.Size == 2048);
+
+        await _meta.KvMarkBackedUpAsync(sid, Path.Combine("/backup", $"{sid}.kv"), 2048);
+
+        var after = await _meta.GetUnbackedKvAsync(_storeDir, 100);
+        Assert.DoesNotContain(after, u => u.SessionId == sid);
+
+        // Idempotent re-mark must not throw.
+        await _meta.KvMarkBackedUpAsync(sid, Path.Combine("/backup", $"{sid}.kv"), 2048);
+    }
+
+    [Fact]
+    public async Task GetUnbackedKv_IgnoresBackedUpAndMissingFiles()
+    {
+        // Backed-up file is excluded from the drain set.
+        const string backed = "sess_meta_backed";
+        var backedPath = Path.Combine(_storeDir.FullName, $"{backed}.kv");
+        await File.WriteAllBytesAsync(backedPath, new byte[512]);
+        await _meta!.KvMarkBackedUpAsync(backed, Path.Combine("/backup", $"{backed}.kv"), 512);
+
+        // Non-sess_ prefix + subdir entries are not per-session manifests.
+        var prefixDir = new DirectoryInfo(Path.Combine(_storeDir.FullName, "prefix"));
+        prefixDir.Create();
+        await File.WriteAllBytesAsync(Path.Combine(prefixDir.FullName, "abc.kv"), new byte[256]);
+
+        var unbacked = await _meta.GetUnbackedKvAsync(_storeDir, 100);
+        Assert.DoesNotContain(unbacked, u => u.SessionId == backed);
+        Assert.DoesNotContain(unbacked, u => u.SessionId == "abc");
+    }
+
+    [Fact]
+    public async Task GetFreeableBackedUpChunkHashes_RespectsRecency()
+    {
+        // Backed-up chunk referenced ONLY by a stale session → freeable from RAM.
+        const string staleChunk = "freeable_stale_meta";
+        await _meta!.RegisterChunkAsync(staleChunk, 128);
+        await _meta.UpsertManifestAsync("sess_meta_stale", 0, 128,
+            [new ChunkRef(0, staleChunk, 128)]);
+        await _meta.MarkBackedUpAsync(staleChunk, "/backup/freeable_stale_meta");
+
+        // Backed-up chunk referenced by a recent session → must stay on RAM.
+        const string recentChunk = "freeable_recent_meta";
+        await _meta.RegisterChunkAsync(recentChunk, 128);
+        await _meta.UpsertManifestAsync("sess_meta_recent", 0, 128,
+            [new ChunkRef(0, recentChunk, 128)]);
+        await _meta.MarkBackedUpAsync(recentChunk, "/backup/freeable_recent_meta");
+
+        await using (var conn = await _meta.DataSource.OpenConnectionAsync())
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                UPDATE sessions SET updated_at = now() - interval '2 hours'
+                WHERE session_id = 'sess_meta_stale';
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        var freeable = await _meta.GetFreeableBackedUpChunkHashesAsync(TimeSpan.FromHours(1), 100);
+        Assert.Contains(staleChunk, freeable);
+        Assert.DoesNotContain(recentChunk, freeable);
+    }
+
+    [Fact]
+    public async Task GetFreeableBackedUpKv_RespectsRecency()
+    {
+        // .kv backed up for a session that went stale → freeable from RAM.
+        const string staleSid = "sess_meta_kv_stale";
+        await _meta!.KvMarkBackedUpAsync(staleSid, "/backup/sess_meta_kv_stale.kv", 512);
+        await _meta.UpsertManifestAsync(staleSid, 5, 512, [new ChunkRef(0, "kv_stale_chunk", 512)]);
+        await _meta.RegisterChunkAsync("kv_stale_chunk", 512);
+
+        // .kv backed up for a recently-active session → kept on RAM.
+        const string recentSid = "sess_meta_kv_recent";
+        await _meta.KvMarkBackedUpAsync(recentSid, "/backup/sess_meta_kv_recent.kv", 512);
+        await _meta.UpsertManifestAsync(recentSid, 5, 512, [new ChunkRef(0, "kv_recent_chunk", 512)]);
+        await _meta.RegisterChunkAsync("kv_recent_chunk", 512);
+
+        await using (var conn = await _meta.DataSource.OpenConnectionAsync())
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                UPDATE sessions SET updated_at = now() - interval '2 hours'
+                WHERE session_id = 'sess_meta_kv_stale';
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        var freeable = await _meta.GetFreeableBackedUpKvAsync(TimeSpan.FromHours(1), 100);
+        Assert.Contains(staleSid, freeable);
+        Assert.DoesNotContain(recentSid, freeable);
     }
 
     [Fact]
