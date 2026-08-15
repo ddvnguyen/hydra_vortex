@@ -326,13 +326,28 @@ check_auth_file() {
 # concurrently afterward: neither of them touches the image build or the
 # whole-project compose state again, only their own service.
 deploy_shared_setup() {
-  step "Shared setup (image build + core)"
+  local rebuild_head="${1:-false}"
+  step "Shared setup (image build + core) [rebuild-head=$rebuild_head]"
 
   build_go
   build_core_image
   generate_token
   AUTH_TOKEN=$(get_token)
-  build_rtx_image
+  if [ "$rebuild_head" = "true" ]; then
+    build_rtx_image
+  else
+    # Fast path: reuse the existing head image. Setup still validates it
+    # exists (and warns if missing) so a broken state is caught early
+    # rather than at first head deploy. (#470: most deploys don't touch
+    # Dockerfile.rtx / verify_and_start.sh / cuda-pin.conf.)
+    step "Reusing existing hydra-head:rtx image (rebuild-head=false)"
+    if ! podman image exists localhost/hydra-head:rtx 2>/dev/null; then
+      step "hydra-head:rtx NOT found locally — building (needed at least once)"
+      build_rtx_image
+    else
+      echo "image localhost/hydra-head:rtx present: $(podman image inspect localhost/hydra-head:rtx --format '{{.Id}}' 2>/dev/null | head -c 16)..."
+    fi
+  fi
   stop_host_sidecars
   check_auth_file
 
@@ -675,7 +690,7 @@ case "$TARGET" in
   # separate, individually-named, concurrently-running steps in the
   # Actions UI instead of one step that backgrounds internally).
   setup)
-    deploy_shared_setup
+    deploy_shared_setup "${2:-false}"
     ;;
   rtx-only)
     deploy_rtx_only

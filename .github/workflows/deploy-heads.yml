@@ -59,6 +59,19 @@ on:
         options:
           - "false"
           - "true"
+      rebuild-head:
+        description: >-
+          Rebuild the hydra-head image (Dockerfile.rtx + init scripts) during
+          setup. Most runs do NOT need this — the head image changes only
+          when Dockerfile.rtx, verify_and_start.sh, or the CUDA pin set
+          changes. Leave false to reuse the existing localhost/hydra-head:rtx
+          image (validated present by setup).
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run-tests:
         description: >
           Run tests after deploy, in order (both run serially on the live
@@ -280,32 +293,38 @@ jobs:
             validate_ref "${{ steps.images.outputs.p100 }}"
           fi
 
-      - name: Validate current pins in node configs
-        if: steps.images.outputs.rtx == '' && steps.images.outputs.p100 == ''
+      - name: Validate resolved engine refs (deploy-time override, else node config fallback)
+        # The head no longer reads the engine pin from node configs as the
+        # live truth (#470): deploy-heads passes the exact image+digest at
+        # deploy time via HYDRA_LLAMA_IMAGE_SOURCE/DIGEST. The node config
+        # source/image_digest is now only the FALLBACK when no deploy-time
+        # value is passed (image-tag=current). So this step validates the
+        # RESOLVED ref: the deploy-time image when one is being deployed,
+        # otherwise the config fallback the head will actually pull.
         run: |
           set -euo pipefail
-          check_pin() {
-            local config="$1"
-            local src digest actual
-            src=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config")
-            digest=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config")
-            [ -n "$src" ] || { echo "::error::$config: no source pinned under llama-server:"; exit 1; }
-            echo "Checking $config: $src"
-            podman pull "$src" >/dev/null 2>&1 || { echo "::error::$config: $src not pullable"; exit 1; }
-            if [ -n "$digest" ]; then
-              actual=$(podman inspect "$src" --format '{{.Digest}}' 2>/dev/null || true)
-              if [ "$actual" = "$digest" ]; then
-                echo "OK: digest matches $actual"
-              else
-                echo "::error::$config: pinned digest mismatch (pinned=$digest actual=${actual:-none})"
-                echo "::error::Re-run deploy with an explicit image-tag to re-pin, or fix $config."
-                exit 1
-              fi
-            fi
+          check_ref() {
+            local src="$1"
+            echo "Checking $src"
+            podman pull "$src" >/dev/null 2>&1 || { echo "::error::$src not pullable"; exit 1; }
+            echo "OK: $src pullable (digest $(podman inspect "$src" --format '{{.Digest}}' 2>/dev/null | head -c 16)...)"
           }
-          check_pin infra/hydra-head/config/node-rtx.yaml
-          check_pin infra/hydra-head/config/node-rtx3060.yaml
-          check_pin infra/hydra-head/config/node-p100.yaml
+          # Deploy-time override (the live truth when deploying an image)
+          if [ -n "${{ steps.images.outputs.rtx }}" ]; then
+            check_ref "${{ steps.images.outputs.rtx }}"
+          else
+            # Fallback: the config pins the head would use (image-tag=current)
+            check_pin() {
+              local config="$1"
+              local src
+              src=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config")
+              [ -n "$src" ] || { echo "::error::$config: no source pinned under llama-server:"; exit 1; }
+              check_ref "$src"
+            }
+            check_pin infra/hydra-head/config/node-rtx.yaml
+            check_pin infra/hydra-head/config/node-rtx3060.yaml
+            check_pin infra/hydra-head/config/node-p100.yaml
+          fi
 
       - name: Pin OCI images in node configs
         id: pin
@@ -427,7 +446,7 @@ jobs:
       # below — see deploy_shared_setup in the script for why.
       - name: Shared setup (build image, bring up core)
         if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
-        run: bash scripts/deploy-hydra-head.sh setup
+        run: bash scripts/deploy-hydra-head.sh setup ${{ inputs.rebuild-head }}
 
       # True parallel steps (GH Actions `parallel:`, June 2026) — RTX,
       # RTX3060, and P100 each show as their own named step with its own
