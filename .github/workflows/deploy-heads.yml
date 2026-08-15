@@ -308,6 +308,7 @@ jobs:
           check_pin infra/hydra-head/config/node-p100.yaml
 
       - name: Pin OCI images in node configs
+        id: pin
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
         run: |
           pin_image() {
@@ -367,6 +368,8 @@ jobs:
               *sm86-sm120*)
                 if [ -n "$RTX_IMG" ]; then
                   pin_image "$RTX_IMG" "$config"
+                  RTX_DIGEST=$(podman inspect "$RTX_IMG" --format '{{.Digest}}' 2>/dev/null || true)
+                  echo "rtx-digest=${RTX_DIGEST:-}" >> "$GITHUB_OUTPUT"
                 else
                   echo "Skipping $config: sm86-sm120 (RTX) source but RTX_IMG empty (image-tag=current)"
                 fi
@@ -438,12 +441,22 @@ jobs:
       - parallel:
           - name: Deploy RTX
             if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx+rtx3060'
+            env:
+              # Deploy-time engine pin (#470): pass the exact image + digest
+              # to the head via its -llama-image-source/-llama-image-digest
+              # flags (compose interpolates these env vars). Unset → the
+              # head falls back to the node config file.
+              HYDRA_LLAMA_IMAGE_SOURCE: ${{ steps.images.outputs.rtx }}
+              HYDRA_LLAMA_IMAGE_DIGEST: ${{ steps.pin.outputs.rtx-digest }}
             run: |
               bash scripts/deploy-hydra-head.sh rtx-only
               bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
 
           - name: Deploy RTX 3060
             if: inputs.gpu == 'all' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
+            env:
+              HYDRA_LLAMA_IMAGE_SOURCE: ${{ steps.images.outputs.rtx }}
+              HYDRA_LLAMA_IMAGE_DIGEST: ${{ steps.pin.outputs.rtx-digest }}
             run: |
               bash scripts/deploy-hydra-head.sh rtx3060-only
               bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480

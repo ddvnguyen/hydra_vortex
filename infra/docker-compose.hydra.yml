@@ -219,6 +219,13 @@ services:
       - /opt/hydra/config/${HYDRA_HEAD_RTX_NODE_CONFIG:-node-rtx.yaml}
       - -api-port
       - "9700"
+      # Deploy-time engine pin: the workflow (deploy-heads.yml) sets these
+      # env vars to the exact built image + digest, overriding the node
+      # config file. Empty/unset = fall back to the config's source/digest.
+      - -llama-image-source
+      - ${HYDRA_LLAMA_IMAGE_SOURCE:--}
+      - -llama-image-digest
+      - ${HYDRA_LLAMA_IMAGE_DIGEST:--}
     volumes:
       # Model + KV slot data
       - /mnt/SSD:/models:ro
@@ -301,6 +308,12 @@ services:
       - /opt/hydra/config/${HYDRA_HEAD_RTX3060_NODE_CONFIG:-node-rtx3060.yaml}
       - -api-port
       - "9701"
+      # Deploy-time engine pin: set by deploy-heads.yml; overrides the
+      # node config file. "-" = unset → fall back to the config.
+      - -llama-image-source
+      - ${HYDRA_LLAMA_IMAGE_SOURCE:--}
+      - -llama-image-digest
+      - ${HYDRA_LLAMA_IMAGE_DIGEST:--}
     volumes:
       # Model + KV slot data (shared with head-rtx via the same bind)
       - /mnt/SSD:/models:ro
