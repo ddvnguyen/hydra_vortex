@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "codebase-memory-mcp": {
+      "command": "/mnt/WorkDisk/Workplace/hydra_vortex/orchestration/mcp/codebase-memory-mcp/launcher.sh"
+    }
+  }
+}
