@@ -161,7 +161,7 @@ services:
       # live /mnt/llm-ram/store path).
       - HYDRA_COORD_CHUNK_CACHE_DIR=/mnt/llm-ram/chunk-cache
       - HYDRA_COORD_CHUNK_CACHE_L1_DIR=/mnt/llm-ram/chunk-cache-l1
-      - HYDRA_COORD_CHUNK_CACHE_L1_MAX_BYTES=21474836480
+      - HYDRA_COORD_CHUNK_CACHE_L1_MAX_BYTES=6442450944
       - HYDRA_CHUNK_CACHE_BACKEND=pg
       - HYDRA_CHUNK_CACHE_PG_CONN=Host=localhost;Database=hydra_store;Username=hydra;Password=hydra
       - HYDRA_CHUNK_CACHE_L2_MAX_BYTES=53687091200
