@@ -39,9 +39,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# CUDA runtime paths
-ENV PATH=/usr/local/cuda-13.2/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:${LD_LIBRARY_PATH}
+# CUDA runtime paths — CUDA 13.2.2 (pinned via cuda-runtime-13-2=13.2.2-1).
+# The packages install into /usr/local/cuda-13.2 (aliased by the
+# /usr/local/cuda-13 alternatives symlink, both resolve to the same dir);
+# keep both on the search path so every runtime component resolves.
+ENV PATH=/usr/local/cuda-13.2/bin:/usr/local/cuda-13/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/cuda-13/lib64:${LD_LIBRARY_PATH}
 
 # Copy init verification script
 COPY infra/hydra-head/init/verify_and_start.sh /init/verify_and_start.sh
