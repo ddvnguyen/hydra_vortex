@@ -173,11 +173,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
-          # Shallow submodule fetch: the fork's full history is huge and
-          # branch-tracked submodules force a complete clone on every run.
-          # Shallow avoids re-downloading ~1.5GB of objects when the pin
-          # commit hasn't changed (the common case).
+          # The llama-cpp submodule is ONLY needed when rebuilding the engine
+          # from the fork. Pure deploys (the common case) pull the pre-built
+          # engine from ghcr — skipping the submodule makes checkout near-
+          # instant and avoids the ~1.5GB fork clone entirely.
+          submodules: ${{ github.event.inputs.build-from-fork == 'true' }}
+          # Shallow submodule fetch: even when the fork IS needed, only the
+          # pinned commit's objects are downloaded — not the full history.
           fetch-depth: 1
           submoduleFetchDepth: 1
           submoduleRecursive: false
