@@ -17,6 +17,17 @@ public sealed record StoreConfig
     public int RestoreTopN { get; init; } = EnvInt("HYDRA_STORE_RESTORE_TOP_N", 10);
 
     /// <summary>
+    /// RAM-front recency window (hours) for the SSD-durable store tier (#470).
+    /// Once a chunk or per-session <c>sess_*.kv</c> manifest is backed up to
+    /// SSD (and marked in PG), the write-behind service may evict the tmpfs
+    /// RAM copy when no session referencing it has been updated within this
+    /// window (same freshness semantics as the retention GC, so warm/recent
+    /// sessions are never victims). <c>0</c> disables free-after-backup
+    /// entirely (backward compatible — files stay on RAM until retention GC).
+    /// </summary>
+    public int RamKeepRecentHours { get; init; } = EnvInt("HYDRA_STORE_RAM_KEEP_RECENT_HOURS", 1);
+
+    /// <summary>
     /// Retention TTL (hours) for saved-KV sessions. A session whose
     /// <c>sessions.updated_at</c> is older than this — and the chunks it
     /// references, once no other session references them — is evicted from

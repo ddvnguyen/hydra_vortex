@@ -83,6 +83,19 @@ if (!hasLocalChunks && backupChunksDir.Exists)
             File.Copy(nvmePath, destPath);
             restoredBytes += chunk.Size;
         }
+
+        // #470 SSD-durable tier: also restore the per-session .kv manifest from
+        // the SSD backup root (the durable home for sess_*.kv blobs), mirroring
+        // the chunks restore above. Missing .kv backups are fine — they simply
+        // haven't been drained yet.
+        var kvBackupPath = Path.Combine(backupDir.FullName, $"{sid}.kv");
+        var kvDestPath = Path.Combine(cfg.StoreDirectory.FullName, $"{sid}.kv");
+        if (File.Exists(kvBackupPath) && !File.Exists(kvDestPath))
+        {
+            File.Copy(kvBackupPath, kvDestPath);
+            restoredBytes += new FileInfo(kvBackupPath).Length;
+        }
+
         sw.Stop();
         totalRestored += restoredBytes;
         totalSessions++;
@@ -189,6 +202,10 @@ if (coordEnabled)
 
 // GC orphan chunks every 30 minutes via referential GC.
 var writeBehind = new WriteBehindService(cfg, metadata, chunkStore);
+// #470 ENOSPC resilience: when a chunk write to the tmpfs RAM front fails with
+// ENOSPC, the write-behind frees backed-up files (SSD holds the durable copy)
+// so the new file can be written — the "allow overwrite of new files" half.
+chunkStore.FreeBackedUpOnEnospc = writeBehind.FreeBackedUpFromRamAsync;
 var writeBehindTask = Task.Run(() => writeBehind.RunAsync(ct), ct);
 
 var gcTask = Task.Run(async () =>
