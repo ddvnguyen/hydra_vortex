@@ -523,8 +523,16 @@ deploy_p100() {
   # Create environment file with auth token. Written over stdin rather than
   # interpolated into the remote command string, which exposed the token in
   # `ps` output on the VM for the lifetime of the ssh command.
-  ssh hydra-p100 "umask 077 && cat > /home/vm1/.config/hydra-head/env" \
-    <<<"HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN"
+  # Deploy-time engine pin (#470): LLAMA_IMAGE_SOURCE / LLAMA_IMAGE_DIGEST
+  # (set by CI from the built image + digest) flow into the systemd env
+  # file and then into the head's -llama-image-source/-llama-image-digest
+  # flags. Unset → the service's ${...} interpolation yields empty → the
+  # head falls back to the node config file.
+  ssh hydra-p100 "umask 077 && cat > /home/vm1/.config/hydra-head/env" <<EOF
+HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN
+LLAMA_IMAGE_SOURCE=${HYDRA_LLAMA_IMAGE_SOURCE:-}
+LLAMA_IMAGE_DIGEST=${HYDRA_LLAMA_IMAGE_DIGEST:-}
+EOF
   ssh hydra-p100 "chmod 600 /home/vm1/.config/hydra-head/env"
   ok "Created auth token environment file"
 

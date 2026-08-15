@@ -361,6 +361,8 @@ jobs:
               *sm60*)
                 if [ -n "$P100_IMG" ]; then
                   pin_image "$P100_IMG" "$config"
+                  P100_DIGEST=$(podman inspect "$P100_IMG" --format '{{.Digest}}' 2>/dev/null || true)
+                  echo "p100-digest=${P100_DIGEST:-}" >> "$GITHUB_OUTPUT"
                 else
                   echo "Skipping $config: sm60 (P100) source but P100_IMG empty (image-tag=current)"
                 fi
@@ -463,6 +465,11 @@ jobs:
 
           - name: Deploy P100
             if: inputs.gpu == 'all' || inputs.gpu == 'p100'
+            env:
+              # Deploy-time engine pin (#470): same mechanism as RTX —
+              # built image + digest flow to the VM's systemd env file.
+              HYDRA_LLAMA_IMAGE_SOURCE: ${{ steps.images.outputs.p100 }}
+              HYDRA_LLAMA_IMAGE_DIGEST: ${{ steps.pin.outputs.p100-digest }}
             run: |
               bash scripts/deploy-hydra-head.sh p100
               bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480
