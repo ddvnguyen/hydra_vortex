@@ -221,6 +221,61 @@ public sealed class StoreMetadataTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GcStaleSessions_RemovesStaleSessionsAndTheirChunks()
+    {
+        // Retention GC must evict stale saved-KV sessions (and the chunks they
+        // reference) from tmpfs + SSD backup + PG, while fresh sessions survive.
+        var chunksDir = new DirectoryInfo(Path.Combine(_storeDir.FullName, "retention-chunks"));
+        var backupDir = new DirectoryInfo(Path.Combine(_storeDir.FullName, "retention-backup"));
+        chunksDir.Create();
+        backupDir.Create();
+
+        // Fresh session (recently updated): must survive the GC.
+        await _meta!.RegisterChunkAsync("fresh_chunk", 128);
+        await _meta.UpsertManifestAsync("sess_fresh", 0, 128,
+            [new ChunkRef(0, "fresh_chunk", 128)]);
+
+        // Stale session (updated 2h ago) referencing chunks that are also
+        // backed up on the SSD dir: must be evicted, including its files.
+        await _meta.RegisterChunkAsync("stale_chunk_a", 64);
+        await _meta.RegisterChunkAsync("stale_chunk_b", 128);
+        await _meta.UpsertManifestAsync("sess_stale", 10, 192,
+            [new ChunkRef(0, "stale_chunk_a", 64), new ChunkRef(1, "stale_chunk_b", 128)]);
+        await _meta.MarkBackedUpAsync("stale_chunk_a", "/backup/stale_chunk_a");
+        await File.WriteAllBytesAsync(Path.Combine(chunksDir.FullName, "stale_chunk_a"), new byte[64]);
+        await File.WriteAllBytesAsync(Path.Combine(chunksDir.FullName, "stale_chunk_b"), new byte[128]);
+        await File.WriteAllBytesAsync(Path.Combine(backupDir.FullName, "stale_chunk_a"), new byte[64]);
+
+        // Age the sessions: stale = 2h old, fresh = 1min old.
+        await using (var conn = await _meta.DataSource.OpenConnectionAsync())
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                UPDATE sessions SET updated_at = now() - interval '2 hours'
+                WHERE session_id = 'sess_stale';
+                UPDATE sessions SET updated_at = now() - interval '1 minute'
+                WHERE session_id = 'sess_fresh';
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        var removed = await _meta.GcStaleSessionsAsync(TimeSpan.FromHours(1), chunksDir, backupDir);
+
+        // Stale session gone: manifest, chunk rows, tmpfs files, backup file.
+        Assert.True(removed >= 2);
+        Assert.Null(await _meta.GetManifestAsync("sess_stale"));
+        Assert.False(await _meta.HasChunkAsync("stale_chunk_a"));
+        Assert.False(await _meta.HasChunkAsync("stale_chunk_b"));
+        Assert.False(File.Exists(Path.Combine(chunksDir.FullName, "stale_chunk_a")));
+        Assert.False(File.Exists(Path.Combine(chunksDir.FullName, "stale_chunk_b")));
+        Assert.False(File.Exists(Path.Combine(backupDir.FullName, "stale_chunk_a")));
+
+        // Fresh session and its chunk survive.
+        Assert.NotNull(await _meta.GetManifestAsync("sess_fresh"));
+        Assert.True(await _meta.HasChunkAsync("fresh_chunk"));
+    }
+
+    [Fact]
     public async Task ReconcileBoot_RemovesUnbackedRowsMissingFromDisk()
     {
         // Register a chunk in PG that is unbacked and has no file

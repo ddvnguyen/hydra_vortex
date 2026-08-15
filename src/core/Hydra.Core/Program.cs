@@ -199,6 +199,19 @@ var gcTask = Task.Run(async () =>
         {
             await Task.Delay(TimeSpan.FromMinutes(30), ct);
             var removed = await metadata.GcOrphanChunksAsync(chunkStore.ChunksDirectory, ct);
+            // #470 post-fix #1: age-based retention for stale saved-KV sessions
+            // (and the chunks they reference). The referential orphan GC above
+            // only frees *unreferenced* chunks — a chunk referenced by a stale
+            // session stays pinned in tmpfs + SSD backup + PG forever without
+            // this TTL sweep. 0 hours disables (default 168 h = 7 days).
+            if (cfg.ChunkRetentionTtlHours > 0)
+            {
+                removed += await metadata.GcStaleSessionsAsync(
+                    TimeSpan.FromHours(cfg.ChunkRetentionTtlHours),
+                    chunkStore.ChunksDirectory,
+                    backupChunksDir,
+                    ct: ct);
+            }
             if (removed > 0)
             {
                 StoreMetrics.ChunksRemoved.Inc(removed);

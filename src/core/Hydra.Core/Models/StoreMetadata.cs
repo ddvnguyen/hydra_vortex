@@ -424,6 +424,120 @@ public sealed class StoreMetadata : IAsyncDisposable
         return hashes.Count;
     }
 
+    /// <summary>
+    /// Retention GC (#470 post-fix queue #1): evict saved-KV sessions that
+    /// have gone untouched for longer than <paramref name="ttl"/>, then free
+    /// the chunk files those sessions referenced — from the tmpfs chunk dir
+    /// AND the SSD backup dir — plus their PG rows, once no other session
+    /// references them. This is the age-based TTL that the referential
+    /// <see cref="GcOrphanChunksAsync"/> cannot provide: a chunk referenced by
+    /// a stale-but-never-deleted session would otherwise stay pinned in tmpfs
+    /// + SSD + PG forever (the save_failed_fallback / stale-session leak class).
+    ///
+    /// Freshness = <c>sessions.updated_at</c>, bumped on every save (save_kv
+    /// and prefix saves), so an actively used session is never a victim. Both
+    /// deletes are gated on the staleness predicate evaluated at execution
+    /// time, so a session re-saved mid-GC is skipped. The Store is a cache:
+    /// a restore that races a purge simply falls back to a cold start (the
+    /// same recovery the orphan GC already relies on).
+    /// </summary>
+    /// <returns>Number of chunk files/rows freed.</returns>
+    public async Task<int> GcStaleSessionsAsync(
+        TimeSpan ttl, DirectoryInfo chunksDir, DirectoryInfo backupChunksDir,
+        int limit = 500, CancellationToken ct = default)
+    {
+        if (ttl <= TimeSpan.Zero)
+            return 0;
+
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // 1. Drop the stale sessions' session_chunks, remembering the hashes
+        //    this orphans. Gated on updated_at at execution time.
+        var orphaned = new HashSet<string>();
+        await using (var delSc = conn.CreateCommand())
+        {
+            delSc.Transaction = tx;
+            delSc.CommandText = """
+                DELETE FROM session_chunks
+                WHERE session_id IN (
+                    SELECT session_id FROM sessions
+                    WHERE updated_at < now() - make_interval(secs => @ttlS)
+                    LIMIT @lim)
+                RETURNING hash
+                """;
+            delSc.Parameters.AddWithValue("ttlS", ttl.TotalSeconds);
+            delSc.Parameters.AddWithValue("lim", limit);
+            await using var rdr = await delSc.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+                orphaned.Add(rdr.GetString(0));
+        }
+
+        // 2. Drop the stale sessions themselves.
+        var removedSessions = 0;
+        await using (var delS = conn.CreateCommand())
+        {
+            delS.Transaction = tx;
+            delS.CommandText = """
+                DELETE FROM sessions
+                WHERE session_id IN (
+                    SELECT session_id FROM sessions
+                    WHERE updated_at < now() - make_interval(secs => @ttlS)
+                    LIMIT @lim)
+                RETURNING session_id
+                """;
+            delS.Parameters.AddWithValue("ttlS", ttl.TotalSeconds);
+            delS.Parameters.AddWithValue("lim", limit);
+            await using var rdr = await delS.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+                removedSessions++;
+        }
+
+        // 3. Free chunk files (tmpfs + SSD backup) and rows for hashes no
+        //    other session references. Mirrors GcOrphanChunksAsync's shape
+        //    but also clears the backup copy, which orphan GC never touches.
+        var toDelete = new List<string>();
+        if (orphaned.Count > 0)
+        {
+            var stillReferenced = new HashSet<string>();
+            await using (var refs = conn.CreateCommand())
+            {
+                refs.Transaction = tx;
+                refs.CommandText = "SELECT DISTINCT hash FROM session_chunks";
+                await using var rdr = await refs.ExecuteReaderAsync(ct);
+                while (await rdr.ReadAsync(ct))
+                    stillReferenced.Add(rdr.GetString(0));
+            }
+
+            toDelete = orphaned.Where(h => !stillReferenced.Contains(h)).ToList();
+            foreach (var hash in toDelete)
+            {
+                var tmpfsPath = Path.Combine(chunksDir.FullName, hash);
+                try { if (File.Exists(tmpfsPath)) File.Delete(tmpfsPath); } catch { /* ignore */ }
+                var backupPath = Path.Combine(backupChunksDir.FullName, hash);
+                try { if (File.Exists(backupPath)) File.Delete(backupPath); } catch { /* ignore */ }
+            }
+
+            if (toDelete.Count > 0)
+            {
+                await using var delC = conn.CreateCommand();
+                delC.Transaction = tx;
+                delC.CommandText = "DELETE FROM chunks WHERE hash = ANY(@hashes)";
+                delC.Parameters.AddWithValue("hashes", toDelete.ToArray());
+                await delC.ExecuteNonQueryAsync(ct);
+            }
+        }
+
+        await tx.CommitAsync(ct);
+
+        if (removedSessions > 0 || toDelete.Count > 0)
+        {
+            _log.Information("Retention GC: removed {Sessions} stale sessions, {Chunks} orphaned chunks (TTL {Ttl})",
+                removedSessions, toDelete.Count, ttl);
+        }
+        return toDelete.Count;
+    }
+
     public async Task ReconcileBootAsync(DirectoryInfo chunksDir, CancellationToken ct = default)
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);

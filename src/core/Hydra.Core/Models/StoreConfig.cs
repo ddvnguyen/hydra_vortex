@@ -16,6 +16,17 @@ public sealed record StoreConfig
     public string BackupDir { get; init; } = EnvString("HYDRA_STORE_BACKUP_DIR", "/mnt/SSD/hydra-backup");
     public int RestoreTopN { get; init; } = EnvInt("HYDRA_STORE_RESTORE_TOP_N", 10);
 
+    /// <summary>
+    /// Retention TTL (hours) for saved-KV sessions. A session whose
+    /// <c>sessions.updated_at</c> is older than this — and the chunks it
+    /// references, once no other session references them — is evicted from
+    /// the tmpfs chunk dir, the SSD backup dir, and PG. <c>0</c> disables
+    /// retention GC entirely (#470 post-fix queue #1). Freshness is
+    /// <c>updated_at</c>, bumped on every save, so an actively used session
+    /// (incl. warm slots restored and re-saved each turn) is never a victim.
+    /// </summary>
+    public int ChunkRetentionTtlHours { get; init; } = EnvInt("HYDRA_STORE_RETENTION_TTL_HOURS", 168);
+
     [JsonIgnore]
     public DirectoryInfo StoreDirectory => new(StoreDir);
 
