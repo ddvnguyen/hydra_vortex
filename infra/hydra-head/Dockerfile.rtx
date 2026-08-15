@@ -30,6 +30,7 @@ RUN curl -fSsL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu24
 COPY infra/hydra-head/init/cuda-pin.conf /etc/apt/preferences.d/cuda-13-2-2
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cuda-runtime-13-2=13.2.2-1 \
+    cublas13=13.2.2-1 \
     libnccl2 \
     libgomp1 \
     libibverbs1 \
