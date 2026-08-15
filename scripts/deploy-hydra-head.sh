@@ -329,7 +329,19 @@ deploy_shared_setup() {
   local rebuild_head="${1:-false}"
   step "Shared setup (image build + core) [rebuild-head=$rebuild_head]"
 
-  build_go
+  # Skip the Go build when no head source changed since the last build —
+  # most runs deploy the same binary. A fresh runner checkout makes mtime
+  # comparison useless (every file is "newer"), so stamp the source content
+  # hash next to the binary and compare hashes.
+  local go_src_hash
+  go_src_hash=$(find "$REPO_ROOT/src/head" -name '*.go' -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)
+  if [ -f "$REPO_ROOT/bin/hydra-head" ] && [ -f "$REPO_ROOT/bin/.hydra-head-src-hash" ] && \
+     [ "$(cat "$REPO_ROOT/bin/.hydra-head-src-hash" 2>/dev/null)" = "$go_src_hash" ]; then
+    step "No Go changes since last build — reusing bin/hydra-head"
+  else
+    build_go
+    echo -n "$go_src_hash" > "$REPO_ROOT/bin/.hydra-head-src-hash"
+  fi
   build_core_image
   generate_token
   AUTH_TOKEN=$(get_token)

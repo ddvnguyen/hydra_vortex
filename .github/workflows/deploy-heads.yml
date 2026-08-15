@@ -303,11 +303,30 @@ jobs:
         # otherwise the config fallback the head will actually pull.
         run: |
           set -euo pipefail
+          # Fast registry check — NO blob download. The engine images are
+          # multi-GB; podman pull (the old way) took ~7m just to verify a
+          # digest. Instead query the OCI manifest directly: the digest
+          # HEAD costs a few hundred ms.
           check_ref() {
-            local src="$1"
-            echo "Checking $src"
-            podman pull "$src" >/dev/null 2>&1 || { echo "::error::$src not pullable"; exit 1; }
-            echo "OK: $src pullable (digest $(podman inspect "$src" --format '{{.Digest}}' 2>/dev/null | head -c 16)...)"
+            local ref="$1"
+            echo "Checking $ref"
+            local repo digest
+            repo=$(echo "$ref" | sed 's|^ghcr.io/||; s|@sha256:.*||')
+            digest=$(echo "$ref" | sed 's|.*@sha256:|sha256:|')
+            # ghcr token (anonymous pull works for public images)
+            local token
+            token=$(curl -sf --max-time 10 "https://ghcr.io/token?scope=repository:${repo}:pull" | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])") || { echo "::error::$ref token failed"; exit 1; }
+            local head_code actual
+            head_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/${repo}/manifests/${digest}")
+            [ "$head_code" = "200" ] || { echo "::error::$ref not found (HTTP $head_code)"; exit 1; }
+            actual=$(curl -sI --max-time 15 \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/${repo}/manifests/${digest}" | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p' | head -1)
+            echo "OK: $ref present (manifest digest ${actual:-$digest})"
           }
           # Deploy-time override (the live truth when deploying an image)
           if [ -n "${{ steps.images.outputs.rtx }}" ]; then
