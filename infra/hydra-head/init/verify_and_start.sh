@@ -61,6 +61,20 @@ fi
 echo '========================================'
 echo 'LAUNCHING HYDRA HEAD'
 echo '========================================'
+
+# Deploy-time engine pin (#470): the workflow sets
+# HYDRA_LLAMA_IMAGE_SOURCE / HYDRA_LLAMA_IMAGE_DIGEST (compose
+# environment — NOT the command list, where podman-compose's
+# ${VAR:--} substitution corrupts the YAML list structure). Append
+# them as -llama-image-source/-llama-image-digest flags; empty/unset
+# → fall back to the node config file.
+if [ -n "${HYDRA_LLAMA_IMAGE_SOURCE:-}" ]; then
+  set -- "$@" -llama-image-source "$HYDRA_LLAMA_IMAGE_SOURCE"
+fi
+if [ -n "${HYDRA_LLAMA_IMAGE_DIGEST:-}" ]; then
+  set -- "$@" -llama-image-digest "$HYDRA_LLAMA_IMAGE_DIGEST"
+fi
+
 echo "Args: $@"
 echo ''
 
