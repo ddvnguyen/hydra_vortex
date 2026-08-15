@@ -39,8 +39,8 @@ binaries:
     # OCI pull, and that pull fatally failed against this directory's
     # intentional :ro mount when the bind-mount override is in use
     # (do not "fix" a mismatch like this by making the mount :rw).
-    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-096b053
-    image_digest: sha256:a451ded2311d33814771c9cdb54180d3696a2af48d16199ae365bce74710a525
+    source: ghcr.io/ddvnguyen/llama-server:sm86-sm120-llama-engine-dd3fbf6
+    image_digest: sha256:6b18835e0dcfdc1b9f36da3996abf660c1505843f41ce337292162ade7c9e1bd
     binary: llama-engine
     dest: /llama/bin/llama-engine
   node_exporter:
