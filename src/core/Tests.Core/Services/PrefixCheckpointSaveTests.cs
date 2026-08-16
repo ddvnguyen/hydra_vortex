@@ -80,8 +80,9 @@ public sealed class PrefixCheckpointSaveTests
 		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
 		Assert.Equal(WorkItemState.SaveDone, next);
 
-		// The prefix save is fire-and-forget — wait for it.
-		await Task.Delay(200);
+		// The prefix save is fire-and-forget — poll until it lands (bounded),
+		// instead of a fixed delay that can flake under CI load.
+		await WaitUntilAsync(() => CoordinatorMetrics.PrefixSaves.Value >= before + 1);
 
 		// Exactly one Put to "prefix/abc123.kv" with payload > 0.
 		var putCalls = fake.Calls.Where(c =>
@@ -109,7 +110,11 @@ public sealed class PrefixCheckpointSaveTests
 		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
 		Assert.Equal(WorkItemState.SaveDone, next);
 
-		await Task.Delay(200);
+		// Fire-and-forget prefix save performs one more Stat (→ Ok) — poll for
+		// it so the "no prefix Put / metric unchanged" asserts aren't a false
+		// pass before the background task has run.
+		var statAfterMain = fake.CallCount(OpCode.Stat);
+		await WaitUntilAsync(() => fake.CallCount(OpCode.Stat) > statAfterMain);
 
 		// No prefix-keyed Put call (main KV save's Put is expected).
 		var prefixPuts = fake.Calls.Where(c =>
@@ -215,5 +220,17 @@ public sealed class PrefixCheckpointSaveTests
 
 		var after = CoordinatorMetrics.PrefixSaveFailures.Value;
 		Assert.Equal(1, after - before);
+	}
+
+	/// <summary>
+	/// Poll until <paramref name="cond"/> holds or the timeout elapses, instead of
+	/// a fixed delay. The prefix save is fire-and-forget (Task.Run), so fixed
+	/// delays can flake under CI load when the background task is slow to start.
+	/// </summary>
+	private static async Task WaitUntilAsync(Func<bool> cond, int timeoutMs = 3000)
+	{
+		var deadline = Environment.TickCount64 + timeoutMs;
+		while (!cond() && Environment.TickCount64 < deadline)
+			await Task.Delay(50);
 	}
 }
