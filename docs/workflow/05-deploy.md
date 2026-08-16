@@ -10,6 +10,14 @@ Redeploy via the control plane —
 
 ## llama.cpp fork change — three parts
 
+> **Coding-agent rule:** the deployed artifact always comes from CI
+> (`hydra-build.yml`). If you need to *verify* a fork change locally (or iterate
+> on it), use `bash scripts/llama-build.sh dev` — it shares the CI ccache store
+> and a persistent build dir, so a fresh task worktree builds fast. Experiments
+> (different flags/CUDA) go to the L2 tier via `bash scripts/llama-build.sh test …`
+> and never touch L1/CI. See DevelopmentRunBook.md → "llama-engine / llama-server
+> — build & package". Design rationale: `docs/decisions/0002-llama-build-cache.md`.
+
 ### 1. Build & push via CI/CD (preferred — do not build locally)
 
 Trigger `hydra-build.yml` in `ddvnguyen/llama.cpp` (manual-dispatch only,

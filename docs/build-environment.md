@@ -149,12 +149,13 @@ The fork has **two** binaries the Hydra system uses:
 
 ### Fast local iteration
 
-For the edit/build/verify loop on a fork change, use the `hydra-dev` CMake preset
-(`src/llama-cpp/CMakePresets.json`) instead of the commands below — same `86;120`
-fat-arch + correctness flags, but LTO off + ccache wired in, cutting a single-file
-rebuild from ~120-180s down to a few seconds once warm. See "Fast local iteration"
-in `DevelopmentRunBook.md`. Use the full commands below only when producing the
-binary that actually gets deployed (LTO affects steady-state decode perf).
+For the edit/build/verify loop on a fork change, prefer
+`bash scripts/llama-build.sh dev` — it wraps the same LTO-off + ccache flags,
+shares the CI ccache store, and keeps a persistent build dir that any worktree
+reuses (so a fresh task worktree builds fast). See "Fast local iteration" in
+`DevelopmentRunBook.md`. Use `bash scripts/llama-build.sh deploy-sm86-sm120`
+(or the full commands below) only when producing the binary that actually gets
+deployed (LTO affects steady-state decode perf).
 
 ### Quick reference
 

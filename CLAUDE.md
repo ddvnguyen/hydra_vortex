@@ -49,6 +49,7 @@ Details: `docs/combined-engine-mode.md`.
 - **ghcr.io auth** in `~/.config/containers/auth.json` + synced to `/run/user/1000/containers/auth.json` (tmpfs, deploy reads tmpfs copy).
 - **`dotnet test`** needs `--settings src/Hydra.runsettings` for full-solution; per-project works without it.
 - **Podman compose** needs `export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)` before `up`.
+- **Fork builds** → use `bash scripts/llama-build.sh {dev|deploy-sm86-sm120|sm60}` (or `test …` for experiments). It shares the CI ccache store and a persistent build dir, so fresh worktrees build fast. Details: DevelopmentRunBook.md → "llama-engine / llama-server — build & package".
 
 ## Milestones
 | MS | Goal | Status |
@@ -126,4 +127,5 @@ status, and verified facts. **Every agent must update it when code changes land:
 - `docs/PORTS_AND_ENV.md` — every service, port, env var
 - `docs/agent-coding-rules.md` — full agent rationale + examples
 - `docs/hydra-system-pod.md` — starting/stopping/debugging hydra-core + hydra-head pod
+- `docs/decisions/0002-llama-build-cache.md` — llama.cpp build-cache design (L1/L2 tiers, eviction, `scripts/llama-build.sh`)
 - `docs/GITHUB_PROJECT_SETUP.md` — board layout

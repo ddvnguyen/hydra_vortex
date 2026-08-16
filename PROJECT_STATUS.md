@@ -293,6 +293,10 @@ Notes:
   (`localhost:8080` / `192.168.122.21:8086`). Live-boundary tests live in
   Tests.LiveRig. This fixed a 30-min teardown hang where the tests hit the
   production rig.
+- Fork builds: local verification uses `scripts/llama-build.sh` (L1 stable / L2 test
+  tiers, one shared 15G ccache store with the CI runner). The deployed artifact always
+  comes from `hydra-build.yml` on `ddvnguyen/llama.cpp`. Design:
+  `docs/decisions/0002-llama-build-cache.md`.
 
 ### Llama-Engine Sub-phases (v4 Design — Issue #397)
 
