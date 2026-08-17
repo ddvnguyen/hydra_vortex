@@ -25,7 +25,8 @@ binaries:
     # (issue #577). The map key stays `llama-server` to match the OCI
     # repo name — the on-disk binary is llama-engine (same convention
     # as node-rtx.yaml). Tag is <arch>-<binary>-<fork-version>-<sha>.
-    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-1d227f7
+    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-latest
+    image_digest: sha256:3d0ef0887b5f44270471aedfc70d00465f5efc9e1d8ac3d141c81eedefd3515c
     binary: llama-engine
     dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine
 
