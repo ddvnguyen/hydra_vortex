@@ -183,4 +183,39 @@ public sealed class LocalFsChunkCacheTests : IDisposable
         Assert.True(evicted >= 1);
         Assert.False(cache.HasChunkData("orphan_session", hash));
     }
+
+    [Fact]
+    public async Task ConcurrentEvictLRU_NeverNegativesByteCounterOrDoubleFrees()
+    {
+        // Issue #615 QA: EvictUntilUnderBytes runs concurrently from the
+        // sweep service, the ENOSPC retry path and at-write eviction. Two
+        // callers must never double-subtract the same session's bytes (which
+        // drove L1UsedBytes negative) nor delete files the other is counting.
+        // Seed 32 sessions x 1 KB raw files (over the 8 KB cap) so the
+        // eviction loop has real work, then fire 8 concurrent evictions.
+        Directory.CreateDirectory(_cacheDir);
+        for (int i = 0; i < 32; i++)
+        {
+            var hash = i.ToString("x64");
+            File.WriteAllBytes(Path.Combine(_cacheDir, $"ses_{i}.{hash}"), new byte[1024]);
+        }
+        var cache = new LocalFsChunkCache(_cacheDir, maxBytes: 8 * 1024);
+        Assert.True(cache.L1UsedBytes > (long)(8 * 1024 * 0.8), "seeded cache must start over the low-water mark");
+
+        var tasks = Enumerable.Range(0, 8)
+            .Select(_ => cache.EvictLRUWithStatsAsync())
+            .ToArray();
+        await Task.WhenAll(tasks);
+
+        Assert.True(cache.L1UsedBytes >= 0, $"L1UsedBytes went negative: {cache.L1UsedBytes}");
+
+        // Byte accounting must match what is actually on disk (no double-free).
+        var onDisk = new DirectoryInfo(_cacheDir).EnumerateFiles()
+            .Where(f => !f.Name.EndsWith(".chunks.json"))
+            .Sum(f => f.Length);
+        Assert.Equal(onDisk, cache.L1UsedBytes);
+
+        // Evicted under the low-water mark.
+        Assert.True(cache.L1UsedBytes <= (long)(8 * 1024 * 0.8));
+    }
 }

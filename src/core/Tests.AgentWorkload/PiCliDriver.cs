@@ -17,11 +17,13 @@ public sealed class PiCliDriver : IAgentCliDriver
 
     public PiCliDriver(
         string provider = "hydra",
-        string model = "moe-35b-solo",
+        string? model = null,
         string binPath = "pi")
     {
         _provider = provider;
-        _model = model;
+        // #470: AGENT_WORKLOAD_MODEL env override (e.g. dense-27b-combined)
+        // lets CI target the combined 27B rig session instead of the default.
+        _model = model ?? Environment.GetEnvironmentVariable("AGENT_WORKLOAD_MODEL") ?? "moe-35b-solo";
         _binPath = binPath;
     }
 
@@ -140,6 +142,10 @@ public sealed class PiCliDriver : IAgentCliDriver
         var bestCompletionTokens = 0;
         var bestCachedTokens = 0;
         var bestReasoningPresent = false;
+        var bestReasoning = (string?)null;
+        var bestToolCallsPresent = false;
+        var bestToolCallName = (string?)null;
+        var bestToolCallArgs = (string?)null;
         var anyValidJson = false;
 
         foreach (var line in lines)
@@ -193,6 +199,19 @@ public sealed class PiCliDriver : IAgentCliDriver
                                 && !string.IsNullOrWhiteSpace(thinkingEl.GetString()))
                             {
                                 bestReasoningPresent = true;
+                                bestReasoning = thinkingEl.GetString();
+                            }
+                            else if (blockTypeName == "tool_call"
+                                && block.ValueKind == JsonValueKind.Object)
+                            {
+                                bestToolCallsPresent = true;
+                                if (bestToolCallName is null
+                                    && block.TryGetProperty("name", out var nameEl)
+                                    && nameEl.ValueKind == JsonValueKind.String)
+                                {
+                                    bestToolCallName = nameEl.GetString();
+                                }
+                                bestToolCallArgs ??= ExtractToolCallArgs(block);
                             }
                         }
 
@@ -226,6 +245,41 @@ public sealed class PiCliDriver : IAgentCliDriver
                         bestContent = content;
                 }
 
+                // Legacy OpenAI-shaped tool_calls array:
+                // [{ "id": "...", "type": "function", "function": { "name", "arguments" } }]
+                if (root.TryGetProperty("tool_calls", out var legacyToolCalls)
+                    && legacyToolCalls.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var call in legacyToolCalls.EnumerateArray())
+                    {
+                        if (call.ValueKind != JsonValueKind.Object) continue;
+                        bestToolCallsPresent = true;
+
+                        if (bestToolCallName is null || bestToolCallArgs is null)
+                        {
+                            string? name = null;
+                            string? args = null;
+                            if (call.TryGetProperty("function", out var fn)
+                                && fn.ValueKind == JsonValueKind.Object)
+                            {
+                                if (fn.TryGetProperty("name", out var fnName)
+                                    && fnName.ValueKind == JsonValueKind.String)
+                                {
+                                    name = fnName.GetString();
+                                }
+                                if (fn.TryGetProperty("arguments", out var fnArgs))
+                                {
+                                    args = fnArgs.ValueKind == JsonValueKind.String
+                                        ? fnArgs.GetString()
+                                        : fnArgs.GetRawText();
+                                }
+                            }
+                            bestToolCallName ??= name;
+                            bestToolCallArgs ??= args;
+                        }
+                    }
+                }
+
                 if (root.TryGetProperty("reasoning_content", out _))
                     bestReasoningPresent = true;
 
@@ -252,12 +306,38 @@ public sealed class PiCliDriver : IAgentCliDriver
 
         builder.ResponseContent = bestContent;
         builder.ReasoningContentPresent = bestReasoningPresent;
+        builder.ReasoningContent = bestReasoning;
+        builder.ToolCallsPresent = bestToolCallsPresent;
+        builder.ToolCallName = bestToolCallName;
+        builder.ToolCallArgs = bestToolCallArgs;
         builder.PromptTokens = bestPromptTokens;
         builder.CompletionTokens = bestCompletionTokens;
         builder.CachedTokens = bestCachedTokens;
         builder.IsValidJson = anyValidJson;
 
         return builder.Build();
+    }
+
+    /// <summary>
+    /// Extract the arguments payload of a pi tool_call content block.
+    /// Accepts the common variants: <c>arguments</c> (OpenAI style), <c>input</c>
+    /// (Anthropic style) and <c>args</c>; the value may be a JSON string or an
+    /// already-parsed JSON value (returned as raw text).
+    /// </summary>
+    private static string? ExtractToolCallArgs(JsonElement toolCall)
+    {
+        foreach (var key in new[] { "arguments", "input", "args" })
+        {
+            if (!toolCall.TryGetProperty(key, out var value)) continue;
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Object or JsonValueKind.Array => value.GetRawText(),
+                _ => null,
+            };
+        }
+
+        return null;
     }
 
     private static bool IsAssistantMessage(JsonElement root, out JsonElement messageEl)
@@ -286,6 +366,10 @@ internal sealed class AgentTurnResultBuilder
     public DateTimeOffset CompletedAt;
     public string? ResponseContent;
     public bool ReasoningContentPresent;
+    public string? ReasoningContent;
+    public bool ToolCallsPresent;
+    public string? ToolCallName;
+    public string? ToolCallArgs;
     public int PromptTokens;
     public int CompletionTokens;
     public int CachedTokens;
@@ -300,6 +384,10 @@ internal sealed class AgentTurnResultBuilder
         CompletedAt = CompletedAt,
         ResponseContent = ResponseContent,
         ReasoningContentPresent = ReasoningContentPresent,
+        ReasoningContent = ReasoningContent,
+        ToolCallsPresent = ToolCallsPresent,
+        ToolCallName = ToolCallName,
+        ToolCallArgs = ToolCallArgs,
         PromptTokens = PromptTokens,
         CompletionTokens = CompletionTokens,
         CachedTokens = CachedTokens,

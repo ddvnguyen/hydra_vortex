@@ -9,8 +9,8 @@ public interface ICompletionProxyService
     Task<bool> LoadModelAsync(string nodeUrl, string modelName, string traceId, CancellationToken ct);
 
     // #470: poll GET /v1/decode/{decodeRequestId} for merged-decode results.
-    // Returns SSE lines (streaming) or throws on timeout/not-found.
-    // Three-way branch: 404=terminal, 202=keep-polling+record-phases, 400=terminal, 200=stream.
+    // Returns SSE lines (streaming) or throws on timeout.
+    // Branch: 404=retry (transient mid-generation, #587), 202=keep-polling+record-phases, 400=terminal, 200=stream.
     IAsyncEnumerable<byte[]> PollDecodeStreamAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct, WorkItem? item = null);
     // #470: poll GET /v1/decode/{decodeRequestId} for buffered result.
     Task<Dictionary<string, object>> PollDecodeResultAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
@@ -31,11 +31,11 @@ public interface IWorkerScheduler
     public string? LastDispatchedModelQuant { get; }
     /// <summary>Capabilities bitmask of the model that served the most recent request (#470).</summary>
     public uint LastDispatchedModelCapabilities { get; }
-    Task<object> SubmitAsync(Dictionary<string, object> request, List<Dictionary<string, object>> messages, string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0);
+    Task<object> SubmitAsync(Dictionary<string, object> request, List<Dictionary<string, object>> messages, string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0, string? traceId = null);
     Task<object> MigrateSessionAsync(string sessionId, string targetNodeName, CancellationToken ct);
     Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct);
     Task RunAsync(CancellationToken ct);
-    Task NotifyStreamComplete(string sessionId);
+    Task NotifyStreamComplete(string sessionId, string? traceId = null);
     int WarmLeaseCount { get; }
 
     /// <summary>
@@ -65,5 +65,22 @@ public interface IHealthMonitorService
     /// Called by the worker scheduler after a PREFILL response populates
     /// the KV model identity so Gate A can verify identity at DECODE time.
     /// </summary>
-    void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities);
+    void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities);
+
+    /// <summary>
+    /// #592: re-mark a node healthy based on positive liveness evidence that
+    /// arrived outside the health-poll cycle — e.g. a successful PREFILL served
+    /// by that node, or a direct router liveness probe. A node flagged unhealthy
+    /// by <c>health_poll_failed</c> (say, during an inline model swap) must not
+    /// keep excluding requests once it demonstrably serves again. Fires
+    /// HealthyChanged only on an actual unhealthy→healthy flip.
+    /// </summary>
+    void MarkHealthy(string nodeName);
+
+    /// <summary>
+    /// Fired when a node's Healthy flag flips (to healthy OR to unhealthy). The
+    /// scheduler subscribes so queued items get re-checked when a node recovers
+    /// — capacity can return without a slot release.
+    /// </summary>
+    event Action? HealthyChanged;
 }

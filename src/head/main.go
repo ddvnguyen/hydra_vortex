@@ -13,7 +13,6 @@ import (
 
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/api"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/config"
-	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/health"
 	hydralog "github.com/ddvnguyen/hydra_vortex/hydra-head/internal/logging"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/process"
 	"github.com/ddvnguyen/hydra_vortex/hydra-head/internal/registry"
@@ -24,6 +23,8 @@ func main() {
 	nodeConfig := flag.String("node", "", "Path to node config file")
 	apiPort := flag.Int("api-port", 9700, "API server port")
 	authToken := flag.String("auth-token", "", "Authentication token for API (or set HYDRA_HEAD_AUTH_TOKEN)")
+	llamaImageSource := flag.String("llama-image-source", "", "OCI image ref for the llama-engine binary (overrides node config 'source'; deploy-time param)")
+	llamaImageDigest := flag.String("llama-image-digest", "", "OCI image digest (sha256:...) for the llama-engine binary (overrides node config 'image_digest'; deploy-time param)")
 	flag.Parse()
 
 	if *globalConfig == "" || *nodeConfig == "" {
@@ -65,6 +66,27 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		bootLogger.Error("invalid config", "error", err)
 		os.Exit(1)
+	}
+
+	// Deploy-time engine overrides: -llama-image-source / -llama-image-digest
+	// take precedence over the node config file. This lets deploy-heads pin
+	// the exact engine build at deploy time without editing the node config.
+	// A "-" value means "unset" (compose interpolation placeholder).
+	if (*llamaImageSource != "" && *llamaImageSource != "-") || (*llamaImageDigest != "" && *llamaImageDigest != "-") {
+		spec, exists := cfg.Binaries["llama-server"]
+		if !exists {
+			spec = config.BinaryConfig{Binary: "llama-server"}
+		}
+		if *llamaImageSource != "" && *llamaImageSource != "-" {
+			spec.Source = *llamaImageSource
+		}
+		if *llamaImageDigest != "" && *llamaImageDigest != "-" {
+			spec.ImageDigest = *llamaImageDigest
+		}
+		cfg.Binaries["llama-server"] = spec
+		bootLogger.Info("llama-engine overridden at deploy time",
+			"source", spec.Source,
+			"image_digest", spec.ImageDigest)
 	}
 
 	// Build the OTel handler now that we know the node name and
@@ -164,25 +186,6 @@ func main() {
 	manager := process.NewManager(cfg, logger, otelShared)
 	defer manager.Shutdown()
 
-	llamaURL := fmt.Sprintf("http://%s:%d", cfg.Llama.Host, cfg.Llama.Port)
-	checker := health.NewChecker(
-		llamaURL,
-		cfg.Health.Path,
-		cfg.IsPeerOnly(), // simple mode: just check HTTP 200, no []SlotStatus decode (#399)
-		logger,
-		time.Duration(cfg.Health.IntervalIdleSec)*time.Second,
-		time.Duration(cfg.Health.IntervalBusySec)*time.Second,
-		cfg.Health.MaxFails,
-	)
-	checker.SetOnUnhealthy(func() {
-		logger.Warn("llama-server unhealthy, triggering restart")
-		if err := manager.RestartLlama(); err != nil {
-			logger.Error("restart failed", "error", err)
-		}
-	})
-	checker.Start()
-	defer checker.Stop()
-
 	if err := manager.StartLlama(); err != nil {
 		logger.Error("failed to start llama-server", "error", err)
 		os.Exit(1)
@@ -201,7 +204,7 @@ func main() {
 		}
 	}
 
-	apiServer := api.NewServer(cfg, manager, checker, regMgr, logger, *authToken)
+	apiServer := api.NewServer(cfg, manager, regMgr, logger, *authToken)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *apiPort),

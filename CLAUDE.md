@@ -33,7 +33,7 @@ Details: `docs/combined-engine-mode.md`.
 
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host (CUDA0, primary)
-- RTX 3060 12 GB sm_86, CUDA 13.2 — host (CUDA1, SOLO + COMBINED peer, ggml-RPC :9504)
+- RTX 3060 12 GB sm_86, CUDA 13.2 — host (CUDA1, peer-only for COMBINED mode, ggml-RPC :9504)
 - Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM (192.168.122.21:8086, Q5_K-balanced)
 - tmpfs 30 GB at /mnt/llm-ram. Model: Qwopus3.6-35B-A3B (Q3_K-mini on host, Q5_K-balanced on P100)
 
@@ -66,7 +66,11 @@ GitHub Projects is the single source of truth. Commands: `DevelopmentRunBook.md`
    → `docs/workflow/01-pickup.md`
 2. **Branch & implement** — never on `main`. → `docs/workflow/02-implement.md`
 3. **Test / verify** — `dotnet test src/core/Tests.Shared/ && dotnet test src/core/Tests.Core/`
-   + `pytest tests/system`. "E2E verify" = deploy to live, **never merge**.
+   + `dotnet test src/core/Tests.E2E/` (hermetic, Aspire-orchestrated, no hardware
+   needed — runs on every PR). Live-rig tiers (`Tests.LiveRig`, `Tests.EngineParity`,
+   `Tests.AgentWorkload`) are opt-in via `workflow_dispatch`, not PR-gating.
+   `tests/system` (pytest) no longer exists — ported to xUnit in #518/PR #528.
+   "E2E verify" = deploy to live, **never merge**.
    → `docs/workflow/03-test-verify.md`
 4. **Commit & PR** — conventional commits + `Co-Authored-By`; `gh pr create … Closes #N`.
    **Merging requires explicit user confirmation.**
@@ -76,6 +80,13 @@ GitHub Projects is the single source of truth. Commands: `DevelopmentRunBook.md`
 6. **Check monitoring** — Grafana :3000 + alerts. → `docs/workflow/06-monitoring.md`
 7. **Close-out** — `gh issue create --label review-finding`; Status → Done on merge.
    → `docs/workflow/07-issue-and-close.md`
+
+**Large / multi-PR issues (epics):** if a task looks like it'll spawn 3+ PRs, spans
+`src/llama-cpp` + `src/core` + `src/head`, or can't be E2E-verified until several
+pieces land together — **proactively suggest** an `epic/{issue-id}-{slug}` integration
+branch (all sub-PRs land there, CI-gated but not E2E-gated; one final PR does the real
+E2E/live-GPU verify before merging to `main`). Don't set it up unilaterally — propose
+it, wait for the user's go-ahead. → `docs/workflow/09-epic-branch.md`
 
 ## GitHub Workflow
 Findings → issues (`review-finding` label) → branch (`gh issue develop N`) →

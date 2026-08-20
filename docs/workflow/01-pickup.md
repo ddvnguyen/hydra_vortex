@@ -12,5 +12,9 @@
    branch and PR.
 4. If the work has no issue yet, create one (`gh issue create`, assign the Milestone +
    labels); the Project's **auto-add** workflow puts it on the board.
+5. **Epic-shaped?** If the issue looks like it'll spawn 3+ PRs, spans multiple repos
+   (fork + core + head), or can't be E2E-verified until several pieces land together —
+   proactively suggest an epic branch to the user before branching. See
+   `09-epic-branch.md` for the criteria and setup; don't set it up unilaterally.
 
 → Next: `02-implement.md`

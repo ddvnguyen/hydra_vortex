@@ -89,6 +89,19 @@ public sealed class StoreMetadata : IAsyncDisposable
             use_count   BIGINT      NOT NULL DEFAULT 1);
         CREATE INDEX IF NOT EXISTS ix_chunk_data_l2_last_used  ON chunk_data_l2(last_used);
         CREATE INDEX IF NOT EXISTS ix_chunk_data_l2_created_at ON chunk_data_l2(created_at);
+
+        -- #470 SSD-durable tier: per-session .kv manifest write-behind state.
+        -- Mirrors the `chunks` backed_up pair so the WriteBehindService can
+        -- drain sess_*.kv blobs (StoreDir root) to the SSD backup root and
+        -- free the tmpfs RAM front once the durable copy is in place.
+        CREATE TABLE IF NOT EXISTS kv_manifests(
+            session_id   TEXT        PRIMARY KEY,
+            size         BIGINT      NOT NULL DEFAULT 0,
+            backed_up    BOOLEAN     NOT NULL DEFAULT false,
+            nvme_path    TEXT,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            backed_up_at TIMESTAMPTZ);
+        CREATE INDEX IF NOT EXISTS ix_kv_manifests_unbacked ON kv_manifests(backed_up) WHERE backed_up = false;
         """;
 
     public StoreMetadata(string connectionString, Serilog.ILogger? log = null)
@@ -373,6 +386,145 @@ public sealed class StoreMetadata : IAsyncDisposable
         return results;
     }
 
+    /// <summary>
+    /// Marks a per-session <c>.kv</c> blob as backed up to SSD (#470 SSD-durable
+    /// tier). Mirrors <see cref="MarkBackedUpAsync"/> for the <c>kv_manifests</c>
+    /// table so the write-behind service can drain sess_*.kv files to the backup
+    /// root and later free the tmpfs RAM front.
+    /// </summary>
+    public async Task KvMarkBackedUpAsync(string sessionId, string nvmePath, long size, CancellationToken ct = default)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO kv_manifests (session_id, size, backed_up, nvme_path, backed_up_at)
+            VALUES (@sid, @size, true, @path, now())
+            ON CONFLICT (session_id) DO UPDATE SET
+                size = EXCLUDED.size,
+                backed_up = true,
+                nvme_path = EXCLUDED.nvme_path,
+                backed_up_at = now()
+            """;
+        cmd.Parameters.AddWithValue("sid", sessionId);
+        cmd.Parameters.AddWithValue("size", size);
+        cmd.Parameters.AddWithValue("path", nvmePath);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Enumerates the per-session <c>sess_*.kv</c> blobs in the StoreDir root
+    /// (excluding the chunks subdir and in-flight .tmp files) that are NOT yet
+    /// marked backed up in <c>kv_manifests</c>. The RAM disk is the source of
+    /// truth for what needs draining — a .kv blob written by <c>OpCode.Put</c>
+    /// never registers a PG row, so disk enumeration (batched against the
+    /// backed-up set) is how the write-behind discovers work. Mirrors the
+    /// PG-driven <see cref="GetUnbackedChunksAsync"/> for the .kv side.
+    /// </summary>
+    /// <returns>Unbacked entries as (sessionId, size).</returns>
+    public async Task<List<(string SessionId, long Size)>> GetUnbackedKvAsync(
+        DirectoryInfo storeDir, int limit, CancellationToken ct = default)
+    {
+        var files = storeDir.Exists
+            ? storeDir.EnumerateFiles("sess_*.kv", SearchOption.TopDirectoryOnly)
+                .Where(f => !f.Name.EndsWith(".tmp"))
+                .OrderBy(f => f.Name)
+                .Take(limit)
+                .ToList()
+            : new List<FileInfo>();
+        if (files.Count == 0)
+            return [];
+
+        var candidateIds = files
+            .Select(f => Path.GetFileNameWithoutExtension(f.Name))
+            .ToArray();
+
+        var backedUp = new HashSet<string>(StringComparer.Ordinal);
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT session_id FROM kv_manifests WHERE session_id = ANY(@ids) AND backed_up = true";
+        cmd.Parameters.AddWithValue("ids", candidateIds);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            backedUp.Add(reader.GetString(0));
+        await reader.CloseAsync();
+
+        var results = new List<(string, long)>();
+        foreach (var file in files)
+        {
+            var sid = Path.GetFileNameWithoutExtension(file.Name);
+            if (!backedUp.Contains(sid))
+                results.Add((sid, file.Length));
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Returns content-addressed chunk hashes that are (a) already backed up to
+    /// SSD and (b) referenced by NO session updated within <paramref name="keepRecent"/>.
+    /// These are the free-after-backup candidates for the tmpfs RAM front (#470):
+    /// SSD holds the durable copy, and no warm/recent session needs the RAM file,
+    /// so it can be evicted. Same <c>updated_at</c> freshness semantics as the
+    /// retention GC (<see cref="GcStaleSessionsAsync"/>), so warm/in-flight
+    /// sessions are never victims.
+    /// </summary>
+    public async Task<List<string>> GetFreeableBackedUpChunkHashesAsync(
+        TimeSpan keepRecent, int limit, CancellationToken ct = default)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT c.hash
+            FROM chunks c
+            WHERE c.backed_up = true
+              AND NOT EXISTS (
+                  SELECT 1 FROM session_chunks sc
+                  JOIN sessions s ON s.session_id = sc.session_id
+                  WHERE sc.hash = c.hash
+                    AND s.updated_at >= now() - make_interval(secs => @keepS))
+            LIMIT @lim
+            """;
+        cmd.Parameters.AddWithValue("keepS", keepRecent.TotalSeconds);
+        cmd.Parameters.AddWithValue("lim", limit);
+
+        var results = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            results.Add(reader.GetString(0));
+        return results;
+    }
+
+    /// <summary>
+    /// Returns session IDs whose per-session <c>.kv</c> blob is (a) already
+    /// backed up to SSD and (b) not referenced by a session updated within
+    /// <paramref name="keepRecent"/> (or whose session row is missing entirely —
+    /// no session activity to protect). These are free-after-backup candidates
+    /// for the tmpfs RAM front, mirroring
+    /// <see cref="GetFreeableBackedUpChunkHashesAsync"/>.
+    /// </summary>
+    public async Task<List<string>> GetFreeableBackedUpKvAsync(
+        TimeSpan keepRecent, int limit, CancellationToken ct = default)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT k.session_id
+            FROM kv_manifests k
+            LEFT JOIN sessions s ON s.session_id = k.session_id
+            WHERE k.backed_up = true
+              AND (s.session_id IS NULL
+                   OR s.updated_at < now() - make_interval(secs => @keepS))
+            LIMIT @lim
+            """;
+        cmd.Parameters.AddWithValue("keepS", keepRecent.TotalSeconds);
+        cmd.Parameters.AddWithValue("lim", limit);
+
+        var results = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            results.Add(reader.GetString(0));
+        return results;
+    }
+
     public async Task<List<string>> GetRecentSessionIdsAsync(int n, CancellationToken ct = default)
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
@@ -422,6 +574,120 @@ public sealed class StoreMetadata : IAsyncDisposable
             _log.Information("GC: removed {Count} zombie sessions with no remaining chunks", sessionCount);
 
         return hashes.Count;
+    }
+
+    /// <summary>
+    /// Retention GC (#470 post-fix queue #1): evict saved-KV sessions that
+    /// have gone untouched for longer than <paramref name="ttl"/>, then free
+    /// the chunk files those sessions referenced — from the tmpfs chunk dir
+    /// AND the SSD backup dir — plus their PG rows, once no other session
+    /// references them. This is the age-based TTL that the referential
+    /// <see cref="GcOrphanChunksAsync"/> cannot provide: a chunk referenced by
+    /// a stale-but-never-deleted session would otherwise stay pinned in tmpfs
+    /// + SSD + PG forever (the save_failed_fallback / stale-session leak class).
+    ///
+    /// Freshness = <c>sessions.updated_at</c>, bumped on every save (save_kv
+    /// and prefix saves), so an actively used session is never a victim. Both
+    /// deletes are gated on the staleness predicate evaluated at execution
+    /// time, so a session re-saved mid-GC is skipped. The Store is a cache:
+    /// a restore that races a purge simply falls back to a cold start (the
+    /// same recovery the orphan GC already relies on).
+    /// </summary>
+    /// <returns>Number of chunk files/rows freed.</returns>
+    public async Task<int> GcStaleSessionsAsync(
+        TimeSpan ttl, DirectoryInfo chunksDir, DirectoryInfo backupChunksDir,
+        int limit = 500, CancellationToken ct = default)
+    {
+        if (ttl <= TimeSpan.Zero)
+            return 0;
+
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // 1. Drop the stale sessions' session_chunks, remembering the hashes
+        //    this orphans. Gated on updated_at at execution time.
+        var orphaned = new HashSet<string>();
+        await using (var delSc = conn.CreateCommand())
+        {
+            delSc.Transaction = tx;
+            delSc.CommandText = """
+                DELETE FROM session_chunks
+                WHERE session_id IN (
+                    SELECT session_id FROM sessions
+                    WHERE updated_at < now() - make_interval(secs => @ttlS)
+                    LIMIT @lim)
+                RETURNING hash
+                """;
+            delSc.Parameters.AddWithValue("ttlS", ttl.TotalSeconds);
+            delSc.Parameters.AddWithValue("lim", limit);
+            await using var rdr = await delSc.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+                orphaned.Add(rdr.GetString(0));
+        }
+
+        // 2. Drop the stale sessions themselves.
+        var removedSessions = 0;
+        await using (var delS = conn.CreateCommand())
+        {
+            delS.Transaction = tx;
+            delS.CommandText = """
+                DELETE FROM sessions
+                WHERE session_id IN (
+                    SELECT session_id FROM sessions
+                    WHERE updated_at < now() - make_interval(secs => @ttlS)
+                    LIMIT @lim)
+                RETURNING session_id
+                """;
+            delS.Parameters.AddWithValue("ttlS", ttl.TotalSeconds);
+            delS.Parameters.AddWithValue("lim", limit);
+            await using var rdr = await delS.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+                removedSessions++;
+        }
+
+        // 3. Free chunk files (tmpfs + SSD backup) and rows for hashes no
+        //    other session references. Mirrors GcOrphanChunksAsync's shape
+        //    but also clears the backup copy, which orphan GC never touches.
+        var toDelete = new List<string>();
+        if (orphaned.Count > 0)
+        {
+            var stillReferenced = new HashSet<string>();
+            await using (var refs = conn.CreateCommand())
+            {
+                refs.Transaction = tx;
+                refs.CommandText = "SELECT DISTINCT hash FROM session_chunks";
+                await using var rdr = await refs.ExecuteReaderAsync(ct);
+                while (await rdr.ReadAsync(ct))
+                    stillReferenced.Add(rdr.GetString(0));
+            }
+
+            toDelete = orphaned.Where(h => !stillReferenced.Contains(h)).ToList();
+            foreach (var hash in toDelete)
+            {
+                var tmpfsPath = Path.Combine(chunksDir.FullName, hash);
+                try { if (File.Exists(tmpfsPath)) File.Delete(tmpfsPath); } catch { /* ignore */ }
+                var backupPath = Path.Combine(backupChunksDir.FullName, hash);
+                try { if (File.Exists(backupPath)) File.Delete(backupPath); } catch { /* ignore */ }
+            }
+
+            if (toDelete.Count > 0)
+            {
+                await using var delC = conn.CreateCommand();
+                delC.Transaction = tx;
+                delC.CommandText = "DELETE FROM chunks WHERE hash = ANY(@hashes)";
+                delC.Parameters.AddWithValue("hashes", toDelete.ToArray());
+                await delC.ExecuteNonQueryAsync(ct);
+            }
+        }
+
+        await tx.CommitAsync(ct);
+
+        if (removedSessions > 0 || toDelete.Count > 0)
+        {
+            _log.Information("Retention GC: removed {Sessions} stale sessions, {Chunks} orphaned chunks (TTL {Ttl})",
+                removedSessions, toDelete.Count, ttl);
+        }
+        return toDelete.Count;
     }
 
     public async Task ReconcileBootAsync(DirectoryInfo chunksDir, CancellationToken ct = default)

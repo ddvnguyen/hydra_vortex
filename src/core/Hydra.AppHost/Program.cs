@@ -8,8 +8,21 @@ var builder = DistributedApplication.CreateBuilder(args);
 var pgPassword = builder.AddParameter("pg-password", "hydra-test-pw");
 var postgres = builder.AddPostgres("postgres")
     .WithImageTag("16")
-    .WithDataVolume(isReadOnly: false)
     .WithPassword(pgPassword);
+
+// Tests.E2E sets this before building the app (Aspire.Hosting.Testing).
+// A named data volume is a deliberate local-dev convenience — the DB
+// survives restarting the AppHost with `dotnet run`. Tests.E2E boots this
+// same Program.cs on a long-lived self-hosted CI runner, so that same
+// named volume would be reused across every run instead of getting a
+// fresh one; an unclean prior teardown (crash/cancel/timeout) then leaves
+// a half-initialized data dir behind and the next run's `initdb` refuses
+// to start (#531). Anonymous volumes are removed with the container, so
+// the hermetic path skips WithDataVolume entirely.
+if (Environment.GetEnvironmentVariable("HYDRA_E2E_HERMETIC") != "true")
+{
+    postgres = postgres.WithDataVolume(isReadOnly: false);
+}
 
 var hydraDb = postgres.AddDatabase("hydra-store");
 

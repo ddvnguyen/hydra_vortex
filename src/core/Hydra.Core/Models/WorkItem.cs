@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
+using Hydra.Core.Services;
+using Hydra.Shared;
 
 namespace Hydra.Core.Models;
 
@@ -154,6 +156,40 @@ public sealed class WorkItem
 	public long KvBytes { get; set; }
 	/// <summary>KV state blob held in memory between Prefill→SaveKv and RestoreKv→Decode (engine mode).</summary>
 	public byte[]? KvBlob { get; set; }
+	/// <summary>#470 Phase 2: true when the prefill response was streamed straight
+	/// into the Store (chunked pipe) — no full blob ever existed; KvBlob stays
+	/// null and the SaveKv chunk phase must not re-push.</summary>
+	public bool KvStreamedToStore { get; set; }
+	/// <summary>#470 Phase 2: chunk list (index/hash/size) of the session KV in the
+	/// Store manifest, used to stream the KV into the framed DECODE instead of
+	/// assembling the full blob in RAM. Set by RestoreKvAsync when merged-capable
+	/// decode will stream from the Store.</summary>
+	public List<ChunkRef>? KvChunks { get; set; }
+	/// <summary>#470 Phase 2: total KV payload size (v2 header + state + logits)
+	/// matching <see cref="KvChunks"/> — the kv_len of the framed DECODE.</summary>
+	public long KvTotalSize { get; set; }
+	/// <summary>#470: engine-computed xxh3-64 wire hash of the whole kv segment
+	/// ("xxh3:HEX", from the PREFILL response meta). Forwarded into the DECODE
+	/// frame's segments[].kv.hash so the decode engine verifies the streamed
+	/// restore end-to-end. Empty when unavailable (old binary / M1 path).</summary>
+	public string KvHash { get; set; } = "";
+
+	/// <summary>#470 Increment 2 (relay): bounded channel carrying the live
+	/// PREFILL response stream (v2_hdr + state + logits) to the DECODE RPC.
+	/// Each item is a rented byte[] + length; the decode consumer returns it
+	/// to ArrayPool. Null when the turn uses the store round trip.</summary>
+	public Channel<(byte[] Buffer, int Length)>? RelayChannel { get; set; }
+
+	/// <summary>#470 Increment 2 (relay): background task draining the PREFILL
+	/// response into <see cref="RelayChannel"/> (backpressure paces the engine
+	/// send to the decode leg). Awaited by DecodeAsync after the DECODE RPC so
+	/// a prefill-stream failure surfaces precisely. Null when not relaying.</summary>
+	public Task<EnginePrefillResult?>? RelayTask { get; set; }
+
+	/// <summary>#470 Increment 2 (relay): total KV payload length (payload_len
+	/// from the PREFILL response header) — the kv_len of the framed DECODE.
+	/// Captured by the relay task's onPayloadLen callback.</summary>
+	public long RelayKvTotalSize { get; set; }
 	/// <summary>True when RestoreKv loaded KV into the slot before Decode (engine mode cross-GPU).</summary>
 	public bool KvRestoredForDecode { get; set; }
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>
@@ -180,6 +216,15 @@ public sealed class WorkItem
 	public string? KvModelPath { get; set; }
 	/// <summary>True when the engine received a `model` value it could not resolve and fell back to the resident model.</summary>
 	public bool KvModelFallback { get; set; }
+	/// <summary>#470: canonical requested-model identity, resolved ONCE at
+	/// ingress (<c>WorkerSchedulerService.SubmitAsync</c>) from the raw
+	/// <c>Request["model"]</c> field (string or JsonElement) +
+	/// <see cref="Hydra.Core.Services.ModelConfigLoader"/>. Every payload builder
+	/// (PREFILL 0x42 body, DECODE 0x43 frame, HTTP-proxy body, cold-atomic
+	/// swap check) consumes this — the raw routing key never reaches the
+	/// engine wire. Null on legacy/unit paths that construct a WorkItem
+	/// without SubmitAsync (callers fall back to the raw request read).</summary>
+	public RequestedModelIdentity? ModelIdentity { get; set; }
 
 	/// <summary>Build a <see cref="ModelIdentity"/> from the per-field KV identity properties.</summary>
 	public ModelIdentity GetKvModelIdentity() => new()
@@ -258,7 +303,21 @@ public sealed class WorkItem
 		_streamDoneWriter = streamDone.Writer;
 	}
 
-	public void Cancel() { _cancelled = true; Completion.TrySetCanceled(); }
+	public void Cancel()
+	{
+		_cancelled = true;
+		Completion.TrySetCanceled();
+		// #613: a client disconnect must cancel the in-flight decode, not just
+		// mark the item. Abort the decode-phase cancellation source so the
+		// completion SSE stream stops promptly (and the merged-decode path fires
+		// its engine abort). Disposal races are guarded — the scheduler may have
+		// already disposed the source on normal completion.
+		if (PipelineCts is { IsCancellationRequested: false } pipelineCts)
+		{
+			try { pipelineCts.Cancel(); }
+			catch (ObjectDisposedException) { }
+		}
+	}
 	public bool IsStreaming => Request.TryGetValue("stream", out var s) && IsTruthy(s);
 
 	private static bool IsTruthy(object? v) => v switch

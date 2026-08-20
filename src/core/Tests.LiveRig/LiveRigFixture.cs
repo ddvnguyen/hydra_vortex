@@ -98,8 +98,8 @@ public sealed class LiveRigFixture : IAsyncLifetime
             {
                 try
                 {
-                    using var healthClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                    var healthResp = await healthClient.GetAsync($"{CoordUrl}/health");
+                    using var healthCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    var healthResp = await HttpHelpers.Client.GetAsync($"{CoordUrl}/health", healthCts.Token);
                     log.Add($"[t={sw.ElapsedMilliseconds}ms] GET /health → {(int)healthResp.StatusCode}");
 
                     if (healthResp.IsSuccessStatusCode)
@@ -162,7 +162,7 @@ public sealed class LiveRigFixture : IAsyncLifetime
             {
                 try
                 {
-                    using var probeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    using var probeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                     var probeBody = new Dictionary<string, object?>
                     {
                         ["messages"] = new[] { new { role = "user", content = "Say ok." } },
@@ -171,7 +171,8 @@ public sealed class LiveRigFixture : IAsyncLifetime
                         ["stream"] = false,
                         ["session_id"] = probeSessionId,
                     };
-                    var probeResp = await probeClient.PostAsJsonAsync($"{CoordUrl}/v1/chat/completions", probeBody);
+                    var probeResp = await HttpHelpers.Client.PostAsJsonAsync(
+                        $"{CoordUrl}/v1/chat/completions", probeBody, probeCts.Token);
                     log.Add($"[t={sw.ElapsedMilliseconds}ms] POST /v1/chat/completions → {(int)probeResp.StatusCode}");
 
                     if (probeResp.IsSuccessStatusCode)
@@ -261,9 +262,10 @@ public sealed class LiveRigFixture : IAsyncLifetime
     /// <summary>GET {CoordUrl}/status and return the parsed JSON.</summary>
     public async Task<StatusResponse> GetStatusAsync(CancellationToken ct = default)
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        return await client.GetFromJsonAsync<StatusResponse>(
-            $"{CoordUrl}/status", ct) ?? new StatusResponse();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(10));
+        return await HttpHelpers.Client.GetFromJsonAsync<StatusResponse>(
+            $"{CoordUrl}/status", cts.Token) ?? new StatusResponse();
     }
 
     /// <summary>DELETE {CoordUrl}/sessions/{sessionId} — best-effort cleanup.</summary>
@@ -271,8 +273,8 @@ public sealed class LiveRigFixture : IAsyncLifetime
     {
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            await client.DeleteAsync($"{CoordUrl}/sessions/{sessionId}");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await HttpHelpers.Client.DeleteAsync($"{CoordUrl}/sessions/{sessionId}", cts.Token);
         }
         catch
         {

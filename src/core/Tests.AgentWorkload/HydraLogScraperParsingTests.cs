@@ -194,4 +194,76 @@ public class HydraLogScraperParsingTests
 
         Assert.Equal(DateTimeOffset.MinValue, ts);
     }
+
+    // ── HydraLogScraper: autoroute_resolved parsing (issue #596) ──
+
+    [Fact]
+    public void ParseAutoRoute_ValidLine_ExtractsAllFields()
+    {
+        const string line = "[2026-08-10T12:00:00.000Z] autoroute_resolved Sid=test-hydra-auto-abc123 Model=moe-35b-pd Head=rtx Peer=none Decode=p100 Mode=pd";
+
+        var evt = HydraLogScraper.ParseAutoRoute(line);
+
+        Assert.NotNull(evt);
+        Assert.Equal("test-hydra-auto-abc123", evt.Sid);
+        Assert.Equal("moe-35b-pd", evt.Model);
+        Assert.Equal("rtx", evt.Head);
+        Assert.Equal("none", evt.Peer);
+        Assert.Equal("p100", evt.Decode);
+        Assert.Equal("pd", evt.Mode);
+        Assert.Equal(line, evt.RawLine);
+    }
+
+    [Fact]
+    public void ParseAutoRoute_NonAutoRouteLine_ReturnsNull()
+    {
+        const string line = "[2026-08-10T12:00:00.000Z] event=request_timeline tokens_out=150 decode_ms=750.0 status=done";
+
+        var evt = HydraLogScraper.ParseAutoRoute(line);
+
+        Assert.Null(evt);
+    }
+
+    [Fact]
+    public void ParseAutoRoute_MissingSid_ReturnsNull()
+    {
+        const string line = "[2026-08-10T12:00:00.000Z] autoroute_resolved Model=moe-35b-pd Head=rtx Mode=pd";
+
+        var evt = HydraLogScraper.ParseAutoRoute(line);
+
+        Assert.Null(evt);
+    }
+
+    // ── HydraLogScraper: model_routing_check correlation (issue #596) ──
+
+    [Fact]
+    public void ExtractModelRoutingSid_MatchesRequestedModel_ReturnsSid()
+    {
+        // Real coordinator line (Sid is a hash, not the CLI session id).
+        const string line = "[2026-08-10T03:30:23Z INF] model_routing_check Sid=sess_9c9a1ea8a0056e898bf6b97c ModelStr=hydra-auto";
+
+        var sid = HydraLogScraper.ExtractModelRoutingSid(line, "hydra-auto");
+
+        Assert.Equal("sess_9c9a1ea8a0056e898bf6b97c", sid);
+    }
+
+    [Fact]
+    public void ExtractModelRoutingSid_DifferentModel_ReturnsNull()
+    {
+        const string line = "[2026-08-10T03:30:01Z INF] model_routing_check Sid=sess_44305e36df753b88ab09de42 ModelStr=moe-35b-solo";
+
+        var sid = HydraLogScraper.ExtractModelRoutingSid(line, "hydra-auto");
+
+        Assert.Null(sid);
+    }
+
+    [Fact]
+    public void ExtractModelRoutingSid_NonRoutingLine_ReturnsNull()
+    {
+        const string line = "[2026-08-10T03:30:01Z INF] event=request_timeline tokens_out=150 status=done";
+
+        var sid = HydraLogScraper.ExtractModelRoutingSid(line, "hydra-auto");
+
+        Assert.Null(sid);
+    }
 }

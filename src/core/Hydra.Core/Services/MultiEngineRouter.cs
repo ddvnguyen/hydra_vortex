@@ -97,6 +97,54 @@ public static class MultiEngineRouter
     }
 
     /// <summary>
+    /// Translate <c>rpc_servers</c> endpoints from models.json (which may name
+    /// workers by their logical name, e.g. "rtx3060:9504") into host:port
+    /// endpoints that are actually reachable from the head engine's network
+    /// namespace (e.g. "localhost:9504" for a same-host/same-pod peer).
+    ///
+    /// models.json is topology-agnostic by design — the per-worker reachable
+    /// address (host + llama_rpc_port) lives in workers.json. Sending the raw
+    /// logical name verbatim broke dense-27b-combined: the fork's
+    /// apply_t3_rebuild() failed to register the RPC peer (DNS could not
+    /// resolve "rtx3060"), so no second device existed for the layer split and
+    /// the whole model loaded onto CUDA0 → OOM → load_model() false → rollback.
+    ///
+    /// Endpoints whose host part matches a configured worker name are resolved
+    /// to that worker's reachable address (same rule as
+    /// <see cref="WorkerConfig.LlamaRpcHost"/> + llama_rpc_port / peer_port).
+    /// Anything else (literal IP/hostname) is passed through unchanged.
+    /// </summary>
+    public static string[]? ResolveRpcServerEndpoints(string[]? rpcServers, IReadOnlyList<WorkerConfig> workers)
+    {
+        if (rpcServers == null || rpcServers.Length == 0) return rpcServers;
+        var result = new string[rpcServers.Length];
+        for (int i = 0; i < rpcServers.Length; i++)
+            result[i] = ResolveRpcServerEndpoint(rpcServers[i], workers);
+        return result;
+    }
+
+    /// <summary>Resolve a single "host:port" RPC endpoint against the worker list.</summary>
+    public static string ResolveRpcServerEndpoint(string endpoint, IReadOnlyList<WorkerConfig> workers)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint)) return endpoint;
+        var host = endpoint;
+        var port = 0;
+        var colon = endpoint.LastIndexOf(':');
+        if (colon > 0 && int.TryParse(endpoint[(colon + 1)..], out port) && port > 0)
+            host = endpoint[..colon];
+
+        var worker = workers.FirstOrDefault(w => w.Name == host);
+        if (worker == null) return endpoint;
+
+        // Same resolution rule as the scheduler's ResolvePeerAddr: an explicit
+        // PeerHost wins over the LlamaUrl-derived host; PeerPort (when set)
+        // wins over LlamaRpcPort.
+        var rHost = !string.IsNullOrWhiteSpace(worker.PeerHost) ? worker.PeerHost! : worker.LlamaRpcHost;
+        var rPort = worker.PeerPort > 0 ? worker.PeerPort : worker.LlamaRpcPort;
+        return $"{rHost}:{rPort}";
+    }
+
+    /// <summary>
     /// Phase 2a: a mode is "usable" for a head when (a) the global flag is on,
     /// (b) the engine advertises the capability, and (c) the EngineConfig has
     /// the runtime data the wire payload needs (override-tensor for PIPELINE;

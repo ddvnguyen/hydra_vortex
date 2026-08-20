@@ -63,7 +63,13 @@ services:
     # write-behind chunks dir) makes the in-container
     # process able to write to it regardless.
     network_mode: host
-    user: "1000:1000"
+    # Run as root inside the container: rootless podman maps container
+    # root (uid 0) -> host uid 1000 (ddv). /mnt/SSD is mounted with the
+    # kernel ntfs driver (uid=1000,umask=022) where chmod is ignored, so
+    # the previous `user: "1000:1000"` (-> host subuid 100999 = "other")
+    # could never write the write-behind dir. Container root == ddv ==
+    # owner of /mnt/SSD -> write-behind works. (2026-08-11, epic #470)
+    user: "0:0"
     # Wrap the C# ENTRYPOINT with a one-liner that ensures
     # the write-behind target dir is mode 777 (writable by
     # the in-container subuid-mapped user). Without this,
@@ -99,7 +105,7 @@ services:
     # the mkdir -m 777 sets the subdirs the C# code needs.
     entrypoint: ["/bin/sh", "-c", "mkdir -m 777 -p \"$${HYDRA_STORE_BACKUP_DIR}/chunks\" \"$${HYDRA_STORE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_L1_DIR}\" && exec dotnet Hydra.Core.dll"]
     tmpfs:
-      - /mnt/llm-ram:size=30G,mode=1777
+      - /mnt/llm-ram:size=40G,mode=1777
     volumes:
       - ./hydra-core/config:/etc/hydra/config:ro
       - /mnt/SSD/hydra-backup:/mnt/SSD/hydra-backup:rw
@@ -155,7 +161,7 @@ services:
       # live /mnt/llm-ram/store path).
       - HYDRA_COORD_CHUNK_CACHE_DIR=/mnt/llm-ram/chunk-cache
       - HYDRA_COORD_CHUNK_CACHE_L1_DIR=/mnt/llm-ram/chunk-cache-l1
-      - HYDRA_COORD_CHUNK_CACHE_L1_MAX_BYTES=21474836480
+      - HYDRA_COORD_CHUNK_CACHE_L1_MAX_BYTES=6442450944
       - HYDRA_CHUNK_CACHE_BACKEND=pg
       - HYDRA_CHUNK_CACHE_PG_CONN=Host=localhost;Database=hydra_store;Username=hydra;Password=hydra
       - HYDRA_CHUNK_CACHE_L2_MAX_BYTES=53687091200
@@ -210,7 +216,7 @@ services:
       - -global
       - /opt/hydra/config/global.yaml
       - -node
-      - /opt/hydra/config/${HYDRA_HEAD_RTX_NODE_CONFIG:-node-rtx.yaml}
+      - /opt/hydra/config/node-rtx.yaml
       - -api-port
       - "9700"
     volumes:
@@ -242,6 +248,12 @@ services:
       #   export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
       - HYDRA_HEAD_AUTH_TOKEN=${HYDRA_HEAD_AUTH_TOKEN:?must export HYDRA_HEAD_AUTH_TOKEN}
       - REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json
+      # Deploy-time engine pin (#470): passed via environment (list form —
+      # the command list's ${VAR:--} substitution corrupts the YAML
+      # structure, so these are consumed by verify_and_start.sh which
+      # appends -llama-image-source/-llama-image-digest when set).
+      - HYDRA_LLAMA_IMAGE_SOURCE=${HYDRA_LLAMA_IMAGE_SOURCE:-}
+      - HYDRA_LLAMA_IMAGE_DIGEST=${HYDRA_LLAMA_IMAGE_DIGEST:-}
       # Both devices visible so the nvidia_gpu_exporter sidecar (covering
       # the whole shared host) can report the 3060 too. Compute is still
       # pinned to GPU 0 (5060 Ti) via CUDA_VISIBLE_DEVICES below — device 1
@@ -292,7 +304,7 @@ services:
       - -global
       - /opt/hydra/config/global.yaml
       - -node
-      - /opt/hydra/config/${HYDRA_HEAD_RTX3060_NODE_CONFIG:-node-rtx3060.yaml}
+      - /opt/hydra/config/node-rtx3060.yaml
       - -api-port
       - "9701"
     volumes:
@@ -315,6 +327,11 @@ services:
     environment:
       - HYDRA_HEAD_AUTH_TOKEN=${HYDRA_HEAD_AUTH_TOKEN:?must export HYDRA_HEAD_AUTH_TOKEN}
       - REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json
+      # Deploy-time engine pin (#470): same mechanism as head-rtx —
+      # env vars (safe from command-list mangling), consumed by
+      # verify_and_start.sh → -llama-image-source/-llama-image-digest.
+      - HYDRA_LLAMA_IMAGE_SOURCE=${HYDRA_LLAMA_IMAGE_SOURCE:-}
+      - HYDRA_LLAMA_IMAGE_DIGEST=${HYDRA_LLAMA_IMAGE_DIGEST:-}
       # Pin to GPU 1 inside the container — defence in depth on top
       # of `nvidia.com/gpu=1` above (in case CDI/driver changes the
       # device ordering).

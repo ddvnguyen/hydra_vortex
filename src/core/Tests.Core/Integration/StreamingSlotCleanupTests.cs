@@ -24,7 +24,9 @@ internal sealed class TestHealthMonitor : IHealthMonitorService
 	public int? GetIdleSlot(string nodeName) => 0;
 	public NodeInfo? GetNodeInfo(string nodeName) => null;
 	public Dictionary<string, object> GetHealthSummary() => new();
-	public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public event Action? HealthyChanged;
+	public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public void MarkHealthy(string nodeName) { }
 }
 
 internal sealed class TestCompletionProxy : ICompletionProxyService
@@ -97,7 +99,7 @@ internal sealed class TestRpcClient : RpcClient
 	public TestRpcClient() : base("test", 0) { }
 
 	public override async Task<RpcResponse> RequestAsync(
-		OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+		OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
 	{
 		Calls.Add((op, key));
 		var meta = JsonSerializer.Serialize(new
@@ -166,6 +168,10 @@ internal sealed class StreamingFixture : IAsyncDisposable
 		Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, Rpc,
 			sp, Serilog.Log.Logger);
 		Scheduler.AgentClientFactory = (_, _) => Rpc;
+		// Hermetic: stub the state HTTP calls so the scheduler never dials
+		// the live engine (localhost:8080 / 192.168.122.21:8086). These are
+		// coordinator-logic tests; live-boundary tests live in Tests.LiveRig.
+		Scheduler.LlamaClientFactory = _ => new TestLlamaClient();
 
 		// Register test model so the "nano" alias used by these tests
 		// passes the unknown-model validation in SubmitAsync.

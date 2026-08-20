@@ -1,0 +1,104 @@
+name: Live Rig Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Live-rig tier to run"
+        required: true
+        default: "liverig"
+        type: choice
+        options:
+          - liverig
+          - engineparity
+          - both
+          - smoke
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  live-rig:
+    name: Live Rig Tests (Tier 2/3)
+    runs-on: self-hosted
+    timeout-minutes: 180
+    concurrency:
+      group: hydra-live-rig
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore & build (.NET)
+        run: dotnet build src/Hydra.sln -c Release --nologo -v minimal
+
+      - name: Verify coordinator healthy
+        run: |
+          STATUS=$(curl -sf http://localhost:9000/health | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unreachable")
+          if [ "$STATUS" != "healthy" ] && [ "$STATUS" != "degraded" ]; then
+            echo "Coordinator not healthy (status=$STATUS). Run deploy-core first."
+            exit 1
+          fi
+          echo "Coordinator: $STATUS"
+
+      - name: Run LiveRig tests (Tier 2)
+        if: inputs.tier == 'liverig' || inputs.tier == 'both'
+        run: |
+          dotnet test src/core/Tests.LiveRig/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --logger "trx;LogFileName=liverig.trx" \
+            --results-directory TestResults/
+        env:
+          COORD_URL: http://localhost:9000
+          LLAMA_RTX_URL: http://localhost:8080
+          LLAMA_P100_URL: http://192.168.122.21:8086
+          COORD_METRICS_URL: http://localhost:9501/metrics
+          STORE_HOST: 127.0.0.1
+          STORE_PORT: "9500"
+
+      - name: Run Smoke tests (Tier smoke)
+        if: inputs.tier == 'smoke'
+        run: |
+          dotnet test src/core/Tests.LiveRig/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --filter "FullyQualifiedName~SmokeTests" \
+            --logger "trx;LogFileName=smoke.trx" \
+            --results-directory TestResults/
+        env:
+          COORD_URL: http://localhost:9000
+          LLAMA_RTX_URL: http://localhost:8080
+          LLAMA_P100_URL: http://192.168.122.21:8086
+          COORD_METRICS_URL: http://localhost:9501/metrics
+          STORE_HOST: 127.0.0.1
+          STORE_PORT: "9500"
+
+      - name: Run EngineParity tests (Tier 3)
+        if: inputs.tier == 'engineparity' || inputs.tier == 'both'
+        run: |
+          dotnet test src/core/Tests.EngineParity/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --logger "trx;LogFileName=engineparity.trx" \
+            --results-directory TestResults/
+        env:
+          COORD_URL: http://localhost:9000
+          LLAMA_RTX_URL: http://localhost:8080
+          LLAMA_P100_URL: http://192.168.122.21:8086
+
+      - name: Publish results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Live Rig Tests
+          path: TestResults/*.trx
+          reporter: dotnet-trx
+          fail-on-error: false
+          fail-on-empty: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-rig-results-${{ github.run_number }}
+          path: TestResults/*.trx
+          retention-days: 30

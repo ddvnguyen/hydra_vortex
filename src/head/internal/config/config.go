@@ -6,17 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Node     NodeConfig     `yaml:"node"`
-	Llama    LlamaConfig    `yaml:"llama"`
-	Services ServicesConfig `yaml:"services"`
-	Infra    InfraConfig    `yaml:"infra"`
-	Binaries BinariesConfig `yaml:"binaries"`
-	Health   HealthConfig   `yaml:"health"`
+	Node     NodeConfig       `yaml:"node"`
+	Llama    LlamaConfig      `yaml:"llama"`
+	Services ServicesConfig   `yaml:"services"`
+	Infra    InfraConfig      `yaml:"infra"`
+	Binaries BinariesConfig   `yaml:"binaries"`
+	Readiness ReadinessConfig `yaml:"readiness"`
 }
 
 type NodeConfig struct {
@@ -71,29 +72,29 @@ type BinaryConfig struct {
 	Dest           string `yaml:"dest"`            // Destination path
 }
 
-// HealthConfig controls the llama-server health checker (interval,
-// retry budget, HTTP path). Defaults are safe for fast NVMe hosts
-// (RTX); slow VM disks (P100) override MaxFails in node-p100.yaml.
-type HealthConfig struct {
-	// Path is the HTTP endpoint the checker probes. Default "/slots"
-	// works with llama-server's existing /slots handler (returns 503
-	// while the model is loading, 200 once ready).
-	Path string `yaml:"path"`
+// ReadinessConfig controls how hydra-head decides a spawned llama-engine
+// is READY. The old `health` block drove a periodic HTTP poll of llama's
+// /slots (or /health) endpoint; that is gone. hydra-head is the *parent*
+// of llama-engine, so readiness is event-driven from the child's stdout:
+// a sentinel line tells the head the engine is actually serving. A
+// miss-deadline (TimeoutSec with no sentinel) marks the process suspect so
+// the coordinator sees it is not ready, without the head waking llama up
+// with HTTP requests.
+type ReadinessConfig struct {
+	// Sentinels are substrings matched against llama-engine stdout lines.
+	// When any line contains one, the process transitions to StateReady.
+	// Defaults cover the fork's lifecycle lines:
+	//   "server is listening on" (full server, boot-resident model)
+	//   "router server is listening on" (router mode, no boot model)
+	//   "model loaded"
+	Sentinels []string `yaml:"sentinels"`
 
-	// IntervalIdleSec is the probe interval (seconds) when llama is
-	// idle. Default 60.
-	IntervalIdleSec int `yaml:"interval_idle_sec"`
-
-	// IntervalBusySec is the probe interval (seconds) when llama is
-	// processing at least one request. Default 300.
-	IntervalBusySec int `yaml:"interval_busy_sec"`
-
-	// MaxFails is the number of consecutive failed probes before
-	// hydra-head restarts the llama-server. Default 3.
-	//
-	// For P100 (slow VM disk, model load = 235-300s), bump to 30
-	// (≈30 min budget). For RTX (fast NVMe, model load ≈30s), 3 is fine.
-	MaxFails int `yaml:"max_fails"`
+	// TimeoutSec is how long to wait for a sentinel after the process
+	// starts before marking it suspect (started, not ready). A generous
+	// default (180s) covers slow VM disks where model load can take
+	// 235-300s (P100). Only used for the miss-deadline — no periodic
+	// probing.
+	TimeoutSec int `yaml:"timeout_sec"`
 }
 
 func Load(globalPath, nodePath string) (*Config, error) {
@@ -213,20 +214,30 @@ func mergeConfigs(global, node *Config) *Config {
 		merged.Binaries = global.Binaries
 	}
 
-	// Health: node values override global; zero values (Go default)
-	// fall through to global. Per-field merge so a node can override
-	// only MaxFails while inheriting the rest of the defaults.
-	if merged.Health.Path == "" {
-		merged.Health.Path = global.Health.Path
+	// Readiness: node values override global; empty/zero fields fall
+	// through to global. Per-field merge so a node can override only
+	// the timeout while inheriting the sentinel defaults.
+	if len(merged.Readiness.Sentinels) == 0 {
+		merged.Readiness.Sentinels = global.Readiness.Sentinels
 	}
-	if merged.Health.IntervalIdleSec == 0 {
-		merged.Health.IntervalIdleSec = global.Health.IntervalIdleSec
+	if merged.Readiness.TimeoutSec == 0 {
+		merged.Readiness.TimeoutSec = global.Readiness.TimeoutSec
 	}
-	if merged.Health.IntervalBusySec == 0 {
-		merged.Health.IntervalBusySec = global.Health.IntervalBusySec
+	if len(merged.Readiness.Sentinels) == 0 {
+		// Default lifecycle sentinels for the fork's binaries. The
+		// llama-engine binary (RTX/RTX3060) emits "hydra-engine ready" at
+		// true readiness on all three startup paths (fork PR
+		// ddvnguyen/llama.cpp#80). The classic llama-server binary (P100)
+		// emits the three server.cpp lines.
+		merged.Readiness.Sentinels = []string{
+			"hydra-engine ready",
+			"server is listening on",
+			"router server is listening on",
+			"model loaded",
+		}
 	}
-	if merged.Health.MaxFails == 0 {
-		merged.Health.MaxFails = global.Health.MaxFails
+	if merged.Readiness.TimeoutSec == 0 {
+		merged.Readiness.TimeoutSec = 180
 	}
 
 	// ── Infra merge ───────────────────────────────────────────────────
@@ -426,6 +437,16 @@ func (c *Config) IsPeerOnly() bool {
 	return b
 }
 
+// ReadinessSentinels returns the readiness sentinels with defaults applied.
+func (c *Config) ReadinessSentinels() []string {
+	return c.Readiness.Sentinels
+}
+
+// ReadinessTimeout returns the readiness miss-deadline.
+func (c *Config) ReadinessTimeout() time.Duration {
+	return time.Duration(c.Readiness.TimeoutSec) * time.Second
+}
+
 func (c *Config) Validate() error {
 	if c.Node.Name == "" {
 		return fmt.Errorf("node.name is required")
@@ -444,14 +465,8 @@ func (c *Config) Validate() error {
 		// (it's the port the head's --rpc-engine dials), so it's always required.
 		return fmt.Errorf("llama.rpc_port is required")
 	}
-	if c.Health.MaxFails < 0 {
-		return fmt.Errorf("health.max_fails must be >= 0, got %d", c.Health.MaxFails)
-	}
-	if c.Health.IntervalIdleSec < 0 {
-		return fmt.Errorf("health.interval_idle_sec must be >= 0, got %d", c.Health.IntervalIdleSec)
-	}
-	if c.Health.IntervalBusySec < 0 {
-		return fmt.Errorf("health.interval_busy_sec must be >= 0, got %d", c.Health.IntervalBusySec)
+	if c.Readiness.TimeoutSec < 0 {
+		return fmt.Errorf("readiness.timeout_sec must be >= 0, got %d", c.Readiness.TimeoutSec)
 	}
 	// Hydra #383 T3: reject list-param values (must be scalar).
 	for key, val := range c.Llama.Params {

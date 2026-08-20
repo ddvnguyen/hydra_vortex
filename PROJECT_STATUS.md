@@ -86,7 +86,7 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
 |-------------|------|------|--------|
 | `moe-35b-solo` | SOLO | RTX 5060 Ti | ✅ Production |
 | `moe-35b-pd` | P/D split | RTX prefill + P100 decode | ✅ Production |
-| `dense-27b-combined` | COMBINED layer-split | RTX 5060 Ti + RTX 3060 | ✅ Config ready |
+| `dense-27b-combined` | COMBINED layer-split | RTX 5060 Ti + RTX 3060 | ⚠️ Swap fixed (PR #537); decode blocked by fork KV-restore (#78) |
 
 ### AutoRouter Algorithm (4-step)
 1. **STEP 0: Warm Affinity** — reuse existing KV session (highest priority)
@@ -101,6 +101,21 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
 - **`WorkerSchedulerService.SendEngineConfig`** — replaced by the `hydra_config` dict
   injected into the PREFILL request body (`WorkerSchedulerService.cs:1209`, #481 Phase 2b)
 - **`HydraEngineClient.SetEngineConfigAsync`** — replaced by `EngineConfigureAsync`
+
+### Merged-decode epic fixes (`epic/470-merged-decode`)
+| Item | Status | Notes |
+|------|--------|-------|
+| #597 parallel + coalesced liveness probes | ✅ Landed | `0cd73cb3` + `2c0b6f7cd` — stale-worker probes no longer serialize; `_llamaClients` made concurrent-safe |
+| #598/#599/#600 merged-decode helper extraction + fixes | ✅ Landed (PR #605) | shared merged-decode request-resolution + `GetOrCreateRpcClient` helpers; leftover bare block flattened |
+| #609 `KvModelAlias` in merged-decode alias fallback | ✅ Landed | `ea10dc03c` — model-agnostic sessions keep Gate A match |
+| #588 LiveRig budgets 4K-16K + concurrency=2 | ✅ Landed | `fec895c06`, `ef8a7adbb` — thinking-heavy model budgets + rig slot limit |
+| #615 Store LRU sweep + evict-on-ENOSPC + eviction lock | ✅ Landed (CRITICAL) | `31c9d30ef`, `6a3e62f4f` — tmpfs can no longer fill 100% → KV save failures → no KV restore between turns; verified live: 0 save failures, restores working, Multiturn40kContext 13 min (was 28 min FAIL) |
+| #616 merged-decode empty-content → HTTP proxy fallback | ✅ Landed | `16e537795` + QA `0ac1fd036` — buffered + streaming fallback paths |
+| #617 migrate continuation re-enters KV restore | ✅ Landed | `16e537795` — StatePut status check + non-resident ledger |
+| FIX-3 Dense27bMultiturn timing-budget test | ✅ Landed | `ea49169f` — baseline + 10 s per expected state transition |
+| Ops: write-behind flush to SSD | ✅ Fixed | compose user 0:0 (rootless podman maps container root → host ddv = owner of ntfs-mounted `/mnt/SSD`); chunks flush to SSD backup, 0 errors |
+| #470 open item 3: p100 cold-expert warm-up | ✅ Landed (config-only) | `no-mmap: true` on p100 (`node-p100.yaml`) — eager expert load kills the +7446-majflt first-decode tax; warm-up prefill not config-hookable (head readiness is sentinel-driven, no post-load hook), so `--no-mmap` chosen as the deterministic fix |
+| #618/#619 follow-ups | 📌 Filed | FIX-3 hidden-load hole; store chunk dir byte cap |
 
 ## Worker Node Model
 
@@ -131,6 +146,22 @@ Coordinator worker config:
 - Switch: `bash scripts/set-profile.sh {moe|dense}`
 
 See `docs/architecture.md` for the 4-tier routing algorithm and session lifecycle detail.
+
+### Hydra Head supervision (event-driven, no HTTP polling)
+Hydra Head is the parent of llama-engine, so it supervises from the child's own
+signals instead of HTTP-polling it:
+
+| Signal | Source | Mechanism |
+|--------|--------|-----------|
+| Liveness | child exit event | `cmd.Wait()` → backoff restart (long-standing) |
+| Readiness | child stdout sentinel | `childWriter` onLine hook matches lifecycle lines (`server is listening on` / `router server is listening on` / `model loaded`) → `StateReady` |
+| Miss-deadline | readiness timeout | no sentinel within `readiness.timeout_sec` → `StateSuspect` (started, not ready); **no restart** on timeout — slow model load is legitimate, crashes come via the exit event |
+
+The periodic HTTP `/slots` health poll was removed (issue #538). The head never
+wakes llama-engine with health probes. `/status` returns 503 until llama is
+READY (real readiness gate for `wait-for-head.sh`); `/health` stays 200 on
+liveness for the pod healthcheck and deploy scripts, reporting `ready` in the
+body.
 
 ## Tech Stack Detail
 | Concern          | Hydra.Core (C#)    |
@@ -244,6 +275,25 @@ All source code lives under `src/`.
 | M4           | Model Management & Multi-Modal  | model distribution, dynamic load, vision/embed/audio        | Production (later) |
 | M5           | LLM Obs & Agentic              | Langfuse tracing, A/B testing, agentic system               | Production (later) |
 
+## CI/CD Structure
+
+| Check | When | Required for merge |
+|-------|------|--------------------|
+| `Build & Test` (ci.yml) | every push/PR | ✅ |
+| `E2E (hermetic)` (e2e-hermetic.yml) | **manual only** (`gh workflow run e2e-hermetic.yml --ref <pr-branch>`) | ✅ required status check |
+| System Tests (test-system.yml, LiveRig) | manual / deploy-heads | opt-in |
+
+Notes:
+- Hermetic E2E boots the full Aspire stack + Postgres and takes ~1–6 min; it was removed
+  from push/PR CI to stop it from slowing/flaking the shared runner. It remains a
+  mandatory merge gate via the required `E2E (hermetic)` check (reported on the PR
+  head when run manually).
+- Tests.Core integration tests are hermetic: the scheduler fixtures stub
+  `LlamaClientFactory`, so they never dial the live engine
+  (`localhost:8080` / `192.168.122.21:8086`). Live-boundary tests live in
+  Tests.LiveRig. This fixed a 30-min teardown hang where the tests hit the
+  production rig.
+
 ### Llama-Engine Sub-phases (v4 Design — Issue #397)
 
 | Phase | What | Status |
@@ -270,6 +320,7 @@ matched the resident model** before generating — the gap behind #469.
 | 3b | DECODE dynamic model-swap before KV restore | ✅ Merged (fork #65) |
 | 4 | Coordinator merged-decode path | ✅ Merged (#492) |
 | R1 | Same-node fallback observability + COMBINED routing fix | ✅ Merged (#493) |
+| 4.x | Epic follow-up fixes (probes, KvModelAlias, empty-content fallback, Store LRU sweep, …) | ✅ Landed on `epic/470-merged-decode` |
 | 5 | v3 segmented framing, validate-first, real SSE streaming | ▶ In progress |
 | 6 | E2E soak on `pi/hydra/moe-35b-pd` | ⏳ Pending |
 
@@ -296,4 +347,17 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 | AutoRouter routing           | ✅ 4-step algorithm |
 | EngineConfig via 0x40        | ✅ Config push works |
 | COMBINED mode (MoE)          | ✅ Expert-split verified |
-| COMBINED mode (Dense)        | ✅ Layer-split config ready |
+| COMBINED mode (Dense)        | ⚠️ Layer-split swap works (PR #537); decode KV-restore blocked (#78) |
+| rpc_servers reachability     | ✅ Coordinator translates worker names → reachable host:port (PR #537). Before: `rtx3060:9504` unresolvable → peer never registered → whole model on CUDA0 → OOM → rollback |
+| P100 binary                  | ✅ llama-engine `6d00536` (build 9670) — switched from llama-server (was RPC-dead in router mode, #577). Boots Q5_K-Balanced, Hydra RPC :9502 up |
+| Merged DECODE prompt shape   | ✅ Coordinator sends bare messages array; engine now wraps it (fork PR #77). Before: `prompt_obj["n_predict"]` threw type_error on the array, silently swallowed by the RPC worker → connection leak → 180s coordinator timeout |
+| `/state/meta` model identity | ✅ Engine now returns tokenizer/model_name/quant/caps (fork PR #77); Gate A requires them |
+| Worker lease on mid-pipeline cancel | ✅ FinalizeAsync called at both exit points (PR #541). Before: BusySince climbed unbounded until coordinator restart |
+| deploy-heads startup_failure | ✅ Root cause: caller workflow lacked `pull-requests: read` for the cross-repo reusable workflow's job-level `permissions` (PR #539) |
+| Head supervision             | ✅ Event-driven (stdout sentinel readiness + exit-event liveness), no HTTP poll (issue #538) |
+| Multiturn40kContext live rig (run #31405080406) | ✅ 13 min PASS (was 28 min FAIL) — KV restores working between turns |
+| KV restore latency           | ✅ Working up to 7.5 s for large blobs; cold prefills bounded (~4 total in suite) |
+| P100 cold-expert mmap tax    | ✅ Fixed (`no-mmap`, epic #470) — first decode prefill after cold start was 15.0 s / 29.6 s total (majflt 12952→20398, RSS +4.15 GB, Mapped 7.73 GB) vs 4.1 / 6.2 s warm; eager expert load at engine start removes the one-shot fault storm |
+| Store LRU sweep              | ✅ L1 sweep heartbeat every 45 s (`chunk_cache_lru_sweep`) |
+| Merged-decode result path    | ⚠️ Drops `reasoning_content` (engine bug, #616) — interim coordinator HTTP-proxy fallback; engine fix pending |
+| RTX 3060 role                | ✅ Peer-only by design (mainline #481, slots=0) — COMBINED peer, not SOLO |

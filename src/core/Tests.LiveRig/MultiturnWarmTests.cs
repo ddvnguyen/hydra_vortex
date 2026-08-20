@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -58,10 +59,10 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
         return msgs;
     }
 
-    private async Task<(HttpResponseMessage Response, List<JsonElement> Events)> DoCompletionStream(
+    private async Task<(HttpResponseMessage Response, List<JsonElement> Events, string RawPayload)> DoCompletionStream(
         string sessionId,
         List<Dictionary<string, object?>> messages,
-        int maxTokens = 300,
+        int maxTokens = 2048,
         int timeoutSec = 600)
     {
         var body = new Dictionary<string, object?>
@@ -72,11 +73,12 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
             ["stream"] = true,
             ["session_id"] = sessionId,
         };
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSec) };
-        var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
 
         var events = new List<JsonElement>();
+        var rawPayload = new System.Text.StringBuilder();
         var stream = await resp.Content.ReadAsStreamAsync();
         using var reader = new StreamReader(stream);
         while (true)
@@ -84,16 +86,22 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
             var line = await reader.ReadLineAsync();
             if (line is null) break;
             if (string.IsNullOrEmpty(line)) continue;
-            if (!line.StartsWith("data: ")) continue;
+            // merged-decode streaming returns the buffered completion as a single
+            // non-SSE JSON blob; keep non-"data:" lines so tests can fall back.
+            if (!line.StartsWith("data: "))
+            {
+                rawPayload.Append(line);
+                continue;
+            }
             var payload = line["data: ".Length..];
             if (payload == "[DONE]") break;
             try { events.Add(JsonSerializer.Deserialize<JsonElement>(payload)); }
             catch { /* skip malformed */ }
         }
-        return (resp, events);
+        return (resp, events, rawPayload.ToString());
     }
 
-    private static string ExtractContent(List<JsonElement> events)
+    private static string ExtractContent(List<JsonElement> events, string rawPayload)
     {
         var parts = new List<string>();
         foreach (var ev in events)
@@ -103,15 +111,30 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
             var content = HttpHelpers.GetOutputText(delta);
             if (!string.IsNullOrEmpty(content)) parts.Add(content);
         }
-        return string.Join("", parts);
+        var joined = string.Join("", parts);
+        if (!string.IsNullOrEmpty(joined)) return joined;
+
+        // Fallback: the merged-decode stream may arrive as a single buffered
+        // non-SSE response blob — parse it as a plain completion.
+        if (!string.IsNullOrWhiteSpace(rawPayload))
+        {
+            try
+            {
+                var blob = JsonSerializer.Deserialize<JsonElement>(rawPayload);
+                if (blob.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+                    return HttpHelpers.GetOutputText(choices[0].GetProperty("message"));
+            }
+            catch { /* not a JSON blob — keep empty */ }
+        }
+        return "";
     }
 
     private async Task<List<JsonElement>?> ScrapeSlots(string url)
     {
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var resp = await client.GetAsync($"{url}/slots");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var resp = await HttpHelpers.Client.GetAsync($"{url}/slots", cts.Token);
             resp.EnsureSuccessStatusCode();
             var arr = await resp.Content.ReadFromJsonAsync<JsonElement>();
             return arr.ValueKind == JsonValueKind.Array
@@ -121,6 +144,11 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
         catch { return null; }
     }
 
+    // Both tests run on the default moe-35b-solo (balanced) resident model —
+    // group 1 (orders 1-27), zero model swaps. Global order via [TestOrder]
+    // + assembly-wide TestCaseOrderer (Ordering/, #470).
+
+    [TestOrder(20)]
     [SkippableFact]
     public async Task FiveTurnWarmAffinity()
     {
@@ -137,11 +165,11 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
                 messages.Add(new() { ["role"] = "user", ["content"] = Turns[i] });
 
                 var t0 = Stopwatch.StartNew();
-                var (_, events) = await DoCompletionStream(sessionId, messages);
+                var (_, events, rawPayload) = await DoCompletionStream(sessionId, messages);
                 t0.Stop();
                 turnTimes.Add(t0.Elapsed.TotalSeconds);
 
-                var reply = ExtractContent(events);
+                var reply = ExtractContent(events, rawPayload);
                 Assert.False(string.IsNullOrEmpty(reply), $"Turn {i + 1} produced empty reply");
                 history.Add((Turns[i], reply));
 
@@ -176,6 +204,7 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(21)]
     [SkippableFact]
     public async Task NoSlotLeak()
     {
@@ -190,8 +219,8 @@ public sealed class MultiturnWarmTests : IClassFixture<LiveRigFixture>
             {
                 var messages = MakeHistory(SystemPrompt, history);
                 messages.Add(new() { ["role"] = "user", ["content"] = Turns[i % Turns.Length] });
-                var (_, events) = await DoCompletionStream(sid, messages, maxTokens: 150);
-                var reply = ExtractContent(events);
+                var (_, events, rawPayload) = await DoCompletionStream(sid, messages, maxTokens: 2048);
+                var reply = ExtractContent(events, rawPayload);
                 Assert.False(string.IsNullOrEmpty(reply), $"Session {sid} turn {i + 1} empty reply");
                 history.Add((Turns[i % Turns.Length], reply));
 

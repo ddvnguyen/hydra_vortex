@@ -66,7 +66,7 @@ public sealed class EngineModeTests
 
         public override Task<RpcResponse> RequestAsync(
             OpCode op, string key, ReadOnlyMemory<byte> payload,
-            string traceId, CancellationToken ct)
+            string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
         {
             Calls.Add((op, key, payload.ToArray()));
 
@@ -222,12 +222,13 @@ public sealed class EngineModeTests
     /// <summary>
     /// Mock LlamaClient that returns a specific model identity from GetStateMetaAsync.
     /// Used by Gate A tests to verify that model_metadata comes from the decode node's
-    /// own report, not from item.Kv*.
+    /// own report, not from item.Kv*. Extends TestLlamaClient so EraseSlotAsync /
+    /// HealthAsync are also no-ops (no live engine dial).
     /// </summary>
-    internal sealed class GateAMockLlamaClient : LlamaClient
+    internal sealed class GateAMockLlamaClient : TestLlamaClient
     {
         private readonly SlotMeta _meta;
-        public GateAMockLlamaClient(SlotMeta meta) : base("http://mock:0")
+        public GateAMockLlamaClient(SlotMeta meta)
             => _meta = meta;
         public override Task<SlotMeta> GetStateMetaAsync(int slotId, CancellationToken ct)
             => Task.FromResult(_meta);
@@ -256,7 +257,9 @@ public sealed class EngineModeTests
             },
         };
         public Dictionary<string, object> GetHealthSummary() => new();
-        public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+        public event Action? HealthyChanged;
+        public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+        public void MarkHealthy(string nodeName) { }
     }
 
     internal sealed class EngineFixture : IAsyncDisposable
@@ -312,9 +315,17 @@ public sealed class EngineModeTests
                 Tracker.InitWorker(w.Name, w.Slots);
 
             var sp = new ServiceCollection().BuildServiceProvider();
-            Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, Rpc,
-                sp, Serilog.Log.Logger);
-            Scheduler.AgentClientFactory = (_, _) => Rpc;
+		Scheduler = new WorkerSchedulerService(Cfg, Ledger, Tracker, Proxy, Health, Rpc,
+			sp, Serilog.Log.Logger);
+		Scheduler.AgentClientFactory = (_, _) => Rpc;
+		// Hermetic: the scheduler's GetLlamaClient() would otherwise build a
+		// REAL HttpClient against the live engine URL (localhost:8080 /
+		// 192.168.122.21:8086) for GetStateMetaAsync / EraseSlotAsync. These
+		// tests verify coordinator logic, not the engine boundary — stub the
+		// state calls so the suite never dials the production rig. Live-boundary
+		// tests live in Tests.LiveRig. Gate A tests that need a specific
+		// model identity set their own LlamaClientFactory override below.
+		Scheduler.LlamaClientFactory = _ => new TestLlamaClient();
 
             // Override busy-timeout so retry loops fail fast in tests (~100ms
             // instead of the real 150s for 5000 tokens). These tests verify
@@ -368,6 +379,28 @@ public sealed class EngineModeTests
             return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
                 maxTokens, prefixHash, _runCts.Token);
         }
+
+        /// <summary>#470 canonical identity: submit with the `model` field as a
+        /// JsonElement — the shape the HTTP body deserializer produces when
+        /// AutoRouter FAILS (the field is never overwritten with a C# string).</summary>
+        public async Task<object?> SubmitWithJsonElementModelAsync(
+            string sessionId, string model, int estimatedTokens, int maxTokens = 500,
+            bool stream = false, string? prefixHash = null)
+        {
+            var req = new Dictionary<string, object>
+            {
+                ["stream"] = stream,
+                ["max_tokens"] = maxTokens
+            };
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(model));
+            req["model"] = doc.RootElement.Clone();
+            var msgs = new List<Dictionary<string, object>>
+            {
+                new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
+            };
+            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+                maxTokens, prefixHash, _runCts.Token);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -392,13 +425,19 @@ public sealed class EngineModeTests
         Assert.Single(proxy.NonStreamingCalls);
         Assert.Equal("http://localhost:8080", proxy.NonStreamingCalls[0].NodeUrl);
 
-        // Engine RPC no longer drives chat completions.
+        // #470 merged-decode: the engine does not advertise merged_decode in this
+        // fixture (TestHealthMonitor.GetNodeInfo returns null → no capabilities),
+        // so the final completion still goes through the HTTP proxy on the SAME
+        // node the prefill built KV on (cold_atomic keeps decode on rtx).
         Assert.False(f.Rpc.HasCall(OpCode.EngineDecode),
-            "Engine chat-completion path is disabled (issue #273 hotfix); HTTP proxy owns text responses");
-        Assert.False(f.Rpc.HasCall(OpCode.EnginePrefill),
-            "Engine atomic should NOT call EnginePrefill separately");
+            "Engine chat-completion path requires the merged_decode capability; HTTP proxy owns text responses here");
+        // #470: cold atomic routes through engine PREFILL first (Gate A needs
+        // kv_metadata + a KV blob to validate before DECODE), so EnginePrefill
+        // IS expected now — this supersedes the pre-#470 "no prefill" assertion.
+        Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
+            "Engine atomic must PREFILL first so the merged DECODE has KV + kv_metadata for Gate A (#470)");
         Assert.False(f.Rpc.HasCall(OpCode.StatePut),
-            "Engine atomic should NOT call StatePut for KV restore");
+            "Engine atomic should NOT call StatePut for KV restore (decode stays on the prefill node)");
 
         var e = f.Ledger.Lookup("sess_ea1");
         Assert.NotNull(e);
@@ -924,9 +963,124 @@ public sealed class EngineModeTests
         await f.SubmitAsync("sess_er2", 500, 100);
 
         Assert.DoesNotContain(OpCode.EngineDecode, f.Rpc.Calls.Select(c => c.Op));
-        Assert.DoesNotContain(OpCode.EnginePrefill, f.Rpc.Calls.Select(c => c.Op));
         Assert.DoesNotContain(OpCode.StatePut, f.Rpc.Calls.Select(c => c.Op));
+        // #470 merged-decode: cold atomic routes through engine PREFILL first
+        // (Gate A needs kv_metadata + KV blob before DECODE). This supersedes
+        // the pre-#470 assertion that EnginePrefill must NOT be called.
+        Assert.Contains(OpCode.EnginePrefill, f.Rpc.Calls.Select(c => c.Op));
         Assert.Single(proxy.NonStreamingCalls);
+    }
+
+    [Fact]
+    public async Task Atomic_ColdProbe_DecodeStaysOnPrefillNode()
+    {
+        // Regression for the live-rig cold-probe failure (AgentWorkflowTests
+        // fixture probe): a cold atomic request (resident model, tiny prompt)
+        // must PREFILL first so the merged DECODE has KV + kv_metadata for
+        // Gate A, and decode must stay on the SAME node — otherwise the
+        // probe 503s with "DECODE 0x43 rejected — KV not restored" and every
+        // LiveRig test skips.
+        await using var f = new EngineFixture(runMode: "fast");
+        var proxy = (TestCompletionProxy)f.Proxy;
+
+        await f.SubmitAsync("sess_coldprobe", 20, 4);
+
+        // PREFILL ran on rtx (cold_atomic always prefills first in engine mode).
+        Assert.Contains(OpCode.EnginePrefill, f.Rpc.Calls.Select(c => c.Op));
+        // No StatePut: decode stays on the prefill node — no KV transfer.
+        Assert.DoesNotContain(OpCode.StatePut, f.Rpc.Calls.Select(c => c.Op));
+        // The completion went through the HTTP proxy on rtx (fixture does not
+        // advertise merged_decode, so the proxy owns the final completion).
+        Assert.Single(proxy.NonStreamingCalls);
+        Assert.Equal("http://localhost:8080", proxy.NonStreamingCalls[0].NodeUrl);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // #470 canonical identity: raw routing key never reaches the engine wire
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>Loader for the combined routing identity: dense-27b-combined
+    /// maps to the GGUF-file alias qwen3.6-27B-coder.</summary>
+    private static void UseDenseCombinedLoader()
+    {
+        var models = new Dictionary<string, ModelTemplate>
+        {
+            ["dense-27b-combined"] = new ModelTemplate
+            {
+                Description = "combined",
+                PrefillAlias = "qwen3.6-27B-coder",
+                DecodeAlias  = "qwen3.6-27B-coder",
+                LoadTimeS = 100,
+                QualityTier = 3,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = GpuCapabilities.Combined,
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 0,
+                    MaxPromptTokens = 999999,
+                    MaxContextTokens = 128000,
+                },
+            },
+        };
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 3,
+            Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-27B-coder"] = "Qwopus3.6-27B-Coder-v1-APEX-I.gguf",
+            },
+        };
+        ModelConfigLoader.Reset();
+        ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
+    }
+
+    [Fact]
+    public async Task ColdAtomic_JsonElementModel_TranslatesForPrefillSwap()
+    {
+        // #470 canonical identity: a cold-atomic route with a JsonElement
+        // model (AutoRouter fails — the fixture has no IsHead worker, so
+        // Request["model"] stays a JsonElement). The `is string` prefill
+        // read used to yield null → the raw routing key rode the 0x42 body
+        // copy to the engine → "preset has 3 alias(es)" → model_fallback.
+        // The identity record translates it at ingress: the PREFILL body and
+        // the HTTP-proxy decode body both carry the GGUF-file alias.
+        await using var f = new EngineFixture(runMode: "fast");
+        UseDenseCombinedLoader();
+        ModelRegistry.RegisterForTest(new EngineConfig(ModelAlias: "dense-27b-combined"));
+        try
+        {
+            var result = await f.SubmitWithJsonElementModelAsync(
+                "sess_cold_jel", "dense-27b-combined", 500, 100);
+
+            // The PREFILL 0x42 body carries the translated alias the engine's
+            // --models-preset knows — never the raw routing key.
+            Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
+                "cold atomic must PREFILL first so the merged DECODE has KV + kv_metadata for Gate A (#470)");
+            var payload = f.Rpc.PayloadAsUtf8(OpCode.EnginePrefill);
+            Assert.DoesNotContain("dense-27b-combined", payload);
+            using var doc = JsonDocument.Parse(payload);
+            Assert.Equal("qwen3.6-27B-coder", doc.RootElement.GetProperty("model").GetString());
+
+            // The HTTP-proxy decode body gets the translated alias via
+            // body-level substitution — Request["model"] itself is never
+            // mutated in place (the raw key stays the frozen request field).
+            var proxy = (TestCompletionProxy)f.Proxy;
+            Assert.Single(proxy.NonStreamingCalls);
+            var proxyBody = proxy.NonStreamingCalls[0].Body;
+            Assert.Equal("qwen3.6-27B-coder", proxyBody.GetValueOrDefault("model")?.ToString());
+            Assert.DoesNotContain("dense-27b-combined", JsonSerializer.Serialize(proxyBody));
+
+            Assert.NotNull(result);
+        }
+        finally
+        {
+            ModelConfigLoader.Reset();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────

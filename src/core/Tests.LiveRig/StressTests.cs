@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -23,8 +24,8 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
     private async Task<JsonElement> DoCompletion(
         List<Dictionary<string, object?>> messages,
         string? sessionId = null,
-        int maxTokens = 100,
-        int timeoutSec = 120)
+        int maxTokens = 4096,
+        int timeoutSec = 300)
     {
         var body = new Dictionary<string, object?>
         {
@@ -34,20 +35,25 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
             ["stream"] = false,
         };
         if (sessionId is not null) body["session_id"] = sessionId;
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSec) };
-        var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     private async Task<JsonElement> GetStatus()
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var resp = await client.GetAsync($"{_fx.CoordUrl}/status");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var resp = await HttpHelpers.Client.GetAsync($"{_fx.CoordUrl}/status", cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    // Both tests run on the default moe-35b-solo (balanced) resident model —
+    // group 1 (orders 1-27), zero model swaps. Global order via [TestOrder]
+    // + assembly-wide TestCaseOrderer (Ordering/, #470).
+
+    [TestOrder(22)]
     [SkippableFact]
     public async Task FourConcurrentCompletions()
     {
@@ -66,8 +72,11 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
         var serialTime = t0.Elapsed.TotalSeconds;
         Assert.True(refResp.TryGetProperty("choices", out _));
 
-        // ── Measure concurrent time (4 requests simultaneously) ───────────
-        var sessionIds = Enumerable.Range(0, 4)
+        // ── Measure concurrent time (2 requests simultaneously) ───────────
+        // 2 concurrent = the rig's RTX slot count. 4 would queue 2 slots deep:
+        // with uncapped verbose thinking each request holds a slot 90-120s, so
+        // the queued pair exceeded the 300s CTS (run 31370319546).
+        var sessionIds = Enumerable.Range(0, 2)
             .Select(_ => $"system-stress-{Guid.NewGuid():N}"[..20])
             .ToList();
 
@@ -106,6 +115,7 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
             await _fx.DeleteSessionAsync(sid);
     }
 
+    [TestOrder(23)]
     [SkippableFact]
     public async Task CrossSessionConsistency()
     {
@@ -117,11 +127,14 @@ public sealed class StressTests : IClassFixture<LiveRigFixture>
         };
 
         // ── Direct to RTX llama-server ─────────────────────────────────────
-        using (var directClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) })
+        // Sequential by design: 1 direct call + 1 coordinator call, never more
+        // than one in flight — fits the 2-slot RTX budget (run 31370319546's
+        // 22ms failure was the direct call hitting a busy slot, not concurrency).
         {
-            var directResp = await directClient.PostAsJsonAsync(
+            using var directCts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+            var directResp = await HttpHelpers.Client.PostAsJsonAsync(
                 $"{_fx.LlamaRtxUrl}/v1/chat/completions",
-                new { messages, max_tokens = 100, temperature = 0 });
+                new { messages, max_tokens = 4096, temperature = 0 }, directCts.Token);
             Assert.True(directResp.IsSuccessStatusCode, $"Direct llama completion failed: {await directResp.Content.ReadAsStringAsync()}");
             var directBody = await directResp.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(directBody.TryGetProperty("choices", out var directChoices));

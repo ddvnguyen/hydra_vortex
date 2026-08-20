@@ -3,6 +3,11 @@ name: System Tests
 on:
   workflow_call:
     inputs:
+      run-tests:
+        description: "run-tests value from deploy-heads (system|both = run, else skip)"
+        required: false
+        default: "none"
+        type: string
       filter:
         description: "xUnit filter expression — FullyQualifiedName substring match (blank = all live-rig + engine-parity tests)"
         required: false
@@ -23,6 +28,7 @@ permissions:
 jobs:
   system:
     name: System Tests
+    if: inputs.run-tests == 'system' || inputs.run-tests == 'both'
     runs-on: self-hosted
     timeout-minutes: 30
     concurrency:

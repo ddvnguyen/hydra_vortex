@@ -68,5 +68,5 @@ services:
     args:
       - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
 
-health:
-  max_fails: 30
+readiness:
+  timeout_sec: 480

@@ -368,18 +368,21 @@ public sealed class CoordinatorConfigTests
             Assert.Null(rtx.RouterModelName);
             Assert.Null(rtx.PrefillModelName);
             Assert.Null(rtx.DecodeModelName);
+            Assert.Equal("RTX 5060 Ti", rtx.DisplayName);
 
             var rtx3060 = workers.Single(w => w.Name == "rtx3060");
             Assert.Equal(3, rtx3060.WorkerType);
             Assert.Null(rtx3060.RouterModelName);
             Assert.Null(rtx3060.PrefillModelName);
             Assert.Null(rtx3060.DecodeModelName);
+            Assert.Equal("RTX 3060", rtx3060.DisplayName);
 
             var p100 = workers.Single(w => w.Name == "p100");
             Assert.Equal(2, p100.WorkerType);
             Assert.Null(p100.RouterModelName);
             Assert.Null(p100.PrefillModelName);
             Assert.Null(p100.DecodeModelName);
+            Assert.Equal("P100", p100.DisplayName);
         }
         finally
         {

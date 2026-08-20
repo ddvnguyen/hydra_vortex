@@ -9,7 +9,8 @@
       "npm": "@ai-sdk/openai-compatible",
       "options": {
         "baseURL": "http://localhost:9000/v1",
-        "apiKey": "hydra-local"
+        "apiKey": "hydra-local",
+        "timeout": 900000
       },
       "models": {
         "dense-27b-combined": {

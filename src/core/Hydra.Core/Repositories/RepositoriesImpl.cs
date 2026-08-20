@@ -111,8 +111,16 @@ public sealed class WorkerTracker : IWorkerTracker
     private readonly ConcurrentDictionary<string, SlotPool> _pools = new();
     private readonly ConcurrentDictionary<string, ConcurrentStack<int>> _held = new();
     private readonly int _errorThreshold;
+    private Action? _slotReleased;
 
     public WorkerTracker(int errorThreshold = 3) => _errorThreshold = errorThreshold;
+
+    /// <inheritdoc/>
+    public event Action? SlotReleased
+    {
+        add => _slotReleased += value;
+        remove => _slotReleased -= value;
+    }
 
     public void InitWorker(string name)
     {
@@ -147,6 +155,11 @@ public sealed class WorkerTracker : IWorkerTracker
             pool.Return(slotId);
         if (_states.TryGetValue(name, out var s))
             lock (s) { s.BusySince = null; }
+        // Single chokepoint for every slot release (lease dispose, eviction,
+        // cross-node skip, session cleanup) — wake the scheduler's evaluator so
+        // freed capacity is claimed promptly (the eviction service in particular
+        // releases slots without otherwise signalling the scheduler).
+        _slotReleased?.Invoke();
     }
 
     public int FreeSlotCount(string name)

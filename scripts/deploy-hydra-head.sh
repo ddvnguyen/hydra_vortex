@@ -230,13 +230,19 @@ check_llama_build_type_local() {
 
 # Check the FAT sm_86+sm_120 binary used by both head-rtx (5060 Ti)
 # and head-rtx3060 in the same pod. Same build-type rules: shared-lib
-# only, no static (see #346). Falls back to build_sm120_v3 (sm_120 only)
-# so a deploy still works if the fat build hasn't been done yet — the
-# 3060 will then run via PTX JIT (slow but functional, see #368).
+# only, no static (see #346). With no local fat build, the default
+# path is an OCI pull (native arch per node — no PTX JIT); only a
+# local-only node config (no OCI source) falls back to build_sm120_v3
+# with PTX JIT on the 3060 (slow but functional, see #368).
 check_llama_build_type_local_fat() {
   local bind_src="$REPO_ROOT/src/llama-cpp/build_sm86_sm120/bin/llama-server"
   if [ ! -x "$bind_src" ]; then
-    warn "Fat sm_86+sm_120 build not present at $bind_src; falling back to sm_120-only at build_sm120_v3/. RTX 3060 will run via PTX JIT (slower)."
+    if grep -qE '^\s*source:\s*(ghcr\.io|docker\.io|quay\.io)/' \
+         "$REPO_ROOT/infra/hydra-head/config/node-rtx.yaml" 2>/dev/null; then
+      ok "No local fat sm_86+sm_120 build; node configs pull from OCI — native arch, no PTX fallback"
+      return 0
+    fi
+    warn "Fat sm_86+sm_120 build not present at $bind_src, and node-rtx.yaml has no OCI source — falling back to sm_120-only at build_sm120_v3/. RTX 3060 will run via PTX JIT (slower)."
     return 0
   fi
   step "Build-type gate (RTX fat binary)"
@@ -246,7 +252,7 @@ check_llama_build_type_local_fat() {
 
 check_llama_build_type_p100() {
   step "Build-type gate (P100 VM binary)"
-  local vm_bin="/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-server"
+  local vm_bin="/opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine"
 
   # Run --version ON THE VM. The previous implementation scp'd just the
   # executable to a temp dir and checked it there — but that file is a small
@@ -265,9 +271,9 @@ check_llama_build_type_p100() {
   fi
 
   if ! grep -q '\[shared\]' <<<"$version_out"; then
-    die "P100 llama-server is not a shared-lib build (output: ${version_out:-<empty>}). Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
+    die "P100 llama-engine is not a shared-lib build (output: ${version_out:-<empty>}). Fix: rebuild with -DBUILD_SHARED_LIBS=ON. See #346."
   fi
-  ok "P100 llama-server reports [shared]"
+  ok "P100 llama-engine reports [shared]"
 }
 
 # ── Pre-deploy Cleanup ───────────────────────────────────────────────────────
@@ -320,13 +326,40 @@ check_auth_file() {
 # concurrently afterward: neither of them touches the image build or the
 # whole-project compose state again, only their own service.
 deploy_shared_setup() {
-  step "Shared setup (image build + core)"
+  local rebuild_head="${1:-false}"
+  step "Shared setup (image build + core) [rebuild-head=$rebuild_head]"
 
-  build_go
+  # Skip the Go build when no head source changed since the last build —
+  # most runs deploy the same binary. A fresh runner checkout makes mtime
+  # comparison useless (every file is "newer"), so stamp the source content
+  # hash next to the binary and compare hashes.
+  local go_src_hash
+  go_src_hash=$(find "$REPO_ROOT/src/head" -name '*.go' -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)
+  if [ -f "$REPO_ROOT/bin/hydra-head" ] && [ -f "$REPO_ROOT/bin/.hydra-head-src-hash" ] && \
+     [ "$(cat "$REPO_ROOT/bin/.hydra-head-src-hash" 2>/dev/null)" = "$go_src_hash" ]; then
+    step "No Go changes since last build — reusing bin/hydra-head"
+  else
+    build_go
+    echo -n "$go_src_hash" > "$REPO_ROOT/bin/.hydra-head-src-hash"
+  fi
   build_core_image
   generate_token
   AUTH_TOKEN=$(get_token)
-  build_rtx_image
+  if [ "$rebuild_head" = "true" ]; then
+    build_rtx_image
+  else
+    # Fast path: reuse the existing head image. Setup still validates it
+    # exists (and warns if missing) so a broken state is caught early
+    # rather than at first head deploy. (#470: most deploys don't touch
+    # Dockerfile.rtx / verify_and_start.sh / cuda-pin.conf.)
+    step "Reusing existing hydra-head:rtx image (rebuild-head=false)"
+    if ! podman image exists localhost/hydra-head:rtx 2>/dev/null; then
+      step "hydra-head:rtx NOT found locally — building (needed at least once)"
+      build_rtx_image
+    else
+      echo "image localhost/hydra-head:rtx present: $(podman image inspect localhost/hydra-head:rtx --format '{{.Id}}' 2>/dev/null | head -c 16)..."
+    fi
+  fi
   stop_host_sidecars
   check_auth_file
 
@@ -366,6 +399,11 @@ deploy_shared_setup() {
   # Service-scoped — brings up ONLY `core`. head-rtx5060ti/head-rtx3060
   # both declare `depends_on: core`, so a bare `up -d` (no service arg)
   # would also try to reconcile them; scoping it avoids that entirely.
+  #
+  # The GitHub runner kills every process whose env carries RUNNER_TRACKING_ID
+  # at job end ("Cleaning up orphan processes", JobExtension.cs) — regardless
+  # of session/cgroup. Strip it so core's conmon doesn't inherit the marker.
+  unset RUNNER_TRACKING_ID 2>/dev/null || true
   if ! podman compose -f infra/docker-compose.hydra.yml up -d core 2>&1 | tail -10; then
     die "podman compose up (core) failed — check the output above. Common causes: HYDRA_HEAD_AUTH_TOKEN not exported, image not built, or userns conflict."
   fi
@@ -407,12 +445,35 @@ deploy_rtx_only() {
     podman rm hydra-head-rtx 2>/dev/null || true
   fi
 
+  # Force a fresh container so the (idempotent) compose up actually applies
+  # the new engine pin. Mirrors deploy_rtx3060_only — a healthy container
+  # would otherwise make `compose up -d` no-op and silently skip the swap
+  # (observed in Deploy Heads run 31552059620).
+  if podman container exists hydra-system_head-rtx5060ti_1 2>/dev/null; then
+    podman stop hydra-system_head-rtx5060ti_1 2>/dev/null || true
+    podman rm hydra-system_head-rtx5060ti_1 2>/dev/null || true
+  fi
+
   reap_zombie_container hydra-system_head-rtx5060ti_1
 
   # Service-scoped — only touches head-rtx5060ti. `core` is already up
   # (deploy_shared_setup), so this is safe to run concurrently with
   # deploy_rtx3060_only, which only ever touches head-rtx3060.
-  if ! podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
+  #
+  # Run compose-up inside a transient systemd user scope: the GitHub
+  # self-hosted runner's job-end "Cleaning up orphan processes" kills
+  # conmon (issue #575), orphaning the head containers. Inside a scope
+  # unit the conmon lands in a session/cgroup the runner cleanup cannot
+  # reach. --unit is timestamped so retries never collide; --collect
+  # garbage-collects the transient unit when it exits.
+  #
+  # The GitHub runner kills every process whose env carries RUNNER_TRACKING_ID
+  # at job end ("Cleaning up orphan processes", JobExtension.cs) — regardless
+  # of session/cgroup. Strip it so conmon doesn't inherit the marker.
+  unset RUNNER_TRACKING_ID 2>/dev/null || true
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$BASHPID" \
+      podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
     die "podman compose up (head-rtx5060ti) failed — check the output above."
   fi
   ok "Compose up: head-rtx5060ti in pod hydra-system"
@@ -489,8 +550,16 @@ deploy_p100() {
   # Create environment file with auth token. Written over stdin rather than
   # interpolated into the remote command string, which exposed the token in
   # `ps` output on the VM for the lifetime of the ssh command.
-  ssh hydra-p100 "umask 077 && cat > /home/vm1/.config/hydra-head/env" \
-    <<<"HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN"
+  # Deploy-time engine pin (#470): LLAMA_IMAGE_SOURCE / LLAMA_IMAGE_DIGEST
+  # (set by CI from the built image + digest) flow into the systemd env
+  # file and then into the head's -llama-image-source/-llama-image-digest
+  # flags. Unset → the service's ${...} interpolation yields empty → the
+  # head falls back to the node config file.
+  ssh hydra-p100 "umask 077 && cat > /home/vm1/.config/hydra-head/env" <<EOF
+HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN
+LLAMA_IMAGE_SOURCE=${HYDRA_LLAMA_IMAGE_SOURCE:-}
+LLAMA_IMAGE_DIGEST=${HYDRA_LLAMA_IMAGE_DIGEST:-}
+EOF
   ssh hydra-p100 "chmod 600 /home/vm1/.config/hydra-head/env"
   ok "Created auth token environment file"
 
@@ -549,7 +618,21 @@ deploy_rtx3060_only() {
   # Service-scoped — only touches head-rtx3060. `core` is already up
   # (deploy_shared_setup), so this is safe to run concurrently with
   # deploy_rtx_only, which only ever touches head-rtx5060ti.
-  if ! podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
+  #
+  # Run compose-up inside a transient systemd user scope: the GitHub
+  # self-hosted runner's job-end "Cleaning up orphan processes" kills
+  # conmon (issue #575), orphaning the head containers. Inside a scope
+  # unit the conmon lands in a session/cgroup the runner cleanup cannot
+  # reach. --unit is timestamped so retries never collide; --collect
+  # garbage-collects the transient unit when it exits.
+  #
+  # The GitHub runner kills every process whose env carries RUNNER_TRACKING_ID
+  # at job end ("Cleaning up orphan processes", JobExtension.cs) — regardless
+  # of session/cgroup. Strip it so conmon doesn't inherit the marker.
+  unset RUNNER_TRACKING_ID 2>/dev/null || true
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$BASHPID" \
+      podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
     die "podman compose up (head-rtx3060) failed — check the output above."
   fi
   ok "Compose up: head-rtx3060 in pod hydra-system"
@@ -619,7 +702,7 @@ case "$TARGET" in
   # separate, individually-named, concurrently-running steps in the
   # Actions UI instead of one step that backgrounds internally).
   setup)
-    deploy_shared_setup
+    deploy_shared_setup "${2:-false}"
     ;;
   rtx-only)
     deploy_rtx_only

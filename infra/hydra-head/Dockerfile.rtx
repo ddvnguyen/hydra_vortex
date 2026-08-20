@@ -17,15 +17,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Add NVIDIA's CUDA repository keyring (Ubuntu 24.04 stable path)
+# Add NVIDIA's CUDA repository keyring (owner: use 24.04 keyring + CUDA 13.2.2
+# packages — the 26.04 repo only ships 13.3, so the 24.04 repo path is used)
 RUN curl -fSsL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -o cuda-keyring.deb \
     && dpkg -i cuda-keyring.deb \
     && rm cuda-keyring.deb
 
-# Install pinned CUDA 13.2 runtime components
+# Install pinned CUDA 13.2.2 runtime components
+# (owner: exact version 13.2.2 — the -13-2 series metapackages float to the
+# newest 13.2.x; pin the runtime release + hold its component micro-versions
+# via apt preferences so transitive deps cannot float past 13.2.2)
+COPY infra/hydra-head/init/cuda-pin.conf /etc/apt/preferences.d/cuda-13-2-2
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cuda-cudart-13-2 \
-    libcublas-13-2 \
+    cuda-runtime-13-2=13.2.2-1 \
+    cublas13=13.2.2-1 \
+    libcublas13-cuda-13=13.2.2.2-1 \
     libnccl2 \
     libgomp1 \
     libibverbs1 \
@@ -35,9 +41,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# CUDA runtime paths
-ENV PATH=/usr/local/cuda-13.2/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:${LD_LIBRARY_PATH}
+# CUDA runtime paths — CUDA 13.2.2 (pinned via cuda-runtime-13-2=13.2.2-1).
+# The packages install into /usr/local/cuda-13.2 (aliased by the
+# /usr/local/cuda-13 alternatives symlink, both resolve to the same dir);
+# keep both on the search path so every runtime component resolves.
+ENV PATH=/usr/local/cuda-13.2/bin:/usr/local/cuda-13/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/cuda-13/lib64:${LD_LIBRARY_PATH}
 
 # Copy init verification script
 COPY infra/hydra-head/init/verify_and_start.sh /init/verify_and_start.sh
@@ -46,12 +55,10 @@ RUN chmod +x /init/verify_and_start.sh
 # Copy hydra-head binary
 COPY bin/hydra-head /usr/local/bin/hydra-head
 
-# Copy config files
-COPY infra/hydra-head/config/global.yaml /opt/hydra/config/global.yaml
-COPY infra/hydra-head/config/node-rtx.yaml /opt/hydra/config/node-rtx.yaml
-COPY infra/hydra-head/config/node-rtx3060.yaml /opt/hydra/config/node-rtx3060.yaml
-COPY infra/hydra-head/config/preset-rtx5060ti.ini /opt/hydra/config/preset-rtx5060ti.ini
-COPY infra/hydra-head/config/preset-rtx3060.ini /opt/hydra/config/preset-rtx3060.ini
+# Config files are NOT baked into the image — they are mounted at runtime
+# from the host (see docker-compose.hydra.yml: ./hydra-head/config:/opt/hydra/config:ro).
+# This keeps the image build-time immutable and lets node configs (engine
+# pins, model presets) change without an image rebuild.
 
 # Download the 2 monitoring sidecar binaries (baked into the image so
 # hydra-head can spawn them as child processes inside this container).

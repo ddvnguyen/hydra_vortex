@@ -143,7 +143,17 @@ public static class Router
 				&& IsModelAllowed(health, w.Name, allowedModels))
 			.OrderBy(w => w.PrefillPriority)
 			.FirstOrDefault()
-			?? PickBestDecodeWorker(workers, tracker, health, allowedModels: allowedModels);
+			// Atomic = single-GPU prefill+decode on ONE worker. The fallback
+			// must NOT pick a decode-only worker (e.g. P100 with WorkerType=2):
+			// cold_atomic in engine mode prefills via Hydra RPC, and a
+			// classic llama-server peer cannot serve RPC prefill — the request
+			// hangs on "prefill_rpc_error ... Connection refused". Filter the
+			// fallback to prefill+decode capable workers only.
+			?? workers
+				.Where(w => w.CanPrefill && w.CanDecode && tracker.IsFree(w.Name) && health.IsHealthy(w.Name)
+					&& IsModelAllowed(health, w.Name, allowedModels))
+				.OrderBy(w => w.PrefillPriority)
+				.FirstOrDefault();
 	}
 
 	public static string? PrefillModel(WorkerConfig w)

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -38,20 +39,20 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
             ["stream"] = stream,
         };
         if (sessionId is not null) body["session_id"] = sessionId;
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSec) };
-        var resp = await client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+        var resp = await HttpHelpers.Client.PostAsJsonAsync($"{_fx.CoordUrl}/v1/chat/completions", body, cts.Token);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     private static async Task<(Dictionary<string, JsonElement> Slots, Dictionary<string, double> Metrics)> ScrapeLlama(string baseUrl)
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var slotsResp = await client.GetAsync($"{baseUrl}/slots");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var slotsResp = await HttpHelpers.Client.GetAsync($"{baseUrl}/slots", cts.Token);
         slotsResp.EnsureSuccessStatusCode();
         var slots = await slotsResp.Content.ReadFromJsonAsync<JsonElement>();
 
-        var metricsResp = await client.GetAsync($"{baseUrl}/metrics");
+        var metricsResp = await HttpHelpers.Client.GetAsync($"{baseUrl}/metrics", cts.Token);
         metricsResp.EnsureSuccessStatusCode();
         var metricsText = await metricsResp.Content.ReadAsStringAsync();
         var metrics = HttpHelpers.ParseLlamaMetrics(metricsText);
@@ -67,13 +68,19 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
         return (slotsDict, metrics);
     }
 
+    /// <summary>
+    /// Runs on the default moe-35b-solo (balanced) resident model — group 1
+    /// (orders 1-27), zero model swaps. Global order via [TestOrder] +
+    /// assembly-wide TestCaseOrderer (Ordering/, #470).
+    /// </summary>
+    [TestOrder(19)]
     [SkippableTheory]
-    [InlineData(8_000, 2_000, 120)]
-    [InlineData(8_000, 4_000, 120)]
-    [InlineData(16_000, 2_000, 180)]
-    [InlineData(16_000, 4_000, 180)]
-    [InlineData(48_000, 2_000, 420)]
-    [InlineData(48_000, 4_000, 420)]
+    [InlineData(8_000, 2_000, 600)]
+    [InlineData(8_000, 4_000, 600)]
+    [InlineData(16_000, 2_000, 600)]
+    [InlineData(16_000, 4_000, 600)]
+    [InlineData(48_000, 2_000, 900)]
+    [InlineData(48_000, 4_000, 900)]
     public async Task LargePromptWithMetricsAndContinuation(int promptTokens, int continueTokens, int timeoutSec)
     {
         _fx.SkipIfUnreachable();
@@ -95,7 +102,7 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
             var initResp = await DoCompletion(
                 [new() { ["role"] = "user", ["content"] = initPrompt }],
                 sessionId,
-                maxTokens: 100,
+                maxTokens: 4096,
                 timeoutSec: timeoutSec);
             Assert.True(initResp.TryGetProperty("choices", out var initChoices));
             Assert.True(initChoices.GetArrayLength() > 0);
@@ -137,7 +144,7 @@ public sealed class LargePromptTests : IClassFixture<LiveRigFixture>
                 new() { ["role"] = "assistant", ["content"] = assistantReply },
                 new() { ["role"] = "user", ["content"] = continuePrompt },
             };
-            var contResp = await DoCompletion(continueMessages, sessionId, maxTokens: 100, timeoutSec: timeoutSec);
+            var contResp = await DoCompletion(continueMessages, sessionId, maxTokens: 4096, timeoutSec: timeoutSec);
             Assert.True(contResp.TryGetProperty("choices", out var contChoices));
             Assert.False(string.IsNullOrEmpty(HttpHelpers.GetOutputText(contChoices[0].GetProperty("message"))),
                 "Empty output in continuation");

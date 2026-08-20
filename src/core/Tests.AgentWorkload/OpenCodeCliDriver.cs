@@ -25,7 +25,10 @@ public sealed class OpenCodeCliDriver : IAgentCliDriver
         string model = "hydra/moe-35b-solo",
         string binPath = "opencode")
     {
-        _model = model;
+        // #470: AGENT_WORKLOAD_MODEL env override (e.g. dense-27b-combined)
+        // lets CI target the combined 27B rig session instead of the default.
+        var envModel = Environment.GetEnvironmentVariable("AGENT_WORKLOAD_MODEL");
+        _model = !string.IsNullOrEmpty(envModel) ? $"hydra/{envModel}" : model;
         _binPath = binPath;
     }
 

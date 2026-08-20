@@ -274,11 +274,6 @@ internal static class CoordinatorMetrics
     public static readonly Histogram DecodeInitMs = Metrics.CreateHistogram(
         "hydra_decode_init_ms", "Time from decode dispatch to first token", new[] { "node" });
 
-    public static readonly Counter ModelIdentityMismatch = Metrics.CreateCounter(
-        "hydra_model_identity_mismatch_total",
-        "Model identity mismatches detected by CrossModelGuard (counted by outcome)",
-        new CounterConfiguration { LabelNames = new[] { "worker", "outcome" } });
-
     public static readonly Counter StreamingHydraMetricsReceived = Metrics.CreateCounter(
         "hydra_streaming_metrics_received_total",
         "Streaming Hydra metrics packets received from engine decode");
