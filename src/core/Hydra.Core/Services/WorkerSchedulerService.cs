@@ -5236,6 +5236,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					await item.DecodeLease.DisposeAsync();
 					SignalEvaluator();
 				}
+				else if (item.HttpCancellationToken.IsCancellationRequested)
+				{
+					// #470 slot-leak fix: the client disconnected (curl timeout, browser
+					// navigate-away, proxy drop) while the pipeline was still running.
+					// NotifyStreamComplete may have already fired (the controller's
+					// finally block runs synchronously on disconnect) but found no
+					// warm lease to release because we haven't stored it yet. If we
+					// stash it here, nobody will ever call NotifyStreamComplete again
+					// for this turn — the slot leaks forever. Release immediately.
+					_log.Information("slot_leak_prevented Sid={Sid} Worker={W} Slot={Slot} reason=client_disconnected",
+						item.SessionId, item.DecodeLease.WorkerName, item.DecodeLease.SlotId);
+					await item.DecodeLease.DisposeAsync();
+					SignalEvaluator();
+				}
 				else
 				{
 					// Evict any prior warm lease for this session before stashing the new one.
