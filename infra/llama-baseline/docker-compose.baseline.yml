@@ -3,10 +3,12 @@ name: llama-baseline
 # Bare-bone upstream llama.cpp on 2xRTX (5060 Ti + 3060) — no Hydra.
 # Single pooled llama-server across both GPUs (vanilla upstream pooling).
 # Model: Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M 19.5GB — does not fit solo, needs split.
-# Ctx: try 96K first (yarn 4x), fallback 64K on OOM. Test with: curl localhost:18080/health
+# Ctx: stable 32K on this hardware (96K→2040MiB OOM, 64K→1360MiB OOM on 3060 12GB even with 65/[25,40]/layer).
+# Verified stable: 32K with 45 layers + 40,25 split (8.3GB/5.6GB model, ~1GB KV). Test: curl localhost:18080/health
 # Build: host cmake -S src/llama-cpp -B src/llama-cpp/build -DGGML_CUDA=1 -DLLAMA_CURL=ON && cmake --build src/llama-cpp/build --parallel 8
 # Run: podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d --build
 #      podman logs -f llama-baseline_llama_1  # watch "model loaded" / OOM
+# Alt: docker-compose.baseline-64k.yml (64K OOM doc) / docker-compose.baseline-96k.yml (96K OOM doc)
 # Harness: OPENAI_BASE_URL=http://localhost:18080/v1 OPENAI_API_KEY=dummy dsh/pi
 # Note: 18080 avoids collision with infra-openwebui on host :8080 (host network). Use :8080 only if openwebui stopped.
 
@@ -27,9 +29,8 @@ services:
       - NVIDIA_VISIBLE_DEVICES=0,1
       - CUDA_VISIBLE_DEVICES=0,1
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/lib
-    # Pooled 2-GPU: layer split (dense-stable) + tensor-split 25/40 (~16GB/12GB ratio, from Hydra dense-27b-combined 65/[25,40]/layer)
-    # Try 98304 first; wrapper script handles fallback to 65536 if this OOMs during load.
-    # Direct compose command for 96K attempt — fallback is manual: edit ctx-size to 65536 and `podman compose up -d`
+    # Pooled 2-GPU: layer split (dense-stable). Stable 32K: 45 layers keeps KV headroom on 3060 (was 65 OOM at 64K/96K).
+    # Original target 96K→64K both OOM on 12GB peer (1360/2040 MiB KV alloc fails) — see BASELINE_SHA and logs.
     command:
       - --model
       - /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
@@ -38,13 +39,13 @@ services:
       - --port
       - "18080"
       - --n-gpu-layers
-      - "65"
+      - "45"
       - --tensor-split
-      - "25,40"
+      - "40,25"
       - --split-mode
       - layer
       - --ctx-size
-      - "98304"
+      - "32768"
       - --rope-scaling
       - yarn
       - --rope-scale
