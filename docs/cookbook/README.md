@@ -17,6 +17,13 @@ does not duplicate it. Each recipe should link back to its governing workflow do
 - Not a place to accumulate session-level state — that's
   `orchestration/state/latest-status.md`.
 
+## Written recipes
+
+- `reconcile-epic-branch.md` — reconcile a diverged local checkout, or rebase a branch
+  onto a moved-forward base, in a disposable worktree
+- `paseo-delegate-and-verify.md` — spin up a Paseo delegate, catch a degenerate loop,
+  and independently verify its "done" report before trusting it
+
 ## Candidate recipes (backlog)
 
 These are scaffolding only; content to be written when the task is next performed:
@@ -24,4 +31,3 @@ These are scaffolding only; content to be written when the task is next performe
 - `bump-fork-submodule.md` — how to update the `src/llama-cpp` fork submodule
 - `run-live-rig-tests.md` — how to run the live-GPU test tiers against real hardware
 - `deploy-engine-build.md` — how to build and deploy llama-engine for a specific GPU arch
-- `reconcile-epic-branch.md` — how to bring a stale epic branch up to date

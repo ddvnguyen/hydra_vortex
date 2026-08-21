@@ -18,6 +18,16 @@ current here, promote what's durable there.
 | `epic/610-server-hydra-extension-rebased` (llama.cpp fork, `ddvnguyen` remote) | **PR #105 open against `hydra-fork`** | 4 rebased commits onto `hydra-fork` HEAD (`67ceb00bd`) + 1 fixup commit (`ecfbfda11`). C++ compiles; link needs the fork's ggml-rpc submodule (can't verify standalone in a worktree — needs the rig). No CI configured on this branch yet. Next: configure CI, full build + `test-hydra-ext-ab.cpp` on the rig, live-rig smoke test before merge to `hydra-fork`. |
 | `epic/697-470-stabilization` | active (this branch) | Stabilization workstream per decision 001. |
 
+## Documentation state
+
+- `AGENTS.md` rewritten 2026-08-21 — was a stale/partly-fictional v2.1.1 "hermes fleet"
+  contract (referenced files that don't exist, model constraint already overridden in
+  practice). Now an accurate bootstrap pointing at the actual leader/Paseo-delegate
+  model. See `docs/decisions/002-supersede-hermes-fleet-contract.md`.
+- `docs/cookbook/` has 2 written recipes now (`reconcile-epic-branch.md`,
+  `paseo-delegate-and-verify.md`), both derived from real work performed this session
+  rather than speculative. 3 more still scaffolding-only (see cookbook README).
+
 ## Open questions
 
 - Is `epic/610`'s conflict surface in `server-context.cpp` from upstream churn or from
