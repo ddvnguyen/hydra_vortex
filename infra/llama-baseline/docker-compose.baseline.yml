@@ -29,8 +29,10 @@ services:
       - NVIDIA_VISIBLE_DEVICES=0,1
       - CUDA_VISIBLE_DEVICES=0,1
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/lib
-    # Pooled 2-GPU: layer split (dense-stable). Stable 32K: 45 layers keeps KV headroom on 3060 (was 65 OOM at 64K/96K).
-    # Original target 96K→64K both OOM on 12GB peer (1360/2040 MiB KV alloc fails) — see BASELINE_SHA and logs.
+    # Pooled 2-GPU: layer split (dense-stable). 40,25 = tensor-split ratio: 40 parts on 5060Ti (61.5%) + 25 on 3060 (38.5%).
+    # With --split-mode layer, whole layers are sharded by this ratio, not tensor-sharded. 65 layers ≈ 40 on 5060Ti, 25 on 3060.
+    # All layers on GPU (n-gpu-layers 65 covers 62-layer 27B), token_embd kept on CPU to save VRAM (like Hydra dense-27b-combined).
+    # MTP enabled: draft-mtp speculative (spec_draft_n_max 3, p_min 0.75) — Qwopus MTP heads run as draft, no separate draft model.
     command:
       - --model
       - /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
@@ -39,11 +41,13 @@ services:
       - --port
       - "18080"
       - --n-gpu-layers
-      - "45"
+      - "65"
       - --tensor-split
       - "40,25"
       - --split-mode
       - layer
+      - --override-tensor
+      - "token_embd.weight=CPU"
       - --ctx-size
       - "32768"
       - --rope-scaling
@@ -64,6 +68,12 @@ services:
       - --jinja
       - --chat-template-file
       - /models/qwen3.6_merged_template.jinja
+      - --spec-type
+      - "draft-mtp"
+      - --spec-draft-n-max
+      - "3"
+      - --spec-draft-p-min
+      - "0.75"
       - --metrics
       - --slots
       - --log-verbosity
