@@ -33,14 +33,32 @@ changes occurred. Re-create or extend if the workstream outlives the expiry.
 ## Model comparison notes (2026-08-21, small sample — not statistically confident)
 
 One identical head-to-head task (review cookbook docs + independently verify #641's
-root-cause location):
-- **mimo-v2.5**: $0.01365. Cited the wrong file for #641 (`server-context.cpp`
-  swa_full gate — real code, wrong mechanism).
-- **muse-spark-1.2-contributor**: $0.01216 (~11% cheaper same task). Cited the
-  correct file (`server-checkpoint-policy.h`, commented "Hydra #641") — this citation
-  directly led to discovering #641's fix was already merged and just needed
+root-cause location) — **normalize by tokens actually used, not just total task
+cost**, since total cost conflates model rate with response verbosity:
+
+| | Total cost | Output tokens | $/1K output tokens |
+|---|---|---|---|
+| mimo-v2.5 | $0.01365 | 1,553 | **$0.009** |
+| muse-spark | $0.01216 | 620 | **$0.020** |
+
+Per output token, mimo-v2.5 was **more than 2x cheaper** — muse-spark's lower total
+cost came from writing a much shorter response, not a cheaper rate for the work done.
+(Caveat: this normalization is only valid for single-turn tasks like this eval —
+`get_agent_status`'s `lastUsage` gives cumulative session cost but only the most
+recent turn's token counts, so multi-turn/tool-heavy sessions can't be normalized
+this way with what's exposed; total dollar cost is the only reliable figure for those,
+see the in-flight tasks below.)
+
+- **mimo-v2.5**: cited the wrong file for #641 (`server-context.cpp` swa_full gate —
+  real code, wrong mechanism).
+- **muse-spark-1.2-contributor**: despite the terser/more expensive-per-token answer,
+  cited the correct file (`server-checkpoint-policy.h`, commented "Hydra #641") — this
+  citation directly led to discovering #641's fix was already merged and just needed
   verification/closing, not a new fix. Also caught a doc-internal-consistency error
-  mimo-v2.5 missed.
+  mimo-v2.5 missed. Terseness didn't cost it accuracy here, but did mean mimo-v2.5
+  independently caught a separate error (stale line count) that muse-spark's shorter
+  response didn't surface — worth weighing coverage against cost-per-token, not just
+  picking whichever number is smaller.
 - **Caveat on muse-spark**: opened its response with an unprompted `[#Engineer]` /
   `[#Engineer.Skills]` tag pattern citing skills that don't exist in this repo's
   toolset (stray/injected-looking content, not something Claude asked for) — treat its
@@ -54,10 +72,11 @@ root-cause location):
   the three, but the 8x multiplier makes real cost near-negligible through 2026-08-30.
 
 **Working conclusion, not final:** Hy3 is the practical default through 2026-08-30
-purely on cost. If its quality disappoints, muse-spark is the stronger fallback for
-precision/hard tasks based on the one data point so far (verify its claims a bit
-more); mimo-v2.5 is the safe middle choice with the most track record on this
-workstream. Revisit after 2026-08-30 when the Hy3 multiplier ends.
+purely on the usage-multiplier, not proven quality or rate efficiency yet. Between
+mimo-v2.5 and muse-spark on rate alone, mimo-v2.5 is actually the more token-efficient
+of the two per the normalized numbers above — muse-spark's edge was accuracy on one
+citation, not cost. Don't default to "whichever quoted the lower total" without
+checking token counts first. Revisit after 2026-08-30 when the Hy3 multiplier ends.
 
 ## Cost tracking
 
