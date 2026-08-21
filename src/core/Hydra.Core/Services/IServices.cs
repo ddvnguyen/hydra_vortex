@@ -31,11 +31,11 @@ public interface IWorkerScheduler
     public string? LastDispatchedModelQuant { get; }
     /// <summary>Capabilities bitmask of the model that served the most recent request (#470).</summary>
     public uint LastDispatchedModelCapabilities { get; }
-    Task<object> SubmitAsync(Dictionary<string, object> request, List<Dictionary<string, object>> messages, string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0);
+    Task<object> SubmitAsync(Dictionary<string, object> request, List<Dictionary<string, object>> messages, string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0, string? traceId = null);
     Task<object> MigrateSessionAsync(string sessionId, string targetNodeName, CancellationToken ct);
     Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct);
     Task RunAsync(CancellationToken ct);
-    Task NotifyStreamComplete(string sessionId);
+    Task NotifyStreamComplete(string sessionId, string? traceId = null);
     int WarmLeaseCount { get; }
 
     /// <summary>

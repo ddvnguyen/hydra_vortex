@@ -56,5 +56,5 @@ removed in #363 — it no longer manages log shipping.
 | `infra/quadlets/hydra-agent-rtx.container` | Agents merged into Hydra.Core |
 | `infra/quadlets/hydra-agent-p100.container` | Agents merged into Hydra.Core |
 | `infra/systemd/llama-p100-user.service` | Managed by hydra-head |
-| `infra/llama-rtx-node/docker-compose.yml` | `infra/hydra-head/Dockerfile.rtx` |
+| `infra/llama-rtx-node/` (removed) | `infra/hydra-head/Dockerfile.rtx` |
 | `scripts/deploy-llama.sh` | `scripts/deploy-hydra-head.sh` |

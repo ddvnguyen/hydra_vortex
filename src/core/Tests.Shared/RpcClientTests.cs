@@ -24,6 +24,19 @@ public class RpcClientTests : IAsyncLifetime
             await _server.DisposeAsync();
     }
 
+    /// <summary>Asserts the client opened a fresh TCP connection after a dropped
+    /// connection. The server's accept loop counts connections on its own thread
+    /// and can briefly lag the response under parallel test load, so poll briefly
+    /// instead of asserting the exact count immediately.</summary>
+    private static async Task AssertFreshConnectionAsync(TestRpcServer server, int before)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        while (server.ConnectionCount <= before && DateTime.UtcNow < deadline)
+            await Task.Delay(25);
+        Assert.True(server.ConnectionCount > before,
+            $"expected a fresh connection (before={before}, after={server.ConnectionCount})");
+    }
+
     [Fact]
     public async Task ClientServer_RoundTrip()
     {
@@ -333,6 +346,130 @@ public class RpcClientTests : IAsyncLifetime
         Assert.Equal((byte)StatusCode.Ok, r2.Status);
         Assert.True(server.ConnectionCount > before,
             "expected a fresh connection after the framing error");
+    }
+
+    [Fact]
+    public async Task BufferedPayload_Exactly2GiBDeclared_ThrowsInvalidData_NotOverflow_AndDropsConnection()
+    {
+        // #595: exactly 2 GiB = int.MaxValue + 1. `new byte[payloadLen]` does a
+        // checked int32 conversion → OverflowException, which is NOT caught by the
+        // InvalidDataException handlers (no connection drop). The explicit
+        // Array.MaxLength materialization check must reject it as a clean framing
+        // error instead: InvalidDataException + desynced connection dropped, so the
+        // next request lands on a fresh TCP connection.
+        Assert.NotNull(_server);
+        var server = _server!;
+        const long twoGiB = (long)int.MaxValue + 1; // 2147483648
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, (ulong)twoGiB, ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            client.RequestAsync(OpCode.Get, "two-gib", ReadOnlyMemory<byte>.Empty,
+                "trace-2gib", cts.Token));
+
+        // Exact-type check: the sliver (OverflowException for n = int.MaxValue + 1)
+        // is gone — the framing error is the single failure path.
+        Assert.IsType<InvalidDataException>(ex);
+        Assert.Contains("materializable", ex.Message);
+
+        // Same client, next request: must go over a brand-new connection.
+        server.OnHandle = null; // back to default echo
+        var before = server.ConnectionCount;
+        var r2 = await client.RequestAsync(
+            OpCode.Put, "after-2gib", new byte[] { 7, 8 },
+            "trace-after-2gib", cts.Token);
+
+        Assert.Equal((byte)StatusCode.Ok, r2.Status);
+        await AssertFreshConnectionAsync(server, before);
+    }
+
+    [Fact]
+    public async Task BufferedPayload_IntMaxValueDeclared_ThrowsInvalidData_NotOom_AndDropsConnection()
+    {
+        // #595: int.MaxValue (2147483647) is above Array.MaxLength (2147483591) —
+        // `new byte[int.MaxValue]` throws OutOfMemoryException, the second half of
+        // the sliver. Same contract: clean InvalidDataException + connection drop.
+        Assert.NotNull(_server);
+        var server = _server!;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, (ulong)int.MaxValue, ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            client.RequestAsync(OpCode.Get, "intmax", ReadOnlyMemory<byte>.Empty,
+                "trace-intmax", cts.Token));
+
+        // Exact-type check: the OOM half of the sliver (new byte[int.MaxValue]) is
+        // gone — the framing error is the single failure path.
+        Assert.IsType<InvalidDataException>(ex);
+        Assert.Contains("materializable", ex.Message);
+
+        server.OnHandle = null;
+        var before = server.ConnectionCount;
+        var r2 = await client.RequestAsync(
+            OpCode.Put, "after-intmax", new byte[] { 9, 10 },
+            "trace-after-intmax", cts.Token);
+
+        Assert.Equal((byte)StatusCode.Ok, r2.Status);
+        await AssertFreshConnectionAsync(server, before);
+    }
+
+    [Fact]
+    public async Task RequestStream_HugeTokenLen_ThrowsInvalidData_AndDropsConnection()
+    {
+        // #595: the streamed-token path reads a raw uint length from the wire and
+        // does `new byte[tokenLen]` — a garbage 0xFFFFFFFF token length throws
+        // OverflowException (checked uint→int conversion) and bypasses the
+        // framing-error drop. It must be rejected as InvalidDataException with the
+        // connection dropped (finally sees completed=false).
+        Assert.NotNull(_server);
+        var server = _server!;
+        server.OnHandle = async (op, key, traceId, payloadLen, reader, writer, ct) =>
+        {
+            await RpcServer.WriteResponseHeaderAsync(writer, (byte)StatusCode.Ok, 0, 0, ct);
+            var lenSpan = writer.GetSpan(4);
+            BinaryPrimitives.WriteUInt32LittleEndian(lenSpan, uint.MaxValue); // 0xFFFFFFFF → sliver
+            writer.Advance(4);
+            await writer.FlushAsync(ct);
+        };
+
+        var client = new RpcClient("127.0.0.1", server.Port);
+        await client.ConnectAsync(CancellationToken.None);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var enumerable = client.RequestStreamAsync(
+            OpCode.EngineDecode, "huge-token", ReadOnlyMemory<byte>.Empty,
+            "trace-huge-token", cts.Token);
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            await foreach (var _ in enumerable) { }
+        });
+        // Exact-type check: the uint→byte[] OverflowException sliver is gone.
+        Assert.IsType<InvalidDataException>(ex);
+        Assert.Contains("materializable", ex.Message);
+
+        // Same client, next request: the desynced stream must have dropped the
+        // connection — the follow-up lands on a fresh TCP connection.
+        server.OnHandle = null; // back to default echo
+        var before = server.ConnectionCount;
+        var r2 = await client.RequestAsync(
+            OpCode.Put, "after-token", new byte[] { 11, 12 },
+            "trace-after-token", cts.Token);
+
+        Assert.Equal((byte)StatusCode.Ok, r2.Status);
+        await AssertFreshConnectionAsync(server, before);
     }
 
     [Fact]
