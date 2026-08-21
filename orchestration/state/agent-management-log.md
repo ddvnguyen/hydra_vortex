@@ -7,6 +7,21 @@ mechanisms — not *what the work is*. Same ephemeral/session-layer rule as
 `latest-status.md`: update at session boundaries, promote anything durable (e.g. "we
 standardized on model X") into `docs/decisions/` once it's actually settled.
 
+## Leadership handoff (2026-08-21, ~07:35)
+
+Claude (this session) handed off leadership of the #470 stabilization workstream to
+Paseo agent `eead475a-2154-4483-a160-da4c9bc68157` (`opencode-go/muse-spark-1.2-contributor`,
+mode `lead`, cwd `/mnt/WorkDisk/workspace/worktree/1q3ry0vb/wicked-zebra` — a different
+worktree than this checkout, unreconciled at handoff time, flagged to the new leader).
+Full context package sent via `send_agent_prompt` (task, current state of PR #695/#105,
+lessons learned, decisions, acceptance criteria, constraints — see the prompt for full
+text, not duplicated here). Claude's 30-min heartbeat (`d660ee11`) was already gone by
+the time of handoff (`delete_heartbeat` returned not-found — likely expired); did not
+recreate one since heartbeats are agent-scoped and the new leader owns that decision
+now, per `AGENTS.md`. Claude is no longer driving this workstream's execution as of
+this handoff — remains available for architecture-review questions directly with the
+user, per the user's redirect in the same turn.
+
 ## Operating mode
 
 Since 2026-08-21: Claude acts as orchestrating leader for this workstream — plans,
