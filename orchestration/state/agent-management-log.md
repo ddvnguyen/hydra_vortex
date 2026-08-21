@@ -131,9 +131,18 @@ where present it's direct-cost-only (see methodology gap above). Known costs so 
 | Eval: review docs + verify #641 | muse-spark | $0.01216 | 0 | Yes (fabricated-tag pattern) | No |
 | Diagnose PR #695 CI failure | mimo-v2.5 | unknown (no lastUsage) | **1** (~50-turn loop) | Yes (Claude re-verified against `main`) | No — final finding was correct |
 | Stand up cookbook/decisions docs | mimo-v2.5 | unknown (no lastUsage) | 0 | No | **Yes** (3 rounds — stale line count, #641 error, numbering) |
-| PR #695 merge + interface fix | mimo-v2.5 | $0.0149 (partial, climbing) | 0 so far | TBD | TBD |
-| epic/610 rebase | mimo-v2.5 | $0.0766 (partial, climbing) | 0 so far | TBD | TBD |
+| PR #695 merge + interface fix | mimo-v2.5 | $0.1409 (final) | **1** (Claude redirect after independent verification found the first "done" report was materially wrong — claimed 3 pre-existing failures, actual was 5 incl. full parity-harness collapse) | Yes — Claude re-ran `DifferentialGateTests`+`AutoRouterTests` independently, 0 failures, root cause matches agent's explanation | No — second report held up under spot-check, but flagged a real outstanding item (GoldenTraceTests re-baseline) rather than glossing over it |
+| epic/610 rebase | mimo-v2.5 | unknown (no `lastUsage` again — same gap) | 0 | TBD (mechanical claim only, standalone build not possible without fork's ggml submodule) | Partially — agent itself flagged 561 uncommitted lines of gaps its own regex-based extraction introduced, self-corrected before reporting done |
 
 No running cumulative total exists yet — add one here as more data comes in if this
 becomes worth tracking precisely. hy3 has no rows yet — first real delegation still
 pending.
+
+**2026-08-21 05:55 heartbeat note:** Both delegate agents (`838bce4a` PR #695,
+`69a5ea7c` epic/610) went idle since the last check-in. Neither is pushable yet:
+#695's fix is real (independently spot-verified) but has an outstanding golden-trace
+re-baseline to review; epic/610's rebase has an uncommitted 561-line fix diff pending
+review. No agents currently running/stuck; no pending permissions. One stale unrelated
+agent (`40cbb151`, "do research on our repo", `deepseek-v4-flash`, stuck
+`initializing` since 2026-08-07) noted but out of scope for this workstream — not
+touched.
