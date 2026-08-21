@@ -95,10 +95,14 @@ internal sealed class ScenarioRpcClient : RpcClient
     public int CountCalls(OpCode op) => RpcCalls.Count(c => c.Op == op);
 
     // ── RequestAsync (both store + engine roles land here) ──
+    // Override the 7-param overload (the 5-param base delegates here, and
+    // EnginePrefillAsync calls the7-param directly with timeout/idle overrides).
 
     public override Task<RpcResponse> RequestAsync(
         OpCode op, string key, ReadOnlyMemory<byte> payload,
-        string traceId, CancellationToken ct)
+        string traceId, CancellationToken ct,
+        TimeSpan? requestTimeoutOverride,
+        TimeSpan? payloadIdleBudget)
     {
         try
         {
@@ -111,6 +115,45 @@ internal sealed class ScenarioRpcClient : RpcClient
             RpcCalls.Add((op, key, payload.Length, "Throw"));
             throw;
         }
+    }
+
+    // ── RequestStreamBodyAsync (streaming store writes, #470) ──
+    // The base class connects to real TCP. Override to feed through the mock.
+
+    public override Task<RpcResponse> RequestStreamBodyAsync(
+        OpCode op, string key, Stream body, long bodyLen,
+        string traceId, CancellationToken ct)
+    {
+        try
+        {
+            var resp = ComputeResponse(op, key, ReadOnlyMemory<byte>.Empty);
+            RpcCalls.Add((op, key, (int)bodyLen, ((StatusCode)resp.Status).ToString()));
+            return Task.FromResult(resp);
+        }
+        catch (Exception)
+        {
+            RpcCalls.Add((op, key, (int)bodyLen, "Throw"));
+            throw;
+        }
+    }
+
+    // ── EnginePrefillChunkedAsync (streaming chunked prefill, #470) ──
+    // The base class calls private RequestChunkedAsync which opens a real TCP
+    // connection. Override here to feed deterministic chunks through the callbacks.
+
+    public override async Task<RpcResponse> EnginePrefillChunkedAsync(
+        string slotKey, string requestJson, string traceId, CancellationToken ct,
+        Action<string>? onMeta,
+        Action<long> onPayloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
+    {
+        var meta = JsonSerializer.Serialize(new { n_past = 2000, state_size = 4096 });
+        onMeta?.Invoke(meta);
+        onPayloadLen(PrefillKvBlob.Length);
+        await onChunk(PrefillKvBlob, ct);
+        RpcCalls.Add((OpCode.EnginePrefill, slotKey, PrefillKvBlob.Length, StatusCode.Ok.ToString()));
+        return new RpcResponse((byte)StatusCode.Ok, meta, []);
     }
 
     private RpcResponse ComputeResponse(OpCode op, string key, ReadOnlyMemory<byte> payload)
