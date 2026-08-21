@@ -78,6 +78,50 @@ public sealed class HydraEngineClient
         int slotId, string? model, string requestJson, string traceId,
         CancellationToken ct, Dictionary<string, object>? hydraConfig)
     {
+        var payloadJson = BuildPrefillRequestJson(requestJson, model, hydraConfig);
+        var resp = await _rpc.EnginePrefillAsync(
+            slotId.ToString(), payloadJson, traceId, ct);
+        return ParsePrefillResponse(resp, includeBlob: true);
+    }
+
+    /// <summary>
+    /// #470 (Phase 2): chunked PREFILL — the response payload is handed to
+    /// <paramref name="onChunk"/> as it arrives (and <paramref name="onPayloadLen"/>
+    /// fires with the total payload length before the first chunk) instead of
+    /// being buffered into <see cref="EnginePrefillResult.KvBlob"/>. The returned
+    /// result carries all meta (n_past / state_size / logits_size / model
+    /// identity / metrics) with an EMPTY KvBlob — the caller is expected to have
+    /// streamed the payload to the Store. Same JSON injection and status handling
+    /// as <see cref="EnginePrefillAsync"/>.
+    /// </summary>
+    public async Task<EnginePrefillResult?> EnginePrefillChunkedAsync(
+        int slotId, string? model, string requestJson, string traceId,
+        CancellationToken ct, Dictionary<string, object>? hydraConfig,
+        Action<long> onPayloadLen,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk,
+        Action<EnginePrefillResult>? onMeta = null,
+        TimeSpan? requestTimeoutOverride = null, TimeSpan? payloadIdleBudget = null)
+    {
+        var payloadJson = BuildPrefillRequestJson(requestJson, model, hydraConfig);
+        var resp = await _rpc.EnginePrefillChunkedAsync(
+            slotId.ToString(), payloadJson, traceId, ct,
+            meta =>
+            {
+                if (onMeta == null || string.IsNullOrEmpty(meta)) return;
+                try
+                {
+                    var m = JsonSerializer.Deserialize<EnginePrefillResult>(meta);
+                    if (m != null) onMeta(m);
+                }
+                catch { /* non-fatal: the final ParsePrefillResponse still runs */ }
+            },
+            onPayloadLen, onChunk, requestTimeoutOverride, payloadIdleBudget);
+        return ParsePrefillResponse(resp, includeBlob: false);
+    }
+
+    private static string BuildPrefillRequestJson(
+        string requestJson, string? model, Dictionary<string, object>? hydraConfig)
+    {
         var node = JsonNode.Parse(requestJson) as JsonObject
             ?? throw new ArgumentException("requestJson must be a JSON object", nameof(requestJson));
 
@@ -96,10 +140,11 @@ public sealed class HydraEngineClient
         if (hydraConfig is { Count: > 0 })
             node["hydra_config"] = JsonSerializer.SerializeToNode(hydraConfig);
 
-        var payloadJson = node.ToJsonString();
-        var resp = await _rpc.EnginePrefillAsync(
-            slotId.ToString(), payloadJson, traceId, ct);
+        return node.ToJsonString();
+    }
 
+    private static EnginePrefillResult? ParsePrefillResponse(RpcResponse resp, bool includeBlob)
+    {
         if (resp.Status == (byte)StatusCode.NotImplemented)
         {
             return new EnginePrefillResult
@@ -134,7 +179,7 @@ public sealed class HydraEngineClient
             try { meta = JsonSerializer.Deserialize<EnginePrefillResult>(resp.Meta); }
             catch { meta = null; }
         }
-        return new EnginePrefillResult
+        var result = new EnginePrefillResult
         {
             NPast             = meta?.NPast             ?? 0,
             StateSize         = meta?.StateSize         ?? 0,
@@ -152,8 +197,9 @@ public sealed class HydraEngineClient
             CacheTokens       = meta?.CacheTokens       ?? 0,
             KvSize            = meta?.KvSize            ?? 0,
             LogitsSize        = meta?.LogitsSize        ?? 0,
-            KvBlob            = resp.Payload
+            KvBlob            = includeBlob ? resp.Payload : Array.Empty<byte>()
         };
+        return result;
     }
 
     /// <summary>Engine CONFIGURE (0x40). Apply a JSON config blob at runtime.
@@ -343,6 +389,14 @@ public sealed class EnginePrefillResult
     public long KvSize { get; init; }
     [JsonPropertyName("logits_size")]
     public long LogitsSize { get; init; }
+
+    /// <summary>M2 (#470): engine-computed xxh3-64 wire hash of the whole kv
+    /// segment (v2 header + [magic][seq_id] + state + logits), emitted in the
+    /// PREFILL response meta as "xxh3:HEX". Forwarded into the DECODE frame's
+    /// segments[].kv.hash so the decode engine can verify the streamed restore
+    /// end-to-end. Empty when the engine did not emit it (M1 path, old binary).</summary>
+    [JsonPropertyName("kv_hash_str")]
+    public string KvHash { get; init; } = "";
 
     /// <summary>Raw KV state blob returned by the engine (caller takes ownership).</summary>
     [JsonIgnore]

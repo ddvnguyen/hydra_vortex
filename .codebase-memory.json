@@ -1,0 +1,8 @@
+{
+  "extra_extensions": {
+    ".cu": "cpp",
+    ".cuh": "cpp",
+    ".metal": "cpp",
+    ".inc": "cpp"
+  }
+}

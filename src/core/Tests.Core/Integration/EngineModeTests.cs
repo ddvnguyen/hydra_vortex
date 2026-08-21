@@ -66,7 +66,7 @@ public sealed class EngineModeTests
 
         public override Task<RpcResponse> RequestAsync(
             OpCode op, string key, ReadOnlyMemory<byte> payload,
-            string traceId, CancellationToken ct)
+            string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
         {
             Calls.Add((op, key, payload.ToArray()));
 
@@ -258,7 +258,8 @@ public sealed class EngineModeTests
         };
         public Dictionary<string, object> GetHealthSummary() => new();
         public event Action? HealthyChanged;
-        public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+        public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+        public void MarkHealthy(string nodeName) { }
     }
 
     internal sealed class EngineFixture : IAsyncDisposable
@@ -377,6 +378,28 @@ public sealed class EngineModeTests
             };
             return CompletionResults.Unwrap(await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
                 maxTokens, prefixHash, _runCts.Token));
+        }
+
+        /// <summary>#470 canonical identity: submit with the `model` field as a
+        /// JsonElement — the shape the HTTP body deserializer produces when
+        /// AutoRouter FAILS (the field is never overwritten with a C# string).</summary>
+        public async Task<object?> SubmitWithJsonElementModelAsync(
+            string sessionId, string model, int estimatedTokens, int maxTokens = 500,
+            bool stream = false, string? prefixHash = null)
+        {
+            var req = new Dictionary<string, object>
+            {
+                ["stream"] = stream,
+                ["max_tokens"] = maxTokens
+            };
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(model));
+            req["model"] = doc.RootElement.Clone();
+            var msgs = new List<Dictionary<string, object>>
+            {
+                new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
+            };
+            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+                maxTokens, prefixHash, _runCts.Token);
         }
     }
 
@@ -970,6 +993,94 @@ public sealed class EngineModeTests
         // advertise merged_decode, so the proxy owns the final completion).
         Assert.Single(proxy.NonStreamingCalls);
         Assert.Equal("http://localhost:8080", proxy.NonStreamingCalls[0].NodeUrl);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // #470 canonical identity: raw routing key never reaches the engine wire
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>Loader for the combined routing identity: dense-27b-combined
+    /// maps to the GGUF-file alias qwen3.6-27B-coder.</summary>
+    private static void UseDenseCombinedLoader()
+    {
+        var models = new Dictionary<string, ModelTemplate>
+        {
+            ["dense-27b-combined"] = new ModelTemplate
+            {
+                Description = "combined",
+                PrefillAlias = "qwen3.6-27B-coder",
+                DecodeAlias  = "qwen3.6-27B-coder",
+                LoadTimeS = 100,
+                QualityTier = 3,
+                Requirements = new ModelRequirements
+                {
+                    MinVramMb = 8000,
+                    RequiredCapabilities = GpuCapabilities.Combined,
+                },
+                Routing = new RoutingRule
+                {
+                    AutoEligible = true,
+                    MinPromptTokens = 0,
+                    MaxPromptTokens = 999999,
+                    MaxContextTokens = 128000,
+                },
+            },
+        };
+        var config = new ModelsConfig
+        {
+            SchemaVersion = 3,
+            Models = models,
+            ModelFileAliases = new Dictionary<string, string>
+            {
+                ["qwen3.6-27B-coder"] = "Qwopus3.6-27B-Coder-v1-APEX-I.gguf",
+            },
+        };
+        ModelConfigLoader.Reset();
+        ModelConfigLoader.SetInstance(ModelConfigLoader.Create(config));
+    }
+
+    [Fact]
+    public async Task ColdAtomic_JsonElementModel_TranslatesForPrefillSwap()
+    {
+        // #470 canonical identity: a cold-atomic route with a JsonElement
+        // model (AutoRouter fails — the fixture has no IsHead worker, so
+        // Request["model"] stays a JsonElement). The `is string` prefill
+        // read used to yield null → the raw routing key rode the 0x42 body
+        // copy to the engine → "preset has 3 alias(es)" → model_fallback.
+        // The identity record translates it at ingress: the PREFILL body and
+        // the HTTP-proxy decode body both carry the GGUF-file alias.
+        await using var f = new EngineFixture(runMode: "fast");
+        UseDenseCombinedLoader();
+        ModelRegistry.RegisterForTest(new EngineConfig(ModelAlias: "dense-27b-combined"));
+        try
+        {
+            var result = await f.SubmitWithJsonElementModelAsync(
+                "sess_cold_jel", "dense-27b-combined", 500, 100);
+
+            // The PREFILL 0x42 body carries the translated alias the engine's
+            // --models-preset knows — never the raw routing key.
+            Assert.True(f.Rpc.HasCall(OpCode.EnginePrefill),
+                "cold atomic must PREFILL first so the merged DECODE has KV + kv_metadata for Gate A (#470)");
+            var payload = f.Rpc.PayloadAsUtf8(OpCode.EnginePrefill);
+            Assert.DoesNotContain("dense-27b-combined", payload);
+            using var doc = JsonDocument.Parse(payload);
+            Assert.Equal("qwen3.6-27B-coder", doc.RootElement.GetProperty("model").GetString());
+
+            // The HTTP-proxy decode body gets the translated alias via
+            // body-level substitution — Request["model"] itself is never
+            // mutated in place (the raw key stays the frozen request field).
+            var proxy = (TestCompletionProxy)f.Proxy;
+            Assert.Single(proxy.NonStreamingCalls);
+            var proxyBody = proxy.NonStreamingCalls[0].Body;
+            Assert.Equal("qwen3.6-27B-coder", proxyBody.GetValueOrDefault("model")?.ToString());
+            Assert.DoesNotContain("dense-27b-combined", JsonSerializer.Serialize(proxyBody));
+
+            Assert.NotNull(result);
+        }
+        finally
+        {
+            ModelConfigLoader.Reset();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────

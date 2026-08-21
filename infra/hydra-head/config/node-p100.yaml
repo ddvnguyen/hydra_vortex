@@ -25,8 +25,7 @@ binaries:
     # (issue #577). The map key stays `llama-server` to match the OCI
     # repo name — the on-disk binary is llama-engine (same convention
     # as node-rtx.yaml). Tag is <arch>-<binary>-<fork-version>-<sha>.
-    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-fb57c87
-    image_digest: sha256:915cec352ad949c2b18bb60b5721b43cd5457d9e009a06b8651a58cddc42a8c2
+    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-1d227f7
     binary: llama-engine
     dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine
 
@@ -61,6 +60,19 @@ llama:
     n-gpu-layers: all
     n-cpu-moe: 26
 
+    # Eager (non-mmap) expert load — cold-expert page-fault fix (epic #470).
+    # With --mmap (default) the 26 CPU-resident MoE experts are lazily
+    # faulted in from the slow virtio disk on first touch: the first
+    # cross-node KV restore + prefill after a cold engine start paid a
+    # one-shot tax of +7446 major faults / +4.15 GB RSS / ~11 s (turn-3
+    # decode prefill 15.0 s cold vs 4.1 s warm, total 29.6 s vs 6.2 s;
+    # instrumented 2026-08-12). no-mmap reads all CPU expert weights
+    # eagerly during model load, inside the existing 235-300 s load
+    # window (readiness budget 480 s), so the first decode prefill never
+    # page-faults. RAM: VM has 16 GB total / ~8 GB CPU-resident expert
+    # set (measured via Mapped/RSS deltas) + 27 GB swap backstop — fits.
+    no-mmap: true
+
     # Sampling
     temp: 0.86
     repeat-penalty: 1.06
@@ -86,10 +98,11 @@ services:
       - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
 
 # P100 lives in a KVM VM with a slow virtio disk. Model load
-# (mmap'ing 16GB of GGUF) takes 235-300s on this hardware, so the
-# readiness miss-deadline must be generous: the old health.max_fails=30
-# (≈30 min budget) was tuned for that. With sentinel-based readiness the
-# default 180s timeout is fine for router mode (no boot model), but keep
-# the slower budget explicit in case a boot-resident model is configured.
+# (eager-read of the ~25 GB GGUF since no-mmap: true, above) takes
+# 235-300s+ on this hardware, so the readiness miss-deadline must be
+# generous: the old health.max_fails=30 (≈30 min budget) was tuned for
+# that. With sentinel-based readiness the default 180s timeout is fine
+# for router mode (no boot model), but keep the slower budget explicit
+# in case a boot-resident model is configured.
 readiness:
   timeout_sec: 480

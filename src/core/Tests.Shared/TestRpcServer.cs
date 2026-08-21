@@ -9,10 +9,21 @@ internal sealed class TestRpcServer : RpcServer
 {
     public Func<OpCode, string, string, long, PipeReader, PipeWriter, CancellationToken, Task>? OnHandle { get; set; }
 
+    /// <summary>When set, the connection is disposed right after OnHandle returns.
+    /// Used to simulate a peer closing mid/after-response (EOF on the client side).</summary>
+    public bool CloseAfterHandle { get; set; }
+
+    /// <summary>Total accepted TCP connections since the server started.</summary>
+    public int ConnectionCount => _connectionCount;
+    private int _connectionCount;
+
     public TestRpcServer(int port = 0)
         : base("127.0.0.1", port)
     {
     }
+
+    protected override void OnConnectionAccepted()
+        => Interlocked.Increment(ref _connectionCount);
 
     protected override async Task HandleAsync(
         OpCode op, string key, string traceId, long payloadLen,
@@ -21,6 +32,8 @@ internal sealed class TestRpcServer : RpcServer
         if (OnHandle != null)
         {
             await OnHandle(op, key, traceId, payloadLen, reader, writer, ct);
+            if (CloseAfterHandle)
+                client.Dispose();
             return;
         }
 

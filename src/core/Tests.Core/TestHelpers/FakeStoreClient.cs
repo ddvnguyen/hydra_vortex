@@ -35,7 +35,7 @@ public sealed class FakeStoreClient : RpcClient
 
 	public override Task<RpcResponse> RequestAsync(
 		OpCode op, string key, ReadOnlyMemory<byte> payload,
-		string traceId, CancellationToken ct)
+		string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
 	{
 		_calls.Add((op, key, payload.Length));
 

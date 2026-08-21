@@ -8,6 +8,12 @@ namespace Hydra.Core.Models;
 public sealed record WorkerConfig
 {
 	public string Name { get; init; } = "";
+	/// <summary>
+	/// Human-readable GPU label for dashboards, e.g. "RTX 5060 Ti" (workers.json
+	/// <c>display_name</c>). Falls back to <see cref="Name"/> when unset so the
+	/// request_timeline node labels stay meaningful for any config shape.
+	/// </summary>
+	public string? DisplayName { get; init; }
 	public string Host { get; init; } = "";
 	public int RpcPort { get; init; }
 	public int LlamaRpcPort { get; init; }
@@ -269,6 +275,14 @@ public sealed class NodeInfo
 	public int SlotsTotal { get; set; }
 	public int SlotsIdle { get; set; }
 	public int ConsecutiveFailures { get; set; }
+	/// <summary>
+	/// Consecutive health-poll cycles where the engine INFO (0x41) RPC failed
+	/// while the HTTP /slots poll succeeded. A dead RPC/prefill path (e.g. a
+	/// ggml_abort zombie still serving HTTP) must flip the node unhealthy
+	/// (#635) or the scheduler keeps dispatching prefill into a dying engine.
+	/// Reset to 0 on the first successful INFO RPC (engine restarted).
+	/// </summary>
+	public int RpcConsecutiveFailures { get; set; }
 	public DateTime LastCheck { get; set; }
 	public int StuckSlots { get; set; }
 	public List<SlotInfo> Slots { get; set; } = [];

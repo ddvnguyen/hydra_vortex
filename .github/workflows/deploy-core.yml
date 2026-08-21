@@ -64,6 +64,101 @@ jobs:
             2>&1 | tee /tmp/hydra-build-head-rtx.log | tail -3
           echo "Build complete"
 
+      - name: Reconcile engine pins before head recreation
+        id: reconcile
+        # #632: the next step reaps both host heads (#590 — podman refuses
+        # to remove/recreate core while dependents exist) and the "Deploy
+        # Hydra Heads" step recreates them from THIS checkout's node
+        # configs. Those configs are the DISPATCH branch's pins, which can
+        # be stale: Deploy Heads pins the image it deploys into its own
+        # checkout and persists it only as a deploy-heads/pin-* branch/PR
+        # — so a deploy-core dispatched from e.g. tmp/deploy-628-pins
+        # silently recreated the heads on engine 1d227f7 while the rig was
+        # on f25032e. Before any head is recreated, re-pin the node configs
+        # to the deployed/expected engine:
+        #   1. Overlay infra/hydra-head/config/ from the NEWEST
+        #      deploy-heads/pin-* branch — that branch is the pin from the
+        #      last Deploy Heads run that moved the image (it deployed from
+        #      those exact configs).
+        #   2. No pin branch (fresh repo): read the live heads'
+        #      binaries.llama-server.{source,pulled_digest} — the deployed
+        #      image — and write it into the checkout configs. MUST run
+        #      before the #590 reap below, which kills those heads.
+        #   3. Neither reachable: warn and keep the checkout pins; the
+        #      "Verify deployed engine digests" step stays the tripwire.
+        run: |
+          set -euo pipefail
+
+          extract_source() {
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$1"
+          }
+          extract_digest() {
+            sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$1"
+          }
+          pin_engine() {
+            local cfg="$1" src="$2" dig="$3"
+            sed -i "/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ s|^\([[:space:]]*source:[[:space:]]*\).*|\1${src}|" "$cfg"
+            if [ -n "$dig" ]; then
+              if grep -q '^[[:space:]]*image_digest:' "$cfg"; then
+                sed -i "/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ s|^\([[:space:]]*image_digest:[[:space:]]*\).*|\1${dig}|" "$cfg"
+              else
+                local esc_src
+                esc_src=$(printf '%s' "$src" | sed 's|/|\\/|g')
+                sed -i "/^[[:space:]]*source:[[:space:]]*${esc_src}$/a\\    image_digest: ${dig}" "$cfg"
+              fi
+            fi
+          }
+          read_live_pin() {
+            local ep="$1" cfg="$2"
+            local json src dig cur_src cur_dig
+            json=$(curl -sf --max-time 10 "$ep/status" 2>/dev/null || true)
+            if [ -z "$json" ]; then
+              echo "::warning::$ep unreachable — keeping checkout pin in $cfg"
+              return 0
+            fi
+            src=$(printf '%s' "$json" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          b = (d.get('binaries') or {}).get('llama-server') or {}
+          print(b.get('source', ''))
+          " 2>/dev/null || true)
+            dig=$(printf '%s' "$json" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          b = (d.get('binaries') or {}).get('llama-server') or {}
+          print(b.get('pulled_digest', ''))
+          " 2>/dev/null || true)
+            if [ -z "$src" ]; then
+              echo "::warning::$ep reports no llama-server source — keeping checkout pin in $cfg"
+              return 0
+            fi
+            cur_src=$(extract_source "$cfg")
+            cur_dig=$(extract_digest "$cfg")
+            if [ "$src" = "$cur_src" ] && [ "$dig" = "$cur_dig" ]; then
+              echo "$cfg already matches the deployed engine ($src)"
+              return 0
+            fi
+            echo "Re-pinning $cfg to the deployed engine: $src ($dig)"
+            pin_engine "$cfg" "$src" "$dig"
+          }
+
+          echo "Fetching deploy-heads pin branches..."
+          git fetch origin '+refs/heads/deploy-heads/pin-*:refs/remotes/origin/deploy-heads/pin-*'
+          LATEST_PIN=$(git for-each-ref --sort=-committerdate --format='%(refname:short)' 'refs/remotes/origin/deploy-heads/pin-*' | head -n 1 || true)
+          if [ -n "$LATEST_PIN" ]; then
+            echo "Overlaying node configs from the latest Deploy Heads pin branch: $LATEST_PIN"
+            git checkout "$LATEST_PIN" -- infra/hydra-head/config/
+          else
+            echo "::warning::No deploy-heads/pin-* branch found — reading the deployed engine from the live heads"
+            read_live_pin http://localhost:9700 infra/hydra-head/config/node-rtx.yaml
+            read_live_pin http://localhost:9701 infra/hydra-head/config/node-rtx3060.yaml
+          fi
+          PIN_SOURCE=$(extract_source infra/hydra-head/config/node-rtx.yaml)
+          EXPECTED_DIGEST=$(extract_digest infra/hydra-head/config/node-rtx.yaml)
+          echo "Recreated heads will run: ${PIN_SOURCE} ${EXPECTED_DIGEST}"
+          echo "pin-source=${PIN_SOURCE}" >> "$GITHUB_OUTPUT"
+          echo "expected-digest=${EXPECTED_DIGEST}" >> "$GITHUB_OUTPUT"
+
       - name: Deploy Hydra Core
         run: |
           set -eo pipefail
@@ -80,6 +175,23 @@ jobs:
           HYDRA_COORD_ALLOW_CROSS_MODEL_KV_REUSE=true
           EOF
           cd infra
+          # Record the current core container so we can prove the recreate
+          # below actually happened (#590): `compose up --force-recreate` can
+          # print errors yet still exit 0, and the health check then passes
+          # against the OLD core — CI green, rig stale.
+          CORE_BEFORE=$(podman inspect hydra-system_core_1 --format '{{.Created}}' 2>/dev/null || echo none)
+          # Both heads declare `depends_on: core`, so podman tracks them as
+          # dependents of the core container and refuses to remove/recreate
+          # it while they exist ("has dependent containers which must be
+          # removed before it" — #590). Reap both before force-recreating.
+          # NOTE: docker-compose.hydra.yml sets x-podman.in_pod: false — the
+          # containers are NOT pod members, so match by name prefix (a
+          # `--filter pod=` would match nothing). The next step brings both
+          # heads back (deploy-hydra-head.sh rtx+rtx3060), so removing them
+          # here is safe.
+          for c in $(podman ps -a --filter name=hydra-system_head- --format '{{.Names}}'); do
+            podman rm -f "$c" 2>/dev/null || true
+          done
           # Strip the runner's job-end orphan-cleanup marker so core's conmon
           # isn't killed when the job ends (actions/runner kills every process
           # whose env carries RUNNER_TRACKING_ID, JobExtension.cs).
@@ -92,10 +204,97 @@ jobs:
           # compose-up (zombie heads are reaped/recreated there too).
           podman compose -f docker-compose.hydra.yml up -d --force-recreate core
           echo "Hydra core started"
+          # Wait for the NEW core to come up — the old container is gone, so
+          # a green health here means the fresh container actually serves.
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            sleep 3
+            if curl -sf http://localhost:9000/health >/dev/null 2>&1; then
+              echo "Hydra core healthy"
+              break
+            fi
+            if [ "$i" = "15" ]; then
+              echo "::warning::core health not green after 45s — continuing (Verify services healthy retries)"
+            fi
+          done
+          # #590 stale-deploy guard: if the core container was NOT recreated
+          # this run (identical Created timestamp), the deploy silently left
+          # the OLD core in place — fail loudly instead of reporting SUCCESS.
+          CORE_AFTER=$(podman inspect hydra-system_core_1 --format '{{.Created}}' 2>/dev/null || echo none)
+          if [ "$CORE_AFTER" = "none" ]; then
+            echo "::error::core container missing after compose up — deploy failed (#590)"
+            exit 1
+          fi
+          if [ "$CORE_BEFORE" != "none" ] && [ "$CORE_AFTER" = "$CORE_BEFORE" ]; then
+            echo "::error::core container was NOT recreated (stale deploy — #590)"
+            exit 1
+          fi
+          echo "Core recreated: $CORE_BEFORE -> $CORE_AFTER"
 
-      - name: Deploy Hydra Head RTX
+      - name: Deploy Hydra Heads (RTX + RTX3060)
+        # rtx+rtx3060 (not rtx): the core step reaps BOTH heads (#590) before
+        # force-recreating core, so both must be brought back here. The target
+        # runs deploy_shared_setup (idempotent `up -d core` — core already
+        # exists and the image is unchanged) once, then recreates
+        # head-rtx5060ti and head-rtx3060 concurrently, each marker-stripped
+        # and setsid/systemd-scoped (#575/#586). The node configs they
+        # recreate from were re-pinned to the deployed/expected engine by the
+        # Reconcile step above (#632).
         run: |
-          bash scripts/deploy-hydra-head.sh rtx
+          bash scripts/deploy-hydra-head.sh rtx+rtx3060
+
+      - name: Verify deployed engine digests
+        # #632 tripwire: the heads were just recreated from the reconciled
+        # node configs; this proves each one actually runs the expected
+        # engine (binaries.llama-server.pulled_digest == the digest pinned
+        # by the last Deploy Heads run) instead of silently smoke-testing a
+        # stale engine (mirrors deploy-heads.yml's "Verify deployed
+        # digests"). The head's /status is only served after its engine
+        # pull+start completes, so a bare missing pulled_digest is retried.
+        run: |
+          set -euo pipefail
+
+          EXPECTED="${{ steps.reconcile.outputs.expected-digest }}"
+          PIN_SOURCE="${{ steps.reconcile.outputs.pin-source }}"
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::no engine digest pinned (source: ${PIN_SOURCE:-none}) — cannot verify the recreated heads"
+            exit 1
+          fi
+          echo "Expected engine: ${PIN_SOURCE} ${EXPECTED}"
+
+          FAIL=0
+          verify_head() {
+            local label="$1" ep="$2" expected="$3"
+            local actual="" try
+            for try in $(seq 1 10); do
+              actual=$(curl -sf --max-time 10 "$ep/status" 2>/dev/null | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          b = (d.get('binaries') or {}).get('llama-server') or {}
+          print(b.get('pulled_digest', ''))
+          " 2>/dev/null || true)
+              if [ -n "$actual" ]; then
+                break
+              fi
+              echo "$label: pulled_digest not reported yet (try $try/10) — engine may still be pulling"
+              sleep 15
+            done
+            if [ -z "$actual" ]; then
+              echo "::error::$label: no pulled_digest after 2.5 min — engine pull/start did not complete"
+              FAIL=1
+              return
+            fi
+            if [ "$actual" = "$expected" ]; then
+              echo "OK: $label digest matches: $actual"
+            else
+              echo "::error::$label digest mismatch (expected=$expected actual=$actual)"
+              FAIL=1
+            fi
+          }
+
+          verify_head "hydra-head-rtx" "http://localhost:9700" "$EXPECTED"
+          verify_head "hydra-head-rtx3060" "http://localhost:9701" "$EXPECTED"
+          [ "$FAIL" -ne 0 ] && exit 1
+          echo "All host heads verified — engine digests match the expected pin"
 
       - name: Verify services healthy
         run: |

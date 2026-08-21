@@ -17,6 +17,21 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
     private readonly object _lock = new();
     private Action? _healthyChanged;
 
+    /// <summary>
+    /// Consecutive engine INFO (0x41) RPC failures after which the node flips
+    /// unhealthy even though the HTTP /slots poll still succeeds (#635).
+    /// Matches the existing OnFail threshold so both health signals agree.
+    /// </summary>
+    private const int RpcFailureThreshold = 3;
+
+    /// <summary>
+    /// Injectable factory for the engine INFO RPC client (test seam). When
+    /// null, a real <see cref="Hydra.Shared.RpcClient"/> to the worker's RPC
+    /// port is created (production behavior). Mirrors the scheduler's
+    /// AgentClientFactory seam.
+    /// </summary>
+    internal Func<string, int, Hydra.Shared.RpcClient>? EngineInfoRpcClientFactory { get; set; }
+
     public bool IsStoreHealthy { get; private set; } = true;
 
     /// <inheritdoc/>
@@ -62,14 +77,46 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
     }
 
     public bool IsHealthy(string name) { lock (_lock) return _nodes.TryGetValue(name, out var n) && n.Healthy; }
+
+    /// <inheritdoc/>
+    public void MarkHealthy(string name)
+    {
+        // #592: mutate the existing NodeInfo in place (slot/model data stays
+        // fresh) and fire HealthyChanged only on a real unhealthy→healthy flip,
+        // mirroring OnFail's flip-only signal semantics.
+        bool flipped = false;
+        lock (_lock)
+        {
+            if (_nodes.TryGetValue(name, out var info) && !info.Healthy)
+            {
+                info.Healthy = true;
+                info.ConsecutiveFailures = 0;
+                // #635: positive liveness evidence (prefill served / probe OK)
+                // also resets the engine-INFO RPC failure counter. If the RPC
+                // path is genuinely still down, the next poll re-counts it.
+                info.RpcConsecutiveFailures = 0;
+                info.LastCheck = DateTime.UtcNow;
+                flipped = true;
+            }
+        }
+        if (flipped) _healthyChanged?.Invoke();
+    }
+
     public int? GetIdleSlot(string name) { var info = GetNodeInfo(name); return info?.Slots.FirstOrDefault(s => !s.IsProcessing)?.Id; }
     public NodeInfo? GetNodeInfo(string name) { lock (_lock) return _nodes.TryGetValue(name, out var n) ? Clone(n) : null; }
-    public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
+    public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities)
     {
         lock (_lock)
         {
             if (_nodes.TryGetValue(nodeName, out var n))
             {
+                // CurrentModel is the GGUF-file alias of the model actually
+                // resident on the node (#479/S3). It feeds the request_timeline
+                // prefill_model/decode_model fields and AutoRouter's residency
+                // check. Only stamp when we have a real alias — don't clear a
+                // known-good value with an empty string.
+                if (!string.IsNullOrEmpty(modelAlias))
+                    n.CurrentModel = modelAlias;
                 n.ModelTokenizer = tokenizer;
                 n.ModelName = modelName;
                 n.ModelQuant = modelQuant;
@@ -107,6 +154,13 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
 
         IsStoreHealthy = true;
     }
+
+    /// <summary>
+    /// Test seam (mirrors the scheduler's RunItemPipeline seam): runs one
+    /// full poll cycle so Tests.Core can exercise the EngineInfo-RPC health
+    /// detection without waiting for the HealthPollIntervalS timer.
+    /// </summary>
+    internal async Task PollForTestAsync(CancellationToken ct) => await PollAllAsync(ct);
 
     private async Task PollWorkerAsync(WorkerConfig w, CancellationToken ct)
     {
@@ -187,9 +241,13 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         // GGUF-file aliases this node's --models-preset can host. Replaces the
         // /v1/models residency signal for AutoRouter + Router.IsModelAllowed.
         // Best-effort: a pre-#289 engine returns NotImplemented → empty set.
+        var engineInfoFailed = false;
         try
         {
-            await using var rpc = new Hydra.Shared.RpcClient(w.LlamaRpcHost, w.LlamaRpcPort > 0 ? w.LlamaRpcPort : w.RpcPort);
+            var rpc = EngineInfoRpcClientFactory is null
+                ? new Hydra.Shared.RpcClient(w.LlamaRpcHost, w.LlamaRpcPort > 0 ? w.LlamaRpcPort : w.RpcPort)
+                : EngineInfoRpcClientFactory(w.LlamaRpcHost, w.LlamaRpcPort > 0 ? w.LlamaRpcPort : w.RpcPort);
+            await using var _ = rpc;
             var engine = new HydraEngineClient(rpc);
             var engineInfo = await engine.EngineInfoAsync($"health-{w.Name}", ct);
             if (engineInfo?.PresetAliases is { } aliases && aliases.Count > 0)
@@ -199,6 +257,7 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         }
         catch (Exception ex)
         {
+            engineInfoFailed = true;
             _log.Warning(ex, "health_poll_engine_info_failed Node={N} Host={H} Port={P}",
                 w.Name, w.LlamaRpcHost, w.LlamaRpcPort > 0 ? w.LlamaRpcPort : w.RpcPort);
         }
@@ -210,6 +269,39 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         lock (_lock)
         {
             _nodes.TryGetValue(w.Name, out var prev);
+            // #479/S3: the resident model is stamped per-request by the worker
+            // scheduler (UpdateNodeModelIdentity). The poll doesn't know the
+            // model, so carry the last-known identity forward instead of
+            // replacing the node with a blank slate each cycle — otherwise the
+            // request_timeline prefill_model/decode_model fields go empty
+            // between the stamp and the next PREFILL.
+            if (prev != null)
+            {
+                info.CurrentModel = prev.CurrentModel;
+                info.ModelTokenizer = prev.ModelTokenizer;
+                info.ModelName = prev.ModelName;
+                info.ModelQuant = prev.ModelQuant;
+                info.ModelCapabilities = prev.ModelCapabilities;
+            }
+
+            // #635: the EngineInfo RPC failing while /slots succeeds means the
+            // RPC/prefill path is dead even though HTTP looks alive (observed:
+            // ggml_abort zombie serving /slots with a dead RPC port). After
+            // RpcFailureThreshold consecutive failures the node flips unhealthy
+            // — the scheduler's admission gate + router then stop dispatching
+            // prefill into the dying engine. One successful INFO RPC (engine
+            // restarted) resets the counter and, via SetNodeInfo below, flips
+            // the node back healthy (firing HealthyChanged → evaluator re-check
+            // for any queued/retry-pending items, #635 fix 3).
+            var rpcFails = engineInfoFailed ? (prev?.RpcConsecutiveFailures ?? 0) + 1 : 0;
+            info.RpcConsecutiveFailures = rpcFails;
+            if (rpcFails >= RpcFailureThreshold)
+            {
+                info.Healthy = false;
+                _log.Warning("health_poll_engine_info_dead Node={N} RpcFails={R}/{T} — RPC/prefill path down, marking unhealthy",
+                    w.Name, rpcFails, RpcFailureThreshold);
+            }
+
             info.StuckSlots = StuckSlotDetector.Apply(prev?.Slots, info.Slots, _cfg.StuckSlotCycles);
             foreach (var slot in info.Slots)
                 if (slot.StuckPollCount == _cfg.StuckSlotCycles)  // log once, on the cycle it crosses
@@ -248,6 +340,7 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         SlotsIdle = src.SlotsIdle,
         StuckSlots = src.StuckSlots,
         ConsecutiveFailures = src.ConsecutiveFailures,
+        RpcConsecutiveFailures = src.RpcConsecutiveFailures,
         PresetAliases = new HashSet<string>(src.PresetAliases, StringComparer.OrdinalIgnoreCase),
         EngineCapabilities = new HashSet<string>(src.EngineCapabilities, StringComparer.OrdinalIgnoreCase),
         CurrentModel = src.CurrentModel,

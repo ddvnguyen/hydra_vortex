@@ -122,6 +122,21 @@ fluent-DSL state machine + differential parity harness). Branch: `epic/591-rewri
   injected into the PREFILL request body (`WorkerSchedulerService.cs:1209`, #481 Phase 2b)
 - **`HydraEngineClient.SetEngineConfigAsync`** — replaced by `EngineConfigureAsync`
 
+### Merged-decode epic fixes (`epic/470-merged-decode`)
+| Item | Status | Notes |
+|------|--------|-------|
+| #597 parallel + coalesced liveness probes | ✅ Landed | `0cd73cb3` + `2c0b6f7cd` — stale-worker probes no longer serialize; `_llamaClients` made concurrent-safe |
+| #598/#599/#600 merged-decode helper extraction + fixes | ✅ Landed (PR #605) | shared merged-decode request-resolution + `GetOrCreateRpcClient` helpers; leftover bare block flattened |
+| #609 `KvModelAlias` in merged-decode alias fallback | ✅ Landed | `ea10dc03c` — model-agnostic sessions keep Gate A match |
+| #588 LiveRig budgets 4K-16K + concurrency=2 | ✅ Landed | `fec895c06`, `ef8a7adbb` — thinking-heavy model budgets + rig slot limit |
+| #615 Store LRU sweep + evict-on-ENOSPC + eviction lock | ✅ Landed (CRITICAL) | `31c9d30ef`, `6a3e62f4f` — tmpfs can no longer fill 100% → KV save failures → no KV restore between turns; verified live: 0 save failures, restores working, Multiturn40kContext 13 min (was 28 min FAIL) |
+| #616 merged-decode empty-content → HTTP proxy fallback | ✅ Landed | `16e537795` + QA `0ac1fd036` — buffered + streaming fallback paths |
+| #617 migrate continuation re-enters KV restore | ✅ Landed | `16e537795` — StatePut status check + non-resident ledger |
+| FIX-3 Dense27bMultiturn timing-budget test | ✅ Landed | `ea49169f` — baseline + 10 s per expected state transition |
+| Ops: write-behind flush to SSD | ✅ Fixed | compose user 0:0 (rootless podman maps container root → host ddv = owner of ntfs-mounted `/mnt/SSD`); chunks flush to SSD backup, 0 errors |
+| #470 open item 3: p100 cold-expert warm-up | ✅ Landed (config-only) | `no-mmap: true` on p100 (`node-p100.yaml`) — eager expert load kills the +7446-majflt first-decode tax; warm-up prefill not config-hookable (head readiness is sentinel-driven, no post-load hook), so `--no-mmap` chosen as the deterministic fix |
+| #618/#619 follow-ups | 📌 Filed | FIX-3 hidden-load hole; store chunk dir byte cap |
+
 ## Worker Node Model
 
 Each GPU node is managed by Hydra Head with these characteristics:
@@ -325,6 +340,7 @@ matched the resident model** before generating — the gap behind #469.
 | 3b | DECODE dynamic model-swap before KV restore | ✅ Merged (fork #65) |
 | 4 | Coordinator merged-decode path | ✅ Merged (#492) |
 | R1 | Same-node fallback observability + COMBINED routing fix | ✅ Merged (#493) |
+| 4.x | Epic follow-up fixes (probes, KvModelAlias, empty-content fallback, Store LRU sweep, …) | ✅ Landed on `epic/470-merged-decode` |
 | 5 | v3 segmented framing, validate-first, real SSE streaming | ▶ In progress |
 | 6 | E2E soak on `pi/hydra/moe-35b-pd` | ⏳ Pending |
 
@@ -359,3 +375,9 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 | Worker lease on mid-pipeline cancel | ✅ FinalizeAsync called at both exit points (PR #541). Before: BusySince climbed unbounded until coordinator restart |
 | deploy-heads startup_failure | ✅ Root cause: caller workflow lacked `pull-requests: read` for the cross-repo reusable workflow's job-level `permissions` (PR #539) |
 | Head supervision             | ✅ Event-driven (stdout sentinel readiness + exit-event liveness), no HTTP poll (issue #538) |
+| Multiturn40kContext live rig (run #31405080406) | ✅ 13 min PASS (was 28 min FAIL) — KV restores working between turns |
+| KV restore latency           | ✅ Working up to 7.5 s for large blobs; cold prefills bounded (~4 total in suite) |
+| P100 cold-expert mmap tax    | ✅ Fixed (`no-mmap`, epic #470) — first decode prefill after cold start was 15.0 s / 29.6 s total (majflt 12952→20398, RSS +4.15 GB, Mapped 7.73 GB) vs 4.1 / 6.2 s warm; eager expert load at engine start removes the one-shot fault storm |
+| Store LRU sweep              | ✅ L1 sweep heartbeat every 45 s (`chunk_cache_lru_sweep`) |
+| Merged-decode result path    | ⚠️ Drops `reasoning_content` (engine bug, #616) — interim coordinator HTTP-proxy fallback; engine fix pending |
+| RTX 3060 role                | ✅ Peer-only by design (mainline #481, slots=0) — COMBINED peer, not SOLO |

@@ -107,10 +107,75 @@ public class CliDriverParsingTests
 
         Assert.True(result.IsValidJson);
         Assert.True(result.ReasoningContentPresent);
+        Assert.Equal("Let me analyze this...", result.ReasoningContent);
         Assert.Equal("The result.", result.ResponseContent);
         Assert.Equal(200, result.PromptTokens);
         Assert.Equal(30, result.CompletionTokens);
         Assert.Equal(10, result.CachedTokens);
+    }
+
+    [Fact]
+    public void PiCliDriver_ParseOutput_ToolCallBlock_CapturesNameAndArgs()
+    {
+        // pi tool_call content block: {type:"tool_call", name, arguments}.
+        var ndjson = string.Join('\n',
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_call\",\"id\":\"tc_1\",\"name\":\"calculator\",\"arguments\":\"{\\\"expression\\\":\\\"1234*5678\\\"}\"},{\"type\":\"text\",\"text\":\"Computing.\"}],\"usage\":{\"input\":200,\"output\":30},\"stopReason\":\"tool_use\",\"timestamp\":1}}");
+
+        var result = PiCliDriver.ParseOutput(ndjson, 0, TimeSpan.FromSeconds(3), BaseTime, BaseTime.AddSeconds(3));
+
+        Assert.True(result.IsValidJson);
+        Assert.True(result.ToolCallsPresent);
+        Assert.Equal("calculator", result.ToolCallName);
+        Assert.NotNull(result.ToolCallArgs);
+        Assert.Contains("1234", result.ToolCallArgs);
+        Assert.Contains("5678", result.ToolCallArgs);
+    }
+
+    [Fact]
+    public void PiCliDriver_ParseOutput_ToolCallArgsAsObject_CapturesRawText()
+    {
+        // args may arrive as an already-parsed JSON object (not a string).
+        var ndjson = string.Join('\n',
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_call\",\"name\":\"calculator\",\"input\":{\"a\":1234,\"b\":5678}}],\"usage\":{\"input\":200,\"output\":30},\"stopReason\":\"tool_use\",\"timestamp\":1}}");
+
+        var result = PiCliDriver.ParseOutput(ndjson, 0, TimeSpan.FromSeconds(3), BaseTime, BaseTime.AddSeconds(3));
+
+        Assert.True(result.ToolCallsPresent);
+        Assert.Equal("calculator", result.ToolCallName);
+        Assert.NotNull(result.ToolCallArgs);
+        Assert.Contains("1234", result.ToolCallArgs);
+        Assert.Contains("5678", result.ToolCallArgs);
+    }
+
+    [Fact]
+    public void PiCliDriver_ParseOutput_LegacyOpenAiToolCalls_Captured()
+    {
+        // Legacy OpenAI-shaped single-doc: top-level tool_calls array with
+        // function.name / function.arguments.
+        var json = "{\"content\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"calculator\",\"arguments\":\"{\\\"a\\\":1234,\\\"b\\\":5678}\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10}}";
+
+        var result = PiCliDriver.ParseOutput(json, 0, TimeSpan.FromSeconds(1), BaseTime, BaseTime.AddSeconds(1));
+
+        Assert.True(result.IsValidJson);
+        Assert.True(result.ToolCallsPresent);
+        Assert.Equal("calculator", result.ToolCallName);
+        Assert.NotNull(result.ToolCallArgs);
+        Assert.Contains("1234", result.ToolCallArgs);
+        Assert.Contains("5678", result.ToolCallArgs);
+    }
+
+    [Fact]
+    public void PiCliDriver_ParseOutput_NoToolCallsOrReasoning_DefaultsNull()
+    {
+        var json = "{\"content\":\"7006652\",\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10}}";
+
+        var result = PiCliDriver.ParseOutput(json, 0, TimeSpan.FromSeconds(1), BaseTime, BaseTime.AddSeconds(1));
+
+        Assert.False(result.ToolCallsPresent);
+        Assert.Null(result.ToolCallName);
+        Assert.Null(result.ToolCallArgs);
+        Assert.False(result.ReasoningContentPresent);
+        Assert.Null(result.ReasoningContent);
     }
 
     [Fact]

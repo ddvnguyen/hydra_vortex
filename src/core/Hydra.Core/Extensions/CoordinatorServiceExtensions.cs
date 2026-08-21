@@ -183,6 +183,16 @@ public static class CoordinatorServiceExtensions
             sp.GetRequiredService<LocalFsChunkCache>(),
             sp.GetService<IContentChunkStore>()));
 
+        // Periodic L1 LRU sweep (#615): the tmpfs byte-LRU eviction must run
+        // on a timer or the L1 (and the shared /mnt/llm-ram mount) fills and
+        // KV saves fail with ENOSPC. Logs chunk_cache_lru_sweep every 45 s.
+        services.AddSingleton<ChunkCacheSweepService>(sp =>
+        {
+            var log = Serilog.Log.ForContext("component", "chunkcache");
+            return new ChunkCacheSweepService(sp.GetRequiredService<LocalChunkCache>(), log);
+        });
+        services.AddHostedService(sp => sp.GetRequiredService<ChunkCacheSweepService>());
+
         // Scheduler background runner
         services.AddHostedService<SchedulerBackgroundRunner>();
 

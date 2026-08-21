@@ -30,6 +30,32 @@ public sealed partial class HydraLogScraper
     private static partial Regex CrashRestartRegex();
 
     /// <summary>
+    /// Pattern 4: hydra-auto resolution — the coordinator logs an
+    /// autoroute_resolved line when a hydra-auto request is resolved to a
+    /// concrete worker plan.
+    /// </summary>
+    [GeneratedRegex(@"autoroute_resolved\b.*", RegexOptions.Compiled)]
+    private static partial Regex AutoRouteRegex();
+
+    /// <summary>
+    /// Pattern 5: model routing check — logged for every request that carries a
+    /// model field, with the coordinator session id and the requested model
+    /// string. Used to correlate a test's request to its autoroute_resolved
+    /// event (the coordinator session id is a hash, not the CLI's --session-id).
+    /// </summary>
+    [GeneratedRegex(@"model_routing_check\b.*", RegexOptions.Compiled)]
+    private static partial Regex ModelRoutingCheckRegex();
+
+    /// <summary>
+    /// Field parser for autoroute_resolved key=value pairs. The coordinator
+    /// uses PascalCase keys (Sid= Model= Head= Peer= Decode= Mode=), which the
+    /// lowercase-only KeyValueRegex does not match, so a case-tolerant variant
+    /// is used here.
+    /// </summary>
+    [GeneratedRegex(@"([A-Za-z_]+)=([^\s]*)", RegexOptions.Compiled)]
+    private static partial Regex AutoRouteKeyValueRegex();
+
+    /// <summary>
     /// Field parser for key=value pairs in request_timeline log lines.
     /// Matches patterns like: tokens_out=150 decode_ms=750.0 queue_wait_ms=0 route_type=affinity node=rtx
     /// </summary>
@@ -121,6 +147,65 @@ public sealed partial class HydraLogScraper
         }
 
         return events;
+    }
+
+    /// <summary>
+    /// Scrape autoroute_resolved events from the core container logs.
+    /// One event per hydra-auto resolution (a fresh session resolves once,
+    /// on its first request).
+    /// </summary>
+    public IReadOnlyList<AutoRouteEvent> ScrapeAutoRoute(
+        DateTimeOffset since, DateTimeOffset? until = null)
+    {
+        var lines = FetchLogs(_coreContainer, since, until);
+        var events = new List<AutoRouteEvent>();
+
+        foreach (var line in lines)
+        {
+            var parsed = ParseAutoRoute(line);
+            if (parsed is not null) events.Add(parsed);
+        }
+
+        return events;
+    }
+
+    /// <summary>
+    /// Find the coordinator session id of the first request in the window that
+    /// specified <paramref name="requestedModel"/> (via the model_routing_check
+    /// log line). The coordinator session id is a hash of the CLI's session id,
+    /// so it cannot be predicted; this is the only reliable correlation between
+    /// a test's request and its routing events. Returns null when no matching
+    /// request ran in the window.
+    /// </summary>
+    public string? FindSessionIdForModel(
+        DateTimeOffset since, DateTimeOffset? until, string requestedModel)
+    {
+        foreach (var line in FetchLogs(_coreContainer, since, until))
+        {
+            var sid = ExtractModelRoutingSid(line, requestedModel);
+            if (sid is not null) return sid;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Extract the coordinator session id from a model_routing_check log line,
+    /// or null when the line is not a routing check for
+    /// <paramref name="requestedModel"/>.
+    /// </summary>
+    internal static string? ExtractModelRoutingSid(string line, string requestedModel)
+    {
+        if (string.IsNullOrWhiteSpace(line) || !ModelRoutingCheckRegex().IsMatch(line))
+            return null;
+
+        var fields = new Dictionary<string, string>();
+        foreach (Match m in AutoRouteKeyValueRegex().Matches(line))
+            fields[m.Groups[1].Value] = m.Groups[2].Value;
+
+        return fields.GetValueOrDefault("ModelStr") == requestedModel
+            ? fields.GetValueOrDefault("Sid")
+            : null;
     }
 
     /// <summary>
@@ -230,6 +315,35 @@ public sealed partial class HydraLogScraper
             Details = line,
             RawLine = line,
             Timestamp = timestamp,
+        };
+    }
+
+    /// <summary>
+    /// Parse an autoroute_resolved log line into a structured event.
+    /// Format: [timestamp] autoroute_resolved Sid=&lt;id&gt; Model=&lt;alias&gt;
+    /// Head=&lt;node&gt; Peer=&lt;node|none&gt; Decode=&lt;node|none&gt; Mode=&lt;mode&gt;
+    /// </summary>
+    public static AutoRouteEvent? ParseAutoRoute(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line) || !AutoRouteRegex().IsMatch(line))
+            return null;
+
+        var fields = new Dictionary<string, string>();
+        foreach (Match m in AutoRouteKeyValueRegex().Matches(line))
+            fields[m.Groups[1].Value] = m.Groups[2].Value;
+
+        var sid = fields.GetValueOrDefault("Sid", "");
+        if (string.IsNullOrEmpty(sid)) return null;
+
+        return new AutoRouteEvent
+        {
+            Sid = sid,
+            Model = fields.GetValueOrDefault("Model", ""),
+            Head = fields.GetValueOrDefault("Head", ""),
+            Peer = fields.GetValueOrDefault("Peer", ""),
+            Decode = fields.GetValueOrDefault("Decode", ""),
+            Mode = fields.GetValueOrDefault("Mode", ""),
+            RawLine = line,
         };
     }
 

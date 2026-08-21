@@ -230,13 +230,19 @@ check_llama_build_type_local() {
 
 # Check the FAT sm_86+sm_120 binary used by both head-rtx (5060 Ti)
 # and head-rtx3060 in the same pod. Same build-type rules: shared-lib
-# only, no static (see #346). Falls back to build_sm120_v3 (sm_120 only)
-# so a deploy still works if the fat build hasn't been done yet — the
-# 3060 will then run via PTX JIT (slow but functional, see #368).
+# only, no static (see #346). With no local fat build, the default
+# path is an OCI pull (native arch per node — no PTX JIT); only a
+# local-only node config (no OCI source) falls back to build_sm120_v3
+# with PTX JIT on the 3060 (slow but functional, see #368).
 check_llama_build_type_local_fat() {
   local bind_src="$REPO_ROOT/src/llama-cpp/build_sm86_sm120/bin/llama-server"
   if [ ! -x "$bind_src" ]; then
-    warn "Fat sm_86+sm_120 build not present at $bind_src; falling back to sm_120-only at build_sm120_v3/. RTX 3060 will run via PTX JIT (slower)."
+    if grep -qE '^\s*source:\s*(ghcr\.io|docker\.io|quay\.io)/' \
+         "$REPO_ROOT/infra/hydra-head/config/node-rtx.yaml" 2>/dev/null; then
+      ok "No local fat sm_86+sm_120 build; node configs pull from OCI — native arch, no PTX fallback"
+      return 0
+    fi
+    warn "Fat sm_86+sm_120 build not present at $bind_src, and node-rtx.yaml has no OCI source — falling back to sm_120-only at build_sm120_v3/. RTX 3060 will run via PTX JIT (slower)."
     return 0
   fi
   step "Build-type gate (RTX fat binary)"
@@ -412,6 +418,15 @@ deploy_rtx_only() {
     podman rm hydra-head-rtx 2>/dev/null || true
   fi
 
+  # Force a fresh container so the (idempotent) compose up actually applies
+  # the new engine pin. Mirrors deploy_rtx3060_only — a healthy container
+  # would otherwise make `compose up -d` no-op and silently skip the swap
+  # (observed in Deploy Heads run 31552059620).
+  if podman container exists hydra-system_head-rtx5060ti_1 2>/dev/null; then
+    podman stop hydra-system_head-rtx5060ti_1 2>/dev/null || true
+    podman rm hydra-system_head-rtx5060ti_1 2>/dev/null || true
+  fi
+
   reap_zombie_container hydra-system_head-rtx5060ti_1
 
   # Service-scoped — only touches head-rtx5060ti. `core` is already up
@@ -430,7 +445,7 @@ deploy_rtx_only() {
   # of session/cgroup. Strip it so conmon doesn't inherit the marker.
   unset RUNNER_TRACKING_ID 2>/dev/null || true
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$$" \
+  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$BASHPID" \
       podman compose -f infra/docker-compose.hydra.yml up -d head-rtx5060ti 2>&1 | tail -10; then
     die "podman compose up (head-rtx5060ti) failed — check the output above."
   fi
@@ -581,7 +596,7 @@ deploy_rtx3060_only() {
   # of session/cgroup. Strip it so conmon doesn't inherit the marker.
   unset RUNNER_TRACKING_ID 2>/dev/null || true
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$$" \
+  if ! setsid --wait systemd-run --user --scope --collect --unit="hydra-head-deploy-$(date +%s)-$BASHPID" \
       podman compose -f infra/docker-compose.hydra.yml up -d head-rtx3060 2>&1 | tail -10; then
     die "podman compose up (head-rtx3060) failed — check the output above."
   fi

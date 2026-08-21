@@ -12,6 +12,7 @@ on:
           - liverig
           - engineparity
           - both
+          - smoke
 
 permissions:
   contents: read
@@ -47,6 +48,22 @@ jobs:
           dotnet test src/core/Tests.LiveRig/ -c Release --no-build --nologo -v normal \
             --settings src/Hydra.runsettings \
             --logger "trx;LogFileName=liverig.trx" \
+            --results-directory TestResults/
+        env:
+          COORD_URL: http://localhost:9000
+          LLAMA_RTX_URL: http://localhost:8080
+          LLAMA_P100_URL: http://192.168.122.21:8086
+          COORD_METRICS_URL: http://localhost:9501/metrics
+          STORE_HOST: 127.0.0.1
+          STORE_PORT: "9500"
+
+      - name: Run Smoke tests (Tier smoke)
+        if: inputs.tier == 'smoke'
+        run: |
+          dotnet test src/core/Tests.LiveRig/ -c Release --no-build --nologo -v normal \
+            --settings src/Hydra.runsettings \
+            --filter "FullyQualifiedName~SmokeTests" \
+            --logger "trx;LogFileName=smoke.trx" \
             --results-directory TestResults/
         env:
           COORD_URL: http://localhost:9000

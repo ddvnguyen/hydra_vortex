@@ -1,0 +1,32 @@
+# Build artifacts & test results
+build/
+out/
+dist/
+TestResults/
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Model weights / large binaries
+models/
+*.gguf
+*.ggml
+*.bin
+*.pt
+*.safetensors
+
+# Secrets — never index
+.env
+.env-*
+!.env.example
+.hydra-head-token
+
+# Dependencies & caches
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc

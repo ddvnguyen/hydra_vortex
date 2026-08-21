@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Tests.LiveRig.Ordering;
 using Xunit;
 
 namespace Tests.LiveRig;
@@ -19,7 +20,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
 
     private const string Prompt = "What is the capital of France? Give a detailed answer.";
     private const string Continuation = "Now tell me about the Eiffel Tower's history and construction details.";
-    private const int MaxTokens = 100;
+    private const int MaxTokens = 4096;
 
     public FullWorkflowTests(LiveRigFixture fx) => _fx = fx;
 
@@ -93,7 +94,11 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         [new() { ["role"] = "user", ["content"] = prompt }];
 
     // ── Tests ────────────────────────────────────────────────────────────
+    // All tests in this class run on the default moe-35b-solo (balanced)
+    // resident model — group 1 (orders 1-27), zero model swaps. Global order
+    // via [TestOrder] + assembly-wide TestCaseOrderer (Ordering/, #470).
 
+    [TestOrder(7)]
     [SkippableFact]
     public async Task HealthEndpoint()
     {
@@ -109,6 +114,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         Assert.True(body.TryGetProperty("store", out _));
     }
 
+    [TestOrder(8)]
     [SkippableFact]
     public async Task StatusEndpoint()
     {
@@ -124,6 +130,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         Assert.True(rt.GetProperty("total").GetInt32() >= 0);
     }
 
+    [TestOrder(9)]
     [SkippableFact]
     public async Task CompletionNonStream()
     {
@@ -155,6 +162,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(10)]
     [SkippableFact]
     public async Task CompletionStream()
     {
@@ -177,12 +185,19 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
             using var reader = new StreamReader(stream);
 
             var allOutputs = new List<string>();
+            var rawPayload = new System.Text.StringBuilder();
             while (true)
             {
                 var line = await reader.ReadLineAsync();
                 if (line is null) break;
                 if (string.IsNullOrEmpty(line)) continue;
-                if (!line.StartsWith("data: ")) continue;
+                // merged-decode streaming returns the buffered completion as a
+                // single non-SSE JSON blob; keep non-"data:" lines as fallback.
+                if (!line.StartsWith("data: "))
+                {
+                    rawPayload.Append(line);
+                    continue;
+                }
                 var payload = line["data: ".Length..];
                 if (payload == "[DONE]") break;
                 try
@@ -198,6 +213,22 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
                 catch { /* skip malformed events */ }
             }
 
+            // Fallback: no SSE deltas — the merged-decode stream may have arrived
+            // as a single buffered response blob; parse it as a plain completion.
+            if (allOutputs.Count == 0 && !string.IsNullOrWhiteSpace(rawPayload.ToString()))
+            {
+                try
+                {
+                    var blob = JsonSerializer.Deserialize<JsonElement>(rawPayload.ToString());
+                    if (blob.TryGetProperty("choices", out var blobChoices) && blobChoices.GetArrayLength() > 0)
+                    {
+                        var content = HttpHelpers.GetOutputText(blobChoices[0].GetProperty("message"));
+                        if (!string.IsNullOrEmpty(content)) allOutputs.Add(content);
+                    }
+                }
+                catch { /* not a JSON blob — keep empty */ }
+            }
+
             Assert.True(allOutputs.Count > 0, "no 'content' or 'reasoning_content' across all stream events");
         }
         finally
@@ -206,6 +237,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(11)]
     [SkippableFact]
     public async Task SessionLifecycle()
     {
@@ -240,6 +272,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(12)]
     [Fact(Skip = "Prefix checkpoint has no dedicated HTTP endpoints — it is driven implicitly through the normal /v1/chat/completions flow via PrefixCheckpointEnabled config. No HTTP-observable way to test save/restore directly.")]
     public void PrefixCheckpoint()
     {
@@ -249,6 +282,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         // There are no HTTP-observable save/restore endpoints.
     }
 
+    [TestOrder(13)]
     [SkippableFact]
     public async Task MigrateSession()
     {
@@ -285,6 +319,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(14)]
     [SkippableFact]
     public async Task MigrationCacheHit()
     {
@@ -292,7 +327,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         var sessionId = MakeSessionId();
         try
         {
-            var first = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 50);
+            var first = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 4096);
             var assistantReply = first.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()!;
 
             using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
@@ -323,6 +358,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(15)]
     [SkippableFact]
     public async Task EvictionWithSave()
     {
@@ -350,6 +386,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(16)]
     [SkippableFact]
     public async Task SlotIdResolvedAfterFirstCompletion()
     {
@@ -397,6 +434,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(17)]
     [SkippableFact]
     public async Task SlotIdPersistsAcrossSessionLifecycle()
     {
@@ -432,6 +470,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         }
     }
 
+    [TestOrder(18)]
     [SkippableFact]
     public async Task FullCycleCompletionMigrationContinuation()
     {
@@ -439,7 +478,7 @@ public sealed class FullWorkflowTests : IClassFixture<LiveRigFixture>
         var sessionId = MakeSessionId();
         try
         {
-            var body = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 50);
+            var body = await DoCompletion(sessionId, MakeMessages(Prompt), maxTokens: 4096);
             var assistantReply = body.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()!;
 
             using var migrateCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));

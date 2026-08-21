@@ -382,7 +382,7 @@ internal sealed class CapturingRpcClient : RpcClient
     public CapturingRpcClient() : base("127.0.0.1", 0) { }
 
     public override async Task<RpcResponse> RequestAsync(
-        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+        OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
     {
         LastRequest = (op, key, payload, traceId);
         return await Task.FromResult(NextResponse);

@@ -25,7 +25,8 @@ internal sealed class TestHealthMonitor : IHealthMonitorService
 	public NodeInfo? GetNodeInfo(string nodeName) => null;
 	public Dictionary<string, object> GetHealthSummary() => new();
 	public event Action? HealthyChanged;
-	public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+	public void MarkHealthy(string nodeName) { }
 }
 
 internal sealed class TestCompletionProxy : ICompletionProxyService
@@ -101,7 +102,7 @@ internal sealed class TestRpcClient : RpcClient
 	public TestRpcClient() : base("test", 0) { }
 
 	public override async Task<RpcResponse> RequestAsync(
-		OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct)
+		OpCode op, string key, ReadOnlyMemory<byte> payload, string traceId, CancellationToken ct, TimeSpan? requestTimeoutOverride, TimeSpan? payloadIdleBudget)
 	{
 		Calls.Add((op, key));
 		var meta = JsonSerializer.Serialize(new

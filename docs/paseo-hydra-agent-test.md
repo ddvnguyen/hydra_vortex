@@ -117,6 +117,8 @@ State the expected value **before** the run, then verify. Prose conclusions like
 | 6 | No engine restarts during the run | crash-watch shell | any `attempting restart` invalidates the run |
 | 7 | `reasoning_content` present when reasoning is on | response JSON | empty while `content` is also empty → fields being dropped |
 | 8 | Route type matches intent | `route_type=` in timeline | unexpected `migration`/`affinity` means the router disagreed with you |
+| 9 | Relevance: thinking / tool calls / answer relate to the question | scripted calculator conversation (`RelevanceValidationTests.cs`): turn 1 `1234×5678` → tool-call args must contain `1234`+`5678`, or the text answer must contain `7006652` (or both operands); turn 2 `5678×2` must reference `11356`/`5678`, not repeat turn 1 | off-topic output — thinking/tool-calls/answer share no entity with the question → Hydra-corruption signal (model state corrupted, undetected by metric checks) |
+| 10 | `hydra-auto` resolves via the auto-resolver | one turn with `model=hydra-auto`; then `podman logs hydra-system_core_1 \| grep autoroute_resolved` → cold session resolves `Sid=<session> Model=moe-35b-pd Mode=pd` (tier 2, P/D split per `infra/hydra-core/config/models.json`) | `autoroute_returned_null`, a 400 unknown-model error, or a resolved `Model` that is not a concrete alias → auto path broken |
 
 Compute throughput per request:
 
@@ -148,7 +150,8 @@ way, and the cause was the stack, not the task.
 
 Pin an explicit model. Do **not** use `hydra-auto` for a verification run — it may
 route into a profile you did not intend, and a routing surprise mid-test invalidates
-your criteria. Use `hydra-auto` only when routing itself is what you are testing.
+your criteria. Use `hydra-auto` only when routing itself is what you are testing
+(that case is covered by criterion #10 above, not by verification runs).
 
 If a profile is known-broken, say so in the run notes rather than silently switching.
 
