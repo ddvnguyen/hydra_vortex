@@ -90,7 +90,16 @@ routinely misses 40-60% of true cost by tracking direct only. Applied here:
   retry cost, unquantified (that agent never exposed `lastUsage`), and NOT reflected
   in the $0.009/1K-output figure above (which came from a different, single-shot,
   no-retry task). Direct-cost comparisons across tasks of different retry-shape are
-  not apples-to-apples.
+  not apples-to-apples. **Second, worse incident** (2026-08-21, `69a5ea7c`, epic/610
+  rebase): mimo-v2.5 got stuck in a genuine degenerate loop — repeating the exact same
+  paragraph of reasoning verbatim many times trying to manually brace-count a missing
+  `}` in an 11K-line C++ file, went idle without fixing it or flagging the loop. Caught
+  by Claude checking the actual worktree state directly rather than trusting the
+  "finished" status. Redirected with concrete tooling (diff against upstream reference
+  instead of hand-counting) rather than more open-ended prompting. This is a second,
+  independent data point that mimo-v2.5 has a real steerability weakness on
+  open-ended/ambiguous technical tasks specifically — worth factoring into "best for
+  hard tasks," separate from the cost question.
 - **Human oversight**: verifying delegate claims (the #695 CI root cause, the #641
   file-location dispute) required substantial independent `git`/`gh` investigation on
   Claude's side — real cost, invisible in any Paseo agent's token accounting, and
