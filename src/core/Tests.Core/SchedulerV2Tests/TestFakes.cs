@@ -18,7 +18,8 @@ internal sealed class FakeHealthMonitor : IHealthMonitorService
     public NodeInfo? GetNodeInfo(string nodeName)
         => EngineCapabilities.Count == 0 ? null : new NodeInfo { NodeName = nodeName, EngineCapabilities = EngineCapabilities };
     public Dictionary<string, object> GetHealthSummary() => new();
-    public void UpdateNodeModelIdentity(string nodeName, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+    public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
+    public void MarkHealthy(string nodeName) { }
     public event Action? HealthyChanged;
     public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
     public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
