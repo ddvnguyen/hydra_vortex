@@ -1,0 +1,78 @@
+name: llama-baseline
+
+# Bare-bone upstream llama.cpp on 2xRTX (5060 Ti + 3060) — no Hydra.
+# Single pooled llama-server across both GPUs (vanilla upstream pooling).
+# Model: Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M 19.5GB — does not fit solo, needs split.
+# Ctx: try 96K first (yarn 4x), fallback 64K on OOM. Test with: curl localhost:18080/health
+# Build: host cmake -S src/llama-cpp -B src/llama-cpp/build -DGGML_CUDA=1 -DLLAMA_CURL=ON && cmake --build src/llama-cpp/build --parallel 8
+# Run: podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d --build
+#      podman logs -f llama-baseline_llama_1  # watch "model loaded" / OOM
+# Harness: OPENAI_BASE_URL=http://localhost:18080/v1 OPENAI_API_KEY=dummy dsh/pi
+# Note: 18080 avoids collision with infra-openwebui on host :8080 (host network). Use :8080 only if openwebui stopped.
+
+services:
+  llama:
+    build:
+      context: ../..
+      dockerfile: infra/llama-baseline/Dockerfile.baseline
+    image: localhost/llama-baseline:upstream
+    network_mode: host
+    devices:
+      - nvidia.com/gpu=all
+    volumes:
+      # Host model stores — keep both mounts to match compose.hydra pattern
+      - /mnt/SSD:/models:ro
+      - /mnt/WorkDisk/LLM-Models:/models2:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/lib
+    # Pooled 2-GPU: layer split (dense-stable) + tensor-split 25/40 (~16GB/12GB ratio, from Hydra dense-27b-combined 65/[25,40]/layer)
+    # Try 98304 first; wrapper script handles fallback to 65536 if this OOMs during load.
+    # Direct compose command for 96K attempt — fallback is manual: edit ctx-size to 65536 and `podman compose up -d`
+    command:
+      - --model
+      - /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "18080"
+      - --n-gpu-layers
+      - "65"
+      - --tensor-split
+      - "25,40"
+      - --split-mode
+      - layer
+      - --ctx-size
+      - "98304"
+      - --rope-scaling
+      - yarn
+      - --rope-scale
+      - "4"
+      - --yarn-orig-ctx
+      - "32768"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --flash-attn
+      - "on"
+      - --parallel
+      - "2"
+      - --cont-batching
+      - --jinja
+      - --chat-template-file
+      - /models/qwen3.6_merged_template.jinja
+      - --metrics
+      - --slots
+      - --log-verbosity
+      - "1"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      component: llama-baseline

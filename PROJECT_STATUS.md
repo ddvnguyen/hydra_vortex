@@ -329,6 +329,10 @@ unconditionally while the engine still rejects `prompt.messages` — the only sh
 Hydra.Core sends — so any live node on this engine build fails every P/D chat
 request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 
+## Leader Contract
+
+- **ADR 0002 signed 2026-08-21 (Option A):** `ddvnguyen ↔ muse-spark-1.2-contributor` — standing until superseded, scoped to **llama.cpp baseline (2×RTX vanilla)** running authority (build `--parallel 8`, `infra/llama-baseline/` compose, ctx `98304→65536` yarn `scale 4`, harness `dsh`/`pi` via `:8080`). Revocable via doc removal + this file update; merges still require explicit user confirmation per `CLAUDE.md §4`. Hermes fleet `v2.1.1` stays superseded (`f8b322c73`). No GPG/HMAC. Ref: `docs/decisions/0002-leader-contract.md`.
+
 ## Verified Facts
 | Fact                         | Value        |
 |------------------------------|--------------|

@@ -17,3 +17,8 @@ build/
 **/*.log
 **/.DS_Store
 src/llama-cpp/
+!src/llama-cpp/build/
+!src/llama-cpp/build/bin/
+!src/llama-cpp/build/bin/llama-server
+!src/llama-cpp/build/bin/*.so
+!src/llama-cpp/build/bin/*.so.*
