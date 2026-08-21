@@ -3,6 +3,10 @@
 This directory holds one-file-per-decision ADRs. Each file is named `NNN-slug.md` with
 a zero-padded 3-digit sequence number and a short kebab-case slug.
 
+`0001-hydra-head-node-agent.md` predates this convention (4-digit numbering, no
+`Ref:`/`Alternatives considered` sections) — grandfathered in as-is, not rewritten.
+All new decisions use the 3-digit format above starting from `001`.
+
 ## Required sections per file
 
 | Section | Purpose |

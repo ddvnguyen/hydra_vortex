@@ -13,7 +13,7 @@ current here, promote what's durable there.
 | Branch | Status | Notes |
 |---|---|---|
 | `epic/470-merged-decode` | deploy-hold, Phase 5 in progress | 37:1 fix:feat ratio. Contract frozen (see decision 001). |
-| PR #695 (`epic/591-rewrite-worker-scheduler`) | in progress, CI failing | 3 of 16 parity scenarios unmatched. Blocks #641 resolution. |
+| PR #695 (`epic/591-rewrite-worker-scheduler`) | in progress, CI failing | Root cause: 113 commits behind `main`, missing 2 interface members. Fix in progress. 3 of 16 parity scenarios unmatched (cosmetic, unrelated to #641). |
 | `epic/610-server-hydra-extension` | needs rebase | 45 commits behind `hydra-fork`, moderate-high conflict in `server-context.cpp`. No CI configured yet. |
 | `epic/697-470-stabilization` | active (this branch) | Stabilization workstream per decision 001. |
 
@@ -29,9 +29,13 @@ current here, promote what's durable there.
 ## Next steps
 
 1. **Verify #469** against current fork state — prerequisite for trusting #695 golden
-   traces.
-2. **Finish PR #695** — fix Build & Test CI, drive `warm_affinity_on` /
-   `warm_affinity_verify_on` / `migration` to full parity match (treat as closing #641).
-3. **Rebase `epic/610`** onto current `hydra-fork`, configure CI, validate with
+   traces. Fix present at HEAD but untested (parity test CI-skipped).
+2. **Verify #641** — fix already landed on `hydra-fork` (`5d37b9f08`,
+   `server-checkpoint-policy.h`), issue just never got closed. Confirm it resolves the
+   reported symptom, then close #641. Not blocked on either rewrite.
+3. **Finish PR #695** — merge 113 commits of `main`, fix the 2 missing interface
+   members, drive `warm_affinity_on` / `warm_affinity_verify_on` / `migration` to full
+   parity match (cosmetic RPC-ordering fix, unrelated to #641).
+4. **Rebase `epic/610`** onto current `hydra-fork`, configure CI, validate with
    differential-parity harness.
-4. **Stand up cookbook/decisions structure** (done in this PR).
+5. **Stand up cookbook/decisions structure** (done in this PR).
