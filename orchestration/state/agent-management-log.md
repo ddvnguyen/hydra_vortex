@@ -138,6 +138,18 @@ No running cumulative total exists yet — add one here as more data comes in if
 becomes worth tracking precisely. hy3 has no rows yet — first real delegation still
 pending.
 
+**2026-08-21 06:30 heartbeat note:** No delegate agents active — both #695 and
+epic/610's remaining work this cycle (golden-trace re-baseline + race diagnosis,
+epic/610 fix-diff review) was done by Claude directly, not delegated, since it was
+judgment-call review of already-produced diffs rather than new implementation. Opened
+issue #698 (real non-deterministic op-ordering race in `chunked_save_with_pushes`,
+found by rerunning 3x in isolation — distinct from the other 4 scenarios' legitimate
+stale-baseline drift). epic/610's rebased history is ready but the force-push was
+correctly blocked by the auto-mode safety classifier pending explicit user
+confirmation (history-rewriting push to a remote branch). No agent cost incurred this
+cycle. One stale unrelated agent (`40cbb151`, stuck `initializing` since 2026-08-07)
+still present, still out of scope.
+
 **2026-08-21 05:55 heartbeat note:** Both delegate agents (`838bce4a` PR #695,
 `69a5ea7c` epic/610) went idle since the last check-in. Neither is pushable yet:
 #695's fix is real (independently spot-verified) but has an outstanding golden-trace
