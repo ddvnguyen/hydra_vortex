@@ -26,13 +26,12 @@ services:
       - /mnt/SSD:/models:ro
       - /mnt/WorkDisk/LLM-Models:/models2:ro
     environment:
-      - NVIDIA_VISIBLE_DEVICES=0,1
-      - CUDA_VISIBLE_DEVICES=0,1
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/lib
-    # Pooled 2-GPU: layer split (dense-stable). 40,25 = tensor-split ratio: 40 parts on 5060Ti (61.5%) + 25 on 3060 (38.5%).
-    # With --split-mode layer, whole layers are sharded by this ratio, not tensor-sharded. 65 layers ≈ 40 on 5060Ti, 25 on 3060.
-    # All layers on GPU (n-gpu-layers 65 covers 62-layer 27B), token_embd kept on CPU to save VRAM (like Hydra dense-27b-combined).
-    # MTP enabled: draft-mtp speculative (spec_draft_n_max 3, p_min 0.75) — Qwopus MTP heads run as draft, no separate draft model.
+    # Fallback single-GPU (5060Ti) after 3060 ERR! (96K illegal access → GPU1 ERR, needs sudo reset).
+    # Original 2-GPU: 40,25 layer split (61.5% 5060Ti + 38.5% 3060), 65 layers, token_embd CPU, MTP.
+    # Single-GPU: offload more to CPU (n-gpu-layers 40) to fit 19.5GB Q5_K on 16GB, 3060 disabled.
     command:
       - --model
       - /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
@@ -41,13 +40,23 @@ services:
       - --port
       - "18080"
       - --n-gpu-layers
-      - "65"
-      - --tensor-split
-      - "40,25"
+      - "40"
       - --split-mode
       - layer
+      - --main-gpu
+      - "0"
       - --override-tensor
       - "token_embd.weight=CPU"
+      - --override-tensor
+      - "output.weight=CPU"
+      - --override-tensor
+      - "output_norm.weight=CPU"
+      - --spec-type
+      - "draft-mtp"
+      - --spec-draft-n-max
+      - "3"
+      - --spec-draft-p-min
+      - "0.75"
       - --ctx-size
       - "32768"
       - --rope-scaling
