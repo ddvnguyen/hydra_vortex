@@ -23,9 +23,15 @@
         "Status": "Ok"
       },
       {
+        "Op": "StateGet",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
         "Op": "Put",
         "Key": "sess_h.kv",
-        "Len": 4096,
+        "Len": 2048,
         "Status": "Ok"
       }
     ],
