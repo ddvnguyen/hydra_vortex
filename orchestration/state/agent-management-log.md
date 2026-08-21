@@ -149,9 +149,14 @@ where present it's direct-cost-only (see methodology gap above). Known costs so 
 | PR #695 merge + interface fix | mimo-v2.5 | $0.1409 (final) | **1** (Claude redirect after independent verification found the first "done" report was materially wrong — claimed 3 pre-existing failures, actual was 5 incl. full parity-harness collapse) | Yes — Claude re-ran `DifferentialGateTests`+`AutoRouterTests` independently, 0 failures, root cause matches agent's explanation | No — second report held up under spot-check, but flagged a real outstanding item (GoldenTraceTests re-baseline) rather than glossing over it |
 | epic/610 rebase | mimo-v2.5 | unknown (no `lastUsage` again — same gap) | 0 | TBD (mechanical claim only, standalone build not possible without fork's ggml submodule) | Partially — agent itself flagged 561 uncommitted lines of gaps its own regex-based extraction introduced, self-corrected before reporting done |
 
+| #698 harness race fix (NormalizeRpcTrace) | mimo-v2.5 | $0.0087 + unknown (no final lastUsage) | 1 (redirect to /tmp/698 worktree, external_dir permit) | **Yes** (lead re-ran GoldenTraceTests 3× + full suite + HYDRA_HARNESS_REGEN, verified 0706feef3 before push) | No — swap logic review passed; golden diff matches current code shape (4096/PutManifest) |
+| PR #695 differential drift (combined/chunked_save) | — | — | — | Pre-existing 2 drifts before #698 (stash baseline), now 3 with chunked_save_with_pushes — expected from re-baseline, not new fix cost | — |
+
 No running cumulative total exists yet — add one here as more data comes in if this
 becomes worth tracking precisely. hy3 has no rows yet — first real delegation still
 pending.
+
+**2026-08-21 ~08:39 (lead eead475a) — #698 DONE:** Worker 443526e verified independently (GoldenTraceTests 3× green, full suite 651/652 — 1 differential pre-existing), pushed fast-forward ccfd8601d..0706feef3 to origin/epic/591-rewrite-worker-scheduler, closed #698. Lead heartbeat 22699852 active (next 08:00 UTC), checkup schedule 28815196 pending for this worker (now idle). Worktree /tmp/698-harness-fix-work @ w698-harness-race-fix retained for audit, branch pushed. Zero-trust verification passed; no delegation to hy3 this task (used providers.yaml t2 mimo-v2.5).
 
 **2026-08-21 06:30 heartbeat note:** No delegate agents active — both #695 and
 epic/610's remaining work this cycle (golden-trace re-baseline + race diagnosis,
