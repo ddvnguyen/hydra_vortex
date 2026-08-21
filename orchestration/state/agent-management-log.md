@@ -78,15 +78,53 @@ of the two per the normalized numbers above — muse-spark's edge was accuracy o
 citation, not cost. Don't default to "whichever quoted the lower total" without
 checking token counts first. Revisit after 2026-08-30 when the Hy3 multiplier ends.
 
+### Cost methodology gap (flagged 2026-08-21, via keito.ai/blog/ai-agent-cost-per-task)
+
+Per-token direct cost is only 1 of 4 real cost components: `total task cost = direct
+(tokens) + indirect (retries/error handling) + infrastructure (amortized) + human
+oversight (review/correction time)`. Simple-agent-shaped work (this whole workstream)
+routinely misses 40-60% of true cost by tracking direct only. Applied here:
+
+- **Indirect (retries)**: mimo-v2.5's CI-diagnosis task (`dd788bdf`) burned ~50
+  unproductive tool-call turns before requiring a manual redirect to converge — a real
+  retry cost, unquantified (that agent never exposed `lastUsage`), and NOT reflected
+  in the $0.009/1K-output figure above (which came from a different, single-shot,
+  no-retry task). Direct-cost comparisons across tasks of different retry-shape are
+  not apples-to-apples.
+- **Human oversight**: verifying delegate claims (the #695 CI root cause, the #641
+  file-location dispute) required substantial independent `git`/`gh` investigation on
+  Claude's side — real cost, invisible in any Paseo agent's token accounting, and
+  weighted toward tasks where delegate output needed a trust check.
+- **Correction/rework**: 3 edit rounds were needed to fix delegate-introduced errors
+  in the decisions/status docs (stale line count, #641 mischaracterization, numbering
+  inconsistency) — real cost attributable to output quality.
+
+**Going forward, log this per delegated task** (not just $ and tokens) so future
+comparisons cover more than bucket 1 of 4:
+- `retries`: number of redirects/follow-up prompts needed to converge
+- `verification_required`: Y/N — did Claude need independent checks to trust the output
+- `corrections_required`: Y/N — did the output need fixing after delivery
+
+Current data (below) is direct-cost-only and incomplete even there (single-turn tasks
+only) — treat "best value" conclusions above as provisional, not final, until this
+gap is closed.
+
 ## Cost tracking
 
 Partial data only — the `get_agent_status` API doesn't expose `lastUsage` for every
-delegate session (some snapshots lack the field entirely, cause unclear). Known costs
-so far, 2026-08-21:
-- mimo-v2.5 eval task: $0.01365
-- muse-spark eval task: $0.01216
-- mimo-v2.5 in-flight tasks (PR #695 merge, epic/610 rebase): $0.0149 and $0.0766 as
-  of last check, both still running and climbing.
+delegate session (some snapshots lack the field entirely, cause unclear), and even
+where present it's direct-cost-only (see methodology gap above). Known costs so far,
+2026-08-21:
+
+| Task | Model | Direct cost | Retries | Verification required | Corrections required |
+|---|---|---|---|---|---|
+| Eval: review docs + verify #641 | mimo-v2.5 | $0.01365 | 0 | Yes (file citation wrong) | No |
+| Eval: review docs + verify #641 | muse-spark | $0.01216 | 0 | Yes (fabricated-tag pattern) | No |
+| Diagnose PR #695 CI failure | mimo-v2.5 | unknown (no lastUsage) | **1** (~50-turn loop) | Yes (Claude re-verified against `main`) | No — final finding was correct |
+| Stand up cookbook/decisions docs | mimo-v2.5 | unknown (no lastUsage) | 0 | No | **Yes** (3 rounds — stale line count, #641 error, numbering) |
+| PR #695 merge + interface fix | mimo-v2.5 | $0.0149 (partial, climbing) | 0 so far | TBD | TBD |
+| epic/610 rebase | mimo-v2.5 | $0.0766 (partial, climbing) | 0 so far | TBD | TBD |
 
 No running cumulative total exists yet — add one here as more data comes in if this
-becomes worth tracking precisely.
+becomes worth tracking precisely. hy3 has no rows yet — first real delegation still
+pending.
