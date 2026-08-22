@@ -1,7 +1,7 @@
 # Baseline 2xRTX vanilla llama.cpp — bare bone, no Hydra
 # Single llama-server pooling both GPUs (5060 Ti 16GB + 3060 12GB)
-# Upstream ggml-org/llama.cpp built on host with --parallel 8, copied in.
-# CUDA 13.2 runtime — mirrors infra/llama-rtx-node/Dockerfile_26.04_cuda13.2
+# Upstream ggml-org/llama.cpp built on host with CUDA 13.2.2, copied in.
+# CUDA 13.2.2 runtime — mirrors infra/llama-rtx-node/Dockerfile_26.04_cuda13.2
 
 FROM ubuntu:26.04
 
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV PATH=/usr/local/cuda-13.2/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/lib:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib:${LD_LIBRARY_PATH}
 
 # Host-built upstream binary (cmake --build --parallel 8) + shared libs
 # .dockerignore whitelists these paths (src/llama-cpp/build/bin/*)

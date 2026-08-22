@@ -26,67 +26,21 @@ services:
       - /mnt/SSD:/models:ro
       - /mnt/WorkDisk/LLM-Models:/models2:ro
     environment:
-      - NVIDIA_VISIBLE_DEVICES=0
-      - CUDA_VISIBLE_DEVICES=0
-      - LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/lib
-    # Fallback single-GPU (5060Ti) after 3060 ERR! (96K illegal access → GPU1 ERR, needs sudo reset).
-    # Original 2-GPU: 40,25 layer split (61.5% 5060Ti + 38.5% 3060), 65 layers, token_embd CPU, MTP.
-    # Single-GPU: offload more to CPU (n-gpu-layers 40) to fit 19.5GB Q5_K on 16GB, 3060 disabled.
-    command:
-      - --model
-      - /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "18080"
-      - --n-gpu-layers
-      - "40"
-      - --split-mode
-      - layer
-      - --main-gpu
-      - "0"
-      - --override-tensor
-      - "token_embd.weight=CPU"
-      - --override-tensor
-      - "output.weight=CPU"
-      - --override-tensor
-      - "output_norm.weight=CPU"
-      - --spec-type
-      - "draft-mtp"
-      - --spec-draft-n-max
-      - "3"
-      - --spec-draft-p-min
-      - "0.75"
-      - --ctx-size
-      - "32768"
-      - --rope-scaling
-      - yarn
-      - --rope-scale
-      - "4"
-      - --yarn-orig-ctx
-      - "32768"
-      - --cache-type-k
-      - q8_0
-      - --cache-type-v
-      - q8_0
-      - --flash-attn
-      - "on"
-      - --parallel
-      - "2"
-      - --cont-batching
-      - --jinja
-      - --chat-template-file
-      - /models/qwen3.6_merged_template.jinja
-      - --spec-type
-      - "draft-mtp"
-      - --spec-draft-n-max
-      - "3"
-      - --spec-draft-p-min
-      - "0.75"
-      - --metrics
-      - --slots
-      - --log-verbosity
-      - "1"
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib
+    command: >
+      --model /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
+      --host 0.0.0.0 --port 18080
+      --n-gpu-layers all --split-mode layer
+      --tensor-split 40,25
+      --override-tensor token_embd.weight=CPU
+      --ctx-size 98304 --rope-scaling yarn --rope-scale 3 --yarn-orig-ctx 32768
+      --cache-type-k q8_0 --cache-type-v q4_0 --flash-attn on
+      --parallel 2 --cont-batching
+      --jinja --chat-template-file /models/qwen3.6_merged_template.jinja
+      --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75
+      --metrics --slots --log-verbosity 4
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:18080/health"]
       interval: 15s

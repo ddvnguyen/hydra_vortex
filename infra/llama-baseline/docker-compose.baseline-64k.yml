@@ -20,43 +20,16 @@ services:
       - NVIDIA_VISIBLE_DEVICES=0,1
       - CUDA_VISIBLE_DEVICES=0,1
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/lib
-    command:
-      - --model
-      - /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "18080"
-      - --n-gpu-layers
-      - "65"
-      - --tensor-split
-      - "25,40"
-      - --split-mode
-      - layer
-      - --ctx-size
-      - "65536"
-      - --rope-scaling
-      - yarn
-      - --rope-scale
-      - "4"
-      - --yarn-orig-ctx
-      - "32768"
-      - --cache-type-k
-      - q8_0
-      - --cache-type-v
-      - q8_0
-      - --flash-attn
-      - "on"
-      - --parallel
-      - "2"
-      - --cont-batching
-      - --jinja
-      - --chat-template-file
-      - /models/qwen3.6_merged_template.jinja
-      - --metrics
-      - --slots
-      - --log-verbosity
-      - "1"
+    # Folded block (>) — same params, readable.
+    command: >
+      --model /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
+      --host 0.0.0.0 --port 18080
+      --n-gpu-layers 65 --split-mode layer --tensor-split 25,40
+      --ctx-size 65536 --rope-scaling yarn --rope-scale 4 --yarn-orig-ctx 32768
+      --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on
+      --parallel 2 --cont-batching
+      --jinja --chat-template-file /models/qwen3.6_merged_template.jinja
+      --metrics --slots --log-verbosity 1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:18080/health"]
       interval: 15s
