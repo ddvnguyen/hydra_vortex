@@ -361,3 +361,4 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 | Store LRU sweep              | ✅ L1 sweep heartbeat every 45 s (`chunk_cache_lru_sweep`) |
 | Merged-decode result path    | ⚠️ Drops `reasoning_content` (engine bug, #616) — interim coordinator HTTP-proxy fallback; engine fix pending |
 | RTX 3060 role                | ✅ Peer-only by design (mainline #481, slots=0) — COMBINED peer, not SOLO |
+| RTX 3060 hardware stability  | ⚠️ Cold-boot-only fault (#701): Xid 13/31/43/109 fired once, in the first CUDA workload dispatched after a reboot; every subsequent test (incl. 180s/97k-iter soak and 2× 60s full-180W soaks) passed clean. Isolated to this card's PCI path (5060 Ti clean on identical driver/tests). Likely cold-start power-rail/link settling on the NVMe-adapter riser, not a persistent defect — unconfirmed without physical slot-swap isolation. `scripts/gpu-smoke-test.sh` added to catch this class of fault going forward |
