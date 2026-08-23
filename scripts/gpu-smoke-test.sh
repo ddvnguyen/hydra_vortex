@@ -15,7 +15,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SMOKE_BUILD_DIR:-/tmp/gpu-smoke-test}"
-FULL_SECONDS="${SMOKE_FULL_SECONDS:-15}"
+# Default 90s matches shortest window where gpu-burn's corruption was actually caught on the faulty 3060
+# (escalating 1520->22718 errors within 90s, vs 15s default that missed it and reported false PASS). Keep overridable via SMOKE_FULL_SECONDS.
+FULL_SECONDS="${SMOKE_FULL_SECONDS:-90}"
 GEMM_N="${SMOKE_GEMM_N:-8192}"
 GENCODES="${SMOKE_GENCODES:--gencode arch=compute_86,code=sm_86 -gencode arch=compute_120,code=sm_120}"
 P100_HEALTH_URL="${P100_HEALTH_URL:-http://192.168.122.21:8086/health}"

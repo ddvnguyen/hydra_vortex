@@ -25,6 +25,11 @@ __global__ void sgemm(const float* A, const float* B, float* C, int N) {
     C[row * N + col] = acc;
 }
 
+__global__ void compare_f32(const float* a, const float* b, int n, unsigned long long* mismatches) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n && a[i] != b[i]) atomicAdd(mismatches, 1ULL);
+}
+
 static int run_light(int dev) {
     cudaSetDevice(dev);
     float *a, *b, *c;
@@ -46,10 +51,11 @@ static int run_light(int dev) {
 
 static int run_full(int dev, int N, int seconds) {    cudaSetDevice(dev);
     size_t mbytes = (size_t)N * N * sizeof(float);
-    float *A, *B, *C;
+    float *A, *B, *C, *C_ref;
     CUDA_CHECK(cudaMalloc(&A, mbytes));
     CUDA_CHECK(cudaMalloc(&B, mbytes));
     CUDA_CHECK(cudaMalloc(&C, mbytes));
+    CUDA_CHECK(cudaMalloc(&C_ref, mbytes));
     float *ha = (float*)malloc(mbytes), *hb = (float*)malloc(mbytes);
     srand(42);
     for (size_t i = 0; i < (size_t)N * N; ++i) { ha[i] = (float)rand() / RAND_MAX - 0.5f; hb[i] = (float)rand() / RAND_MAX - 0.5f; }
@@ -59,15 +65,27 @@ static int run_full(int dev, int N, int seconds) {    cudaSetDevice(dev);
     free(ha); free(hb);
 
     dim3 blk(16, 16), grd((N + 15) / 16, (N + 15) / 16);
+    // Golden reference: compute once, compare every iteration after
+    sgemm<<<grd, blk>>>(A, B, C_ref, N);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    unsigned long long *d_mismatches;
+    CUDA_CHECK(cudaMalloc(&d_mismatches, sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMemset(d_mismatches, 0, sizeof(unsigned long long)));
+    int n = N * N;
     time_t start = time(NULL);
     int iter = 0;
     while (time(NULL) - start < seconds) {
         sgemm<<<grd, blk>>>(A, B, C, N);
         CUDA_CHECK(cudaDeviceSynchronize());
+        compare_f32<<<(n + 255)/256, 256>>>(C, C_ref, n, d_mismatches);
+        CUDA_CHECK(cudaDeviceSynchronize());
         ++iter;
     }
-    printf("RESULT device=%d status=PASS mode=full iters=%d seconds=%ld\n", dev, iter, (long)(time(NULL) - start));
-    return 0;
+    unsigned long long mismatches = 0;
+    CUDA_CHECK(cudaMemcpy(&mismatches, d_mismatches, sizeof(mismatches), cudaMemcpyDeviceToHost));
+    const char *status = mismatches ? "FAIL" : "PASS";
+    printf("RESULT device=%d status=%s mode=full iters=%d seconds=%ld mismatches=%llu\n", dev, status, iter, (long)(time(NULL) - start), mismatches);
+    return mismatches ? 1 : 0;
 }
 
 // Full-VRAM capacity + stress soak: allocate `frac` of free VRAM across 1 GiB chunks,
@@ -77,6 +95,11 @@ static int run_full(int dev, int N, int seconds) {    cudaSetDevice(dev);
 __global__ void vram_rmw(float* p, int n, float addend) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) p[i] = p[i] + addend;
+}
+
+__global__ void verify_rmw(const float* p, int n, float expected, unsigned long long* mismatches) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n && p[i] != expected) atomicAdd(mismatches, 1ULL);
 }
 
 static int run_vram(int dev, int seconds, float frac) {
@@ -134,11 +157,24 @@ static int run_vram(int dev, int seconds, float frac) {
         touched += totalElems * 2; // RMW read+write
         ++iter;
     }
+    // Verify RMW: every element must equal exactly (float)iter (exact for realistic iter counts, well within float exact-int range)
+    unsigned long long *d_mismatches;
+    CUDA_CHECK(cudaMalloc(&d_mismatches, sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMemset(d_mismatches, 0, sizeof(unsigned long long)));
+    float expected = (float)iter;
+    for (int c = 0; c < nchunks; ++c) {
+        int n = (int)sizes[c];
+        verify_rmw<<<(n + 255)/256, 256>>>(bufs[c], n, expected, d_mismatches);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+    unsigned long long mismatches = 0;
+    CUDA_CHECK(cudaMemcpy(&mismatches, d_mismatches, sizeof(mismatches), cudaMemcpyDeviceToHost));
     long long mb = (long long)totalElems * 4 / (1024 * 1024);
     double secs = (double)(time(NULL) - start);
-    printf("RESULT device=%d status=PASS mode=vram iters=%d seconds=%ld vram_mb=%lld bw_gbs=%.1f\n",
-           dev, iter, (long)secs, mb, secs > 0 ? (touched * 4.0 / (1024.0*1024.0*1024.0)) / secs : 0.0);
-    return 0;
+    const char *status = mismatches ? "FAIL" : "PASS";
+    printf("RESULT device=%d status=%s mode=vram iters=%d seconds=%ld vram_mb=%lld bw_gbs=%.1f mismatches=%llu expected=%.0f\n",
+           dev, status, iter, (long)secs, mb, secs > 0 ? (touched * 4.0 / (1024.0*1024.0*1024.0)) / secs : 0.0, mismatches, expected);
+    return mismatches ? 1 : 0;
 }
 
 int main(int argc, char** argv) {
