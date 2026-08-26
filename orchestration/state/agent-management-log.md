@@ -282,3 +282,25 @@ touched.
   inherited invalid mode `lead`; recreate with explicit settings.modeId=build).
   One-shot checkup cron must be expressed in the schedule timezone's local terms
   (UTC expression fired next-year).
+
+## W2 (#699 re-baseline) DONE — pushed, PR #695 relabeled `review` (2026-08-26)
+
+- **W2 `c92bedb0`** (mimo-v2.5, build mode) on `/tmp/w2-rebaseline`
+  (branch `w2-rebaseline-699`, parent `0706feef3`). Produced exactly the scoped
+  diff: 3 golden JSONs + `DifferentialGateTests.cs` (HYDRA_HARNESS_REGEN_V2
+  guarded write mode, explicit allowlist, logging) + `StateRunners.cs`
+  comment-only rewording (false "wire parity" claim -> owner-ruling citation).
+  Left the GoldenTraceTests adjustment to lead (per brief) and did NOT commit
+  itself — lead committed its 5-file change (`ec00e468e`) then added the
+  GoldenTraceTests `V2Rebaselined` exemption set (`027e9de29` after a `_output`
+  build fix).
+- **Zero-trust passed:** lead re-built (0 errors), ran GoldenTraceTests 3×
+  green, DifferentialGateTests 3× green (0 drift), full Tests.Core **652/652**
+  green. Fast-forward push `0706feef3..027e9de29` to origin/epic/591-rewrite-worker-scheduler
+  (clean, no force/history-rewrite).
+- **PR #695:** drift-inventory comment posted (accepted-intended table + explicit
+  OWNER-RULING paragraph for combined superseding legacy #635 fix4 in COMBINED
+  mode); relabeled `status:review`. **Merge to `main` gated on owner CONFIRM**
+  (decision 6 — absolute).
+- **Cost row:** | W2 golden re-baseline | mimo-v2.5 | ~$0.02 est (short run) |
+  0 redirects | Yes (lead re-ran full suite + diff scope) | No — diff scope exactly as planned; one follow-up compile fix by lead (test-code only) |
