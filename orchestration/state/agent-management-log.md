@@ -256,3 +256,29 @@ touched.
 - **#469/#641 classification done directly by lead** (CPU-only inspection via gh api):
   both fixes verified ancestors of fork HEAD with code present at HEAD; rig-work
   remainder posted as issue comments; issues stay OPEN per owner decision 3.
+
+## W1 (#699 equivalence proof) DONE — mixed verdict, STOP gate (2026-08-26, ~13:0x UTC)
+
+- **W1 `a6fadd23` finished in ~35 min.** Verdict: chunked_save* EQUIVALENT;
+  combined NOT-equivalent. Deliverable `EQUIVALENCE_FINDINGS.md` preserved at
+  `orchestration/state/699-w1-equivalence-findings.md` + proof test
+  `V2TraceDiagnostic.cs` on branch `w1-kv-equivalence` (worktree retained for audit).
+- **Zero-trust passed with an addition:** lead re-ran DifferentialGateTests
+  (drift set exact: combined/chunked_save/chunked_save_with_pushes; store_exception
+  confirmed SKIP) + V2TraceDiagnostic (pass) and read every cited code line.
+  Lead found the aggravator W1 under-weighted: legacy `#635 fix 4` comment calls
+  pre-decode-blob persistence a REGRESSION it fixed; V2's COMBINED branch
+  deliberately re-introduces that pattern → two deliberate designs in opposition,
+  exactly the "unexplained behavioral difference" owner decision 2 gates on.
+- **Per owner decision 2: STOP.** No W2 spawn, no golden re-baseline, PR #695
+  untouched, no relabel. CONFIRM_REQUIRED posted to owner with 3 options.
+- **emit-event.sh gap:** script is untracked in git → absent from fresh worktrees;
+  W1 couldn't run its final step (reported correctly), lead emitted manually.
+  Chat-post also failed (`paseo` CLI not on this shell's PATH) — noted; issue
+  comments + state files carried the durability instead.
+- **Cost row:** | W1 KV-equivalence proof | mimo-v2.5 | $0.0194 @ 12:44Z mid-run (last observed lastUsage) | 0 redirects | Yes (lead re-ran tests + read all cited lines) | No — findings held up; verdict interpretation corrected (worker recommended re-baseline despite NOT-equivalent; owner gate says otherwise) |
+
+- **Worker lifecycle note:** first spawn attempt errored instantly (workspace
+  inherited invalid mode `lead`; recreate with explicit settings.modeId=build).
+  One-shot checkup cron must be expressed in the schedule timezone's local terms
+  (UTC expression fired next-year).

@@ -29,10 +29,21 @@ deferred. Issue #703 lane explicitly out of scope.
 
 Progress this session:
 
-- **W1 `a6fadd23` spawned** (mimo-v2.5, build mode): KV-equivalence proof,
-  worktree `/tmp/w1-equiv-proof` @ `0706feef3` (branch `w1-kv-equivalence`),
-  deliverable EQUIVALENCE_FINDINGS.md w/ per-scenario verdict. Prior findings
-  `/tmp/w1-diffgate/DIFFGATE_FINDINGS.md` wiped — worker re-derives from source.
+- **W1 `a6fadd23` DONE — verdict MIXED → owner decision 2 STOP triggered:**
+  - `chunked_save` / `chunked_save_with_pushes` = **equivalent** (transport-only diff).
+  - `combined` = **NOT-equivalent**: legacy persists POST-decode slot state
+    (`StateGet(0)`→`Put(2048)`); V2 persists PRE-decode prefill blob
+    (`Put(4096)`, `req.KvBlob` from PrefillRunner). Delta ≠ granularity.
+  - Aggravator (lead-confirmed): legacy `#635 fix 4` comment explicitly calls
+    persisting pre-decode KvBlob a regression it fixed; V2 re-introduces it
+    deliberately for COMBINED (HydraConfigDelivered gate ≠ same freshness).
+  - Lead zero-trust: re-ran DifferentialGateTests (10 MATCH/8 SKIP/3 DRIFT,
+    drift set exact), ran V2TraceDiagnostic (pass), read all cited lines.
+  - **NO re-baseline, NO W2 spawn, PR #695 untouched.** Findings:
+    `orchestration/state/699-w1-equivalence-findings.md` +
+    [#699 comment](https://github.com/ddvnguyen/hydra_vortex/issues/699#issuecomment-5425652942).
+  - **CONFIRM_REQUIRED posted to owner** (options: all-3 re-baseline /
+    chunked-only + design review of combined save semantics / require V2 code change).
 - **#469/#641 CPU-verifiable parts DONE** (comments posted on both issues):
   - #469: fix via fork PR #60 (`8c8775c7a`), ancestor of fork HEAD `67ceb00bd`;
     checkpoint-before-final-token-decode invariant verified at HEAD (`server-context.cpp`
