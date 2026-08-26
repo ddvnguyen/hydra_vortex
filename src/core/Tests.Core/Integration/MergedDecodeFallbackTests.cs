@@ -1006,6 +1006,9 @@ public sealed class MergedDecodeFallbackTests
 
         public Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
             => Task.CompletedTask;
+
+        public Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct)
+            => Task.CompletedTask;
     }
 
     /// <summary>RPC double: Ok for every op (Store + engine binary RPCs) and a
@@ -1180,8 +1183,9 @@ public sealed class MergedDecodeFallbackTests
                 ["model"] = "nano",
                 ["messages"] = msgs
             };
-            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+            var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
                 maxTokens, null, _runCts.Token);
+            return CompletionResults.Unwrap(result);
         }
 
         /// <summary>#470 Fix 1: submit a model-agnostic request — no `model`
@@ -1200,8 +1204,9 @@ public sealed class MergedDecodeFallbackTests
                 ["max_tokens"] = maxTokens,
                 ["messages"] = msgs
             };
-            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+            var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
                 maxTokens, null, _runCts.Token);
+            return CompletionResults.Unwrap(result);
         }
 
         /// <summary>#470 canonical identity: submit with the `model` field as a
@@ -1222,8 +1227,9 @@ public sealed class MergedDecodeFallbackTests
                 ["model"] = doc.RootElement.Clone(),
                 ["messages"] = msgs
             };
-            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+            var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
                 maxTokens, null, _runCts.Token);
+            return CompletionResults.Unwrap(result);
         }
     }
 }

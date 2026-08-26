@@ -130,7 +130,7 @@ public class RpcClient : IAsyncDisposable
         }
     }
 
-    public async Task<RpcResponse> RequestStreamBodyAsync(
+    public virtual async Task<RpcResponse> RequestStreamBodyAsync(
         OpCode op, string key, Stream body, long bodyLen,
         string traceId, CancellationToken ct)
     {
