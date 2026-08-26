@@ -304,3 +304,13 @@ touched.
   (decision 6 — absolute).
 - **Cost row:** | W2 golden re-baseline | mimo-v2.5 | ~$0.02 est (short run) |
   0 redirects | Yes (lead re-ran full suite + diff scope) | No — diff scope exactly as planned; one follow-up compile fix by lead (test-code only) |
+
+## Owner-notification channel correction (2026-08-26, end of W2)
+
+- Contract/owner said the dispatch consultant id is `26a5ca56-2a70-4482-b421-e260c38709e4`,
+  but that agent ERRORS internally ("Model not found: opencode-go/ox-alpha-free") when
+  prompted — unusable as a relay. The WORKING owner channel is `6f8a1b9e` ("Ox Consult",
+  the lead's parent agent) — it received + forwarded both CONFIRM_REQUIREDs and the
+  owner's A/B/C ruling. LEAD_CONTRACT_SIGNED.md Handover-1 was updated to `26a5ca56`
+  per the owner's instruction but that id is broken; future owner comms should use
+  `6f8a1b9e`. Flagging so a future lead doesn't trust 26a5ca56.
