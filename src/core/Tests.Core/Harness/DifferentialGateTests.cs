@@ -21,10 +21,25 @@ namespace Tests.Core.Harness;
 /// skip-restore, BgSave StateGet+Put, ledger registration, warm-lease
 /// retention). This test documents the current state — the matrix in the output
 /// is the A/B parity scoreboard.</para>
+///
+/// <para>V2 regen mode: set <c>HYDRA_HARNESS_REGEN_V2=1</c> — when the scenario
+/// Id is in <see cref="V2RegenSet"/>, the test WRITES the serialized V2 trace to
+/// the golden path instead of comparing (same <c>SerializeGolden</c> format).</para>
 /// </summary>
 [Collection("HydraHarnessTests")]
 public sealed class DifferentialGateTests
 {
+    /// <summary>Env var that flips the test into V2 golden-regen mode.</summary>
+    private const string V2RegenEnvVar = "HYDRA_HARNESS_REGEN_V2";
+
+    /// <summary>Scenarios eligible for V2 regen — only these three are overwritten.</summary>
+    private static readonly HashSet<string> V2RegenSet = new()
+    {
+        "combined",
+        "chunked_save",
+        "chunked_save_with_pushes",
+    };
+
     /// <summary>Scenarios the v2 scheduler must byte-match today. Grows with parity.</summary>
     private static readonly HashSet<string> ExpectedParity = new()
     {
@@ -61,6 +76,7 @@ public sealed class DifferentialGateTests
     {
         Directory.CreateDirectory(ScenarioCatalog.GoldensDirectory);
 
+        var regenV2 = Environment.GetEnvironmentVariable(V2RegenEnvVar) == "1";
         var failures = new List<string>();
         var matched = 0;
         var skipped = 0;
@@ -85,6 +101,19 @@ public sealed class DifferentialGateTests
             await using (var driver = new V2ScenarioDriver(spec.Options, "sess_h"))
             {
                 result = await SchedulerScenarioRunner.ExecuteOnAsync(driver, spec);
+            }
+
+            // V2 regen mode: overwrite the golden for selected scenarios and skip comparison.
+            if (regenV2 && V2RegenSet.Contains(spec.Id))
+            {
+                var goldenPathV2 = Path.Combine(ScenarioCatalog.GoldensDirectory, $"{spec.Id}.json");
+                var v2Json = SchedulerScenarioRunner.SerializeGolden(
+                    new GoldenTrace(spec.Id, spec.Description, 1, result.Trace));
+                File.WriteAllText(goldenPathV2, v2Json);
+                _output.WriteLine($"V2 REGEN: wrote {goldenPathV2} ({v2Json.Length} bytes)");
+                matched++;
+                matrix.Add($"{spec.Id,-28} V2-REGEN");
+                continue;
             }
 
             var goldenPath = Path.Combine(ScenarioCatalog.GoldensDirectory, $"{spec.Id}.json");

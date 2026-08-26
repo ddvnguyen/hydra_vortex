@@ -1099,9 +1099,9 @@ public sealed class BgSaveRunner : WorkerStateRunner
         try
         {
             // COMBINED (epic #591): SaveKv was SKIPPED so the prefill KV blob is
-            // still in memory — Put it DIRECTLY, no StateGet (legacy BgSaveAsync
-            // engine-KvBlob path, wire parity: the combined golden pins Put 4096
-            // with no StateGet). Gated on HydraConfigDelivered (review #5): a
+            // still in memory — Put it DIRECTLY, no StateGet (COMBINED persists
+            // the in-memory prefill blob directly (owner-approved 2026-08-26,
+            // see #699/#695 drift inventory)). Gated on HydraConfigDelivered (review #5): a
             // combined request that took the #279 HTTP-prefill fallback never
             // delivered hydra_config AND nulls KvBlob, but a later cross-node
             // RestoreKv can re-set req.KvBlob to the PRE-decode store blob — the

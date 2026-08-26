@@ -11,15 +11,21 @@
         "Status": "Ok"
       },
       {
-        "Op": "PutChunked",
-        "Key": "sess_h.kv",
-        "Len": 4096,
+        "Op": "EnginePrefill",
+        "Key": "0",
+        "Len": 604,
         "Status": "Ok"
       },
       {
-        "Op": "EnginePrefill",
-        "Key": "0",
-        "Len": 4096,
+        "Op": "SyncMissing",
+        "Key": "sess_h.kv",
+        "Len": 269,
+        "Status": "Ok"
+      },
+      {
+        "Op": "PushChunks",
+        "Key": "sess_h.kv",
+        "Len": 1028,
         "Status": "Ok"
       },
       {
@@ -38,24 +44,6 @@
         "Op": "StateGet",
         "Key": "0",
         "Len": 0,
-        "Status": "Ok"
-      },
-      {
-        "Op": "SyncMissing",
-        "Key": "sess_h.kv",
-        "Len": 135,
-        "Status": "Ok"
-      },
-      {
-        "Op": "PushChunks",
-        "Key": "sess_h.kv",
-        "Len": 1028,
-        "Status": "Ok"
-      },
-      {
-        "Op": "PutManifest",
-        "Key": "sess_h.kv",
-        "Len": 343,
         "Status": "Ok"
       },
       {
