@@ -309,8 +309,9 @@ touched.
 
 - Contract/owner said the dispatch consultant id is `26a5ca56-2a70-4482-b421-e260c38709e4`,
   but that agent ERRORS internally ("Model not found: opencode-go/ox-alpha-free") when
-  prompted — unusable as a relay. The WORKING owner channel is `6f8a1b9e` ("Ox Consult",
-  the lead's parent agent) — it received + forwarded both CONFIRM_REQUIREDs and the
-  owner's A/B/C ruling. LEAD_CONTRACT_SIGNED.md Handover-1 was updated to `26a5ca56`
-  per the owner's instruction but that id is broken; future owner comms should use
-  `6f8a1b9e`. Flagging so a future lead doesn't trust 26a5ca56.
+  prompted — unusable as a relay. `6f8a1b9e` ("Ox Consult", lead's parent) ALSO now
+  errors with the same message when prompted (worked earlier in session, then broke) —
+  both sub-agent owner-relays are down. Fallback per LEAD_CHARTER: emit the owner
+  CONFIRM_REQUIRED as a chat message with the `CONFIRM_REQUIRED:` prefix (Paseo phone
+  notify). Lead did so directly. Future leads: do NOT trust either id as a relay;
+  use the chat-prefix escalation.
