@@ -4,7 +4,21 @@ Owner directive 2026-08-27: make small-model multi-node smoke tests part of CI/C
 to quickly validate implementation changes. Architect produced the design below;
 LEAD implements, then USES it to run smoke against the P100 VM. No RTX anywhere.
 
-## Deliverable PR-1 (branch off epic/697-470-stabilization, base same epic branch)
+## Operating context (consultant re-adjudication 2026-08-28)
+- BASE CHANGE: this tier now lives on branch feat/minifleet-smoke-v2, created from
+  origin/epic/591-rewrite-worker-scheduler (027e9de29) — i.e. STACKED ON PR #695's
+  tree, NOT epic/697-470-stabilization. Rationale: SchedulerV2 + the
+  Tests.Core Harness/ScenarioCatalog only exist on epic/591; the original base
+  would smoke-test nothing of v2 and force a forbidden catalog fork.
+- Catalog-reuse mandate (§Components 1) is now SATISFIED literally: the runner
+  consumes Tests.Core.Harness.ScenarioCatalog specs (smoke subset:
+  cold_atomic_engine + chunked_save); no local mirror record exists.
+- HYDRA_SCHEDULER_IMPL A/B hooks (§Components 1) operate against the real
+  legacy|v2 scheduler split that epic/591 introduces.
+- The original "branch off epic/697-470-stabilization" line below is SUPERSEDED
+  by this section; everything else stands.
+
+## Deliverable PR-1 (branch feat/minifleet-smoke-v2, base epic/591-rewrite-worker-scheduler)
 Title: test(minifleet): mini-fleet smoke tier — real-engine multi-node scenario runner
 Closes: open issue first -> [Test] Mini-Fleet smoke tier (label review-finding is for findings;
 use plain issue + area/testing).
