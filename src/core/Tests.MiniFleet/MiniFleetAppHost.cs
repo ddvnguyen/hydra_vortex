@@ -14,6 +14,7 @@ public sealed record MiniFleetRun(
     string CoordinatorBaseUrl,
     string EngineAUrl,
     string EngineBUrl,
+    string PresetName,
     IAsyncDisposable? Lifecycle = null)
 {
     public async ValueTask DisposeAsync() =>
@@ -127,7 +128,8 @@ public static class MiniFleetAppHost
             App: app,
             CoordinatorBaseUrl: app.GetEndpoint("hydra-core", "http").ToString().TrimEnd('/'),
             EngineAUrl: app.GetEndpoint("engine-a", "http").ToString().TrimEnd('/'),
-            EngineBUrl: app.GetEndpoint("engine-b", "http").ToString().TrimEnd('/'));
+            EngineBUrl: app.GetEndpoint("engine-b", "http").ToString().TrimEnd('/'),
+            PresetName: preset.Name);
     }
 
     /// <summary>One REAL llama-engine ExecutableResource with brief-exact argv:
@@ -279,6 +281,7 @@ public sealed class SshShimFleet : IAsyncDisposable
             CoordinatorBaseUrl: urlA,
             EngineAUrl: urlA,
             EngineBUrl: urlB,
+            PresetName: preset.Name,
             Lifecycle: fleet);
     }
 
