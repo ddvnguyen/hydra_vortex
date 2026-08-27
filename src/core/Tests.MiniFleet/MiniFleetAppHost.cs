@@ -46,7 +46,9 @@ public static class MiniFleetAppHost
     private const string DefaultLdLibraryPath = "~/hydra-min-test";
     private const int CoordinatorPort = 19000;
 
-    /// <summary>Entry point. cpu-2node runs fully local (no GPU, Aspire-hosted);
+    /// <summary>Entry point. cpu-2node runs fully local (no GPU, Aspire-hosted
+    /// via the REAL Tests.MiniFleet.AppHost project — dcp/dashboard metadata comes
+    /// from its AssemblyInfo, which an in-test-assembly builder cannot provide);
     /// gpu-gpu-shared drives the P100 VM through scripts/minifleet/vm-run.sh.</summary>
     public static async Task<MiniFleetRun> StartAsync(
         MiniFleetPreset preset, string modelPath, CancellationToken ct = default)
@@ -74,47 +76,22 @@ public static class MiniFleetAppHost
         }
 
         var engineBinary = ResolveEngineBinary();
-        var builder = DistributedApplication.CreateBuilder();
 
-        // ── PostgreSQL (Hydra.Core StoreMetadata requires it) — hermetic, no volume,
-        //    mirroring Hydra.AppHost's E2E path (#531). ──────────────────────────
-        var pgPassword = builder.AddParameter("pg-password", "hydra-test-pw");
-        var postgres = builder.AddPostgres("postgres")
-            .WithImageTag("16")
-            .WithPassword(pgPassword);
-        var hydraDb = postgres.AddDatabase("hydra-store");
+        // Configuration travels via env vars (AppHost Program.cs-independent
+        // testing path): the topology builder reads these inside the AppHost.
+        Environment.SetEnvironmentVariable("MINIFLEET_ENGINE_BIN", engineBinary);
+        Environment.SetEnvironmentVariable("MINIFLEET_MODEL_PATH", modelPath);
+        Environment.SetEnvironmentVariable("MINIFLEET_PRESET_PORTS",
+            $"{preset.EnginePortA}:{preset.RpcPortA}:{preset.NglA}:" +
+            $"{preset.EnginePortB}:{preset.RpcPortB}:{preset.NglB}:" +
+            $"{preset.ThreadsPerEngine}:{preset.ContextSize}");
 
-        // ── REAL llama-engine nodes (quirks #1/#2/#3) ────────────────────────
-        var engineA = RegisterEngine(builder, "engine-a", engineBinary,
-            preset.EnginePortA, preset.RpcPortA, preset.NglA,
-            preset.ThreadsPerEngine, preset.ContextSize, modelPath);
-        var engineB = RegisterEngine(builder, "engine-b", engineBinary,
-            preset.EnginePortB, preset.RpcPortB, preset.NglB,
-            preset.ThreadsPerEngine, preset.ContextSize, modelPath);
-
-        // ── Sandbox Hydra.Core coordinator (mirrors Hydra.AppHost wiring) ────
-        var workersJson = $$"""
-            [{"name":"engine-a","host":"localhost","rpc_port":{{preset.RpcPortA}},"llama_rpc_port":{{preset.RpcPortA}},"llama_url":"http://localhost:{{preset.EnginePortA}}","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2},{"name":"engine-b","host":"localhost","rpc_port":{{preset.RpcPortB}},"llama_rpc_port":{{preset.RpcPortB}},"llama_url":"http://localhost:{{preset.EnginePortB}}","worker_type":2,"slots":1,"prefill_priority":100,"decode_priority":1}]
-            """;
-
-        var hydraCore = builder.AddProject<Projects.Hydra_Core>("hydra-core")
-            .WithHttpEndpoint(targetPort: CoordinatorPort, name: "http")
-            .WithReference(hydraDb)
-            .WithEnvironment("HYDRA_COORD_ENABLED", "true")
-            .WithEnvironment("HYDRA_COORD_PORT", CoordinatorPort.ToString())
-            .WithEnvironment("HYDRA_COORD_WORKERS", workersJson)
-            .WithEnvironment("HYDRA_STORE_PORT", "19500")
-            .WithEnvironment("HYDRA_STORE_DEBUG_PORT", "19501")
-            .WithEnvironment("HYDRA_STORE_HOST", "0.0.0.0")
-            .WithEnvironment("HYDRA_STORE_DIR", "/tmp/hydra-store-minifleet")
-            .WithEnvironment("HYDRA_COORD_STORE_PORT", "19500")
-            .WithEnvironment("HYDRA_COORD_NO_STORE_KV_RESTORE", "true");
-
-        var schedulerImpl = Environment.GetEnvironmentVariable(SchedulerImplEnvVar);
-        if (!string.IsNullOrWhiteSpace(schedulerImpl))
-        {
-            hydraCore = hydraCore.WithEnvironment(SchedulerImplEnvVar, schedulerImpl);
-        }
+        // Real AppHost project bootstrap (consultant diagnosis: in-test-assembly
+        // DistributedApplication.CreateBuilder() lacks dcpclipath metadata →
+        // Options validation failure at StartAsync).
+        var builder = await DistributedApplicationTestingBuilder
+            .CreateAsync<Projects.Tests_MiniFleet_AppHost>(
+                args: [], configureBuilder: null, cancellationToken: ct).ConfigureAwait(false);
 
         var app = builder.Build();
         await app.StartAsync(ct).ConfigureAwait(false);
@@ -130,42 +107,6 @@ public static class MiniFleetAppHost
             EngineAUrl: app.GetEndpoint("engine-a", "http").ToString().TrimEnd('/'),
             EngineBUrl: app.GetEndpoint("engine-b", "http").ToString().TrimEnd('/'),
             PresetName: preset.Name);
-    }
-
-    /// <summary>One REAL llama-engine ExecutableResource with brief-exact argv:
-    /// --host/--port/--rpc-port/--n-gpu-layers/-t/-c/--model. Health = GET /health.</summary>
-    private static IResourceBuilder<ExecutableResource> RegisterEngine(
-        IDistributedApplicationBuilder builder,
-        string name,
-        string binary,
-        int httpPort,
-        int rpcPort,
-        int ngl,
-        int threads,
-        int contextSize,
-        string modelPath)
-    {
-        var workingDirectory = Path.GetDirectoryName(binary) ?? Directory.GetCurrentDirectory();
-        var engine = builder
-            .AddExecutable(
-                name, binary, workingDirectory,
-                "--host", "127.0.0.1",
-                "--port", httpPort.ToString(),
-                "--rpc-port", rpcPort.ToString(),
-                "--n-gpu-layers", ngl.ToString(),
-                "-t", threads.ToString(),
-                "-c", contextSize.ToString(),
-                "--model", modelPath)
-            .WithHttpEndpoint(targetPort: httpPort, name: "http", isProxied: false)
-            .WithHttpHealthCheck("/health");
-
-        // Quirk #2: only set LD_LIBRARY_PATH when a dir actually resolves.
-        var ldLibraryPath = ResolveLdLibraryPath();
-        if (ldLibraryPath is not null)
-        {
-            engine = engine.WithEnvironment("LD_LIBRARY_PATH", ldLibraryPath);
-        }
-        return engine;
     }
 
     /// <summary>MINIFLEET_ENGINE_BIN override, else the staged ~/hydra-min-test
@@ -184,23 +125,12 @@ public static class MiniFleetAppHost
             {
                 throw new InvalidOperationException(
                     $"No llama-engine binary found. Stage it at {DefaultEngineBin} " +
-                    $"or set {Artifacts.EngineBinEnvVar}.");
+                    $"or set {Artifacts.EngineBinEnvVar}. For the cpu CI lane, build the " +
+                    "PR-pinned fork with GGML_CUDA=OFF (see scripts/minifleet/) and point " +
+                    "MINIFLEET_ENGINE_BIN at build_cpu/bin/llama-engine.");
             }
         }
         return Path.GetFullPath(ExpandHome(bin));
-    }
-
-    /// <summary>MINIFLEET_LD_LIBRARY_PATH override, else the engine build prefix
-    /// dir when it exists (quirk #2), else null (env var not emitted).</summary>
-    private static string? ResolveLdLibraryPath()
-    {
-        var explicitPath = Environment.GetEnvironmentVariable(LdLibraryPathEnvVar);
-        if (!string.IsNullOrWhiteSpace(explicitPath))
-        {
-            return explicitPath;
-        }
-        var staged = ExpandHome(DefaultLdLibraryPath);
-        return Directory.Exists(staged) ? staged : null;
     }
 
     private static string ExpandHome(string path)
@@ -248,8 +178,17 @@ public sealed class SshShimFleet : IAsyncDisposable
                 $"(got '{preset.Name}').", nameof(preset));
         }
 
-        var fleet = new SshShimFleet(
-            Environment.GetEnvironmentVariable(SshTargetEnvVar) ?? SshTargetDefault);
+        var sshTarget = Environment.GetEnvironmentVariable(SshTargetEnvVar);
+        if (string.IsNullOrWhiteSpace(sshTarget))
+        {
+            // Defense-in-depth: SmokeTests facts already Skip.If-gate before
+            // calling StartAsync, so this only fires on direct misuse.
+            // (Xunit.Sdk.SkipException is NOT usable here — xunit.assert ships a
+            // shadowing type with a private (string) ctor.)
+            throw new InvalidOperationException(
+                "MINIFLEET_SSH_TARGET unset — VM lane is opt-in; CI must not hang here.");
+        }
+        var fleet = new SshShimFleet(sshTarget);
 
         // 1. Launch both engines on the VM (idempotent; health-gated inside).
         await fleet.RunScriptAsync("start", ct).ConfigureAwait(false);
@@ -375,11 +314,20 @@ public sealed class SshShimFleet : IAsyncDisposable
     }
 
     /// <summary>Walks up from the test assembly to find scripts/minifleet/vm-run.sh
-    /// (tests run from arbitrary working directories under bin/).</summary>
+    /// (tests run from arbitrary working directories under bin/). Falls back to
+    /// the source-adjacent path recorded at build time via MSBuild : since the
+    /// bin tree sits under the repo, upward traversal suffices there; for
+    /// out-of-repo execution a MINIFLEET_REPO_ROOT override is honored.</summary>
     private static string RepoRoot()
     {
+        var overrideRoot = Environment.GetEnvironmentVariable("MINIFLEET_REPO_ROOT");
+        if (!string.IsNullOrWhiteSpace(overrideRoot) &&
+            File.Exists(Path.Combine(overrideRoot, ScriptPath)))
+        {
+            return overrideRoot;
+        }
         var dir = AppContext.BaseDirectory;
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < 12; i++)
         {
             var candidate = Path.Combine(dir, ScriptPath);
             if (File.Exists(candidate))
@@ -389,7 +337,8 @@ public sealed class SshShimFleet : IAsyncDisposable
             dir = Path.GetFullPath(Path.Combine(dir, ".."));
         }
         throw new InvalidOperationException(
-            $"Could not locate {ScriptPath} from {AppContext.BaseDirectory}.");
+            $"Could not locate {ScriptPath} from {AppContext.BaseDirectory}. " +
+            $"Set MINIFLEET_REPO_ROOT to the repo checkout root.");
     }
 
     public async ValueTask DisposeAsync()

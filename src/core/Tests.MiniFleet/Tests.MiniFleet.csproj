@@ -24,6 +24,10 @@
   <ItemGroup>
     <ProjectReference Include="..\Tests.Core\Tests.Core.csproj" />
     <ProjectReference Include="..\Hydra.AppHost\Hydra.AppHost.csproj" />
+    <!-- Real AppHost project for this tier: supplies dcpclipath/dashboard
+         metadata (consultant AC1 diagnosis — in-test-assembly builders fail
+         Aspire options validation). -->
+    <ProjectReference Include="..\Tests.MiniFleet.AppHost\Tests.MiniFleet.AppHost.csproj" />
   </ItemGroup>
 
 </Project>

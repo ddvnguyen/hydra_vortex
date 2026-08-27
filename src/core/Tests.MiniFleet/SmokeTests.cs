@@ -148,7 +148,12 @@ public sealed class CpuTwoNodeSmokeTests : MiniFleetSmokeBase, IAsyncLifetime
 public sealed class GpuGpuSharedSmokeTests : MiniFleetSmokeBase, IAsyncLifetime
 {
     private static readonly string? SshTarget =
-        Environment.GetEnvironmentVariable("MINIFLEET_SSH_TARGET");
+        Normalize(Environment.GetEnvironmentVariable("MINIFLEET_SSH_TARGET"));
+
+    /// <summary>Treat empty-string env vars as unset (MINIFLEET_SSH_TARGET= on a
+    /// command line means "skip the VM lane", same as not setting it).</summary>
+    private static string? Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 
     private MiniFleetRun? _fleet;
     private static readonly CancellationTokenSource Cts = new(TimeSpan.FromMinutes(25));
@@ -187,7 +192,8 @@ public sealed class GpuGpuSharedSmokeTests : MiniFleetSmokeBase, IAsyncLifetime
     [SkippableFact]
     public async Task ColdAtomicEngine_VmLane_Passes()
     {
-        Skip.If(SshTarget is null, "MINIFLEET_SSH_TARGET unset — VM lane is opt-in.");
+        Skip.If(SshTarget is null || _fleet is null,
+            "MINIFLEET_SSH_TARGET unset — VM lane is opt-in.");
         var results = await RunSmokeAsync(_fleet!, "legacy", Cts.Token).ConfigureAwait(false);
         Assert.Contains(results, r => r.ScenarioId == "cold_atomic_engine");
     }
@@ -195,7 +201,8 @@ public sealed class GpuGpuSharedSmokeTests : MiniFleetSmokeBase, IAsyncLifetime
     [SkippableFact]
     public async Task ChunkedSave_VmLane_Passes()
     {
-        Skip.If(SshTarget is null, "MINIFLEET_SSH_TARGET unset — VM lane is opt-in.");
+        Skip.If(SshTarget is null || _fleet is null,
+            "MINIFLEET_SSH_TARGET unset — VM lane is opt-in.");
         var results = await RunSmokeAsync(_fleet!, "legacy", Cts.Token).ConfigureAwait(false);
         Assert.Contains(results, r => r.ScenarioId == "chunked_save");
     }
