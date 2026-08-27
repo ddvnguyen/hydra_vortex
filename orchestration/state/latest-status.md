@@ -18,6 +18,20 @@ current here, promote what's durable there.
 | `epic/610-server-hydra-extension-rebased` (llama.cpp fork, `ddvnguyen` remote) | **PR #105 open against `hydra-fork`** — **DEFERRED (GPU phase)** | 4 rebased commits onto `hydra-fork` HEAD (`67ceb00bd`) + 1 fixup (`ecfbfda11`). Rig-validated 6/7 gates 2026-08-21; gate 7 (A/B toggle parity on P100 VM) blocked by VM SSH starvation. Per owner decision 2026-08-26: gate 7 + any live-rig validation deferred until owner schedules rig time. |
 | `epic/697-470-stabilization` | active (this branch) | Stabilization workstream per decision 001. |
 
+## Fleet model change — 2026-08-27 (owner directive)
+
+- **Default lead/delegate model is now `opencode-go/glm-5.3-flash`.** Prior default
+  `opencode-go/ox-alpha-free` is DEPRECATED — it now errors "Model not found" when
+  prompted (both consultant relays `26a5ca56` and `6f8a1b9e` died of this).
+- glm-5.3-flash known failure mode (per AGENTS.md): long multi-step turns truncate
+  mid-tool-call → mitigate with micro-scoped single-action prompts + explicit
+  "reply with only X, then stop".
+- **New leader dispatched** for the P100 VM GPU-passthrough fix (Track A adjacent):
+  root cause pre-diagnosed by consultant — host vfio binding correct
+  (`08:00.0` @ `10de:15f8` on `vfio-pci`, clean IOMMU group), but domain
+  `ubuntu26_server` has NO `<hostdev>` in its libvirt XML, so every boot comes up
+  without the GPU. Fix = `virsh attach-device --persistent` + reboot + in-VM nvidia-smi.
+
 ## Track A resumed 2026-08-26 (lead `1abcd138`, ox-alpha-free)
 
 Owner decisions locked via consultant (do not re-ask): PR #695 DifferentialGate drift =

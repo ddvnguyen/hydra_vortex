@@ -315,3 +315,12 @@ touched.
   CONFIRM_REQUIRED as a chat message with the `CONFIRM_REQUIRED:` prefix (Paseo phone
   notify). Lead did so directly. Future leads: do NOT trust either id as a relay;
   use the chat-prefix escalation.
+
+## Fleet model change (2026-08-27)
+
+| Item | Detail |
+|---|---|
+| Owner directive | Default lead/delegate model → `opencode-go/glm-5.3-flash` |
+| Reason | `opencode-go/ox-alpha-free` deprecated — errors "Model not found" when prompted; killed both consultant relay agents (26a5ca56, 6f8a1b9e) |
+| Mitigation baked in | glm-5.3-flash truncates on long multi-step turns → all briefings phase-gated, single-action prompts, "reply only X then stop" |
+| New agent | P100 VM passthrough leader dispatched this date; mission: attach `<hostdev>` for 08:00.0 to domain `ubuntu26_server`, reboot, verify in-VM nvidia-smi |
