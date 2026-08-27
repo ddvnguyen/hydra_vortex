@@ -88,10 +88,12 @@ public static class MiniFleetAppHost
 
         // Real AppHost project bootstrap (consultant diagnosis: in-test-assembly
         // DistributedApplication.CreateBuilder() lacks dcpclipath metadata →
-        // Options validation failure at StartAsync).
+        // Options validation failure at StartAsync). configureBuilder must be a
+        // no-op lambda, NOT null — the 4-arg overload throws ArgumentNullException.
         var builder = await DistributedApplicationTestingBuilder
             .CreateAsync<Projects.Tests_MiniFleet_AppHost>(
-                args: [], configureBuilder: null, cancellationToken: ct).ConfigureAwait(false);
+                args: [], configureBuilder: static (_, _) => { }, cancellationToken: ct)
+            .ConfigureAwait(false);
 
         var app = builder.Build();
         await app.StartAsync(ct).ConfigureAwait(false);
