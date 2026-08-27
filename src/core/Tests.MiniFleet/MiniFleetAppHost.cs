@@ -5,13 +5,20 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Tests.MiniFleet;
 
-/// <summary>Handles to a started mini-fleet: the Aspire app plus resolved base URLs
-/// for the sandbox coordinator and the two real engine nodes.</summary>
+/// <summary>Handles to a started mini-fleet: the Aspire app (cpu lane) plus resolved
+/// base URLs for the sandbox coordinator and the two real engine nodes. The ssh-shim
+/// lane has no Aspire app — <see cref="MiniFleetRun.App"/> is null and lifecycle is
+/// owned by <see cref="SshShimFleet"/>.</summary>
 public sealed record MiniFleetRun(
-    DistributedApplication App,
+    DistributedApplication? App,
     string CoordinatorBaseUrl,
     string EngineAUrl,
-    string EngineBUrl);
+    string EngineBUrl,
+    IAsyncDisposable? Lifecycle = null)
+{
+    public async ValueTask DisposeAsync() =>
+        await (Lifecycle?.DisposeAsync() ?? ValueTask.CompletedTask).ConfigureAwait(false);
+}
 
 /// <summary>
 /// Mini-fleet smoke tier — real-engine multi-node scenario runner
@@ -38,18 +45,16 @@ public static class MiniFleetAppHost
     private const string DefaultLdLibraryPath = "~/hydra-min-test";
     private const int CoordinatorPort = 19000;
 
-    /// <summary>Entry point. cpu-2node runs fully local (no GPU); the
-    /// gpu-gpu-shared ssh-shim lane is the next implementation step.</summary>
-    public static Task<MiniFleetRun> StartAsync(
+    /// <summary>Entry point. cpu-2node runs fully local (no GPU, Aspire-hosted);
+    /// gpu-gpu-shared drives the P100 VM through scripts/minifleet/vm-run.sh.</summary>
+    public static async Task<MiniFleetRun> StartAsync(
         MiniFleetPreset preset, string modelPath, CancellationToken ct = default)
     {
         if (preset.ViaSshShim)
         {
-            throw new NotImplementedException(
-                "gpu-gpu-shared (P100 VM ssh shim) lane is not implemented yet — " +
-                "follow-up step per orchestration/state/tasks/2026-08-27-minifleet.md.");
+            return await SshShimFleet.StartAsync(preset, modelPath, ct).ConfigureAwait(false);
         }
-        return StartCpuTwoNodeAsync(preset, modelPath, ct);
+        return await StartCpuTwoNodeAsync(preset, modelPath, ct).ConfigureAwait(false);
     }
 
     public static Task<MiniFleetRun> StartCpuTwoNodeAsync(
@@ -204,5 +209,216 @@ public static class MiniFleetAppHost
             return Path.GetFullPath(Path.Combine(home, path[1..].TrimStart('/')));
         }
         return Environment.ExpandEnvironmentVariables(path);
+    }
+}
+
+/// <summary>
+/// gpu-gpu-shared lane: drives the P100 VM through scripts/minifleet/vm-run.sh
+/// (start/status/stop) instead of Aspire. Engines run on the VM at
+/// 127.0.0.1:{8088,8089} — the test host reaches them via ssh port-forward
+/// (LocalForward through the same ssh connection used for control).
+///
+/// Safety: start/stop ONLY act on pids whose cmdline matches the exact run
+/// signature enforced inside vm-run.sh (llama-engine + Qwen3.5-9B-Q4_K_M +
+/// qwen-2node alias). Residents (:8086 prod, :8090 upstream) are untouchable.
+/// </summary>
+public sealed class SshShimFleet : IAsyncDisposable
+{
+    private const string ScriptPath = "scripts/minifleet/vm-run.sh";
+    private const string SshTargetEnvVar = "MINIFLEET_SSH_TARGET";
+    private const string SshTargetDefault = "hydra-p100";
+    private const int EngineAPort = 8088;
+    private const int EngineBPort = 8089;
+
+    private readonly string _sshTarget;
+    private System.Diagnostics.Process? _tunnelA;
+    private System.Diagnostics.Process? _tunnelB;
+
+    private SshShimFleet(string sshTarget) => _sshTarget = sshTarget;
+
+    public static async Task<MiniFleetRun> StartAsync(
+        MiniFleetPreset preset, string modelPath, CancellationToken ct)
+    {
+        if (preset.Name != Presets.GpuGpuShared.Name)
+        {
+            throw new ArgumentException(
+                $"ssh-shim lane only supports the '{Presets.GpuGpuShared.Name}' preset " +
+                $"(got '{preset.Name}').", nameof(preset));
+        }
+
+        var fleet = new SshShimFleet(
+            Environment.GetEnvironmentVariable(SshTargetEnvVar) ?? SshTargetDefault);
+
+        // 1. Launch both engines on the VM (idempotent; health-gated inside).
+        await fleet.RunScriptAsync("start", ct).ConfigureAwait(false);
+
+        // 2. Forward engine ports to localhost so the runner hits them like
+        //    any other lane. Two dedicated tunnels per fleet instance.
+        try
+        {
+            fleet._tunnelA = fleet.OpenTunnel(EngineAPort);
+            fleet._tunnelB = fleet.OpenTunnel(EngineBPort);
+        }
+        catch
+        {
+            await fleet.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+
+        // 3. Health-gate through the tunnels (quirk #3: {"status":"ok"}).
+        var urlA = $"http://127.0.0.1:{EngineAPort}";
+        var urlB = $"http://127.0.0.1:{EngineBPort}";
+        await WaitHealthyAsync(urlA, ct).ConfigureAwait(false);
+        await WaitHealthyAsync(urlB, ct).ConfigureAwait(false);
+
+        // 4. No sandbox coordinator on this lane yet: scenarios talk to the
+        //    engines directly. CoordinatorBaseUrl points at node A as a
+        //    placeholder until the coordinator-on-VM step lands.
+        return new MiniFleetRun(
+            App: null,
+            CoordinatorBaseUrl: urlA,
+            EngineAUrl: urlA,
+            EngineBUrl: urlB,
+            Lifecycle: fleet);
+    }
+
+    /// <summary>Local ssh tunnel: localhost:port → VM 127.0.0.1:port. -o ExitOnForwardFailure
+    /// + BatchMode so failures surface immediately instead of hanging the gate.</summary>
+    private System.Diagnostics.Process OpenTunnel(int port)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "ssh",
+            ArgumentList =
+            {
+                "-N",
+                "-o", "ExitOnForwardFailure=yes",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-L", $"{port}:127.0.0.1:{port}",
+                _sshTarget,
+            },
+            UseShellExecute = false,
+            RedirectStandardError = true,
+        };
+        var proc = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to launch ssh tunnel process.");
+        // Give ssh a moment to establish the forward; ExitOnForwardFailure makes
+        // a bind failure exit nonzero quickly, which we surface as an exception.
+        Thread.Sleep(750);
+        if (proc.HasExited)
+        {
+            var err = proc.StandardError.ReadToEnd();
+            proc.Dispose();
+            throw new InvalidOperationException(
+                $"ssh tunnel for port {port} exited immediately: {err}");
+        }
+        return proc;
+    }
+
+    /// <summary>Polls GET /health until {"status":"ok"} or timeout (quirk #3).</summary>
+    private static async Task WaitHealthyAsync(string baseUrl, CancellationToken ct)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(3);
+        Exception? last = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var response = await http.GetAsync($"{baseUrl}/health", ct).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    return;
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                last = ex;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+        }
+        throw new TimeoutException(
+            $"Engine at {baseUrl}/health never became healthy within 3 minutes." +
+            (last is null ? "" : $" Last error: {last.Message}"));
+    }
+
+    /// <summary>Runs `bash scripts/minifleet/vm-run.sh &lt;verb&gt;` from the repo root,
+    /// streaming output; throws on nonzero exit.</summary>
+    private async Task<string> RunScriptAsync(string verb, CancellationToken ct)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "bash",
+            WorkingDirectory = RepoRoot(),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add(ScriptPath);
+        psi.ArgumentList.Add(verb);
+
+        var proc = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException($"Failed to launch vm-run.sh {verb}.");
+        var stdout = await proc.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
+        var stderr = await proc.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+        if (proc.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"vm-run.sh {verb} failed (exit {proc.ExitCode}): {stderr}{stdout}");
+        }
+        return stdout;
+    }
+
+    /// <summary>Walks up from the test assembly to find scripts/minifleet/vm-run.sh
+    /// (tests run from arbitrary working directories under bin/).</summary>
+    private static string RepoRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        for (var i = 0; i < 10; i++)
+        {
+            var candidate = Path.Combine(dir, ScriptPath);
+            if (File.Exists(candidate))
+            {
+                return dir;
+            }
+            dir = Path.GetFullPath(Path.Combine(dir, ".."));
+        }
+        throw new InvalidOperationException(
+            $"Could not locate {ScriptPath} from {AppContext.BaseDirectory}.");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // Tunnels first (they hold the port forwards), then engines on the VM.
+        foreach (var tunnel in new[] { _tunnelA, _tunnelB })
+        {
+            if (tunnel is null)
+            {
+                continue;
+            }
+            try
+            {
+                if (!tunnel.HasExited)
+                {
+                    tunnel.Kill(entireProcessTree: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[minifleet] tunnel cleanup: {ex.Message}");
+            }
+            tunnel.Dispose();
+        }
+
+        try
+        {
+            await RunScriptAsync("stop", CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[minifleet] vm-run stop failed: {ex.Message}");
+        }
     }
 }
