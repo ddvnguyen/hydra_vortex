@@ -18,19 +18,16 @@ independently verifies their output, decides what lands. This is a **standing de
 not scoped to one workstream — see `docs/decisions/001-freeze-470-rewrite-internals.md`
 for where it was adopted.
 
-**Delegate models** (Paseo, provider string `opencode/opencode-go/<model>`):
-- `opencode-go/glm-5.3-flash` — **default for leads and delegates** per owner
-  directive 2026-08-27. Known failure mode observed on Track A (2026-08-26):
-  long multi-step turns can end truncated mid-tool-call; mitigate with
-  micro-scoped single-action prompts and explicit "reply with only X, then stop".
-- `opencode-go/hy3` — proven leader baseline (Track A #697); use when a task
-  needs sustained autonomous orchestration.
-- `opencode-go/mimo-v2.5` — worker-tier fallback / comparison baseline. Can get
-  stuck in a degenerate loop on ambiguous, open-ended technical tasks — redirect
-  with concrete tooling (diff against a reference, grep-based checks) rather than
-  more open-ended prompting if it stalls.
-- `opencode-go/muse-spark-1.2-contributor` — third option, needs a per-workspace
-  data-policy opt-in before first use. Verify its claims a bit more than the others'.
+**Delegate models** (Paseo create string `opencode/<model-id>`; registry 2026-08-27v2):
+- **Leads:** `command_code/z-ai/glm-5.3-flash` — owner directive 2026-08-27v2.
+  Known failure mode: long multi-step turns truncate mid-tool-call or degenerate-repeat;
+  mitigate with micro-scoped single-action prompts + empty-tick rule on heartbeats.
+- **All subagents/workers:** `command_code/minimax/minimax-m3-free` — owner directive
+  2026-08-27v2. Re-run minimax claims against evidence before trusting them.
+- `opencode-go/hy3` — proven-leader fallback if command_code unavailable.
+- RETIRED 2026-08-27: `opencode-go/glm-5.3-flash` (workspace billing exhausted —
+  CreditsError 401 killed a lead mid-task), `opencode-go/ox-alpha-free` (model not
+  found), `mimo-v2.5`/`muse-spark-1.2-contributor`/`deepseek-v4-flash` (legacy).
 
 No hard model restriction beyond "pick the one that fits the task and note why" —
 routing rationale and cost/quality comparisons live in
