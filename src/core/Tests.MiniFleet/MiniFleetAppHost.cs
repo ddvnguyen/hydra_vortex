@@ -98,33 +98,38 @@ public static class MiniFleetAppHost
                 args: [], configureBuilder: static (_, _) => { }, cancellationToken: ct)
             .ConfigureAwait(false);
 
-        var app = builder.Build();
-        await app.StartAsync(ct).ConfigureAwait(false);
-
-        // AC1-r6 instrumentation (consultant diagnosis: /health HANGS — connect
-        // OK, no bytes, 120s cancel; topology matches E2E, so instrument first):
-        // mirror resource logs to tests/logs/<runid>/{resource}.log so engine and
-        // coordinator boot output is captured for the verdict.
         var runId = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
         var logsDir = Path.Combine(RepoRoot(), "tests", "logs", runId);
         Directory.CreateDirectory(logsDir);
+
+        var app = builder.Build();
+
+        // AC1-r7 fix: subscribe the log watchers BEFORE app.StartAsync —
+        // subscribing after start missed everything (no hydra-core.log was
+        // written in r6). Each line is flushed SYNCHRONOUSLY (no per-line
+        // await on the shared ct inside a hot loop) so the capture never
+        // lags a crash.
         var loggers = app.Services.GetRequiredService<ResourceLoggerService>();
         foreach (var resourceName in new[] { "hydra-core", "engine-a", "engine-b", "postgres" })
         {
+            var logFilePath = Path.Combine(logsDir, $"{resourceName}.log");
+            File.WriteAllText(logFilePath, string.Empty); // create eagerly
+            var watchCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _ = Task.Run(async () =>
             {
                 try
                 {
                     await foreach (var batch in loggers.WatchAsync(resourceName)
-                        .WithCancellation(ct).ConfigureAwait(false))
+                        .WithCancellation(watchCts.Token).ConfigureAwait(false))
                     {
                         foreach (var logLine in batch)
                         {
                             var level = logLine.IsErrorMessage ? "ERR" : "INF";
-                            await File.AppendAllTextAsync(
-                                Path.Combine(logsDir, $"{resourceName}.log"),
-                                $"[{level}] {logLine.Content}{Environment.NewLine}",
-                                ct).ConfigureAwait(false);
+                            // Synchronous flush per line — capture must survive
+                            // a hard process crash mid-write.
+                            File.AppendAllText(
+                                logFilePath,
+                                $"[{level}] {logLine.Content}{Environment.NewLine}");
                         }
                     }
                 }
@@ -136,6 +141,8 @@ public static class MiniFleetAppHost
             }, CancellationToken.None);
         }
 
+        await app.StartAsync(ct).ConfigureAwait(false);
+
         // Readiness gates, ordered (fail fast with resource states on timeout):
         // postgres must be Running before hydra-core's StoreMetadata can connect;
         // hydra-core Running before the engines' traffic matters.
@@ -146,6 +153,11 @@ public static class MiniFleetAppHost
         await WaitForRunningAsync(notifications, "engine-b", logsDir, ct).ConfigureAwait(false);
         await WaitForHealthyAsync(notifications, "engine-a", logsDir, ct).ConfigureAwait(false);
         await WaitForHealthyAsync(notifications, "engine-b", logsDir, ct).ConfigureAwait(false);
+        // AC1-r6 evidence: coordinator HTTP server NEVER started — gate on the
+        // coordinator being Healthy too (health check registered in Topology
+        // via the /health endpoint annotation), dumping its last 30 captured
+        // log lines on failure for the verdict.
+        await WaitForCoordinatorHealthyAsync(notifications, logsDir, ct).ConfigureAwait(false);
 
         // 6x retry health probe (5s gap) — AC1-r6: each attempt's URL + status is
         // logged to tests/logs/<runid>/probe.log so the hang becomes diagnosable.
@@ -215,6 +227,36 @@ public static class MiniFleetAppHost
             var states = await SnapshotResourceStatesAsync(notifications).ConfigureAwait(false);
             throw new TimeoutException(
                 $"Resource '{resourceName}' did not become Healthy within 90s. States: {states}");
+        }
+    }
+
+    /// <summary>AC1-r7: coordinator waitForHealthy with 90s fail-fast that dumps
+    /// the LAST 30 captured coordinator log lines into the exception message —
+    /// the Kestrel-bind failure (or its absence) becomes immediately visible.</summary>
+    private static async Task WaitForCoordinatorHealthyAsync(
+        ResourceNotificationService notifications, string logsDir, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(90));
+        try
+        {
+            await notifications.WaitForResourceHealthyAsync("hydra-core", timeoutCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            var states = await SnapshotResourceStatesAsync(notifications).ConfigureAwait(false);
+            var coordLogPath = Path.Combine(logsDir, "hydra-core.log");
+            var tail = File.Exists(coordLogPath)
+                ? string.Join(Environment.NewLine, File.ReadLines(coordLogPath).TakeLast(30))
+                : "(no coordinator log captured)";
+            await File.AppendAllTextAsync(
+                Path.Combine(logsDir, "probe.log"),
+                $"[{DateTime.UtcNow:HH:mm:ss}] hydra-core Healthy TIMEOUT. states: {states}{Environment.NewLine}last-30 log lines:{Environment.NewLine}{tail}{Environment.NewLine}",
+                CancellationToken.None).ConfigureAwait(false);
+            throw new TimeoutException(
+                "hydra-core did not become Healthy within 90s. " +
+                $"States: {states}. Last 30 coordinator log lines:{Environment.NewLine}{tail}");
         }
     }
 

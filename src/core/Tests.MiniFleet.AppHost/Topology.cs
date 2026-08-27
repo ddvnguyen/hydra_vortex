@@ -66,6 +66,17 @@ public static class Topology
             .WithReference(hydraDb)
             .WithEnvironment("HYDRA_COORD_ENABLED", "true")
             .WithEnvironment("HYDRA_COORD_PORT", CoordinatorPort.ToString())
+            // AC1-r6 evidence: hydra-core bound ONLY 19500/19501 — the
+            // coordinator's internal CreateSlimBuilder web host (Program.cs
+            // Task.Run) never bound :19000. Force the Kestrel binding via env
+            // (UseUrls inside the task should win, but Aspire's injected
+            // ASPNETCORE_URLS for the endpoint annotation evidently did not
+            // reach the slim builder — set it explicitly so BOTH paths agree).
+            .WithEnvironment("ASPNETCORE_URLS", $"http://0.0.0.0:{CoordinatorPort.ToString()}")
+            // AC1-r7 diagnostics: verbose AspNetCore startup logging so a
+            // silent Kestrel bind failure becomes visible in the captured logs.
+            .WithEnvironment("Logging__LogLevel__Default", "Debug")
+            .WithEnvironment("Logging__LogLevel__Microsoft.AspNetCore", "Information")
             .WithEnvironment("HYDRA_COORD_WORKERS", workersJson)
             .WithEnvironment("HYDRA_STORE_PORT", "19500")
             .WithEnvironment("HYDRA_STORE_DEBUG_PORT", "19501")
