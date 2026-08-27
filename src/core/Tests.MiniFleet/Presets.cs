@@ -32,6 +32,18 @@ public sealed record MiniFleetPreset
     /// <summary>cpu-2node runs engines in-process on the CI host (no GPU, ngl=0).
     /// gpu-gpu-shared launches through the ssh shim onto the P100 VM.</summary>
     public required bool ViaSshShim { get; init; }
+
+    /// <summary>Smoke prompt token cap (architect ruling 2026-08-28a): CPU prefill
+    /// of full-size scenario prompts can exceed any sane timeout — smoke must NOT
+    /// use parity-size prompts. ScenarioRunner materializes requests under this
+    /// cap; full-size parity stays in the rig tier (Tests.EngineParity etc.).</summary>
+    public required int SmokePromptTokenCap { get; init; }
+
+    /// <summary>Smoke completion token cap — smoke asserts non-empty output and
+    /// finish_reason, not generation length. 48 is plenty for "ok"-shaped replies
+    /// while keeping CPU decode time bounded (quirk #4 reasoning-model note:
+    /// content may still come back empty — that is a PASS for smoke).</summary>
+    public required int SmokeCompletionTokenCap { get; init; }
 }
 
 public static class Presets
@@ -52,6 +64,8 @@ public static class Presets
         ThreadsPerEngine = 3,
         ContextSize = 4096,
         ViaSshShim = false,
+        SmokePromptTokenCap = 256,
+        SmokeCompletionTokenCap = 48,
     };
 
     /// <summary>P100 VM lane: SAME validated topology as the owner proof run
@@ -71,5 +85,7 @@ public static class Presets
         ThreadsPerEngine = 3,
         ContextSize = 4096,
         ViaSshShim = true,
+        SmokePromptTokenCap = 256,
+        SmokeCompletionTokenCap = 48,
     };
 }

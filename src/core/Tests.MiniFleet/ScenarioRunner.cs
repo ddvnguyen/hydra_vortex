@@ -78,11 +78,17 @@ public sealed class RealEngineScenarioRunner
 
     private readonly HttpClient _http;
     private readonly string _presetName;
+    private readonly TimeSpan _perRequestTimeout;
 
-    public RealEngineScenarioRunner(HttpClient http, string presetName)
+    /// <summary>Architect ruling 2026-08-28b: the client itself never times out
+    /// (Timeout.InfiniteTimeSpan); the per-request CTS carries the real budget —
+    /// 120s for the CPU lane, 180s for the VM lane (slower P100 prefill + ssh
+    /// tunnel overhead). callers pass preset.ViaSshShim to select.</summary>
+    public RealEngineScenarioRunner(HttpClient http, string presetName, bool viaSshShim)
     {
         _http = http;
         _presetName = presetName;
+        _perRequestTimeout = viaSshShim ? TimeSpan.FromSeconds(180) : TimeSpan.FromSeconds(120);
     }
 
     /// <summary>Executes one harness scenario spec against a routed node URL,
@@ -93,6 +99,7 @@ public sealed class RealEngineScenarioRunner
         ScenarioSpec scenario,
         string schedulerImpl,
         IReadOnlyList<string> engineUrls,
+        MiniFleetPreset preset,
         CancellationToken ct = default)
     {
         if (engineUrls.Count == 0)
@@ -101,12 +108,14 @@ public sealed class RealEngineScenarioRunner
         }
 
         var trace = new List<MiniFleetTraceCall>();
+        // Architect ruling 2026-08-28a: smoke must NOT use parity-size prompts —
+        // CPU prefill of full-size scenario prompts can exceed any sane timeout.
+        // Materialize requests under the preset's smoke caps; full-size parity
+        // stays in the rig tier (Tests.EngineParity etc.).
+        var prompt = new string('x', Math.Max(8, preset.SmokePromptTokenCap / 4));
         var messages = new List<object>
         {
-            // The harness specs drive token-estimated conversations; the real-engine
-            // adapter represents each spec as a short deterministic chat script.
-            new { role = "system", content = $"Scenario: {scenario.Id}. {scenario.Description}" },
-            new { role = "user", content = "Reply with exactly: ok" },
+            new { role = "user", content = $"Scenario {scenario.Id}: reply with exactly: ok. Ignore this filler: {prompt}" },
         };
 
         int? promptTokens = null, completionTokens = null;
@@ -114,7 +123,7 @@ public sealed class RealEngineScenarioRunner
         string? error = null;
 
         var nodeUrl = engineUrls[0];
-        var call = await PostChatCompletionAsync(nodeUrl, messages, MaxCompletionTokens, ct)
+        var call = await PostChatCompletionAsync(nodeUrl, messages, preset.SmokeCompletionTokenCap, ct)
             .ConfigureAwait(false);
         trace.Add(call);
 
@@ -162,17 +171,18 @@ public sealed class RealEngineScenarioRunner
     internal async Task<(MiniFleetScenarioRunResult Legacy, MiniFleetScenarioRunResult? V2)> RunBothPassesAsync(
         ScenarioSpec scenario,
         IReadOnlyList<string> engineUrls,
+        MiniFleetPreset preset,
         Func<string, Task<IReadOnlyList<string>>>? implLaneFactory = null,
         CancellationToken ct = default)
     {
-        var legacy = await RunAsync(scenario, "legacy", engineUrls, ct).ConfigureAwait(false);
+        var legacy = await RunAsync(scenario, "legacy", engineUrls, preset, ct).ConfigureAwait(false);
         MiniFleetScenarioRunResult? v2 = null;
         try
         {
             var v2Urls = implLaneFactory is not null
                 ? await implLaneFactory("v2").ConfigureAwait(false)
                 : engineUrls;
-            v2 = await RunAsync(scenario, "v2", v2Urls, ct).ConfigureAwait(false);
+            v2 = await RunAsync(scenario, "v2", v2Urls, preset, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -191,6 +201,11 @@ public sealed class RealEngineScenarioRunner
         string nodeUrl, IReadOnlyList<object> messages, int maxTokens, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
+        // Architect ruling 2026-08-28b: HttpClient.Timeout stays Infinite —
+        // per-request CTS carries the real budget (120s CPU / 180s VM) so a
+        // slow first prefill isn't killed at a fixed 10s client default.
+        using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        requestCts.CancelAfter(_perRequestTimeout);
         try
         {
             var body = new
@@ -202,9 +217,9 @@ public sealed class RealEngineScenarioRunner
             };
             using var content = new StringContent(
                 JsonSerializer.Serialize(body, JsonOpts), Encoding.UTF8, "application/json");
-            using var response = await _http.PostAsync($"{nodeUrl}/v1/chat/completions", content, ct)
+            using var response = await _http.PostAsync($"{nodeUrl}/v1/chat/completions", content, requestCts.Token)
                 .ConfigureAwait(false);
-            var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var json = await response.Content.ReadAsStringAsync(requestCts.Token).ConfigureAwait(false);
             sw.Stop();
 
             if (!response.IsSuccessStatusCode)

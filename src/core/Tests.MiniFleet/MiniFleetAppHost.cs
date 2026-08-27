@@ -14,9 +14,12 @@ public sealed record MiniFleetRun(
     string CoordinatorBaseUrl,
     string EngineAUrl,
     string EngineBUrl,
+    MiniFleetPreset Preset,
     string PresetName,
     IAsyncDisposable? Lifecycle = null)
 {
+    public bool ViaSshShim => Preset.ViaSshShim;
+
     public async ValueTask DisposeAsync() =>
         await (Lifecycle?.DisposeAsync() ?? ValueTask.CompletedTask).ConfigureAwait(false);
 }
@@ -108,6 +111,7 @@ public static class MiniFleetAppHost
             CoordinatorBaseUrl: app.GetEndpoint("hydra-core", "http").ToString().TrimEnd('/'),
             EngineAUrl: app.GetEndpoint("engine-a", "http").ToString().TrimEnd('/'),
             EngineBUrl: app.GetEndpoint("engine-b", "http").ToString().TrimEnd('/'),
+            Preset: preset,
             PresetName: preset.Name);
     }
 
@@ -222,6 +226,7 @@ public sealed class SshShimFleet : IAsyncDisposable
             CoordinatorBaseUrl: urlA,
             EngineAUrl: urlA,
             EngineBUrl: urlB,
+            Preset: preset,
             PresetName: preset.Name,
             Lifecycle: fleet);
     }

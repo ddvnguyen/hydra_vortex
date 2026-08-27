@@ -3,6 +3,11 @@ using Tests.Core.Harness;
 using Xunit;
 using Xunit.Abstractions;
 
+// Architect ruling 2026-08-28c: both smoke classes bind FIXED engine/coordinator
+// ports (8088/8089/19000/19500) — xunit must run them sequentially or the two
+// fleets collide. (Per-preset distinct ports would re-enable parallelism later.)
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
+
 namespace Tests.MiniFleet;
 
 /// <summary>
@@ -72,14 +77,17 @@ public abstract class MiniFleetSmokeBase
         MiniFleetRun fleet, string schedulerImplPass, CancellationToken ct)
     {
         var results = new List<MiniFleetScenarioRunResult>();
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        // Architect ruling 2026-08-28b: InfiniteTimeSpan client — the per-request
+        // CTS inside RealEngineScenarioRunner carries the real budget.
+        using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
 
         foreach (var spec in Specs)
         {
-            var runner = new RealEngineScenarioRunner(http, fleet.PresetName);
+            var runner = new RealEngineScenarioRunner(http, fleet.PresetName, fleet.ViaSshShim);
             var (legacy, v2) = await runner.RunBothPassesAsync(
                 spec,
                 new[] { fleet.EngineAUrl, fleet.EngineBUrl },
+                fleet.Preset,
                 ct: ct).ConfigureAwait(false);
 
             AssertSmokeAssertions(legacy);
