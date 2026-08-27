@@ -101,18 +101,213 @@ public static class MiniFleetAppHost
         var app = builder.Build();
         await app.StartAsync(ct).ConfigureAwait(false);
 
-        // Readiness gate (quirk #3): engines healthy via GET /health.
+        // AC1-r6 instrumentation (consultant diagnosis: /health HANGS — connect
+        // OK, no bytes, 120s cancel; topology matches E2E, so instrument first):
+        // mirror resource logs to tests/logs/<runid>/{resource}.log so engine and
+        // coordinator boot output is captured for the verdict.
+        var runId = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        var logsDir = Path.Combine(RepoRoot(), "tests", "logs", runId);
+        Directory.CreateDirectory(logsDir);
+        var loggers = app.Services.GetRequiredService<ResourceLoggerService>();
+        foreach (var resourceName in new[] { "hydra-core", "engine-a", "engine-b", "postgres" })
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await foreach (var batch in loggers.WatchAsync(resourceName)
+                        .WithCancellation(ct).ConfigureAwait(false))
+                    {
+                        foreach (var logLine in batch)
+                        {
+                            var level = logLine.IsErrorMessage ? "ERR" : "INF";
+                            await File.AppendAllTextAsync(
+                                Path.Combine(logsDir, $"{resourceName}.log"),
+                                $"[{level}] {logLine.Content}{Environment.NewLine}",
+                                ct).ConfigureAwait(false);
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { /* fleet shutdown */ }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[minifleet] log watch {resourceName}: {ex.Message}");
+                }
+            }, CancellationToken.None);
+        }
+
+        // Readiness gates, ordered (fail fast with resource states on timeout):
+        // postgres must be Running before hydra-core's StoreMetadata can connect;
+        // hydra-core Running before the engines' traffic matters.
         var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
-        await notifications.WaitForResourceHealthyAsync("engine-a", ct).ConfigureAwait(false);
-        await notifications.WaitForResourceHealthyAsync("engine-b", ct).ConfigureAwait(false);
+        await WaitForRunningAsync(notifications, "postgres", logsDir, ct).ConfigureAwait(false);
+        await WaitForRunningAsync(notifications, "hydra-core", logsDir, ct).ConfigureAwait(false);
+        await WaitForRunningAsync(notifications, "engine-a", logsDir, ct).ConfigureAwait(false);
+        await WaitForRunningAsync(notifications, "engine-b", logsDir, ct).ConfigureAwait(false);
+        await WaitForHealthyAsync(notifications, "engine-a", logsDir, ct).ConfigureAwait(false);
+        await WaitForHealthyAsync(notifications, "engine-b", logsDir, ct).ConfigureAwait(false);
+
+        // 6x retry health probe (5s gap) — AC1-r6: each attempt's URL + status is
+        // logged to tests/logs/<runid>/probe.log so the hang becomes diagnosable.
+        var coordinatorUrl = app.GetEndpoint("hydra-core", "http").ToString().TrimEnd('/');
+        await ProbeHealthWithRetriesAsync(coordinatorUrl, logsDir, viaSshShim: false, ct)
+            .ConfigureAwait(false);
+        foreach (var (name, port) in new[] { ("engine-a", preset.EnginePortA), ("engine-b", preset.EnginePortB) })
+        {
+            await ProbeHealthWithRetriesAsync(
+                app.GetEndpoint(name, "http").ToString().TrimEnd('/'), logsDir,
+                viaSshShim: false, ct, label: name).ConfigureAwait(false);
+            _ = port; // ports documented in preset; endpoints resolved via Aspire
+        }
 
         return new MiniFleetRun(
             App: app,
-            CoordinatorBaseUrl: app.GetEndpoint("hydra-core", "http").ToString().TrimEnd('/'),
+            CoordinatorBaseUrl: coordinatorUrl,
             EngineAUrl: app.GetEndpoint("engine-a", "http").ToString().TrimEnd('/'),
             EngineBUrl: app.GetEndpoint("engine-b", "http").ToString().TrimEnd('/'),
             Preset: preset,
             PresetName: preset.Name);
+    }
+
+    /// <summary>Waits for a resource to reach Running; on 90s timeout throws with
+    /// a snapshot of ALL resource states (the fail-fast diagnosis payload).</summary>
+    private static async Task WaitForRunningAsync(
+        ResourceNotificationService notifications, string resourceName,
+        string logsDir, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(90));
+        try
+        {
+            await notifications
+                .WaitForResourceAsync(resourceName, KnownResourceStates.Running, timeoutCts.Token)
+                .ConfigureAwait(false);
+            await File.AppendAllTextAsync(
+                Path.Combine(logsDir, "probe.log"),
+                $"[{DateTime.UtcNow:HH:mm:ss}] {resourceName}: Running{Environment.NewLine}",
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            var states = await SnapshotResourceStatesAsync(notifications).ConfigureAwait(false);
+            await File.AppendAllTextAsync(
+                Path.Combine(logsDir, "probe.log"),
+                $"[{DateTime.UtcNow:HH:mm:ss}] {resourceName}: TIMEOUT. states: {states}{Environment.NewLine}",
+                CancellationToken.None).ConfigureAwait(false);
+            throw new TimeoutException(
+                $"Resource '{resourceName}' did not reach Running within 90s. States: {states}");
+        }
+    }
+
+    private static async Task WaitForHealthyAsync(
+        ResourceNotificationService notifications, string resourceName,
+        string logsDir, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(90));
+        try
+        {
+            await notifications.WaitForResourceHealthyAsync(resourceName, timeoutCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            var states = await SnapshotResourceStatesAsync(notifications).ConfigureAwait(false);
+            throw new TimeoutException(
+                $"Resource '{resourceName}' did not become Healthy within 90s. States: {states}");
+        }
+    }
+
+    /// <summary>Health probe with 6 retries (5s gap) — every attempt's URL and
+    /// outcome appended to tests/logs/&lt;runid&gt;/probe.log (AC1-r6 instrumentation).</summary>
+    private static async Task ProbeHealthWithRetriesAsync(
+        string baseUrl, string logsDir, bool viaSshShim, CancellationToken ct, string label = "coordinator")
+    {
+        var probeLog = Path.Combine(logsDir, "probe.log");
+        using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        for (var attempt = 1; attempt <= 6; attempt++)
+        {
+            using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            requestCts.CancelAfter(viaSshShim
+                ? TimeSpan.FromSeconds(180)
+                : TimeSpan.FromSeconds(120));
+            string outcome;
+            try
+            {
+                using var response = await http.GetAsync($"{baseUrl}/health", requestCts.Token)
+                    .ConfigureAwait(false);
+                outcome = $"HTTP {(int)response.StatusCode}";
+                if (response.IsSuccessStatusCode)
+                {
+                    await File.AppendAllTextAsync(probeLog,
+                        $"[{DateTime.UtcNow:HH:mm:ss}] {label} {baseUrl}/health attempt {attempt}: {outcome} OK{Environment.NewLine}",
+                        CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+            {
+                outcome = ex is TaskCanceledException ? "TIMEOUT" : ex.Message;
+            }
+            await File.AppendAllTextAsync(probeLog,
+                $"[{DateTime.UtcNow:HH:mm:ss}] {label} {baseUrl}/health attempt {attempt}: {outcome}{Environment.NewLine}",
+                CancellationToken.None).ConfigureAwait(false);
+            if (attempt < 6)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+            }
+        }
+        throw new TimeoutException(
+            $"{label} /health at {baseUrl} never succeeded after 6 attempts — see {probeLog}");
+    }
+
+    /// <summary>Compact name→state dump of the resources we gate on (fail-fast
+    /// exception payload; also mirrored to probe.log by callers).</summary>
+    private static Task<string> SnapshotResourceStatesAsync(
+        ResourceNotificationService notifications)
+    {
+        var names = new[] { "postgres", "hydra-core", "engine-a", "engine-b" };
+        var lines = names.Select(name =>
+        {
+            try
+            {
+                if (notifications.TryGetCurrentState(name, out var evt))
+                {
+                    return $"{name}={evt.Snapshot.State?.Text ?? "unknown"}";
+                }
+                return $"{name}=no-event";
+            }
+            catch (Exception ex)
+            {
+                return $"{name}=(snapshot failed: {ex.Message})";
+            }
+        });
+        return Task.FromResult(string.Join(", ", lines));
+    }
+
+    /// <summary>Walks up from the test assembly to the repo root (tests/logs/
+    /// &lt;runid&gt; lives there); honored override: MINIFLEET_REPO_ROOT.</summary>
+    internal static string RepoRoot()
+    {
+        var overrideRoot = Environment.GetEnvironmentVariable("MINIFLEET_REPO_ROOT");
+        if (!string.IsNullOrWhiteSpace(overrideRoot) &&
+            Directory.Exists(Path.Combine(overrideRoot, "tests")))
+        {
+            return overrideRoot;
+        }
+        var dir = AppContext.BaseDirectory;
+        for (var i = 0; i < 12; i++)
+        {
+            if (Directory.Exists(Path.Combine(dir, "tests")) &&
+                Directory.Exists(Path.Combine(dir, "src")))
+            {
+                return dir;
+            }
+            dir = Path.GetFullPath(Path.Combine(dir, ".."));
+        }
+        throw new InvalidOperationException(
+            $"Could not locate repo root from {AppContext.BaseDirectory}. " +
+            "Set MINIFLEET_REPO_ROOT to the repo checkout root.");
     }
 
     /// <summary>MINIFLEET_ENGINE_BIN override, else the staged ~/hydra-min-test
@@ -299,7 +494,7 @@ public sealed class SshShimFleet : IAsyncDisposable
         var psi = new System.Diagnostics.ProcessStartInfo
         {
             FileName = "bash",
-            WorkingDirectory = RepoRoot(),
+            WorkingDirectory = RepoRootForScript(),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -325,28 +520,7 @@ public sealed class SshShimFleet : IAsyncDisposable
     /// the source-adjacent path recorded at build time via MSBuild : since the
     /// bin tree sits under the repo, upward traversal suffices there; for
     /// out-of-repo execution a MINIFLEET_REPO_ROOT override is honored.</summary>
-    private static string RepoRoot()
-    {
-        var overrideRoot = Environment.GetEnvironmentVariable("MINIFLEET_REPO_ROOT");
-        if (!string.IsNullOrWhiteSpace(overrideRoot) &&
-            File.Exists(Path.Combine(overrideRoot, ScriptPath)))
-        {
-            return overrideRoot;
-        }
-        var dir = AppContext.BaseDirectory;
-        for (var i = 0; i < 12; i++)
-        {
-            var candidate = Path.Combine(dir, ScriptPath);
-            if (File.Exists(candidate))
-            {
-                return dir;
-            }
-            dir = Path.GetFullPath(Path.Combine(dir, ".."));
-        }
-        throw new InvalidOperationException(
-            $"Could not locate {ScriptPath} from {AppContext.BaseDirectory}. " +
-            $"Set MINIFLEET_REPO_ROOT to the repo checkout root.");
-    }
+    private static string RepoRootForScript() => MiniFleetAppHost.RepoRoot();
 
     public async ValueTask DisposeAsync()
     {
