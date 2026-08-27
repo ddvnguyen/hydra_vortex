@@ -19,12 +19,16 @@ not scoped to one workstream — see `docs/decisions/001-freeze-470-rewrite-inte
 for where it was adopted.
 
 **Delegate models** (Paseo, provider string `opencode/opencode-go/<model>`):
-- `opencode-go/hy3` — default while the usage multiplier is active (through
-  2026-08-30 per the grant that set this); recheck after that date.
-- `opencode-go/mimo-v2.5` — fallback / comparison baseline. Known weakness: can get
-  stuck in a degenerate loop on ambiguous, open-ended technical tasks — redirect with
-  concrete tooling (diff against a reference, grep-based checks) rather than more
-  open-ended prompting if it stalls.
+- `opencode-go/glm-5.3-flash` — **default for leads and delegates** per owner
+  directive 2026-08-27. Known failure mode observed on Track A (2026-08-26):
+  long multi-step turns can end truncated mid-tool-call; mitigate with
+  micro-scoped single-action prompts and explicit "reply with only X, then stop".
+- `opencode-go/hy3` — proven leader baseline (Track A #697); use when a task
+  needs sustained autonomous orchestration.
+- `opencode-go/mimo-v2.5` — worker-tier fallback / comparison baseline. Can get
+  stuck in a degenerate loop on ambiguous, open-ended technical tasks — redirect
+  with concrete tooling (diff against a reference, grep-based checks) rather than
+  more open-ended prompting if it stalls.
 - `opencode-go/muse-spark-1.2-contributor` — third option, needs a per-workspace
   data-policy opt-in before first use. Verify its claims a bit more than the others'.
 
