@@ -64,3 +64,20 @@ missing from disk (owner was restoring it; reported).
    PREFILL M2 with `hash pre-pass hashed 0 B`. Prod P100 is decode-only so it is
    dormant there; Mixed sm_60 workers will hit it. Fix = rebuild engine from
    fork tip with a CUDA 12.x toolkit (host 12.9 toolkit currently missing).
+
+## Addendum (2026-08-28 late): real sm_60 engine from 12.9 minimal toolkit
+
+The 12.9 minimal toolkit was located at `~/opt/cuda-12.9-min` on the host
+(nvcc 12.9.86, micromamba build with the math_functions header patch,
+per HEADER-PATCH-NOTICE.md). Full clean rebuild of fork tip `67ceb00bd`:
+
+    cmake -G Ninja -DCMAKE_CUDA_ARCHITECTURES=60 -DGGML_CUDA=ON -DGGML_RPC=ON \
+      -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14 (gcc >14 guard in 12.9 host_config.h) \
+      -DCUDAToolkit_ROOT=~/opt/cuda-12.9-min
+
+- CUB/Thrust symbols bake `SM_600` → true sm_60 SASS; `ARCHS = 600` at engine start.
+- Deployed self-contained to `~/hydra-fork-fix-sm60/` on the VM (no lib mixing).
+- Test lane relaunched on it (run-v4.sh); **Workflow=HydraTest re-run: PASSED (54 s)**;
+  PREFILL M2 + STATE_GET M2 both stream 101 MiB, zero failures.
+
+Toolkit location is authoritative for all future sm_60 builds.
