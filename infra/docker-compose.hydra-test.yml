@@ -239,11 +239,14 @@ services:
 
   # ── Llama Engine TEST A ───────────────────────────────────────────────
   # Uses the same resident binary as prod at ~/hydra-min-test/llama-engine
-  # (no rebuild). Host bind-mount provides the binary + shared libs via
-  # LD_LIBRARY_PATH. See also: docs/hydra-test.md VM hygiene.
+  # (no rebuild). Host bind-mount provides the binary; container provides
+  # CUDA 12.9 runtime (P100 sm_60). See also: docs/hydra-test.md VM hygiene.
+  # Single-GPU P100 VM; both engines share the device via mmap page-cache.
+  # This is single-GPU shared-VRAM P/D, not true 2-GPU P/D split.
   llama-engine-test-a:
-    image: ubuntu:22.04
+    image: nvidia/cuda:12.9.0-runtime-ubuntu22.04
     network_mode: host
+    runtime: nvidia
     volumes:
       - ${HOME}/hydra-min-test:/opt/hydra-min-test:ro
       - /mnt/SSD:/models:ro
@@ -254,7 +257,7 @@ services:
     command:
       - /opt/hydra-min-test/llama-engine
       - --model
-      - /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
+      - /opt/hydra-min-test/Qwen3.5-9B-Q4_K_M.gguf
       - --host
       - "0.0.0.0"
       - --port
@@ -285,20 +288,23 @@ services:
     restart: unless-stopped
 
   # ── Llama Engine TEST B ───────────────────────────────────────────────
+  # Single-GPU P100 VM; both engines share the device via mmap page-cache.
+  # This is single-GPU shared-VRAM P/D, not true 2-GPU P/D split.
   llama-engine-test-b:
-    image: ubuntu:22.04
+    image: nvidia/cuda:12.9.0-runtime-ubuntu22.04
     network_mode: host
+    runtime: nvidia
     volumes:
       - ${HOME}/hydra-min-test:/opt/hydra-min-test:ro
       - /mnt/SSD:/models:ro
       - /mnt/llm-ram:/mnt/llm-ram:rw
     environment:
       - LD_LIBRARY_PATH=${HOME}/hydra-min-test
-      - CUDA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=0
     command:
       - /opt/hydra-min-test/llama-engine
       - --model
-      - /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
+      - /opt/hydra-min-test/Qwen3.5-9B-Q4_K_M.gguf
       - --host
       - "0.0.0.0"
       - --port
