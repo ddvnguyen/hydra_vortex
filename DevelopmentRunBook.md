@@ -161,6 +161,16 @@ dotnet test src/core/Tests.EngineParity/
 
 # Tier 4 — Agent workload (opt-in, real GPU + CLI, workflow_dispatch only)
 dotnet test src/core/Tests.AgentWorkload/
+
+# MiniFleet smoke tier (real-engine, multi-node) — docs/minifleet.md
+# host CPU (no GPU, ngl=0): Aspire + 2 real engines
+LD_LIBRARY_PATH=$HOME/hydra-min-test MINIFLEET_ENGINE_BIN=$HOME/hydra-min-test/llama-engine \
+MINIFLEET_MODEL_PATH=$HOME/.cache/minifleet/models/Qwen3.5-9B-Q4_K_M.gguf \
+dotnet test src/core/Tests.MiniFleet --filter "Tier=MiniFleet&FullyQualifiedName~CpuTwoNode"
+# VM P100 (2-node 16+8, via ssh shim)
+MINIFLEET_SSH_TARGET=hydra-p100 MINIFLEET_MODEL_PATH=$HOME/hydra-min-test/Qwen3.5-9B-Q4_K_M.gguf \
+MINIFLEET_ENGINE_BIN=$HOME/hydra-min-test/llama-engine LD_LIBRARY_PATH=$HOME/hydra-min-test \
+dotnet test src/core/Tests.MiniFleet --filter "Tier=MiniFleet&RequiresVm=true"
 ```
 
 ---
