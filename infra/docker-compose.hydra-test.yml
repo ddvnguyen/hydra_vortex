@@ -9,7 +9,7 @@
 # Verify: podman exec pg psql -U hydra -l  # should list hydra and hydra_test
 #
 # Engine binaries: same resident builds as prod at ~/hydra-min-test/llama-engine
-# (no rebuild). LD_LIBRARY_PATH=$HOME/hydra-min-test for both engines.
+# (no rebuild). LD_LIBRARY_PATH=/opt/hydra-min-test (container-internal bind-mount path; $HOME expands to host path which is invalid inside the container) for both engines.
 #
 # Port plan (+10000 vs prod :9000/:9500/:9501 + heads :9700/:9701 + engines :8080/:8086):
 #   hydra-core-test-a: 19000 HTTP, 19500 Store RPC, 19501 metrics
@@ -254,7 +254,7 @@ services:
       - /mnt/SSD:/models:ro
       - /mnt/llm-ram:/mnt/llm-ram:rw
     environment:
-      - LD_LIBRARY_PATH=${HOME}/hydra-min-test
+      - LD_LIBRARY_PATH=/opt/hydra-min-test
       - CUDA_VISIBLE_DEVICES=0
     command:
       - /opt/hydra-min-test/llama-engine
@@ -301,7 +301,7 @@ services:
       - /mnt/SSD:/models:ro
       - /mnt/llm-ram:/mnt/llm-ram:rw
     environment:
-      - LD_LIBRARY_PATH=${HOME}/hydra-min-test
+      - LD_LIBRARY_PATH=/opt/hydra-min-test
       - CUDA_VISIBLE_DEVICES=0
     command:
       - /opt/hydra-min-test/llama-engine

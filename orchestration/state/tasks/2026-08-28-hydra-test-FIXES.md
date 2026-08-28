@@ -40,6 +40,12 @@ Base: `origin/epic/697-470-stabilization`
 | `git diff --stat origin/epic/697-470-stabilization..HEAD` | **PASS** | 21 files changed, 1297 insertions (+4 new config files vs scaffold's 15 files; all 11 fixes present, no prod `infra/docker-compose.hydra.yml` or prod `appsettings*.json` touched) |
 | Scope discipline | **PASS** | `git diff -- infra/docker-compose.hydra.yml` empty, `git diff -- src/core/Hydra.Core/appsettings.json` empty |
 
+## LEAD FOLLOW-UP FIX (2026-08-28 ~17:30 ICT, post-verify)
+
+After worker's 11-fix pass, lead independently re-verified and caught **one additional critical bug missed in pass 1**: the engine's `LD_LIBRARY_PATH` env was `${HOME}/hydra-min-test` (host path). Inside the container, the host path doesn't exist; the engine's runtime linker would fail to find `libggml-cuda.so` / `libcuda.so.1` etc. Fixed to `LD_LIBRARY_PATH=/opt/hydra-min-test` (container-internal bind-mount path, matching the `volumes:` line). Both engines (lines 257, 304) + comment at line 12. Commit `<pending>` — `infra/docker-compose.hydra-test.yml` only, 3 lines, no other file touched.
+
+This is the same trap the minifleet worker hit (documented at the top of the minifleet brief: "LD_LIBRARY_PATH must point at the engine build prefix dir"). When running the engine in a container, the "engine build prefix" is the container-internal bind-mount target, not the host path.
+
 ## NEW Issues Discovered (none blocking, for lead awareness)
 
 1. **Head image build dependency** — `infra/hydra-head/Dockerfile.rtx:56` `COPY bin/hydra-head` requires `bin/hydra-head` built from Go. `up.sh` now auto-builds it via `go build -o bin/hydra-head ./src/head/...` if missing (`$HOME/go-sdk/go/bin/go` per `CLAUDE.md: go is NOT in default PATH`). If the binary is stale, the `podman image exists` short-circuit will skip rebuild; bump by `podman rmi localhost/hydra-head:rtx` if needed. Not a new bug, but head build is heavier than core.
