@@ -1,0 +1,329 @@
+# Deployed with: `podman compose -f infra/docker-compose.infra.yml -f infra/docker-compose.hydra-test.yml up -d`
+# Hydra TEST instance (T2) — 2 cores + 2 heads + 2 engines, port-shifted +10000 vs prod.
+# Isolated by DB (hydra_test) and ports. Prod infra (postgres/redis/loki/prom) is shared
+# via infra/docker-compose.infra.yml. This file does NOT modify prod compose.
+#
+# DB init: infra/sql/init-hydra-test.sql is NOT auto-mounted into postgres.
+# It is applied idempotently by scripts/hydra-test/up.sh:
+#   podman exec pg psql -U hydra -f /path/to/init-hydra-test.sql
+# Verify: podman exec pg psql -U hydra -l  # should list hydra and hydra_test
+#
+# Engine binaries: same resident builds as prod at ~/hydra-min-test/llama-engine
+# (no rebuild). LD_LIBRARY_PATH=$HOME/hydra-min-test for both engines.
+#
+# Port plan (+10000 vs prod :9000/:9500/:9501 + heads :9700/:9701 + engines :8080/:8086):
+#   hydra-core-test-a: 19000 HTTP, 19500 Store RPC, 19501 metrics
+#   hydra-core-test-b: 19001 HTTP, 19502 Store RPC, 19503 metrics
+#   hydra-head-test-a: 19700 API -> llama-engine-test-a
+#   hydra-head-test-b: 19701 API -> llama-engine-test-b
+#   llama-engine-test-a: 18086 HTTP, 19513 rpc, ngl 16, -t 3, -c 4096
+#   llama-engine-test-b: 18087 HTTP, 19514 rpc, ngl 8, -t 3, -c 4096
+
+name: hydra-test
+
+x-podman:
+  in_pod: false
+
+services:
+  # ── Hydra Core TEST A (T2 instance A) ─────────────────────────────────
+  hydra-core-test-a:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: core
+      tags:
+        - localhost/hydra-core:latest
+    image: localhost/hydra-core:latest
+    network_mode: host
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "mkdir -m 777 -p \"$${HYDRA_STORE_BACKUP_DIR}/chunks\" \"$${HYDRA_STORE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_L1_DIR}\" && exec dotnet Hydra.Core.dll"]
+    tmpfs:
+      - /mnt/llm-ram:size=40G,mode=1777
+    volumes:
+      - ./hydra-core/config:/etc/hydra/config:ro
+      - /mnt/SSD/hydra-backup:/mnt/SSD/hydra-backup:rw
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
+      - /mnt/llm-ram/hydra-test-store:/mnt/llm-ram/hydra-test-store:rw
+      - /tmp/hydra-test-l1:/tmp/hydra-test-l1:rw
+    environment:
+      - HYDRA_INSTANCE=test
+      - HYDRA_INSTANCE_ID=A
+      - HYDRA_STORE_HOST=0.0.0.0
+      - HYDRA_STORE_PORT=19500
+      - HYDRA_STORE_DIR=/mnt/llm-ram/hydra-test-store
+      - HYDRA_STORE_DEBUG_PORT=19501
+      - HYDRA_STORE_PG_CONN=Host=localhost;Database=hydra_test;Username=hydra;Password=hydra
+      - HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup-test-a
+      - HYDRA_STORE_RESTORE_TOP_N=10
+      - HYDRA_COORD_PORT=19000
+      - HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers-test-a.json
+      - HYDRA_COORD_MODELS_FILE=/etc/hydra/config/models.json
+      - HYDRA_COORD_ENABLE_CHUNKS=true
+      - HYDRA_LLAMA_ENGINE=true
+      - HYDRA_COORD_PIPELINE_ENABLED=false
+      - HYDRA_COORD_COMBINED_ENABLED=false
+      - HYDRA_STORE_CHUNK_SIZE=8192
+      - OTEL_SERVICE_NAME=hydra-test-a
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://localhost:4318
+      - HYDRA_LOG_NODE=test-a
+      - HYDRA_COORD_CHUNK_CACHE_DIR=/mnt/llm-ram/hydra-test-chunk-cache
+      - HYDRA_COORD_CHUNK_CACHE_L1_DIR=/tmp/hydra-test-l1
+      - HYDRA_COORD_CHUNK_CACHE_L1_MAX_BYTES=2147483648
+      - HYDRA_CHUNK_CACHE_BACKEND=pg
+      - HYDRA_CHUNK_CACHE_PG_CONN=Host=localhost;Database=hydra_test;Username=hydra;Password=hydra
+      - HYDRA_CHUNK_CACHE_L2_MAX_BYTES=10737418240
+      - HYDRA_CHUNK_CACHE_L2_LOW_WATER=0.9
+      - HYDRA_CHUNK_CACHE_L2_GC_INTERVAL_SECONDS=300
+      - HYDRA_CHUNK_CACHE_L2_VACUUM_INTERVAL_SECONDS=3600
+      - HYDRA_CHUNK_CACHE_L2_BATCH_SIZE=500
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19000/v1/models"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      component: hydra-test
+      instance: A
+    restart: unless-stopped
+
+  # ── Hydra Core TEST B (T2 instance B) ─────────────────────────────────
+  hydra-core-test-b:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: core
+      tags:
+        - localhost/hydra-core:latest
+    image: localhost/hydra-core:latest
+    network_mode: host
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "mkdir -m 777 -p \"$${HYDRA_STORE_BACKUP_DIR}/chunks\" \"$${HYDRA_STORE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_DIR}\" \"$${HYDRA_COORD_CHUNK_CACHE_L1_DIR}\" && exec dotnet Hydra.Core.dll"]
+    tmpfs:
+      - /mnt/llm-ram:size=40G,mode=1777
+    volumes:
+      - ./hydra-core/config:/etc/hydra/config:ro
+      - /mnt/SSD/hydra-backup:/mnt/SSD/hydra-backup:rw
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
+      - /mnt/llm-ram/hydra-test-store:/mnt/llm-ram/hydra-test-store:rw
+      - /tmp/hydra-test-l1:/tmp/hydra-test-l1:rw
+    environment:
+      - HYDRA_INSTANCE=test
+      - HYDRA_INSTANCE_ID=B
+      - HYDRA_STORE_HOST=0.0.0.0
+      - HYDRA_STORE_PORT=19502
+      - HYDRA_STORE_DIR=/mnt/llm-ram/hydra-test-store
+      - HYDRA_STORE_DEBUG_PORT=19503
+      - HYDRA_STORE_PG_CONN=Host=localhost;Database=hydra_test;Username=hydra;Password=hydra
+      - HYDRA_STORE_BACKUP_DIR=/mnt/SSD/hydra-backup-test-b
+      - HYDRA_STORE_RESTORE_TOP_N=10
+      - HYDRA_COORD_PORT=19001
+      - HYDRA_COORD_CONFIG_FILE=/etc/hydra/config/workers-test-b.json
+      - HYDRA_COORD_MODELS_FILE=/etc/hydra/config/models.json
+      - HYDRA_COORD_ENABLE_CHUNKS=true
+      - HYDRA_LLAMA_ENGINE=true
+      - HYDRA_COORD_PIPELINE_ENABLED=false
+      - HYDRA_COORD_COMBINED_ENABLED=false
+      - HYDRA_STORE_CHUNK_SIZE=8192
+      - OTEL_SERVICE_NAME=hydra-test-b
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://localhost:4318
+      - HYDRA_LOG_NODE=test-b
+      - HYDRA_COORD_CHUNK_CACHE_DIR=/mnt/llm-ram/hydra-test-chunk-cache
+      - HYDRA_COORD_CHUNK_CACHE_L1_DIR=/tmp/hydra-test-l1
+      - HYDRA_COORD_CHUNK_CACHE_L1_MAX_BYTES=2147483648
+      - HYDRA_CHUNK_CACHE_BACKEND=pg
+      - HYDRA_CHUNK_CACHE_PG_CONN=Host=localhost;Database=hydra_test;Username=hydra;Password=hydra
+      - HYDRA_CHUNK_CACHE_L2_MAX_BYTES=10737418240
+      - HYDRA_CHUNK_CACHE_L2_LOW_WATER=0.9
+      - HYDRA_CHUNK_CACHE_L2_GC_INTERVAL_SECONDS=300
+      - HYDRA_CHUNK_CACHE_L2_VACUUM_INTERVAL_SECONDS=3600
+      - HYDRA_CHUNK_CACHE_L2_BATCH_SIZE=500
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19001/v1/models"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      component: hydra-test
+      instance: B
+    restart: unless-stopped
+
+  # ── Hydra Head TEST A -> llama-engine-test-a ──────────────────────────
+  hydra-head-test-a:
+    image: localhost/hydra-head:rtx
+    network_mode: host
+    user: "1000:1000"
+    env_file:
+      - ../.env
+    depends_on:
+      hydra-core-test-a:
+        condition: service_started
+      llama-engine-test-a:
+        condition: service_started
+    command:
+      - -global
+      - /opt/hydra/config/global.yaml
+      - -node
+      - /opt/hydra/config/node-test-a.yaml
+      - -api-port
+      - "19700"
+    volumes:
+      - /mnt/SSD:/models:ro
+      - ./hydra-head/config:/opt/hydra/config:ro
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /mnt/containers/:/mnt/containers/:ro
+    environment:
+      - HYDRA_HEAD_AUTH_TOKEN=${HYDRA_HEAD_AUTH_TOKEN:?must export HYDRA_HEAD_AUTH_TOKEN}
+      - REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json
+      - HYDRA_LLAMA_IMAGE_SOURCE=${HYDRA_LLAMA_IMAGE_SOURCE:-}
+      - HYDRA_LLAMA_IMAGE_DIGEST=${HYDRA_LLAMA_IMAGE_DIGEST:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19700/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    labels:
+      component: hydra-test-head
+      instance: A
+    restart: unless-stopped
+
+  # ── Hydra Head TEST B -> llama-engine-test-b ──────────────────────────
+  hydra-head-test-b:
+    image: localhost/hydra-head:rtx
+    network_mode: host
+    user: "1000:1000"
+    env_file:
+      - ../.env
+    depends_on:
+      hydra-core-test-b:
+        condition: service_started
+      llama-engine-test-b:
+        condition: service_started
+    command:
+      - -global
+      - /opt/hydra/config/global.yaml
+      - -node
+      - /opt/hydra/config/node-test-b.yaml
+      - -api-port
+      - "19701"
+    volumes:
+      - /mnt/SSD:/models:ro
+      - ./hydra-head/config:/opt/hydra/config:ro
+      - /run/user/1000/containers/auth.json:/run/host-ctrs-auth.json:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /mnt/containers/:/mnt/containers/:ro
+    environment:
+      - HYDRA_HEAD_AUTH_TOKEN=${HYDRA_HEAD_AUTH_TOKEN:?must export HYDRA_HEAD_AUTH_TOKEN}
+      - REGISTRY_AUTH_FILE=/run/host-ctrs-auth.json
+      - HYDRA_LLAMA_IMAGE_SOURCE=${HYDRA_LLAMA_IMAGE_SOURCE:-}
+      - HYDRA_LLAMA_IMAGE_DIGEST=${HYDRA_LLAMA_IMAGE_DIGEST:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19701/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    labels:
+      component: hydra-test-head
+      instance: B
+    restart: unless-stopped
+
+  # ── Llama Engine TEST A ───────────────────────────────────────────────
+  # Uses the same resident binary as prod at ~/hydra-min-test/llama-engine
+  # (no rebuild). Host bind-mount provides the binary + shared libs via
+  # LD_LIBRARY_PATH. See also: docs/hydra-test.md VM hygiene.
+  llama-engine-test-a:
+    image: ubuntu:22.04
+    network_mode: host
+    volumes:
+      - ${HOME}/hydra-min-test:/opt/hydra-min-test:ro
+      - /mnt/SSD:/models:ro
+      - /mnt/llm-ram:/mnt/llm-ram:rw
+    environment:
+      - LD_LIBRARY_PATH=${HOME}/hydra-min-test
+      - CUDA_VISIBLE_DEVICES=0
+    command:
+      - /opt/hydra-min-test/llama-engine
+      - --model
+      - /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "18086"
+      - --rpc-port
+      - "19513"
+      - --n-gpu-layers
+      - "16"
+      - -t
+      - "3"
+      - -c
+      - "4096"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --cont-batching
+      - --flash-attn
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:18086/health | grep -q '\"status\":\"ok\"' || curl -f http://localhost:18086/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    labels:
+      component: hydra-test-engine
+      instance: A
+    restart: unless-stopped
+
+  # ── Llama Engine TEST B ───────────────────────────────────────────────
+  llama-engine-test-b:
+    image: ubuntu:22.04
+    network_mode: host
+    volumes:
+      - ${HOME}/hydra-min-test:/opt/hydra-min-test:ro
+      - /mnt/SSD:/models:ro
+      - /mnt/llm-ram:/mnt/llm-ram:rw
+    environment:
+      - LD_LIBRARY_PATH=${HOME}/hydra-min-test
+      - CUDA_VISIBLE_DEVICES=1
+    command:
+      - /opt/hydra-min-test/llama-engine
+      - --model
+      - /models/Qwopus3.6-35B-A3B-v1-APEX-I-Mini.gguf
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "18087"
+      - --rpc-port
+      - "19514"
+      - --n-gpu-layers
+      - "8"
+      - -t
+      - "3"
+      - -c
+      - "4096"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --cont-batching
+      - --flash-attn
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:18087/health | grep -q '\"status\":\"ok\"' || curl -f http://localhost:18087/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    labels:
+      component: hydra-test-engine
+      instance: B
+    restart: unless-stopped
