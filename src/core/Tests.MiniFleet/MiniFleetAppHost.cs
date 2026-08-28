@@ -143,42 +143,123 @@ public static class MiniFleetAppHost
 
         await app.StartAsync(ct).ConfigureAwait(false);
 
-        // Readiness gates, ordered (fail fast with resource states on timeout):
-        // postgres must be Running before hydra-core's StoreMetadata can connect;
-        // hydra-core Running before the engines' traffic matters.
-        var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
-        await WaitForRunningAsync(notifications, "postgres", logsDir, ct).ConfigureAwait(false);
-        await WaitForRunningAsync(notifications, "hydra-core", logsDir, ct).ConfigureAwait(false);
-        await WaitForRunningAsync(notifications, "engine-a", logsDir, ct).ConfigureAwait(false);
-        await WaitForRunningAsync(notifications, "engine-b", logsDir, ct).ConfigureAwait(false);
-        await WaitForHealthyAsync(notifications, "engine-a", logsDir, ct).ConfigureAwait(false);
-        await WaitForHealthyAsync(notifications, "engine-b", logsDir, ct).ConfigureAwait(false);
-        // AC1-r6 evidence: coordinator HTTP server NEVER started — gate on the
-        // coordinator being Healthy too (health check registered in Topology
-        // via the /health endpoint annotation), dumping its last 30 captured
-        // log lines on failure for the verdict.
-        await WaitForCoordinatorHealthyAsync(notifications, logsDir, ct).ConfigureAwait(false);
-
-        // 6x retry health probe (5s gap) — AC1-r6: each attempt's URL + status is
-        // logged to tests/logs/<runid>/probe.log so the hang becomes diagnosable.
-        var coordinatorUrl = app.GetEndpoint("hydra-core", "http").ToString().TrimEnd('/');
-        await ProbeHealthWithRetriesAsync(coordinatorUrl, logsDir, viaSshShim: false, ct)
-            .ConfigureAwait(false);
-        foreach (var (name, port) in new[] { ("engine-a", preset.EnginePortA), ("engine-b", preset.EnginePortB) })
+        // AC1-r8 (architect root cause): failed runs leaked processes — the
+        // coordinator WebApplication runs fire-and-forget inside Task.Run, so
+        // ITS exception is unobserved; and when any gate below throws, the
+        // built app was never returned → nothing disposed it. Guarantee
+        // teardown: wrap every post-Start step so ANY failure disposes the app.
+        try
         {
-            await ProbeHealthWithRetriesAsync(
-                app.GetEndpoint(name, "http").ToString().TrimEnd('/'), logsDir,
-                viaSshShim: false, ct, label: name).ConfigureAwait(false);
-            _ = port; // ports documented in preset; endpoints resolved via Aspire
+            // Readiness gates, ordered (fail fast with resource states on timeout):
+            // postgres must be Running before hydra-core's StoreMetadata can connect;
+            // hydra-core Running before the engines' traffic matters.
+            var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
+            await WaitForRunningAsync(notifications, "postgres", logsDir, ct).ConfigureAwait(false);
+            await WaitForRunningAsync(notifications, "hydra-core", logsDir, ct).ConfigureAwait(false);
+            await WaitForRunningAsync(notifications, "engine-a", logsDir, ct).ConfigureAwait(false);
+            await WaitForRunningAsync(notifications, "engine-b", logsDir, ct).ConfigureAwait(false);
+            await WaitForHealthyAsync(notifications, "engine-a", logsDir, ct).ConfigureAwait(false);
+            await WaitForHealthyAsync(notifications, "engine-b", logsDir, ct).ConfigureAwait(false);
+            // AC1-r6 evidence: coordinator HTTP server NEVER started — gate on the
+            // coordinator being Healthy too (health check registered in Topology
+            // via the /health endpoint annotation), dumping its last 30 captured
+            // log lines on failure for the verdict.
+            await WaitForCoordinatorHealthyAsync(notifications, logsDir, ct).ConfigureAwait(false);
+
+            // AC1-r8 (2): poll the TCP coordinator port 15x2s; on failure throw
+            // with the coordinator resource's health state + last captured log
+            // lines — surfacing the real fire-and-forget fault (e.g. bind
+            // conflict against ORPHANED prior-run processes).
+            var coordinatorUrl = app.GetEndpoint("hydra-core", "http").ToString().TrimEnd('/');
+            await PollCoordinatorPortAsync(coordinatorUrl, logsDir, ct).ConfigureAwait(false);
+
+            // 6x retry health probe (5s gap) — AC1-r6: each attempt's URL + status is
+            // logged to tests/logs/<runid>/probe.log so the hang becomes diagnosable.
+            await ProbeHealthWithRetriesAsync(coordinatorUrl, logsDir, viaSshShim: false, ct)
+                .ConfigureAwait(false);
+            foreach (var name in new[] { "engine-a", "engine-b" })
+            {
+                await ProbeHealthWithRetriesAsync(
+                    app.GetEndpoint(name, "http").ToString().TrimEnd('/'), logsDir,
+                    viaSshShim: false, ct, label: name).ConfigureAwait(false);
+            }
+
+            return new MiniFleetRun(
+                App: app,
+                CoordinatorBaseUrl: coordinatorUrl,
+                EngineAUrl: app.GetEndpoint("engine-a", "http").ToString().TrimEnd('/'),
+                EngineBUrl: app.GetEndpoint("engine-b", "http").ToString().TrimEnd('/'),
+                Preset: preset,
+                PresetName: preset.Name);
+        }
+        catch
+        {
+            // No leak: any gate/probe failure disposes the app (and its DCP-
+            // managed children) before the exception propagates.
+            try
+            {
+                await app.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception disposeEx)
+            {
+                Console.Error.WriteLine($"[minifleet] app dispose during failure: {disposeEx.Message}");
+            }
+            throw;
+        }
+    }
+
+    /// <summary>AC1-r8 (2): poll the coordinator's TCP port 15 times x 2s. On
+    /// persistent failure, throw with the hydra-core resource state snapshot and
+    /// its last 30 captured log lines — surfacing the unobserved fire-and-forget
+    /// coordinator fault (bind conflict, DI failure, etc.).</summary>
+    private static async Task PollCoordinatorPortAsync(
+        string coordinatorUrl, string logsDir, CancellationToken ct)
+    {
+        var uri = new Uri(coordinatorUrl);
+        var port = uri.Port;
+        var coordLogPath = Path.Combine(logsDir, "hydra-core.log");
+        for (var attempt = 1; attempt <= 15; attempt++)
+        {
+            try
+            {
+                // TCP connect probe — no HTTP semantics, just "is the port open".
+                using var tcp = new System.Net.Sockets.TcpClient();
+                ValueTask connectTask = tcp.ConnectAsync(uri.Host, port, ct);
+                var connectAsTask = connectTask.AsTask();
+                var completed = await Task.WhenAny(
+                    connectAsTask, Task.Delay(TimeSpan.FromSeconds(2), ct)).ConfigureAwait(false);
+                if (completed == connectAsTask && tcp.Connected)
+                {
+                    await File.AppendAllTextAsync(
+                        Path.Combine(logsDir, "probe.log"),
+                        $"[{DateTime.UtcNow:HH:mm:ss}] coord tcp {uri.Host}:{port} open (attempt {attempt}){Environment.NewLine}",
+                        CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+            }
+            catch (Exception ex) when (ex is System.Net.Sockets.SocketException or OperationCanceledException)
+            {
+                // fall through to retry
+            }
+            if (attempt < 15)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+            }
         }
 
-        return new MiniFleetRun(
-            App: app,
-            CoordinatorBaseUrl: coordinatorUrl,
-            EngineAUrl: app.GetEndpoint("engine-a", "http").ToString().TrimEnd('/'),
-            EngineBUrl: app.GetEndpoint("engine-b", "http").ToString().TrimEnd('/'),
-            Preset: preset,
-            PresetName: preset.Name);
+        var tail = File.Exists(coordLogPath)
+            ? string.Join(Environment.NewLine, File.ReadLines(coordLogPath).TakeLast(30))
+            : "(no coordinator log captured)";
+        var faultReport =
+            $"Coordinator TCP {uri.Host}:{port} never opened after 15 attempts (30s). " +
+            "The coordinator WebApplication runs fire-and-forget inside Task.Run — " +
+            "its fault is unobserved; last 30 hydra-core log lines follow:" +
+            $"{Environment.NewLine}{tail}";
+        await File.AppendAllTextAsync(
+            Path.Combine(logsDir, "probe.log"),
+            $"[{DateTime.UtcNow:HH:mm:ss}] {faultReport}{Environment.NewLine}",
+            CancellationToken.None).ConfigureAwait(false);
+        throw new TimeoutException(faultReport);
     }
 
     /// <summary>Waits for a resource to reach Running; on 90s timeout throws with
