@@ -80,6 +80,21 @@ public static class MiniFleetAppHost
 
         var engineBinary = ResolveEngineBinary();
 
+        // Dynamic coordinator/store ports per fleet (AC1-r9): fixed 19000/19500
+        // collided when two facts ran sequentially without sufficient dispose
+        // lag (address already in use). Allocate free ports per invocation.
+        var coordinatorPort = GetFreePort();
+        var storePort = GetFreePort();
+        var storeDebugPort = GetFreePort();
+        // Ensure distinctness from engine ports and each other
+        while (storePort == coordinatorPort || storeDebugPort == coordinatorPort || storeDebugPort == storePort ||
+               storePort == preset.EnginePortA || storePort == preset.EnginePortB ||
+               storeDebugPort == preset.EnginePortA || storeDebugPort == preset.EnginePortB ||
+               coordinatorPort == preset.EnginePortA || coordinatorPort == preset.EnginePortB)
+        {
+            storeDebugPort = GetFreePort();
+        }
+
         // Configuration travels via env vars (AppHost Program.cs-independent
         // testing path): the topology builder reads these inside the AppHost.
         Environment.SetEnvironmentVariable("MINIFLEET_ENGINE_BIN", engineBinary);
@@ -88,6 +103,9 @@ public static class MiniFleetAppHost
             $"{preset.EnginePortA}:{preset.RpcPortA}:{preset.NglA}:" +
             $"{preset.EnginePortB}:{preset.RpcPortB}:{preset.NglB}:" +
             $"{preset.ThreadsPerEngine}:{preset.ContextSize}");
+        Environment.SetEnvironmentVariable("MINIFLEET_COORDINATOR_PORT", coordinatorPort.ToString());
+        Environment.SetEnvironmentVariable("MINIFLEET_STORE_PORT", storePort.ToString());
+        Environment.SetEnvironmentVariable("MINIFLEET_STORE_DEBUG_PORT", storeDebugPort.ToString());
 
         // Real AppHost project bootstrap (consultant diagnosis: in-test-assembly
         // DistributedApplication.CreateBuilder() lacks dcpclipath metadata →
@@ -465,6 +483,15 @@ public static class MiniFleetAppHost
             return Path.GetFullPath(Path.Combine(home, path[1..].TrimStart('/')));
         }
         return Environment.ExpandEnvironmentVariables(path);
+    }
+
+    private static int GetFreePort()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
     }
 }
 

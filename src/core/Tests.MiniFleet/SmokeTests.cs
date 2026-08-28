@@ -66,9 +66,23 @@ public abstract class MiniFleetSmokeBase
         {
             return; // lane without a sandbox coordinator — out of scope for that lane
         }
+        if (viaSshShim)
+        {
+            // VM lane has no sandbox coordinator; health is engine's {"status":"ok"}.
+            // Just verify the endpoint is reachable and returns ok; store check is out of scope.
+            using var httpSsh = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            using var ctsSsh = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            ctsSsh.CancelAfter(TimeSpan.FromSeconds(180));
+            var jsonSsh = await httpSsh.GetStringAsync($"{coordinatorUrl}/health", ctsSsh.Token)
+                .ConfigureAwait(false);
+            using var docSsh = JsonDocument.Parse(jsonSsh);
+            var hasOk = docSsh.RootElement.TryGetProperty("status", out var st) && st.GetString() == "ok";
+            Assert.True(hasOk, $"VM lane /health should return status ok: {jsonSsh}");
+            return;
+        }
         using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        requestCts.CancelAfter(viaSshShim ? TimeSpan.FromSeconds(180) : TimeSpan.FromSeconds(120));
+        requestCts.CancelAfter(TimeSpan.FromSeconds(120));
         var json = await http.GetStringAsync($"{coordinatorUrl}/health", requestCts.Token)
             .ConfigureAwait(false);
         using var doc = JsonDocument.Parse(json);

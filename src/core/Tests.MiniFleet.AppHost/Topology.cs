@@ -61,29 +61,37 @@ public static class Topology
             [{"name":"engine-a","host":"localhost","rpc_port":{{rpcPortA}},"llama_rpc_port":{{rpcPortA}},"llama_url":"http://localhost:{{enginePortA}}","worker_type":3,"slots":2,"prefill_priority":1,"decode_priority":2},{"name":"engine-b","host":"localhost","rpc_port":{{rpcPortB}},"llama_rpc_port":{{rpcPortB}},"llama_url":"http://localhost:{{enginePortB}}","worker_type":2,"slots":1,"prefill_priority":100,"decode_priority":1}]
             """;
 
+        var coordinatorPort = ResolveCoordinatorPort();
+        var storePort = ResolveStorePort();
+        var storeDebugPort = ResolveStoreDebugPort();
+        var l1Dir = Environment.GetEnvironmentVariable("HYDRA_COORD_CHUNK_CACHE_L1_DIR") ?? "/tmp/hydra-minifleet-l1";
+        var backupDir = Environment.GetEnvironmentVariable("HYDRA_STORE_BACKUP_DIR") ?? "/tmp/hydra-backup-minifleet";
+
         var hydraCore = builder.AddProject<Projects.Hydra_Core>("hydra-core")
-            .WithHttpEndpoint(targetPort: CoordinatorPort, name: "http")
+            .WithHttpEndpoint(targetPort: coordinatorPort, name: "http")
             .WithReference(hydraDb)
             .WithEnvironment("HYDRA_COORD_ENABLED", "true")
-            .WithEnvironment("HYDRA_COORD_PORT", CoordinatorPort.ToString())
+            .WithEnvironment("HYDRA_COORD_PORT", coordinatorPort.ToString())
             // AC1-r6 evidence: hydra-core bound ONLY 19500/19501 — the
             // coordinator's internal CreateSlimBuilder web host (Program.cs
             // Task.Run) never bound :19000. Force the Kestrel binding via env
             // (UseUrls inside the task should win, but Aspire's injected
             // ASPNETCORE_URLS for the endpoint annotation evidently did not
             // reach the slim builder — set it explicitly so BOTH paths agree).
-            .WithEnvironment("ASPNETCORE_URLS", $"http://0.0.0.0:{CoordinatorPort.ToString()}")
+            .WithEnvironment("ASPNETCORE_URLS", $"http://0.0.0.0:{coordinatorPort.ToString()}")
             // AC1-r7 diagnostics: verbose AspNetCore startup logging so a
             // silent Kestrel bind failure becomes visible in the captured logs.
             .WithEnvironment("Logging__LogLevel__Default", "Debug")
             .WithEnvironment("Logging__LogLevel__Microsoft.AspNetCore", "Information")
             .WithEnvironment("HYDRA_COORD_WORKERS", workersJson)
-            .WithEnvironment("HYDRA_STORE_PORT", "19500")
-            .WithEnvironment("HYDRA_STORE_DEBUG_PORT", "19501")
+            .WithEnvironment("HYDRA_STORE_PORT", storePort.ToString())
+            .WithEnvironment("HYDRA_STORE_DEBUG_PORT", storeDebugPort.ToString())
             .WithEnvironment("HYDRA_STORE_HOST", "0.0.0.0")
             .WithEnvironment("HYDRA_STORE_DIR", "/tmp/hydra-store-minifleet")
-            .WithEnvironment("HYDRA_COORD_STORE_PORT", "19500")
-            .WithEnvironment("HYDRA_COORD_NO_STORE_KV_RESTORE", "true");
+            .WithEnvironment("HYDRA_COORD_CHUNK_CACHE_L1_DIR", l1Dir)
+            .WithEnvironment("HYDRA_COORD_STORE_PORT", storePort.ToString())
+            .WithEnvironment("HYDRA_COORD_NO_STORE_KV_RESTORE", "true")
+            .WithEnvironment("HYDRA_STORE_BACKUP_DIR", backupDir);
 
         var schedulerImpl = Environment.GetEnvironmentVariable(SchedulerImplEnvVar);
         if (!string.IsNullOrWhiteSpace(schedulerImpl))
@@ -128,6 +136,24 @@ public static class Topology
             engine = engine.WithEnvironment("LD_LIBRARY_PATH", ldLibraryPath);
         }
         return engine;
+    }
+
+    private static int ResolveCoordinatorPort()
+    {
+        var env = Environment.GetEnvironmentVariable("MINIFLEET_COORDINATOR_PORT");
+        return int.TryParse(env, out var p) && p > 0 ? p : CoordinatorPort;
+    }
+
+    private static int ResolveStorePort()
+    {
+        var env = Environment.GetEnvironmentVariable("MINIFLEET_STORE_PORT");
+        return int.TryParse(env, out var p) && p > 0 ? p : 19500;
+    }
+
+    private static int ResolveStoreDebugPort()
+    {
+        var env = Environment.GetEnvironmentVariable("MINIFLEET_STORE_DEBUG_PORT");
+        return int.TryParse(env, out var p) && p > 0 ? p : 19501;
     }
 
     /// <summary>MINIFLEET_LD_LIBRARY_PATH override, else the engine build prefix
