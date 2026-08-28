@@ -1,0 +1,17 @@
+[
+  {
+    "name": "test-b",
+    "display_name": "Test B (P100 single-GPU shared-VRAM engine-B)",
+    "host": "localhost",
+    "rpc_port": 19514,
+    "llama_rpc_port": 19514,
+    "llama_url": "http://localhost:18087",
+    "worker_type": 3,
+    "slots": 2,
+    "prefill_priority": 1,
+    "decode_priority": 1,
+    "decode_speed_tps": 28,
+    "gpu": { "vram_mb": 16384, "compute_tflops": 19.0, "bandwidth_gbps": 732.0, "cuda_arch": "sm_60", "capabilities": 1 },
+    "_comment": "P100 single-GPU shared-VRAM instance B — mmap page-cache sharing with test-a, not true 2-GPU P/D"
+  }
+]
