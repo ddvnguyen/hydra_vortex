@@ -2,16 +2,23 @@
   {
     "name": "test-a",
     "display_name": "Test A (P100 single-GPU shared-VRAM engine-A)",
-    "host": "localhost",
+    "host": "192.168.122.21",
     "rpc_port": 19513,
     "llama_rpc_port": 19513,
-    "llama_url": "http://localhost:18086",
+    "llama_url": "http://192.168.122.21:18086",
     "worker_type": 3,
     "slots": 2,
     "prefill_priority": 1,
     "decode_priority": 1,
     "decode_speed_tps": 28,
-    "gpu": { "vram_mb": 16384, "compute_tflops": 19.0, "bandwidth_gbps": 732.0, "cuda_arch": "sm_60", "capabilities": 1 },
-    "_comment": "P100 single-GPU shared-VRAM instance A — mmap page-cache sharing with test-b, not true 2-GPU P/D"
+    "gpu": {
+      "vram_mb": 16384,
+      "compute_tflops": 19.0,
+      "bandwidth_gbps": 732.0,
+      "cuda_arch": "sm_60",
+      "capabilities": 1
+    },
+    "_comment": "Decode-only (mirrors prod P100 worker_type=2). RPC PREFILL M2 hash pre-pass is broken on sm_60 builds pre-3206b13b6; fixed engine requires CUDA 12.x toolkit (deferred). See 2026-08-28-hydra-test-BRINGUP.md.",
+    "role": "head"
   }
 ]

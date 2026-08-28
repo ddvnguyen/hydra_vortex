@@ -1,0 +1,52 @@
+{
+  "schema_version": 3,
+  "engine_defaults": {
+    "flash_attn": true,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "kv_unified": true,
+    "cont_batching": true,
+    "cache_prompt": true,
+    "cache_reuse": 64,
+    "reasoning": true,
+    "jinja": true,
+    "context_shift": true,
+    "chat_template_kwargs": "{\"preserve_thinking\": true}",
+    "ubatch_size": 512,
+    "fit": false
+  },
+  "auto_routing": {
+    "enabled": true,
+    "default_model": "moe-35b-solo",
+    "swap_cost_budget_s": 30
+  },
+  "model_file_aliases": {
+    "qwen3.5-9b-test": "Qwen3.5-9B-Q4_K_M.gguf"
+  },
+  "models": {
+    "qwen3.5-9b-test": {
+      "description": "Hydra TEST: Qwen3.5 9B Q4_K_M on P100 VM single-GPU (2 shared-VRAM engines, mmap shared)",
+      "prefill_alias": "qwen3.5-9b-test",
+      "decode_alias": "qwen3.5-9b-test",
+      "load_time_s": 30,
+      "quality_tier": 5,
+      "requirements": {
+        "min_vram_mb": 6000,
+        "required_capabilities": 1
+      },
+      "routing": {
+        "auto_eligible": true,
+        "min_prompt_tokens": 0,
+        "max_prompt_tokens": 999999,
+        "max_context_tokens": 4096,
+        "requires_workers": [
+          "test-a",
+          "test-b"
+        ]
+      },
+      "engine_config": {
+        "n_ctx": 4096
+      }
+    }
+  }
+}

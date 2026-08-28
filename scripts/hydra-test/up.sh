@@ -38,19 +38,19 @@ chmod 1777 /mnt/llm-ram 2>/dev/null || true
 echo "==> Ensuring hydra_test DB exists (idempotent)..."
 if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' 2>/dev/null | grep -qE '^pg$|postgres'; then
   # Try to init via running pg container; fallback to host psql
-  if podman exec pg psql -U hydra -d postgres -c "SELECT 1 FROM pg_database WHERE datname='hydra_test'" 2>/dev/null | grep -q 1; then
+  if podman exec infra-postgres psql -U hydra -d postgres -c "SELECT 1 FROM pg_database WHERE datname='hydra_test'" 2>/dev/null | grep -q 1; then
     echo "  hydra_test DB already exists"
   else
     echo "  creating hydra_test DB..."
     # Use psql \gexec for CREATE DATABASE idempotency (outside transaction)
-    podman exec pg psql -U hydra -d postgres -c "SELECT 'CREATE DATABASE hydra_test OWNER hydra' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='hydra_test')\\gexec" 2>/dev/null || \
+    podman exec infra-postgres psql -U hydra -d postgres -c "SELECT 'CREATE DATABASE hydra_test OWNER hydra' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='hydra_test')\\gexec" 2>/dev/null || \
     echo "  WARN: could not create hydra_test DB via \\gexec" >&2
   fi
   # Verify DB exists after create attempt (5s timeout, bail with clear error if not)
   echo "  verifying hydra_test DB exists..."
   verified=false
   for _ in 1 2 3 4 5; do
-    if podman exec pg psql -U hydra -d postgres -c "SELECT 1 FROM pg_database WHERE datname='hydra_test'" 2>/dev/null | grep -q 1; then
+    if podman exec infra-postgres psql -U hydra -d postgres -c "SELECT 1 FROM pg_database WHERE datname='hydra_test'" 2>/dev/null | grep -q 1; then
       verified=true
       break
     fi

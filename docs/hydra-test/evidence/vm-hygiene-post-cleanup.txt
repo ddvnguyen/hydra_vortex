@@ -1,0 +1,4 @@
+# VM hygiene after freeing minifleet lane pids (40372/40373, exact-signature kill)
+# Compute apps: ONLY residents remain — 1620 (upstream :8090), 2899 (prod :8086)
+1620, 2850 MiB
+2899, 3034 MiB
