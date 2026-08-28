@@ -1,4 +1,5 @@
 using Hydra.Core;
+using Hydra.Core.Configuration;
 using Hydra.Core.Extensions;
 using Hydra.Core.Models;
 using Hydra.Core.Services;
@@ -12,6 +13,11 @@ using Microsoft.Extensions.Hosting;
 using System.Runtime.InteropServices;
 
 Log.Logger = HydraLogging.CreateLogger("store");
+
+// T2 test-instance gate: only validates when HYDRA_INSTANCE=test; prod is untouched.
+HydraTestConfig.ValidateIfTestInstance();
+if (HydraTestConfig.IsTestInstance)
+    Log.Information("hydra_test_instance Active InstanceId={InstanceId}", HydraTestConfig.InstanceId);
 Log.Information("Starting Hydra.Store at {BootTime}", DateTime.UtcNow);
 
 var cfg = new StoreConfig();
