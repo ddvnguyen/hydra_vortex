@@ -208,8 +208,9 @@ public sealed class PrefillRetryBackoffTests
 			{
 				new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
 			};
-			return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+			var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
 				100, null, _runCts.Token);
+			return CompletionResults.Unwrap(result);
 		}
 	}
 }

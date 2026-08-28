@@ -90,6 +90,9 @@ internal sealed class TestCompletionProxy : ICompletionProxyService
 
 	public Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
 		=> Task.CompletedTask;
+
+	public Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct)
+		=> Task.CompletedTask;
 }
 
 internal sealed class TestRpcClient : RpcClient
@@ -210,8 +213,8 @@ internal sealed class StreamingFixture : IAsyncDisposable
 		{
 			new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
 		};
-		return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
-			maxTokens, prefixHash, _runCts.Token);
+		return CompletionResults.Unwrap(await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+			maxTokens, prefixHash, _runCts.Token));
 	}
 }
 

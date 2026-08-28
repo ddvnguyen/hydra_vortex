@@ -1,0 +1,140 @@
+{
+  "Scenario": "warm_affinity_verify_on",
+  "Description": "WarmSlotVerificationEnabled=true with an unreachable engine URL: turn 2 fails warm-slot verification, saves the slot state, evicts, and re-routes cold.",
+  "Version": 1,
+  "Trace": {
+    "Rpc": [
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 28,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EnginePrefill",
+        "Key": "0",
+        "Len": 5104,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 4096,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Get",
+        "Key": "sess_h.kv",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StatePut",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 28,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 17,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateGet",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 2048,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateGet",
+        "Key": "1",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateMeta",
+        "Key": "1",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 2048,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Get",
+        "Key": "sess_h.kv",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StatePut",
+        "Key": "1",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EngineConfigure",
+        "Key": "1",
+        "Len": 17,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateGet",
+        "Key": "1",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 2048,
+        "Status": "Ok"
+      }
+    ],
+    "MergedDecode": [],
+    "Proxy": [
+      {
+        "Url": "http://127.0.0.1:1",
+        "Stream": false,
+        "Model": "nano",
+        "MaxTokens": 100,
+        "NPredict": null
+      },
+      {
+        "Url": "http://127.0.0.1:1",
+        "Stream": false,
+        "Model": "nano",
+        "MaxTokens": 100,
+        "NPredict": null
+      }
+    ],
+    "FinalState": "Done",
+    "Ledger": {
+      "NodeName": "p100",
+      "SlotId": 1,
+      "NPast": 150,
+      "HasStoreState": true,
+      "SlotFreed": false
+    },
+    "BusySeconds": {
+      "rtx": 0,
+      "p100": 0
+    }
+  }
+}

@@ -12,6 +12,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Hydra.Shared\Hydra.Shared.csproj" />
+    <ProjectReference Include="..\Hydra.StateMachine\Hydra.StateMachine.csproj" />
+    <ProjectReference Include="..\Hydra.Core.Scheduling\Hydra.Core.Scheduling.csproj" />
   </ItemGroup>
 
   <ItemGroup>

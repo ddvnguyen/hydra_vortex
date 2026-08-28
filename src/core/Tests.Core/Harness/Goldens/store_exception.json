@@ -1,0 +1,67 @@
+{
+  "Scenario": "store_exception",
+  "Description": "Store Put throws during SaveKv: the save falls back to same-node decode (the KV stays in the prefill slot) and the request completes; the BgSave Put failure is swallowed (logged) without failing the request.",
+  "Version": 1,
+  "Trace": {
+    "Rpc": [
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 28,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EnginePrefill",
+        "Key": "0",
+        "Len": 604,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 4096,
+        "Status": "Throw"
+      },
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 17,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateGet",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 2048,
+        "Status": "Throw"
+      }
+    ],
+    "MergedDecode": [],
+    "Proxy": [
+      {
+        "Url": "http://localhost:8080",
+        "Stream": false,
+        "Model": "nano",
+        "MaxTokens": 100,
+        "NPredict": null
+      }
+    ],
+    "FinalState": "Done",
+    "Ledger": {
+      "NodeName": "rtx",
+      "SlotId": 0,
+      "NPast": 150,
+      "HasStoreState": false,
+      "SlotFreed": false
+    },
+    "BusySeconds": {
+      "rtx": 1,
+      "p100": 0
+    }
+  }
+}
