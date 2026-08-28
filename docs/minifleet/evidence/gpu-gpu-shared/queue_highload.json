@@ -1,0 +1,10 @@
+{
+  "concurrent": 8,
+  "duration_s": 60,
+  "requests": 16,
+  "ok": 16,
+  "errors": 0,
+  "p50_ms": 43272.48,
+  "p99_ms": 88016.14,
+  "tok_per_s": 12.8
+}
