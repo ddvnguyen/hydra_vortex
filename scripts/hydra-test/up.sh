@@ -52,6 +52,35 @@ else
   echo "  pg container not running; DB init will be retried after infra up" >&2
 fi
 
+echo "==> Ensuring images exist (idempotent)..."
+# Hydra.Core: infra/Dockerfile target core
+if podman image exists localhost/hydra-core:latest 2>/dev/null; then
+  echo "  localhost/hydra-core:latest already exists — skipping build"
+else
+  echo "  building localhost/hydra-core:latest ..."
+  podman build -f infra/Dockerfile --target core -t localhost/hydra-core:latest . || {
+    echo "ERROR: podman build for localhost/hydra-core:latest failed" >&2
+    exit 1
+  }
+fi
+# Hydra.Head: infra/hydra-head/Dockerfile.rtx (infra/Dockerfile has no head target — only core)
+# The compose references image localhost/hydra-head:rtx built from infra/hydra-head/Dockerfile.rtx
+if podman image exists localhost/hydra-head:rtx 2>/dev/null; then
+  echo "  localhost/hydra-head:rtx already exists — skipping build"
+else
+  echo "  building localhost/hydra-head:rtx ..."
+  # Head image requires bin/hydra-head; build if missing
+  if [[ ! -f "$REPO_ROOT/bin/hydra-head" ]]; then
+    echo "  bin/hydra-head missing — building via go..."
+    export PATH="$HOME/go-sdk/go/bin:$PATH"
+    go build -o "$REPO_ROOT/bin/hydra-head" ./src/head/... 2>&1 | head -n 20 || echo "WARN: go build failed, attempting podman build anyway" >&2
+  fi
+  podman build -f infra/hydra-head/Dockerfile.rtx -t localhost/hydra-head:rtx . || {
+    echo "ERROR: podman build for localhost/hydra-head:rtx failed" >&2
+    exit 1
+  }
+fi
+
 echo "==> Bringing up TEST stack..."
 # shellcheck disable=SC2086
 podman compose -f "$INFRA_COMPOSE" -f "$TEST_COMPOSE" up -d
