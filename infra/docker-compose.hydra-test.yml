@@ -46,6 +46,7 @@ services:
       - /mnt/llm-ram/hydra-test-store:/mnt/llm-ram/hydra-test-store:rw
       - /tmp/hydra-test-l1:/tmp/hydra-test-l1:rw
     environment:
+      - ASPNETCORE_ENVIRONMENT=Test
       - HYDRA_INSTANCE=test
       - HYDRA_INSTANCE_ID=A
       - HYDRA_STORE_HOST=0.0.0.0
@@ -109,6 +110,7 @@ services:
       - /mnt/llm-ram/hydra-test-store:/mnt/llm-ram/hydra-test-store:rw
       - /tmp/hydra-test-l1:/tmp/hydra-test-l1:rw
     environment:
+      - ASPNETCORE_ENVIRONMENT=Test
       - HYDRA_INSTANCE=test
       - HYDRA_INSTANCE_ID=B
       - HYDRA_STORE_HOST=0.0.0.0
