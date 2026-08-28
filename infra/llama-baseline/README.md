@@ -74,6 +74,40 @@ bash infra/llama-baseline/bench-baseline.sh  # writes tests/bench/baselines/rtx2
 
 `bench-baseline.sh` runs short/medium/long prompts (512/4096/8192) and records TTFT, TPOT, prefill tok/s, p50/p95 + `nvidia-smi` VRAM. Do not overwrite `tests/bench/baselines/main.json` until intentional.
 
+## Parameterized Arms — Native 2-GPU vs RPC
+
+Results from `run-with-params.sh` harness. All arms: Qwen3.8-27B-MTP-Q5_K_M, 98K ctx, q8_0/q4_0 KV, flash_attn on, YaRN scale 3, prod-parity params (cache_reuse=64, cache_prompt, prio_batch=1, context_shift).
+
+### 6-Column Summary (key arms)
+
+| Arm | Mode | Split | MTP | Decode tok/s | Acceptance | Notes |
+|-----|------|-------|-----|-------------|------------|-------|
+| 017 | RPC 26,39 | CUDA0+RPC0 | draft-mtp | 36–39 | 0.544 | RPC baseline, 10/10 pass |
+| 056 | Native | 26,39 | none | OOM | — | CUDA1 OOM at 98K (26,39 ceiling ~44K) |
+| 057 | Native | 39,26 | none | 20.6 | — | No speculative decoding |
+| **058** | **Native** | **39,26** | **draft-mtp** | **32.0 (24.3–42.4)** | **0.544** | **PASS 40/40, no Xid** |
+
+### 4-Column Detail — 058 vs 057 (MTP impact on native)
+
+| Metric | 057 (no MTP) | 058 (MTP) | Delta |
+|--------|-------------|-----------|-------|
+| Decode tok/s (avg) | 20.6 | 32.0 | **+55%** |
+| Decode tok/s (min) | 20.6 | 24.3 | +18% |
+| Decode tok/s (max) | 20.6 | 42.4 | +106% |
+| Acceptance rate | — | 0.544 (0.33–0.84) | — |
+| Requests OK | 40/40 | 40/40 | — |
+| VRAM (5060 Ti) | — | 13783 / 16311 MiB (84.5%) | — |
+| VRAM (3060) | — | 11771 / 12288 MiB (95.8%) | — |
+| Xid errors | 0 | 0 | — |
+
+### Key Findings
+
+1. **MTP on native: +55% decode speedup** (20.6 → 32.0 tok/s) — MTP draft is highly effective even in native pooled mode.
+2. **Native 32 tok/s vs RPC 36–39 tok/s: ~15% gap** — RPC still faster. Native pooled mode has overhead from single-process tensor splitting vs RPC's independent GPU contexts.
+3. **3060 at 95.8% VRAM** — critically tight with MTP draft allocations. No headroom for larger ctx or heavier workloads.
+4. **056 (26,39) OOM confirmed**: native 26,39 split puts too much model weight on 3060 (12GB). Ceiling ~44K ctx only.
+5. **DSpark-on-native: candidate** — 058 beats 057, proving MTP works on native. Queue DSpark-on-native as next arm to test external draft model on native 39,26.
+
 ## Files
 
 * `Dockerfile.baseline` — CUDA 13.2 runtime, copies host-built `llama-server`

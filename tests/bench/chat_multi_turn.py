@@ -11,6 +11,11 @@ criteria.
 
 Usage:
     python -m tests.bench.chat_multi_turn --output results/multi_turn.json
+
+Deterministic growing-context mode (arm 015):
+    python -m tests.bench.chat_multi_turn \
+        --deterministic --base-url http://localhost:8081 \
+        --n-turns 10 --max-tokens 120
 """
 
 from __future__ import annotations
@@ -35,6 +40,31 @@ FOLLOWUP_QUESTIONS: tuple[str, ...] = (
     "How would you implement a P/D disaggregated serving system?",
 )
 
+# Repeating filler for deterministic growing-context tests.
+# Each filler "token" is a single unique word (~1 token each) to hit target size.
+_FILLER_CHARS = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _generate_filler(target_tokens: int, turn: int) -> str:
+    """Generate a filler text of approximately `target_tokens` tokens.
+
+    Uses single-character words separated by spaces, each ~1 token.
+    Turn number is embedded via a prefix to ensure unique per-turn content
+    while keeping the token count predictable.
+    """
+    # Each word is ~1 token (single char + space).  We generate slightly
+    # under target to stay within budget.
+    n_words = max(1, target_tokens - 10)  # leave room for the task prompt overhead
+    words = []
+    for i in range(n_words):
+        # Cycle through single chars; each is ~1 token
+        ch = _FILLER_CHARS[i % len(_FILLER_CHARS)]
+        # Every 100 words, insert turn marker to ensure uniqueness
+        if i % 100 == 0:
+            words.append(f"t{turn}")
+        words.append(ch)
+    return " ".join(words)
+
 
 def build_turn_messages(
     *,
@@ -49,6 +79,20 @@ def build_turn_messages(
     return msgs
 
 
+def _register_deterministic_args(p: Any) -> None:
+    """Register CLI args for the deterministic growing-context mode."""
+    p.add_argument("--deterministic", action="store_true",
+                    help="Run deterministic growing-context multi-turn "
+                         "(arm 015 style: fixed max_tokens, filler prompts, "
+                         "single session, per-turn inline output)")
+    p.add_argument("--n-turns", type=int, default=10,
+                    help="Number of turns in deterministic mode (default: 10)")
+    p.add_argument("--first-turn-tokens", type=int, default=5000,
+                    help="Target tokens for first turn prompt (default: 5000)")
+    p.add_argument("--growth-tokens", type=int, default=2000,
+                    help="Additional tokens per turn (default: 2000)")
+
+
 @cli_entrypoint(
     build_messages=lambda args: build_turn_messages(),
     scenario_id="chat_multi_turn",
@@ -56,9 +100,84 @@ def build_turn_messages(
     default_concurrency=1,
     default_warmup=3,
     default_max_tokens=120,
+    extra_args=_register_deterministic_args,
+    runner=lambda harness, args, messages: _deterministic_runner(harness, args, messages)
+    if getattr(args, "deterministic", False) else None,
 )
 async def main() -> None:  # pragma: no cover
     raise RuntimeError("unreachable: cli_entrypoint injects the body")
+
+
+async def _deterministic_runner(
+    harness: BenchmarkHarness,
+    args: Any,
+    _messages: list[dict[str, Any]] | None,
+) -> Any:
+    """Deterministic growing-context multi-turn runner.
+
+    Sends n_turns requests in a single session with growing filler
+    prompts.  max_tokens is FIXED across all turns (the key control
+    variable).  Each turn's timing is printed inline as it completes.
+    """
+    n_turns = getattr(args, "n_turns", 10)
+    first_turn_tokens = getattr(args, "first_turn_tokens", 5000)
+    growth_tokens = getattr(args, "growth_tokens", 2000)
+    max_tokens = args.max_tokens  # already parsed by cli_entrypoint
+
+    session_id = f"det-multiturn-{os.urandom(4).hex()}"
+    history: list[dict[str, str]] = []
+
+    print(f"Deterministic growing-context multi-turn")
+    print(f"  Session:   {session_id}")
+    print(f"  Turns:     {n_turns}")
+    print(f"  Max tokens: {max_tokens} (FIXED)")
+    print(f"  Growth:    +{growth_tokens} tokens/turn starting at {first_turn_tokens}")
+    print(f"  Base URL:  {harness.base_url}")
+    print()
+
+    for turn in range(n_turns):
+        target_tokens = first_turn_tokens + turn * growth_tokens
+        filler = _generate_filler(target_tokens, turn + 1)
+        task_prompt = (
+            f"Write a Python function called 'process_turn_{turn + 1}' "
+            f"that takes a list of integers and returns their sum multiplied "
+            f"by {turn + 1}. Here is some context to process: {filler}"
+        )
+
+        msgs: list[dict[str, str]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+        ]
+        if history:
+            msgs.extend(history)
+        msgs.append({"role": "user", "content": task_prompt})
+
+        result = await harness.submit(
+            messages=msgs,
+            session_id=session_id,
+            max_tokens=max_tokens,
+        )
+
+        # Capture assistant response for history (first 200 chars as summary)
+        # The harness doesn't return the text, so we append a placeholder
+        # that keeps the conversation growing.
+        history.append({"role": "user", "content": task_prompt})
+        history.append({"role": "assistant", "content": f"[turn {turn + 1} response]"})
+
+        # Per-turn inline output
+        status = "OK" if result.error is None else f"ERROR: {result.error}"
+        print(
+            f"  Turn {turn + 1}/{n_turns} "
+            f"(target ~{target_tokens} tok): "
+            f"ttft={result.ttft_s:.3f}s  "
+            f"tpot={result.tpot_s:.3f}s  "
+            f"total={result.total_s:.1f}s  "
+            f"tokens={result.token_count}  "
+            f"{status}"
+        )
+
+    print()
+    rep = harness.report()
+    return rep
 
 
 async def run(

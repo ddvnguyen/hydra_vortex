@@ -1,19 +1,70 @@
 name: llama-baseline
 
-# Bare-bone upstream llama.cpp on 2xRTX (5060 Ti + 3060) — no Hydra.
-# Single pooled llama-server across both GPUs (vanilla upstream pooling).
-# Model: Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M 19.5GB — does not fit solo, needs split.
-# Ctx: stable 32K on this hardware (96K→2040MiB OOM, 64K→1360MiB OOM on 3060 12GB even with 65/[25,40]/layer).
-# Verified stable: 32K with 45 layers + 40,25 split (8.3GB/5.6GB model, ~1GB KV). Test: curl localhost:18080/health
-# Build: host cmake -S src/llama-cpp -B src/llama-cpp/build -DGGML_CUDA=1 -DLLAMA_CURL=ON && cmake --build src/llama-cpp/build --parallel 8
+# RPC-split 2xRTX vanilla llama.cpp — bare bone, no Hydra.
+# Two separate processes: ggml-rpc-server (3060) + llama-server (5060 Ti).
+# Model: Qwen3.8-27B-MTP-Q5_K_M 19.5GB — RPC-split across both GPUs.
+#
+# DEFAULT PIN: **Arm 083** (human-approved 2026-08-28).
+#   UD-Q5_K_M @163,840 ctx (32768×5 YaRN), split 27/38, q8_0/q4_1 KV, ubatch 512,
+#   draft-mtp f16. NO mlock / cache-reuse 256 / checkpoint-min-step 4096
+#   (those were INERT per the post-059 audit).
+#   Evidence: /tmp/rpc-test/results/083-udq5-163840-k-q8_0-v-q4_1-ubatch-512-5fff12845/
+#     - crash-loop PASS 40/40 GOOD, 0 Xid; decode median 36.95 t/s (mean 37.47)
+#     - pi-harness 9/10 PASS, 0 Xid, 9/9 KV-cache growth (cache ratio 0% → 97.2%)
+#     - VRAM: CUDA0 15,069 used / 67 MiB min-free (single-request) /
+#             CUDA0 15,808 used / 43 MiB min-free (pi-harness multi-turn)
+#   Params file: infra/llama-baseline/params/083-udq5-163840-k-q8_0-v-q4_1-ubatch-512.yml
+#
+# FALLBACK PIN: **Arm 079** (for rollback if 083 fails in production).
+#   UD-Q5_K_M @155,648 ctx, q8_0/q4_1 KV, ubatch 512, draft-mtp f16.
+#   Decode 37.57 t/s, acc 0.63, CUDA0 min-free 704 MiB (single-request).
+#   Params file: infra/llama-baseline/params/079-udq5-155648-v-q4_1-ubatch-512.yml
+#   Rollback: change LLAMACPP_PARAMS_FILE in this compose file (or override at
+#     podman-compose up time) to point at 079-*.yml, then `podman compose up -d --build`.
+#     No other file change required.
+#
+# PIN SWITCH ARCHITECTURE (added 2026-08-28, lead b10e501):
+#   The container's entrypoint is `llama-cpp-entrypoint.sh` (mirrors
+#   run-with-params.sh logic). It reads LLAMACPP_PARAMS_FILE (a YAML
+#   params file) and exec's llama-server with the constructed args.
+#   This unifies the bench-test workflow (`run-with-params.sh <params.yml>`)
+#   and the production container workflow (compose env var → entrypoint →
+#   llama-server) under the same params-file schema. To fall back, swap the
+#   env var; to test a new config, drop a new params file in the
+#   `infra/llama-baseline/params/` dir and point the env var at it.
+#
+# #703 test matrix notes still standing:
+#   - 27/38 tensor_split is optimal on UD-Q5_K_M (036/054/059/079/080/081/083)
+#   - ubatch 512 vs 1024: 512 is the chosen pin (sufficient prefill throughput;
+#     1024 was the old 059 default but the post-059 audit showed no measured
+#     benefit at 143K and 512 frees ~150-300 MiB)
+#   - cache_type_k=q8_0 (the chosen pin); K=q5_0 tested in 080/081 (PPL-PASS but
+#     acc -24% MTP draft tax); K=q6_0 unsupported in this llama-cpp build (082 BLOCKED)
+#   - yarn max ctx at scale 5 = 163,840 (arm 081 K=q5_0: 607 free; arm 083 K=q8_0: 67 free / 43 pi)
+#
+# Build (use matching CUDA 13.2.2 toolkit/compiler — never mix):
+#   cmake -S src/llama-cpp -B src/llama-cpp/build-cuda1322 -DGGML_CUDA=1 -DLLAMA_CURL=ON \
+#     -DCMAKE_CUDA_ARCHITECTURES="86;120" -DCUDAToolkit_ROOT=/opt/software/cuda/13.2.2 \
+#     -DCMAKE_CUDA_COMPILER=/opt/software/cuda/13.2.2/bin/nvcc
+#   cmake --build src/llama-cpp/build-cuda1322 --parallel 8 --target llama-server ggml-rpc-server
 # Run: podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d --build
-#      podman logs -f llama-baseline_llama_1  # watch "model loaded" / OOM
-# Alt: docker-compose.baseline-64k.yml (64K OOM doc) / docker-compose.baseline-96k.yml (96K OOM doc)
-# Harness: OPENAI_BASE_URL=http://localhost:18080/v1 OPENAI_API_KEY=dummy dsh/pi
-# Note: 18080 avoids collision with infra-openwebui on host :8080 (host network). Use :8080 only if openwebui stopped.
+#      podman logs -f llama-baseline_llama_1
+#      podman logs -f llama-baseline_rpc_1
+# Harness: curl http://localhost:18081/health
+#
+# Rollback to 079 (manual):
+#   sed -i 's|083-udq5-163840-k-q8_0-v-q4_1-ubatch-512.yml|079-udq5-155648-v-q4_1-ubatch-512.yml|' \
+#     infra/llama-baseline/docker-compose.baseline.yml
+#   podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d --build
+# (Or set LLAMACPP_PARAMS_FILE as an env override when running podman compose.)
+#
+# Campaign state (2026-08-28T04:30Z): arm 080/081/082/083 + pi-harness 083 all DONE.
+#   Full ledger at docs/investigations/703-results-report.md and
+#   orchestration/state/080-kcache-research.md. 6-candidate pin menu in
+#   infra/llama-baseline/params/README.md.
 
 services:
-  llama:
+  rpc:
     build:
       context: ../..
       dockerfile: infra/llama-baseline/Dockerfile.baseline
@@ -22,27 +73,55 @@ services:
     devices:
       - nvidia.com/gpu=all
     volumes:
-      # Host model stores — keep both mounts to match compose.hydra pattern
       - /mnt/SSD:/models:ro
       - /mnt/WorkDisk/LLM-Models:/models2:ro
     environment:
-      - NVIDIA_VISIBLE_DEVICES=0,1
-      - CUDA_VISIBLE_DEVICES=0,1
+      - NVIDIA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=1
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib
+    entrypoint: ["/usr/local/bin/ggml-rpc-server"]
     command: >
-      --model /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
-      --host 0.0.0.0 --port 18080
-      --n-gpu-layers all --split-mode layer
-      --tensor-split 40,25
-      --override-tensor token_embd.weight=CPU
-      --ctx-size 98304 --rope-scaling yarn --rope-scale 3 --yarn-orig-ctx 32768
-      --cache-type-k q8_0 --cache-type-v q4_0 --flash-attn on
-      --parallel 2 --cont-batching
-      --jinja --chat-template-file /models/qwen3.6_merged_template.jinja
-      --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75
-      --metrics --slots --log-verbosity 4
+      -H 0.0.0.0
+      -p 18052
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:18080/health"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/18052'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    labels:
+      component: llama-baseline
+
+  llama:
+    build:
+      context: ../..
+      dockerfile: infra/llama-baseline/Dockerfile.baseline
+    image: localhost/llama-baseline:upstream
+    network_mode: host
+    depends_on:
+      rpc:
+        condition: service_healthy
+    devices:
+      - nvidia.com/gpu=all
+    volumes:
+      - /mnt/SSD:/models:ro
+      - /mnt/WorkDisk/LLM-Models:/models2:ro
+      # Parametrized pin: the entrypoint reads this YAML and constructs
+      # llama-server args. To fall back to 079, change LLAMACPP_PARAMS_FILE
+      # (below) to point at infra/llama-baseline/params/079-*.yml.
+      - /mnt/WorkDisk/workspace/worktree/1q3ry0vb/majestic-toad/infra/llama-baseline/params:/etc/llama-baseline:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
+      - LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib
+      # DEFAULT PIN = 083 (main). FALLBACK = 079 (edit this line for rollback).
+      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/083-udq5-163840-k-q8_0-v-q4_1-ubatch-512.yml
+    entrypoint: ["/usr/local/bin/llama-cpp-entrypoint.sh"]
+    # NOTE: no hardcoded `command:` — all args come from LLAMACPP_PARAMS_FILE.
+    # To change the pin: edit the env var above, then `podman compose up -d --build`.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18081/health"]
       interval: 15s
       timeout: 5s
       retries: 5
