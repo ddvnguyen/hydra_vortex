@@ -1,0 +1,15 @@
+# Paseo provider prep for Hydra TEST — lead to copy to ~/.paseo/providers.yaml after rig is up.
+# Paseo daemon will pick this up on next config reload.
+# See docs/hydra-test.md "How to Point a Paseo Workflow at It".
+
+providers:
+  - id: hydra-test
+    type: openai-compat
+    base_url: http://localhost:19000
+    default_model: minicpm5-1b
+    api_key: not-required
+    description: Hydra TEST instance (2-core P/D split on P100 VM, dedicated hydra_test DB)
+    # routing: Paseo agent workflows set provider: hydra-test per-workflow;
+    # the second core is at http://localhost:19001 (Tests.AgentWorkflow hits both).
+    # Model alias minicpm5-1b is the test rig's lightweight default; check
+    # infra/hydra-core/config/models.json for the full alias map.
