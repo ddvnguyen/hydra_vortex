@@ -1,0 +1,3 @@
+pid, process_name, used_gpu_memory [MiB]
+1620, /opt/software/llama-upstream-sm60/bin/llama-server, 2850 MiB
+2899, /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine, 3034 MiB

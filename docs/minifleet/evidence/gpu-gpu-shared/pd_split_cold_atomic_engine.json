@@ -1,0 +1,1 @@
+{"scenario_id":"cold_atomic_engine","preset":"gpu-gpu-shared","scheduler_impl":"legacy","outcome":"Done","trace":[{"node":"http://127.0.0.1:8088","endpoint":"/v1/chat/completions","stream":false,"http_status_code":200,"finish_reason":"length","prompt_tokens":35,"completion_tokens":48,"duration_ms":5326}],"usage_prompt_tokens":35,"usage_completion_tokens":48}
