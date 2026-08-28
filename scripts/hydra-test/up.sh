@@ -42,12 +42,25 @@ if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' 2>/dev/n
     echo "  hydra_test DB already exists"
   else
     echo "  creating hydra_test DB..."
-    # Use psql \gexec fallback for CREATE DATABASE idempotency
+    # Use psql \gexec for CREATE DATABASE idempotency (outside transaction)
     podman exec pg psql -U hydra -d postgres -c "SELECT 'CREATE DATABASE hydra_test OWNER hydra' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='hydra_test')\\gexec" 2>/dev/null || \
-    podman exec pg psql -U hydra -f /dev/stdin < "$INIT_SQL" 2>/dev/null || \
-    psql "Host=localhost;Database=postgres;Username=hydra;Password=hydra" -f "$INIT_SQL" 2>/dev/null || \
-    echo "  WARN: could not create hydra_test DB (pg not ready?); will retry on next up" >&2
+    echo "  WARN: could not create hydra_test DB via \\gexec" >&2
   fi
+  # Verify DB exists after create attempt (5s timeout, bail with clear error if not)
+  echo "  verifying hydra_test DB exists..."
+  verified=false
+  for _ in 1 2 3 4 5; do
+    if podman exec pg psql -U hydra -d postgres -c "SELECT 1 FROM pg_database WHERE datname='hydra_test'" 2>/dev/null | grep -q 1; then
+      verified=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$verified" != "true" ]]; then
+    echo "ERROR: hydra_test DB not found after create attempt (pg not ready or CREATE failed)" >&2
+    exit 1
+  fi
+  echo "  hydra_test DB verified"
 else
   echo "  pg container not running; DB init will be retried after infra up" >&2
 fi
