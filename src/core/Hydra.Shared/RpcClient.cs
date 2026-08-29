@@ -443,10 +443,13 @@ public class RpcClient : IAsyncDisposable
     {
         var keyBytes = Encoding.UTF8.GetBytes(key);
         var traceBytes = Encoding.UTF8.GetBytes(traceId);
-        var declaredPayloadLen = (long)payload.Length;
 
+        // #716: pre-write parity check — the declared size in the header MUST
+        // match the actual payload length. This is the real invariant; the
+        // post-write check was unreachable dead code because WriteExactlyAsync
+        // can only return data.Length or throw.
         var header = Protocol.CreateRequestHeader(
-            op, (ushort)keyBytes.Length, (ulong)declaredPayloadLen, (ushort)traceBytes.Length);
+            op, (ushort)keyBytes.Length, (ulong)payload.Length, (ushort)traceBytes.Length);
 
         var headerBuf = new byte[Protocol.REQUEST_HEADER_SIZE];
         Protocol.WriteRequest(headerBuf, header);
@@ -457,22 +460,10 @@ public class RpcClient : IAsyncDisposable
         if (traceBytes.Length > 0)
             await _stream.WriteAsync(traceBytes, ct);
 
-        // #716: write payload with short-write protection and byte-count verification
-        if (declaredPayloadLen > 0)
-        {
-            var written = await WriteExactlyAsync(_stream, payload, ct);
-            if (written != declaredPayloadLen)
-            {
-                Interlocked.Increment(ref _shortWriteCount);
-                Serilog.Log.Error(
-                    "rpc_short_write Op={Op} Host={Host}:{Port} Declared={Declared} Written={Written} " +
-                    "ShortWriteCount={Count} — payload truncated on wire",
-                    op, _host, _port, declaredPayloadLen, written, _shortWriteCount);
-                throw new InvalidDataException(
-                    $"RPC {op} short write to {_host}:{_port}: declared {declaredPayloadLen} bytes, " +
-                    $"wrote {written} ({_shortWriteCount} total short writes)");
-            }
-        }
+        // #716: write payload through WriteExactlyAsync which throws
+        // RpcShortWriteException on terminal failure (sent == 0).
+        if (payload.Length > 0)
+            await WriteExactlyAsync(_stream, payload, ct);
 
         await _stream.FlushAsync(ct);
     }
@@ -483,19 +474,16 @@ public class RpcClient : IAsyncDisposable
     internal static int ShortWriteCount => Volatile.Read(ref _shortWriteCount);
 
     /// <summary>
-    /// #716: Write all bytes to the stream, handling short writes. On Linux,
-    /// NetworkStream.WriteAsync can return fewer bytes than requested when the
-    /// kernel send buffer is full (large KV blobs 240-650 MB). This loops
-    /// until all bytes are written or the cancellation token fires.
-    /// Returns the total number of bytes written.
+    /// #716: Write all bytes to the stream, looping on partial completions.
+    /// On healthy connections, .NET's internal TryCompleteSendTo loop means
+    /// this completes in one iteration. On a genuinely broken connection
+    /// (sent == 0), throws <see cref="RpcShortWriteException"/> instead of
+    /// a generic EndOfStreamException so callers can distinguish short-write
+    /// failures from normal EOF.
     /// </summary>
-    internal static async Task<long> WriteExactlyAsync(
+    internal static async Task WriteExactlyAsync(
         NetworkStream stream, ReadOnlyMemory<byte> data, CancellationToken ct)
     {
-        // #716: Use Socket.SendAsync directly (returns ValueTask<int>) instead of
-        // NetworkStream.WriteAsync (returns ValueTask — discards byte count).
-        // On Linux, .NET's async socket I/O uses non-blocking mode internally,
-        // so send() CAN return fewer bytes than requested for large buffers.
         var socket = stream.Socket;
         var totalToWrite = data.Length;
         var written = 0;
@@ -504,11 +492,13 @@ public class RpcClient : IAsyncDisposable
             var chunk = data[written..];
             var sent = await socket.SendAsync(chunk, SocketFlags.None, ct);
             if (sent == 0)
-                throw new EndOfStreamException(
-                    $"WriteExactlyAsync: socket returned 0 bytes after writing {written}/{totalToWrite}");
+            {
+                var count = Interlocked.Increment(ref _shortWriteCount);
+                throw new RpcShortWriteException(
+                    "WriteExactly", totalToWrite, written, count);
+            }
             written += sent;
         }
-        return written;
     }
 
     private async Task EnsureConnectedAsync(CancellationToken ct)

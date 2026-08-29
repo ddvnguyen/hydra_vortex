@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Scheduling;
+using Hydra.Shared;
 using Hydra.StateMachine;
 using Serilog;
 
@@ -433,7 +434,7 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         catch (Exception ex)
         {
             // #716: increment short-write counter when the sender detected a byte-count mismatch
-            if (ex is InvalidDataException ide && ide.Message.Contains("short write"))
+            if (ex is RpcShortWriteException)
                 CoordinatorMetrics.RestoreStreamShortWrites.Inc();
             req.Error = ex;
             _log.Warning(ex, "v2_pipeline_error Sid={Sid}", req.SessionId);
