@@ -5,11 +5,9 @@
 providers:
   - id: hydra-test
     type: openai-compat
-    base_url: http://192.168.122.21:19000 # P100 VM is at 192.168.122.21; Paseo agent on the host uses this URL. If the Paseo daemon runs INSIDE the P100 VM, change to http://localhost:19000.
-    default_model: minicpm5-1b
+    base_url: http://localhost:19000 # Host containers with network_mode:host; cores reachable on localhost.
+    default_model: qwen3.5-9b-test
     api_key: "" # Hydra.Core doesn't require auth in test; empty api_key is fine.
     description: Hydra TEST instance (2-core P/D split on P100 VM, dedicated hydra_test DB)
-    # routing: Paseo agent workflows set provider: hydra-test per-workflow;
-    # the second core is at http://localhost:19001 (Tests.AgentWorkflow hits both).
-    # Model alias minicpm5-1b is the test rig's lightweight default; check
-    # infra/hydra-core/config/models.json for the full alias map.
+    # Core-A :19000, Core-B :19001 — both on host network.
+    # Model alias qwen3.5-9b-test; check infra/hydra-core/config/models.json for the full alias map.
