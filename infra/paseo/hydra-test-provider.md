@@ -109,3 +109,17 @@ subagent which executed the full agentic loop ON THE RIG:
 - Subagent final report: `PROOF OK` (independently verified by lead reading the file)
 
 v1b criterion (b) satisfied. Both (a) scripted rehearsal and (b) real subagent E2E green.
+
+## CORRECTED provider config 2026-08-29 09:50 ICT (owner caught wrong values)
+
+The first entry overstated rig limits. Probed the actual TEST server and rewrote:
+
+| Field | Was (wrong) | Now (server-verified) | How verified |
+|---|---|---|---|
+| contextWindow | 32768 | **16384** | rig `max_context_tokens`/`n_ctx` (models-test.json + engine log) — 32K would invite prefill overflow (the exact 6.7K-tok bug class already hit) |
+| reasoning | false | **true** | stream probe shows `reasoning_content` deltas (Qwen3.5 is a thinking model) |
+| api | openai-completions | openai-completions (confirmed) | `/v1/responses` and `/v1/completions` both 404 — chat/completions only |
+| maxTokens | 4096 | 4096 (kept) | test-rig output policy for the shared 9B |
+
+Functional re-test after correction: pi tool-loop created + verified
+`/tmp/opencode/hydra-test-proof2.txt` = "provider config corrected". PASS.
