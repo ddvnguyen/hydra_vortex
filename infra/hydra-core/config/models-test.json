@@ -45,7 +45,7 @@
         ]
       },
       "engine_config": {
-        "n_ctx": 4096
+        "n_ctx": 16384
       }
     }
   }
