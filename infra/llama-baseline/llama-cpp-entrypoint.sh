@@ -72,6 +72,8 @@ vars_ = {
     "P_PRIO":               v(p, "prio"),
     "P_PRIO_BATCH":         v(p, "prio_batch", "1"),
     "P_CONTEXT_SHIFT":      b(p, "context_shift"),
+    "P_CACHE_IDLE_SLOTS":   b(p, "cache_idle_slots"),
+    "P_CACHE_RAM_MIB":      v(p, "cache_ram_mib"),
 }
 for k, val in vars_.items():
     # shlex.quote each value to be shell-safe
@@ -200,6 +202,18 @@ if [[ "$P_CONTEXT_SHIFT" == "on" ]]; then
   LLAMA_ARGS+=(--context-shift)
 elif [[ "$P_CONTEXT_SHIFT" == "off" ]]; then
   LLAMA_ARGS+=(--no-context-shift)
+fi
+
+# Cache idle slots (requires --cache-ram)
+if [[ "$P_CACHE_IDLE_SLOTS" == "on" ]]; then
+  LLAMA_ARGS+=(--cache-idle-slots)
+elif [[ "$P_CACHE_IDLE_SLOTS" == "off" ]]; then
+  LLAMA_ARGS+=(--no-cache-idle-slots)
+fi
+
+# Cache RAM limit (MiB) — host-RAM prompt cache for idle-slot swap
+if [[ -n "$P_CACHE_RAM_MIB" ]]; then
+  LLAMA_ARGS+=(--cache-ram "$P_CACHE_RAM_MIB")
 fi
 
 # Production observability flags
