@@ -1941,13 +1941,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 		// n_tokens > n_past guard: skip restore when the estimated prompt is
 		// shorter than the cached n_past — the client truncated history and
-		// the KV prefix won't match.  Use the same tolerance as the warm-path
-		// guard in RouteAsync.
+		// the KV prefix won't match.
+		// #715 R3: proportional tolerance accounts for generated-token growth
+		// (e.g. 64 ACK tokens/turn accumulate in NPast but not in EstimatedTokens).
+		// Floor of 128 protects small sessions; 5% covers 24+ turns of ACK growth.
+		var soloTolerance = Math.Max(128, (int)(entry.NPast * 0.05));
 		if (item.EstimatedTokens > 0
-			&& item.EstimatedTokens + _cfg.NPastGuardTolerance < entry.NPast)
+			&& item.EstimatedTokens + soloTolerance < entry.NPast)
 		{
-			_log.Warning("solo_kv_restore_skip_n_past Sid={Sid} Est={Est} NPast={NP}",
-				item.SessionId, item.EstimatedTokens, entry.NPast);
+			_log.Warning("solo_kv_restore_skip_n_past Sid={Sid} Est={Est} NPast={NP} Tol={Tol}",
+				item.SessionId, item.EstimatedTokens, entry.NPast, soloTolerance);
 			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
 			return false;
 		}
@@ -2016,6 +2019,31 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
 			return false;
 		}
+	}
+
+	// ── #715 R3: delta-prefill message truncation ─────────────────────────
+	// When session-KV is restored (PrefixNPast tokens already in the slot),
+	// only send messages whose tokens fall beyond PrefixNPast so the engine
+	// skips re-tokenizing + re-evaluating the shared prefix.
+	// Falls back to full message list when the split lands mid-message
+	// (token boundaries don't align with message boundaries).
+	internal static List<Dictionary<string, object>> TruncateMessagesForDeltaPublic(
+		List<Dictionary<string, object>> messages, int prefixNPast)
+		=> TruncateMessagesForDelta(messages, prefixNPast);
+
+	private static List<Dictionary<string, object>> TruncateMessagesForDelta(
+		List<Dictionary<string, object>> messages, int prefixNPast)
+	{
+		int cumulative = 0;
+		for (int i = 0; i < messages.Count; i++)
+		{
+			var content = messages[i].GetValueOrDefault("content")?.ToString() ?? "";
+			var tokens = content.Length / 4; // ~4 chars/token heuristic (matches Router estimator)
+			if (cumulative + tokens > prefixNPast)
+				return messages.Skip(i).ToList(); // includes the straddling message
+			cumulative += tokens;
+		}
+		return messages; // fallback: all messages within prefix, send full
 	}
 
 	// ── Gap 4: n_past tracking in prefill ──
@@ -2148,11 +2176,28 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				item.KvRestoredForDecode = false;
 				var slotId = item.PrefillSlot ?? 0;
+
+				// #715 R3: delta prefill — when session-KV was restored into the
+				// slot (PrefixCacheHit) the engine already holds KV for the first
+				// PrefixNPast tokens.  Truncate messages so the engine only
+				// tokenizes + evals the delta (new tokens since last turn), which
+				// the shared-prefix mechanism detects via N_COMMON overlap.
+				// Invariant: delta > 0 (n_tokens > n_past) — if not, send full
+				// prompt so the engine does a clean prefill from scratch.
+				var prefillMessages = item.Messages;
+				if (item.PrefixCacheHit && item.PrefixNPast > 0 && item.EstimatedTokens > item.PrefixNPast)
+				{
+					prefillMessages = TruncateMessagesForDelta(item.Messages, item.PrefixNPast);
+					_log.Information("prefill_delta Sid={Sid} OrigTokens={Orig} NPast={NP} DeltaMsgs={Dm}/{Tm}",
+						item.SessionId, item.EstimatedTokens, item.PrefixNPast,
+						prefillMessages.Count, item.Messages.Count);
+				}
+
 				var body = new Dictionary<string, object>(item.Request)
 				{
 					["stream"] = false,
 					["n_predict"] = 0,
-					["messages"] = item.Messages
+					["messages"] = prefillMessages
 				};
 			// M-Perf.9 #289 + #479/S3: include the prefill model alias so the
 			// engine can swap to it (or fall back to the resident model if the

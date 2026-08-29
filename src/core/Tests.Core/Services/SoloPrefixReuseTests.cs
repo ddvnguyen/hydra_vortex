@@ -176,7 +176,9 @@ public sealed class SoloPrefixReuseTests
 		ledger.MarkStoreState(sessionId);
 		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[1024]);
 
-		var item = MakeSoloItem(sessionId, estimatedTokens: 4900);
+		// Use a gap that exceeds even the new proportional tolerance:
+		// tolerance = max(128, 5000*0.05) = 250 → 4500 + 250 = 4750 < 5000 → skip
+		var item = MakeSoloItem(sessionId, estimatedTokens: 4500);
 		item.State = WorkItemState.PrefixRestore;
 		item.PrefillWorker = new WorkerConfig
 		{
@@ -187,7 +189,7 @@ public sealed class SoloPrefixReuseTests
 
 		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
 
-		// n_past guard fires: estimated 4900 + tolerance 50 = 4950 < 5000 = skip
+		// n_past guard fires: estimated 4500 + tolerance 250 = 4750 < 5000 = skip
 		Assert.Equal(WorkItemState.Prefill, next);
 		Assert.False(item.PrefixCacheHit);
 		// StatePut was NOT called (guard prevented restore)
@@ -349,5 +351,130 @@ public sealed class SoloPrefixReuseTests
 		Assert.False(item.PrefixCacheHit);
 		// StatePut was NOT attempted (empty payload caught before wire)
 		Assert.Equal(0, engineStore.CallCount(OpCode.StatePut));
+	}
+
+	// ── 11. n_past tolerance: NPast = Est + 65 (one ACK turn) → must restore ──
+
+	[Fact]
+	public async Task SoloPrefixReuse_NPastTolerance_RestoresWithAckTurnGrowth()
+	{
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok,
+			meta: "{\"n_past\":3065}");
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_solo_tolerance";
+
+		// NPast = 3065 (3000 prompt + 65 ACK tokens from prior turn)
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3065);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// EstimatedTokens = 3000 (current prompt size, same as prior turn's prompt)
+		// Old tolerance (50): 3000 + 50 = 3050 < 3065 → would SKIP (false positive)
+		// New tolerance: max(128, 3065*0.05) = max(128, 153) = 153 → 3000 + 153 = 3153 > 3065 → restores
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3000);
+		item.State = WorkItemState.PrefixRestore;
+		item.PrefillWorker = new WorkerConfig
+		{
+			Name = "rtx", Host = "localhost", RpcPort = 9601,
+			LlamaUrl = "http://localhost:8080", WorkerType = 3,
+		};
+		item.PrefillSlot = 0;
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// Must restore (not skip) — the ACK growth is within proportional tolerance
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.True(item.PrefixCacheHit);
+		Assert.Equal(3065, item.PrefixNPast);
+	}
+
+	// ── 12. n_past tolerance: NPast >> Est (truncated history) → must skip ──
+
+	[Fact]
+	public async Task SoloPrefixReuse_NPastTolerance_SkipsTruncatedHistory()
+	{
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok,
+			meta: "{\"n_past\":10000}");
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_solo_skip";
+
+		// NPast = 10000 (large prior session)
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 10000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// EstimatedTokens = 500 (client truncated history significantly)
+		// tolerance = max(128, 10000*0.05) = 500 → 500 + 500 = 1000 < 10000 → must skip
+		var item = MakeSoloItem(sessionId, estimatedTokens: 500);
+		item.State = WorkItemState.PrefixRestore;
+		item.PrefillWorker = new WorkerConfig
+		{
+			Name = "rtx", Host = "localhost", RpcPort = 9601,
+			LlamaUrl = "http://localhost:8080", WorkerType = 3,
+		};
+		item.PrefillSlot = 0;
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// Must skip restore — the prompt is far shorter than cached NPast
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.False(item.PrefixCacheHit);
+	}
+
+	// ── 13. Delta prefill: TruncateMessagesForDelta cuts messages at PrefixNPast ──
+
+	[Fact]
+	public async Task PrefillAsync_DeltaPrefill_TruncatesMessagesForDelta()
+	{
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok,
+			meta: "{\"n_past\":3000}");
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_solo_delta";
+
+		// Prior turn: 3000 tokens saved to Store
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// 4 messages: system (~20 tok) + user_x (~3000 tok) + assistant (~3 tok) + user_y (~500 tok)
+		// Total ~3523 tokens. PrefixNPast=3000 → delta starts mid user_x message.
+		var item = new WorkItem(
+			new Dictionary<string, object> { ["stream"] = false },
+			[
+				new() { ["role"] = "system",    ["content"] = "You are a helpful assistant." },
+				new() { ["role"] = "user",      ["content"] = new string('x', 12000) },
+				new() { ["role"] = "assistant",  ["content"] = "I understand." },
+				new() { ["role"] = "user",      ["content"] = new string('y', 2000) },
+			],
+			sessionId, "trace_1", prefixHash: null, estimatedTokens: 3500, estimatedNewTokens: 3500);
+		item.ForceMode = "solo";
+		item.State = WorkItemState.PrefixRestore;
+		item.PrefillWorker = new WorkerConfig
+		{
+			Name = "rtx", Host = "localhost", RpcPort = 9601,
+			LlamaUrl = "http://localhost:8080", WorkerType = 3,
+		};
+		item.PrefillSlot = 0;
+
+		// Run PrefixRestore → sets PrefixCacheHit=true, PrefixNPast=3000
+		var afterRestore = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.Prefill, afterRestore);
+		Assert.True(item.PrefixCacheHit);
+		Assert.Equal(3000, item.PrefixNPast);
+
+		// Verify truncation: with 4 messages and PrefixNPast=3000, the system message
+		// (~20 tokens) is below threshold, user_x (~3000 tokens) straddles the boundary
+		// so it becomes the first delta message. Expected: messages[1..] (3 messages).
+		var delta = WorkerSchedulerService.TruncateMessagesForDeltaPublic(
+			item.Messages, item.PrefixNPast);
+		// System msg (~20 tok) < 3000 → skipped. user_x straddles → included.
+		Assert.Equal(3, delta.Count);
+		Assert.Equal("user", delta[0].GetValueOrDefault("role"));
 	}
 }

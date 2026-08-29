@@ -370,9 +370,13 @@ public sealed class PrefixRestoreRunner : WorkerStateRunner
             return false;
         }
 
-        // n_tokens > n_past guard
+        // n_tokens > n_past guard — proportional tolerance accounts for
+        // generated-token growth (e.g. 64 ACK tokens/turn accumulate in NPast
+        // but not in EstimatedTokens). Floor of 128 protects small sessions;
+        // 5% covers 24+ turns of ACK growth.
+        var soloTolerance = Math.Max(128, (int)(entry.NPast * 0.05));
         if (req.Chat.EstimatedTokens > 0
-            && req.Chat.EstimatedTokens + _cfg.NPastGuardTolerance < entry.NPast)
+            && req.Chat.EstimatedTokens + soloTolerance < entry.NPast)
         {
             CoordinatorMetrics.SoloKvRestoreMisses.Inc();
             return false;
@@ -468,7 +472,8 @@ public sealed class PrefillRunner : WorkerStateRunner
             var slotKey = req.PrefillLease?.SlotId.ToString() ?? "0"; // engine keys prefill by slot id
             var sw = Stopwatch.StartNew();
             var result = await _engine.PrefillAsync(req.PrefillWorker.Name, slotKey, req.Chat, ct,
-                hydraConfig: BuildHydraConfig(req));
+                hydraConfig: BuildHydraConfig(req),
+                prefixCacheHit: req.PrefixCacheHit, prefixNPast: req.PrefixNPast);
             if (result.NotImplemented)
             {
                 // #279: old binary without PREFILL 0x42 — fall through to the HTTP
