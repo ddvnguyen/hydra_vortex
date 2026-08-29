@@ -1,0 +1,63 @@
+# Arm 085 — no MTP/speculative decoding + K=q4_0 + ctx 262144 (2×128K target).
+#
+# Base = arm 084 (K=q8_0, V=q4_1, ctx 140000, parallel 2, cache-idle-slots).
+# Changes vs 084:
+#   1. Drop MTP entirely (remove spec_type / spec_draft_type_k / spec_draft_type_v).
+#      This frees ~1505 MiB on CUDA0: draft KV buffer ~236 MiB, compute-graph
+#      reserve ~764 MiB, and recurrent-state shrinks 4× (n_rs_seq 3→0 per
+#      common/common.h:386 need_n_rs_seq() / src/llama-memory-recurrent.cpp:99)
+#      saving ~505 MiB.
+#   2. Quantize K cache q8_0→q4_0 (V stays q4_1). Saves 8.0 KiB/token → ~697 MiB
+#      freed on the current pool; reduces growth cost for the bigger pool.
+#      Q4_0 is in the kv_cache_types whitelist (common/arg.cpp) with full CUDA
+#      flash-attn kernel support.
+#   3. Grow ctx 140000→262144 (the model's n_ctx_train, i.e. native max).
+#
+# Combined VRAM math: MTP drop ~1505 MiB + K quant savings ~697 MiB = ~2202 MiB
+# freed vs arm 084.  Arm 084 had ~41 MiB free at ctx=140K; new budget ≈ 2243 MiB
+# headroom — enough for the KV pool growth at 262K ctx with ~890 MiB margin.
+#
+# WARNING: llama-cpp-entrypoint.sh defaults spec_type to "draft-mtp" when the
+# YAML field is absent (line 59).  This arm relies on run-with-params.sh for
+# testing, which correctly omits the flag.  The entrypoint script needs a fix
+# to support "no MTP" arms properly — see report below.
+#
+# Ports match live 083 (18081 / 50052) — this arm is tested via in-place
+# restart of the live instance, not a second concurrent process.
+---
+name: 085-udq5-262144-no-mtp-kq4_0
+description: "No MTP + K=q4_0 + ctx 262144 (2×128K). Drops speculative decoding to free ~1.5 GiB VRAM, then grows KV pool. Non-production test."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 262144
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q4_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'on'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 8192
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 40
+prompt_path: /tmp/bigprompt.txt
+timeout: 120
+expect: unknown
