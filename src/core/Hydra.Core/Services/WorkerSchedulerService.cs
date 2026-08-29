@@ -3837,6 +3837,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		catch (Exception ex)
 		{
+			// #716: increment short-write counter when the sender detected a byte-count mismatch
+			if (ex is InvalidDataException ide && ide.Message.Contains("short write"))
+				CoordinatorMetrics.RestoreStreamShortWrites.Inc();
 			if (item.PrefillWorker?.CanDecode == true
 				&& item.DecodeWorker?.Name != item.PrefillWorker?.Name
 				&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot, "decode-fallback"))

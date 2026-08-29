@@ -377,7 +377,8 @@ public class RpcClient : IAsyncDisposable
                     if (read == 0)
                         throw new EndOfStreamException(
                             $"Stream ended early ({remaining} bytes remaining)");
-                    await _stream.WriteAsync(buffer.AsMemory(0, read), ct);
+                    // #716: use WriteExactlyAsync to handle short writes on large payloads
+                    await WriteExactlyAsync(_stream, buffer.AsMemory(0, read), ct);
                     remaining -= read;
                 }
                 await _stream.FlushAsync(ct);
@@ -442,9 +443,10 @@ public class RpcClient : IAsyncDisposable
     {
         var keyBytes = Encoding.UTF8.GetBytes(key);
         var traceBytes = Encoding.UTF8.GetBytes(traceId);
+        var declaredPayloadLen = (long)payload.Length;
 
         var header = Protocol.CreateRequestHeader(
-            op, (ushort)keyBytes.Length, (ulong)payload.Length, (ushort)traceBytes.Length);
+            op, (ushort)keyBytes.Length, (ulong)declaredPayloadLen, (ushort)traceBytes.Length);
 
         var headerBuf = new byte[Protocol.REQUEST_HEADER_SIZE];
         Protocol.WriteRequest(headerBuf, header);
@@ -454,10 +456,59 @@ public class RpcClient : IAsyncDisposable
             await _stream.WriteAsync(keyBytes, ct);
         if (traceBytes.Length > 0)
             await _stream.WriteAsync(traceBytes, ct);
-        if (payload.Length > 0)
-            await _stream.WriteAsync(payload, ct);
+
+        // #716: write payload with short-write protection and byte-count verification
+        if (declaredPayloadLen > 0)
+        {
+            var written = await WriteExactlyAsync(_stream, payload, ct);
+            if (written != declaredPayloadLen)
+            {
+                Interlocked.Increment(ref _shortWriteCount);
+                Serilog.Log.Error(
+                    "rpc_short_write Op={Op} Host={Host}:{Port} Declared={Declared} Written={Written} " +
+                    "ShortWriteCount={Count} — payload truncated on wire",
+                    op, _host, _port, declaredPayloadLen, written, _shortWriteCount);
+                throw new InvalidDataException(
+                    $"RPC {op} short write to {_host}:{_port}: declared {declaredPayloadLen} bytes, " +
+                    $"wrote {written} ({_shortWriteCount} total short writes)");
+            }
+        }
 
         await _stream.FlushAsync(ct);
+    }
+
+    /// <summary>Total short-write events observed across all RPCs on this client.
+    /// Exposed for metrics collection by higher layers.</summary>
+    private static int _shortWriteCount;
+    internal static int ShortWriteCount => Volatile.Read(ref _shortWriteCount);
+
+    /// <summary>
+    /// #716: Write all bytes to the stream, handling short writes. On Linux,
+    /// NetworkStream.WriteAsync can return fewer bytes than requested when the
+    /// kernel send buffer is full (large KV blobs 240-650 MB). This loops
+    /// until all bytes are written or the cancellation token fires.
+    /// Returns the total number of bytes written.
+    /// </summary>
+    internal static async Task<long> WriteExactlyAsync(
+        NetworkStream stream, ReadOnlyMemory<byte> data, CancellationToken ct)
+    {
+        // #716: Use Socket.SendAsync directly (returns ValueTask<int>) instead of
+        // NetworkStream.WriteAsync (returns ValueTask — discards byte count).
+        // On Linux, .NET's async socket I/O uses non-blocking mode internally,
+        // so send() CAN return fewer bytes than requested for large buffers.
+        var socket = stream.Socket;
+        var totalToWrite = data.Length;
+        var written = 0;
+        while (written < totalToWrite)
+        {
+            var chunk = data[written..];
+            var sent = await socket.SendAsync(chunk, SocketFlags.None, ct);
+            if (sent == 0)
+                throw new EndOfStreamException(
+                    $"WriteExactlyAsync: socket returned 0 bytes after writing {written}/{totalToWrite}");
+            written += sent;
+        }
+        return written;
     }
 
     private async Task EnsureConnectedAsync(CancellationToken ct)
@@ -980,9 +1031,9 @@ public class RpcClient : IAsyncDisposable
             if (promptBytes.Length > 0)
                 await _stream.WriteAsync(promptBytes, timeoutCts.Token);
 
-            // Write KV segment
+            // Write KV segment (#716: use WriteExactlyAsync for large blobs)
             if (kvLen > 0)
-                await _stream.WriteAsync(kvBlob, timeoutCts.Token);
+                await WriteExactlyAsync(_stream, kvBlob, timeoutCts.Token);
 
             await _stream.FlushAsync(timeoutCts.Token);
 
@@ -1151,11 +1202,11 @@ public class RpcClient : IAsyncDisposable
                 await _stream.WriteAsync(promptBytes, timeoutCts.Token);
 
             // Stream the KV segment chunk-by-chunk (backpressure propagates
-            // to the Store read).
+            // to the Store read). #716: use WriteExactlyAsync per chunk.
             var expectedBytes = 0L;
             await foreach (var chunk in kvChunks.WithCancellation(timeoutCts.Token))
             {
-                await _stream.WriteAsync(chunk, timeoutCts.Token);
+                await WriteExactlyAsync(_stream, chunk, timeoutCts.Token);
                 expectedBytes += chunk.Length;
             }
             if (expectedBytes != kvLen)
