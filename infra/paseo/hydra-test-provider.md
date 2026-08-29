@@ -95,3 +95,17 @@ VRAM impact ~+1.1 GiB total, well within budget. Test-rig compose default
 Paseo spawns pi agents with the workspace's pi config, so a Paseo subagent can
 target the rig via provider=pi, model=hydra-test/qwen3.5-9b-test once this
 models.json entry exists on the host running the paseo daemon (done here).
+
+## FINAL PROOF 2026-08-29 09:35 ICT — real Paseo subagent (pi harness → Hydra TEST)
+
+Paseo `create_agent(provider="pi/hydra-test/qwen3.5-9b-test")` spawned a live
+subagent which executed the full agentic loop ON THE RIG:
+
+- Multi-turn agent loop: **21 PREFILLs** (turn-continuation prompts ~7.9-8.1K tok each)
+- KV persistence across turns: **7 STATE_GET M2-streams** (up to 233.5 MiB), 0 failures
+- Tool use: shell file created + read back
+- Artifact: `/tmp/opencode/paseo-hydra-subagent-proof.txt` =
+  `paseo pi subagent via hydra TEST rig works at 2026-08-29`
+- Subagent final report: `PROOF OK` (independently verified by lead reading the file)
+
+v1b criterion (b) satisfied. Both (a) scripted rehearsal and (b) real subagent E2E green.
