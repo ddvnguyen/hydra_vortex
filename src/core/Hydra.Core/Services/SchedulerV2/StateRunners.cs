@@ -472,8 +472,7 @@ public sealed class PrefillRunner : WorkerStateRunner
             var slotKey = req.PrefillLease?.SlotId.ToString() ?? "0"; // engine keys prefill by slot id
             var sw = Stopwatch.StartNew();
             var result = await _engine.PrefillAsync(req.PrefillWorker.Name, slotKey, req.Chat, ct,
-                hydraConfig: BuildHydraConfig(req),
-                prefixCacheHit: req.PrefixCacheHit, prefixNPast: req.PrefixNPast);
+                hydraConfig: BuildHydraConfig(req));
             if (result.NotImplemented)
             {
                 // #279: old binary without PREFILL 0x42 — fall through to the HTTP

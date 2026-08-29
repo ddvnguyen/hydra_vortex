@@ -425,25 +425,24 @@ public sealed class SoloPrefixReuseTests
 		Assert.False(item.PrefixCacheHit);
 	}
 
-	// ── 13. Delta prefill: TruncateMessagesForDelta cuts messages at PrefixNPast ──
+	// ── 13. Pin: after successful restore, full message list is preserved ──
+	//    (A/B#3 verified: engine N_COMMON handles delta eval; char-based
+	//     truncation is unsafe due to tokenizer accuracy, see A/B#4 regression).
 
 	[Fact]
-	public async Task PrefillAsync_DeltaPrefill_TruncatesMessagesForDelta()
+	public async Task SoloPrefixReuse_Restore_PreservesFullMessageListForPrefill()
 	{
 		var engineStore = new FakeStoreClient();
 		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok,
 			meta: "{\"n_past\":3000}");
 
 		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
-		var sessionId = "sess_solo_delta";
+		var sessionId = "sess_solo_pin";
 
-		// Prior turn: 3000 tokens saved to Store
 		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
 		ledger.MarkStoreState(sessionId);
 		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
 
-		// 4 messages: system (~20 tok) + user_x (~3000 tok) + assistant (~3 tok) + user_y (~500 tok)
-		// Total ~3523 tokens. PrefixNPast=3000 → delta starts mid user_x message.
 		var item = new WorkItem(
 			new Dictionary<string, object> { ["stream"] = false },
 			[
@@ -462,19 +461,17 @@ public sealed class SoloPrefixReuseTests
 		};
 		item.PrefillSlot = 0;
 
-		// Run PrefixRestore → sets PrefixCacheHit=true, PrefixNPast=3000
-		var afterRestore = await scheduler.DispatchAsync(item, CancellationToken.None);
-		Assert.Equal(WorkItemState.Prefill, afterRestore);
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// Restore succeeded → PrefixCacheHit=true, PrefixNPast>0
+		Assert.Equal(WorkItemState.Prefill, next);
 		Assert.True(item.PrefixCacheHit);
 		Assert.Equal(3000, item.PrefixNPast);
 
-		// Verify truncation: with 4 messages and PrefixNPast=3000, the system message
-		// (~20 tokens) is below threshold, user_x (~3000 tokens) straddles the boundary
-		// so it becomes the first delta message. Expected: messages[1..] (3 messages).
-		var delta = WorkerSchedulerService.TruncateMessagesForDeltaPublic(
-			item.Messages, item.PrefixNPast);
-		// System msg (~20 tok) < 3000 → skipped. user_x straddles → included.
-		Assert.Equal(3, delta.Count);
-		Assert.Equal("user", delta[0].GetValueOrDefault("role"));
+		// #715 R4 pin: full message list must be preserved for the PREFILL body.
+		// Engine N_COMMON handles delta eval (~300 ms); char-based truncation
+		// undercounts real tokens (A/B#4 regression) and is not safe without
+		// tokenizer-accurate boundaries.
+		Assert.Equal(4, item.Messages.Count);
 	}
 }

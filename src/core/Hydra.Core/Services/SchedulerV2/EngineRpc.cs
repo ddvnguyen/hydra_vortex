@@ -107,8 +107,7 @@ public interface IEngineRpcGateway
     /// <c>HydraEngineClient.EnginePrefillAsync</c>). Null for solo/atomic/P-D.</param>
     Task<EnginePrefillResult> PrefillAsync(
         string worker, string slotKey, ChatRequest chat, CancellationToken ct,
-        Dictionary<string, object>? hydraConfig = null,
-        bool prefixCacheHit = false, int prefixNPast = 0);
+        Dictionary<string, object>? hydraConfig = null);
 
     /// <summary>Push the KV blob onto the decode worker's slot (STATE_PUT 0x31).
     /// Returns the parsed response — transport status AND the slot's model
@@ -178,10 +177,9 @@ public sealed class EngineRpcGateway : IEngineRpcGateway
 
     public Task<EnginePrefillResult> PrefillAsync(
         string worker, string slotKey, ChatRequest chat, CancellationToken ct,
-        Dictionary<string, object>? hydraConfig = null,
-        bool prefixCacheHit = false, int prefixNPast = 0)
+        Dictionary<string, object>? hydraConfig = null)
     {
-        var body = BuildPrefillBody(chat, hydraConfig, prefixCacheHit, prefixNPast);
+        var body = BuildPrefillBody(chat, hydraConfig);
         var payloadJson = JsonSerializer.Serialize(body);
         return Channel(worker).EnginePrefillAsync(slotKey, payloadJson, chat.TraceId, ct, hydraConfig);
     }
@@ -219,23 +217,8 @@ public sealed class EngineRpcGateway : IEngineRpcGateway
             ? c
             : throw new InvalidOperationException($"no engine channel configured for worker '{worker}'");
 
-    private static Dictionary<string, object> BuildPrefillBody(
-        ChatRequest chat, Dictionary<string, object>? hydraConfig,
-        bool prefixCacheHit = false, int prefixNPast = 0)
+    private static Dictionary<string, object> BuildPrefillBody(ChatRequest chat, Dictionary<string, object>? hydraConfig)
     {
-        // #715 R3: delta prefill — when session-KV was restored (PrefixCacheHit)
-        // the engine already holds KV for the first prefixNPast tokens. Truncate
-        // messages so the engine only tokenizes + evals the delta. Falls back
-        // to full message list when delta <= 0 (invariant: n_tokens > n_past).
-        var messages = (IReadOnlyList<Dictionary<string, object>>)chat.Messages;
-        if (prefixCacheHit && prefixNPast > 0 && chat.EstimatedTokens > prefixNPast)
-        {
-            messages = TruncateMessagesForDelta(chat.Messages, prefixNPast);
-            Serilog.Log.Information(
-                "v2_prefill_delta Est={Est} NPast={NP} OrigMsgs={Om} DeltaMsgs={Dm}",
-                chat.EstimatedTokens, prefixNPast, chat.Messages.Count, messages.Count);
-        }
-
         var body = new Dictionary<string, object>(chat.Body)
         {
             // Wire parity with the legacy EnginePrefill body: the raw request (stream,
@@ -243,7 +226,7 @@ public sealed class EngineRpcGateway : IEngineRpcGateway
             // the messages array (the goldens pin the exact payload length).
             ["stream"] = false,
             ["n_predict"] = 0,
-            ["messages"] = messages,
+            ["messages"] = chat.Messages,
         };
         // COMBINED (epic #591): inject hydra_config as the LAST key. The value is a
         // JsonNode so System.Text.Json emits its raw JSON verbatim — byte parity with
@@ -252,24 +235,6 @@ public sealed class EngineRpcGateway : IEngineRpcGateway
         if (hydraConfig is { Count: > 0 })
             body["hydra_config"] = JsonSerializer.SerializeToNode(hydraConfig);
         return body;
-    }
-
-    // #715 R3: delta-prefill message truncation (V2 path).
-    // When session-KV is restored (prefixNPast tokens already in the slot),
-    // only send messages whose tokens fall beyond prefixNPast.
-    private static IReadOnlyList<Dictionary<string, object>> TruncateMessagesForDelta(
-        IReadOnlyList<Dictionary<string, object>> messages, int prefixNPast)
-    {
-        int cumulative = 0;
-        for (int i = 0; i < messages.Count; i++)
-        {
-            var content = messages[i].GetValueOrDefault("content")?.ToString() ?? "";
-            var tokens = content.Length / 4; // ~4 chars/token heuristic (matches Router estimator)
-            if (cumulative + tokens > prefixNPast)
-                return messages.Skip(i).ToList(); // includes the straddling message
-            cumulative += tokens;
-        }
-        return messages; // fallback: all messages within prefix, send full
     }
 
     /// <summary>Parse the STATE_PUT response meta: model_match (absent → true,
