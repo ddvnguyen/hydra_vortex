@@ -56,7 +56,7 @@ vars_ = {
     "P_CONT_BATCHING":      b(p, "cont_batching"),
     "P_KV_UNIFIED":         b(p, "kv_unified"),
     "P_JINJA":              b(p, "jinja"),
-    "P_SPEC_TYPE":          v(p, "spec_type", "draft-mtp"),
+    "P_SPEC_TYPE":          v(p, "spec_type"),
     "P_SPEC_DRAFT_N_MAX":   v(p, "spec_draft_n_max"),
     "P_SPEC_DRAFT_P_MIN":   v(p, "spec_draft_p_min"),
     "P_SPEC_DRAFT_MODEL":   v(p, "spec_draft_model"),
