@@ -1,0 +1,148 @@
+# Arm 090 — PRODUCTION PIN (concurrency arm). Supersedes arm 083 as the
+# primary pin for multi-agent workflows. Arm 088 design (parallel=1 +
+# cache-idle-slots + 16 GiB cache-ram, MTP kept, no KV quant change) at
+# ctx=148000, the practical upper bound found by bisecting the real ctx
+# ceiling for this design.
+#
+# Bisection results (2026-08-29, same build/config family):
+#   ctx=140000: 407 MiB free CUDA0 at boot -- arm088, comfortable margin.
+#   ctx=148000: 167-191 MiB free CUDA0 -- THIS ARM. Thin but survived a
+#     full 6-turn / 3-agent simulated-workload stress test (real generation
+#     load, not just cold boot) with no crash, no OOM, 0 evictions.
+#   ctx=150000: 147 MiB free -- boots, not simulation-tested.
+#   ctx=152000: 93 MiB free -- boots, not simulation-tested.
+#   ctx=156000: OOM, short by 843 MiB (MTP draft compute-buffer reserve).
+#   ctx=163840 (083's original ctx): OOM, short by 880 MiB -- same failure
+#     mode recurs at BOTH n_seq_max=1 (this arm) and n_seq_max=2 (084's
+#     original 163840 attempt), meaning it is NOT purely an n_seq_max
+#     duplication cost as originally assumed -- there's a discrete jump in
+#     the MTP draft-context compute-buffer requirement somewhere between
+#     ctx=152000 and ctx=156000, likely tied to quantized-draft-KV
+#     dequant-scratch sizing, independent of parallelism.
+#
+# Validated behavior (2026-08-29, 3-agent rotation, ~104-122K-token
+# sessions each, 6 turns total):
+#   A turn1 (initial)              253.1s  cached=0%
+#   B turn1 (evicts A)              218.8s  cached=0%
+#   A turn2 (RETURN after evict)     14.2s  cached=100%  <- the payoff
+#   C turn1 (evicts A)              210.3s  cached=0%
+#   B turn2 (RETURN after evict)     13.1s  cached=100%
+#   A turn3 (RETURN after evict)     16.4s  cached=100%
+# ~18x faster on every return-after-eviction turn, 0 cache-ram evictions
+# logged. Root cause of why 8 GiB (084 as originally committed) failed to
+# deliver this: each ~110-120K-token session's cached KV entry is ~4-4.8
+# GiB; 8 GiB only fits ~1.5-2 entries, so with 3 sessions rotating, every
+# return arrived after its own entry had already been evicted by whichever
+# session ran in between (0% cache hit, statistically identical to no
+# idle-cache at all). 16 GiB fixes this for a 3-session rotation with
+# real margin. See "sizing rule" below before assuming this holds for
+# MORE than 3 concurrently-rotating sessions.
+#
+# WHAT THIS ARM DOES NOT DO: true simultaneous decode of 2+ sessions.
+# Verified in arm087: with n_slots=1, a second concurrent request just
+# queues fully behind the first -- zero overlap, regardless of
+# cache-idle-slots. This arm's win is exclusively cheap RETURN for a
+# session that goes idle and comes back later in a rotation (the
+# realistic multi-agent-taking-turns pattern), not concurrent decode.
+# If genuine simultaneous decode of 2 sessions becomes the actual
+# requirement (not just fast turn-taking), this design cannot deliver it
+# at any ctx -- see arms 084/085/086 (parallel=2 family) instead, all of
+# which trade off ctx headroom, MTP, or KV quality to get real dual
+# residency.
+#
+# ============================================================
+# FALLBACK GUIDANCE -- what to change if this pin doesn't hold up in
+# real usage (read this before touching prod, not after an incident):
+# ============================================================
+#
+# 1. If ctx=148000 OOMs on a real request (thin 167-191 MiB margin;
+#    tested only up to ~122K-token prompts, not the full 148K):
+#    -> Step DOWN to arm 088 (ctx=140000, params/088-udq5-140000-
+#       parallel1-cache-ram-16g.yml). Same design, 407 MiB margin,
+#       fully validated. Safest same-family fallback, ~1 line change
+#       (LLAMACPP_PARAMS_FILE) via run-with-params.sh or the compose
+#       LLAMACPP_PARAMS_FILE env var below.
+#
+# 2. If cache-ram (16384 MiB) starts thrashing again (visible as
+#    "making room for prompt cache entry, removing oldest entry" in the
+#    server log, and/or cached_tokens dropping back near 0 on return
+#    turns that used to hit 100%):
+#    -> This means either (a) more than ~3 sessions are rotating
+#       concurrently, or (b) sessions have grown past ~110-120K tokens
+#       each. Sizing rule: cache_ram_mib should be >=
+#       (typical per-session KV size in MiB) x (number of concurrently-
+#       rotating sessions to retain), with margin. Host has ~47 GiB
+#       available (2026-08-29 measurement, `free -g`) -- raising to
+#       24576-32768 MiB is safe headroom if session count/size grows.
+#       Do NOT assume a bigger number is free of cost: bumping cache-ram
+#       does not touch VRAM, only host RAM, so it's low-risk to raise.
+#
+# 3. If the MTP draft-context compute-buffer cliff (see bisection above)
+#    becomes a problem at THIS ctx too (e.g. a future llama.cpp build
+#    changes the buffer sizing and the cliff moves lower than 152000):
+#    -> Two independent levers, in order of preference:
+#       a) Drop ctx further (e.g. back to 140000/arm088) -- no quality
+#          or speed cost, just less per-session context.
+#       b) Drop MTP entirely (spec_type/spec_draft_type_k/v fields
+#          removed -- see arm 085, params/085-udq5-262144-no-mtp-
+#          kq4_0.yml for the pattern, though that arm targets a much
+#          bigger ctx). This directly removes the draft compute-buffer
+#          reserve that's causing the cliff, at the cost of MTP's ~53%
+#          decode speedup. NOTE: llama-cpp-entrypoint.sh:60 currently
+#          defaults spec_type to "draft-mtp" when the YAML field is
+#          absent -- confirm that bug is fixed before relying on
+#          omitting spec_type to actually disable MTP via the
+#          containerized entrypoint path.
+#
+# 4. If real concurrent (not just fast-turn-taking) decode of 2 sessions
+#    becomes the actual requirement:
+#    -> This design (parallel=1) cannot do it at any ctx -- verified
+#       architecturally, not a tuning problem. Move to the parallel=2
+#       family (arm 084 baseline, or 085/086 for the ctx=262144/2x128K
+#       target), which requires trading off either ctx headroom, MTP,
+#       or KV cache quality to fit 2 VRAM-resident slots simultaneously.
+#
+# 5. If host RAM itself becomes constrained (other agents/processes on
+#    this shared host competing for the same ~47 GiB, per CLAUDE.md's
+#    note that this host runs many concurrent agent worktrees):
+#    -> Re-check `free -g` before raising cache-ram per (2) above --
+#       the 16 GiB budgeted here assumes host RAM is actually available
+#       at request time, not just at pin-time measurement.
+#
+# Ports match live 083/084/088 (18081 / 50052).
+---
+name: 090-udq5-148000-parallel1-cache-ram-16g
+description: "PRODUCTION PIN (concurrency arm): parallel=1 + cache-idle-slots + 16 GiB cache-ram, ctx=148000, MTP kept, no KV quant change. Validated via 3-agent/6-turn stress test: ~18x faster session-return, 0 evictions. See in-file fallback guidance if this pin doesn't hold up."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 148000
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 1
+cont_batching: 'on'
+kv_unified: 'on'
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 16384
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150

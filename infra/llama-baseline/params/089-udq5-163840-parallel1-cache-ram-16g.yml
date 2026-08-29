@@ -1,0 +1,54 @@
+# Arm 089 — arm 088 design (parallel=1 + cache-idle-slots + 16 GiB cache-ram)
+# pushed to arm 083's original ctx size (163840), to find the real ctx
+# ceiling for the session-swap design now that parallel=1 recovered VRAM
+# headroom vs 084's parallel=2.
+#
+# Base = arm 088 (parallel=1, K=q8_0, V=q4_1, MTP kept q8_0/q4_1 draft,
+# cache-idle-slots + cache_ram_mib=16384, ctx=140000). Only change: ctx
+# 140000 -> 163840 (arm 083's original ctx). No other params touched.
+#
+# VRAM math (rough, unverified until booted): arm 088 @ ctx=140000 measured
+# 407 MiB free on CUDA0. Growing to 163840 (Delta = 23840 tokens) costs
+# roughly: main KV 23840 x 27.0 KiB x 9/16 ~= 354 MiB, quantized draft KV
+# 23840 x 1.6875 KiB ~= 39 MiB (assumed all on CUDA0 per prior logs) ->
+# ~393 MiB needed vs 407 MiB free. This is right at the edge -- genuinely
+# uncertain whether it boots or OOMs; that uncertainty is the point of this
+# arm (bisect down from here if it fails, e.g. try 150000 next).
+#
+# Ports match live 083/084/088 (18081 / 50052).
+---
+name: 089-udq5-163840-parallel1-cache-ram-16g
+description: "arm 088 design pushed to ctx=163840 (arm 083's original ctx) to find the real ceiling for parallel=1 + cache-idle-slots. Edge-of-VRAM test, may OOM."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 163840
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 1
+cont_batching: 'on'
+kv_unified: 'on'
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 16384
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
