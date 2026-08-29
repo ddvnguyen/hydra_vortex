@@ -1794,21 +1794,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> PrefixRestoreAsync(WorkItem item, CancellationToken ct)
 	{
-		// #712: solo prefix reuse — attempt full-session KV restore even when
-		// PrefixCheckpointEnabled is off or PrefixHash is null, as long as
-		// SoloPrefixReuseEnabled is on and the session has a Store checkpoint.
+		// #712: solo prefix reuse — when the session has a prior KV checkpoint
+		// in the Store (HasStoreState), prefer session-KV restore over the
+		// prefix-checkpoint path. The session KV is a superset of the system-
+		// prompt checkpoint and enables the engine's shared-prefix detection
+		// to only prefill the delta (new tokens since last turn).
 		if (_cfg.SoloPrefixReuseEnabled && item.PrefillWorker != null)
 		{
-			// Try full-session KV restore first (covers both PrefixHash=null
-			// and prefix-checkpoint-miss cases).
-			// Structurally impossible to double-StatePut: this block only runs
-			// when (PrefixHash == null || !PrefixCheckpointEnabled), and the
-			// prefix-checkpoint block below returns early on the same condition.
-			if (item.PrefixHash == null || !_cfg.PrefixCheckpointEnabled)
+			var entry = _ledger.Lookup(item.SessionId);
+			if (entry is { HasStoreState: true })
 			{
 				var restored = await TryRestoreSessionKvAsync(item, ct);
 				if (restored) return WorkItemState.Prefill;
 			}
+			// Fallback: no session KV in Store — try prefix-checkpoint path below.
 		}
 
 		if (!_cfg.PrefixCheckpointEnabled || item.PrefixHash == null || item.PrefillWorker == null)
@@ -1827,12 +1826,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				CoordinatorMetrics.CacheMisses.Inc();
 				item.PrefixCacheHit = false;
 				_log.Information("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
-				// #712: prefix checkpoint missed — try full-session KV restore
-				if (_cfg.SoloPrefixReuseEnabled)
-				{
-					var restored = await TryRestoreSessionKvAsync(item, ct);
-					if (restored) return WorkItemState.Prefill;
-				}
+				return WorkItemState.Prefill;
+			}
+
+			// #716/#712: guard against empty payload — a zero-length Store Get
+			// response must not be forwarded to StatePut (engine quarantine
+			// flags state_len=0 as a restore failure). Treat as a miss.
+			if (storeResp.Payload.Length == 0)
+			{
+				_log.Warning("prefix_restore_empty_payload Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				CoordinatorMetrics.CacheMisses.Inc();
+				item.PrefixCacheHit = false;
 				return WorkItemState.Prefill;
 			}
 

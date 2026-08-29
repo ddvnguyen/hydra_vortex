@@ -265,4 +265,89 @@ public sealed class SoloPrefixReuseTests
 		// cold_atomic + no ledger entry → Prefill (no restore attempted)
 		Assert.Equal(WorkItemState.Prefill, next);
 	}
+
+	// ── 9. HasStoreState=true + PrefixHash!=null + PrefixCheckpointEnabled=true ──
+	//     → session-KV restore takes priority over prefix-checkpoint path
+
+	[Fact]
+	public async Task SoloPrefixReuse_HasStoreState_PrioritizesSessionKvOverCheckpoint()
+	{
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok,
+			meta: "{\"n_past\":3000}");
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_solo_priority";
+
+		// Session has prior KV saved (HasStoreState=true) AND a prefix hash
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+
+		// Store has the session KV blob (for TryRestoreSessionKvAsync)
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// Create item with PrefixHash set via constructor (WorkItem.PrefixHash is read-only)
+		var item = new WorkItem(
+			new Dictionary<string, object> { ["stream"] = false },
+			[
+				new() { ["role"] = "system", ["content"] = "You are helpful." },
+				new() { ["role"] = "user", ["content"] = "test" },
+			],
+			sessionId, "trace_1", prefixHash: "abc123", estimatedTokens: 3500, estimatedNewTokens: 3500);
+		item.ForceMode = "solo";
+		item.State = WorkItemState.PrefixRestore;
+		item.PrefillWorker = new WorkerConfig
+		{
+			Name = "rtx", Host = "localhost", RpcPort = 9601,
+			LlamaUrl = "http://localhost:8080", WorkerType = 3,
+		};
+		item.PrefillSlot = 0;
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// Session-KV restore must have been called (not the prefix-checkpoint path).
+		// The session KV is a superset of the system-prompt checkpoint.
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.True(item.PrefixCacheHit);
+		Assert.Equal(3000, item.PrefixNPast);
+		// Store Get was called with the session KV key, not the prefix key
+		var getCalls = store.Calls.Where(c => c.Op == OpCode.Get).ToList();
+		Assert.Contains(getCalls, c => c.Key == $"{sessionId}.kv");
+		Assert.DoesNotContain(getCalls, c => c.Key.StartsWith("prefix/"));
+	}
+
+	// ── 10. Empty-payload restore → fail fast, no false cache hit ──
+
+	[Fact]
+	public async Task SoloPrefixReuse_EmptyStorePayload_FailsFast()
+	{
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok,
+			meta: "{\"n_past\":3000}");
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_solo_empty";
+
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		// Store returns Ok but with zero-length payload
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: Array.Empty<byte>());
+
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500);
+		item.State = WorkItemState.PrefixRestore;
+		item.PrefillWorker = new WorkerConfig
+		{
+			Name = "rtx", Host = "localhost", RpcPort = 9601,
+			LlamaUrl = "http://localhost:8080", WorkerType = 3,
+		};
+		item.PrefillSlot = 0;
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// Empty payload → clean fallback to Prefill, no false cache hit
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.False(item.PrefixCacheHit);
+		// StatePut was NOT attempted (empty payload caught before wire)
+		Assert.Equal(0, engineStore.CallCount(OpCode.StatePut));
+	}
 }
