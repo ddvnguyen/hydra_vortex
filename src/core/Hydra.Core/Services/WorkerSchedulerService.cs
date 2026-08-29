@@ -1801,9 +1801,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			// Try full-session KV restore first (covers both PrefixHash=null
 			// and prefix-checkpoint-miss cases).
-			// If PrefixHash is set and PrefixCheckpointEnabled is on, the
-			// prefix-checkpoint path below may also run — but it's fine to
-			// try session KV first (it's the common solo path).
+			// Structurally impossible to double-StatePut: this block only runs
+			// when (PrefixHash == null || !PrefixCheckpointEnabled), and the
+			// prefix-checkpoint block below returns early on the same condition.
 			if (item.PrefixHash == null || !_cfg.PrefixCheckpointEnabled)
 			{
 				var restored = await TryRestoreSessionKvAsync(item, ct);
@@ -1966,8 +1966,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
 				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
 
+			// #712/#716: check StatePut response status before declaring success.
+			// A non-Ok means the engine slot does not hold valid KV — declaring
+			// a cache hit would send PREFILL onto a corrupt/empty slot (the same
+			// anti-pattern fixed in the migration path at L428-442, #617/A1).
+			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+			{
+				_log.Warning("solo_kv_restore_state_put_failed Sid={Sid} Key={Key} Status={Status}",
+					item.SessionId, storeKey, putResp.Status);
+				CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+				return false;
+			}
+
 			item.PrefixCacheHit = true;
-			item.PrefixNPast = entry.NPast;
 
 			if (putResp.Meta != null)
 			{
@@ -1975,11 +1986,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var nPast = meta?.TryGetValue("n_past", out var n) == true
 					? n.GetInt32() : 0;
 				if (nPast > 0)
+				{
 					_ledger.UpdateNPast(item.SessionId, nPast);
+					item.PrefixNPast = nPast;
+				}
+				else
+				{
+					item.PrefixNPast = entry.NPast;
+				}
+			}
+			else
+			{
+				item.PrefixNPast = entry.NPast;
 			}
 
 			_log.Information("solo_kv_restored Sid={Sid} Key={Key} NPast={NP}",
-				item.SessionId, storeKey, entry.NPast);
+				item.SessionId, storeKey, item.PrefixNPast);
 			CoordinatorMetrics.SoloKvRestores.Inc();
 			return true;
 		}

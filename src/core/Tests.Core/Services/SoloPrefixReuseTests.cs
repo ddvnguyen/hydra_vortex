@@ -212,4 +212,57 @@ public sealed class SoloPrefixReuseTests
 		// With SoloPrefixReuseEnabled=false, cold_atomic returns Prefill
 		Assert.Equal(WorkItemState.Prefill, next);
 	}
+
+	// ── 7. StatePut returns non-Ok → fallback to Prefill, no false cache hit ──
+
+	[Fact]
+	public async Task SoloPrefixReuse_StatePutFailed_FallsBackToPrefill()
+	{
+		var engineStore = new FakeStoreClient();
+		// Store GET succeeds, but engine StatePut returns a non-Ok status
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.InternalError);
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_solo_put_fail";
+
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[1024]);
+
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500);
+		item.State = WorkItemState.PrefixRestore;
+		item.PrefillWorker = new WorkerConfig
+		{
+			Name = "rtx", Host = "localhost", RpcPort = 9601,
+			LlamaUrl = "http://localhost:8080", WorkerType = 3,
+		};
+		item.PrefillSlot = 0;
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// StatePut failed → clean fallback to Prefill, no false cache hit
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.False(item.PrefixCacheHit);
+		// StatePut was attempted (Store GET succeeded)
+		Assert.Equal(1, engineStore.CallCount(OpCode.StatePut));
+	}
+
+	// ── 8. First solo turn (no ledger entry) → no-op, straight to Prefill ──
+
+	[Fact]
+	public async Task SoloPrefixReuse_FirstTurn_NoLedgerEntry_RoutesToPrefill()
+	{
+		var (scheduler, ledger, tracker, store) = MakeScheduler();
+		var sessionId = "sess_solo_first_turn";
+
+		// No ledger.Register — session has never been seen before.
+		// ColdRouteAsync should route to cold_atomic; HasStoreState is
+		// false (no entry), so SoloPrefixReuseEnabled gate is skipped.
+
+		var item = MakeSoloItem(sessionId, estimatedTokens: 500);
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// cold_atomic + no ledger entry → Prefill (no restore attempted)
+		Assert.Equal(WorkItemState.Prefill, next);
+	}
 }
