@@ -38,7 +38,7 @@
         "auto_eligible": true,
         "min_prompt_tokens": 0,
         "max_prompt_tokens": 999999,
-        "max_context_tokens": 4096,
+        "max_context_tokens": 16384,
         "requires_workers": [
           "test-a",
           "test-b"

@@ -16,8 +16,8 @@
 #   hydra-core-test-b: 19001 HTTP, 19502 Store RPC, 19503 metrics
 #   hydra-head-test-a: 19700 API -> llama-engine-test-a
 #   hydra-head-test-b: 19701 API -> llama-engine-test-b
-#   llama-engine-test-a: 18086 HTTP, 19513 rpc, ngl 16, -t 3, -c 4096
-#   llama-engine-test-b: 18087 HTTP, 19514 rpc, ngl 8, -t 3, -c 4096
+#   llama-engine-test-a: 18086 HTTP, 19513 rpc, ngl 16, -t 3, -c 16384
+#   llama-engine-test-b: 18087 HTTP, 19514 rpc, ngl 8, -t 3, -c 16384
 
 name: hydra-test
 
@@ -267,7 +267,7 @@ services:
       - -t
       - "3"
       - -c
-      - "4096"
+      - "16384"
       - --cache-type-k
       - q8_0
       - --cache-type-v
@@ -314,7 +314,7 @@ services:
       - -t
       - "3"
       - -c
-      - "4096"
+      - "16384"
       - --cache-type-k
       - q8_0
       - --cache-type-v
