@@ -127,6 +127,15 @@ public sealed record CoordinatorConfig
 	public List<string> AllowedModels { get; init; } = EnvList("HYDRA_COORD_ALLOWED_MODELS");
 	public bool RawSlot { get; init; } = EnvBool("HYDRA_COORD_RAW_SLOT", false);
 	public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
+	/// <summary>
+	/// When true, a force_mode="solo" request that has a prior KV checkpoint
+	/// in the Store (HasStoreState) will restore the full session KV before
+	/// issuing PREFILL, enabling shared-prefix detection (engine-side delta
+	/// prefill). When false, solo requests always full-re-prefill (legacy
+	/// behaviour). Only meaningful when UseLlamaEngine=true.
+	/// Config: HYDRA_COORD_SOLO_PREFIX_REUSE_ENABLED
+	/// </summary>
+	public bool SoloPrefixReuseEnabled { get; init; } = EnvBool("HYDRA_COORD_SOLO_PREFIX_REUSE_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
 	public bool EnableChunks { get; init; } = EnvBool("HYDRA_COORD_ENABLE_CHUNKS", false);
 	public bool UseLlamaEngine { get; init; } = EnvBool("HYDRA_LLAMA_ENGINE", false);

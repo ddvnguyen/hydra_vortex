@@ -1186,6 +1186,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						_log.Information("cold_atomic_prefill_resident Sid={Sid} Node={N} Model={Model}",
 							item.SessionId, aw.Name, nodeInfo?.CurrentModel ?? requestedAlias);
 					}
+					// #712: solo prefix reuse — when the session has a prior KV
+					// checkpoint in the Store, route through PrefixRestore so the
+					// full session KV is restored before PREFILL. The engine's
+					// shared-prefix detection then only prefills the delta tokens.
+					if (_cfg.SoloPrefixReuseEnabled)
+					{
+						var entry = _ledger.Lookup(item.SessionId);
+						if (entry is { HasStoreState: true })
+						{
+							_log.Information("solo_prefix_reuse Sid={Sid} Node={N} NPast={NP} — restoring KV before prefill",
+								item.SessionId, aw.Name, entry.NPast);
+							item.RouteType = "solo_prefix_restore";
+							return WorkItemState.PrefixRestore;
+						}
+					}
 					return WorkItemState.Prefill;
 				}
 				return WorkItemState.ModelLoadDecode;
@@ -1779,6 +1794,23 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> PrefixRestoreAsync(WorkItem item, CancellationToken ct)
 	{
+		// #712: solo prefix reuse — attempt full-session KV restore even when
+		// PrefixCheckpointEnabled is off or PrefixHash is null, as long as
+		// SoloPrefixReuseEnabled is on and the session has a Store checkpoint.
+		if (_cfg.SoloPrefixReuseEnabled && item.PrefillWorker != null)
+		{
+			// Try full-session KV restore first (covers both PrefixHash=null
+			// and prefix-checkpoint-miss cases).
+			// If PrefixHash is set and PrefixCheckpointEnabled is on, the
+			// prefix-checkpoint path below may also run — but it's fine to
+			// try session KV first (it's the common solo path).
+			if (item.PrefixHash == null || !_cfg.PrefixCheckpointEnabled)
+			{
+				var restored = await TryRestoreSessionKvAsync(item, ct);
+				if (restored) return WorkItemState.Prefill;
+			}
+		}
+
 		if (!_cfg.PrefixCheckpointEnabled || item.PrefixHash == null || item.PrefillWorker == null)
 		{
 			return WorkItemState.Prefill;
@@ -1794,7 +1826,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				CoordinatorMetrics.CacheMisses.Inc();
 				item.PrefixCacheHit = false;
-				_log.Warning("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				_log.Information("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				// #712: prefix checkpoint missed — try full-session KV restore
+				if (_cfg.SoloPrefixReuseEnabled)
+				{
+					var restored = await TryRestoreSessionKvAsync(item, ct);
+					if (restored) return WorkItemState.Prefill;
+				}
 				return WorkItemState.Prefill;
 			}
 
@@ -1879,6 +1917,79 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 
 		return WorkItemState.Prefill;
+	}
+
+	// ── #712: full-session KV restore for solo prefix reuse ──
+	// When the prefix checkpoint (system-prompt KV) misses or is unavailable,
+	// try restoring the full session KV from the Store. The engine's shared-
+	// prefix detection will then only prefill the delta (new tokens since the
+	// last turn). Returns true if the KV was successfully restored.
+	private async Task<bool> TryRestoreSessionKvAsync(WorkItem item, CancellationToken ct)
+	{
+		if (item.PrefillWorker == null) return false;
+
+		var entry = _ledger.Lookup(item.SessionId);
+		if (entry is not { HasStoreState: true } || entry.NPast <= 0)
+		{
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
+
+		// n_tokens > n_past guard: skip restore when the estimated prompt is
+		// shorter than the cached n_past — the client truncated history and
+		// the KV prefix won't match.  Use the same tolerance as the warm-path
+		// guard in RouteAsync.
+		if (item.EstimatedTokens > 0
+			&& item.EstimatedTokens + _cfg.NPastGuardTolerance < entry.NPast)
+		{
+			_log.Warning("solo_kv_restore_skip_n_past Sid={Sid} Est={Est} NPast={NP}",
+				item.SessionId, item.EstimatedTokens, entry.NPast);
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
+
+		var storeKey = $"{item.SessionId}.kv";
+		try
+		{
+			var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
+				storeKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
+			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok || storeResp.Payload.Length == 0)
+			{
+				_log.Information("solo_kv_restore_miss Sid={Sid} Key={Key}",
+					item.SessionId, storeKey);
+				CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+				return false;
+			}
+
+			var slotId = item.PrefillSlot ?? 0;
+			var llamaRpc = GetStateRpcClient(item.PrefillWorker);
+			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
+
+			item.PrefixCacheHit = true;
+			item.PrefixNPast = entry.NPast;
+
+			if (putResp.Meta != null)
+			{
+				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
+				var nPast = meta?.TryGetValue("n_past", out var n) == true
+					? n.GetInt32() : 0;
+				if (nPast > 0)
+					_ledger.UpdateNPast(item.SessionId, nPast);
+			}
+
+			_log.Information("solo_kv_restored Sid={Sid} Key={Key} NPast={NP}",
+				item.SessionId, storeKey, entry.NPast);
+			CoordinatorMetrics.SoloKvRestores.Inc();
+			return true;
+		}
+		catch (Exception ex)
+		{
+			_log.Warning(ex, "solo_kv_restore_failed Sid={Sid} Key={Key}",
+				item.SessionId, storeKey);
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
 	}
 
 	// ── Gap 4: n_past tracking in prefill ──
