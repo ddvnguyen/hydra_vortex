@@ -52,14 +52,6 @@ name: llama-baseline
 #     podman-compose up time) to point at the desired fallback's params file,
 #     then `podman compose up -d --build`. No other file change required.
 #
-# KNOWN PRE-EXISTING BUG on this branch (not fixed here, out of scope for
-#   this pin change — already fixed on branch fix/703-selfreview-container-
-#   paths, commit d797ae32a, not yet merged to this branch): the `rpc`
-#   service below still uses port 18052 instead of 50052, which does NOT
-#   match any params file (all of 079/083/088/090 use rpc_port: 50052).
-#   Do not deploy this compose file as-is without merging that port fix
-#   first, or the llama service will fail to reach the RPC server.
-#
 # PIN SWITCH ARCHITECTURE (added 2026-08-28, lead b10e501):
 #   The container's entrypoint is `llama-cpp-entrypoint.sh` (mirrors
 #   run-with-params.sh logic). It reads LLAMACPP_PARAMS_FILE (a YAML
