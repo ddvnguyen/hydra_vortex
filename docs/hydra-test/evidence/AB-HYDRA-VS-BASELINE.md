@@ -97,3 +97,27 @@ Harness caveat: conversation grows one user turn at a time (assistant ACK append
 Hydra compute remains neutral; its losses are (1) missing prefix reuse — the single biggest, very fixable
 optimization target, (2) RPC prefill chunking that scales poorly with context, (3) a hard P0 failure at
 ~37K context on the shared-prefix restore path. Baseline stays flat ~25 s TTFT at every turn via prefix cache.
+
+---
+
+# FINAL ACCEPTANCE RUN (A/B #5) — 2026-08-30 — v9722 engine + R4 core (938727daf)
+
+Stack: fork fix/hydra-recv-eagain (EAGAIN retry + shared helper) + fix/713-slot-quarantine (slot quarantine on failed restore);
+core: solo prefix-reuse (session-KV priority, proportional n_past tolerance) + byte-parity diagnostics. Integrated suite 671/671 (lead-run).
+
+| Turn | Prompt tok | TTFT | total | note |
+|---|---|---|---|---|
+| 1 | 8,323 | 34.1 s | 41.5 s | cold |
+| 2 | 14,532 | 61.4 s | 70.1 s | restore 8,386 |
+| 3 | 20,291 | 87.4 s | 97.6 s | restore 14,595 |
+| 4 | 26,050 | 115.1 s | 126.5 s | restore 20,354 |
+| 5 | 31,359 | 158.3 s | 170.9 s | restore 26,113 (tolerance fix: no skip) |
+| 6 | 37,118 | 181.8 s | 195.7 s | restore 31,422 — **completes** (was deterministic 503 pre-fix) |
+
+Engine window (FINAL run): **0 quarantines, 0 truncated restores, 0 decode failures.**
+N_COMMON delta eval every turn (full prompt shipped; engine evals only new tokens: 209-374 ms).
+Restores byte-exact 198-600 MB via STATE_PUT (byte-parity confirmed).
+
+Remaining TTFT gap vs baseline (flat ~25 s) = chunked-RPC roundtrip structure (~40-48 s/chunk) +
+coordinator pipeline — documented follow-up (delta-start chunker / engine n_past resume), NOT a correctness issue.
+Delta-only prefill requires tokenizer-accurate boundaries (see #715 comments; heuristic attempt reverted in R4).
