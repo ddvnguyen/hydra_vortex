@@ -119,9 +119,9 @@ services:
     entrypoint: ["/usr/local/bin/ggml-rpc-server"]
     command: >
       -H 0.0.0.0
-      -p 18052
+      -p 50052
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/18052'"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/50052'"]
       interval: 5s
       timeout: 3s
       retries: 10

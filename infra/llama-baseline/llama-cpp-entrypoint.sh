@@ -46,9 +46,8 @@ vars_ = {
     "P_CACHE_TYPE_K":       v(p, "cache_type_k", "q8_0"),
     "P_CACHE_TYPE_V":       v(p, "cache_type_v", "q4_1"),
     "P_RPC_ENDPOINT":       v(p, "rpc_endpoint", "127.0.0.1"),
-    "P_RPC_PORT":           v(p, "rpc_port", "18052"),
+    "P_RPC_PORT":           v(p, "rpc_port", "50052"),
     "P_TENSOR_SPLIT":       v(p, "tensor_split", "27,38"),
-    "P_OVERRIDE_TENSORS":   v(p, "override_tensors"),
     "P_UBATCH":             v(p, "ubatch", "512"),
     "P_ROPE_SCALING":       v(p, "rope_scaling", "yarn"),
     "P_ROPE_SCALE":         v(p, "rope_scale", "5"),
@@ -72,7 +71,17 @@ vars_ = {
     "P_PRIO":               v(p, "prio"),
     "P_PRIO_BATCH":         v(p, "prio_batch", "1"),
     "P_CONTEXT_SHIFT":      b(p, "context_shift"),
+    "P_CACHE_IDLE_SLOTS":   b(p, "cache_idle_slots"),
+    "P_CACHE_RAM_MIB":      v(p, "cache_ram_mib"),
 }
+# override_tensors is a YAML list (e.g. ["token_embd.weight=CPU"]) or [] —
+# str() of a list produces Python repr ("[]", "['a', 'b']"), which llama-server
+# rejects: common/arg.cpp parse_tensor_buffer_overrides() throws
+# invalid_argument("invalid value") for any comma chunk lacking '='. Join to
+# the comma form the -ot flag expects; [] → empty → flag omitted below
+# (mirrors run-with-params.sh). #703 self-review bug 1.
+_tensors = p.get("override_tensors") or []
+vars_["P_OVERRIDE_TENSORS"] = ",".join(str(t) for t in _tensors)
 for k, val in vars_.items():
     # shlex.quote each value to be shell-safe
     print(f'{k}={shlex.quote(val)}')
@@ -200,6 +209,18 @@ if [[ "$P_CONTEXT_SHIFT" == "on" ]]; then
   LLAMA_ARGS+=(--context-shift)
 elif [[ "$P_CONTEXT_SHIFT" == "off" ]]; then
   LLAMA_ARGS+=(--no-context-shift)
+fi
+
+# Cache idle slots (requires --cache-ram)
+if [[ "$P_CACHE_IDLE_SLOTS" == "on" ]]; then
+  LLAMA_ARGS+=(--cache-idle-slots)
+elif [[ "$P_CACHE_IDLE_SLOTS" == "off" ]]; then
+  LLAMA_ARGS+=(--no-cache-idle-slots)
+fi
+
+# Cache RAM limit (MiB) — host-RAM prompt cache for idle-slot swap
+if [[ -n "$P_CACHE_RAM_MIB" ]]; then
+  LLAMA_ARGS+=(--cache-ram "$P_CACHE_RAM_MIB")
 fi
 
 # Production observability flags
