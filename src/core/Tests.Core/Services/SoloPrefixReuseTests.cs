@@ -220,7 +220,7 @@ public sealed class SoloPrefixReuseTests
 	{
 		var engineStore = new FakeStoreClient();
 		// Store GET succeeds, but engine StatePut returns a non-Ok status
-		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.InternalError);
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Error);
 
 		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
 		var sessionId = "sess_solo_put_fail";
