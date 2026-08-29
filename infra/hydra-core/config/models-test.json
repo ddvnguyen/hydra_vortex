@@ -38,14 +38,14 @@
         "auto_eligible": true,
         "min_prompt_tokens": 0,
         "max_prompt_tokens": 999999,
-        "max_context_tokens": 16384,
+        "max_context_tokens": 65536,
         "requires_workers": [
           "test-a",
           "test-b"
         ]
       },
       "engine_config": {
-        "n_ctx": 16384
+        "n_ctx": 65536
       }
     }
   }
