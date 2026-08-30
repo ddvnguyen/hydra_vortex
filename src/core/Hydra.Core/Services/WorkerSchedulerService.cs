@@ -868,6 +868,56 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					var isWarm = await Router.VerifyWarmSlotAsync(target, entry, item.TraceId);
 					if (!isWarm)
 					{
+						// ── #718 warm-slot fast path ──
+						// The slot verification failed but the session KV may still be
+						// resident (transient network blip, stale healthy flag, engine
+						// still decoding from the prior turn). Before falling through
+						// to the full Store Get+StatePut restore cycle (~30s+), check
+						// whether the bound worker is healthy, still serves the same
+						// model alias, and has a free prefill slot. If so, go straight
+						// to Prefill — the fork's shared-prefix checkpoint mechanism
+						// (token-accurate N_COMMON match) self-corrects stale residency:
+						// worst case is a full prefill (same as cold), never corruption,
+						// because the engine only reuses matching token prefixes and the
+						// model-match guard prevents cross-model takeovers.
+						if (_cfg.WarmSlotFastPathEnabled)
+						{
+							var nodeInfo = _health.GetNodeInfo(target.Name);
+							var boundAlias = entry.BoundModel;
+							var modelMatch = nodeInfo != null
+								&& !string.IsNullOrEmpty(boundAlias)
+								&& !string.IsNullOrEmpty(nodeInfo.CurrentModel)
+								&& (nodeInfo.CurrentModel.Contains(boundAlias, StringComparison.OrdinalIgnoreCase)
+									|| boundAlias.Contains(nodeInfo.CurrentModel, StringComparison.OrdinalIgnoreCase));
+							// Target.Slots > 0 (not HasFreeSlot) because we will
+							// release the decode slot we just acquired before Prefill —
+							// the prefill slot is the same slot. HasFreeSlot may be
+							// false when the worker has only 1 slot (the decode slot
+							// we hold accounts for it), but the release frees it.
+							if (nodeInfo != null && nodeInfo.Healthy && modelMatch
+								&& target.CanPrefill && target.Slots > 0)
+							{
+								// Release the decode slot we just acquired — the fast
+								// path only needs a prefill slot (DecodeLease was
+								// acquired above but we won't use it for decode).
+								var fpLease = item.DecodeLease;
+								item.DecodeLease = null;
+								await fpLease.DisposeAsync();
+
+								item.RouteType = "warm_slot_fastpath";
+								item.PrefixCacheHit = true;
+								item.PrefixNPast = entry.NPast;
+								item.PrefillWorker = target;
+								item.PrefillSlot = entry.SlotId;
+								CoordinatorMetrics.RequestsTotal.WithLabels(target.Name, "warm_slot_fastpath").Inc();
+								CoordinatorMetrics.RequestsTotalAll.Inc();
+								CoordinatorMetrics.WarmSessionStarts.Inc();
+								_log.Information("warm_slot_fastpath Sid={Sid} Node={Node} Slot={Slot} NPast={NP} ResidentModel={RM} BoundAlias={BA}",
+									item.SessionId, target.Name, entry.SlotId, entry.NPast, nodeInfo.CurrentModel, boundAlias);
+								return WorkItemState.Prefill;
+							}
+						}
+
 						_log.Warning("verify_warm_slot_failed Sid={Sid} Slot={Slot}",
 							item.SessionId, entry.SlotId);
 						// A1: the slot-state save is a network RPC that can throw. Detach
@@ -893,6 +943,48 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (entry.NPast > 0 && entry.NPast > _cfg.AtomicThreshold * 4
 					&& item.EstimatedTokens < entry.NPast * _cfg.NPastGuardThreshold)
 				{
+					// ── #718 warm-slot fast path (n_past guard variant) ──
+					// The n_past guard says the estimated tokens are too small relative
+					// to the cached context, suggesting a short prompt. But the engine
+					// may still hold the KV resident — the guard is a heuristic, not a
+					// guarantee. Before evicting and falling through to the full Store
+					// restore cycle, try the same warm-residency fast path: if the
+					// worker is healthy + same model + free prefill slot, go straight
+					// to Prefill. The engine's shared-prefix checkpoint self-corrects
+					// if the residency is stale (worst case = full prefill, same as cold).
+					if (_cfg.WarmSlotFastPathEnabled)
+					{
+						var nodeInfo = _health.GetNodeInfo(target.Name);
+						var boundAlias = entry.BoundModel;
+						var modelMatch = nodeInfo != null
+							&& !string.IsNullOrEmpty(boundAlias)
+							&& !string.IsNullOrEmpty(nodeInfo.CurrentModel)
+							&& (nodeInfo.CurrentModel.Contains(boundAlias, StringComparison.OrdinalIgnoreCase)
+								|| boundAlias.Contains(nodeInfo.CurrentModel, StringComparison.OrdinalIgnoreCase));
+						// Same slot-release rationale as the verify-failure fast path:
+						// we will release the decode slot before Prefill, so
+						// target.Slots > 0 suffices even when HasFreeSlot is false.
+						if (nodeInfo != null && nodeInfo.Healthy && modelMatch
+							&& target.CanPrefill && target.Slots > 0)
+						{
+							var fpLease = item.DecodeLease;
+							item.DecodeLease = null;
+							await fpLease.DisposeAsync();
+
+							item.RouteType = "warm_slot_fastpath";
+							item.PrefixCacheHit = true;
+							item.PrefixNPast = entry.NPast;
+							item.PrefillWorker = target;
+							item.PrefillSlot = entry.SlotId;
+							CoordinatorMetrics.RequestsTotal.WithLabels(target.Name, "warm_slot_fastpath").Inc();
+							CoordinatorMetrics.RequestsTotalAll.Inc();
+							CoordinatorMetrics.WarmSessionStarts.Inc();
+							_log.Information("warm_slot_fastpath_npast_guard Sid={Sid} Node={Node} Slot={Slot} NPast={NP} Est={E} ResidentModel={RM} BoundAlias={BA}",
+								item.SessionId, target.Name, entry.SlotId, entry.NPast, item.EstimatedTokens, nodeInfo.CurrentModel, boundAlias);
+							return WorkItemState.Prefill;
+						}
+					}
+
 					// Issue #435: surface how often this predicate evaluates true,
 					// even when downstream eviction/save may fail. The {reason}
 					// label distinguishes this in-RouteAsync check from any
