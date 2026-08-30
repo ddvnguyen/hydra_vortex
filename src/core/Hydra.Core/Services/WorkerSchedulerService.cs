@@ -3768,6 +3768,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					restoreBlob = await AssembleFromChunksAsync(null, storeKey, manifestChunks, item.TraceId, ct);
 					assembleSw.Stop();
 					item.KvBytes = restoreBlob.Length;
+
+					// #716 Store-side diagnostic: compare assembled blob size against
+					// the manifest's declared total_size. A mismatch means the Store
+					// chunks are incomplete or the manifest is wrong.
+					if (totalSize > 0 && restoreBlob.Length != totalSize)
+					{
+						_log.Error(
+							"restore_assemble_size_mismatch Sid={Sid} StoreKey={Key} ManifestSize={Manifest} " +
+							"AssembledSize={Assembled} Delta={Delta} — assembled fewer bytes than manifest declares",
+							item.SessionId, storeKey, totalSize, restoreBlob.Length,
+							restoreBlob.Length - totalSize);
+					}
+
 					_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count} manifest_ms={ManifestMs} assemble_ms={AssembleMs}",
 						item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count,
 						manifestSw.ElapsedMilliseconds, assembleSw.ElapsedMilliseconds);
@@ -3780,6 +3793,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 				if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 					throw new InvalidOperationException($"Store Get RPC failed: status={storeResp.Status} meta={storeResp.Meta}");
+
+				// #716 Store-side diagnostic: compare Get payload length against the
+				// size recorded at save time (item.KvBytes set in SaveKvAsync).
+				// A mismatch here means the Store returned fewer bytes than saved —
+				// the real root cause of the "unexpectedly reached end of buffer".
+				var savedSize = item.KvBytes;
+				if (savedSize > 0 && storeResp.Payload.Length != savedSize)
+				{
+					_log.Error(
+						"restore_store_size_mismatch Sid={Sid} StoreKey={Key} SavedSize={Saved} " +
+						"RestoreSize={Restore} Delta={Delta} — Store returned fewer bytes than saved",
+						item.SessionId, storeKey, savedSize, storeResp.Payload.Length,
+						storeResp.Payload.Length - savedSize);
+				}
 
 				if (item.KvBytes == 0)
 					item.KvBytes = storeResp.Payload.Length;
@@ -3977,6 +4004,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		catch (Exception ex)
 		{
+			// #716: increment short-write counter when the sender detected a byte-count mismatch
+			if (ex is RpcShortWriteException)
+				CoordinatorMetrics.RestoreStreamShortWrites.Inc();
 			if (item.PrefillWorker?.CanDecode == true
 				&& item.DecodeWorker?.Name != item.PrefillWorker?.Name
 				&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot, "decode-fallback"))

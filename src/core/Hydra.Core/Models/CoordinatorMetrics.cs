@@ -164,6 +164,13 @@ internal static class CoordinatorMetrics
     public static readonly Counter SaveKvErrors = Metrics.CreateCounter(
         "hydra_save_kv_errors_total", "Background bg-save Put failed (state lost; next resume will be cold)");
 
+    // Issue #716: RPC sender short-write events. When NetworkStream.WriteAsync
+    // writes fewer bytes than declared in the request header, the engine sees
+    // a truncated restore and fails with "unexpectedly reached end of buffer".
+    public static readonly Counter RestoreStreamShortWrites = Metrics.CreateCounter(
+        "hydra_restore_stream_short_writes_total",
+        "RPC sender short-write: header declared more bytes than actually sent on wire");
+
     // Issue #286: duration of the fire-and-forget bg-save Put. Useful for
     // sizing the slow-disk / write-bandwidth problem separately from the
     // slot-release-lag metric (which only captures the StateGet RPC).

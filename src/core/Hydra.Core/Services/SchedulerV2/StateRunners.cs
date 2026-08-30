@@ -759,6 +759,28 @@ public sealed class RestoreRunner : WorkerStateRunner
             return PhaseResult.Fire(SchedulerEvent.Failed);
         }
 
+        // #716 Store-side diagnostic: compare GetAsync payload length against the
+        // size logged at save time (req.KvBlob.Length from the prefill response or
+        // manifest). A mismatch here means the Store returned a truncated blob —
+        // the real root cause of the "unexpectedly reached end of buffer" at the
+        // engine. The warning fires every turn until the Store-side issue is
+        // fixed; on a healthy path the sizes match and no warning is emitted.
+        var storeKey = StoreKeys.KvKey(req.SessionId);
+        var savedSize = req.KvBlob?.Length ?? 0;
+        if (savedSize > 0 && kv.Length != savedSize)
+        {
+            Serilog.Log.Error(
+                "restore_store_size_mismatch Sid={Sid} StoreKey={Key} SavedSize={Saved} " +
+                "RestoreSize={Restore} Delta={Delta} — Store returned fewer bytes than saved",
+                req.SessionId, storeKey, savedSize, kv.Length, kv.Length - savedSize);
+        }
+        else
+        {
+            Serilog.Log.Debug(
+                "restore_store_size_ok Sid={Sid} StoreKey={Key} Size={Size}",
+                req.SessionId, storeKey, kv.Length);
+        }
+
         var slotKey = DecodeSlotId(req)?.ToString() ?? "0";
         var put = await _engine.RestoreAsync(req.DecodeWorker.Name, slotKey, kv, req.NPastAfter, ct);
         if (!put.Ok)
