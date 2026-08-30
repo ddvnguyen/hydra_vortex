@@ -35,6 +35,8 @@ Client (HTTP) → Hydra.Core :9000             [C#/.NET 10 — HTTP API + Store 
 | 9502    | llama-engine  | C++      | P100      | hydra RPC (StateGet/Put)    |
 | 9100    | node_exporter | Go       | P100      | Host metrics                |
 | 9835    | nvidia_exporter | Go    | P100      | GPU metrics                 |
+| 19000   | Hydra.Core TEST A | C#   | P100 TEST | HTTP API (OpenAI-compat, isolated `hydra_test` DB) — see `docs/hydra-test.md` |
+| 19001   | Hydra.Core TEST B | C#   | P100 TEST | HTTP API (OpenAI-compat, isolated `hydra_test` DB) — see `docs/hydra-test.md` |
 
 ---
 

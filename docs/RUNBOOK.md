@@ -413,18 +413,17 @@ If running outside Docker, always start in this order:
 
 ### 8.2 llama-server RTX
 
-Runs as a **container** via `infra/llama-rtx-node/docker-compose.yml`.
-The container mounts `src/llama-cpp/build_sm120/` directly — no copy needed.
+Runs as a **container** via the hydra-head image built from
+`infra/hydra-head/Dockerfile.rtx` (Ubuntu 26.04 + CUDA 13.2.2 + config
+mounted at runtime from `./infra/hydra-head/config`).
 
 ```bash
-cd infra/llama-rtx-node
-podman-compose up -d
-# Connect to internal network so Hydra.Core can resolve "llama-cpp" hostname:
-podman network connect hydra_default llama-cpp
+# Build + deploy the head image (see DevelopmentRunBook.md):
+export HYDRA_HEAD_AUTH_TOKEN=$(cat .hydra-head-token)
+podman compose -f infra/docker-compose.hydra.yml up -d
 ```
 
-Full launch args are in `infra/llama-rtx-node/docker-compose.yml`.  
-Ports: HTTP `:8080`, Hydra RPC `:9503`
+Ports: Head API `:9700`, llama-server `:8080`, Hydra RPC `:9503`
 
 ### 8.3 llama-server P100
 

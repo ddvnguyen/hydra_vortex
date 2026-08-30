@@ -1,0 +1,3 @@
+-- This file is applied by scripts/hydra-test/up.sh via:
+-- podman exec pg psql -U hydra -d postgres -c "SELECT 'CREATE DATABASE hydra_test OWNER hydra' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='hydra_test') \gexec"
+-- Idempotent: the \gexec only fires the CREATE if the database does not exist.

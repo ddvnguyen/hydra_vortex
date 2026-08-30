@@ -124,7 +124,8 @@ public sealed class WorkerSchedulerV2 : IWorkerScheduler
         int maxTokens,
         string? prefixHash,
         CancellationToken ct,
-        int systemPromptTokens = 0)
+        int systemPromptTokens = 0,
+        string? traceId = null)
     {
         var chat = ChatRequest.FromSubmit(request, messages, sessionId, estimatedTokens, maxTokens, prefixHash, systemPromptTokens);
         // Warm gate (review): a session is Solo-eligible only when it holds BOTH a

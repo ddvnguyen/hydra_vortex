@@ -230,6 +230,12 @@ public class RpcClient : IAsyncDisposable
             // For streaming RPC (EngineDecode), PayloadLen=0 and tokens are streamed
             // as 4-byte length + N-byte token until connection is closed.
             // For non-streaming RPC, PayloadLen > 0 and we read that many bytes.
+            // #595: apply the wire sanity bound here too — a garbage ulong length
+            // (e.g. ulong.MaxValue → (long) = -1) previously slipped past
+            // `remaining > 0` and silently yielded nothing while the peer sent a
+            // body, desyncing the connection. Same contract as the other paths:
+            // InvalidDataException → connection dropped in finally.
+            ValidatePayloadLen((long)header.PayloadLen);
             if (header.PayloadLen > 0)
             {
                 var remaining = (long)header.PayloadLen;
@@ -261,6 +267,17 @@ public class RpcClient : IAsyncDisposable
                     var tokenLen = BitConverter.ToUInt32(lenBuf, 0);
                     if (tokenLen == 0)
                         continue; // Skip empty tokens
+
+                    // #595: tokenLen is a raw uint from the wire — `new byte[tokenLen]`
+                    // throws OverflowException for tokenLen > int.MaxValue (checked
+                    // uint→int conversion), the same sliver class as the buffered
+                    // payload reads, and bypasses the framing-error drop. No legit
+                    // engine token is anywhere near 2 GiB; reject above the
+                    // materializable bound so InvalidDataException (finally → drop) is
+                    // the single failure path.
+                    if (tokenLen > Array.MaxLength)
+                        throw new InvalidDataException(
+                            $"RPC stream token length exceeds the max materializable buffer (Array.MaxLength={Array.MaxLength} bytes): {tokenLen} bytes");
 
                     // Read token bytes
                     var tokenBuf = new byte[tokenLen];
@@ -562,7 +579,17 @@ public class RpcClient : IAsyncDisposable
     /// cap and every agent turn failed with "RPC payload length out of range".
     /// It still rejects garbage/malformed lengths (negative or absurd values).
     /// NOTE (#470 follow-up): the 10 GB target exceeds this cap — raising it is
-    /// a separate change from the timeout fix landed here.</summary>
+    /// a separate change from the timeout fix landed here.
+    /// #595 (two-tier cap): this is the WIRE sanity bound — it caps every declared
+    /// payload length (negative → ulong wrap, or absurdly large). It is NOT the
+    /// materialization bound: the buffered read paths additionally cap at
+    /// <see cref="Array.MaxLength"/> (~2 GiB − 8) via
+    /// <see cref="ValidateBufferedPayloadLen"/>, because .NET cannot allocate a
+    /// single byte[] beyond that (see #595 — the OverflowException/OOM sliver).
+    /// Payloads between Array.MaxLength and MaxPayloadLen are legal on the wire and
+    /// are served by the STREAMING APIs (RequestChunkedPayloadAsync,
+    /// EnginePrefillChunkedAsync, RequestStreamAsync, EngineMergedDecodeStreamKvAsync),
+    /// which never materialize the full blob.</summary>
     private const long MaxPayloadLen = 4L * 1024 * 1024 * 1024;
 
     private static void ValidatePayloadLen(long payloadLen)
@@ -571,9 +598,40 @@ public class RpcClient : IAsyncDisposable
             throw new InvalidDataException($"RPC payload length out of range: {payloadLen} bytes");
     }
 
+    /// <summary>
+    /// #595: the buffered read paths can only materialize payloads up to
+    /// <see cref="Array.MaxLength"/> (0x7FFFFFC7 ≈ 2 GiB − 8). A declared length
+    /// above that does a checked conversion in <c>new byte[n]</c> that throws
+    /// OUTSIDE the framing-error contract: OverflowException for
+    /// n ∈ (int.MaxValue, MaxPayloadLen] (exactly-2 GiB = int.MaxValue + 1 is the
+    /// sliver this issue is named after) and OutOfMemoryException for
+    /// n ∈ (Array.MaxLength, int.MaxValue]. Neither is caught by the
+    /// InvalidDataException handlers in RequestAsync/RequestStreamBodyAsync, so the
+    /// desynced connection is never dropped. Rejecting here keeps the sanity check
+    /// the single failure path: InvalidDataException → connection dropped → the
+    /// caller's retry re-requests on a fresh socket. Payloads at/above this size
+    /// must use a streaming API (they are legal on the wire up to MaxPayloadLen).
+    /// </summary>
+    private static void ValidateBufferedPayloadLen(long payloadLen)
+    {
+        if (payloadLen > Array.MaxLength)
+            throw new InvalidDataException(
+                $"RPC payload length exceeds the max materializable buffer (Array.MaxLength={Array.MaxLength} bytes): {payloadLen} bytes — use a streaming RPC API for payloads this large");
+    }
+
+    /// <summary>
+    /// Buffered single-shot read — returns the WHOLE payload as one byte[]. Only
+    /// valid up to <see cref="Array.MaxLength"/> (~2 GiB − 8); larger declared
+    /// lengths are rejected by <see cref="ValidateBufferedPayloadLen"/> (see #595)
+    /// and must be read via <see cref="RequestChunkedPayloadAsync"/> or
+    /// <see cref="EnginePrefillChunkedAsync"/> instead. Used by the generic
+    /// RequestAsync path (response contract is <c>RpcResponse.Payload: byte[]</c>),
+    /// the RequestStreamBodyAsync response, and the merged-decode response read.
+    /// </summary>
     private static async Task<byte[]> ReadPayloadAsync(NetworkStream stream, long payloadLen, CancellationToken ct)
     {
         ValidatePayloadLen(payloadLen);
+        ValidateBufferedPayloadLen(payloadLen);
         var buf = new byte[payloadLen];
         await ReadExactAsync(stream, buf, ct);
         return buf;
@@ -590,12 +648,20 @@ public class RpcClient : IAsyncDisposable
     /// keeps the exchange alive, while a genuinely wedged engine (no bytes for a
     /// full idle period) still fails fast. The initial <c>CancelAfter</c> set by
     /// RequestAsync remains the ceiling for the whole exchange (compute included).
+    /// #595: BUFFERED path — materializes the full payload as one byte[] (the
+    /// non-chunked EnginePrefillAsync contract), so it is capped at
+    /// <see cref="Array.MaxLength"/> via <see cref="ValidateBufferedPayloadLen"/>
+    /// (no OverflowException/OOM sliver; clean InvalidDataException instead).
+    /// Large PREFILL blobs must use <see cref="EnginePrefillChunkedAsync"/> —
+    /// the production EnableChunks path — which streams via
+    /// <see cref="ReadPayloadChunkedAsync"/> and never materializes.
     /// </summary>
     private static async Task<byte[]> ReadPayloadIdleAsync(
         NetworkStream stream, long payloadLen,
         CancellationTokenSource timeoutCts, TimeSpan idleBudget, CancellationToken ct)
     {
         ValidatePayloadLen(payloadLen);
+        ValidateBufferedPayloadLen(payloadLen);
         var buf = new byte[payloadLen];
         var offset = 0;
         while (offset < buf.Length)

@@ -28,9 +28,12 @@ else
   exit 1
 fi
 
-# Verify config files exist
+# Verify config files exist (config is mounted at runtime from the host —
+# nothing is baked into the image at build time). The node config path
+# comes from the command line (-node ...); verify it exists rather than
+# hardcoding a name, since the 3060 container runs node-rtx3060.yaml.
 echo 'Checking config files:'
-for f in /opt/hydra/config/global.yaml /opt/hydra/config/node-rtx.yaml; do
+for f in /opt/hydra/config/global.yaml; do
   if [ -f "$f" ]; then
     echo "  $f -- OK"
   else
@@ -38,10 +41,45 @@ for f in /opt/hydra/config/global.yaml /opt/hydra/config/node-rtx.yaml; do
     exit 1
   fi
 done
+NODE_CONFIG=""
+# Parse args WITHOUT consuming $@ — the exec below must receive the
+# FULL original argument list (including -global etc.). Indexing into
+# "$@" preserves it for the exec.
+i=1
+while [ "$i" -le "$#" ]; do
+  if [ "${!i}" = "-node" ] && [ "$i" -lt "$#" ]; then
+    j=$((i+1))
+    NODE_CONFIG="${!j}"
+    break
+  fi
+  i=$((i+1))
+done
+if [ -n "$NODE_CONFIG" ]; then
+  if [ -f "$NODE_CONFIG" ]; then
+    echo "  $NODE_CONFIG -- OK"
+  else
+    echo "  $NODE_CONFIG -- MISSING"
+    exit 1
+  fi
+fi
 
 echo '========================================'
 echo 'LAUNCHING HYDRA HEAD'
 echo '========================================'
+
+# Deploy-time engine pin (#470): the workflow sets
+# HYDRA_LLAMA_IMAGE_SOURCE / HYDRA_LLAMA_IMAGE_DIGEST (compose
+# environment — NOT the command list, where podman-compose's
+# ${VAR:--} substitution corrupts the YAML list structure). Append
+# them as -llama-image-source/-llama-image-digest flags; empty/unset
+# → fall back to the node config file.
+if [ -n "${HYDRA_LLAMA_IMAGE_SOURCE:-}" ]; then
+  set -- "$@" -llama-image-source "$HYDRA_LLAMA_IMAGE_SOURCE"
+fi
+if [ -n "${HYDRA_LLAMA_IMAGE_DIGEST:-}" ]; then
+  set -- "$@" -llama-image-digest "$HYDRA_LLAMA_IMAGE_DIGEST"
+fi
+
 echo "Args: $@"
 echo ''
 

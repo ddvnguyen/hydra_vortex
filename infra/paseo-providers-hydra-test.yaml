@@ -1,0 +1,13 @@
+# Paseo provider prep for Hydra TEST — lead to copy to ~/.paseo/providers.yaml after rig is up.
+# Paseo daemon will pick this up on next config reload.
+# See docs/hydra-test.md "How to Point a Paseo Workflow at It".
+
+providers:
+  - id: hydra-test
+    type: openai-compat
+    base_url: http://localhost:19000 # Host containers with network_mode:host; cores reachable on localhost.
+    default_model: qwen3.5-9b-test
+    api_key: "" # Hydra.Core doesn't require auth in test; empty api_key is fine.
+    description: Hydra TEST instance (2-core P/D split on P100 VM, dedicated hydra_test DB)
+    # Core-A :19000, Core-B :19001 — both on host network.
+    # Model alias qwen3.5-9b-test; check infra/hydra-core/config/models.json for the full alias map.

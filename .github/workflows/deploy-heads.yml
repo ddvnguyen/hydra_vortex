@@ -59,6 +59,19 @@ on:
         options:
           - "false"
           - "true"
+      rebuild-head:
+        description: >-
+          Rebuild the hydra-head image (Dockerfile.rtx + init scripts) during
+          setup. Most runs do NOT need this — the head image changes only
+          when Dockerfile.rtx, verify_and_start.sh, or the CUDA pin set
+          changes. Leave false to reuse the existing localhost/hydra-head:rtx
+          image (validated present by setup).
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run-tests:
         description: >
           Run tests after deploy, in order (both run serially on the live
@@ -160,7 +173,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          # The llama-cpp submodule is ONLY needed when rebuilding the engine
+          # from the fork. Pure deploys (the common case) pull the pre-built
+          # engine from ghcr — skipping the submodule makes checkout near-
+          # instant and avoids the ~1.5GB fork clone entirely.
+          submodules: ${{ github.event.inputs.build-from-fork == 'true' }}
+          # Shallow submodule fetch: even when the fork IS needed, only the
+          # pinned commit's objects are downloaded — not the full history.
+          fetch-depth: 1
+          submoduleFetchDepth: 1
+          submoduleRecursive: false
 
       - name: Select profile
         run: bash scripts/set-profile.sh moe
@@ -280,34 +302,55 @@ jobs:
             validate_ref "${{ steps.images.outputs.p100 }}"
           fi
 
-      - name: Validate current pins in node configs
-        if: steps.images.outputs.rtx == '' && steps.images.outputs.p100 == ''
+      - name: Validate resolved engine refs (deploy-time override, else node config fallback)
+        # The head no longer reads the engine pin from node configs as the
+        # live truth (#470): deploy-heads passes the exact image+digest at
+        # deploy time via HYDRA_LLAMA_IMAGE_SOURCE/DIGEST. The node config
+        # source/image_digest is now only the FALLBACK when no deploy-time
+        # value is passed (image-tag=current). So this step validates the
+        # RESOLVED ref: the deploy-time image when one is being deployed,
+        # otherwise the config fallback the head will actually pull.
         run: |
           set -euo pipefail
-          check_pin() {
-            local config="$1"
-            local src digest actual
-            src=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config")
-            digest=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*image_digest:/{ s/.*image_digest:[[:space:]]*//; p; } }' "$config")
-            [ -n "$src" ] || { echo "::error::$config: no source pinned under llama-server:"; exit 1; }
-            echo "Checking $config: $src"
-            podman pull "$src" >/dev/null 2>&1 || { echo "::error::$config: $src not pullable"; exit 1; }
-            if [ -n "$digest" ]; then
-              actual=$(podman inspect "$src" --format '{{.Digest}}' 2>/dev/null || true)
-              if [ "$actual" = "$digest" ]; then
-                echo "OK: digest matches $actual"
-              else
-                echo "::error::$config: pinned digest mismatch (pinned=$digest actual=${actual:-none})"
-                echo "::error::Re-run deploy with an explicit image-tag to re-pin, or fix $config."
-                exit 1
+          # Validate the ref is pullable. The anonymous ghcr token endpoint
+          # is unreachable from the self-hosted runner (empty response →
+          # JSONDecodeError), while authenticated podman pull works (the
+          # step above already logs into ghcr). Use the proven podman-pull
+          # validation with a bounded retry instead of the curl token dance.
+          check_ref() {
+            local ref="$1"
+            echo "Checking $ref"
+            local attempt
+            for attempt in 1 2 3; do
+              if podman pull "$ref" >/dev/null 2>&1; then
+                echo "OK: $ref present (pull attempt $attempt)"
+                return 0
               fi
-            fi
+              echo "retry $attempt/3: $ref not pullable yet — waiting 15s"
+              sleep 15
+            done
+            echo "::error::$ref not found or not pullable"
+            exit 1
           }
-          check_pin infra/hydra-head/config/node-rtx.yaml
-          check_pin infra/hydra-head/config/node-rtx3060.yaml
-          check_pin infra/hydra-head/config/node-p100.yaml
+          # Deploy-time override (the live truth when deploying an image)
+          if [ -n "${{ steps.images.outputs.rtx }}" ]; then
+            check_ref "${{ steps.images.outputs.rtx }}"
+          else
+            # Fallback: the config pins the head would use (image-tag=current)
+            check_pin() {
+              local config="$1"
+              local src
+              src=$(sed -n '/^[[:space:]]*llama-server:/,/^[[:space:]]*binary:/ { /^[[:space:]]*source:/{ s/.*source:[[:space:]]*//; p; } }' "$config")
+              [ -n "$src" ] || { echo "::error::$config: no source pinned under llama-server:"; exit 1; }
+              check_ref "$src"
+            }
+            check_pin infra/hydra-head/config/node-rtx.yaml
+            check_pin infra/hydra-head/config/node-rtx3060.yaml
+            check_pin infra/hydra-head/config/node-p100.yaml
+          fi
 
       - name: Pin OCI images in node configs
+        id: pin
         if: steps.images.outputs.rtx != '' || steps.images.outputs.p100 != ''
         run: |
           pin_image() {
@@ -360,6 +403,8 @@ jobs:
               *sm60*)
                 if [ -n "$P100_IMG" ]; then
                   pin_image "$P100_IMG" "$config"
+                  P100_DIGEST=$(podman inspect "$P100_IMG" --format '{{.Digest}}' 2>/dev/null || true)
+                  echo "p100-digest=${P100_DIGEST:-}" >> "$GITHUB_OUTPUT"
                 else
                   echo "Skipping $config: sm60 (P100) source but P100_IMG empty (image-tag=current)"
                 fi
@@ -367,6 +412,8 @@ jobs:
               *sm86-sm120*)
                 if [ -n "$RTX_IMG" ]; then
                   pin_image "$RTX_IMG" "$config"
+                  RTX_DIGEST=$(podman inspect "$RTX_IMG" --format '{{.Digest}}' 2>/dev/null || true)
+                  echo "rtx-digest=${RTX_DIGEST:-}" >> "$GITHUB_OUTPUT"
                 else
                   echo "Skipping $config: sm86-sm120 (RTX) source but RTX_IMG empty (image-tag=current)"
                 fi
@@ -422,7 +469,7 @@ jobs:
       # below — see deploy_shared_setup in the script for why.
       - name: Shared setup (build image, bring up core)
         if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
-        run: bash scripts/deploy-hydra-head.sh setup
+        run: bash scripts/deploy-hydra-head.sh setup ${{ inputs.rebuild-head }}
 
       # True parallel steps (GH Actions `parallel:`, June 2026) — RTX,
       # RTX3060, and P100 each show as their own named step with its own
@@ -438,18 +485,33 @@ jobs:
       - parallel:
           - name: Deploy RTX
             if: inputs.gpu == 'all' || inputs.gpu == 'rtx' || inputs.gpu == 'rtx+rtx3060'
+            env:
+              # Deploy-time engine pin (#470): pass the exact image + digest
+              # to the head via its -llama-image-source/-llama-image-digest
+              # flags (compose interpolates these env vars). Unset → the
+              # head falls back to the node config file.
+              HYDRA_LLAMA_IMAGE_SOURCE: ${{ steps.images.outputs.rtx }}
+              HYDRA_LLAMA_IMAGE_DIGEST: ${{ steps.pin.outputs.rtx-digest }}
             run: |
               bash scripts/deploy-hydra-head.sh rtx-only
               bash scripts/ci/wait-for-head.sh "hydra-head-rtx" "http://localhost:9700/status" 480
 
           - name: Deploy RTX 3060
             if: inputs.gpu == 'all' || inputs.gpu == 'rtx3060' || inputs.gpu == 'rtx+rtx3060'
+            env:
+              HYDRA_LLAMA_IMAGE_SOURCE: ${{ steps.images.outputs.rtx }}
+              HYDRA_LLAMA_IMAGE_DIGEST: ${{ steps.pin.outputs.rtx-digest }}
             run: |
               bash scripts/deploy-hydra-head.sh rtx3060-only
               bash scripts/ci/wait-for-head.sh "hydra-head-rtx3060" "http://localhost:9701/status" 480
 
           - name: Deploy P100
             if: inputs.gpu == 'all' || inputs.gpu == 'p100'
+            env:
+              # Deploy-time engine pin (#470): same mechanism as RTX —
+              # built image + digest flow to the VM's systemd env file.
+              HYDRA_LLAMA_IMAGE_SOURCE: ${{ steps.images.outputs.p100 }}
+              HYDRA_LLAMA_IMAGE_DIGEST: ${{ steps.pin.outputs.p100-digest }}
             run: |
               bash scripts/deploy-hydra-head.sh p100
               bash scripts/ci/wait-for-head.sh "hydra-head-p100" "http://192.168.122.21:9700/status" 480

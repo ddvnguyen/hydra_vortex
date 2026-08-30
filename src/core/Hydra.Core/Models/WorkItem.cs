@@ -303,7 +303,21 @@ public sealed class WorkItem
 		_streamDoneWriter = streamDone.Writer;
 	}
 
-	public void Cancel() { _cancelled = true; Completion.TrySetCanceled(); }
+	public void Cancel()
+	{
+		_cancelled = true;
+		Completion.TrySetCanceled();
+		// #613: a client disconnect must cancel the in-flight decode, not just
+		// mark the item. Abort the decode-phase cancellation source so the
+		// completion SSE stream stops promptly (and the merged-decode path fires
+		// its engine abort). Disposal races are guarded — the scheduler may have
+		// already disposed the source on normal completion.
+		if (PipelineCts is { IsCancellationRequested: false } pipelineCts)
+		{
+			try { pipelineCts.Cancel(); }
+			catch (ObjectDisposedException) { }
+		}
+	}
 	public bool IsStreaming => Request.TryGetValue("stream", out var s) && IsTruthy(s);
 
 	private static bool IsTruthy(object? v) => v switch
