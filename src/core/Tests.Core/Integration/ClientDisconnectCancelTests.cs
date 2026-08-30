@@ -36,6 +36,8 @@ namespace Tests.Core.Integration;
 /// source can no longer fire.</summary>
 internal sealed class DisconnectTestProxy : ICompletionProxyService
 {
+	public Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct) => Task.CompletedTask;
+
 	private readonly object _lock = new();
 	private readonly List<TaskCompletionSource> _httpGates = new();
 	private readonly List<TaskCompletionSource> _pollGates = new();
@@ -335,7 +337,8 @@ internal sealed class DisconnectFixture : IAsyncDisposable
 		};
 		var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
 			maxTokens, null, httpCt, traceId: traceId);
-		return (traceId, Assert.IsAssignableFrom<IAsyncEnumerable<byte[]>>(result));
+		var streamResult = Assert.IsAssignableFrom<StreamCompletionResult>(result);
+		return (traceId, streamResult.Chunks);
 	}
 }
 
