@@ -16,6 +16,56 @@ public interface ICompletionProxyService
     Task<Dictionary<string, object>> PollDecodeResultAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
     // #470: DELETE /v1/decode/{decodeRequestId} to cancel orphaned generation.
     Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct);
+
+    /// <summary>#470: erase a slot's KV state (POST /slots/{id}?action=erase).
+    /// Best-effort — the engine tolerates missing slot-save support (404/501).</summary>
+    Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct);
+}
+
+/// <summary>Kind of a completed submission: a buffered final response, or a live SSE stream.</summary>
+public enum CompletionResultKind { Final, Stream }
+
+/// <summary>
+/// Typed result of <see cref="IWorkerScheduler.SubmitAsync"/> — replaces the
+/// previous untyped <c>object</c> return. <see cref="CompletionResults.Unwrap"/>
+/// recovers the legacy-shaped payload/stream for adapters that need it.
+/// </summary>
+public interface ICompletionResult
+{
+    CompletionResultKind Kind { get; }
+}
+
+/// <summary>Buffered, non-streaming completion (an OpenAI-shaped response payload).</summary>
+public sealed class FinalCompletionResult : ICompletionResult
+{
+    public CompletionResultKind Kind => CompletionResultKind.Final;
+    public object Payload { get; }
+    public FinalCompletionResult(object payload) => Payload = payload;
+}
+
+/// <summary>Live SSE stream completion.</summary>
+public sealed class StreamCompletionResult : ICompletionResult
+{
+    public CompletionResultKind Kind => CompletionResultKind.Stream;
+    public IAsyncEnumerable<byte[]> Chunks { get; }
+    public StreamCompletionResult(IAsyncEnumerable<byte[]> chunks) => Chunks = chunks;
+}
+
+/// <summary>Helpers for consumers that must bridge the typed result back to the
+/// legacy object/stream shape (fixtures, adapters).</summary>
+public static class CompletionResults
+{
+    /// <summary>Returns the final payload, or the chunk stream for stream results.</summary>
+    public static object? Unwrap(ICompletionResult result) => result switch
+    {
+        FinalCompletionResult f => f.Payload,
+        StreamCompletionResult s => s.Chunks,
+        _ => throw new ArgumentOutOfRangeException(nameof(result), result, "unknown completion result kind"),
+    };
+
+    /// <summary>Awaits the submit task, then unwraps its result (for Task-returning adapters).</summary>
+    public static async Task<object?> UnwrapAsync(Task<ICompletionResult> submit)
+        => Unwrap(await submit.ConfigureAwait(false));
 }
 
 public interface IWorkerScheduler
@@ -31,7 +81,7 @@ public interface IWorkerScheduler
     public string? LastDispatchedModelQuant { get; }
     /// <summary>Capabilities bitmask of the model that served the most recent request (#470).</summary>
     public uint LastDispatchedModelCapabilities { get; }
-    Task<object> SubmitAsync(Dictionary<string, object> request, List<Dictionary<string, object>> messages, string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0, string? traceId = null);
+    Task<ICompletionResult> SubmitAsync(Dictionary<string, object> request, List<Dictionary<string, object>> messages, string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0, string? traceId = null);
     Task<object> MigrateSessionAsync(string sessionId, string targetNodeName, CancellationToken ct);
     Task EvictWarmSessionAsync(string sessionId, string nodeName, CancellationToken ct);
     Task RunAsync(CancellationToken ct);

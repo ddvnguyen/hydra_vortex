@@ -9,6 +9,8 @@ COPY src/core/Directory.Build.props core/
 # Copy only source directories needed for .NET builds
 COPY src/core/Hydra.Shared/ core/Hydra.Shared/
 COPY src/core/Hydra.Core/ core/Hydra.Core/
+COPY src/core/Hydra.Core.Scheduling/ core/Hydra.Core.Scheduling/
+COPY src/core/Hydra.StateMachine/ core/Hydra.StateMachine/
 COPY src/Hydra.sln .
 
 RUN dotnet restore core/Hydra.Core/Hydra.Core.csproj && \

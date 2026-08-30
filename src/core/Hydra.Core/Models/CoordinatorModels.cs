@@ -98,6 +98,10 @@ public sealed record CoordinatorConfig
 	public int NPastGuardTolerance { get; init; } = EnvInt("HYDRA_COORD_N_PAST_GUARD_TOLERANCE", 50);
 	public int WorkerErrorThreshold { get; init; } = EnvInt("HYDRA_COORD_WORKER_ERROR_THRESHOLD", 3);
 	public string RunMode { get; init; } = Env("HYDRA_COORD_RUN_MODE", "concurrency");
+	/// <summary>Scheduler implementation for A/B: "legacy" (WorkerSchedulerService)
+	/// or "v2" (WorkerSchedulerV2). The legacy scheduler is always kept intact;
+	/// this flag only selects which one backs <c>IWorkerScheduler</c>.</summary>
+	public string SchedulerImplementation { get; init; } = Env("HYDRA_SCHEDULER_IMPL", "legacy");
 	public bool MixPrecisionEnabled { get; init; } = EnvBool("HYDRA_COORD_MIX_PRECISION_ENABLED", false);
 	/// <summary>
 	/// When true, allow a KV cache built with model A to be restored into a slot
@@ -123,6 +127,15 @@ public sealed record CoordinatorConfig
 	public List<string> AllowedModels { get; init; } = EnvList("HYDRA_COORD_ALLOWED_MODELS");
 	public bool RawSlot { get; init; } = EnvBool("HYDRA_COORD_RAW_SLOT", false);
 	public bool PrefixCheckpointEnabled { get; init; } = EnvBool("HYDRA_COORD_PREFIX_CHECKPOINT_ENABLED", true);
+	/// <summary>
+	/// When true, a force_mode="solo" request that has a prior KV checkpoint
+	/// in the Store (HasStoreState) will restore the full session KV before
+	/// issuing PREFILL, enabling shared-prefix detection (engine-side delta
+	/// prefill). When false, solo requests always full-re-prefill (legacy
+	/// behaviour). Only meaningful when UseLlamaEngine=true.
+	/// Config: HYDRA_COORD_SOLO_PREFIX_REUSE_ENABLED
+	/// </summary>
+	public bool SoloPrefixReuseEnabled { get; init; } = EnvBool("HYDRA_COORD_SOLO_PREFIX_REUSE_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
 	public bool EnableChunks { get; init; } = EnvBool("HYDRA_COORD_ENABLE_CHUNKS", false);
 	public bool UseLlamaEngine { get; init; } = EnvBool("HYDRA_LLAMA_ENGINE", false);

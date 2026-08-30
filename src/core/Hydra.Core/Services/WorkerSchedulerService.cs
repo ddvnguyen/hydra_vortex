@@ -190,7 +190,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	public string? LastDispatchedModelQuant { get; private set; }
 	public uint LastDispatchedModelCapabilities { get; private set; }
 
-	public async Task<object> SubmitAsync(
+	public async Task<ICompletionResult> SubmitAsync(
 		Dictionary<string, object> request,
 		List<Dictionary<string, object>> messages,
 		string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0, string? traceId = null)
@@ -377,12 +377,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Streaming: return the chunk enumerable as soon as decode phase produces it
 			if (item.IsStreaming)
 			{
-				return await item.StreamCompletion.Task.WaitAsync(TimeSpan.FromSeconds(600), linked.Token);
+				return new StreamCompletionResult(
+					await item.StreamCompletion.Task.WaitAsync(TimeSpan.FromSeconds(600), linked.Token));
 			}
 			else
 			{
 				// Non-streaming: wait for full response
-				return (await item.Completion.Task.WaitAsync(TimeSpan.FromSeconds(1800), linked.Token))!;
+				return new FinalCompletionResult(
+					(await item.Completion.Task.WaitAsync(TimeSpan.FromSeconds(1800), linked.Token))!);
 			}
 		}
 		catch (OperationCanceledException)
@@ -1190,6 +1192,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						_log.Information("cold_atomic_prefill_resident Sid={Sid} Node={N} Model={Model}",
 							item.SessionId, aw.Name, nodeInfo?.CurrentModel ?? requestedAlias);
 					}
+					// #712: solo prefix reuse — when the session has a prior KV
+					// checkpoint in the Store, route through PrefixRestore so the
+					// full session KV is restored before PREFILL. The engine's
+					// shared-prefix detection then only prefills the delta tokens.
+					if (_cfg.SoloPrefixReuseEnabled)
+					{
+						var entry = _ledger.Lookup(item.SessionId);
+						if (entry is { HasStoreState: true })
+						{
+							_log.Information("solo_prefix_reuse Sid={Sid} Node={N} NPast={NP} — restoring KV before prefill",
+								item.SessionId, aw.Name, entry.NPast);
+							item.RouteType = "solo_prefix_restore";
+							return WorkItemState.PrefixRestore;
+						}
+					}
 					return WorkItemState.Prefill;
 				}
 				return WorkItemState.ModelLoadDecode;
@@ -1783,6 +1800,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> PrefixRestoreAsync(WorkItem item, CancellationToken ct)
 	{
+		// #712: solo prefix reuse — when the session has a prior KV checkpoint
+		// in the Store (HasStoreState), prefer session-KV restore over the
+		// prefix-checkpoint path. The session KV is a superset of the system-
+		// prompt checkpoint and enables the engine's shared-prefix detection
+		// to only prefill the delta (new tokens since last turn).
+		if (_cfg.SoloPrefixReuseEnabled && item.PrefillWorker != null)
+		{
+			var entry = _ledger.Lookup(item.SessionId);
+			if (entry is { HasStoreState: true })
+			{
+				var restored = await TryRestoreSessionKvAsync(item, ct);
+				if (restored) return WorkItemState.Prefill;
+			}
+			// Fallback: no session KV in Store — try prefix-checkpoint path below.
+		}
+
 		if (!_cfg.PrefixCheckpointEnabled || item.PrefixHash == null || item.PrefillWorker == null)
 		{
 			return WorkItemState.Prefill;
@@ -1798,7 +1831,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				CoordinatorMetrics.CacheMisses.Inc();
 				item.PrefixCacheHit = false;
-				_log.Warning("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				_log.Information("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				return WorkItemState.Prefill;
+			}
+
+			// #716/#712: guard against empty payload — a zero-length Store Get
+			// response must not be forwarded to StatePut (engine quarantine
+			// flags state_len=0 as a restore failure). Treat as a miss.
+			if (storeResp.Payload.Length == 0)
+			{
+				_log.Warning("prefix_restore_empty_payload Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				CoordinatorMetrics.CacheMisses.Inc();
+				item.PrefixCacheHit = false;
 				return WorkItemState.Prefill;
 			}
 
@@ -1883,6 +1927,104 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 
 		return WorkItemState.Prefill;
+	}
+
+	// ── #712: full-session KV restore for solo prefix reuse ──
+	// When the prefix checkpoint (system-prompt KV) misses or is unavailable,
+	// try restoring the full session KV from the Store. The engine's shared-
+	// prefix detection will then only prefill the delta (new tokens since the
+	// last turn). Returns true if the KV was successfully restored.
+	private async Task<bool> TryRestoreSessionKvAsync(WorkItem item, CancellationToken ct)
+	{
+		if (item.PrefillWorker == null) return false;
+
+		var entry = _ledger.Lookup(item.SessionId);
+		if (entry is not { HasStoreState: true } || entry.NPast <= 0)
+		{
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
+
+		// n_tokens > n_past guard: skip restore when the estimated prompt is
+		// shorter than the cached n_past — the client truncated history and
+		// the KV prefix won't match.
+		// #715 R3: proportional tolerance accounts for generated-token growth
+		// (e.g. 64 ACK tokens/turn accumulate in NPast but not in EstimatedTokens).
+		// Floor of 128 protects small sessions; 5% covers 24+ turns of ACK growth.
+		var soloTolerance = Math.Max(128, (int)(entry.NPast * 0.05));
+		if (item.EstimatedTokens > 0
+			&& item.EstimatedTokens + soloTolerance < entry.NPast)
+		{
+			_log.Warning("solo_kv_restore_skip_n_past Sid={Sid} Est={Est} NPast={NP} Tol={Tol}",
+				item.SessionId, item.EstimatedTokens, entry.NPast, soloTolerance);
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
+
+		var storeKey = $"{item.SessionId}.kv";
+		try
+		{
+			var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
+				storeKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
+			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok || storeResp.Payload.Length == 0)
+			{
+				_log.Information("solo_kv_restore_miss Sid={Sid} Key={Key}",
+					item.SessionId, storeKey);
+				CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+				return false;
+			}
+
+			var slotId = item.PrefillSlot ?? 0;
+			var llamaRpc = GetStateRpcClient(item.PrefillWorker);
+			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
+
+			// #712/#716: check StatePut response status before declaring success.
+			// A non-Ok means the engine slot does not hold valid KV — declaring
+			// a cache hit would send PREFILL onto a corrupt/empty slot (the same
+			// anti-pattern fixed in the migration path at L428-442, #617/A1).
+			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+			{
+				_log.Warning("solo_kv_restore_state_put_failed Sid={Sid} Key={Key} Status={Status}",
+					item.SessionId, storeKey, putResp.Status);
+				CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+				return false;
+			}
+
+			item.PrefixCacheHit = true;
+
+			if (putResp.Meta != null)
+			{
+				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
+				var nPast = meta?.TryGetValue("n_past", out var n) == true
+					? n.GetInt32() : 0;
+				if (nPast > 0)
+				{
+					_ledger.UpdateNPast(item.SessionId, nPast);
+					item.PrefixNPast = nPast;
+				}
+				else
+				{
+					item.PrefixNPast = entry.NPast;
+				}
+			}
+			else
+			{
+				item.PrefixNPast = entry.NPast;
+			}
+
+			_log.Information("solo_kv_restored Sid={Sid} Key={Key} NPast={NP}",
+				item.SessionId, storeKey, item.PrefixNPast);
+			CoordinatorMetrics.SoloKvRestores.Inc();
+			return true;
+		}
+		catch (Exception ex)
+		{
+			_log.Warning(ex, "solo_kv_restore_failed Sid={Sid} Key={Key}",
+				item.SessionId, storeKey);
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
 	}
 
 	// ── Gap 4: n_past tracking in prefill ──
@@ -3632,6 +3774,19 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					restoreBlob = await AssembleFromChunksAsync(null, storeKey, manifestChunks, item.TraceId, ct);
 					assembleSw.Stop();
 					item.KvBytes = restoreBlob.Length;
+
+					// #716 Store-side diagnostic: compare assembled blob size against
+					// the manifest's declared total_size. A mismatch means the Store
+					// chunks are incomplete or the manifest is wrong.
+					if (totalSize > 0 && restoreBlob.Length != totalSize)
+					{
+						_log.Error(
+							"restore_assemble_size_mismatch Sid={Sid} StoreKey={Key} ManifestSize={Manifest} " +
+							"AssembledSize={Assembled} Delta={Delta} — assembled fewer bytes than manifest declares",
+							item.SessionId, storeKey, totalSize, restoreBlob.Length,
+							restoreBlob.Length - totalSize);
+					}
+
 					_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count} manifest_ms={ManifestMs} assemble_ms={AssembleMs}",
 						item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count,
 						manifestSw.ElapsedMilliseconds, assembleSw.ElapsedMilliseconds);
@@ -3644,6 +3799,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 				if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 					throw new InvalidOperationException($"Store Get RPC failed: status={storeResp.Status} meta={storeResp.Meta}");
+
+				// #716 Store-side diagnostic: compare Get payload length against the
+				// size recorded at save time (item.KvBytes set in SaveKvAsync).
+				// A mismatch here means the Store returned fewer bytes than saved —
+				// the real root cause of the "unexpectedly reached end of buffer".
+				var savedSize = item.KvBytes;
+				if (savedSize > 0 && storeResp.Payload.Length != savedSize)
+				{
+					_log.Error(
+						"restore_store_size_mismatch Sid={Sid} StoreKey={Key} SavedSize={Saved} " +
+						"RestoreSize={Restore} Delta={Delta} — Store returned fewer bytes than saved",
+						item.SessionId, storeKey, savedSize, storeResp.Payload.Length,
+						storeResp.Payload.Length - savedSize);
+				}
 
 				if (item.KvBytes == 0)
 					item.KvBytes = storeResp.Payload.Length;
@@ -3841,6 +4010,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		catch (Exception ex)
 		{
+			// #716: increment short-write counter when the sender detected a byte-count mismatch
+			if (ex is RpcShortWriteException)
+				CoordinatorMetrics.RestoreStreamShortWrites.Inc();
 			if (item.PrefillWorker?.CanDecode == true
 				&& item.DecodeWorker?.Name != item.PrefillWorker?.Name
 				&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot, "decode-fallback"))

@@ -1,0 +1,73 @@
+{
+  "Scenario": "chunked_save",
+  "Description": "EnableChunks with a tiny chunk size: SaveKv SyncMISSINGs the chunk hashes (all present \u2192 no pushes) then writes the manifest. Non-chunked counterpart is cold_atomic_engine / cold_concurrency_pd.",
+  "Version": 1,
+  "Trace": {
+    "Rpc": [
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 28,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EnginePrefill",
+        "Key": "0",
+        "Len": 604,
+        "Status": "Ok"
+      },
+      {
+        "Op": "SyncMissing",
+        "Key": "sess_h.kv",
+        "Len": 269,
+        "Status": "Ok"
+      },
+      {
+        "Op": "PutManifest",
+        "Key": "sess_h.kv",
+        "Len": 540,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 17,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateGet",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 2048,
+        "Status": "Ok"
+      }
+    ],
+    "MergedDecode": [],
+    "Proxy": [
+      {
+        "Url": "http://localhost:8080",
+        "Stream": false,
+        "Model": "nano",
+        "MaxTokens": 100,
+        "NPredict": null
+      }
+    ],
+    "FinalState": "Done",
+    "Ledger": {
+      "NodeName": "rtx",
+      "SlotId": 0,
+      "NPast": 150,
+      "HasStoreState": true,
+      "SlotFreed": true
+    },
+    "BusySeconds": {
+      "rtx": 1,
+      "p100": 0
+    }
+  }
+}
