@@ -1066,6 +1066,35 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					item.MultiMode = MultiEngineMode.Combined;
 			}
 
+			// ── #718 warm-slot fast path (migration interception) ──
+			// The solo post-MarkEvicted flow reaches this migration block when
+			// SlotFreed=true (set by SaveDone→MarkEvicted). Before falling through
+			// to PickDecodeAsync→RestoreKvAsync (30s+ Store Get+StatePut), check
+			// if the session's KV is still resident on its bound worker — the
+			// engine's live /slots poll is the real residency truth, not SlotFreed.
+			// On success: acquire a prefill slot on the bound worker and go straight
+			// to Prefill (skip Store round-trip entirely).
+			//
+			// IMPORTANT: check TryWarmSlotFastPath BEFORE TryAcquireSlot to avoid
+			// leaking the slot if the helper rejects (empty BoundModel, model
+			// mismatch, slot not in /slots list, etc.).
+			if (_cfg.WarmSlotFastPathEnabled
+				&& entry.SlotId.HasValue
+				&& !string.IsNullOrEmpty(entry.NodeName))
+			{
+				var target = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
+				if (target != null
+					&& TryWarmSlotFastPath(item, target, entry, "migration")
+					&& _tracker.TryAcquireSlot(target.Name, out var fpSlot, "prefill"))
+				{
+					item.PrefillWorker = target;
+					item.PrefillSlot = fpSlot;
+					item.PrefillLease = new SlotLease(target.Name, fpSlot, item.SessionId,
+						LeaseLifetime.Short, _tracker);
+					return WorkItemState.Prefill;
+				}
+			}
+
 			item.State = WorkItemState.PickDecode;
 			return await PickDecodeAsync(item);
 		}
@@ -1166,6 +1195,28 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// excluding it — on success the flag is cleared and every pick below
 		// (multi-engine plan, atomic, cold_concurrency) sees fresh health.
 		await ProbeStaleUnhealthyWorkersAsync();
+
+		// ── #718 warm-slot fast path (cold-route interception) ──
+		// The solo post-MarkEvicted flow reaches ColdRouteAsync when RouteAsync's
+		// warm-affinity block is skipped (SlotFreed=true after SaveDone→MarkEvicted)
+		// and the migration block falls through to the cold path. Before any cold
+		// routing decision, check if the session's KV is still resident on its bound
+		// worker — the engine's live /slots poll is the real residency truth, not
+		// SlotFreed. If the bound worker is healthy, still serves the same model,
+		// and the engine's /slots poll still lists the session's slot → go straight
+		// to Prefill, skipping PrefixRestore/Store Get+StatePut entirely.
+		if (_cfg.WarmSlotFastPathEnabled)
+		{
+			var entry = _ledger.Lookup(item.SessionId);
+			if (entry != null && entry.SlotId.HasValue)
+			{
+				var target = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
+				if (target != null && TryWarmSlotFastPath(item, target, entry, "cold_route"))
+				{
+					return WorkItemState.Prefill;
+				}
+			}
+		}
 
 		// Debug force-mode: bypass MultiEngineRouter.Select when the caller
 		// sets force_mode in the request body. Handy for testing COMBINED

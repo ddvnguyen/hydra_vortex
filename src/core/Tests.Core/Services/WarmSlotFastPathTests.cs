@@ -110,25 +110,63 @@ public sealed class WarmSlotFastPathTests
 	}
 
 	/// <summary>
-	/// (b) Stale residency (SlotFreed=true) → falls back to PrefixRestore/PickDecode
-	/// path. The fast path condition requires !SlotFreed, so a freed slot falls through.
+	/// (b) Solo regression: SlotFreed=true (post-MarkEvicted) + healthy worker with
+	/// the slot still present in nodeInfo.Slots → fast path fires via ColdRouteAsync
+	/// interception (THE solo flow interception point). No Store Get — the engine's
+	/// live /slots poll is the real residency truth, not SlotFreed.
 	/// </summary>
 	[Fact]
-	public async Task StaleResidency_SlotFreed_FallsBack()
+	public async Task SoloPostMarkEvicted_FastPath_TakesColdRoute()
+	{
+		const string sessionId = "warm-fastpath-6";
+		const string boundModel = "moe-35b-solo";
+		const int nPast = 5000;
+
+		var (scheduler, ledger, fake) = SetupScheduler(sessionId, boundModel, nPast);
+
+		// Simulate post-MarkEvicted: SlotFreed=true, HasStoreState=true.
+		// The fast path works because the engine's live /slots poll still lists the slot.
+		ledger.MarkEvicted(sessionId);
+		var entry = ledger.Lookup(sessionId)!;
+		Assert.True(entry.SlotFreed, "precondition: SlotFreed=true after MarkEvicted");
+
+		var item = MakeItem(sessionId, 300);
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// Fast path → Prefill via ColdRouteAsync interception
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.Equal("warm_slot_fastpath", item.RouteType);
+		Assert.True(item.PrefixCacheHit, "PrefixCacheHit must be true on fast path");
+		Assert.Equal(nPast, item.PrefixNPast);
+		Assert.Equal("rtx", item.PrefillWorker?.Name);
+		Assert.Equal(0, item.PrefillSlot);
+
+		// No Store round-trip — the whole point of the fast path
+		Assert.Equal(0, fake.CallCount(OpCode.Get));
+	}
+
+	/// <summary>
+	/// (c) Stale residency (SlotFreed=true) + worker unhealthy → falls back to
+	/// migration/restore path. The fast path gate requires nodeInfo.Healthy.
+	/// </summary>
+	[Fact]
+	public async Task StaleResidency_WorkerUnhealthy_FallsBack()
 	{
 		const string sessionId = "warm-fastpath-2";
 		const string boundModel = "moe-35b-solo";
 		const int nPast = 5000;
 
-		var (scheduler, ledger, _) = SetupScheduler(sessionId, boundModel, nPast);
+		var (scheduler, ledger, _) = SetupScheduler(
+			sessionId, boundModel, nPast,
+			workerHealthy: false);
 
-		// Mark the session as evicted (SlotFreed=true)
+		// Mark the session as evicted (SlotFreed=true) AND worker unhealthy
 		ledger.MarkEvicted(sessionId);
 
 		var item = MakeItem(sessionId, 300);
 		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
 
-		// NOT the fast path — falls through to PickDecode or migration
+		// NOT the fast path — worker unhealthy
 		Assert.NotEqual("warm_slot_fastpath", item.RouteType);
 		Assert.False(item.PrefixCacheHit);
 	}
