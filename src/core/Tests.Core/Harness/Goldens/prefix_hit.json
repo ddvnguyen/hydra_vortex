@@ -19,7 +19,7 @@
       {
         "Op": "StatePut",
         "Key": "0",
-        "Len": 0,
+        "Len": 4096,
         "Status": "Ok"
       },
       {

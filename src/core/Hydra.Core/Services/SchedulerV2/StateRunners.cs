@@ -305,6 +305,23 @@ public sealed class PrefixRestoreRunner : WorkerStateRunner
     public override async Task<PhaseResult> RunAsync(RunnerContext ctx, CancellationToken ct)
     {
         var req = ctx.Request;
+
+        // #712: solo prefix reuse — when the session has a prior KV checkpoint
+        // in the Store (HasStoreState), prefer session-KV restore over the
+        // prefix-checkpoint path. The session KV is a superset of the system-
+        // prompt checkpoint and enables the engine's shared-prefix detection
+        // to only prefill the delta (new tokens since last turn).
+        if (_cfg.SoloPrefixReuseEnabled && req.PrefillWorker is not null)
+        {
+            var entry = _ledger.Lookup(req.SessionId);
+            if (entry is { HasStoreState: true })
+            {
+                var restored = await TryRestoreSessionKvAsync(req, ct);
+                if (restored) return PhaseResult.Fire(SchedulerEvent.PrefixRestoreSucceeded);
+            }
+            // Fallback: no session KV in Store — try prefix-checkpoint path below.
+        }
+
         if (!_cfg.PrefixCheckpointEnabled || req.Chat.PrefixHash is null || req.PrefillWorker is null)
             return PhaseResult.Fire(SchedulerEvent.PrefixRestoreSucceeded); // miss → straight to prefill
 
@@ -340,6 +357,60 @@ public sealed class PrefixRestoreRunner : WorkerStateRunner
         }
 
         return PhaseResult.Fire(SchedulerEvent.PrefixRestoreSucceeded);
+    }
+
+    private async Task<bool> TryRestoreSessionKvAsync(SchedulerRequest req, CancellationToken ct)
+    {
+        if (req.PrefillWorker is null) return false;
+
+        var entry = _ledger.Lookup(req.SessionId);
+        if (entry is not { HasStoreState: true } || entry.NPast <= 0)
+        {
+            CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+            return false;
+        }
+
+        // n_tokens > n_past guard — proportional tolerance accounts for
+        // generated-token growth (e.g. 64 ACK tokens/turn accumulate in NPast
+        // but not in EstimatedTokens). Floor of 128 protects small sessions;
+        // 5% covers 24+ turns of ACK growth.
+        var soloTolerance = Math.Max(128, (int)(entry.NPast * 0.05));
+        if (req.Chat.EstimatedTokens > 0
+            && req.Chat.EstimatedTokens + soloTolerance < entry.NPast)
+        {
+            CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+            return false;
+        }
+
+        var storeKey = $"{req.SessionId}.kv";
+        var blob = await _store.GetRawAsync(storeKey, ct);
+        if (blob is null || blob.Length == 0)
+        {
+            CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+            return false;
+        }
+
+        var slotKey = req.PrefillLease?.SlotId.ToString() ?? "0";
+        var put = await _engine.RestoreAsync(req.PrefillWorker.Name, slotKey, blob, entry.NPast, ct);
+        if (!put.Ok)
+        {
+            CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+            return false;
+        }
+
+        req.PrefixCacheHit = true;
+        if (put.NPast > 0)
+        {
+            _ledger.UpdateNPast(req.SessionId, put.NPast);
+            req.PrefixNPast = put.NPast;
+        }
+        else
+        {
+            req.PrefixNPast = entry.NPast;
+        }
+
+        CoordinatorMetrics.SoloKvRestores.Inc();
+        return true;
     }
 
     private async Task<int> ReadPrefixNPastAsync(string prefixKey, CancellationToken ct)

@@ -246,6 +246,14 @@ internal static class CoordinatorMetrics
         "Prefix restore skipped due to n_past guard (stale or oversized checkpoint)",
         new CounterConfiguration { LabelNames = new[] { "reason" } });
 
+    // ── Issue #712: solo prefix reuse metrics ──
+    public static readonly Counter SoloKvRestores = Metrics.CreateCounter(
+        "hydra_solo_kv_restores_total",
+        "Full-session KV restored from Store for solo prefix reuse (delta prefill)");
+    public static readonly Counter SoloKvRestoreMisses = Metrics.CreateCounter(
+        "hydra_solo_kv_restore_misses_total",
+        "Solo prefix reuse: no Store KV checkpoint found (full re-prefill)");
+
     // ── Issue #435: n_past guard observability ──
     // Fires in RouteAsync when the warm-slot n_past guard's predicate evaluates
     // true: a warm slot exists for the session but its cached n_past is so much

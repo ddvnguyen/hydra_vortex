@@ -250,7 +250,15 @@ internal static class ScenarioCatalog
             Id = "prefix_hit",
             Description = "Prefix checkpoint present in Store: PrefixRestore gets the blob + manifest, " +
                           "StatePuts it into the prefill slot (PrefixCacheHit), then the request prefills.",
-            Options = new ScenarioOptions { UseLlamaEngine = true, PrefixCheckpointEnabled = true },
+            Options = new ScenarioOptions
+            {
+                UseLlamaEngine = true,
+                PrefixCheckpointEnabled = true,
+                // #716: Store Get must return a non-empty payload so the empty-payload
+                // guard does not suppress the hit path (GetManifest + StatePut).
+                ConfigureRpc = rpc => rpc.SetKeyResponse("prefix/", OpCode.Get,
+                    (byte)StatusCode.Ok, payload: new byte[4096]),
+            },
             Run = r => r.SubmitAsync(r.SessionId, 5000, 100, prefixHash: "abc123"),
         },
 
