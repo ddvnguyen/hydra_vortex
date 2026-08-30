@@ -880,42 +880,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// worst case is a full prefill (same as cold), never corruption,
 						// because the engine only reuses matching token prefixes and the
 						// model-match guard prevents cross-model takeovers.
-						if (_cfg.WarmSlotFastPathEnabled)
+						// SAFETY: DecodeLease is NOT released here — it mirrors the
+						// happy-path warm-affinity branch (L852-864) and cold_atomic's
+						// pattern where DecodeLease owns the slot through Prefill→Decode.
+						// Releasing before Prefill would hand the physical slot to the
+						// next queued request via SignalEvaluator, causing a cross-session
+						// slot collision on 1-slot workers.
+						if (_cfg.WarmSlotFastPathEnabled
+							&& TryWarmSlotFastPath(item, target, entry, "verify_fail"))
 						{
-							var nodeInfo = _health.GetNodeInfo(target.Name);
-							var boundAlias = entry.BoundModel;
-							var modelMatch = nodeInfo != null
-								&& !string.IsNullOrEmpty(boundAlias)
-								&& !string.IsNullOrEmpty(nodeInfo.CurrentModel)
-								&& (nodeInfo.CurrentModel.Contains(boundAlias, StringComparison.OrdinalIgnoreCase)
-									|| boundAlias.Contains(nodeInfo.CurrentModel, StringComparison.OrdinalIgnoreCase));
-							// Target.Slots > 0 (not HasFreeSlot) because we will
-							// release the decode slot we just acquired before Prefill —
-							// the prefill slot is the same slot. HasFreeSlot may be
-							// false when the worker has only 1 slot (the decode slot
-							// we hold accounts for it), but the release frees it.
-							if (nodeInfo != null && nodeInfo.Healthy && modelMatch
-								&& target.CanPrefill && target.Slots > 0)
-							{
-								// Release the decode slot we just acquired — the fast
-								// path only needs a prefill slot (DecodeLease was
-								// acquired above but we won't use it for decode).
-								var fpLease = item.DecodeLease;
-								item.DecodeLease = null;
-								await fpLease.DisposeAsync();
-
-								item.RouteType = "warm_slot_fastpath";
-								item.PrefixCacheHit = true;
-								item.PrefixNPast = entry.NPast;
-								item.PrefillWorker = target;
-								item.PrefillSlot = entry.SlotId;
-								CoordinatorMetrics.RequestsTotal.WithLabels(target.Name, "warm_slot_fastpath").Inc();
-								CoordinatorMetrics.RequestsTotalAll.Inc();
-								CoordinatorMetrics.WarmSessionStarts.Inc();
-								_log.Information("warm_slot_fastpath Sid={Sid} Node={Node} Slot={Slot} NPast={NP} ResidentModel={RM} BoundAlias={BA}",
-									item.SessionId, target.Name, entry.SlotId, entry.NPast, nodeInfo.CurrentModel, boundAlias);
-								return WorkItemState.Prefill;
-							}
+							return WorkItemState.Prefill;
 						}
 
 						_log.Warning("verify_warm_slot_failed Sid={Sid} Slot={Slot}",
@@ -952,37 +926,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					// worker is healthy + same model + free prefill slot, go straight
 					// to Prefill. The engine's shared-prefix checkpoint self-corrects
 					// if the residency is stale (worst case = full prefill, same as cold).
-					if (_cfg.WarmSlotFastPathEnabled)
+					if (_cfg.WarmSlotFastPathEnabled
+						&& TryWarmSlotFastPath(item, target, entry, "npast_guard"))
 					{
-						var nodeInfo = _health.GetNodeInfo(target.Name);
-						var boundAlias = entry.BoundModel;
-						var modelMatch = nodeInfo != null
-							&& !string.IsNullOrEmpty(boundAlias)
-							&& !string.IsNullOrEmpty(nodeInfo.CurrentModel)
-							&& (nodeInfo.CurrentModel.Contains(boundAlias, StringComparison.OrdinalIgnoreCase)
-								|| boundAlias.Contains(nodeInfo.CurrentModel, StringComparison.OrdinalIgnoreCase));
-						// Same slot-release rationale as the verify-failure fast path:
-						// we will release the decode slot before Prefill, so
-						// target.Slots > 0 suffices even when HasFreeSlot is false.
-						if (nodeInfo != null && nodeInfo.Healthy && modelMatch
-							&& target.CanPrefill && target.Slots > 0)
-						{
-							var fpLease = item.DecodeLease;
-							item.DecodeLease = null;
-							await fpLease.DisposeAsync();
-
-							item.RouteType = "warm_slot_fastpath";
-							item.PrefixCacheHit = true;
-							item.PrefixNPast = entry.NPast;
-							item.PrefillWorker = target;
-							item.PrefillSlot = entry.SlotId;
-							CoordinatorMetrics.RequestsTotal.WithLabels(target.Name, "warm_slot_fastpath").Inc();
-							CoordinatorMetrics.RequestsTotalAll.Inc();
-							CoordinatorMetrics.WarmSessionStarts.Inc();
-							_log.Information("warm_slot_fastpath_npast_guard Sid={Sid} Node={Node} Slot={Slot} NPast={NP} Est={E} ResidentModel={RM} BoundAlias={BA}",
-								item.SessionId, target.Name, entry.SlotId, entry.NPast, item.EstimatedTokens, nodeInfo.CurrentModel, boundAlias);
-							return WorkItemState.Prefill;
-						}
+						return WorkItemState.Prefill;
 					}
 
 					// Issue #435: surface how often this predicate evaluates true,
@@ -1137,6 +1084,64 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (entry == null) return item.EstimatedTokens;
 		var baseline = entry.NPromptTokens > 0 ? entry.NPromptTokens : entry.NPast;
 		return baseline > 0 ? Math.Max(0, item.EstimatedTokens - baseline) : item.EstimatedTokens;
+	}
+
+	// ── #718 warm-slot fast-path helper ──────────────────────────────────
+	// Shared logic for both call sites (verify-fail and n_past-guard). Returns
+	// true and mutates item when the fast path is taken; false otherwise.
+	//
+	// Conditions:
+	//   1. nodeInfo != null && nodeInfo.Healthy — bound worker is alive
+	//   2. nodeInfo.CurrentModel == entry.BoundModel (OrdinalIgnoreCase) —
+	//      exact model match (not Contains — dense-27b vs dense-27b-combined
+	//      is a real collision in AutoRouterTests)
+	//   3. nodeInfo.Slots contains a SlotInfo whose Id == entry.SlotId —
+	//      the engine's /slots poll still lists the session's slot (also
+	//      guards engine restart: restarted engine returns empty/different slots)
+	//   4. target.CanPrefill — worker is prefill-capable
+	//
+	// SAFETY: DecodeLease is NOT released. The lease acquired at L852 owns the
+	// physical slot through Prefill→Decode, mirroring the happy-path warm-affinity
+	// branch and cold_atomic's pattern. Releasing before Prefill would hand the
+	// slot to the next queued request via SignalEvaluator, causing a cross-session
+	// slot collision on 1-slot workers. The fork's shared-prefix checkpoint
+	// mechanism (token-accurate N_COMMON match) self-corrects stale residency —
+	// worst case is a full prefill (same as cold), never corruption.
+	private bool TryWarmSlotFastPath(WorkItem item, WorkerConfig target, SessionEntry entry, string reason)
+	{
+		var nodeInfo = _health.GetNodeInfo(target.Name);
+		var boundAlias = entry.BoundModel;
+
+		// Gate 1: worker alive
+		if (nodeInfo == null || !nodeInfo.Healthy)
+			return false;
+
+		// Gate 2: exact case-insensitive model match
+		if (string.IsNullOrEmpty(boundAlias)
+			|| string.IsNullOrEmpty(nodeInfo.CurrentModel)
+			|| !string.Equals(nodeInfo.CurrentModel, boundAlias, StringComparison.OrdinalIgnoreCase))
+			return false;
+
+		// Gate 3: engine's /slots poll still lists the session's slot (restart guard)
+		if (nodeInfo.Slots == null || nodeInfo.Slots.Count == 0
+			|| !nodeInfo.Slots.Any(s => s.Id == entry.SlotId))
+			return false;
+
+		// Gate 4: worker is prefill-capable
+		if (!target.CanPrefill)
+			return false;
+
+		item.RouteType = "warm_slot_fastpath";
+		item.PrefixCacheHit = true;
+		item.PrefixNPast = entry.NPast;
+		item.PrefillWorker = target;
+		item.PrefillSlot = entry.SlotId;
+		CoordinatorMetrics.RequestsTotal.WithLabels(target.Name, "warm_slot_fastpath").Inc();
+		CoordinatorMetrics.RequestsTotalAll.Inc();
+		CoordinatorMetrics.WarmSessionStarts.Inc();
+		_log.Information("warm_slot_fastpath_{Reason} Sid={Sid} Node={Node} Slot={Slot} NPast={NP} ResidentModel={RM} BoundAlias={BA}",
+			reason, item.SessionId, target.Name, entry.SlotId, entry.NPast, nodeInfo.CurrentModel, boundAlias);
+		return true;
 	}
 
 	private async Task<WorkItemState> EvictWarmAndColdRouteAsync(WorkItem item)

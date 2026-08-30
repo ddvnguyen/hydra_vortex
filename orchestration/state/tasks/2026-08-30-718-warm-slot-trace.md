@@ -135,22 +135,28 @@ public bool NoStoreKvRestore { get; init; } = EnvBool("HYDRA_COORD_NO_STORE_KV_R
 
 ### Warm-Residency Fast Path (RouteAsync)
 
-**Location:** In `RouteAsync`, AFTER the warm affinity check at L819 but BEFORE the
-PrefixRestore/PickDecode fallthrough.
+**Location:** In `RouteAsync`, at two fallthrough points — warm-slot verify failure
+(L869) and n_past guard (L918). Both call the shared helper `TryWarmSlotFastPath`.
 
-**Logic:**
-```
-if entry != null && entry.HasStoreState && !entry.SlotFreed:
-    target = worker where entry.NodeName
-    if target is healthy AND serves same model alias AND has free prefill slot:
-        → set item.RouteType = "warm_slot_fastpath"
-        → set item.PrefixCacheHit = true
-        → set item.PrefixNPast = entry.NPast
-        → bind item to target worker/slot
-        → go to WorkItemState.Prefill (skip PrefixRestore, skip Store Get+StatePut)
-    else:
-        → fall through to existing PrefixRestore path
-```
+**Helper:** `TryWarmSlotFastPath(item, target, entry, reason)` — single implementation,
+both call sites, distinct log event names via `reason` parameter.
+
+**Gates (all must pass):**
+1. `nodeInfo != null && nodeInfo.Healthy` — bound worker is alive
+2. `string.Equals(nodeInfo.CurrentModel, entry.BoundModel, OrdinalIgnoreCase)` — exact model match
+3. `nodeInfo.Slots.Any(s => s.Id == entry.SlotId)` — engine's /slots poll lists the session's slot (restart guard)
+4. `target.CanPrefill` — worker is prefill-capable
+
+**Action when all gates pass:**
+- Set `item.RouteType = "warm_slot_fastpath"`
+- Set `item.PrefixCacheHit = true`
+- Set `item.PrefixNPast = entry.NPast`
+- Set `item.PrefillWorker = target`, `item.PrefillSlot = entry.SlotId`
+- Return `WorkItemState.Prefill`
+- **DecodeLease is NOT released** — mirrors happy-path warm-affinity (L852-864) and
+  cold_atomic's pattern where DecodeLease owns the slot through Prefill→Decode.
+
+**When any gate fails:** fall through to existing eviction/restore path unchanged.
 
 **Safety:** The fork's shared-prefix checkpoint mechanism (token-accurate N_COMMON match)
 self-corrects stale residency — worst case is a full prefill (same as cold), never corruption,

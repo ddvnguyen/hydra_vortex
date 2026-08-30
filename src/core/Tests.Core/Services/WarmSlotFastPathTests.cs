@@ -3,6 +3,7 @@ using Hydra.Core;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
 using Hydra.Core.Services;
+using Hydra.Shared;
 using Microsoft.Extensions.DependencyInjection;
 using Tests.Core.Integration;
 using Tests.Core.TestHelpers;
@@ -42,9 +43,15 @@ public sealed class WarmSlotFastPathTests
 		estimatedTokens,
 		estimatedNewTokens: 50);
 
-	private static WorkerSchedulerService MakeScheduler(
-		CoordinatorConfig cfg, FakeStoreClient fake, IHealthMonitorService health)
+	private static (WorkerSchedulerService scheduler, SessionLedger ledger, FakeStoreClient fake) SetupScheduler(
+		string sessionId, string boundModel, int nPast,
+		bool fastPathEnabled = true, bool warmVerifyEnabled = true,
+		string? residentModel = null, bool workerHealthy = true,
+		List<SlotInfo>? slots = null)
 	{
+		var cfg = MakeConfig(fastPathEnabled, warmVerifyEnabled);
+		var fake = new FakeStoreClient();
+		var health = new WarmFastPathHealthMonitor(workerHealthy, residentModel ?? boundModel, slots);
 		var ledger = new SessionLedger();
 		var tracker = new WorkerTracker();
 		foreach (var w in cfg.Workers) tracker.InitWorker(w.Name, w.Slots);
@@ -54,37 +61,22 @@ public sealed class WarmSlotFastPathTests
 			cfg, ledger, tracker, proxy, health, fake, sp, Serilog.Log.Logger);
 		scheduler.AgentClientFactory = (_, _) => fake;
 		scheduler.LlamaClientFactory = _ => new TestLlamaClient();
-		return scheduler;
-	}
-
-	private static (WorkerSchedulerService scheduler, SessionLedger ledger) SetupScheduler(
-		string sessionId, string boundModel, int nPast,
-		bool fastPathEnabled = true, bool warmVerifyEnabled = true,
-		string? residentModel = null, bool workerHealthy = true)
-	{
-		var cfg = MakeConfig(fastPathEnabled, warmVerifyEnabled);
-		var fake = new FakeStoreClient();
-		var health = new WarmFastPathHealthMonitor(workerHealthy, residentModel ?? boundModel);
-		var scheduler = MakeScheduler(cfg, fake, health);
-
-		var ledger = (SessionLedger)typeof(WorkerSchedulerService)
-			.GetField("_ledger", BindingFlags.NonPublic | BindingFlags.Instance)!
-			.GetValue(scheduler)!;
 
 		// Pre-populate: warm session with HasStoreState=true, SlotFreed=false
 		ledger.Register(sessionId, "rtx", slotId: 0, nPast: nPast, prefixHash: null);
 		var entry = ledger.Lookup(sessionId)!;
 		lock (entry) { entry.HasStoreState = true; entry.BoundModel = boundModel; }
 		// Set NPromptTokens to match estimatedTokens so the shrinkage guard
-		// at L831 (estimatedTokens + tolerance < guardBaseline) does NOT fire.
+		// (estimatedTokens + tolerance < guardBaseline) does NOT fire.
 		ledger.UpdateNPromptTokens(sessionId, 300);
 
-		return (scheduler, ledger);
+		return (scheduler, ledger, fake);
 	}
 
 	/// <summary>
-	/// (a) Warm residency hit → fast path taken: RouteType=affinity → warm_slot_fastpath,
-	/// PrefixCacheHit=true, Prefill on bound worker, NO StatePut in RPC trace.
+	/// (a) Warm residency hit → fast path taken: RouteType=warm_slot_fastpath,
+	/// PrefixCacheHit=true, Prefill on bound worker, NO Store round-trip (CallCount(Get)==0).
+	/// DecodeLease is NOT released (keeps the slot through Prefill→Decode).
 	/// </summary>
 	[Fact]
 	public async Task WarmResidency_VerifyFails_FastPath_Taken()
@@ -93,7 +85,7 @@ public sealed class WarmSlotFastPathTests
 		const string boundModel = "moe-35b-solo";
 		const int nPast = 5000;
 
-		var (scheduler, ledger) = SetupScheduler(sessionId, boundModel, nPast);
+		var (scheduler, ledger, fake) = SetupScheduler(sessionId, boundModel, nPast);
 		var item = MakeItem(sessionId, 300);
 		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
 
@@ -110,8 +102,11 @@ public sealed class WarmSlotFastPathTests
 		Assert.NotNull(entryAfter);
 		Assert.False(entryAfter!.SlotFreed, "fast path must not evict the session");
 
-		// DecodeLease must be null (released before going to Prefill)
-		Assert.Null(item.DecodeLease);
+		// BLOCKER fix: DecodeLease must be NON-null — kept through Prefill→Decode
+		Assert.NotNull(item.DecodeLease);
+
+		// No Store round-trip at all — the whole point of the fast path
+		Assert.Equal(0, fake.CallCount(OpCode.Get));
 	}
 
 	/// <summary>
@@ -125,7 +120,7 @@ public sealed class WarmSlotFastPathTests
 		const string boundModel = "moe-35b-solo";
 		const int nPast = 5000;
 
-		var (scheduler, ledger) = SetupScheduler(sessionId, boundModel, nPast);
+		var (scheduler, ledger, _) = SetupScheduler(sessionId, boundModel, nPast);
 
 		// Mark the session as evicted (SlotFreed=true)
 		ledger.MarkEvicted(sessionId);
@@ -149,7 +144,7 @@ public sealed class WarmSlotFastPathTests
 		const string boundModel = "moe-35b-solo";
 		const int nPast = 5000;
 
-		var (scheduler, ledger) = SetupScheduler(
+		var (scheduler, ledger, _) = SetupScheduler(
 			sessionId, boundModel, nPast,
 			residentModel: "dense-27b"); // different model
 
@@ -172,7 +167,7 @@ public sealed class WarmSlotFastPathTests
 		const string boundModel = "moe-35b-solo";
 		const int nPast = 5000;
 
-		var (scheduler, ledger) = SetupScheduler(
+		var (scheduler, ledger, _) = SetupScheduler(
 			sessionId, boundModel, nPast,
 			fastPathEnabled: false);
 
@@ -183,21 +178,53 @@ public sealed class WarmSlotFastPathTests
 		Assert.NotEqual("warm_slot_fastpath", item.RouteType);
 		Assert.False(item.PrefixCacheHit);
 	}
+
+	/// <summary>
+	/// (e) Restarted worker: nodeInfo.Slots does NOT contain entry.SlotId → fast
+	/// path skipped. The engine restart guard catches stale slot IDs from before
+	/// the restart (small reused int may collide with another session's slot).
+	/// </summary>
+	[Fact]
+	public async Task RestartedWorker_SlotNotInList_FallsBack()
+	{
+		const string sessionId = "warm-fastpath-5";
+		const string boundModel = "moe-35b-solo";
+		const int nPast = 5000;
+
+		// Slot list has Id=1 and Id=2 — but entry.SlotId=0 is missing (restart scenario)
+		var slots = new List<SlotInfo>
+		{
+			new() { Id = 1, NPast = 3000 },
+			new() { Id = 2, NPast = 4000 },
+		};
+		var (scheduler, ledger, _) = SetupScheduler(
+			sessionId, boundModel, nPast,
+			slots: slots);
+
+		var item = MakeItem(sessionId, 300);
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// NOT the fast path — slot not in engine's /slots list
+		Assert.NotEqual("warm_slot_fastpath", item.RouteType);
+		Assert.False(item.PrefixCacheHit);
+	}
 }
 
 /// <summary>
-/// Health monitor for warm-slot fast path tests. Returns configurable health
-/// and node info with CurrentModel for the model-match check.
+/// Health monitor for warm-slot fast path tests. Returns configurable health,
+/// node info with CurrentModel, and a per-slot list for the slot-presence gate.
 /// </summary>
 internal sealed class WarmFastPathHealthMonitor : IHealthMonitorService
 {
 	private readonly bool _healthy;
 	private readonly string _currentModel;
+	private readonly List<SlotInfo> _slots;
 
-	public WarmFastPathHealthMonitor(bool healthy, string currentModel)
+	public WarmFastPathHealthMonitor(bool healthy, string currentModel, List<SlotInfo>? slots = null)
 	{
 		_healthy = healthy;
 		_currentModel = currentModel;
+		_slots = slots ?? [new SlotInfo { Id = 0, NPast = 5000 }]; // default: slot 0 present
 	}
 
 	public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
@@ -212,6 +239,7 @@ internal sealed class WarmFastPathHealthMonitor : IHealthMonitorService
 		CurrentModel = _currentModel,
 		SlotsTotal = 2,
 		SlotsIdle = 1,
+		Slots = _slots,
 	};
 	public Dictionary<string, object> GetHealthSummary() => new();
 	public void UpdateNodeModelIdentity(string nodeName, string modelAlias, string tokenizer, string modelName, string modelQuant, uint modelCapabilities) { }
