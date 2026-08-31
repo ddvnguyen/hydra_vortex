@@ -341,101 +341,15 @@ public sealed class StateHandler
         using var _ = _log.TraceScope(traceId);
         var sw = ValueStopwatch.StartNew();
 
-        var cachedHashes = await _chunkCache.LoadHashesAsync(BaseSessionId(sessionId), ct);
-        var storeKey = $"kv/{BaseSessionId(sessionId)}";
-
-        _log.Information("Restoring chunked session {SessionId} to slot {SlotId} (cached_chunks={Cached})",
-            sessionId, slotId, cachedHashes.Count);
-
-        // Use slot-independent session ID for chunk cache lookups
         var sid = BaseSessionId(sessionId);
+        var storeKey = $"kv/{sid}";
 
-        // Request missing chunks from store with known hashes.
-        var clientHashesJson = JsonSerializer.Serialize(cachedHashes);
-        var getResp = await _store.RequestAsync(
-            OpCode.GetChunked, storeKey, Encoding.UTF8.GetBytes(clientHashesJson),
-            traceId, ct);
-
-        if (getResp.Status != (byte)StatusCode.Ok)
-        {
-            _log.Error("Session {SessionId} not found in store", sessionId);
-            throw new InvalidDataException(
-                $"Session '{sessionId}' not found in store (status=0x{getResp.Status:X2})");
-        }
-
-        var totalSize = 0L;
-        int missingCount = 0;
-        if (getResp.Meta is not null)
-        {
-            using var doc = JsonDocument.Parse(getResp.Meta);
-            if (doc.RootElement.TryGetProperty("total_size", out var s))
-                totalSize = s.GetInt64();
-            if (doc.RootElement.TryGetProperty("missing_count", out var m))
-                missingCount = m.GetInt32();
-        }
-
-          if (getResp.Meta is null)
-        {
-            _log.Error("GetChunked returned OK but no manifest metadata for session {SessionId}",
-                sessionId);
-            return new RestoreSessionResult(sessionId, slotId, false, 0, 0, sw.ElapsedMilliseconds);
-        }
-
-        // If all chunks deduped, verify local cache actually has the chunk body files.
-        // Local chunk data can be evicted while the hash list (from SaveHashesAsync) persists.
-        if (totalSize > 0 && missingCount == 0 && cachedHashes.Count > 0)
-        {
-            bool localDataOk = true;
-            foreach (var hash in cachedHashes)
-            {
-                if (!_chunkCache.HasChunkData(sid, hash))
-                {
-                    localDataOk = false;
-                    break;
-                }
-            }
-            if (!localDataOk)
-            {
-                _log.Warning("Local chunk data evicted for session {SessionId} — re-fetching from store",
-                    sessionId);
-                getResp = await _store.RequestAsync(
-                    OpCode.GetChunked, storeKey, Encoding.UTF8.GetBytes("[]"),
-                    traceId, ct);
-                if (getResp.Status != (byte)StatusCode.Ok)
-                {
-                    _log.Error("Re-fetch failed for session {SessionId}", sessionId);
-                    throw new InvalidDataException($"Re-fetch failed (status=0x{getResp.Status:X2})");
-                }
-                if (getResp.Meta is not null)
-                {
-                    using var doc = JsonDocument.Parse(getResp.Meta);
-                    if (doc.RootElement.TryGetProperty("total_size", out var s))
-                        totalSize = s.GetInt64();
-                    if (doc.RootElement.TryGetProperty("missing_count", out var m))
-                        missingCount = m.GetInt32();
-                }
-                // Fall through: now missingCount > 0 and getResp.Payload has chunk data
-            }
-        }
-
-        if (totalSize == 0 || missingCount == 0)
-        {
-            // All chunks deduped locally — verify llama has state (warm cache hit).
-            var restoreMeta = await _llama.GetStateMetaAsync(slotId, ct);
-            if (restoreMeta.NPast > 0)
-            {
-                _log.Information("Full cache hit for session {SessionId} — using existing llama state (n_past={NPast})",
-                    sessionId, restoreMeta.NPast);
-                return new RestoreSessionResult(sessionId, slotId, true, restoreMeta.NPast, restoreMeta.StateSize, sw.ElapsedMilliseconds);
-            }
-
-            // Llama state is empty (slot was cleared) but chunks are cached locally.
-            // Fall through to reassemble from cache and PUT to llama-server.
-            _log.Information("Full dedup but llama state empty for session {SessionId} — reassembling from cached chunks",
-                sessionId);
-        }
-
-        // Partial cache hit — fetch manifest and reassemble state from local + store chunks.
+        // #720 P1 (items 1-3): manifest-first restore. The manifest is the
+        // source of truth for chunk order/sizes; the local cache only decides
+        // which chunks the store must send. No full-blob allocation, no
+        // O(n^2) hash-list Contains, no zero-fill of evicted cache files,
+        // no trailing STATE_META round-trip.
+        var manifestSw = System.Diagnostics.Stopwatch.StartNew();
         var manifestResp = await _store.RequestAsync(
             OpCode.GetManifest, storeKey, ReadOnlyMemory<byte>.Empty,
             traceId, ct);
@@ -447,14 +361,12 @@ public sealed class StateHandler
             return new RestoreSessionResult(sessionId, slotId, false, 0, 0, sw.ElapsedMilliseconds);
         }
 
-        int nPast = 0;
-        List<ChunkRef> allChunks = [];
+        long totalSize;
+        List<ChunkRef> allChunks;
         {
             using var doc = JsonDocument.Parse(manifestResp.Payload);
-            if (doc.RootElement.TryGetProperty("n_past", out var npEl))
-                nPast = npEl.GetInt32();
-
-            // Extract chunk list from manifest payload.
+            totalSize = doc.RootElement.TryGetProperty("total_size", out var s) ? s.GetInt64() : 0;
+            allChunks = [];
             var chunksNode = doc.RootElement.GetProperty("chunks");
             foreach (var chunk in chunksNode.EnumerateArray())
             {
@@ -465,71 +377,55 @@ public sealed class StateHandler
                 ));
             }
         }
+        manifestSw.Stop();
 
-        // Allocate buffer for the full KV state (no custom header — llama expects raw binary).
-        var completeState = new byte[totalSize];
+        _log.Information("Restoring chunked session {SessionId} to slot {SlotId} (chunks={Chunks}, size={Size} B, manifest_ms={ManifestMs})",
+            sessionId, slotId, allChunks.Count, totalSize, manifestSw.ElapsedMilliseconds);
 
-        // Fill local cached chunks directly into completeState.
-        foreach (var chunk in allChunks)
+        // Local decision per chunk (L1 file presence) + streaming store fetch
+        // of exactly the non-local chunks. The store fetch starts here and
+        // overlaps the warm-slot check / PUT setup below.
+        var stateStream = OrderedKvStateStream.Create(
+            allChunks, totalSize, _chunkCache, sid, _store, storeKey, traceId, ct);
+
+        if (totalSize > 0 && stateStream.LocalChunks == allChunks.Count)
         {
-            if (cachedHashes.Contains(chunk.Hash))
+            // All data is local: skip the PUT entirely when the slot already
+            // holds this session (warm cache hit).
+            var restoreMeta = await _llama.GetStateMetaAsync(slotId, ct);
+            if (restoreMeta.NPast > 0)
             {
-                var chunkData = await _chunkCache.GetChunkDataAsync(sid, chunk.Hash, ct);
-                if (chunkData is not null && chunkData.Length == chunk.Size)
-                {
-                   int dataOffset = chunk.Index * ChunkConstants.ChunkSize;
-                    Array.Copy(chunkData, 0, completeState, dataOffset, chunkData.Length);
-                }
-            }
-        }
-
-        // Parse missing chunks from GetChunked payload: [4B index][4B size][chunk data]...
-        var storePayload = getResp.Payload;
-        int storeOffset = 0;
-
-        while (storeOffset < storePayload.Length)
-        {
-            if (storeOffset + 8 > storePayload.Length)
-                break;
-
-            var header = storePayload.AsSpan(storeOffset, 8);
-            int chunkIndex = BinaryPrimitives.ReadInt32LittleEndian(header[..4]);
-            int chunkSize = BinaryPrimitives.ReadInt32LittleEndian(header[4..]);
-            storeOffset += 8;
-
-            if (chunkIndex < 0 || chunkSize <= 0 || storeOffset + chunkSize > storePayload.Length)
-                break;
-
-            int dataOffset = chunkIndex * ChunkConstants.ChunkSize;
-            if (dataOffset + chunkSize > completeState.Length)
-            {
-                _log.Warning("Chunk overflow for session {SessionId}: offset={Offset} + size={Size} > total={Total}",
-                    sessionId, dataOffset, chunkSize, completeState.Length);
-                storeOffset += chunkSize;
-                continue;
+                _log.Information("Full cache hit for session {SessionId} — using existing llama state (n_past={NPast})",
+                    sessionId, restoreMeta.NPast);
+                stateStream.Dispose();
+                return new RestoreSessionResult(sessionId, slotId, true, restoreMeta.NPast, restoreMeta.StateSize, sw.ElapsedMilliseconds);
             }
 
-            Array.Copy(storePayload, storeOffset, completeState, dataOffset, chunkSize);
-            storeOffset += chunkSize;
+            // Llama state is empty (slot was cleared) but chunks are cached
+            // locally. Fall through and stream the local chunks into the PUT.
+            _log.Information("Full local cache for session {SessionId} but llama state empty — streaming local chunks to slot",
+                sessionId);
         }
 
-        using var dataStream = new MemoryStream(completeState);
-        var restoreResult = await _llama.PutStateAsync(slotId, dataStream, (long)completeState.Length, ct);
+        // #720 P1 item 1: stream local + store chunks directly into the PUT
+        // body — the engine buffers the body server-side, so the coordinator
+        // never holds the full state.
+        var restoreResult = await _llama.PutStateAsync(slotId, stateStream, totalSize, ct);
 
-        // Query llama for actual n_past after restore (not from header or manifest).
-        var postRestoreMeta = await _llama.GetStateMetaAsync(slotId, ct);
-
-        if (!restoreResult.Restored || postRestoreMeta.StateSize == 0)
+        // #720 P1 item 2: the STATE_PUT response is authoritative — the engine
+        // sets n_past from the restored slot's n_prompt_tokens_cache and bytes
+        // from llama_state_seq_set_data's n_read. No second STATE_META call.
+        if (!restoreResult.Restored || restoreResult.Bytes == 0)
         {
-            _log.Warning("LLAMA restore failed for session {SessionId}: result={Restored}, n_past={NPast}",
-                sessionId, restoreResult.Restored, postRestoreMeta.NPast);
+            _log.Warning("State restore failed for session {SessionId} (restored={Restored}, bytes={Bytes})",
+                sessionId, restoreResult.Restored, restoreResult.Bytes);
             return new RestoreSessionResult(sessionId, slotId, false, 0, 0, sw.ElapsedMilliseconds);
         }
 
-        _log.Information("Restored session {SessionId} slot {SlotId} in {Elapsed}ms (n_past={NPast})",
-            sessionId, slotId, sw.ElapsedMilliseconds, postRestoreMeta.NPast);
+        _log.Information("State restored for session {SessionId} slot {SlotId} in {Elapsed}ms (n_past={NPast}, bytes={Bytes})",
+            sessionId, slotId, sw.ElapsedMilliseconds, restoreResult.NPast, restoreResult.Bytes);
 
-        return new RestoreSessionResult(sessionId, slotId, true, postRestoreMeta.NPast, totalSize, sw.ElapsedMilliseconds);
+        return new RestoreSessionResult(sessionId, slotId, true, restoreResult.NPast, totalSize, sw.ElapsedMilliseconds);
     }
 
     internal sealed class ChunkHashTeeStream : Stream

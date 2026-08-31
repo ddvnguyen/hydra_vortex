@@ -22,12 +22,46 @@ internal class TestLlamaClient : LlamaClient
         : base("http://mock:0")
         => _meta = meta ?? new SlotMeta { SlotId = 0, NPast = 0, IsProcessing = false };
 
+    /// <summary>STATE_META call count (warm-check observability for #720 tests).</summary>
+    public int MetaCallCount;
+
+    /// <summary>Every PutStateAsync call: (slot, body bytes drained from the stream, declared content length).</summary>
+    public List<(int SlotId, byte[] Body, long DeclaredLen)> PutStateCalls { get; } = [];
+
+    /// <summary>Responder for PutStateAsync; defaults to a successful restore of the
+    /// drained body size.</summary>
+    public Func<int, byte[], Task<RestoreResult>> PutStateResponder =
+        (slotId, body) => Task.FromResult(new RestoreResult
+        {
+            Restored = true,
+            NPast = 0,
+            Bytes = body.Length,
+        });
+
     public override Task<SlotMeta> GetStateMetaAsync(int slotId, CancellationToken ct)
-        => Task.FromResult(_meta);
+    {
+        Interlocked.Increment(ref MetaCallCount);
+        return Task.FromResult(_meta);
+    }
+
+    public override Task<RestoreResult> PutStateAsync(int slotId, Stream data, long contentLength, CancellationToken ct)
+    {
+        var drained = new byte[contentLength > 0 ? (int)Math.Min(contentLength, int.MaxValue) : 0];
+        var read = 0;
+        while (read < drained.Length)
+        {
+            var n = data.Read(drained, read, drained.Length - read);
+            if (n <= 0) break;
+            read += n;
+        }
+        var body = drained[..read];
+        PutStateCalls.Add((slotId, body, contentLength));
+        return PutStateResponder(slotId, body);
+    }
+
 
     public override Task<bool> HealthAsync(CancellationToken ct)
         => Task.FromResult(true);
-
     public override Task EraseSlotAsync(int slotId, CancellationToken ct)
         => Task.CompletedTask;
 }
