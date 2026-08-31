@@ -328,8 +328,8 @@ public sealed class NonMergedChunkedRestoreTests
                 ["model"] = "nano",
                 ["messages"] = msgs
             };
-            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
-                maxTokens, null, _runCts.Token);
+            return CompletionResults.Unwrap(await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+                maxTokens, null, _runCts.Token));
         }
     }
 }
