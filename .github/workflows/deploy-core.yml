@@ -50,9 +50,8 @@ jobs:
           podman build --target core -f infra/Dockerfile \
             -t localhost/hydra-core:latest . \
             2>&1 | tee /tmp/hydra-build-core.log | tail -3
-          podman build -f infra/llama-rtx-node/Dockerfile_26.04_cuda13.2 \
-            -t hydra-cuda-base:latest infra/llama-rtx-node \
-            2>&1 | tee /tmp/hydra-build-cuda-base.log | tail -3
+          # (hydra-cuda-base build from infra/llama-rtx-node removed — that
+          # folder is gone; Dockerfile.rtx inlines its own CUDA 13.2.2)
           export PATH=$HOME/go-sdk/go/bin:$PATH
           # -C changes dir, so a relative -o resolves under src/head — the
           # Dockerfile.rtx COPY expects <repo>/bin/hydra-head (same as

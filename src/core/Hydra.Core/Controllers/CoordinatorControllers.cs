@@ -116,10 +116,10 @@ public class CompletionsController : ControllerBase
 		try
 		{
 			Log.Information("event=chat_completions_submit_start trace_id={TraceId} elapsed_ms={ElapsedMs}", traceId, sw.ElapsedMilliseconds);
-			var result = await _scheduler.SubmitAsync(body, messages, sessionId, summary.EstimatedTokens, maxTokens, summary.PrefixHash, ct, summary.SystemPromptTokens);
+			var result = await _scheduler.SubmitAsync(body, messages, sessionId, summary.EstimatedTokens, maxTokens, summary.PrefixHash, ct, summary.SystemPromptTokens, traceId);
 			Log.Information("event=chat_completions_submit_returned trace_id={TraceId} elapsed_ms={ElapsedMs} is_stream={IsStream}",
-				traceId, sw.ElapsedMilliseconds, result is IAsyncEnumerable<byte[]>);
-			if (result is IAsyncEnumerable<byte[]> stream)
+				traceId, sw.ElapsedMilliseconds, result is StreamCompletionResult);
+			if (result is StreamCompletionResult stream)
 			{
 				Response.ContentType = "text/event-stream";
 				Response.Headers["X-Hydra-Node"] = _scheduler.LastDispatchedNode ?? "unknown";
@@ -135,7 +135,7 @@ public class CompletionsController : ControllerBase
 					Response.Headers["X-Hydra-Tokenizer"] = tokenizer;
 				if (!string.IsNullOrEmpty(modelName))
 					Response.Headers["X-Hydra-Model-Name"] = modelName;
-				await foreach (var chunk in stream.WithCancellation(ct))
+				await foreach (var chunk in stream.Chunks.WithCancellation(ct))
 				{
 					await Response.Body.WriteAsync(chunk, ct);
 				}
@@ -155,7 +155,7 @@ public class CompletionsController : ControllerBase
 				Response.Headers["X-Hydra-Tokenizer"] = tokenizerNs;
 			if (!string.IsNullOrEmpty(modelNameNs))
 				Response.Headers["X-Hydra-Model-Name"] = modelNameNs;
-			return new JsonResult(result);
+			return new JsonResult(((FinalCompletionResult)result).Payload);
 		}
 		catch (OperationCanceledException)
 		{
@@ -175,7 +175,11 @@ public class CompletionsController : ControllerBase
 			// returned to the pool while a save is in flight. Disposal of the
 			// lease is wrapped in try/catch inside NotifyStreamComplete so an
 			// exception becomes a log line rather than an unobserved task.
-			_ = _scheduler.NotifyStreamComplete(sessionId);
+			// #613-followup: pass THIS request's traceId so the scheduler
+			// finalizes exactly this request — a session-keyed lookup is
+			// ambiguous when two requests stream on the same session
+			// concurrently (it could dispose the sibling's pipeline cts).
+			_ = _scheduler.NotifyStreamComplete(sessionId, traceId);
 		}
 	}
 }

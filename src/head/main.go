@@ -23,6 +23,8 @@ func main() {
 	nodeConfig := flag.String("node", "", "Path to node config file")
 	apiPort := flag.Int("api-port", 9700, "API server port")
 	authToken := flag.String("auth-token", "", "Authentication token for API (or set HYDRA_HEAD_AUTH_TOKEN)")
+	llamaImageSource := flag.String("llama-image-source", "", "OCI image ref for the llama-engine binary (overrides node config 'source'; deploy-time param)")
+	llamaImageDigest := flag.String("llama-image-digest", "", "OCI image digest (sha256:...) for the llama-engine binary (overrides node config 'image_digest'; deploy-time param)")
 	flag.Parse()
 
 	if *globalConfig == "" || *nodeConfig == "" {
@@ -64,6 +66,27 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		bootLogger.Error("invalid config", "error", err)
 		os.Exit(1)
+	}
+
+	// Deploy-time engine overrides: -llama-image-source / -llama-image-digest
+	// take precedence over the node config file. This lets deploy-heads pin
+	// the exact engine build at deploy time without editing the node config.
+	// A "-" value means "unset" (compose interpolation placeholder).
+	if (*llamaImageSource != "" && *llamaImageSource != "-") || (*llamaImageDigest != "" && *llamaImageDigest != "-") {
+		spec, exists := cfg.Binaries["llama-server"]
+		if !exists {
+			spec = config.BinaryConfig{Binary: "llama-server"}
+		}
+		if *llamaImageSource != "" && *llamaImageSource != "-" {
+			spec.Source = *llamaImageSource
+		}
+		if *llamaImageDigest != "" && *llamaImageDigest != "-" {
+			spec.ImageDigest = *llamaImageDigest
+		}
+		cfg.Binaries["llama-server"] = spec
+		bootLogger.Info("llama-engine overridden at deploy time",
+			"source", spec.Source,
+			"image_digest", spec.ImageDigest)
 	}
 
 	// Build the OTel handler now that we know the node name and

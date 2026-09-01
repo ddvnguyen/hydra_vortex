@@ -81,6 +81,31 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
 | `0x44 SET_EXPERT_MODE` | ✅ Implemented | COMBINED mode activation |
 | `0x46 EnginePipelineAttach` | ✅ Implemented | PIPELINE mode activation |
 
+### Scheduler Rewrite Epic (#591)
+Event-driven, slot-bounded rewrite of `WorkerSchedulerService` (event-loop executor +
+fluent-DSL state machine + differential parity harness). Branch: `epic/591-rewrite-worker-scheduler`.
+| Component | Status | Location |
+|-----------|--------|----------|
+| `Hydra.StateMachine` DSL framework | ✅ Implemented (epic #591, 23 unit tests) | `src/core/Hydra.StateMachine/` |
+| `Tests.StateMachine` | ✅ Implemented | `src/core/Tests.StateMachine/` |
+| Differential/contract harness (WP0) | ✅ Implemented (21 golden scenarios, lease invariants, route matrix; 500/500 Tests.Core green) | `src/core/Tests.Core/Harness/` |
+| `Hydra.Core.Scheduling` executor core (WP1) | ✅ Implemented (SlotPool, PriorityWaiterQueue, MailboxExecutor, RpcConnectionPool, TimerWheel, OffloadPool; 75 tests) | `src/core/Hydra.Core.Scheduling/` + `src/core/Tests.Core.Scheduling/` |
+| `WorkerSchedulerV2` (WP2, SOLID) | ✅ Implemented — separate class on `IWorkerScheduler`; DI A/B toggle `HYDRA_SCHEDULER_IMPL=legacy\|v2` (default legacy); **state-runner architecture** (`WorkerStateRunner` base, one class per state, unified `PlanRunner`); **simple `SchedulerRequest` model**; **typed `ICompletionResult` submit** (no `Task<object>`); 28 tests | `src/core/Hydra.Core/Services/SchedulerV2/` + `src/core/Tests.Core/SchedulerV2Tests/` |
+| v2 behavior parity | ✅ **13 scenarios byte-match the legacy goldens** (asserted by the differential gate: cold_atomic_engine, cold_concurrency_pd, streaming_cold_atomic, busy_retry_then_success, busy_exhausted, merged_decode_accept, merged_decode_gate_a_reject, prefix_hit, prefix_miss, chunked_save, chunked_save_with_pushes, combined, cross_node_fallback). Legacy-mode `cold_atomic_http` excluded by contract (v2 is engine-mode/hydra-model by design). warm_affinity_on/verify_on + migration still `match=False` (tracked). See `docs/handoff-scheduler-v2-rewrite.md` | — |
+| v2 P/D split (two-phase) | ✅ Implemented — planner picks the **prefill worker only**; decode worker chosen at decode time (`PlanDecode`) with a slot handoff (prefill slot released before decode slot acquired); e2e test verifies rtx-prefill / p100-decode | `src/core/Hydra.Core/Services/SchedulerV2/` |
+| v2 session ledger (C1, core) | ✅ Implemented — three-point ledger timeline (SaveKv→prefill node, RestoreKv→decode node, Decode conditional + usage NPast); enables warm affinity + migration. warm_affinity_on/verify_on flipped Done in differential matrix | `src/core/Hydra.Core/Services/SchedulerV2/` |
+| v2 warm-lease stash (C2, core) | ✅ Implemented — non-streaming Done stashes the decode slot warm (reuse + evict via `EvictWarmSessionAsync`); warm turns reuse the stashed slot; `WarmLeaseCount` counts the stash; streaming releases (no warm lease) | `src/core/Hydra.Core/Services/SchedulerV2/` |
+| v2 C4 (decode + guards + resilience) | ✅ Implemented (reviewed + merged) — merged-decode 0x43 + Gate A, #279 HTTP prefill fallback, cross-model re-prefill, EngineConfigure wire; **7 scenarios byte-match the legacy goldens** (asserted by the differential gate); PickDecode fallback, retry re-plan, per-turn streaming keys + reaper, store-reuse. Claude Sonnet 5 High review fixes applied (eviction save-before-erase, resume error surfacing, caller-token threading, slot-identity same-node skip, on-demand warm eviction). `Tests.Core` 551/551 | `src/core/Hydra.Core/Services/SchedulerV2/` |
+| v2 feature follow-ups | ✅ prefix-checkpoint restore (prefix_hit/miss byte-match) + chunked save (SyncMissing/PushChunks/PutManifest, chunked_save* byte-match) + **COMBINED multi-engine** (head slot + peer exclusive reservation, hydra_config in 0x42 prefill, skip SaveKv → decode on head, BgSave direct-Put of the surviving KvBlob; combined golden byte-matches) + **cross-node warm fallback** (warm turn whose affinity node's only slot is warm-held → alternate worker + Store restore; cross_node_fallback byte-matches) + warm-slot verification. **13 scenarios byte-match**, asserted by the differential gate. `Tests.Core` 559/559 | `src/core/Hydra.Core/Services/SchedulerV2/` |
+| v2 hydra-model rule evaluation | ✅ Implemented — classifier + route planner validated against the rules of models and GPU workers (atomic/prefill split, COMBINED capability, warm affinity, capacity); 8 tests | `src/core/Tests.Core/SchedulerV2Tests/V2HydraModelRuleTests.cs` |
+| Differential gate (WP3) | ✅ Implemented — runs the catalog against v2 via `V2ScenarioDriver`, diffs vs legacy goldens, prints parity matrix (legacy-mode scenarios skipped) | `src/core/Tests.Core/Harness/DifferentialGateTests.cs`, `IScenarioDriver.cs`, `V2ScenarioDriver.cs` |
+| Hydra.Core v2 integration (toggle + strangler swap) | ✅ Toggle `HYDRA_SCHEDULER_IMPL=legacy\|v2` (default **legacy**). Epic → main PR open, **held for approval** (not yet default, not yet live-GPU verified) | — |
+
+### Warm-Slot Fast Path (#718, M-Perf)
+| Item | Status | Notes |
+|------|--------|-------|
+| #718 skip Store Get+StatePut restore when session KV still resident on bound slot | ✅ Merged to epic/697-final-verify (PR #719) — pending epic→main, not yet live-GPU verified | Pinned-slot lease on both interception sites; ForceMode takes precedence over the fast path (round-4 item 6a) |
+
 ### Model Config (models.json)
 | Model Alias | Mode | GPUs | Status |
 |-------------|------|------|--------|

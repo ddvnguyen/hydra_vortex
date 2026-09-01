@@ -164,6 +164,13 @@ internal static class CoordinatorMetrics
     public static readonly Counter SaveKvErrors = Metrics.CreateCounter(
         "hydra_save_kv_errors_total", "Background bg-save Put failed (state lost; next resume will be cold)");
 
+    // Issue #716: RPC sender short-write events. When NetworkStream.WriteAsync
+    // writes fewer bytes than declared in the request header, the engine sees
+    // a truncated restore and fails with "unexpectedly reached end of buffer".
+    public static readonly Counter RestoreStreamShortWrites = Metrics.CreateCounter(
+        "hydra_restore_stream_short_writes_total",
+        "RPC sender short-write: header declared more bytes than actually sent on wire");
+
     // Issue #286: duration of the fire-and-forget bg-save Put. Useful for
     // sizing the slow-disk / write-bandwidth problem separately from the
     // slot-release-lag metric (which only captures the StateGet RPC).
@@ -245,6 +252,14 @@ internal static class CoordinatorMetrics
         "hydra_prefix_restore_skipped_total",
         "Prefix restore skipped due to n_past guard (stale or oversized checkpoint)",
         new CounterConfiguration { LabelNames = new[] { "reason" } });
+
+    // ── Issue #712: solo prefix reuse metrics ──
+    public static readonly Counter SoloKvRestores = Metrics.CreateCounter(
+        "hydra_solo_kv_restores_total",
+        "Full-session KV restored from Store for solo prefix reuse (delta prefill)");
+    public static readonly Counter SoloKvRestoreMisses = Metrics.CreateCounter(
+        "hydra_solo_kv_restore_misses_total",
+        "Solo prefix reuse: no Store KV checkpoint found (full re-prefill)");
 
     // ── Issue #435: n_past guard observability ──
     // Fires in RouteAsync when the warm-slot n_past guard's predicate evaluates

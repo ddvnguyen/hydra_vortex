@@ -1,0 +1,122 @@
+{
+  "Scenario": "cross_node_fallback",
+  "Description": "Turn 1 P/D split leaves the affinity session on p100 with its only slot warm-held; turn 2 cannot acquire the affinity node and falls back to rtx (cross_node): KV is restored from Store (Get \u002B StatePut) and rtx decodes.",
+  "Version": 1,
+  "Trace": {
+    "Rpc": [
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 28,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EnginePrefill",
+        "Key": "0",
+        "Len": 5104,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 4096,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Get",
+        "Key": "sess_h.kv",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StatePut",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 28,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 17,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateGet",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 2048,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Get",
+        "Key": "sess_h.kv",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StatePut",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "EngineConfigure",
+        "Key": "0",
+        "Len": 17,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateGet",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 2048,
+        "Status": "Ok"
+      }
+    ],
+    "MergedDecode": [],
+    "Proxy": [
+      {
+        "Url": "http://192.168.122.21:8086",
+        "Stream": false,
+        "Model": "nano",
+        "MaxTokens": 100,
+        "NPredict": null
+      },
+      {
+        "Url": "http://localhost:8080",
+        "Stream": false,
+        "Model": "nano",
+        "MaxTokens": 100,
+        "NPredict": null
+      }
+    ],
+    "FinalState": "Done",
+    "Ledger": {
+      "NodeName": "rtx",
+      "SlotId": 0,
+      "NPast": 150,
+      "HasStoreState": true,
+      "SlotFreed": false
+    },
+    "BusySeconds": {
+      "rtx": 1,
+      "p100": 0
+    }
+  }
+}

@@ -326,13 +326,40 @@ check_auth_file() {
 # concurrently afterward: neither of them touches the image build or the
 # whole-project compose state again, only their own service.
 deploy_shared_setup() {
-  step "Shared setup (image build + core)"
+  local rebuild_head="${1:-false}"
+  step "Shared setup (image build + core) [rebuild-head=$rebuild_head]"
 
-  build_go
+  # Skip the Go build when no head source changed since the last build —
+  # most runs deploy the same binary. A fresh runner checkout makes mtime
+  # comparison useless (every file is "newer"), so stamp the source content
+  # hash next to the binary and compare hashes.
+  local go_src_hash
+  go_src_hash=$(find "$REPO_ROOT/src/head" -name '*.go' -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)
+  if [ -f "$REPO_ROOT/bin/hydra-head" ] && [ -f "$REPO_ROOT/bin/.hydra-head-src-hash" ] && \
+     [ "$(cat "$REPO_ROOT/bin/.hydra-head-src-hash" 2>/dev/null)" = "$go_src_hash" ]; then
+    step "No Go changes since last build — reusing bin/hydra-head"
+  else
+    build_go
+    echo -n "$go_src_hash" > "$REPO_ROOT/bin/.hydra-head-src-hash"
+  fi
   build_core_image
   generate_token
   AUTH_TOKEN=$(get_token)
-  build_rtx_image
+  if [ "$rebuild_head" = "true" ]; then
+    build_rtx_image
+  else
+    # Fast path: reuse the existing head image. Setup still validates it
+    # exists (and warns if missing) so a broken state is caught early
+    # rather than at first head deploy. (#470: most deploys don't touch
+    # Dockerfile.rtx / verify_and_start.sh / cuda-pin.conf.)
+    step "Reusing existing hydra-head:rtx image (rebuild-head=false)"
+    if ! podman image exists localhost/hydra-head:rtx 2>/dev/null; then
+      step "hydra-head:rtx NOT found locally — building (needed at least once)"
+      build_rtx_image
+    else
+      echo "image localhost/hydra-head:rtx present: $(podman image inspect localhost/hydra-head:rtx --format '{{.Id}}' 2>/dev/null | head -c 16)..."
+    fi
+  fi
   stop_host_sidecars
   check_auth_file
 
@@ -523,8 +550,16 @@ deploy_p100() {
   # Create environment file with auth token. Written over stdin rather than
   # interpolated into the remote command string, which exposed the token in
   # `ps` output on the VM for the lifetime of the ssh command.
-  ssh hydra-p100 "umask 077 && cat > /home/vm1/.config/hydra-head/env" \
-    <<<"HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN"
+  # Deploy-time engine pin (#470): LLAMA_IMAGE_SOURCE / LLAMA_IMAGE_DIGEST
+  # (set by CI from the built image + digest) flow into the systemd env
+  # file and then into the head's -llama-image-source/-llama-image-digest
+  # flags. Unset → the service's ${...} interpolation yields empty → the
+  # head falls back to the node config file.
+  ssh hydra-p100 "umask 077 && cat > /home/vm1/.config/hydra-head/env" <<EOF
+HYDRA_HEAD_AUTH_TOKEN=$AUTH_TOKEN
+LLAMA_IMAGE_SOURCE=${HYDRA_LLAMA_IMAGE_SOURCE:-}
+LLAMA_IMAGE_DIGEST=${HYDRA_LLAMA_IMAGE_DIGEST:-}
+EOF
   ssh hydra-p100 "chmod 600 /home/vm1/.config/hydra-head/env"
   ok "Created auth token environment file"
 
@@ -667,7 +702,7 @@ case "$TARGET" in
   # separate, individually-named, concurrently-running steps in the
   # Actions UI instead of one step that backgrounds internally).
   setup)
-    deploy_shared_setup
+    deploy_shared_setup "${2:-false}"
     ;;
   rtx-only)
     deploy_rtx_only

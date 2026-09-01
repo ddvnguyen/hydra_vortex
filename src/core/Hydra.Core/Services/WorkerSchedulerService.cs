@@ -94,7 +94,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	private static readonly TimeSpan DecodeMetaQueryTimeout = TimeSpan.FromSeconds(15);
 	internal readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
-	private readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
+	// #613: keyed by TraceId (per-request), NOT SessionId — with concurrent
+	// requests on one session, a session key lets one request's completion
+	// dispose the pipeline cts of another, killing its disconnect-abort path.
+	internal readonly ConcurrentDictionary<string, CancellationTokenSource> _pipelineCts = new();
 	internal readonly ConcurrentDictionary<string, WorkItem> _pendingTimelines = new();
 
 	/// <summary>
@@ -187,12 +190,15 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	public string? LastDispatchedModelQuant { get; private set; }
 	public uint LastDispatchedModelCapabilities { get; private set; }
 
-	public async Task<object> SubmitAsync(
+	public async Task<ICompletionResult> SubmitAsync(
 		Dictionary<string, object> request,
 		List<Dictionary<string, object>> messages,
-		string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0)
+		string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0, string? traceId = null)
 	{
-		var traceId = Router.NewTraceId();
+		// #613-followup: when the caller (controller) supplies its per-request
+		// traceId, the item uses it — so the same identity is later passed to
+		// NotifyStreamComplete and the pipeline-cts disposal is exact.
+		traceId ??= Router.NewTraceId();
 		var item = new WorkItem(request, messages, sessionId, traceId, prefixHash, estimatedTokens, maxTokens);
 		item.SystemPromptTokens = systemPromptTokens;
 		item.HttpCancellationToken = ct;
@@ -371,12 +377,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Streaming: return the chunk enumerable as soon as decode phase produces it
 			if (item.IsStreaming)
 			{
-				return await item.StreamCompletion.Task.WaitAsync(TimeSpan.FromSeconds(600), linked.Token);
+				return new StreamCompletionResult(
+					await item.StreamCompletion.Task.WaitAsync(TimeSpan.FromSeconds(600), linked.Token));
 			}
 			else
 			{
 				// Non-streaming: wait for full response
-				return (await item.Completion.Task.WaitAsync(TimeSpan.FromSeconds(1800), linked.Token))!;
+				return new FinalCompletionResult(
+					(await item.Completion.Task.WaitAsync(TimeSpan.FromSeconds(1800), linked.Token))!);
 			}
 		}
 		catch (OperationCanceledException)
@@ -866,6 +874,30 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					var isWarm = await Router.VerifyWarmSlotAsync(target, entry, item.TraceId);
 					if (!isWarm)
 					{
+						// ── #718 warm-slot fast path ──
+						// The slot verification failed but the session KV may still be
+						// resident (transient network blip, stale healthy flag, engine
+						// still decoding from the prior turn). Before falling through
+						// to the full Store Get+StatePut restore cycle (~30s+), check
+						// whether the bound worker is healthy, still serves the same
+						// model alias, and has a free prefill slot. If so, go straight
+						// to Prefill — the fork's shared-prefix checkpoint mechanism
+						// (token-accurate N_COMMON match) self-corrects stale residency:
+						// worst case is a full prefill (same as cold), never corruption,
+						// because the engine only reuses matching token prefixes and the
+						// model-match guard prevents cross-model takeovers.
+						// SAFETY: DecodeLease is NOT released here — it mirrors the
+						// happy-path warm-affinity branch (L852-864) and cold_atomic's
+						// pattern where DecodeLease owns the slot through Prefill→Decode.
+						// Releasing before Prefill would hand the physical slot to the
+						// next queued request via SignalEvaluator, causing a cross-session
+						// slot collision on 1-slot workers.
+						if (_cfg.WarmSlotFastPathEnabled
+							&& TryWarmSlotFastPath(item, target, entry, "verify_fail"))
+						{
+							return WorkItemState.Prefill;
+						}
+
 						_log.Warning("verify_warm_slot_failed Sid={Sid} Slot={Slot}",
 							item.SessionId, entry.SlotId);
 						// A1: the slot-state save is a network RPC that can throw. Detach
@@ -891,6 +923,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				if (entry.NPast > 0 && entry.NPast > _cfg.AtomicThreshold * 4
 					&& item.EstimatedTokens < entry.NPast * _cfg.NPastGuardThreshold)
 				{
+					// ── #718 warm-slot fast path (n_past guard variant) ──
+					// The n_past guard says the estimated tokens are too small relative
+					// to the cached context, suggesting a short prompt. But the engine
+					// may still hold the KV resident — the guard is a heuristic, not a
+					// guarantee. Before evicting and falling through to the full Store
+					// restore cycle, try the same warm-residency fast path: if the
+					// worker is healthy + same model + free prefill slot, go straight
+					// to Prefill. The engine's shared-prefix checkpoint self-corrects
+					// if the residency is stale (worst case = full prefill, same as cold).
+					if (_cfg.WarmSlotFastPathEnabled
+						&& TryWarmSlotFastPath(item, target, entry, "npast_guard"))
+					{
+						return WorkItemState.Prefill;
+					}
+
 					// Issue #435: surface how often this predicate evaluates true,
 					// even when downstream eviction/save may fail. The {reason}
 					// label distinguishes this in-RouteAsync check from any
@@ -1025,6 +1072,44 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					item.MultiMode = MultiEngineMode.Combined;
 			}
 
+			// ── #718 warm-slot fast path (migration interception) ──
+			// The solo post-MarkEvicted flow reaches this migration block when
+			// SlotFreed=true (set by SaveDone→MarkEvicted). Before falling through
+			// to PickDecodeAsync→RestoreKvAsync (30s+ Store Get+StatePut), check
+			// if the session's KV is still resident on its bound worker — the
+			// engine's live /slots poll is the real residency truth, not SlotFreed.
+			// On success: acquire a PINNED lease on the bound worker's resident slot
+			// (entry.SlotId) and go straight to Prefill (skip Store round-trip
+			// entirely).
+			//
+			// IMPORTANT: check TryWarmSlotFastPath BEFORE TryAcquireSlot to avoid
+			// leaking the slot if the helper rejects (empty BoundModel, model
+			// mismatch, slot not in /slots list, etc.).
+			//
+			// #718 round-3: the lease MUST be pinned to entry.SlotId. The generic
+			// TryAcquireSlot pops whatever is on top of the free stack — on a
+			// multi-slot worker that can be a different slot, which would target
+			// Prefill + PrefixNPast at a slot that does not hold this session's
+			// resident KV (cache nuke, or evicting another session's warm cache).
+			// If the resident slot is not free the pinned acquire fails and we fall
+			// through to PickDecodeAsync (full restore) — never a second slot.
+			if (_cfg.WarmSlotFastPathEnabled
+				&& entry.SlotId.HasValue
+				&& !string.IsNullOrEmpty(entry.NodeName))
+			{
+				var target = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
+				if (target != null
+					&& TryWarmSlotFastPath(item, target, entry, "migration")
+					&& _tracker.TryAcquireSlot(target.Name, out var fpSlot, "prefill", entry.SlotId))
+				{
+					item.PrefillWorker = target;
+					item.PrefillSlot = fpSlot;
+					item.PrefillLease = new SlotLease(target.Name, fpSlot, item.SessionId,
+						LeaseLifetime.Short, _tracker);
+					return WorkItemState.Prefill;
+				}
+			}
+
 			item.State = WorkItemState.PickDecode;
 			return await PickDecodeAsync(item);
 		}
@@ -1043,6 +1128,68 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (entry == null) return item.EstimatedTokens;
 		var baseline = entry.NPromptTokens > 0 ? entry.NPromptTokens : entry.NPast;
 		return baseline > 0 ? Math.Max(0, item.EstimatedTokens - baseline) : item.EstimatedTokens;
+	}
+
+	// ── #718 warm-slot fast-path helper ──────────────────────────────────
+	// Shared logic for all call sites (verify-fail, n_past-guard, migration,
+	// cold_route). The caller is responsible for the slot lease: sites that
+	// return Prefill from here must acquire it PINNED to entry.SlotId (#718
+	// round-3) — the generic pool rent may hand out a different physical slot.
+	// Returns
+	// true and mutates item when the fast path is taken; false otherwise.
+	//
+	// Conditions:
+	//   1. nodeInfo != null && nodeInfo.Healthy — bound worker is alive
+	//   2. nodeInfo.CurrentModel == entry.BoundModel (OrdinalIgnoreCase) —
+	//      exact model match (not Contains — dense-27b vs dense-27b-combined
+	//      is a real collision in AutoRouterTests)
+	//   3. nodeInfo.Slots contains a SlotInfo whose Id == entry.SlotId —
+	//      the engine's /slots poll still lists the session's slot (also
+	//      guards engine restart: restarted engine returns empty/different slots)
+	//   4. target.CanPrefill — worker is prefill-capable
+	//
+	// SAFETY: DecodeLease is NOT released. The lease acquired at L852 owns the
+	// physical slot through Prefill→Decode, mirroring the happy-path warm-affinity
+	// branch and cold_atomic's pattern. Releasing before Prefill would hand the
+	// slot to the next queued request via SignalEvaluator, causing a cross-session
+	// slot collision on 1-slot workers. The fork's shared-prefix checkpoint
+	// mechanism (token-accurate N_COMMON match) self-corrects stale residency —
+	// worst case is a full prefill (same as cold), never corruption.
+	private bool TryWarmSlotFastPath(WorkItem item, WorkerConfig target, SessionEntry entry, string reason)
+	{
+		var nodeInfo = _health.GetNodeInfo(target.Name);
+		var boundAlias = entry.BoundModel;
+
+		// Gate 1: worker alive
+		if (nodeInfo == null || !nodeInfo.Healthy)
+			return false;
+
+		// Gate 2: exact case-insensitive model match
+		if (string.IsNullOrEmpty(boundAlias)
+			|| string.IsNullOrEmpty(nodeInfo.CurrentModel)
+			|| !string.Equals(nodeInfo.CurrentModel, boundAlias, StringComparison.OrdinalIgnoreCase))
+			return false;
+
+		// Gate 3: engine's /slots poll still lists the session's slot (restart guard)
+		if (nodeInfo.Slots == null || nodeInfo.Slots.Count == 0
+			|| !nodeInfo.Slots.Any(s => s.Id == entry.SlotId))
+			return false;
+
+		// Gate 4: worker is prefill-capable
+		if (!target.CanPrefill)
+			return false;
+
+		item.RouteType = "warm_slot_fastpath";
+		item.PrefixCacheHit = true;
+		item.PrefixNPast = entry.NPast;
+		item.PrefillWorker = target;
+		item.PrefillSlot = entry.SlotId;
+		CoordinatorMetrics.RequestsTotal.WithLabels(target.Name, "warm_slot_fastpath").Inc();
+		CoordinatorMetrics.RequestsTotalAll.Inc();
+		CoordinatorMetrics.WarmSessionStarts.Inc();
+		_log.Information("warm_slot_fastpath_{Reason} Sid={Sid} Node={Node} Slot={Slot} NPast={NP} ResidentModel={RM} BoundAlias={BA}",
+			reason, item.SessionId, target.Name, entry.SlotId, entry.NPast, nodeInfo.CurrentModel, boundAlias);
+		return true;
 	}
 
 	private async Task<WorkItemState> EvictWarmAndColdRouteAsync(WorkItem item)
@@ -1067,6 +1214,48 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// excluding it — on success the flag is cleared and every pick below
 		// (multi-engine plan, atomic, cold_concurrency) sees fresh health.
 		await ProbeStaleUnhealthyWorkersAsync();
+
+		// ── #718 warm-slot fast path (cold-route interception) ──
+		// The solo post-MarkEvicted flow reaches ColdRouteAsync when RouteAsync's
+		// warm-affinity block is skipped (SlotFreed=true after SaveDone→MarkEvicted)
+		// and the migration block falls through to the cold path. Before any cold
+		// routing decision, check if the session's KV is still resident on its bound
+		// worker — the engine's live /slots poll is the real residency truth, not
+		// SlotFreed. If the bound worker is healthy, still serves the same model,
+		// and the engine's /slots poll still lists the session's slot → go straight
+		// to Prefill, skipping PrefixRestore/Store Get+StatePut entirely.
+		//
+		// #718 round-3: the fast path MUST hold a lease on the resident slot
+		// (pinned acquire on entry.SlotId) — without one, another concurrent route
+		// can rent the same physical slot while this Prefill is in flight (the
+		// round-1 unprotected-slot race). Unlike the cold_atomic route below (slot
+		// owned by item.DecodeLease), this intercept is a pure prefill route, so
+		// the slot is owned by item.PrefillLease, mirroring the migration
+		// interception and cold_concurrency. If the pinned slot is not free we
+		// fall through to the normal cold routing (restore path).
+		//
+		// Round-4 (item 6a, owner decision): ForceMode is a documented
+		// debug/test override and takes precedence over the fast path — a
+		// force_mode request on a warm session must reach the ForceMode routing
+		// block below, not be silently captured here.
+		if (_cfg.WarmSlotFastPathEnabled && string.IsNullOrWhiteSpace(item.ForceMode))
+		{
+			var entry = _ledger.Lookup(item.SessionId);
+			if (entry != null && entry.SlotId.HasValue)
+			{
+				var target = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
+				if (target != null
+					&& TryWarmSlotFastPath(item, target, entry, "cold_route")
+					&& _tracker.TryAcquireSlot(target.Name, out var fpSlot, "prefill", entry.SlotId))
+				{
+					item.PrefillWorker = target;
+					item.PrefillSlot = fpSlot;
+					item.PrefillLease = new SlotLease(target.Name, fpSlot, item.SessionId,
+						LeaseLifetime.Short, _tracker);
+					return WorkItemState.Prefill;
+				}
+			}
+		}
 
 		// Debug force-mode: bypass MultiEngineRouter.Select when the caller
 		// sets force_mode in the request body. Handy for testing COMBINED
@@ -1183,6 +1372,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						// merged DECODE has KV + kv_metadata for Gate A (#470).
 						_log.Information("cold_atomic_prefill_resident Sid={Sid} Node={N} Model={Model}",
 							item.SessionId, aw.Name, nodeInfo?.CurrentModel ?? requestedAlias);
+					}
+					// #712: solo prefix reuse — when the session has a prior KV
+					// checkpoint in the Store, route through PrefixRestore so the
+					// full session KV is restored before PREFILL. The engine's
+					// shared-prefix detection then only prefills the delta tokens.
+					if (_cfg.SoloPrefixReuseEnabled)
+					{
+						var entry = _ledger.Lookup(item.SessionId);
+						if (entry is { HasStoreState: true })
+						{
+							_log.Information("solo_prefix_reuse Sid={Sid} Node={N} NPast={NP} — restoring KV before prefill",
+								item.SessionId, aw.Name, entry.NPast);
+							item.RouteType = "solo_prefix_restore";
+							return WorkItemState.PrefixRestore;
+						}
 					}
 					return WorkItemState.Prefill;
 				}
@@ -1777,6 +1981,22 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	private async Task<WorkItemState> PrefixRestoreAsync(WorkItem item, CancellationToken ct)
 	{
+		// #712: solo prefix reuse — when the session has a prior KV checkpoint
+		// in the Store (HasStoreState), prefer session-KV restore over the
+		// prefix-checkpoint path. The session KV is a superset of the system-
+		// prompt checkpoint and enables the engine's shared-prefix detection
+		// to only prefill the delta (new tokens since last turn).
+		if (_cfg.SoloPrefixReuseEnabled && item.PrefillWorker != null)
+		{
+			var entry = _ledger.Lookup(item.SessionId);
+			if (entry is { HasStoreState: true })
+			{
+				var restored = await TryRestoreSessionKvAsync(item, ct);
+				if (restored) return WorkItemState.Prefill;
+			}
+			// Fallback: no session KV in Store — try prefix-checkpoint path below.
+		}
+
 		if (!_cfg.PrefixCheckpointEnabled || item.PrefixHash == null || item.PrefillWorker == null)
 		{
 			return WorkItemState.Prefill;
@@ -1792,7 +2012,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				CoordinatorMetrics.CacheMisses.Inc();
 				item.PrefixCacheHit = false;
-				_log.Warning("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				_log.Information("prefix_not_found Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				return WorkItemState.Prefill;
+			}
+
+			// #716/#712: guard against empty payload — a zero-length Store Get
+			// response must not be forwarded to StatePut (engine quarantine
+			// flags state_len=0 as a restore failure). Treat as a miss.
+			if (storeResp.Payload.Length == 0)
+			{
+				_log.Warning("prefix_restore_empty_payload Sid={Sid} Hash={Hash}", item.SessionId, item.PrefixHash);
+				CoordinatorMetrics.CacheMisses.Inc();
+				item.PrefixCacheHit = false;
 				return WorkItemState.Prefill;
 			}
 
@@ -1879,6 +2110,104 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return WorkItemState.Prefill;
 	}
 
+	// ── #712: full-session KV restore for solo prefix reuse ──
+	// When the prefix checkpoint (system-prompt KV) misses or is unavailable,
+	// try restoring the full session KV from the Store. The engine's shared-
+	// prefix detection will then only prefill the delta (new tokens since the
+	// last turn). Returns true if the KV was successfully restored.
+	private async Task<bool> TryRestoreSessionKvAsync(WorkItem item, CancellationToken ct)
+	{
+		if (item.PrefillWorker == null) return false;
+
+		var entry = _ledger.Lookup(item.SessionId);
+		if (entry is not { HasStoreState: true } || entry.NPast <= 0)
+		{
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
+
+		// n_tokens > n_past guard: skip restore when the estimated prompt is
+		// shorter than the cached n_past — the client truncated history and
+		// the KV prefix won't match.
+		// #715 R3: proportional tolerance accounts for generated-token growth
+		// (e.g. 64 ACK tokens/turn accumulate in NPast but not in EstimatedTokens).
+		// Floor of 128 protects small sessions; 5% covers 24+ turns of ACK growth.
+		var soloTolerance = Math.Max(128, (int)(entry.NPast * 0.05));
+		if (item.EstimatedTokens > 0
+			&& item.EstimatedTokens + soloTolerance < entry.NPast)
+		{
+			_log.Warning("solo_kv_restore_skip_n_past Sid={Sid} Est={Est} NPast={NP} Tol={Tol}",
+				item.SessionId, item.EstimatedTokens, entry.NPast, soloTolerance);
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
+
+		var storeKey = $"{item.SessionId}.kv";
+		try
+		{
+			var storeResp = await StoreClient.RequestAsync(Hydra.Shared.OpCode.Get,
+				storeKey, ReadOnlyMemory<byte>.Empty, item.TraceId, ct);
+			if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok || storeResp.Payload.Length == 0)
+			{
+				_log.Information("solo_kv_restore_miss Sid={Sid} Key={Key}",
+					item.SessionId, storeKey);
+				CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+				return false;
+			}
+
+			var slotId = item.PrefillSlot ?? 0;
+			var llamaRpc = GetStateRpcClient(item.PrefillWorker);
+			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+				slotId.ToString(), storeResp.Payload, item.TraceId, ct);
+
+			// #712/#716: check StatePut response status before declaring success.
+			// A non-Ok means the engine slot does not hold valid KV — declaring
+			// a cache hit would send PREFILL onto a corrupt/empty slot (the same
+			// anti-pattern fixed in the migration path at L428-442, #617/A1).
+			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
+			{
+				_log.Warning("solo_kv_restore_state_put_failed Sid={Sid} Key={Key} Status={Status}",
+					item.SessionId, storeKey, putResp.Status);
+				CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+				return false;
+			}
+
+			item.PrefixCacheHit = true;
+
+			if (putResp.Meta != null)
+			{
+				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
+				var nPast = meta?.TryGetValue("n_past", out var n) == true
+					? n.GetInt32() : 0;
+				if (nPast > 0)
+				{
+					_ledger.UpdateNPast(item.SessionId, nPast);
+					item.PrefixNPast = nPast;
+				}
+				else
+				{
+					item.PrefixNPast = entry.NPast;
+				}
+			}
+			else
+			{
+				item.PrefixNPast = entry.NPast;
+			}
+
+			_log.Information("solo_kv_restored Sid={Sid} Key={Key} NPast={NP}",
+				item.SessionId, storeKey, item.PrefixNPast);
+			CoordinatorMetrics.SoloKvRestores.Inc();
+			return true;
+		}
+		catch (Exception ex)
+		{
+			_log.Warning(ex, "solo_kv_restore_failed Sid={Sid} Key={Key}",
+				item.SessionId, storeKey);
+			CoordinatorMetrics.SoloKvRestoreMisses.Inc();
+			return false;
+		}
+	}
+
 	// ── Gap 4: n_past tracking in prefill ──
 
 	// ── #592: worker-health recovery on positive liveness evidence ─────────
@@ -1901,8 +2230,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <summary>
 	/// Release every lease a prefill phase may hold before a failure/retry
 	/// re-routes the item. PrefillLease covers the cold_concurrency / PD-split
-	/// routes; the cold_atomic route holds the prefill slot via item.DecodeLease
-	/// (PrefillLease is deliberately null there — ColdRouteAsync). #635 fix 3:
+	/// routes and the #718 warm-slot fast-path cold_route intercept; the
+	/// cold_atomic route holds the prefill slot via item.DecodeLease (PrefillLease
+	/// is deliberately null ONLY there — ColdRouteAsync). #635 fix 3:
 	/// a prefill failure MUST release BOTH, or the tracker keeps the slot busy
 	/// and a re-enqueued/retried item is gated on IsFree forever (observed:
 	/// pipeline_retry Retries=2 → queued while the engine was free).
@@ -3132,8 +3462,34 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
-					var prefixKey = $"prefix/{item.PrefixHash}.kv";
 					var kvPayload = payload;
+
+					// #721: invariant — NEVER write an empty blob to the store.
+					// Stream-to-store prefill (EnginePrefillChunkedAndStoreAsync,
+					// #470) leaves the KV in the Store under the session key and
+					// nulls the in-memory payload. The old code issued the prefix
+					// Put with that null payload → a zero-byte blob under
+					// prefix/... plus an NRE on the SizeMB log line (logged as
+					// prefix_save_failed); every later restore of the poisoned key
+					// forwarded an empty STATE_PUT the engine quarantines → full
+					// re-prefill each turn. Skip the save entirely BEFORE any store
+					// op. An absent prefix key is a clean miss on restore
+					// (prefix_not_found → Prefill).
+					//
+					// Follow-up (note on #721): sourcing the prefix blob at the
+					// store level is NOT a simple copy of the streamed session blob
+					// — that blob covers the full request, and saving it under the
+					// system-prompt key would reintroduce the #245 "live poisoning"
+					// bug (prefix checkpoint must be truncated to SysTokens).
+					if (kvPayload is null)
+					{
+						_log.Information("prefix_save_skipped_streamed Sid={Sid} Hash={Hash} — KvStreamedToStore, no in-memory payload; absent key restores as clean miss",
+							item.SessionId, item.PrefixHash);
+						CoordinatorMetrics.PrefixSavePayloadTruncated.WithLabels("streamed_to_store").Inc();
+						return WorkItemState.SaveDone;
+					}
+
+					var prefixKey = $"prefix/{item.PrefixHash}.kv";
 					var traceId = item.TraceId;
 					var sysTokens = item.SystemPromptTokens;
 					var prefixNPast = item.NPastAfter;
@@ -3565,6 +3921,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// #470 Phase 2: null when the KV is streamed from the Store instead
 			// of assembled (merged-capable decode, chunks mode).
 			byte[]? restoreBlob = null;
+			// #720 P1: non-merged chunked path streams local+store chunks into
+			// the STATE_PUT body — no full-blob assembly in coordinator RAM.
+			OrderedKvStateStream? restoreStream = null;
 			if (_cfg.EnableChunks)
 			{
 				// ── Restore Phase 1: GetManifest ──────────────────────
@@ -3622,13 +3981,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
-					var assembleSw = System.Diagnostics.Stopwatch.StartNew();
-					restoreBlob = await AssembleFromChunksAsync(null, storeKey, manifestChunks, item.TraceId, ct);
-					assembleSw.Stop();
-					item.KvBytes = restoreBlob.Length;
-					_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count} manifest_ms={ManifestMs} assemble_ms={AssembleMs}",
-						item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count,
-						manifestSw.ElapsedMilliseconds, assembleSw.ElapsedMilliseconds);
+					// #720 P1: stream local + store chunks in manifest order straight
+					// into the STATE_PUT body (below) — no full-blob assembly.
+					// Cache is keyed by the session id (the scheduler's save
+					// convention); the old AssembleFromChunksAsync probed it with
+					// the store key, so L1 never hit on this path.
+					var planSw = System.Diagnostics.Stopwatch.StartNew();
+					restoreStream = OrderedKvStateStream.Create(
+						manifestChunks, totalSize, _chunkCache, item.SessionId,
+						StoreClient, storeKey, item.TraceId, ct);
+					planSw.Stop();
+					item.KvBytes = totalSize;
+					_log.Information("state_stream_planned Sid={Sid} SizeMB={Size} Chunks={Count} Local={Local} manifest_ms={ManifestMs} plan_ms={PlanMs}",
+						item.SessionId, totalSize / 1024 / 1024, manifestChunks.Count, restoreStream.LocalChunks,
+						manifestSw.ElapsedMilliseconds, planSw.ElapsedMilliseconds);
 				}
 			}
 			else
@@ -3638,6 +4004,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 				if (storeResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 					throw new InvalidOperationException($"Store Get RPC failed: status={storeResp.Status} meta={storeResp.Meta}");
+
+				// #716 Store-side diagnostic: compare Get payload length against the
+				// size recorded at save time (item.KvBytes set in SaveKvAsync).
+				// A mismatch here means the Store returned fewer bytes than saved —
+				// the real root cause of the "unexpectedly reached end of buffer".
+				var savedSize = item.KvBytes;
+				if (savedSize > 0 && storeResp.Payload.Length != savedSize)
+				{
+					_log.Error(
+						"restore_store_size_mismatch Sid={Sid} StoreKey={Key} SavedSize={Saved} " +
+						"RestoreSize={Restore} Delta={Delta} — Store returned fewer bytes than saved",
+						item.SessionId, storeKey, savedSize, storeResp.Payload.Length,
+						storeResp.Payload.Length - savedSize);
+				}
 
 				if (item.KvBytes == 0)
 					item.KvBytes = storeResp.Payload.Length;
@@ -3655,6 +4035,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var mergedCapable = _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true;
 			if (mergedCapable)
 			{
+				// #720 P1: if health flipped between the phase-2 plan and this
+				// check, drop the planned stream — the merged path carries the
+				// KV via item.KvChunks instead.
+				restoreStream?.Dispose();
 				if (restoreBlob != null)
 				{
 					// Carry the assembled KV blob forward to DecodeAsync so the
@@ -3675,16 +4059,32 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 			var putSw = System.Diagnostics.Stopwatch.StartNew();
 			var llamaRpc = GetStateRpcClient(w);
-			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
-				slotId.ToString(), restoreBlob, item.TraceId, ct);
+			Hydra.Shared.RpcResponse putResp;
+			try
+			{
+				// #720 P1: stream the state body on the chunked path — the
+				// wire framing is identical to RequestAsync (header, then body
+				// bytes) and the engine buffers the body server-side.
+				putResp = restoreStream is not null
+					? await llamaRpc.RequestStreamBodyAsync(Hydra.Shared.OpCode.StatePut,
+						slotId.ToString(), restoreStream, item.KvBytes, item.TraceId, ct)
+					: await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+						slotId.ToString(), restoreBlob, item.TraceId, ct);
+			}
+			finally
+			{
+				// The RPC layer consumes the body but does not own it.
+				restoreStream?.Dispose();
+			}
 			putSw.Stop();
 
 			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 				throw new InvalidOperationException($"StatePut RPC failed: status={putResp.Status} meta={putResp.Meta}");
 
 			// #469 trace: log STATE_PUT response for cross-flow comparison
-				_log.Debug("#PD-TRACE STATE_PUT_RESPONSE Sid={Sid} Node={Node} Slot={Slot} Status={Status} Meta={Meta} BlobSize={BlobSize}",
-				item.SessionId, w.Name, slotId, putResp.Status, putResp.Meta ?? "(null)", restoreBlob.Length);
+			var putBytes = restoreStream is not null ? item.KvBytes : restoreBlob!.Length;
+			_log.Debug("#PD-TRACE STATE_PUT_RESPONSE Sid={Sid} Node={Node} Slot={Slot} Status={Status} Meta={Meta} BlobSize={BlobSize}",
+				item.SessionId, w.Name, slotId, putResp.Status, putResp.Meta ?? "(null)", putBytes);
 
 			_log.Information("restore_kv_timing Sid={Sid} total_ms={TotalMs} put_ms={PutMs}",
 				item.SessionId, restoreSw.ElapsedMilliseconds, putSw.ElapsedMilliseconds);
@@ -3835,6 +4235,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 		catch (Exception ex)
 		{
+			// #716: increment short-write counter when the sender detected a byte-count mismatch
+			if (ex is RpcShortWriteException)
+				CoordinatorMetrics.RestoreStreamShortWrites.Inc();
 			if (item.PrefillWorker?.CanDecode == true
 				&& item.DecodeWorker?.Name != item.PrefillWorker?.Name
 				&& _tracker.TryAcquireSlot(item.PrefillWorker.Name, out var fbSlot, "decode-fallback"))
@@ -4180,7 +4583,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// running when this state returns Done.
 			item.DecodeStartMs = item.ElapsedMs;
 			var cts = CancellationTokenSource.CreateLinkedTokenSource(item.HttpCancellationToken, ct);
-			_pipelineCts[item.SessionId] = cts;
+			// #613: the linked source is stored per-request (item + TraceId key)
+			// so a client disconnect aborts THIS decode's stream, and one
+			// request's completion can never cancel/dispose another request's
+			// pipeline on the same session. WorkItem.Cancel() cancels it too
+			// (disconnect before the stream is produced).
+			item.PipelineCts = cts;
+			_pipelineCts[item.TraceId] = cts;
 
 			// Phase 2b: emit 0x40 EngineConfigure with per-request T1 overrides
 			// (sampling, n_predict, seed) before activating the peer. T1 keys
@@ -4903,7 +5312,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			sessionId, nodeName, lease.SlotId);
 	}
 
-	public async Task NotifyStreamComplete(string sessionId)
+	public async Task NotifyStreamComplete(string sessionId, string? traceId = null)
 	{
 		// Issue #284 + #286: two related bugs fixed together.
 		//
@@ -4927,26 +5336,45 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		string? releaseNode = null;
 		try
 		{
-			// Search _pendingTimelines (keyed by TraceId) for an entry matching
-			// this session whose stream has ACTUALLY completed. When two streaming
-			// requests share the same sessionId, this prevents NotifyStreamComplete
-			// from removing the wrong entry (the other request's still-streaming item).
+			// #613-followup: with two CONCURRENT streaming requests on one
+			// session, a session-keyed scan of _pendingTimelines is ambiguous —
+			// both items have a completed StreamCompletion (the TCS is set when
+			// the stream is PRODUCED, not when it is drained), so the scan can
+			// pick the still-streaming sibling and dispose ITS pipeline cts,
+			// killing the sibling's disconnect-abort path (the #613 race
+			// resurfacing at the disposal site). The controller knows exactly
+			// which request it is finishing — it passes the per-request TraceId
+			// (the same one it gave SubmitAsync) — so finalize exactly that item.
 			WorkItem? timelineItem = null;
-			foreach (var kv in _pendingTimelines)
+			if (traceId is { Length: > 0 })
 			{
-				if (kv.Value.SessionId == sessionId
-					&& kv.Value.StreamCompletion.Task.IsCompleted
-					&& _pendingTimelines.TryRemove(kv.Key, out timelineItem))
-					break;
+				_pendingTimelines.TryRemove(traceId, out timelineItem);
+			}
+			else
+			{
+				// Legacy callers (no per-request identity): fall back to the
+				// session scan. Correct when at most one request per session is
+				// streaming — ambiguous only in the concurrent same-session case,
+				// which must always supply the traceId.
+				foreach (var kv in _pendingTimelines)
+				{
+					if (kv.Value.SessionId == sessionId
+						&& kv.Value.StreamCompletion.Task.IsCompleted
+						&& _pendingTimelines.TryRemove(kv.Key, out timelineItem))
+						break;
+				}
 			}
 
 			_pendingBgSaves.TryGetValue(sessionId, out var bgInfo);
-			var traceId = bgInfo.TraceId;
+			// #613-followup: use the caller's per-request traceId when provided —
+			// _pendingBgSaves is session-keyed, so its TraceId is the LAST
+			// writer's under concurrency (the wrong request for stream cleanup).
+			var effectiveTraceId = traceId ?? bgInfo.TraceId;
 
 			// Key _streamCompleted by TraceId (per-turn) to avoid stale entries
 			// from failed requests leaking into subsequent turns for the same session.
-			if (traceId is { Length: > 0 })
-				_streamCompleted.TryAdd(traceId, 0);
+			if (effectiveTraceId is { Length: > 0 })
+				_streamCompleted.TryAdd(effectiveTraceId, 0);
 
 			// Emit the deferred timeline now that the stream is done — decode_ms/total_ms
 			// cover the full stream duration.
@@ -4978,9 +5406,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				EmitTimeline(timelineItem);
 			}
 
-			// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct)
-			if (_pipelineCts.TryRemove(sessionId, out var pipelineCts))
-				pipelineCts.Dispose();
+			// Dispose the pipeline cancellation token source (linked from HTTP ct + scheduler ct).
+			// #613: dispose THIS request's source — via the finalized item's own cts
+			// (per-request, keyed by TraceId). A session-keyed map entry could belong
+			// to a concurrent request on the same session; disposing it would kill that
+			// request's disconnect-abort path (its linked token is disposed before it
+			// can fire → the engine decode keeps generating → slot busy → 503 cascade).
+			if (timelineItem?.PipelineCts is { } itemPipelineCts)
+			{
+				itemPipelineCts.Dispose();
+				if (_pipelineCts.TryGetValue(timelineItem.TraceId, out var mapCts)
+					&& ReferenceEquals(mapCts, itemPipelineCts))
+					_pipelineCts.TryRemove(timelineItem.TraceId, out _);
+			}
+			else if (effectiveTraceId is { Length: > 0 } && _pipelineCts.TryRemove(effectiveTraceId, out var orphanCts))
+			{
+				// No timeline entry yet (early disconnect — the pipeline is still
+				// mid-DecodeAsync): release the in-flight decode's linked source.
+				orphanCts.Dispose();
+			}
 
 			// Capture the KV blob from the engine. This RPC must hold the slot
 			// (it reads from the engine's slot buffer), but it's a single round
@@ -6036,109 +6480,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 	}
 
-	/// <summary>Create a blob from chunk-index-ordered data by reading the
-	/// missing chunks from the Store and filling known chunks from the
-	/// supplied stateData (the previous save's full blob).</summary>
-	private async Task<byte[]> AssembleFromChunksAsync(byte[]? prevState, string storeKey, List<ChunkRef> chunks, string traceId, CancellationToken ct)
-	{
-		var totalSize = chunks.Sum(c => (long)c.Size);
-		var blob = new byte[totalSize];
-
-		// Collect hashes the coordinator already has (from previous state data)
-		var knownHashes = new HashSet<string>();
-		if (prevState != null && prevState.Length > 0)
-		{
-			// Parallel hash-check + copy for previous state data
-			var prevCopyTasks = chunks.Select(c =>
-			{
-				return Task.Run(() =>
-				{
-					var offset = c.Index * _cfg.ChunkSize;
-					if (offset + c.Size <= prevState.Length)
-					{
-						var prevHash = ChunkEngine.ComputeHash(prevState.AsSpan(offset, c.Size));
-						if (prevHash == c.Hash)
-						{
-							Array.Copy(prevState, offset, blob, offset, c.Size);
-							return (c.Hash, true);
-						}
-					}
-					return (c.Hash, false);
-				});
-			}).ToList();
-			await Task.WhenAll(prevCopyTasks);
-			foreach (var (hash, ok) in prevCopyTasks.Select(t => t.Result))
-				if (ok) knownHashes.Add(hash);
-		}
-		// Also check local chunk cache — parallel lookups
-		if (_chunkCache != null)
-		{
-			var remainingChunks = chunks.Where(c => !knownHashes.Contains(c.Hash)).ToList();
-			if (remainingChunks.Count > 0)
-			{
-				var cacheTasks = remainingChunks.Select(c =>
-				{
-					return Task.Run(async () =>
-					{
-						var data = await _chunkCache.GetChunkDataAsync(storeKey, c.Hash, ct);
-						return (c.Hash, c.Index, data);
-					});
-				}).ToList();
-				await Task.WhenAll(cacheTasks);
-				foreach (var (hash, idx, data) in cacheTasks.Select(t => t.Result))
-				{
-					if (data != null)
-					{
-						knownHashes.Add(hash);
-						var offset = idx * _cfg.ChunkSize;
-						Array.Copy(data, 0, blob, offset, data.Length);
-					}
-				}
-			}
-		}
-		// Fetch remaining missing chunks from Store — parallel groups
-		var missingChunks = chunks.Where(c => !knownHashes.Contains(c.Hash)).ToList();
-		if (missingChunks.Count > 0)
-		{
-			// Split missing chunks into parallel groups (up to 4) for concurrent GET_CHUNKED RPCs.
-			// Each group sends its OWN known-hash set (everything NOT in this group) so the Store
-			// returns exactly that group's chunks.
-			const int maxGroups = 4;
-			var groups = new List<List<ChunkRef>>();
-			for (var i = 0; i < maxGroups; i++) groups.Add([]);
-			for (var i = 0; i < missingChunks.Count; i++)
-				groups[i % maxGroups].Add(missingChunks[i]);
-
-			var fetchTasks = groups.Where(g => g.Count > 0).Select(async group =>
-			{
-				// Known = everything EXCEPT this group's chunks
-				var groupHashes = new HashSet<string>(group.Select(c => c.Hash));
-				var knownForGroup = chunks.Where(c => !groupHashes.Contains(c.Hash)).Select(c => c.Hash).ToList();
-				var knownList = JsonSerializer.SerializeToUtf8Bytes(knownForGroup);
-				var storeResp = await StoreClient.RequestAsync(OpCode.GetChunked, storeKey, knownList, traceId, ct);
-				if (storeResp.Status != (byte)StatusCode.Ok)
-					throw new InvalidDataException($"GET_CHUNKED failed (status=0x{storeResp.Status:X2}): {storeResp.Meta}");
-				if (storeResp.Payload is { Length: > 0 })
-				{
-					var off = 0;
-					while (off + 8 <= storeResp.Payload.Length)
-					{
-						var idx = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off));
-						var size = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off + 4));
-						off += 8;
-						if (off + size > storeResp.Payload.Length) break;
-						var dstOff = idx * _cfg.ChunkSize;
-						if (dstOff + size <= blob.Length)
-							Array.Copy(storeResp.Payload, off, blob, dstOff, size);
-						off += size;
-					}
-				}
-			}).ToList();
-			await Task.WhenAll(fetchTasks);
-		}
-		return blob;
-	}
-
 	// ── Gap 4 helpers: n_past tracking ──
 
 	private static int ExtractTotalTokens(Dictionary<string, object> result)
@@ -6193,8 +6534,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		IAsyncEnumerable<byte[]> source, WorkItem item,
 		bool mergedPath = false, Dictionary<string, object>? fallbackRequestBody = null,
 		string? fallbackNodeUrl = null,
-		CancellationToken fallbackCt = default)
+		CancellationToken fallbackCt = default,
+		[EnumeratorCancellation] CancellationToken ct = default)
 	{
+		// #613: the coordinator's own SSE generation loop must observe the
+		// client-disconnect token, not rely on the consumer disposing the
+		// enumerator. [EnumeratorCancellation] wires the controller's
+		// WithCancellation(ct) (RequestAborted) into this parameter, so a
+		// disconnect aborts the loop deterministically on every decode path
+		// (merged + HTTP proxy). The underlying source streams observe the same
+		// linked token and abort their engine reads (HTTP request close /
+		// merged-decode DELETE) in turn.
 		string? lastUtf8 = null;
 		// #616 merged path: one-chunk lookahead — hold the LAST data chunk and
 		// the trailing `data: [DONE]` (when present) so an empty-content stream
@@ -6204,8 +6554,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		byte[]? heldDone = null;
 		bool sawContent = false;
 
-		await foreach (var chunk in source)
+		await foreach (var chunk in source.WithCancellation(ct))
 		{
+			ct.ThrowIfCancellationRequested();
 			var isDone = false;
 			if (chunk.Length > 0)
 			{
@@ -6238,6 +6589,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				yield return heldChunk;
 			heldChunk = chunk;
 		}
+
+		// #613: a client-disconnect abort skips the token-accounting tail and the
+		// merged empty-content fallback — re-issuing the completion for a dead
+		// request would double-run the generation. (The consumer's WithCancellation
+		// normally aborts the loop before reaching here; this guards the edge where
+		// the source ends exactly as the token fires.)
+		if (ct.IsCancellationRequested)
+			yield break;
 
 		if (lastUtf8 != null)
 		{

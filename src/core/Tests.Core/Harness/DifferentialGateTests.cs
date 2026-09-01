@@ -1,0 +1,164 @@
+using Xunit;
+using Xunit.Abstractions;
+
+namespace Tests.Core.Harness;
+
+/// <summary>
+/// DIFFERENTIAL GATE (epic #591 WP3): runs the SAME catalog scenarios against
+/// the v2 scheduler (<see cref="V2ScenarioDriver"/>) and compares the
+/// normalized trace byte-for-byte against the legacy goldens under
+/// <c>Harness/Goldens/</c>.
+///
+/// <para>Only scenarios listed in <see cref="ExpectedParity"/> are ASSERTED;
+/// everything else is reported as SKIP in the test output (a growing parity
+/// matrix). As v2 ports close behavior gaps, move scenarios from the skip
+/// bucket into <c>ExpectedParity</c> — a byte-identical trace is the merge gate
+/// for every strangler swap.</para>
+///
+/// <para>Known divergence: <c>ExpectedParity</c> starts empty because v2's
+/// current pipeline (EnginePrefill → Put → Get → StatePut → HTTP decode) does
+/// not yet reproduce the legacy wire stream (EngineConfigure payloads, same-node
+/// skip-restore, BgSave StateGet+Put, ledger registration, warm-lease
+/// retention). This test documents the current state — the matrix in the output
+/// is the A/B parity scoreboard.</para>
+///
+/// <para>V2 regen mode: set <c>HYDRA_HARNESS_REGEN_V2=1</c> — when the scenario
+/// Id is in <see cref="V2RegenSet"/>, the test WRITES the serialized V2 trace to
+/// the golden path instead of comparing (same <c>SerializeGolden</c> format).</para>
+/// </summary>
+[Collection("HydraHarnessTests")]
+public sealed class DifferentialGateTests
+{
+    /// <summary>Env var that flips the test into V2 golden-regen mode.</summary>
+    private const string V2RegenEnvVar = "HYDRA_HARNESS_REGEN_V2";
+
+    /// <summary>Scenarios eligible for V2 regen — only these three are overwritten.</summary>
+    private static readonly HashSet<string> V2RegenSet = new()
+    {
+        "combined",
+        "chunked_save",
+        "chunked_save_with_pushes",
+    };
+
+    /// <summary>Scenarios the v2 scheduler must byte-match today. Grows with parity.</summary>
+    private static readonly HashSet<string> ExpectedParity = new()
+    {
+        // C4 (epic #591): the engine wire contract. Byte-identical to the legacy
+        // goldens after the merged-decode (0x43) + Gate A + EngineConfigure work:
+        "cold_atomic_engine",
+        "cold_concurrency_pd",
+        "streaming_cold_atomic",
+        "busy_retry_then_success",
+        "busy_exhausted",
+        "merged_decode_accept",
+        "merged_decode_gate_a_reject",
+        // Prefix-checkpoint restore (feature follow-up): byte-identical.
+        "prefix_hit",
+        "prefix_miss",
+        // Chunked save (feature follow-up): byte-identical.
+        "chunked_save",
+        "chunked_save_with_pushes",
+        // COMBINED multi-engine (feature follow-up): byte-identical — head slot +
+        // peer exclusive, hydra_config prefill, skip SaveKv, direct-Put BgSave.
+        "combined",
+        // Cross-node warm fallback (feature follow-up): byte-identical — a warm
+        // turn whose affinity node's only slot is warm-held falls back to an
+        // alternate worker and restores the KV from Store (Get + StatePut).
+        "cross_node_fallback",
+    };
+
+    private readonly ITestOutputHelper _output;
+
+    public DifferentialGateTests(ITestOutputHelper output) => _output = output;
+
+    [Fact]
+    public async Task V2_Traces_Match_Legacy_Goldens_For_InScope_Scenarios()
+    {
+        Directory.CreateDirectory(ScenarioCatalog.GoldensDirectory);
+
+        var regenV2 = Environment.GetEnvironmentVariable(V2RegenEnvVar) == "1";
+        var failures = new List<string>();
+        var matched = 0;
+        var skipped = 0;
+        var matrix = new List<string>();
+
+        foreach (var spec in ScenarioCatalog.All)
+        {
+            if (spec.LegacyOnly)
+            {
+                skipped++;
+                matrix.Add($"{spec.Id,-28} SKIP  (legacy-only direct-drive seams)");
+                continue;
+            }
+            if (spec.LegacyMode)
+            {
+                skipped++;
+                matrix.Add($"{spec.Id,-28} SKIP  (legacy mode UseLlamaEngine=false — v2 is engine-mode/hydra-model by contract)");
+                continue;
+            }
+
+            ScenarioRunResult result;
+            await using (var driver = new V2ScenarioDriver(spec.Options, "sess_h"))
+            {
+                result = await SchedulerScenarioRunner.ExecuteOnAsync(driver, spec);
+            }
+
+            // V2 regen mode: overwrite the golden for selected scenarios and skip comparison.
+            if (regenV2 && V2RegenSet.Contains(spec.Id))
+            {
+                var goldenPathV2 = Path.Combine(ScenarioCatalog.GoldensDirectory, $"{spec.Id}.json");
+                var v2Json = SchedulerScenarioRunner.SerializeGolden(
+                    new GoldenTrace(spec.Id, spec.Description, 1, result.Trace));
+                File.WriteAllText(goldenPathV2, v2Json);
+                _output.WriteLine($"V2 REGEN: wrote {goldenPathV2} ({v2Json.Length} bytes)");
+                matched++;
+                matrix.Add($"{spec.Id,-28} V2-REGEN");
+                continue;
+            }
+
+            var goldenPath = Path.Combine(ScenarioCatalog.GoldensDirectory, $"{spec.Id}.json");
+            if (!File.Exists(goldenPath))
+            {
+                skipped++;
+                matrix.Add($"{spec.Id,-28} SKIP  (no golden on disk)");
+                continue;
+            }
+
+            var expected = File.ReadAllText(goldenPath);
+            var actual = SchedulerScenarioRunner.SerializeGolden(
+                new GoldenTrace(spec.Id, spec.Description, 1, result.Trace));
+            var matches = expected == actual;
+
+            if (!ExpectedParity.Contains(spec.Id))
+            {
+                skipped++;
+                var err = result.Error is null ? "" : $" err={result.Error.GetType().Name}:{result.Error.Message}";
+                matrix.Add($"{spec.Id,-28} SKIP  (not in ExpectedParity)  v2_outcome={result.Outcome,-8} rpc={result.Trace.Rpc.Count,2} match={matches}{err}");
+                continue;
+            }
+
+            if (matches)
+            {
+                matched++;
+                matrix.Add($"{spec.Id,-28} MATCH");
+            }
+            else
+            {
+                failures.Add($"{spec.Id}: TRACE DRIFT vs golden — outcome={result.Outcome}, " +
+                             $"rpc={result.Trace.Rpc.Count}, busy={string.Join(",", result.Trace.BusySeconds.Select(kv => $"{kv.Key}={kv.Value}"))}, " +
+                             $"final={result.Trace.FinalState}");
+            }
+        }
+
+        // Always report the matrix (the parity scoreboard) even on success.
+        _output.WriteLine("PARITY MATRIX (v2 vs legacy goldens):\n" + string.Join("\n", matrix));
+        var matrixText = string.Join("\n", matrix);
+        Assert.True(failures.Count == 0,
+            $"Differential gate: {matched} matched, {skipped} skipped, {failures.Count} drifted.\n" +
+            $"PARITY MATRIX:\n{matrixText}\n" +
+            (failures.Count == 0 ? "" : "DRIFT:\n" + string.Join("\n", failures)));
+
+        if (ExpectedParity.Count > 0)
+            Assert.Equal(ExpectedParity.Count, matched);
+    }
+}

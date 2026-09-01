@@ -130,6 +130,14 @@ public sealed class EngineModeTests
                     JsonSerializer.Serialize(new { n_past = 1050, tokens_generated = 50, stop_reason = "complete" }),
                     Encoding.UTF8.GetBytes("Hello from engine decode")),
 
+                // Store Get — used by RestoreKvAsync to fetch the KV blob from the Store.
+                // Must return a non-empty payload; a zero-length blob triggers the
+                // #716 empty-payload guard (coordinator-side fail-fast before wire).
+                OpCode.Get => new RpcResponse(
+                    (byte)StatusCode.Ok,
+                    null,
+                    new byte[2048]),
+
                 OpCode.StateGet => new RpcResponse(
                     (byte)StatusCode.Ok,
                     JsonSerializer.Serialize(new { n_past = 2000 }),
@@ -376,8 +384,8 @@ public sealed class EngineModeTests
             {
                 new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
             };
-            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
-                maxTokens, prefixHash, _runCts.Token);
+            return CompletionResults.Unwrap(await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+                maxTokens, prefixHash, _runCts.Token));
         }
 
         /// <summary>#470 canonical identity: submit with the `model` field as a

@@ -129,7 +129,7 @@ public class LlamaClient : IDisposable
         return new StateStreamResult(response, stream, contentLength);
     }
 
-    public async Task<RestoreResult> PutStateAsync(int slotId, Stream data, long contentLength, CancellationToken ct)
+    public virtual async Task<RestoreResult> PutStateAsync(int slotId, Stream data, long contentLength, CancellationToken ct)
     {
         var content = new StreamContent(data, 65536);
         content.Headers.ContentLength = contentLength;

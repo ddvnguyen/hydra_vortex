@@ -5,10 +5,17 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/vm1/hydra
+# Deploy-time engine pin (#470): the env file carries the exact
+# LLAMA_IMAGE_SOURCE / LLAMA_IMAGE_DIGEST set at deploy time by
+# deploy-hydra-head.sh p100. Empty (=form) → the head falls back
+# to the node config file (node-p100.yaml).
+EnvironmentFile=/home/vm1/.config/hydra-head/env
 ExecStart=/home/vm1/hydra/bin/hydra-head \
   -global /home/vm1/hydra/config/global.yaml \
   -node /home/vm1/hydra/config/node-p100.yaml \
-  -api-port 9700
+  -api-port 9700 \
+  -llama-image-source=${LLAMA_IMAGE_SOURCE} \
+  -llama-image-digest=${LLAMA_IMAGE_DIGEST}
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

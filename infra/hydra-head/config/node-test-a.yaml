@@ -1,0 +1,52 @@
+# Hydra Head - TEST A Node Configuration (P100 single-GPU shared-VRAM)
+# Copied from infra/hydra-head/config/node-p100-mini.yaml and trimmed for test instance A.
+# P100 VM is single-GPU; both test-a and test-b share CUDA_VISIBLE_DEVICES=0 via mmap page-cache.
+# This is single-GPU shared-VRAM P/D, not true 2-GPU P/D split.
+#
+# Port plan (+10000 vs prod):
+#   head API: 19700 (compose -api-port), engine HTTP: 18086, engine RPC: 19513
+#
+node:
+  name: test-a
+  mode: vm
+
+infra:
+  otel:
+    url: http://192.168.122.1:4318
+
+binaries:
+  llama-server:
+    source: ghcr.io/ddvnguyen/llama-server-sm60:f518cff16
+    binary: llama-engine
+    dest: /opt/hydra-min-test/llama-engine
+
+llama:
+  binary: /opt/hydra-min-test/llama-engine
+  working_dir: /opt/hydra-min-test
+  port: 18086
+  rpc_port: 19513
+  env:
+    OTEL_SERVICE_NAME: llama-engine-test-a
+    OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://192.168.122.1:4318
+    LD_LIBRARY_PATH: /opt/hydra-min-test
+  params:
+    model: /opt/hydra-min-test/Qwen3.5-9B-Q4_K_M.gguf
+    ctx-size: 4096
+    parallel: 1
+    n-gpu-layers: 16
+    threads: 3
+    cache-type-k: q8_0
+    cache-type-v: q8_0
+    cont-batching: true
+    flash-attn: true
+    chat-template-kwargs: '{"preserve_thinking": true}'
+
+services:
+  node_exporter:
+    enabled: false
+  nvidia_exporter:
+    enabled: false
+
+readiness:
+  timeout_sec: 120
