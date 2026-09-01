@@ -324,3 +324,15 @@ touched.
 | Reason | `opencode-go/ox-alpha-free` deprecated — errors "Model not found" when prompted; killed both consultant relay agents (26a5ca56, 6f8a1b9e) |
 | Mitigation baked in | glm-5.3-flash truncates on long multi-step turns → all briefings phase-gated, single-action prompts, "reply only X then stop" |
 | New agent | P100 VM passthrough leader dispatched this date; mission: attach `<hostdev>` for 08:00.0 to domain `ubuntu26_server`, reboot, verify in-VM nvidia-smi |
+
+## #712 prefix-KV reuse — lead direct implementation (2026-08-31 → 2026-09-01)
+
+| Item | Detail |
+|---|---|
+| Task | P0 #712: solo/cold route full re-prefill every turn (TTFT 99s→234s over 6 turns, linear) |
+| Executor | Lead session (pi coding agent) direct — no Paseo delegation. Rationale: multi-component change with live-rig iteration (6 images v1→v6); delegate round-trips would have dominated. Zero-trust satisfied by independent A/B re-runs + full hermetic suites + engine-trace ground truth. |
+| Outcome | DRAFT PR #732 (`fix/712-prefix-reuse` → `epic/697-final-verify`), commit `f381f11`. Final A/B: T1–T6 TTFT 34.3/26.8/26.7/28.4/28.1/31.8 s = max 1.10× A/B#4 baseline (criterion ≤1.5× every turn). Engine N_COMMON 8321/14530/20289/26048/31357 → delta-only prefills. |
+| Defects found+fixed during rig A/B (each with its own image + re-run) | (1) save/restore race — restore read previous turn's blob, delta +1 turn (v2: T3–T6 ~48 s); (2) T4 144 s — failed 0x41 INFO poll blanked EngineCapabilities → silent HTTP fallback → `model_path` mismatch → engine T3-rebuild attempt wiped slot; fixed via health-cap carry-forward + `model_path` strip + `decode_path`/`Caps=` logging; (3) T2 43.3 s — redundant evict save (second full STATE_GET+PUT) serialized with bg save on engine RPC channel; fixed via `StoreNPast` freshness skip. |
+| Tests | +5 hermetic (strip ×2, health-carry ×1, evict-skip ×2 + test seam `SeedWarmLeaseForTest`). Tests.Core 722/722, Tests.Shared 70/70. |
+| Known flake | `MergedDecodeModelAliasTests.ModelAgnosticWorker_FallsBackToRequestRoutingIdentity_DecodeRole` fails ~1/5 full-suite runs (static `ModelConfigLoader` race vs `WorkerSchedulerTests` under xunit parallelism); 0/5 isolated; pre-existing, unrelated to #712. |
+| Rig | test-a `:19000` only; images `localhost/hydra-core:712-w1-before` (a20c91f) / `:712-w1` (c7e9d8d). Engines untouched (no restarts); test-b `:19001` untouched. |
