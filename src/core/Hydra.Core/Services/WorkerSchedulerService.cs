@@ -3462,8 +3462,34 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
-					var prefixKey = $"prefix/{item.PrefixHash}.kv";
 					var kvPayload = payload;
+
+					// #721: invariant — NEVER write an empty blob to the store.
+					// Stream-to-store prefill (EnginePrefillChunkedAndStoreAsync,
+					// #470) leaves the KV in the Store under the session key and
+					// nulls the in-memory payload. The old code issued the prefix
+					// Put with that null payload → a zero-byte blob under
+					// prefix/... plus an NRE on the SizeMB log line (logged as
+					// prefix_save_failed); every later restore of the poisoned key
+					// forwarded an empty STATE_PUT the engine quarantines → full
+					// re-prefill each turn. Skip the save entirely BEFORE any store
+					// op. An absent prefix key is a clean miss on restore
+					// (prefix_not_found → Prefill).
+					//
+					// Follow-up (note on #721): sourcing the prefix blob at the
+					// store level is NOT a simple copy of the streamed session blob
+					// — that blob covers the full request, and saving it under the
+					// system-prompt key would reintroduce the #245 "live poisoning"
+					// bug (prefix checkpoint must be truncated to SysTokens).
+					if (kvPayload is null)
+					{
+						_log.Information("prefix_save_skipped_streamed Sid={Sid} Hash={Hash} — KvStreamedToStore, no in-memory payload; absent key restores as clean miss",
+							item.SessionId, item.PrefixHash);
+						CoordinatorMetrics.PrefixSavePayloadTruncated.WithLabels("streamed_to_store").Inc();
+						return WorkItemState.SaveDone;
+					}
+
+					var prefixKey = $"prefix/{item.PrefixHash}.kv";
 					var traceId = item.TraceId;
 					var sysTokens = item.SystemPromptTokens;
 					var prefixNPast = item.NPastAfter;
@@ -3895,6 +3921,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// #470 Phase 2: null when the KV is streamed from the Store instead
 			// of assembled (merged-capable decode, chunks mode).
 			byte[]? restoreBlob = null;
+			// #720 P1: non-merged chunked path streams local+store chunks into
+			// the STATE_PUT body — no full-blob assembly in coordinator RAM.
+			OrderedKvStateStream? restoreStream = null;
 			if (_cfg.EnableChunks)
 			{
 				// ── Restore Phase 1: GetManifest ──────────────────────
@@ -3952,26 +3981,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
-					var assembleSw = System.Diagnostics.Stopwatch.StartNew();
-					restoreBlob = await AssembleFromChunksAsync(null, storeKey, manifestChunks, item.TraceId, ct);
-					assembleSw.Stop();
-					item.KvBytes = restoreBlob.Length;
-
-					// #716 Store-side diagnostic: compare assembled blob size against
-					// the manifest's declared total_size. A mismatch means the Store
-					// chunks are incomplete or the manifest is wrong.
-					if (totalSize > 0 && restoreBlob.Length != totalSize)
-					{
-						_log.Error(
-							"restore_assemble_size_mismatch Sid={Sid} StoreKey={Key} ManifestSize={Manifest} " +
-							"AssembledSize={Assembled} Delta={Delta} — assembled fewer bytes than manifest declares",
-							item.SessionId, storeKey, totalSize, restoreBlob.Length,
-							restoreBlob.Length - totalSize);
-					}
-
-					_log.Information("state_assembled Sid={Sid} SizeMB={Size} Chunks={Count} manifest_ms={ManifestMs} assemble_ms={AssembleMs}",
-						item.SessionId, restoreBlob.Length / 1024 / 1024, manifestChunks.Count,
-						manifestSw.ElapsedMilliseconds, assembleSw.ElapsedMilliseconds);
+					// #720 P1: stream local + store chunks in manifest order straight
+					// into the STATE_PUT body (below) — no full-blob assembly.
+					// Cache is keyed by the session id (the scheduler's save
+					// convention); the old AssembleFromChunksAsync probed it with
+					// the store key, so L1 never hit on this path.
+					var planSw = System.Diagnostics.Stopwatch.StartNew();
+					restoreStream = OrderedKvStateStream.Create(
+						manifestChunks, totalSize, _chunkCache, item.SessionId,
+						StoreClient, storeKey, item.TraceId, ct);
+					planSw.Stop();
+					item.KvBytes = totalSize;
+					_log.Information("state_stream_planned Sid={Sid} SizeMB={Size} Chunks={Count} Local={Local} manifest_ms={ManifestMs} plan_ms={PlanMs}",
+						item.SessionId, totalSize / 1024 / 1024, manifestChunks.Count, restoreStream.LocalChunks,
+						manifestSw.ElapsedMilliseconds, planSw.ElapsedMilliseconds);
 				}
 			}
 			else
@@ -4012,6 +4035,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var mergedCapable = _health.GetNodeInfo(w.Name)?.EngineCapabilities?.Contains(Protocol.CapMergedDecode) == true;
 			if (mergedCapable)
 			{
+				// #720 P1: if health flipped between the phase-2 plan and this
+				// check, drop the planned stream — the merged path carries the
+				// KV via item.KvChunks instead.
+				restoreStream?.Dispose();
 				if (restoreBlob != null)
 				{
 					// Carry the assembled KV blob forward to DecodeAsync so the
@@ -4032,16 +4059,32 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 			var putSw = System.Diagnostics.Stopwatch.StartNew();
 			var llamaRpc = GetStateRpcClient(w);
-			var putResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
-				slotId.ToString(), restoreBlob, item.TraceId, ct);
+			Hydra.Shared.RpcResponse putResp;
+			try
+			{
+				// #720 P1: stream the state body on the chunked path — the
+				// wire framing is identical to RequestAsync (header, then body
+				// bytes) and the engine buffers the body server-side.
+				putResp = restoreStream is not null
+					? await llamaRpc.RequestStreamBodyAsync(Hydra.Shared.OpCode.StatePut,
+						slotId.ToString(), restoreStream, item.KvBytes, item.TraceId, ct)
+					: await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StatePut,
+						slotId.ToString(), restoreBlob, item.TraceId, ct);
+			}
+			finally
+			{
+				// The RPC layer consumes the body but does not own it.
+				restoreStream?.Dispose();
+			}
 			putSw.Stop();
 
 			if (putResp.Status != (byte)Hydra.Shared.StatusCode.Ok)
 				throw new InvalidOperationException($"StatePut RPC failed: status={putResp.Status} meta={putResp.Meta}");
 
 			// #469 trace: log STATE_PUT response for cross-flow comparison
-				_log.Debug("#PD-TRACE STATE_PUT_RESPONSE Sid={Sid} Node={Node} Slot={Slot} Status={Status} Meta={Meta} BlobSize={BlobSize}",
-				item.SessionId, w.Name, slotId, putResp.Status, putResp.Meta ?? "(null)", restoreBlob.Length);
+			var putBytes = restoreStream is not null ? item.KvBytes : restoreBlob!.Length;
+			_log.Debug("#PD-TRACE STATE_PUT_RESPONSE Sid={Sid} Node={Node} Slot={Slot} Status={Status} Meta={Meta} BlobSize={BlobSize}",
+				item.SessionId, w.Name, slotId, putResp.Status, putResp.Meta ?? "(null)", putBytes);
 
 			_log.Information("restore_kv_timing Sid={Sid} total_ms={TotalMs} put_ms={PutMs}",
 				item.SessionId, restoreSw.ElapsedMilliseconds, putSw.ElapsedMilliseconds);
@@ -6435,109 +6478,6 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		{
 			await producer; // surface producer failures / cancellation
 		}
-	}
-
-	/// <summary>Create a blob from chunk-index-ordered data by reading the
-	/// missing chunks from the Store and filling known chunks from the
-	/// supplied stateData (the previous save's full blob).</summary>
-	private async Task<byte[]> AssembleFromChunksAsync(byte[]? prevState, string storeKey, List<ChunkRef> chunks, string traceId, CancellationToken ct)
-	{
-		var totalSize = chunks.Sum(c => (long)c.Size);
-		var blob = new byte[totalSize];
-
-		// Collect hashes the coordinator already has (from previous state data)
-		var knownHashes = new HashSet<string>();
-		if (prevState != null && prevState.Length > 0)
-		{
-			// Parallel hash-check + copy for previous state data
-			var prevCopyTasks = chunks.Select(c =>
-			{
-				return Task.Run(() =>
-				{
-					var offset = c.Index * _cfg.ChunkSize;
-					if (offset + c.Size <= prevState.Length)
-					{
-						var prevHash = ChunkEngine.ComputeHash(prevState.AsSpan(offset, c.Size));
-						if (prevHash == c.Hash)
-						{
-							Array.Copy(prevState, offset, blob, offset, c.Size);
-							return (c.Hash, true);
-						}
-					}
-					return (c.Hash, false);
-				});
-			}).ToList();
-			await Task.WhenAll(prevCopyTasks);
-			foreach (var (hash, ok) in prevCopyTasks.Select(t => t.Result))
-				if (ok) knownHashes.Add(hash);
-		}
-		// Also check local chunk cache — parallel lookups
-		if (_chunkCache != null)
-		{
-			var remainingChunks = chunks.Where(c => !knownHashes.Contains(c.Hash)).ToList();
-			if (remainingChunks.Count > 0)
-			{
-				var cacheTasks = remainingChunks.Select(c =>
-				{
-					return Task.Run(async () =>
-					{
-						var data = await _chunkCache.GetChunkDataAsync(storeKey, c.Hash, ct);
-						return (c.Hash, c.Index, data);
-					});
-				}).ToList();
-				await Task.WhenAll(cacheTasks);
-				foreach (var (hash, idx, data) in cacheTasks.Select(t => t.Result))
-				{
-					if (data != null)
-					{
-						knownHashes.Add(hash);
-						var offset = idx * _cfg.ChunkSize;
-						Array.Copy(data, 0, blob, offset, data.Length);
-					}
-				}
-			}
-		}
-		// Fetch remaining missing chunks from Store — parallel groups
-		var missingChunks = chunks.Where(c => !knownHashes.Contains(c.Hash)).ToList();
-		if (missingChunks.Count > 0)
-		{
-			// Split missing chunks into parallel groups (up to 4) for concurrent GET_CHUNKED RPCs.
-			// Each group sends its OWN known-hash set (everything NOT in this group) so the Store
-			// returns exactly that group's chunks.
-			const int maxGroups = 4;
-			var groups = new List<List<ChunkRef>>();
-			for (var i = 0; i < maxGroups; i++) groups.Add([]);
-			for (var i = 0; i < missingChunks.Count; i++)
-				groups[i % maxGroups].Add(missingChunks[i]);
-
-			var fetchTasks = groups.Where(g => g.Count > 0).Select(async group =>
-			{
-				// Known = everything EXCEPT this group's chunks
-				var groupHashes = new HashSet<string>(group.Select(c => c.Hash));
-				var knownForGroup = chunks.Where(c => !groupHashes.Contains(c.Hash)).Select(c => c.Hash).ToList();
-				var knownList = JsonSerializer.SerializeToUtf8Bytes(knownForGroup);
-				var storeResp = await StoreClient.RequestAsync(OpCode.GetChunked, storeKey, knownList, traceId, ct);
-				if (storeResp.Status != (byte)StatusCode.Ok)
-					throw new InvalidDataException($"GET_CHUNKED failed (status=0x{storeResp.Status:X2}): {storeResp.Meta}");
-				if (storeResp.Payload is { Length: > 0 })
-				{
-					var off = 0;
-					while (off + 8 <= storeResp.Payload.Length)
-					{
-						var idx = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off));
-						var size = BinaryPrimitives.ReadInt32LittleEndian(storeResp.Payload.AsSpan(off + 4));
-						off += 8;
-						if (off + size > storeResp.Payload.Length) break;
-						var dstOff = idx * _cfg.ChunkSize;
-						if (dstOff + size <= blob.Length)
-							Array.Copy(storeResp.Payload, off, blob, dstOff, size);
-						off += size;
-					}
-				}
-			}).ToList();
-			await Task.WhenAll(fetchTasks);
-		}
-		return blob;
 	}
 
 	// ── Gap 4 helpers: n_past tracking ──
