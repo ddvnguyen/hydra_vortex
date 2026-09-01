@@ -136,14 +136,24 @@ public sealed class WorkerTracker : IWorkerTracker
         _held.GetOrAdd(name, _ => new ConcurrentStack<int>());
     }
 
-    public bool TryAcquireSlot(string name, out int slotId, string role = "decode")
+    public bool TryAcquireSlot(string name, out int slotId, string role = "decode", int? pinnedSlot = null)
     {
         slotId = -1;
         if (!_states.TryGetValue(name, out var s)) return false;
         lock (s) { if (!s.Healthy || s.ExclusiveReserved || s.Swapping) return false; }
         if (!_pools.TryGetValue(name, out var pool)) return false;
-        if (!pool.TryRent(out slotId)) return false;
         if (!_held.TryGetValue(name, out var held)) return false;
+        if (pinnedSlot is int pinned)
+        {
+            // #718: slot-pinned acquire — rent exactly the slot the caller
+            // verified the session's KV resident on. Fails (no side effects)
+            // when that slot is not free.
+            if (!pool.TryRentPinned(pinned, out slotId)) return false;
+        }
+        else if (!pool.TryRent(out slotId))
+        {
+            return false;
+        }
         held.Push(slotId);
         lock (s) { s.Role = role; s.BusySince = DateTime.UtcNow; }
         return true;

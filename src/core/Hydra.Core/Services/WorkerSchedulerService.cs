@@ -1072,12 +1072,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// to PickDecodeAsync→RestoreKvAsync (30s+ Store Get+StatePut), check
 			// if the session's KV is still resident on its bound worker — the
 			// engine's live /slots poll is the real residency truth, not SlotFreed.
-			// On success: acquire a prefill slot on the bound worker and go straight
-			// to Prefill (skip Store round-trip entirely).
+			// On success: acquire a PINNED lease on the bound worker's resident slot
+			// (entry.SlotId) and go straight to Prefill (skip Store round-trip
+			// entirely).
 			//
 			// IMPORTANT: check TryWarmSlotFastPath BEFORE TryAcquireSlot to avoid
 			// leaking the slot if the helper rejects (empty BoundModel, model
 			// mismatch, slot not in /slots list, etc.).
+			//
+			// #718 round-3: the lease MUST be pinned to entry.SlotId. The generic
+			// TryAcquireSlot pops whatever is on top of the free stack — on a
+			// multi-slot worker that can be a different slot, which would target
+			// Prefill + PrefixNPast at a slot that does not hold this session's
+			// resident KV (cache nuke, or evicting another session's warm cache).
+			// If the resident slot is not free the pinned acquire fails and we fall
+			// through to PickDecodeAsync (full restore) — never a second slot.
 			if (_cfg.WarmSlotFastPathEnabled
 				&& entry.SlotId.HasValue
 				&& !string.IsNullOrEmpty(entry.NodeName))
@@ -1085,7 +1094,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				var target = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
 				if (target != null
 					&& TryWarmSlotFastPath(item, target, entry, "migration")
-					&& _tracker.TryAcquireSlot(target.Name, out var fpSlot, "prefill"))
+					&& _tracker.TryAcquireSlot(target.Name, out var fpSlot, "prefill", entry.SlotId))
 				{
 					item.PrefillWorker = target;
 					item.PrefillSlot = fpSlot;
@@ -1116,7 +1125,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	// ── #718 warm-slot fast-path helper ──────────────────────────────────
-	// Shared logic for both call sites (verify-fail and n_past-guard). Returns
+	// Shared logic for all call sites (verify-fail, n_past-guard, migration,
+	// cold_route). The caller is responsible for the slot lease: sites that
+	// return Prefill from here must acquire it PINNED to entry.SlotId (#718
+	// round-3) — the generic pool rent may hand out a different physical slot.
+	// Returns
 	// true and mutates item when the fast path is taken; false otherwise.
 	//
 	// Conditions:
@@ -1205,14 +1218,29 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// SlotFreed. If the bound worker is healthy, still serves the same model,
 		// and the engine's /slots poll still lists the session's slot → go straight
 		// to Prefill, skipping PrefixRestore/Store Get+StatePut entirely.
+		//
+		// #718 round-3: the fast path MUST hold a lease on the resident slot
+		// (pinned acquire on entry.SlotId) — without one, another concurrent route
+		// can rent the same physical slot while this Prefill is in flight (the
+		// round-1 unprotected-slot race). Unlike the cold_atomic route below (slot
+		// owned by item.DecodeLease), this intercept is a pure prefill route, so
+		// the slot is owned by item.PrefillLease, mirroring the migration
+		// interception and cold_concurrency. If the pinned slot is not free we
+		// fall through to the normal cold routing (restore path).
 		if (_cfg.WarmSlotFastPathEnabled)
 		{
 			var entry = _ledger.Lookup(item.SessionId);
 			if (entry != null && entry.SlotId.HasValue)
 			{
 				var target = _cfg.Workers.FirstOrDefault(w => w.Name == entry.NodeName);
-				if (target != null && TryWarmSlotFastPath(item, target, entry, "cold_route"))
+				if (target != null
+					&& TryWarmSlotFastPath(item, target, entry, "cold_route")
+					&& _tracker.TryAcquireSlot(target.Name, out var fpSlot, "prefill", entry.SlotId))
 				{
+					item.PrefillWorker = target;
+					item.PrefillSlot = fpSlot;
+					item.PrefillLease = new SlotLease(target.Name, fpSlot, item.SessionId,
+						LeaseLifetime.Short, _tracker);
 					return WorkItemState.Prefill;
 				}
 			}
@@ -2051,8 +2079,9 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// <summary>
 	/// Release every lease a prefill phase may hold before a failure/retry
 	/// re-routes the item. PrefillLease covers the cold_concurrency / PD-split
-	/// routes; the cold_atomic route holds the prefill slot via item.DecodeLease
-	/// (PrefillLease is deliberately null there — ColdRouteAsync). #635 fix 3:
+	/// routes and the #718 warm-slot fast-path cold_route intercept; the
+	/// cold_atomic route holds the prefill slot via item.DecodeLease (PrefillLease
+	/// is deliberately null ONLY there — ColdRouteAsync). #635 fix 3:
 	/// a prefill failure MUST release BOTH, or the tracker keeps the slot busy
 	/// and a re-enqueued/retried item is gated on IsFree forever (observed:
 	/// pipeline_retry Retries=2 → queued while the engine was free).
