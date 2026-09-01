@@ -104,7 +104,7 @@ fluent-DSL state machine + differential parity harness). Branch: `epic/591-rewri
 ### Warm-Slot Fast Path (#718, M-Perf)
 | Item | Status | Notes |
 |------|--------|-------|
-| #718 skip Store Get+StatePut restore when session KV still resident on bound slot | 🚧 PR #719 (epic/697-final-verify track) | Pinned-slot lease on both interception sites; ForceMode takes precedence over the fast path (round-4 item 6a) |
+| #718 skip Store Get+StatePut restore when session KV still resident on bound slot | ✅ Merged to epic/697-final-verify (PR #719) — pending epic→main, not yet live-GPU verified | Pinned-slot lease on both interception sites; ForceMode takes precedence over the fast path (round-4 item 6a) |
 
 ### Model Config (models.json)
 | Model Alias | Mode | GPUs | Status |
