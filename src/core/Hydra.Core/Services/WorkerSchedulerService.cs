@@ -1227,7 +1227,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// the slot is owned by item.PrefillLease, mirroring the migration
 		// interception and cold_concurrency. If the pinned slot is not free we
 		// fall through to the normal cold routing (restore path).
-		if (_cfg.WarmSlotFastPathEnabled)
+		//
+		// Round-4 (item 6a, owner decision): ForceMode is a documented
+		// debug/test override and takes precedence over the fast path — a
+		// force_mode request on a warm session must reach the ForceMode routing
+		// block below, not be silently captured here.
+		if (_cfg.WarmSlotFastPathEnabled && string.IsNullOrWhiteSpace(item.ForceMode))
 		{
 			var entry = _ledger.Lookup(item.SessionId);
 			if (entry != null && entry.SlotId.HasValue)

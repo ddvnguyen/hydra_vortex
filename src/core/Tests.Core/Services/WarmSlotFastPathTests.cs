@@ -18,10 +18,12 @@ namespace Tests.Core.Services;
 /// </summary>
 public sealed class WarmSlotFastPathTests
 {
-	private static CoordinatorConfig MakeConfig(bool fastPathEnabled = true, bool warmVerifyEnabled = true) => new()
+	private static CoordinatorConfig MakeConfig(
+		bool fastPathEnabled = true, bool warmVerifyEnabled = true, int? warmThreshold = null) => new()
 	{
 		WarmSlotVerificationEnabled = warmVerifyEnabled,
 		WarmSlotFastPathEnabled = fastPathEnabled,
+		WarmThreshold = warmThreshold ?? 5120, // pin the default — tests must not depend on HYDRA_COORD_WARM_THRESHOLD
 		PrefixCheckpointEnabled = false,
 		EnableChunks = false,
 		UseLlamaEngine = true,
@@ -47,9 +49,9 @@ public sealed class WarmSlotFastPathTests
 		string sessionId, string boundModel, int nPast,
 		bool fastPathEnabled = true, bool warmVerifyEnabled = true,
 		string? residentModel = null, bool workerHealthy = true,
-		List<SlotInfo>? slots = null, int residentSlot = 0)
+		List<SlotInfo>? slots = null, int residentSlot = 0, int? warmThreshold = null)
 	{
-		var cfg = MakeConfig(fastPathEnabled, warmVerifyEnabled);
+		var cfg = MakeConfig(fastPathEnabled, warmVerifyEnabled, warmThreshold);
 		var fake = new FakeStoreClient();
 		var health = new WarmFastPathHealthMonitor(
 			workerHealthy, residentModel ?? boundModel,
@@ -155,16 +157,18 @@ public sealed class WarmSlotFastPathTests
 	}
 
 	/// <summary>
-	/// #718 round-3, site 2 (ColdRouteAsync interception) regression: a ForceMode
-	/// request on a session with prior residency goes RouteAsync →
-	/// EvictWarmAndColdRouteAsync → ColdRouteAsync, bypassing the migration block
-	/// entirely. The fast path fires and MUST hold a lease on the resident slot
-	/// (PrefillLease non-null) — without one, another concurrent route can rent
-	/// entry.SlotId while this Prefill is in flight (the round-1
-	/// unprotected-slot race). No Store Get.
+	/// #718 round-3, site 2 (ColdRouteAsync interception) regression: a warm
+	/// session whose incremental prompt exceeds WarmThreshold goes
+	/// RouteAsync → EvictWarmAndColdRouteAsync → ColdRouteAsync, bypassing the
+	/// migration block entirely. The fast path fires and MUST hold a lease on
+	/// the resident slot (PrefillLease non-null) — without one, another
+	/// concurrent route can rent entry.SlotId while this Prefill is in flight
+	/// (the round-1 unprotected-slot race). No Store Get.
+	/// (Round-4 item 6a: previously driven via ForceMode, which now takes
+	/// precedence over the fast path — see ForceMode_SkipsFastPath_NormalForceRoutingProceeds.)
 	/// </summary>
 	[Fact]
-	public async Task ColdRouteSite_ForceMode_LeaseHeld_NoStoreGet()
+	public async Task ColdRouteSite_WarmThresholdEvict_LeaseHeld_NoStoreGet()
 	{
 		const string sessionId = "warm-fastpath-7";
 		const string boundModel = "moe-35b-solo";
@@ -173,8 +177,9 @@ public sealed class WarmSlotFastPathTests
 		var (scheduler, ledger, fake, tracker) = SetupScheduler(sessionId, boundModel, nPast);
 		Assert.True(tracker.FreeSlotCount("rtx") == 2, "precondition: fresh 2-slot pool");
 
-		var item = MakeItem(sessionId, 300);
-		item.ForceMode = "pd"; // RouteAsync's first line → EvictWarmAndColdRouteAsync → ColdRouteAsync (site 2)
+		// Incremental prompt = 6000 - 300 (NPromptTokens baseline) = 5700 > WarmThreshold (5120)
+		// → EvictWarmAndColdRouteAsync → ColdRouteAsync (site 2).
+		var item = MakeItem(sessionId, 6000);
 		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
 
 		Assert.Equal(WorkItemState.Prefill, next);
@@ -229,11 +234,13 @@ public sealed class WarmSlotFastPathTests
 
 	/// <summary>
 	/// #718 round-3, site 2 (ColdRouteAsync interception) multi-slot pinning:
-	/// same scenario as MultiSlot_MigrationSite_PinsResidentSlot_NotLowestFree but
-	/// driven through ForceMode so the item reaches ColdRouteAsync directly.
+	/// same scenario as MultiSlot_MigrationSite_PinsResidentSlot_NotLowestFree
+	/// but driven through the WarmThreshold-eviction path so the item reaches
+	/// ColdRouteAsync directly (round-4 item 6a: ForceMode now skips the fast
+	/// path and can no longer drive site 2).
 	/// </summary>
 	[Fact]
-	public async Task MultiSlot_ColdRouteSite_PinsResidentSlot_NotLowestFree()
+	public async Task MultiSlot_ColdRouteSite_WarmThresholdEvict_PinsResidentSlot_NotLowestFree()
 	{
 		const string sessionId = "warm-fastpath-9";
 		const string boundModel = "moe-35b-solo";
@@ -244,8 +251,8 @@ public sealed class WarmSlotFastPathTests
 			sessionId, boundModel, nPast, residentSlot: residentSlot);
 		Assert.True(tracker.FreeSlotCount("rtx") == 2, "precondition: fresh 2-slot pool");
 
-		var item = MakeItem(sessionId, 300);
-		item.ForceMode = "pd"; // → EvictWarmAndColdRouteAsync → ColdRouteAsync (site 2)
+		// Incremental prompt 5700 > WarmThreshold (5120) → EvictWarmAndColdRouteAsync → ColdRouteAsync (site 2)
+		var item = MakeItem(sessionId, 6000);
 		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
 
 		Assert.Equal(WorkItemState.Prefill, next);
@@ -255,6 +262,40 @@ public sealed class WarmSlotFastPathTests
 		Assert.Equal(residentSlot, item.PrefillLease!.SlotId);
 		Assert.Equal(1, tracker.FreeSlotCount("rtx"));
 		Assert.Equal(0, fake.CallCount(OpCode.Get));
+	}
+
+	/// <summary>
+	/// Round-4 item 6a (owner decision): ForceMode is a documented debug/test
+	/// override and takes precedence over the warm-slot fast path. A
+	/// force_mode request on a session with warm residency must NOT be captured
+	/// by the site-2 fast path (no "warm_slot_fastpath" route, no fast-path
+	/// lease on the resident slot) — it proceeds to the normal ForceMode
+	/// routing block.
+	/// </summary>
+	[Fact]
+	public async Task ForceMode_SkipsFastPath_NormalForceRoutingProceeds()
+	{
+		const string sessionId = "warm-fastpath-11";
+		const string boundModel = "moe-35b-solo";
+		const int nPast = 5000;
+		const int residentSlot = 1;
+
+		var (scheduler, ledger, fake, tracker) = SetupScheduler(
+			sessionId, boundModel, nPast, residentSlot: residentSlot);
+		Assert.True(tracker.FreeSlotCount("rtx") == 2, "precondition: fresh 2-slot pool");
+
+		var item = MakeItem(sessionId, 300);
+		item.ForceMode = "pd";
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// Normal ForceMode (P/D split) routing ran — NOT the fast path.
+		Assert.Equal("cold_pd", item.RouteType);
+		Assert.False(item.PrefixCacheHit);
+		Assert.Equal(WorkItemState.PrefixRestore, next); // UseLlamaEngine=true
+		// The pd block rents its own generic prefill slot — on a fresh 2-slot
+		// pool that is slot 0, NOT the resident slot 1 (no fast-path pin happened).
+		Assert.NotNull(item.PrefillLease);
+		Assert.True(item.PrefillLease!.SlotId != residentSlot, "pd routing must not reuse the fast-path pinned resident slot");
 	}
 
 	/// <summary>

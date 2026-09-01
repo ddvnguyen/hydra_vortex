@@ -101,6 +101,11 @@ fluent-DSL state machine + differential parity harness). Branch: `epic/591-rewri
 | Differential gate (WP3) | ✅ Implemented — runs the catalog against v2 via `V2ScenarioDriver`, diffs vs legacy goldens, prints parity matrix (legacy-mode scenarios skipped) | `src/core/Tests.Core/Harness/DifferentialGateTests.cs`, `IScenarioDriver.cs`, `V2ScenarioDriver.cs` |
 | Hydra.Core v2 integration (toggle + strangler swap) | ✅ Toggle `HYDRA_SCHEDULER_IMPL=legacy\|v2` (default **legacy**). Epic → main PR open, **held for approval** (not yet default, not yet live-GPU verified) | — |
 
+### Warm-Slot Fast Path (#718, M-Perf)
+| Item | Status | Notes |
+|------|--------|-------|
+| #718 skip Store Get+StatePut restore when session KV still resident on bound slot | 🚧 PR #719 (epic/697-final-verify track) | Pinned-slot lease on both interception sites; ForceMode takes precedence over the fast path (round-4 item 6a) |
+
 ### Model Config (models.json)
 | Model Alias | Mode | GPUs | Status |
 |-------------|------|------|--------|
