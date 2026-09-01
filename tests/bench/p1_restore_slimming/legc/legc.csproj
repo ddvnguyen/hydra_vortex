@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>legc</AssemblyName>
+    <!-- Relative to this csproj: <repo root>/src/core/Hydra.Core/bin/Debug/net10.0/
+         Build Hydra.Core first (dotnet build src/core/Hydra.Core -c Debug),
+         then this harness (dotnet build legc). -->
+    <WorktreeBin>../../../../src/core/Hydra.Core/bin/Debug/net10.0/</WorktreeBin>
+    <!-- #720 P1 leg (c) harness: references the built worktree DLLs directly
+         (no project references, no NuGet restore needed). -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Hydra.Core">
+      <HintPath>$(WorktreeBin)Hydra.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="Hydra.Shared">
+      <HintPath>$(WorktreeBin)Hydra.Shared.dll</HintPath>
+    </Reference>
+    <Reference Include="Serilog">
+      <HintPath>$(WorktreeBin)Serilog.dll</HintPath>
+    </Reference>
+    <Reference Include="Serilog.Sinks.Console">
+      <HintPath>$(WorktreeBin)Serilog.Sinks.Console.dll</HintPath>
+    </Reference>
+    <!-- Prometheus.NetStandard (loaded via ChunkCacheMetrics) needs this;
+         the worktree bin set does not carry it, take the exact version
+         from the NuGet cache. -->
+    <Reference Include="Microsoft.Extensions.ObjectPool">
+      <HintPath>$(NuGetPackageRoot)microsoft.extensions.objectpool/7.0.0/lib/net7.0/Microsoft.Extensions.ObjectPool.dll</HintPath>
+    </Reference>
+    <WorktreeDlls Include="$(WorktreeBin)*.dll" Exclude="$(WorktreeBin)legc.dll" />
+  </ItemGroup>
+
+  <!-- Runtime deps: copy the full worktree bin set next to the harness so
+       any transitively loaded Hydra.Core type resolves. -->
+  <Target Name="CopyWorktreeDlls" AfterTargets="Build">
+    <Copy SourceFiles="@(WorktreeDlls)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
