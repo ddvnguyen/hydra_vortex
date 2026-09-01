@@ -3462,8 +3462,34 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				}
 				else
 				{
-					var prefixKey = $"prefix/{item.PrefixHash}.kv";
 					var kvPayload = payload;
+
+					// #721: invariant — NEVER write an empty blob to the store.
+					// Stream-to-store prefill (EnginePrefillChunkedAndStoreAsync,
+					// #470) leaves the KV in the Store under the session key and
+					// nulls the in-memory payload. The old code issued the prefix
+					// Put with that null payload → a zero-byte blob under
+					// prefix/... plus an NRE on the SizeMB log line (logged as
+					// prefix_save_failed); every later restore of the poisoned key
+					// forwarded an empty STATE_PUT the engine quarantines → full
+					// re-prefill each turn. Skip the save entirely BEFORE any store
+					// op. An absent prefix key is a clean miss on restore
+					// (prefix_not_found → Prefill).
+					//
+					// Follow-up (note on #721): sourcing the prefix blob at the
+					// store level is NOT a simple copy of the streamed session blob
+					// — that blob covers the full request, and saving it under the
+					// system-prompt key would reintroduce the #245 "live poisoning"
+					// bug (prefix checkpoint must be truncated to SysTokens).
+					if (kvPayload is null)
+					{
+						_log.Information("prefix_save_skipped_streamed Sid={Sid} Hash={Hash} — KvStreamedToStore, no in-memory payload; absent key restores as clean miss",
+							item.SessionId, item.PrefixHash);
+						CoordinatorMetrics.PrefixSavePayloadTruncated.WithLabels("streamed_to_store").Inc();
+						return WorkItemState.SaveDone;
+					}
+
+					var prefixKey = $"prefix/{item.PrefixHash}.kv";
 					var traceId = item.TraceId;
 					var sysTokens = item.SystemPromptTokens;
 					var prefixNPast = item.NPastAfter;
