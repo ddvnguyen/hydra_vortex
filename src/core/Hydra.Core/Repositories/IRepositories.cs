@@ -12,6 +12,9 @@ public interface ISessionLedger
     void UpdateBoundModel(string sessionId, string boundModel);
     void MarkEvicted(string sessionId);
     void MarkStoreState(string sessionId);
+    /// <summary>#712: also records the n_past the blob was written at, so a
+    /// later evict-save can prove the store holds the current slot state.</summary>
+    void MarkStoreState(string sessionId, int storeNPast);
     List<SessionEntry> GetSessionsOnNode(string nodeName);
     SessionEntry? GetLruSession(string nodeName);
     int ActiveCountOnNode(string nodeName);

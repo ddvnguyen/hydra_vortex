@@ -273,6 +273,11 @@ public sealed class SessionEntry
 	public int NPast { get; set; }
 	public int NPromptTokens { get; set; }
 	public bool HasStoreState { get; set; }
+	/// <summary>#712: the n_past the store blob was written at (last
+	/// <c>MarkStoreState</c> with a known NPast). The evict-save freshness
+	/// check compares this against the ledger NPast — equal means the store
+	/// already holds the current slot state and a second save is redundant.</summary>
+	public int StoreNPast { get; set; }
 	public bool SlotFreed { get; set; }
 	public string? PrefixHash { get; set; }
 	/// <summary>Model alias this session was routed to (warm-session affinity for STEP 0 of AutoRouter).</summary>

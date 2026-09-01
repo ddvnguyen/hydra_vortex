@@ -230,4 +230,42 @@ public sealed class HealthMonitorTests
 		await health.PollForTestAsync(CancellationToken.None);
 		Assert.Equal(1, flips);
 	}
+
+	[Fact]
+	public async Task EngineInfoFailure_CarriesLastKnownCapabilities_Forward()
+	{
+		// #712: a single failed/empty 0x41 INFO poll must not silently drop the
+		// node's last-known engine capabilities. PollWorkerAsync builds a FRESH
+		// NodeInfo each cycle, so without carry-forward one bad poll (observed:
+		// RPC channel busy behind a multi-hundred-MB state transfer) flips the
+		// next decode off the merged-decode path with no log line at all — the
+		// A/B T4 turn then hit the HTTP fallback and a destructive T3 model
+		// rebuild attempt wiped the restored KV (144s TTFT vs ~27s expected).
+		var infoSucceeds = true;
+		var (health, _, _, server) = CreateMonitor(() => infoSucceeds);
+		await using var _ = server;
+
+		// Poll 1: INFO OK → capabilities + preset aliases learned.
+		await health.PollForTestAsync(CancellationToken.None);
+		var first = health.GetNodeInfo("rtx")!;
+		Assert.Contains(Protocol.CapMergedDecode, first.EngineCapabilities);
+		Assert.Contains("nano", first.PresetAliases);
+
+		// Poll 2: INFO fails (RPC busy). Node stays healthy (below threshold),
+		// but the fresh NodeInfo would blank the capabilities — carry-forward
+		// must preserve them so decode path selection stays stable.
+		infoSucceeds = false;
+		await health.PollForTestAsync(CancellationToken.None);
+		var second = health.GetNodeInfo("rtx")!;
+		Assert.True(second.Healthy, "one INFO failure is below the unhealthy threshold");
+		Assert.True(second.EngineCapabilities.Contains(Protocol.CapMergedDecode),
+			"last-known capabilities must survive a failed INFO poll");
+		Assert.True(second.PresetAliases.Contains("nano"),
+			"last-known preset aliases must survive a failed INFO poll");
+
+		// Poll 3: INFO recovers → the real advertisement wins again.
+		infoSucceeds = true;
+		await health.PollForTestAsync(CancellationToken.None);
+		Assert.Contains(Protocol.CapMergedDecode, health.GetNodeInfo("rtx")!.EngineCapabilities);
+	}
 }
