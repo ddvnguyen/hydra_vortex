@@ -43,7 +43,14 @@ public interface IWorkerTracker
     bool IsExpired(string name, double maxSeconds = 600);
     List<string> AllWorkers { get; }
 
-    bool TryAcquireSlot(string name, out int slotId, string role = "decode");
+    /// <summary>
+    /// Rents a slot from <paramref name="name"/>. When <paramref name="pinnedSlot"/>
+    /// is supplied, the pool must hand over exactly that slot (false when it is
+    /// not currently free) — the #718 warm-slot fast path uses this to lease the
+    /// specific physical slot the session's KV is verified resident on, instead
+    /// of whatever slot the generic rent would return.
+    /// </summary>
+    bool TryAcquireSlot(string name, out int slotId, string role = "decode", int? pinnedSlot = null);
     void ReleaseSlot(string name, int slotId);
     int FreeSlotCount(string name);
     bool HasFreeSlot(string name);

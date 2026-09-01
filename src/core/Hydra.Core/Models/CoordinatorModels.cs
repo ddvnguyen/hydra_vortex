@@ -137,6 +137,13 @@ public sealed record CoordinatorConfig
 	/// </summary>
 	public bool SoloPrefixReuseEnabled { get; init; } = EnvBool("HYDRA_COORD_SOLO_PREFIX_REUSE_ENABLED", true);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
+	/// <summary>
+	/// Skip Store Get+StatePut round-trip when the session KV is still resident on the
+	/// bound worker's slot (warm residency). Goes straight to Prefill with PrefixCacheHit=true.
+	/// Safety: the fork's shared-prefix checkpoint mechanism self-corrects stale residency —
+	/// worst case is a full prefill (same as cold), never corruption. See #718.
+	/// </summary>
+	public bool WarmSlotFastPathEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_FAST_PATH", true);
 	public bool EnableChunks { get; init; } = EnvBool("HYDRA_COORD_ENABLE_CHUNKS", false);
 	public bool UseLlamaEngine { get; init; } = EnvBool("HYDRA_LLAMA_ENGINE", false);
 	// ── Two-engine "work together" (default OFF; only meaningful in engine mode) ──
