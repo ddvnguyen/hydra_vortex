@@ -15,11 +15,12 @@ namespace Tests.Core.Services;
 /// </summary>
 public sealed class PrefixCheckpointSaveTests
 {
-	private static CoordinatorConfig MakeConfig(bool prefixEnabled = true) => new()
+	private static CoordinatorConfig MakeConfig(bool prefixEnabled = true, bool enableChunks = false) => new()
 	{
 		// UseLlamaEngine=true so SaveKvAsync takes the item.KvBlob shortcut
 		// instead of calling SaveKvStateCoreAsync (which needs a live llama-server).
 		UseLlamaEngine = true,
+		EnableChunks = enableChunks,
 		PrefixCheckpointEnabled = prefixEnabled,
 		Workers =
 		[
@@ -215,5 +216,52 @@ public sealed class PrefixCheckpointSaveTests
 
 		var after = CoordinatorMetrics.PrefixSaveFailures.Value;
 		Assert.Equal(1, after - before);
+	}
+
+	// ── 5. #721: stream-to-store prefill (KvStreamedToStore=true, payload null)
+	//    → prefix save must be skipped BEFORE any store op. Pre-fix the miss path
+	//    issued Put with the null payload → zero-byte blob under prefix/... (the
+	//    "never write an empty blob" invariant) + NRE on the SizeMB log line
+	//    (logged as prefix_save_failed), and every later restore of the poisoned
+	//    key forwarded an empty STATE_PUT the engine quarantines. ──
+
+	[Fact]
+	public async Task PrefixSave_StreamedToStore_SkipsSave_NeverWritesEmptyBlob()
+	{
+		var fake = new FakeStoreClient();
+		// Stat returns NotFound — the pre-fix code took the miss path and issued
+		// the prefix Put with the null payload.
+		fake.SetResponse(OpCode.Stat, (byte)StatusCode.NotFound);
+		// EnableChunks=true so SaveKvAsync recognises the streamed outcome
+		// (payload stays null, session KV is already in the Store under the
+		// session key) instead of calling the engine StateGet RPC.
+		var scheduler = MakeScheduler(fake, MakeConfig(enableChunks: true));
+		var item = MakeItem("stream721");
+		// Force the EnginePrefillChunkedAndStoreAsync (#470) outcome: KV already
+		// streamed to the Store, no in-memory payload.
+		item.KvBlob = null;
+		item.KvStreamedToStore = true;
+		item.KvBytes = 2048;
+
+		var savesBefore = CoordinatorMetrics.PrefixSaves.Value;
+		var failuresBefore = CoordinatorMetrics.PrefixSaveFailures.Value;
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.SaveDone, next);
+
+		// Give any (incorrectly) spawned fire-and-forget task time to run.
+		await Task.Delay(200);
+
+		// The invariant: NO store op under the prefix key at all — no Stat,
+		// no PutMeta, and crucially no Put with an empty/zero payload.
+		var prefixCalls = fake.Calls.Where(c => c.Key.StartsWith("prefix/")).ToList();
+		Assert.Empty(prefixCalls);
+
+		// No zero-length Put anywhere (the pre-fix bug wrote one under prefix/).
+		Assert.DoesNotContain(fake.Calls, c => c.PayloadLen == 0);
+
+		// The NRE is gone: prefix_save_failed (PrefixSaveFailures) not incremented.
+		Assert.Equal(failuresBefore, CoordinatorMetrics.PrefixSaveFailures.Value);
+		Assert.Equal(savesBefore, CoordinatorMetrics.PrefixSaves.Value);
 	}
 }
