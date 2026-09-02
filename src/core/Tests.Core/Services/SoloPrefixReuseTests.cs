@@ -16,11 +16,12 @@ namespace Tests.Core.Services;
 /// </summary>
 public sealed class SoloPrefixReuseTests
 {
-	private static CoordinatorConfig MakeConfig(bool soloPrefixReuse = true) => new()
+	private static CoordinatorConfig MakeConfig(bool soloPrefixReuse = true, int soloSaveWaitMs = 30000) => new()
 	{
 		UseLlamaEngine = true,
 		PrefixCheckpointEnabled = true,
 		SoloPrefixReuseEnabled = soloPrefixReuse,
+		SoloSaveWaitMs = soloSaveWaitMs,
 		AtomicThreshold = 2048,
 		WarmThreshold = 5120,
 		NPastGuardTolerance = 50,
@@ -743,10 +744,15 @@ public sealed class SoloPrefixReuseTests
 		Assert.Equal("rtx", item.DecodeWorker?.Name);
 		Assert.Equal(0, item.DecodeSlot);
 		Assert.Null(item.PrefillLease);
-		Assert.Same(prefillLease, item.DecodeLease); // converted, not re-acquired
-		Assert.Equal("rtx", item.DecodeLease?.WorkerName);
-		Assert.Equal(0, item.DecodeLease?.SlotId);
-		// The slot stayed held exactly once (converted, not re-acquired)
+		// Review #732 finding 1: the decode lease must be a fresh LONG lease —
+		// the old code transferred the Short prefill lease object, which
+		// FinalizeAsync disposed mid-stream (slot released while generating).
+		Assert.NotSame(prefillLease, item.DecodeLease);
+		Assert.Equal(LeaseLifetime.Long, item.DecodeLease!.Lifetime);
+		Assert.Equal("rtx", item.DecodeLease.WorkerName);
+		Assert.Equal(0, item.DecodeLease.SlotId);
+		// The slot stayed held exactly once: one acquire (prefill), the Short
+		// lease dropped without release, the Long lease will release it once.
 		Assert.Equal(1, tracker.TotalSlots("rtx") - tracker.FreeSlotCount("rtx"));
 	}
 
@@ -866,9 +872,17 @@ public sealed class SoloPrefixReuseTests
 		var state3 = await scheduler.DispatchAsync(item, CancellationToken.None);
 		Assert.Equal(WorkItemState.Decode, state3);
 		Assert.Equal(item.PrefillSlot, item.DecodeSlot); // pinned to the restored slot
+		Assert.Equal(LeaseLifetime.Long, item.DecodeLease!.Lifetime);
 
 		// No PREFILL was ever issued for this turn
 		Assert.Equal(0, engineStore.CallCount(Hydra.Shared.OpCode.EnginePrefill));
+
+		// Finding 1: FinalizeAsync must STASH the Long decode lease as warm —
+		// only Long leases take that path; anything shorter disposes the slot
+		// while the stream is still draining.
+		await scheduler.FinalizeAsync(item, WorkItemState.Done);
+		Assert.Equal(1, scheduler.WarmLeaseCount);
+		Assert.Equal(LeaseLifetime.Long, scheduler.GetWarmLeasesSnapshot()[sessionId].Lifetime);
 	}
 
 	[Fact]
@@ -906,7 +920,18 @@ public sealed class SoloPrefixReuseTests
 		Assert.Equal(item.PrefillSlot, item.DecodeSlot);
 		Assert.Null(item.PrefillLease); // converted into the decode lease
 		Assert.NotNull(item.DecodeLease);
+		// Finding 1 (regression guard): the converted decode lease must be
+		// Long-lived. Transferring the Short prefill lease object made
+		// FinalizeAsync dispose the slot mid-stream on every cold_concurrency
+		// restore hit (stream_done_no_lease 6/6 in the v6 A/B run).
+		Assert.Equal(LeaseLifetime.Long, item.DecodeLease.Lifetime);
 		Assert.Equal(0, engineStore.CallCount(Hydra.Shared.OpCode.EnginePrefill));
+
+		// Finding 1: FinalizeAsync must STASH the Long decode lease as warm —
+		// that is what lets the next turn's evict skip the redundant save.
+		await scheduler.FinalizeAsync(item, WorkItemState.Done);
+		Assert.Equal(1, scheduler.WarmLeaseCount);
+		Assert.Equal(LeaseLifetime.Long, scheduler.GetWarmLeasesSnapshot()[sessionId].Lifetime);
 	}
 
 	// ── T4 anomaly (P100 A/B): model_path strip on restore hits ──
@@ -995,5 +1020,61 @@ public sealed class SoloPrefixReuseTests
 		Assert.Equal(WorkItemState.PrefixRestore, next);
 		Assert.True(engineStore.CallCount(Hydra.Shared.OpCode.StateGet) == 1,
 			$"stale store state must trigger the evict save (got {engineStore.CallCount(Hydra.Shared.OpCode.StateGet)})");
+	}
+
+	// ── Save-wait timeout branch (finding 2/7) ──
+
+	[Fact]
+	public async Task SaveWait_Timeout_RestoreProceedsWithStaleBlob()
+	{
+		// The in-flight save TCS is registered but NEVER completed (simulates a
+		// stuck save). The restore must not block beyond the bounded wait — it
+		// proceeds with possibly-stale KV (larger delta prefill, correct output).
+		// SoloSaveWaitMs is lifted to CoordinatorConfig so this branch is testable.
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+		var (scheduler, ledger, tracker, store) = MakeScheduler(cfg: MakeConfig(soloSaveWaitMs: 100), engineStore: engineStore);
+		var sessionId = "sess_savewait_timeout";
+
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		scheduler.RegisterSessionSave(sessionId); // in-flight, never completed
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// restore hit is gated on RouteType — stage it as cold_concurrency
+		var item = StagedRestoreItem(sessionId, "cold_concurrency");
+
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+		sw.Stop();
+
+		Assert.Equal(WorkItemState.PickDecode, next);
+		Assert.True(item.SoloKvRestoreHit);
+		Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5),
+			$"restore must proceed after the bounded wait, not block 30s (elapsed {sw.Elapsed.TotalMilliseconds:F0} ms)");
+	}
+
+	// ── Superseded TCS resolution (finding 3/7) ──
+
+	[Fact]
+	public async Task RegisterSessionSave_SupersededTCS_ResolvesImmediately()
+	{
+		// A waiter parked on a superseded TCS must not block the full bounded
+		// wait — RegisterSessionSave completes any existing TCS before
+		// replacing it (the old comment claimed this; the code didn't).
+		var (scheduler, _, _, _) = MakeScheduler();
+		var sessionId = "sess_superseded";
+
+		var t1 = scheduler.RegisterSessionSave(sessionId);
+		Assert.False(t1.Task.IsCompleted);
+		var parkedWaiter = t1.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+		var t2 = scheduler.RegisterSessionSave(sessionId); // supersedes t1
+		await parkedWaiter; // must resolve NOW, not after t2's save completes
+		Assert.True(t1.Task.IsCompleted, "superseded TCS must be resolved on replacement");
+		Assert.False(t2.Task.IsCompleted);
+
+		scheduler.CompleteSessionSave(sessionId);
+		Assert.True(t2.Task.IsCompleted);
 	}
 }

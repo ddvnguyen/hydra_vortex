@@ -105,9 +105,21 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	/// <summary>#712: register this session's save as in-flight (last writer wins).
 	/// Called when a decode stream announces its deferred save (_pendingBgSaves)
-	/// and when the pipeline BgSave state starts. internal for hermetic tests.</summary>
-	internal void RegisterSessionSave(string sessionId)
-		=> _sessionSaveInFlight[sessionId] = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+	/// and when the pipeline BgSave state starts. A TCS superseded by a newer
+	/// registration is completed immediately so a waiter parked on it does not
+	/// block the full bounded wait (review #732 finding 3) — the newer save
+	/// commits the same-or-newer state, which is all the waiter needs. Returns
+	/// the new TCS (internal for hermetic tests).</summary>
+	internal TaskCompletionSource<bool> RegisterSessionSave(string sessionId)
+	{
+		var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		_sessionSaveInFlight.AddOrUpdate(sessionId, tcs, (_, existing) =>
+		{
+			existing.TrySetResult(true); // superseded — resolve its waiters now
+			return tcs;
+		});
+		return tcs;
+	}
 
 	/// <summary>#712: mark the session's in-flight save as finished. Completes the
 	/// current TCS (waiters resolve) and removes it unless a newer save already
@@ -1244,7 +1256,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// then judge freshness on the final ledger state.
 			if (_sessionSaveInFlight.TryGetValue(item.SessionId, out var evictInFlightSave))
 			{
-				using var evictWaitCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+				using var evictWaitCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_cfg.SoloSaveWaitMs));
 				try
 				{
 					await evictInFlightSave.Task.WaitAsync(evictWaitCts.Token);
@@ -2229,7 +2241,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		if (_sessionSaveInFlight.TryGetValue(item.SessionId, out var inFlightSave))
 		{
 			CoordinatorMetrics.SoloRestoreSaveWaits.Inc();
-			using var saveWaitCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+			using var saveWaitCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_cfg.SoloSaveWaitMs));
 			try
 			{
 				await inFlightSave.Task.WaitAsync(saveWaitCts.Token);
@@ -3801,14 +3813,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (item.PrefillLease != null && item.PrefillLease.WorkerName == pw.Name
 				&& item.PrefillLease.SlotId == pinSlot)
 			{
-				// cold_concurrency: convert the short prefill lease into the decode
-				// lease (same pattern as the COMBINED guard above) — no release +
+				// cold_concurrency: the prefill lease is Short-lived, but
+				// FinalizeAsync only stashes Long decode leases as warm —
+				// transferring the same object would release the slot while the
+				// SSE stream is still draining (review #732 finding 1). Build a
+				// fresh Long lease over the same slot and drop the prefill
+				// reference WITHOUT disposing: the tracker claim is made once
+				// (ColdRouteAsync) and released once (the Long lease at stream
+				// end) — disposing both would double-release. No release +
 				// re-acquire, so no window for another item to rent the slot.
 				item.DecodeWorker = pw;
 				item.DecodeSlot = pinSlot;
-				item.DecodeLease = item.PrefillLease;
-				item.PrefillLease = null;
-				_log.Information("solo_prefix_decode_pinned Sid={Sid} Node={N} Slot={S} Lease=prefill_convert — PREFILL skipped, delta prefill via n_common",
+				item.DecodeLease = new SlotLease(pw.Name, pinSlot, item.SessionId, LeaseLifetime.Long, _tracker);
+				item.PrefillLease = null; // dropped, not released — do NOT DisposeAsync
+				_log.Information("solo_prefix_decode_pinned Sid={Sid} Node={N} Slot={S} Lease=long_fresh — PREFILL skipped, delta prefill via n_common",
 					item.SessionId, pw.Name, pinSlot);
 				return WorkItemState.Decode;
 			}
@@ -5819,11 +5837,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				_ = WriteStateToStoreAsync(stateResp.Payload, sessionId, bgTraceId ?? "",
 					timelineItem, bgRpcSw.ElapsedMilliseconds);
+				// #712: the in-flight TCS is completed by WriteStateToStoreAsync's
+				// own finally — AFTER the store Put lands, so a waiting restore
+				// reads the fresh blob, not the previous turn's.
 			}
-			else if (stateResp is { Status: not (byte)Hydra.Shared.StatusCode.Ok })
+			else
 			{
-				_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
-				CompleteSessionSave(sessionId); // #712: save skipped — unblock any waiting restore
+				// #712 review finding 2: stateResp==null (StateGet threw, or the
+				// worker lookup failed) used to fall through BOTH branches and
+				// leave the in-flight TCS uncompleted — the next turn then paid
+				// the full bounded save-wait twice (evict + restore). Every exit
+				// from the bg-save block without a store handoff must complete it.
+				_log.Warning("bg_save_skipped Sid={Sid} Status={Status} — no store Put, in-flight save TCS completed",
+					sessionId, stateResp?.Status.ToString("X2") ?? "null");
+				CompleteSessionSave(sessionId);
 			}
 		}
 		catch (Exception ex)

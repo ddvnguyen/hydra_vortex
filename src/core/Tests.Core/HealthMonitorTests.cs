@@ -32,12 +32,19 @@ public sealed class HealthMonitorTests
 		public HttpClient CreateClient(string name) => new();
 	}
 
-	/// <summary>RPC double for the EngineInfo health poll: succeeds (with
-	/// preset aliases + capabilities) or throws ConnectionRefused.</summary>
+	/// <summary>RPC double for the EngineInfo health poll: succeeds (with or
+	/// without preset aliases + capabilities) or throws ConnectionRefused.
+	/// withCaps:false models a node redeployed with an engine build that no
+	/// longer advertises merged_decode — INFO succeeds, capability set empty.</summary>
 	private sealed class EngineInfoRpcStub : RpcClient
 	{
 		private readonly bool _succeed;
-		public EngineInfoRpcStub(bool succeed) : base("test", 0) => _succeed = succeed;
+		private readonly bool _withCaps;
+		public EngineInfoRpcStub(bool succeed, bool withCaps = true) : base("test", 0)
+		{
+			_succeed = succeed;
+			_withCaps = withCaps;
+		}
 
 		public override Task<RpcResponse> RequestAsync(
 			OpCode op, string key, ReadOnlyMemory<byte> payload,
@@ -47,8 +54,8 @@ public sealed class HealthMonitorTests
 				throw new SocketException((int)SocketError.ConnectionRefused);
 			var meta = JsonSerializer.Serialize(new
 			{
-				preset_aliases = new[] { "nano" },
-				capabilities = new[] { Protocol.CapMergedDecode },
+				preset_aliases = _withCaps ? new[] { "nano" } : Array.Empty<string>(),
+				capabilities = _withCaps ? new[] { Protocol.CapMergedDecode } : Array.Empty<string>(),
 			});
 			return Task.FromResult(new RpcResponse((byte)StatusCode.Ok, meta, []));
 		}
@@ -267,5 +274,30 @@ public sealed class HealthMonitorTests
 		infoSucceeds = true;
 		await health.PollForTestAsync(CancellationToken.None);
 		Assert.Contains(Protocol.CapMergedDecode, health.GetNodeInfo("rtx")!.EngineCapabilities);
+	}
+
+	[Fact]
+	public async Task EngineInfoSucceedsWithEmptyCaps_ClearsStaleCapabilities()
+	{
+		// #712 review finding 4: carry-forward must be gated on the INFO query
+		// FAILING. A node redeployed with an engine build that no longer
+		// advertises merged_decode returns an EMPTY cap set on a SUCCESSFUL
+		// INFO — carrying the stale capability forward would route 0x43 into
+		// a gateRejected 503 with no fallback. Successful empty = authoritative.
+		var (health, _, _, server) = CreateMonitor(() => true);
+		await using var _ = server;
+
+		// Poll 1: INFO OK with capabilities → learned.
+		await health.PollForTestAsync(CancellationToken.None);
+		Assert.Contains(Protocol.CapMergedDecode, health.GetNodeInfo("rtx")!.EngineCapabilities);
+
+		// Poll 2: INFO succeeds but advertises NOTHING (build without merged_decode).
+		health.EngineInfoRpcClientFactory = (_, _) => new EngineInfoRpcStub(succeed: true, withCaps: false);
+		await health.PollForTestAsync(CancellationToken.None);
+
+		var second = health.GetNodeInfo("rtx")!;
+		Assert.True(second.EngineCapabilities.Count == 0,
+			"a successful INFO with an empty cap set must clear stale capabilities");
+		Assert.True(second.PresetAliases.Count == 0);
 	}
 }
