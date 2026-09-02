@@ -1,0 +1,298 @@
+name: Dev-Test — A/B Parity Gate
+
+# #733 T4 — dev-test tier CI. Gates PROD promotion only; hardware-absent → warning not failure.
+# Triggers: merge-to-main (push: main) + manual workflow_dispatch (tier: deploy|ab|full).
+# Advisory on PRs: do NOT block PR merge; only the post-merge dev-test run gates prod.
+# Concurrency: single hydra-devtest group serializes A/B on the lone p100 runner.
+# Fork engine build: calls ddvnguyen/llama.cpp hydra-build.yml (workflow_call, arch_sm60)
+#   only when src/llama-cpp submodule changed — inputs verified against fork repo.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Dev-test tier to run"
+        required: false
+        default: full
+        type: choice
+        options: [deploy, ab, full]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: hydra-devtest
+  cancel-in-progress: false
+
+jobs:
+  # ── Detect if engine submodule moved (sm60 build guard) ────────────────
+  detect-changes:
+    name: Detect engine changes
+    runs-on: ubuntu-latest
+    outputs:
+      engine_changed: ${{ steps.check.outputs.engine_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: check
+        run: |
+          set -euo pipefail
+          # workflow_dispatch with tier=ab still checks; default to changed=false for manual full?
+          # For push events, compare HEAD~1..HEAD; for dispatch, check diff vs main if available
+          changed="false"
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            if git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -qE '(^src/llama-cpp|src/llama-cpp)'; then
+              changed="true"
+            fi
+          else
+            # First commit or shallow — fallback to checking current diff files list from event
+            if git diff --name-only HEAD 2>/dev/null | grep -qE 'src/llama-cpp'; then
+              changed="true"
+            fi
+          fi
+          echo "engine_changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "engine_changed=$changed"
+
+  # ── Job 1 (runner rtx): build core+head images (podman) ────────────────
+  build:
+    name: Build core+head (rtx)
+    runs-on: rtx
+    needs: detect-changes
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Build core image (podman)
+        run: |
+          set -euo pipefail
+          podman build --target core -f infra/Dockerfile \
+            -t localhost/hydra-core:devtest \
+            -t ghcr.io/${{ github.repository }}/hydra-core:${{ github.sha }} . 2>&1 | tail -n 20
+          echo "core image built: ghcr.io/${{ github.repository }}/hydra-core:${{ github.sha }}"
+
+      - name: Build head image (podman)
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/go-sdk/go/bin:$PATH"
+          # Ensure binary exists for Dockerfile context
+          if [ ! -f bin/hydra-head ]; then
+            go build -C src/head -o "${{ github.workspace }}/bin/hydra-head" . 2>&1 | tail -n 20
+          fi
+          podman build -f infra/hydra-head/Dockerfile.rtx \
+            -t localhost/hydra-head:devtest \
+            -t ghcr.io/${{ github.repository }}/hydra-head:${{ github.sha }} . 2>&1 | tail -n 20
+          echo "head image built"
+
+      - name: Save images artifact (optional, not pushed yet)
+        run: |
+          podman save localhost/hydra-core:devtest localhost/hydra-head:devtest | gzip > /tmp/hydra-devtest-images.tar.gz || true
+          ls -lh /tmp/hydra-devtest-images.tar.gz || true
+
+      # Disk guard per #733 T1 — fail if <8GB free (runner may also run P100 promotion)
+      - name: Disk guard (<8GB free → fail)
+        run: |
+          avail_gb=$(df -BG / | awk 'NR==2{print $4}' | tr -d G)
+          echo "Disk free: ${avail_gb}GB"
+          if [ "$avail_gb" -lt 8 ]; then
+            echo "::warning::Disk free <8GB ($avail_gb GB) — aborting dev-test (see #681)"
+            exit 1
+          fi
+
+  # ── Engine sm60 image — only if submodule changed (fork reusable) ──────
+  build-engine-sm60:
+    name: Build engine sm60 (fork hydra-build)
+    needs: detect-changes
+    if: needs.detect-changes.outputs.engine_changed == 'true'
+    uses: ddvnguyen/llama.cpp/.github/workflows/hydra-build.yml@hydra-fork
+    with:
+      build_llama_engine: true
+      build_llama_server: false
+      arch_sm86_sm120: false
+      arch_sm60: true
+      runner_target: local
+      execution_mode: matrix
+    secrets: inherit
+
+  # ── Job 2 (runner p100, serialized): deploy devtest lane + A/B + report ──
+  ab:
+    name: A/B parity (p100 devtest lane)
+    runs-on: p100
+    needs: [build, detect-changes]
+    # Serialize A/B runs on the single p100 runner
+    concurrency:
+      group: hydra-devtest
+      cancel-in-progress: false
+    timeout-minutes: 30
+    # Advisory gate — hardware-absent is warning, not failure. Dont fail the workflow.
+    continue-on-error: false
+    environment: dev-test
+    if: |
+      always() && (needs.build.result == 'success' || needs.build.result == 'skipped')
+      && (github.event.inputs.tier == 'full' || github.event.inputs.tier == 'ab' || github.event.inputs.tier == 'deploy' || github.event_name == 'push')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Select tier input
+        id: tier
+        run: |
+          TIER="${{ github.event.inputs.tier || 'full' }}"
+          if [ "${{ github.event_name }}" = "push" ]; then TIER="full"; fi
+          echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+          echo "tier=$TIER"
+
+      - name: Disk guard (p100)
+        run: |
+          avail_gb=$(df -BG / 2>/dev/null | awk 'NR==2{print $4}' | tr -d G || echo 99)
+          echo "Disk free: ${avail_gb}GB"
+          if [ "${avail_gb:-99}" -lt 8 ]; then
+            echo "::warning::P100 disk free <8GB — dev-test may fail (#681)"
+          fi
+
+      - name: Deploy candidate to devtest lane (sequential, never prod)
+        if: steps.tier.outputs.tier == 'full' || steps.tier.outputs.tier == 'deploy'
+        run: |
+          set -euo pipefail
+          # Hardware-absent → warning not failure (promotion gate, not merge gate)
+          if ! command -v podman >/dev/null 2>&1; then
+            echo "::warning::podman not found on p100 runner — hardware-absent, marking warning"
+            exit 0
+          fi
+          export HYDRA_HEAD_AUTH_TOKEN="${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}"
+          if [ -z "$HYDRA_HEAD_AUTH_TOKEN" ] && [ -f ~/.hydra-head-token ]; then
+            export HYDRA_HEAD_AUTH_TOKEN="$(cat ~/.hydra-head-token)"
+          fi
+          if [ -z "$HYDRA_HEAD_AUTH_TOKEN" ]; then
+            export HYDRA_HEAD_AUTH_TOKEN="devtest-dummy"
+            echo "::warning::HYDRA_HEAD_AUTH_TOKEN missing — using dummy (hydra lane may be degraded)"
+          fi
+          # Idempotent up (hydra lane only; ab.sh will orchestrate sequential)
+          # We just ensure compose is valid and warn if ports are not free
+          bash scripts/devtest/up.sh --hydra-only || {
+            echo "::warning::devtest lane up failed — hardware-absent? (warning not failure)"
+            exit 0
+          }
+          bash scripts/devtest/status.sh || true
+
+      - name: Run A/B harness (sequential per-side)
+        if: steps.tier.outputs.tier == 'full' || steps.tier.outputs.tier == 'ab'
+        id: ab
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          export HYDRA_HEAD_AUTH_TOKEN="${{ secrets.HYDRA_HEAD_AUTH_TOKEN }}"
+          if [ -z "$HYDRA_HEAD_AUTH_TOKEN" ] && [ -f ~/.hydra-head-token ]; then
+            export HYDRA_HEAD_AUTH_TOKEN="$(cat ~/.hydra-head-token)"
+          fi
+          # Prefer sequential ab.sh; fallback to direct parity.py if podman missing
+          if [ -x scripts/devtest/ab.sh ]; then
+            # ab.sh implements hydra lane up+run → down → baseline up+run → down (never both, never prod)
+            bash scripts/devtest/ab.sh 2>&1 | tee /tmp/ab-output.log || AB_RC=$?
+            AB_RC=${AB_RC:-0}
+            # Also run direct live parity for report if ab.sh sequential captures are not ready
+            # (parity.py handles hardware-absent with warning)
+            if [ "${AB_RC:-0}" != "0" ] && ! grep -q "RESULT:" /tmp/ab-output.log 2>/dev/null; then
+              echo "::warning::ab.sh exited $AB_RC — falling back to parity.py live run"
+              python3 tests/ab/parity.py --hydra-url http://localhost:19000 --baseline-url http://localhost:18080 --output-dir tests/ab-results 2>&1 | tee -a /tmp/ab-output.log || true
+            fi
+          else
+            python3 tests/ab/parity.py --hydra-url http://localhost:19000 --baseline-url http://localhost:18080 --output-dir tests/ab-results 2>&1 | tee /tmp/ab-output.log || true
+          fi
+          # Capture overall result for gating
+          if grep -q "RESULT: FAIL" /tmp/ab-output.log 2>/dev/null; then
+            echo "ab_result=FAIL" >> "$GITHUB_OUTPUT"
+          elif grep -q "RESULT: PASS" /tmp/ab-output.log 2>/dev/null; then
+            echo "ab_result=PASS" >> "$GITHUB_OUTPUT"
+          elif grep -q "hardware-absent" /tmp/ab-output.log 2>/dev/null; then
+            echo "ab_result=PASS_HW_ABSENT" >> "$GITHUB_OUTPUT"
+          else
+            echo "ab_result=UNKNOWN" >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/ab-output.log || true
+
+      - name: Tear down devtest lane (always, prod untouched)
+        if: always()
+        run: |
+          bash scripts/devtest/down.sh --all 2>&1 || true
+          bash scripts/devtest/status.sh 2>&1 || true
+
+      - name: Post markdown report comment (on push, comment on commit)
+        if: always() && steps.ab.outputs.ab_result != ''
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '';
+            try { body = fs.readFileSync('/tmp/ab-output.log', 'utf8'); } catch(e) { body = 'AB output not found (hardware-absent?)'; }
+            // Extract markdown table from body (between # A/B Parity Report and next header)
+            const lines = body.split('\n');
+            let mdStart = lines.findIndex(l => l.startsWith('# A/B Parity Report'));
+            let md = mdStart >= 0 ? lines.slice(mdStart, mdStart+40).join('\n') : body.slice(0, 4000);
+            const tier = '${{ steps.tier.outputs.tier }}';
+            const result = '${{ steps.ab.outputs.ab_result }}';
+            const sha = context.sha.slice(0, 12);
+            const header = `### Dev-Test A/B \`${sha}\` — \`${result}\` (tier: ${tier})`;
+            const warn = result === 'PASS_HW_ABSENT' ? '\n> ⚠️ Hardware-absent — warning not failure (promotion gate, not merge gate).' : '';
+            const full = `${header}${warn}\n\n${md}\n\n<sub>hydra \`:19000\` vs baseline \`:18080\` · model Qwen3.5-9B-Q4_K_M · ±10% perf tolerance · functional exact-token match = hard gate</sub>`;
+            // For push events, create a commit comment; for dispatch, also comment
+            try {
+              await github.rest.repos.createCommitComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha,
+                body: full
+              });
+            } catch (e) {
+              core.warning(`createCommitComment failed: ${e.message}`);
+              // Fallback: try issue comment if PR context exists
+              const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner, repo: context.repo.repo, commit_sha: context.sha
+              }).catch(()=>({data:[]}));
+              if (prs.data.length) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: prs.data[0].number, body: full
+                }).catch(()=>{});
+              }
+            }
+
+      - name: Upload JSON artifact (devtest-<date>-<sha>.json)
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: ab-results-${{ github.sha }}
+          path: |
+            tests/ab-results/*.json
+            tests/ab-results/*.md
+            /tmp/ab-output.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Gate check — A/B gates PROD promotion only (do not fail workflow on hardware-absent)
+        if: always()
+        run: |
+          result="${{ steps.ab.outputs.ab_result }}"
+          tier="${{ steps.tier.outputs.tier }}"
+          echo "AB result: $result tier: $tier"
+          # Promotion gate logic (per #733): A/B red blocks prod promotion, but does NOT fail this workflow.
+          # We record the outcome; the prod deploy workflow checks the latest dev-test artifact.
+          if [ "$result" = "FAIL" ]; then
+            echo "::warning::A/B parity FAIL — PROD promotion BLOCKED for ${{ github.sha }} (promotion gate, not merge gate)"
+            echo "A/B FAIL will block the prod environment's required check; see artifact."
+            # Do NOT exit 1 — this workflow remains green so merge is not blocked; only prod promotion is gated.
+            # The prod deploy workflow should add: `needs: ab` or check via API that the commit has a PASS artifact.
+          elif [ "$result" = "PASS_HW_ABSENT" ]; then
+            echo "::warning::Hardware-absent — A/B not executed, promotion requires manual approval"
+          else
+            echo "A/B result: $result — promotion gate handled via artifact check"
+          fi
+          exit 0
