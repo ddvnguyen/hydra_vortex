@@ -1,0 +1,61 @@
+# Arm 083 — K=q8_0 (HELD FROM 079) + ctx 163,840 (yarn max) push.
+#
+# Base = arm 079 (155648 ctx, V=q4_1, ubatch 512, 27/38, MTP f16 draft-KV, K=q8_0).
+# SINGLE CHANGE vs 079: ctx 155648 -> 163840 (yarn max; +8,192).
+# K=q8_0 is HELD — does NOT change. This is the "is 079's K=q8_0 pin ctx-ceiling-limited,
+# or was 079 just under-tested?" probe.
+#
+# PPL gate: K=q8_0 PPL = 6.4979 ± 0.04202 (the established baseline, arm 068-B).
+# Gate <= 6.5304. PASS by 0.0325 (0.5% margin). No new PPL run needed — this IS the baseline.
+#
+# VRAM math: 079 held 15607 used / 704 free on CUDA0. 081 (same ctx but K=q5_0) held
+# 15069 used / 781 free — K-cheapening saved 77 MiB at the same 155K ctx. At 163K ctx
+# (per 081): compute buffer growth ~174 MiB, K-cache q5_0 ~16 MiB more. So:
+#   - 081 (K=q5_0, 163K): 15069 + 174 = 15243 used / 607 free
+#   - 083 (K=q8_0, 163K): 15243 + 77 = 15320 used / **~530 min-free** (modeled)
+#   - 400 MiB danger bar: 130 MiB cushion. Tighter than 081's 207.
+#
+# If 083 fits with K=q8_0 → 079's pin can reach yarn max without K-cheapening; the
+# K-tier decision becomes orthogonal to the ctx decision. K=q8_0 then wins on
+# acceptance (expected 0.65-0.75, between 079's 0.63 and a slightly-higher value) at
+# slightly less headroom (530 vs 607).
+# If 083 OOMs at load → K-cheapening IS the unlock; 081 is the right pin.
+#
+# PPL gate is the same as 079 (K=q8_0 is the baseline); no PPL re-run needed.
+# Danger zone: steady-state free below ~400 MiB (see 072 failure).
+---
+name: 083-udq5-163840-k-q8_0-v-q4_1-ubatch-512
+description: "K=q8_0 ceiling push: 079 base + ctx 163840 (yarn max; +8,192). K-tier HELD to test 'is K-cheapening the unlock?'."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 163840
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 1
+cont_batching: 'on'
+kv_unified: 'on'
+spec_type: draft-mtp
+cache_reuse: 64
+cache_prompt: 'on'
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 40
+prompt_path: /tmp/bigprompt.txt
+timeout: 120
+expect: unknown
