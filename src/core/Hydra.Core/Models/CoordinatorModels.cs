@@ -343,6 +343,15 @@ public sealed class NodeInfo
 	/// Includes "merged_decode" when the engine supports the framed DECODE wire format.
 	/// </summary>
 	public HashSet<string> EngineCapabilities { get; set; } = [];
+	/// <summary>
+	/// #738: consecutive SUCCESSFUL empty-cap INFO polls. Debounces the
+	/// capability clear: one empty-cap blip (observed on P100: a single empty
+	/// /info wiped 11 cached caps for ~61s, costing a full-context re-prefill)
+	/// retains last-known; the 2nd consecutive empty poll is authoritative and
+	/// clears. A FAILED INFO poll carries this value unchanged (neither
+	/// increments nor resets); a successful poll with caps resets it to 0.
+	/// </summary>
+	public int ConsecutiveEmptyCapPolls { get; set; }
 }
 
 public sealed class SlotInfo
