@@ -3205,6 +3205,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						catch (Exception ex)
 						{
 							pushError = ex;
+							// #712 M2: pushTask faults were previously unobserved — a dead
+							// store push silently clogged the chunk pipe and parked the
+							// engine PREFILL read loop (the M2 stall). Log at the fault
+							// site so the death is never silent again.
+							_log.Error(ex, "prefill_store_push_fault Sid={Sid} Node={Node} Slot={Slot} Key={Key} — store PUT_CHUNKED push failed; the prefill turn will error instead of stalling",
+								item.SessionId, w.Name, slotId, storeKey);
 							throw;
 						}
 					});
