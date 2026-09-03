@@ -136,6 +136,13 @@ public sealed record CoordinatorConfig
 	/// Config: HYDRA_COORD_SOLO_PREFIX_REUSE_ENABLED
 	/// </summary>
 	public bool SoloPrefixReuseEnabled { get; init; } = EnvBool("HYDRA_COORD_SOLO_PREFIX_REUSE_ENABLED", true);
+	/// <summary>#712: bounded wait (ms) for the previous turn's in-flight bg save
+	/// to commit before the next turn's restore reads the store (and before an
+	/// evict judges store freshness). On timeout the restore proceeds with a
+	/// possibly-stale blob — larger delta prefill, correct output. Two sites
+	/// share this value; hermetic tests shrink it to exercise the timeout branch.
+	/// Config: HYDRA_COORD_SOLO_SAVE_WAIT_MS</summary>
+	public int SoloSaveWaitMs { get; init; } = EnvInt("HYDRA_COORD_SOLO_SAVE_WAIT_MS", 30000);
 	public bool WarmSlotVerificationEnabled { get; init; } = EnvBool("HYDRA_COORD_WARM_SLOT_VERIFY", true);
 	/// <summary>
 	/// Skip Store Get+StatePut round-trip when the session KV is still resident on the
@@ -273,6 +280,11 @@ public sealed class SessionEntry
 	public int NPast { get; set; }
 	public int NPromptTokens { get; set; }
 	public bool HasStoreState { get; set; }
+	/// <summary>#712: the n_past the store blob was written at (last
+	/// <c>MarkStoreState</c> with a known NPast). The evict-save freshness
+	/// check compares this against the ledger NPast — equal means the store
+	/// already holds the current slot state and a second save is redundant.</summary>
+	public int StoreNPast { get; set; }
 	public bool SlotFreed { get; set; }
 	public string? PrefixHash { get; set; }
 	/// <summary>Model alias this session was routed to (warm-session affinity for STEP 0 of AutoRouter).</summary>

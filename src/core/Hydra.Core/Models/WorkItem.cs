@@ -195,6 +195,16 @@ public sealed class WorkItem
 	/// <summary>Whether the prefix checkpoint was found in Store and restored before prefill.</summary>
 	public bool PrefixCacheHit { get; set; }
 
+	/// <summary>
+	/// #712: the session KV was restored via STATE_PUT onto <see cref="PrefillSlot"/>
+	/// and the full PREFILL is skipped. Decode must run on that exact slot (see
+	/// PickDecodeAsync's pin branch) so the engine's completion-path n_common
+	/// detection prefills only the delta (new tokens since the last turn).
+	/// KV model identity (<see cref="KvTokenizer"/> etc.) is stamped from the
+	/// STATE_PUT response meta so the merged DECODE frame passes Gate A.
+	/// </summary>
+	public bool SoloKvRestoreHit { get; set; }
+
 	/// <summary>Request ID for the merged DECODE RPC, used to poll GET /v1/decode/{id}.</summary>
 	public int? DecodeRequestId { get; set; }
 

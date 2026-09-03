@@ -16,11 +16,12 @@ namespace Tests.Core.Services;
 /// </summary>
 public sealed class SoloPrefixReuseTests
 {
-	private static CoordinatorConfig MakeConfig(bool soloPrefixReuse = true) => new()
+	private static CoordinatorConfig MakeConfig(bool soloPrefixReuse = true, int soloSaveWaitMs = 30000) => new()
 	{
 		UseLlamaEngine = true,
 		PrefixCheckpointEnabled = true,
 		SoloPrefixReuseEnabled = soloPrefixReuse,
+		SoloSaveWaitMs = soloSaveWaitMs,
 		AtomicThreshold = 2048,
 		WarmThreshold = 5120,
 		NPastGuardTolerance = 50,
@@ -473,5 +474,694 @@ public sealed class SoloPrefixReuseTests
 		// undercounts real tokens (A/B#4 regression) and is not safe without
 		// tokenizer-accurate boundaries.
 		Assert.Equal(4, item.Messages.Count);
+	}
+
+	// ── #712 skip-PREFILL flow (this PR) ─────────────────────────────────────
+	// When the session-KV restore lands on a single-engine cold route, the full
+	// PREFILL is skipped and the DECODE is pinned to the restored slot; the
+	// engine's completion-path n_common detection prefills only the delta.
+
+	[Fact]
+	public async Task SkipPrefill_Restore_WaitsForInFlightWriteStateToStore()
+	{
+		// Production save path for the streaming decode route: NotifyStreamComplete
+		// captures the blob, releases the slot, then fire-and-forget
+		// WriteStateToStoreAsync (store Put + MarkStoreState). While that Put is
+		// in flight, the next turn's restore must wait — otherwise it reads the
+		// previous turn's blob and the delta prefill covers two turns of history
+		// (~1.9x baseline TTFT in the #712 P100 A/B).
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_write_wait";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 8386);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// Gate the store Put — the save tail is in flight, not yet committed
+		var putGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		store.PreCallHook = op => op == OpCode.Put ? putGate.Task : Task.CompletedTask;
+
+		var saveItem = MakeSoloItem(sessionId, estimatedTokens: 14532);
+		// Production sequence: decode dispatch announces the deferred save
+		// (_pendingBgSaves + RegisterSessionSave), then stream end captures the
+		// blob and fire-and-forgets WriteStateToStoreAsync (store Put).
+		scheduler.RegisterSessionSave(sessionId);
+		var saveTask = scheduler.WriteStateToStoreAsync(new byte[4096], sessionId, "trace-save", saveItem, 100);
+		await Task.Delay(50); // let the save reach the gated Put
+
+		var restoreItem = StagedRestoreItem(sessionId, "cold_concurrency", estimatedTokens: 8000);
+		var restoreTask = scheduler.DispatchAsync(restoreItem, CancellationToken.None);
+		await Task.Delay(200);
+		Assert.False(restoreTask.IsCompleted, "restore must wait for the in-flight store write");
+
+		putGate.TrySetResult();
+		await saveTask;
+		var next = await restoreTask;
+
+		Assert.Equal(WorkItemState.PickDecode, next);
+		Assert.True(restoreItem.SoloKvRestoreHit);
+
+		// Ordering proof: the restore's store GET landed AFTER the save's store PUT.
+		// (OrderedCalls, not Calls — ConcurrentBag enumeration is not temporal.)
+		var ordered = store.OrderedCalls;
+		int putIdx = ordered.FindIndex(c => c.Op == OpCode.Put && c.Key == $"{sessionId}.kv");
+		int getIdx = ordered.FindIndex(c => c.Op == OpCode.Get && c.Key == $"{sessionId}.kv");
+		Assert.True(putIdx >= 0, "save must have written the session KV to the store");
+		Assert.True(getIdx > putIdx, $"restore must read the store after the save committed: {string.Join(" | ", ordered)}");
+	}
+
+	[Fact]
+	public async Task SkipPrefill_Restore_WaitsForInFlightBgSave()
+	{
+		// Pipeline-path coverage (WorkItemState.BgSave): the previous turn's
+		// BgSave is still streaming the engine state; the restore must not read
+		// the store until that save has committed.
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StateGet, (byte)StatusCode.Ok, payload: new byte[4096]);
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+		var stateGetGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		engineStore.PreCallHook = op => op == OpCode.StateGet ? stateGetGate.Task : Task.CompletedTask;
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_save_wait";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 8386);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// Turn N's BgSave in flight (StateGet gated — not yet committed)
+		var saveItem = MakeSoloItem(sessionId, estimatedTokens: 14532);
+		saveItem.State = WorkItemState.BgSave;
+		saveItem.DecodeWorker = RtxWorker();
+		saveItem.DecodeSlot = 0;
+		saveItem.LastIdSlot = 0;
+		var saveTask = scheduler.BgSaveAsync(saveItem);
+		await Task.Delay(50); // let BgSaveAsync reach the gated StateGet
+
+		// Turn N+1's restore — must block until the save commits.
+		// estimatedTokens 8000 keeps the n_past guard happy against entry.NPast=8386
+		// (guard: est + max(128, 5%) >= n_past).
+		var restoreItem = StagedRestoreItem(sessionId, "cold_concurrency", estimatedTokens: 8000);
+		var restoreTask = scheduler.DispatchAsync(restoreItem, CancellationToken.None);
+		await Task.Delay(200);
+		Assert.False(restoreTask.IsCompleted, "restore must wait for the in-flight save");
+
+		stateGetGate.TrySetResult();
+		await saveTask;
+		var next = await restoreTask;
+
+		Assert.Equal(WorkItemState.PickDecode, next);
+		Assert.True(restoreItem.SoloKvRestoreHit);
+
+		// Ordering proof: the restore's store GET landed AFTER the save's store PUT.
+		// (OrderedCalls, not Calls — ConcurrentBag enumeration is not temporal.)
+		var ordered = store.OrderedCalls;
+		int putIdx = ordered.FindIndex(c => c.Op == OpCode.Put && c.Key == $"{sessionId}.kv");
+		int getIdx = ordered.FindIndex(c => c.Op == OpCode.Get && c.Key == $"{sessionId}.kv");
+		Assert.True(putIdx >= 0, "BgSave must have written the session KV to the store");
+		Assert.True(getIdx > putIdx, $"restore must read the store after the save committed: {string.Join(" | ", ordered)}");
+	}
+
+	private const string FullStatePutMeta =
+		"{\"n_past\":3000,\"restored\":true,\"bytes\":2048,\"model_match\":true,"
+		+ "\"model_alias\":\"qwen3.5-9b-test\",\"model_path\":\"/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf\","
+		+ "\"tokenizer\":\"llama\",\"model_name\":\"Qwen3.5-9B\",\"model_quant\":\"Q4_K\",\"model_capabilities\":1}";
+
+	private static WorkerConfig RtxWorker() => new()
+	{
+		Name = "rtx", Host = "localhost", RpcPort = 9601,
+		LlamaUrl = "http://localhost:8080", WorkerType = 3, Slots = 2,
+	};
+
+	private static WorkItem StagedRestoreItem(string sessionId, string routeType, int estimatedTokens = 3500)
+	{
+		var item = MakeSoloItem(sessionId, estimatedTokens);
+		item.State = WorkItemState.PrefixRestore;
+		item.RouteType = routeType;
+		item.PrefillWorker = RtxWorker();
+		item.PrefillSlot = 0;
+		return item;
+	}
+
+
+	[Fact]
+	public async Task SkipPrefill_ColdConcurrency_StoreHit_RoutesToPickDecodeWithStampedIdentity()
+	{
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+
+		var (scheduler, ledger, _, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_skip_cc";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		var item = StagedRestoreItem(sessionId, "cold_concurrency");
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// Restore hit on a solo-eligible route → skip Prefill+SaveKv, go to PickDecode
+		Assert.Equal(WorkItemState.PickDecode, next);
+		Assert.True(item.PrefixCacheHit);
+		Assert.True(item.SoloKvRestoreHit);
+		Assert.Equal(3000, item.PrefixNPast);
+		Assert.Equal(3000, item.NPastAfter);
+		// KV identity stamped from STATE_PUT meta (Gate A kv_metadata source)
+		Assert.Equal("llama", item.KvTokenizer);
+		Assert.Equal("Qwen3.5-9B", item.KvModelName);
+		Assert.Equal("Q4_K", item.KvModelQuant);
+		Assert.Equal(1u, item.KvModelCapabilities);
+		Assert.Equal("qwen3.5-9b-test", item.KvModelAlias);
+	}
+
+	[Fact]
+	public async Task SkipPrefill_ColdPd_StoreHit_StillRoutesToPrefill()
+	{
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+
+		var (scheduler, ledger, _, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_skip_pd";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// P/D split: the KV must stream to the decode node via the PREFILL M2
+		// relay — skipping PREFILL would leave the decode node without KV.
+		var item = StagedRestoreItem(sessionId, "cold_pd");
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.True(item.PrefixCacheHit);
+		Assert.False(item.SoloKvRestoreHit);
+	}
+
+	[Fact]
+	public async Task SkipPrefill_Migration_StoreHit_StillRoutesToPrefill()
+	{
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+
+		var (scheduler, ledger, _, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_skip_mig";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		var item = StagedRestoreItem(sessionId, "migration");
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.False(item.SoloKvRestoreHit);
+	}
+
+	[Fact]
+	public async Task SkipPrefill_ModelMismatch_StoreHit_StillRoutesToPrefill()
+	{
+		// model_match=false: the resident model differs from the KV's model —
+		// the PREFILL path performs the inline model swap and must run in full.
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok,
+			meta: "{\"n_past\":3000,\"model_match\":false,\"tokenizer\":\"llama\",\"model_name\":\"Other\",\"model_quant\":\"Q4_K\",\"model_capabilities\":1}");
+
+		var (scheduler, ledger, _, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_skip_mismatch";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		var item = StagedRestoreItem(sessionId, "cold_concurrency");
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.False(item.SoloKvRestoreHit);
+	}
+
+	[Fact]
+	public async Task SkipPrefill_OldEngineMetaWithoutIdentity_StillRoutesToPrefill()
+	{
+		// Pre-#289 engines omit the identity fields from the STATE_PUT meta —
+		// the merged DECODE frame would carry empty kv_metadata and Gate A
+		// would reject it, so the full PREFILL path (which stamps identity from
+		// the PREFILL result) must be used.
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: "{\"n_past\":3000}");
+
+		var (scheduler, ledger, _, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_skip_oldmeta";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		var item = StagedRestoreItem(sessionId, "cold_concurrency");
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.Prefill, next);
+		Assert.True(item.PrefixCacheHit);
+		Assert.False(item.SoloKvRestoreHit);
+	}
+
+	[Fact]
+	public async Task PickDecode_SkipHit_PrefillLease_ConvertsAndPinsRestoredSlot()
+	{
+		var (scheduler, _, tracker, _) = MakeScheduler();
+		var sessionId = "sess_pin_convert";
+
+		// cold_concurrency shape: short prefill lease owns the restored slot
+		var item = MakeSoloItem(sessionId, 3500);
+		item.State = WorkItemState.PickDecode;
+		item.RouteType = "solo_prefix_reuse";
+		item.SoloKvRestoreHit = true;
+		item.PrefillWorker = RtxWorker();
+		item.PrefillSlot = 0;
+		Assert.True(tracker.TryAcquireSlot("rtx", out _, "prefill", pinnedSlot: 0));
+		var prefillLease = new SlotLease("rtx", 0, sessionId, LeaseLifetime.Short, tracker);
+		item.PrefillLease = prefillLease;
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.Decode, next);
+		Assert.Equal("rtx", item.DecodeWorker?.Name);
+		Assert.Equal(0, item.DecodeSlot);
+		Assert.Null(item.PrefillLease);
+		// Review #732 finding 1: the decode lease must be a fresh LONG lease —
+		// the old code transferred the Short prefill lease object, which
+		// FinalizeAsync disposed mid-stream (slot released while generating).
+		Assert.NotSame(prefillLease, item.DecodeLease);
+		Assert.Equal(LeaseLifetime.Long, item.DecodeLease!.Lifetime);
+		Assert.Equal("rtx", item.DecodeLease.WorkerName);
+		Assert.Equal(0, item.DecodeLease.SlotId);
+		// The slot stayed held exactly once: one acquire (prefill), the Short
+		// lease dropped without release, the Long lease will release it once.
+		Assert.Equal(1, tracker.TotalSlots("rtx") - tracker.FreeSlotCount("rtx"));
+	}
+
+	[Fact]
+	public async Task PickDecode_SkipHit_DecodeLease_ReusesAndPinsRestoredSlot()
+	{
+		var (scheduler, _, tracker, _) = MakeScheduler();
+		var sessionId = "sess_pin_reuse";
+
+		// cold_atomic / solo_prefix_restore shape: the Long decode lease already
+		// owns the restored slot (ColdRouteAsync acquired it up-front).
+		var item = MakeSoloItem(sessionId, 500);
+		item.State = WorkItemState.PickDecode;
+		item.RouteType = "solo_prefix_reuse";
+		item.SoloKvRestoreHit = true;
+		item.PrefillWorker = RtxWorker();
+		item.PrefillSlot = 1;
+		item.DecodeWorker = RtxWorker();
+		item.DecodeSlot = 1;
+		Assert.True(tracker.TryAcquireSlot("rtx", out _, "decode", pinnedSlot: 1));
+		item.DecodeLease = new SlotLease("rtx", 1, sessionId, LeaseLifetime.Long, tracker);
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.Decode, next);
+		Assert.Equal("rtx", item.DecodeWorker?.Name);
+		Assert.Equal(1, item.DecodeSlot);
+		Assert.Equal(1, tracker.TotalSlots("rtx") - tracker.FreeSlotCount("rtx"));
+	}
+
+	[Fact]
+	public async Task PickDecode_SkipHit_NoLeaseHoldsSlot_FreshPinnedAcquire()
+	{
+		var (scheduler, _, tracker, _) = MakeScheduler();
+		var sessionId = "sess_pin_fresh";
+
+		// Defensive shape: the hit is set but no lease owns the restored slot
+		// (should not happen in the live flow) — re-acquire it pinned.
+		var item = MakeSoloItem(sessionId, 3500);
+		item.State = WorkItemState.PickDecode;
+		item.RouteType = "solo_prefix_reuse";
+		item.SoloKvRestoreHit = true;
+		item.PrefillWorker = RtxWorker();
+		item.PrefillSlot = 0;
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.Decode, next);
+		Assert.Equal("rtx", item.DecodeWorker?.Name);
+		Assert.Equal(0, item.DecodeSlot);
+		Assert.NotNull(item.DecodeLease);
+		Assert.Equal(LeaseLifetime.Long, item.DecodeLease?.Lifetime);
+	}
+
+	[Fact]
+	public async Task RestoreKv_SkipHit_ReturnsDecodeWithoutStoreTraffic()
+	{
+		var (scheduler, ledger, tracker, store) = MakeScheduler();
+		var sessionId = "sess_restore_skip";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+
+		var item = MakeSoloItem(sessionId, 3500);
+		item.State = WorkItemState.RestoreKv;
+		item.RouteType = "solo_prefix_reuse";
+		item.SoloKvRestoreHit = true;
+		item.DecodeWorker = RtxWorker();
+		item.DecodeSlot = 0;
+		item.DecodeLease = new SlotLease("rtx", 0, sessionId, LeaseLifetime.Long, tracker);
+
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		// KV already resident via STATE_PUT — no manifest lookup, no re-restore
+		Assert.Equal(WorkItemState.Decode, next);
+		Assert.Equal(0, store.Calls.Count);
+	}
+
+	[Fact]
+	public async Task EndToEnd_Atomic_SoloRestoreHit_ReachesDecodeWithoutPrefill()
+	{
+		// Full solo turn-2 flow (atomic route): cold route → PrefixRestore
+		// (STATE_PUT) → PickDecode (pinned) → Decode. No PREFILL RPC is issued.
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+
+		var cfg = MakeConfig();
+		var atomicCfg = new CoordinatorConfig
+		{
+			UseLlamaEngine = true,
+			PrefixCheckpointEnabled = true,
+			SoloPrefixReuseEnabled = true,
+			AtomicThreshold = 4000, // 500-token item routes atomic
+			WarmThreshold = 5120,
+			NPastGuardTolerance = 50,
+			Workers = [cfg.Workers[0]],
+		};
+		var (scheduler, ledger, tracker, store) = MakeScheduler(atomicCfg, engineStore);
+		var sessionId = "sess_e2e_atomic";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 450);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		var item = MakeSoloItem(sessionId, estimatedTokens: 500);
+
+		// Turn 2 routing: cold_atomic + HasStoreState → PrefixRestore
+		var state1 = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.PrefixRestore, state1);
+		Assert.Equal("solo_prefix_restore", item.RouteType);
+		Assert.NotNull(item.DecodeLease); // atomic route holds the slot up-front
+
+		item.State = WorkItemState.PrefixRestore;
+		var state2 = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.PickDecode, state2); // PREFILL skipped
+		Assert.True(item.SoloKvRestoreHit);
+
+		item.State = WorkItemState.PickDecode;
+		var state3 = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.Decode, state3);
+		Assert.Equal(item.PrefillSlot, item.DecodeSlot); // pinned to the restored slot
+		Assert.Equal(LeaseLifetime.Long, item.DecodeLease!.Lifetime);
+
+		// No PREFILL was ever issued for this turn
+		Assert.Equal(0, engineStore.CallCount(Hydra.Shared.OpCode.EnginePrefill));
+
+		// Finding 1: FinalizeAsync must STASH the Long decode lease as warm —
+		// only Long leases take that path; anything shorter disposes the slot
+		// while the stream is still draining.
+		await scheduler.FinalizeAsync(item, WorkItemState.Done);
+		Assert.Equal(1, scheduler.WarmLeaseCount);
+		Assert.Equal(LeaseLifetime.Long, scheduler.GetWarmLeasesSnapshot()[sessionId].Lifetime);
+	}
+
+	[Fact]
+	public async Task EndToEnd_ColdConcurrency_SoloRestoreHit_ReachesDecodeWithoutPrefill()
+	{
+		// Full solo turn-N flow (large prompt → cold_concurrency): the short
+		// prefill lease is converted to the decode lease and the decode is
+		// pinned to the restored slot.
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_e2e_cc";
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500); // > AtomicThreshold
+
+		var state1 = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.PrefixRestore, state1);
+		Assert.Equal("cold_concurrency", item.RouteType);
+		Assert.NotNull(item.PrefillLease);
+		Assert.Null(item.DecodeLease);
+
+		item.State = WorkItemState.PrefixRestore;
+		var state2 = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.PickDecode, state2);
+		Assert.True(item.SoloKvRestoreHit);
+
+		item.State = WorkItemState.PickDecode;
+		var state3 = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.Decode, state3);
+		Assert.Equal("rtx", item.DecodeWorker?.Name);
+		Assert.Equal(item.PrefillSlot, item.DecodeSlot);
+		Assert.Null(item.PrefillLease); // converted into the decode lease
+		Assert.NotNull(item.DecodeLease);
+		// Finding 1 (regression guard): the converted decode lease must be
+		// Long-lived. Transferring the Short prefill lease object made
+		// FinalizeAsync dispose the slot mid-stream on every cold_concurrency
+		// restore hit (stream_done_no_lease 6/6 in the v6 A/B run).
+		Assert.Equal(LeaseLifetime.Long, item.DecodeLease.Lifetime);
+		Assert.Equal(0, engineStore.CallCount(Hydra.Shared.OpCode.EnginePrefill));
+
+		// Finding 1: FinalizeAsync must STASH the Long decode lease as warm —
+		// that is what lets the next turn's evict skip the redundant save.
+		await scheduler.FinalizeAsync(item, WorkItemState.Done);
+		Assert.Equal(1, scheduler.WarmLeaseCount);
+		Assert.Equal(LeaseLifetime.Long, scheduler.GetWarmLeasesSnapshot()[sessionId].Lifetime);
+	}
+
+	// ── T4 anomaly (P100 A/B): model_path strip on restore hits ──
+
+	[Fact]
+	public void HydraConfig_ModelPathStripped_OnRestoreHit_DecodeConfigKeepsT1Keys()
+	{
+		// The decode HTTP-fallback body carries the alias EngineConfig dict. On
+		// a restore hit the model is resident — model_path must not travel (a
+		// mismatched path triggers an engine T3 rebuild whose failed rollback
+		// wipes the restored slot). T1 slot keys survive.
+		var cfg = new Dictionary<string, object>
+		{
+			["model_path"] = "/models/Qwen3.5-9B-Q4_K_M.gguf",
+			["n_ctx"] = 65536,
+			["cache_type_k"] = "q8_0",
+			["flash_attn"] = true,
+		};
+
+		WorkerSchedulerService.StripReloadTriggerForRestoreHit(cfg, Serilog.Log.Logger, "sess_strip");
+
+		Assert.False(cfg.ContainsKey("model_path"), "T3 reload trigger must be stripped");
+		Assert.Equal(3, cfg.Count);
+		Assert.Equal(65536, cfg["n_ctx"]);
+		Assert.Equal("q8_0", cfg["cache_type_k"]);
+	}
+
+	[Fact]
+	public void HydraConfig_NoModelPath_StripIsNoOp()
+	{
+		var cfg = new Dictionary<string, object> { ["n_ctx"] = 65536 };
+		WorkerSchedulerService.StripReloadTriggerForRestoreHit(cfg, Serilog.Log.Logger, "sess_noop");
+		Assert.Equal(1, cfg.Count);
+		Assert.Equal(65536, cfg["n_ctx"]);
+	}
+
+	// ── Evict-save redundancy (P100 A/B run #2): T2's 43s TTFT ──
+
+	[Fact]
+	public async Task EvictWarm_FreshStoreState_SkipsRedundantEvictSave()
+	{
+		// Turn 2 of a solo session: turn 1's bg save already committed the slot
+		// state (StoreNPast == ledger NPast) and the warm lease kept the slot
+		// idle. The force-mode evict must NOT run a second STATE_GET+PUT —
+		// on P100 that redundant save serialized with the bg save on the
+		// engine RPC channel and cost +16s on turn 2's TTFT (43s vs ~27s).
+		var engineStore = new FakeStoreClient();
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_evict_skip";
+
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 8386);
+		ledger.MarkStoreState(sessionId, 8386); // bg save committed
+		scheduler.SeedWarmLeaseForTest(sessionId, new SlotLease("rtx", 0, sessionId, LeaseLifetime.Long, tracker));
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500); // cold_concurrency
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.PrefixRestore, next);
+		Assert.True(engineStore.CallCount(Hydra.Shared.OpCode.StateGet) == 0,
+			$"fresh store state must suppress the redundant evict save (got {engineStore.CallCount(Hydra.Shared.OpCode.StateGet)})");
+		Assert.Equal(0, engineStore.CallCount(Hydra.Shared.OpCode.Put));
+	}
+
+	[Fact]
+	public async Task EvictWarm_StaleStoreState_RunsEvictSave()
+	{
+		// The bg save failed (or the ledger moved on): the store blob is older
+		// than the current slot state (StoreNPast != NPast). The evict save is
+		// the only chance to persist the current KV before the slot is freed —
+		// it must run.
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StateGet, (byte)StatusCode.Ok, payload: new byte[4096]);
+		var (scheduler, ledger, tracker, store) = MakeScheduler(engineStore: engineStore);
+		var sessionId = "sess_evict_save";
+
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 8386);
+		ledger.MarkStoreState(sessionId, 3000); // stale: store holds an older state
+		scheduler.SeedWarmLeaseForTest(sessionId, new SlotLease("rtx", 0, sessionId, LeaseLifetime.Long, tracker));
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+		store.SetResponse(OpCode.Put, (byte)StatusCode.Ok);
+
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500);
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+
+		Assert.Equal(WorkItemState.PrefixRestore, next);
+		Assert.True(engineStore.CallCount(Hydra.Shared.OpCode.StateGet) == 1,
+			$"stale store state must trigger the evict save (got {engineStore.CallCount(Hydra.Shared.OpCode.StateGet)})");
+	}
+
+	// ── #712 warm-lease handoff marker (A/B v8 gate: stream_done_no_lease = 0) ──
+
+	[Fact]
+	public async Task EvictWinsRace_HandoffMarker_SuppressesSpuriousNoLease()
+	{
+		// Back-to-back turns (A/B v8 fingerprint): turn N's stream ends and the
+		// next request arrives BEFORE NotifyStreamComplete (NSC) reaches its
+		// warm-lease release — the force-mode evict consumes the warm lease
+		// first. NSC must then consume the handoff marker instead of logging
+		// stream_done_no_lease, and the slot must be released exactly once.
+		var (scheduler, ledger, tracker, store) = MakeScheduler();
+		var sessionId = "sess_handoff_evict_wins";
+
+		// Pre-stash: slot is HELD (rented) — Free = 1 of 2.
+		Assert.True(tracker.TryAcquireSlot("rtx", out var held));
+		Assert.Equal(1, tracker.FreeSlotCount("rtx"));
+
+		ledger.Register(sessionId, "rtx", slotId: held, nPast: 8386);
+		ledger.MarkStoreState(sessionId, 8386); // bg save committed → evict skips re-save
+		scheduler.SeedWarmLeaseForTest(sessionId, new SlotLease("rtx", held, sessionId, LeaseLifetime.Long, tracker));
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// Next turn arrives → force-mode evict consumes the warm lease, then
+		// cold-route rents a fresh prefill slot for the new turn.
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500); // cold_concurrency
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.PrefixRestore, next);
+		Assert.NotNull(item.PrefillLease);
+		Assert.Equal(0, scheduler.WarmLeaseCount);
+		Assert.True(scheduler.WarmLeaseHandoffPendingForTest(sessionId),
+			"evict that removed the warm lease must leave the handoff marker");
+		// Evict released the warm lease; the new turn's prefill lease holds one
+		// slot → exactly 1 of 2 free.
+		Assert.True(tracker.FreeSlotCount("rtx") == 1, $"expected 1 free (prefill lease holds 1), got {tracker.FreeSlotCount("rtx")}");
+
+		// Turn N's NSC finally lands → consumes the marker, no double release.
+		await scheduler.NotifyStreamComplete(sessionId);
+		Assert.False(scheduler.WarmLeaseHandoffPendingForTest(sessionId), "marker must be consumed by NSC");
+		Assert.True(tracker.FreeSlotCount("rtx") == 1,
+			$"NSC must not release a second time — Free unchanged (got {tracker.FreeSlotCount("rtx")})");
+
+		// New turn's prefill lease released → both slots back: the warm lease
+		// was released exactly once (by the evict).
+		await item.PrefillLease.DisposeAsync();
+		Assert.True(tracker.FreeSlotCount("rtx") == 2,
+			$"expected 2 free after releasing the prefill lease (got {tracker.FreeSlotCount("rtx")})");
+	}
+
+	[Fact]
+	public async Task NscWinsRace_ReverseOrder_NoMarkerAndEvictMissIsHarmless()
+	{
+		// Reverse order: NSC releases the warm lease BEFORE the next turn's
+		// evict arrives. No handoff marker must be left (the evict removed
+		// nothing), and the evict's TryRemove miss must be harmless — routing
+		// proceeds to PrefixRestore with the slot free count consistent.
+		var (scheduler, ledger, tracker, store) = MakeScheduler();
+		var sessionId = "sess_handoff_nsc_wins";
+
+		Assert.True(tracker.TryAcquireSlot("rtx", out var held));
+		Assert.Equal(1, tracker.FreeSlotCount("rtx"));
+
+		ledger.Register(sessionId, "rtx", slotId: held, nPast: 8386);
+		ledger.MarkStoreState(sessionId, 8386);
+		scheduler.SeedWarmLeaseForTest(sessionId, new SlotLease("rtx", held, sessionId, LeaseLifetime.Long, tracker));
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// NSC first → stream_done_release path (lease disposed here).
+		await scheduler.NotifyStreamComplete(sessionId);
+		Assert.Equal(0, scheduler.WarmLeaseCount);
+		Assert.Equal(2, tracker.FreeSlotCount("rtx"));
+		Assert.False(scheduler.WarmLeaseHandoffPendingForTest(sessionId),
+			"NSC release must not leave a handoff marker");
+
+		// Next turn's evict: TryRemove misses → no exception, routing proceeds
+		// (cold-route rents a fresh prefill slot for the new turn).
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500); // cold_concurrency
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.PrefixRestore, next);
+		Assert.NotNull(item.PrefillLease);
+		Assert.True(tracker.FreeSlotCount("rtx") == 1, $"expected 1 free (prefill lease holds 1) after evict miss (got {tracker.FreeSlotCount("rtx")})");
+		Assert.False(scheduler.WarmLeaseHandoffPendingForTest(sessionId));
+
+		await item.PrefillLease.DisposeAsync();
+		Assert.True(tracker.FreeSlotCount("rtx") == 2,
+			$"expected 2 free after releasing the prefill lease (got {tracker.FreeSlotCount("rtx")})");
+	}
+
+	// ── Save-wait timeout branch (finding 2/7) ──
+
+	[Fact]
+	public async Task SaveWait_Timeout_RestoreProceedsWithStaleBlob()
+	{
+		// The in-flight save TCS is registered but NEVER completed (simulates a
+		// stuck save). The restore must not block beyond the bounded wait — it
+		// proceeds with possibly-stale KV (larger delta prefill, correct output).
+		// SoloSaveWaitMs is lifted to CoordinatorConfig so this branch is testable.
+		var engineStore = new FakeStoreClient();
+		engineStore.SetResponse(OpCode.StatePut, (byte)StatusCode.Ok, meta: FullStatePutMeta);
+		var (scheduler, ledger, tracker, store) = MakeScheduler(cfg: MakeConfig(soloSaveWaitMs: 100), engineStore: engineStore);
+		var sessionId = "sess_savewait_timeout";
+
+		ledger.Register(sessionId, "rtx", slotId: 0, nPast: 3000);
+		ledger.MarkStoreState(sessionId);
+		scheduler.RegisterSessionSave(sessionId); // in-flight, never completed
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// restore hit is gated on RouteType — stage it as cold_concurrency
+		var item = StagedRestoreItem(sessionId, "cold_concurrency");
+
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+		sw.Stop();
+
+		Assert.Equal(WorkItemState.PickDecode, next);
+		Assert.True(item.SoloKvRestoreHit);
+		Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5),
+			$"restore must proceed after the bounded wait, not block 30s (elapsed {sw.Elapsed.TotalMilliseconds:F0} ms)");
+	}
+
+	// ── Superseded TCS resolution (finding 3/7) ──
+
+	[Fact]
+	public async Task RegisterSessionSave_SupersededTCS_ResolvesImmediately()
+	{
+		// A waiter parked on a superseded TCS must not block the full bounded
+		// wait — RegisterSessionSave completes any existing TCS before
+		// replacing it (the old comment claimed this; the code didn't).
+		var (scheduler, _, _, _) = MakeScheduler();
+		var sessionId = "sess_superseded";
+
+		var t1 = scheduler.RegisterSessionSave(sessionId);
+		Assert.False(t1.Task.IsCompleted);
+		var parkedWaiter = t1.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+		var t2 = scheduler.RegisterSessionSave(sessionId); // supersedes t1
+		await parkedWaiter; // must resolve NOW, not after t2's save completes
+		Assert.True(t1.Task.IsCompleted, "superseded TCS must be resolved on replacement");
+		Assert.False(t2.Task.IsCompleted);
+
+		scheduler.CompleteSessionSave(sessionId);
+		Assert.True(t2.Task.IsCompleted);
 	}
 }

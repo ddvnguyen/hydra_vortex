@@ -131,6 +131,12 @@ await using var server = new StoreServer(cfg, engine, chunkStore, metadata);
 Console.Error.WriteLine($"[BOOT] StoreServer created, starting RPC on {cfg.Port}");
 Console.Error.Flush();
 var serverTask = server.RunAsync(ct);
+// #712: RunAsync is fire-and-forget until Task.WhenAll at end of Main, so a fault
+// (e.g. bind: address in use) was previously SILENT — observed once as a ~17-min
+// connection-refusal window on the store port with no log trace. Observe it now.
+_ = serverTask.ContinueWith(t =>
+    Serilog.Log.Error(t.Exception, "store_server_task_faulted Port={Port} — store RPC listener may be DOWN", cfg.Port),
+    TaskContinuationOptions.OnlyOnFaulted);
 var debugTask = server.StartDebugEndpointAsync(ct);
 
 // ── Coordinator DI host ────────────────────────────────────────────────
