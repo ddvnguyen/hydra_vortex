@@ -277,13 +277,17 @@ public sealed class HealthMonitorTests
 	}
 
 	[Fact]
-	public async Task EngineInfoSucceedsWithEmptyCaps_ClearsStaleCapabilities()
+	public async Task EngineInfoEmptyCaps_SingleEmptyRetains_SecondConsecutiveEmptyClears()
 	{
-		// #712 review finding 4: carry-forward must be gated on the INFO query
-		// FAILING. A node redeployed with an engine build that no longer
-		// advertises merged_decode returns an EMPTY cap set on a SUCCESSFUL
-		// INFO — carrying the stale capability forward would route 0x43 into
-		// a gateRejected 503 with no fallback. Successful empty = authoritative.
+		// #738 (supersedes the #712 finding-4 single-empty-clears test, which
+		// encoded the behavior that broke A/B v8 turn 3): one empty-cap INFO
+		// blip (observed on P100: a single empty /info wiped 11 cached caps for
+		// ~61s across 3 polls, sending the next decode down the non-merged
+		// fallback for a 76s full re-prefill) must RETAIN last-known caps; the
+		// 2nd consecutive empty poll is still authoritative — a node redeployed
+		// with a build that no longer advertises merged_decode must clear the
+		// stale capability (carrying it would route 0x43 into a gateRejected
+		// 503 with no fallback).
 		var (health, _, _, server) = CreateMonitor(() => true);
 		await using var _ = server;
 
@@ -291,13 +295,21 @@ public sealed class HealthMonitorTests
 		await health.PollForTestAsync(CancellationToken.None);
 		Assert.Contains(Protocol.CapMergedDecode, health.GetNodeInfo("rtx")!.EngineCapabilities);
 
-		// Poll 2: INFO succeeds but advertises NOTHING (build without merged_decode).
+		// Polls 2–3: INFO succeeds but advertises NOTHING.
 		health.EngineInfoRpcClientFactory = (_, _) => new EngineInfoRpcStub(succeed: true, withCaps: false);
 		await health.PollForTestAsync(CancellationToken.None);
 
+		// 1st consecutive empty-cap poll → debounced: caps RETAINED.
 		var second = health.GetNodeInfo("rtx")!;
-		Assert.True(second.EngineCapabilities.Count == 0,
-			"a successful INFO with an empty cap set must clear stale capabilities");
-		Assert.True(second.PresetAliases.Count == 0);
+		Assert.True(second.EngineCapabilities.Contains(Protocol.CapMergedDecode),
+			"a single empty-cap INFO blip must retain last-known capabilities (debounce)");
+		Assert.Equal(1, second.ConsecutiveEmptyCapPolls);
+
+		// 2nd consecutive empty-cap poll → authoritative: caps CLEARED.
+		await health.PollForTestAsync(CancellationToken.None);
+		var third = health.GetNodeInfo("rtx")!;
+		Assert.True(third.EngineCapabilities.Count == 0,
+			"the 2nd consecutive empty-cap INFO must clear stale capabilities");
+		Assert.Equal(2, third.ConsecutiveEmptyCapPolls);
 	}
 }
