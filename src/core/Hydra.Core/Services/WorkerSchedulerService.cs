@@ -71,6 +71,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	internal Func<int, bool, TimeSpan>? RetryBackoffOverride { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
+	/// <summary>
+	/// #712 handoff marker: set when <see cref="EvictWarmAndColdRouteAsync"/>
+	/// actually consumed (TryRemove'd) the session's warm lease — i.e. the NEXT
+	/// turn's evict won the race against the PREVIOUS turn's
+	/// <see cref="NotifyStreamComplete"/> (NSC). In back-to-back turns the evict
+	/// fires ~20ms after stream end while NSC is still in its StateGet RPC, so
+	/// NSC's own warm-lease release then finds an empty dict and would log a
+	/// spurious <c>stream_done_no_lease</c>. NSC consumes this marker on miss
+	/// and downgrades to an Information log. The marker is set only when the
+	/// lease was actually removed, so at most one path disposes the lease; a
+	/// stale marker (NSC never ran, e.g. disconnect) is harmless and is
+	/// overwritten by the next evict.
+	/// </summary>
+	private readonly ConcurrentDictionary<string, byte> _warmLeaseHandoff = new();
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
 	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new();
@@ -1242,6 +1256,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	{
 		if (_warmLeases.TryRemove(item.SessionId, out var warmLease))
 		{
+			_warmLeaseHandoff[item.SessionId] = 1; // #712: tell the prior turn's NSC this lease is ours now
 			// #712: the stream-end bg save already persisted this exact slot
 			// state — the warm lease kept the slot idle since, so nothing new
 			// can be in it. Re-saving here costs a second 250MB+ STATE_GET+PUT
@@ -5799,27 +5814,40 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 			else
 			{
-				_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
-					sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
-				// #470 Fix 3: the lease must not be lost. When the warm-lease
-				// stash is empty for this session, the item's own DecodeLease
-				// may still be held (e.g. the pipeline finalized outside the
-				// warm-lease stash path after a merged_decode_transport_fault).
-				// Release it here so the slot returns to the pool instead of
-				// being stranded — a stranded slot 503/empties the NEXT turn
-				// of the same session. The streamed reply is unaffected: it is
-				// assembled from DecodeChunks and does not depend on the lease.
-				foreach (var kv in _pendingTimelines)
+				if (_warmLeaseHandoff.TryRemove(sessionId, out _))
 				{
-					if (kv.Value.SessionId != sessionId || kv.Value.DecodeLease == null)
-						continue;
-					var orphanedLease = kv.Value.DecodeLease;
-					kv.Value.DecodeLease = null;
-					if (releaseNode is null) releaseNode = orphanedLease.WorkerName;
-					try { await orphanedLease.DisposeAsync(); }
-					catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
-					SignalEvaluator();
-					break;
+					// #712: the warm lease was already consumed by this session's
+					// NEXT-turn evict (back-to-back turn race). Not a leak — the
+					// lease was disposed exactly once, by the evict. Information,
+					// and skip the orphan-lease scan: there is no lease left to
+					// orphan.
+					_log.Information("stream_done_lease_handed_off Sid={Sid} — warm lease consumed by next-turn evict (expected back-to-back)",
+						sessionId);
+				}
+				else
+				{
+					_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
+						sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
+					// #470 Fix 3: the lease must not be lost. When the warm-lease
+					// stash is empty for this session, the item's own DecodeLease
+					// may still be held (e.g. the pipeline finalized outside the
+					// warm-lease stash path after a merged_decode_transport_fault).
+					// Release it here so the slot returns to the pool instead of
+					// being stranded — a stranded slot 503/empties the NEXT turn
+					// of the same session. The streamed reply is unaffected: it is
+					// assembled from DecodeChunks and does not depend on the lease.
+					foreach (var kv in _pendingTimelines)
+					{
+						if (kv.Value.SessionId != sessionId || kv.Value.DecodeLease == null)
+							continue;
+						var orphanedLease = kv.Value.DecodeLease;
+						kv.Value.DecodeLease = null;
+						if (releaseNode is null) releaseNode = orphanedLease.WorkerName;
+						try { await orphanedLease.DisposeAsync(); }
+						catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
+						SignalEvaluator();
+						break;
+					}
 				}
 			}
 
@@ -5938,6 +5966,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	public Dictionary<string, SlotLease> GetWarmLeasesSnapshot()
 		=> new(_warmLeases);
+
+	/// <summary>Test seam: true when the prior turn's NSC is still owed the #712
+	/// handoff marker for this session (set by the evict, consumed by NSC).</summary>
+	internal bool WarmLeaseHandoffPendingForTest(string sessionId)
+		=> _warmLeaseHandoff.ContainsKey(sessionId);
 
 	private Hydra.Shared.RpcClient? GetAgentByName(string name)
 	{

@@ -1022,6 +1022,93 @@ public sealed class SoloPrefixReuseTests
 			$"stale store state must trigger the evict save (got {engineStore.CallCount(Hydra.Shared.OpCode.StateGet)})");
 	}
 
+	// ── #712 warm-lease handoff marker (A/B v8 gate: stream_done_no_lease = 0) ──
+
+	[Fact]
+	public async Task EvictWinsRace_HandoffMarker_SuppressesSpuriousNoLease()
+	{
+		// Back-to-back turns (A/B v8 fingerprint): turn N's stream ends and the
+		// next request arrives BEFORE NotifyStreamComplete (NSC) reaches its
+		// warm-lease release — the force-mode evict consumes the warm lease
+		// first. NSC must then consume the handoff marker instead of logging
+		// stream_done_no_lease, and the slot must be released exactly once.
+		var (scheduler, ledger, tracker, store) = MakeScheduler();
+		var sessionId = "sess_handoff_evict_wins";
+
+		// Pre-stash: slot is HELD (rented) — Free = 1 of 2.
+		Assert.True(tracker.TryAcquireSlot("rtx", out var held));
+		Assert.Equal(1, tracker.FreeSlotCount("rtx"));
+
+		ledger.Register(sessionId, "rtx", slotId: held, nPast: 8386);
+		ledger.MarkStoreState(sessionId, 8386); // bg save committed → evict skips re-save
+		scheduler.SeedWarmLeaseForTest(sessionId, new SlotLease("rtx", held, sessionId, LeaseLifetime.Long, tracker));
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// Next turn arrives → force-mode evict consumes the warm lease, then
+		// cold-route rents a fresh prefill slot for the new turn.
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500); // cold_concurrency
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.PrefixRestore, next);
+		Assert.NotNull(item.PrefillLease);
+		Assert.Equal(0, scheduler.WarmLeaseCount);
+		Assert.True(scheduler.WarmLeaseHandoffPendingForTest(sessionId),
+			"evict that removed the warm lease must leave the handoff marker");
+		// Evict released the warm lease; the new turn's prefill lease holds one
+		// slot → exactly 1 of 2 free.
+		Assert.True(tracker.FreeSlotCount("rtx") == 1, $"expected 1 free (prefill lease holds 1), got {tracker.FreeSlotCount("rtx")}");
+
+		// Turn N's NSC finally lands → consumes the marker, no double release.
+		await scheduler.NotifyStreamComplete(sessionId);
+		Assert.False(scheduler.WarmLeaseHandoffPendingForTest(sessionId), "marker must be consumed by NSC");
+		Assert.True(tracker.FreeSlotCount("rtx") == 1,
+			$"NSC must not release a second time — Free unchanged (got {tracker.FreeSlotCount("rtx")})");
+
+		// New turn's prefill lease released → both slots back: the warm lease
+		// was released exactly once (by the evict).
+		await item.PrefillLease.DisposeAsync();
+		Assert.True(tracker.FreeSlotCount("rtx") == 2,
+			$"expected 2 free after releasing the prefill lease (got {tracker.FreeSlotCount("rtx")})");
+	}
+
+	[Fact]
+	public async Task NscWinsRace_ReverseOrder_NoMarkerAndEvictMissIsHarmless()
+	{
+		// Reverse order: NSC releases the warm lease BEFORE the next turn's
+		// evict arrives. No handoff marker must be left (the evict removed
+		// nothing), and the evict's TryRemove miss must be harmless — routing
+		// proceeds to PrefixRestore with the slot free count consistent.
+		var (scheduler, ledger, tracker, store) = MakeScheduler();
+		var sessionId = "sess_handoff_nsc_wins";
+
+		Assert.True(tracker.TryAcquireSlot("rtx", out var held));
+		Assert.Equal(1, tracker.FreeSlotCount("rtx"));
+
+		ledger.Register(sessionId, "rtx", slotId: held, nPast: 8386);
+		ledger.MarkStoreState(sessionId, 8386);
+		scheduler.SeedWarmLeaseForTest(sessionId, new SlotLease("rtx", held, sessionId, LeaseLifetime.Long, tracker));
+		store.SetResponse(OpCode.Get, (byte)StatusCode.Ok, payload: new byte[2048]);
+
+		// NSC first → stream_done_release path (lease disposed here).
+		await scheduler.NotifyStreamComplete(sessionId);
+		Assert.Equal(0, scheduler.WarmLeaseCount);
+		Assert.Equal(2, tracker.FreeSlotCount("rtx"));
+		Assert.False(scheduler.WarmLeaseHandoffPendingForTest(sessionId),
+			"NSC release must not leave a handoff marker");
+
+		// Next turn's evict: TryRemove misses → no exception, routing proceeds
+		// (cold-route rents a fresh prefill slot for the new turn).
+		var item = MakeSoloItem(sessionId, estimatedTokens: 3500); // cold_concurrency
+		var next = await scheduler.DispatchAsync(item, CancellationToken.None);
+		Assert.Equal(WorkItemState.PrefixRestore, next);
+		Assert.NotNull(item.PrefillLease);
+		Assert.True(tracker.FreeSlotCount("rtx") == 1, $"expected 1 free (prefill lease holds 1) after evict miss (got {tracker.FreeSlotCount("rtx")})");
+		Assert.False(scheduler.WarmLeaseHandoffPendingForTest(sessionId));
+
+		await item.PrefillLease.DisposeAsync();
+		Assert.True(tracker.FreeSlotCount("rtx") == 2,
+			$"expected 2 free after releasing the prefill lease (got {tracker.FreeSlotCount("rtx")})");
+	}
+
 	// ── Save-wait timeout branch (finding 2/7) ──
 
 	[Fact]
