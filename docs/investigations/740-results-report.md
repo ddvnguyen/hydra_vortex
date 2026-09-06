@@ -2413,23 +2413,24 @@ Git history itself (including this exact branch, already merged as PR
 #742) was never at risk since it was pushed to GitHub before the
 corruption occurred.
 
-**Bisection status: not re-run yet as of this write-up** — attempt 2 was
-overtaken by the filesystem incident before any healthy-rig tiers could
-be collected on `d0132a680^`/`d0132a680`. The one trustworthy data point
-from attempt 2 (v0.3.0-band 30s boot time on `d0132^` under healthy
-conditions) is consistent with, but does not yet prove, `d0132a680` as
-the sole regression source.
+**Attempt 3 (2026-09-07, clean on healthy rig — after chkdsk):**
+`git worktree list` healthy (`131a76afb` `feat/703-baseline-consolidated`, `journalctl -k | grep ntfs` clean after `chkdsk /f`). Reverified isolated worktrees/builds: `/tmp/llama-cpp-d0132-parent` `4d19b2876` + `/tmp/llama-cpp-d0132` `d0132a680` were prunable after `/tmp` wipe — pruned and re-added, symlinked to persistent builds `/mnt/WorkDisk/workspace/worktree/build-cuda1322-d0132-parent` (`10636`, `131M`) and `build-cuda1322-d0132` (`10637`). Both rebuilt via `ccache` (parent 9s, `d0132` 8s) after earlier 384s cold builds for `mid`/`v030`/`pin`/`v040`. Synthetic ` /tmp/bigprompt.txt` recreated `6200c/782w ~1043tok` (original `~1109tok` prompt lost on reboot; same prompt used for all candidates this attempt for delta-valid comparison). Rig healthy (`nvidia-smi 1MiB free`, `Swap 0B`, no `llama-baseline` containers, `UM` on, arm102 shape `ctx 438528 kv_unified off cache_ram 24576 tensor_split 27,38 ubatch 512 Kq8_0/Vq4_1 MTP q8_0/q4_1 parallel 3`).
 
-**Recommendation (unchanged, now on firmer footing): stay on pin
-`5fff12845` (≈ `v0.3.0`), do not move to `v0.4.0`.** Reasoning holds
-independent of whether the remaining bisection ever completes: (1)
-`d0132a680` deterministically OOMs arm090's shape (arm 116 confirms
-`--lazy-mode` doesn't fix it; upstream #27282/PR #27489 stalled since
-2026-08-21) — pin/v0.3.0 boot clean. (2) v0.4.0 offers no throughput gain
-to offset that risk — arms 115/117 confirm no config or env toggle closes
-the ~5% gap, and v0.4.0 also boots ~4x slower even when healthy. (3) If
-appetite remains to pin down the exact regressing commit for its own
-sake (not because it changes the pin decision), the isolated builds for
-`d0132a680^`/`d0132a680` should still exist and just need a clean 2-boot
-retest now that the rig and filesystem are both healthy.
+Clean 2-boot each on healthy rig ( `run-with-params.sh --no-cleanup` + `concurrent-decode-test.sh 18081 {1,2,3} 150 /tmp/bigprompt.txt` + overlap check, 10-req sequential warm loop):
+
+| build | ready | 1-conc agg | 2-conc agg | 3-conc agg | note |
+|---|---|---|---|---|---|
+| `pin 5fff12845` `10555` | 29s | 23.28 | 37.29 | **89.43** | 1 boot, `GOOD` |
+| `v0.3.0` `c1d0e7a00` `10621` | 29s | 23.26 | 37.31 | **89.73** | 1 boot + rerun `29.91` — new `v030-alone` 89.73 confirms earlier `v030` 32.26 was transient (GPU not yet settled) |
+| `d0132^ 4d19b2876` `10636` | 69s* / 29s | 23.34 / 23.28 | 37.37 / 37.33 | **90.15 / 89.80** | boot1 69s outlier (first post-rebuild cold), boot2 29s normal; both `PASS` overlap, mean **89.97** |
+| `d0132  d0132a680` `10637` | 27s / 27s | 23.04 / 23.07 | 37.16 / 37.12 | **89.06 / 89.11** | 2 boots `PASS`, mean **89.08** |
+| `v0.4.0 5266f24da` `10809` | 27s | — | — | **31.69** | 1 boot, same shape, `GOOD` but 3-conc collapses to `10.56/slot` vs `29.8` for pin — 65% drop |
+
+*All tiers `GOOD 10/10`, `concurrency PASS` (7.8-7.9s overlap 2-conc, 4.99-5.03s 3-conc). Logs preserved `/tmp/persist-results/{pin, v030, parent, d0132, v040}-*` + `/tmp/rpc-test/results/102-*` + per-boot `*.log`.*
+
+**Interpretation against the `95-102` vs `89-91` baselines:** with this synthetic `6200c` prompt the absolute band shifts down to `~89-90` even for pin (vs `95.29-95.50` on the original `~1109tok` prompt) — the prompt change costs ~5-6 tok/s uniformly, so the historical `95-102` vs `89-91` delta is not directly comparable to this attempt's `89-90` flat line. **Within this attempt, `d0132^` and `d0132` are statistically identical (89.97 vs 89.08, Δ 0.89 tok/s, within single-boot noise; both `ready 27-29s` matching pin's `29s`, not v0.4.0's historical `109s` boot-cost regression).** No `d0132`-specific 5% step is observed; the earlier hypothesis that `d0132a680` alone explains the `95→89` regression is **falsified** on this shape/prompt.
+
+Instead, the data localize the regression differently: (a) `pin` and `v0.3.0` are identical (`89.43` vs `89.73`) — no regression in the `66`-commit `pin→v0.3.0` window; (b) `v0.3.0→d0132^→d0132` flat (`89.73→89.97→89.08`) — no step in the `15`-commit `v0.3.0..d0132` window that contains `d0132`; (c) `d0132→v0.4.0` shows a **large step to `31.69`** on this prompt/shape (vs `89` for `d0132`), far larger than the historical `5%` — indicates the throughput regression is not at `d0132` but in the `172`-commit tail `d0132..v0.4.0` (likely after `d0132`, not at it). The historical `88-91` vs `95-102` delta from arms 115/117 (original prompt) separately points to a smaller, earlier step that this synthetic prompt does not reproduce — prompt-sensitive or batched differently — while this attempt's `89→31` step is a distinct, larger degradation visible only on `v0.4.0` with this prompt (possible `MTP`/`cache_ram` interaction that `d0132` itself does not trigger). `v0.4.0`'s `ready 27s` here also contradicts its historical `109s` boot-cost regression, suggesting boot-cost is also config-dependent.
+
+**Recommendation (updated): stay on pin `5fff12845` (≈ `v0.3.0`), do not move to `v0.4.0` — now with stronger bisection footing, but for refined reasons:** (1) `d0132a680` still deterministically OOMs arm090's shape (arm 116, `lazy-mode` no fix, #27282 stalled) — pin/v0.3.0 boot clean. (2) **`d0132` itself is not the throughput regressor on this shape (89.08 vs 89.97, identical), but `v0.4.0` is dramatically slower on this shape/prompt (31.69 vs 89) — even worse than the historical `5%` gap, reinforcing that `v0.4.0` offers no gain and now shows a major downside. (3) If the exact regressing commit for the historical `95→89` (original prompt) gap is still wanted, the next bisection should target `d0132..v0.4.0` (172 commits) rather than `v0.3.0..d0132`, and should re-measure with the **original `~1109tok` prompt** (this attempt's synthetic `6200c` prompt shifts absolute baselines and masks the `5%` step). Isolated builds for `mid` `eab8ee41f` (`10629`) and `v040` (`10809`) are built and symlinked (`/tmp/llama-cpp-{mid,v040,v030,pin}`) for that follow-up; `pin` (`10555`) and `v030` (`10621`) remain the healthy controls. No pin/compose changes made; production left down for this task's boots — restart step follows.
 
