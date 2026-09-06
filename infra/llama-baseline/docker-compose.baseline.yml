@@ -88,7 +88,7 @@ name: llama-baseline
 # (Or set LLAMACPP_PARAMS_FILE as an env override when running podman compose.)
 #
 # Campaign state (2026-08-28T04:30Z): arm 080/081/082/083 + pi-harness 083 all DONE.
-#   Full ledger at docs/investigations/703-results-report.md and
+#   Full ledger at docs/investigations/740-results-report.md and
 #   orchestration/state/080-kcache-research.md. 6-candidate pin menu in
 #   infra/llama-baseline/params/README.md.
 

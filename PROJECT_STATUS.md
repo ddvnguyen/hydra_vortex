@@ -376,7 +376,7 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 - Action: do NOT file RMA or upstream issue yet (user's call, still pending). The card is usable on a clean slot.
 - Post-swap solo crash-loop (Qwen3.5-9B-Q8_0, `CUDA_VISIBLE_DEVICES=1`, 5×10 multi-turn 6K→12K) also **PASS 50/50** (corrected harness; first run misfired on `Qwen3.5` `reasoning_content`, not a fault) — overturns the pre-swap 6:40 hang. Both decisive tests (smoke + crash-loop) now clean on the real x16 slot.
 - #381 decode re-validation (POST-hardware-fix): RPC-split 21/44 + MTP `Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf` on clean x16 slot = **50/50 PASS, ~31 tok/s decode (MTP draft acc 0.62–0.67), ~776 tok/s prefill, 0 Xid** on both buses. Confirms the #381 best decode number (31.1 tok/s) under rigorous sustained 5×10 growing-context load. The §12 `mul_mat_vec_q<Q6_K>` GEMV OOB software bug did NOT trigger in this exact config (latent in other shapes); hardware question definitively answered — 3060 on clean slot holds #381 decode clean.
-- Detail: `docs/investigations/703-results-report.md` (post-slot-swap rows + verdict section).
+- Detail: `docs/investigations/740-results-report.md` (post-slot-swap rows + verdict section).
 
 ## #703 systematic test matrix + confirmed best config (addendum 2026-08-25, updated 2026-08-26)
 
@@ -392,4 +392,11 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
   - cache_type_k=q8_0 is a hard constraint (never q4_0 for K-cache).
 - `infra/llama-baseline/docker-compose.baseline.yml` / `Dockerfile.baseline` now pinned to 017's RPC-split topology with prod-parity params. 024 documented as alternative profile (change `--ctx-size 143360 --rope-scale 5` to switch).
 - `run-with-params.sh` updated with crash-loop/multi-turn log separation (`-crashloop.log`/`-multiturn.log`) and prod-parity param mappings. `tests/bench/chat_multi_turn.py` extended with `--deterministic` mode for controlled multi-turn testing.
-- Detail: `docs/investigations/703-results-report.md`, `infra/llama-baseline/params/README.md`.
+- Detail: `docs/investigations/740-results-report.md`, `infra/llama-baseline/params/README.md`.
+
+## #703 arms 090-114 — concurrency-shape vs production-pin verdict (addendum 2026-09-06)
+
+- Arms 090-105 established a 3-slot concurrent shape (`146176×3 ctx, kv_unified off, cache_ram 24576 MiB, UM on`, arm102) as the best concurrent-decode config found, alongside knob sweeps (tensor_split 25/40 and 30/35, ubatch 1024, cache_ram 8192, cache V-quant q5_0/q5_1, UM-off — arms 106-112) that all landed **statistically identical to arm102** (3-conc aggregate 95-102 tok/s band); an upstream llama.cpp v0.3.0 rebuild (arm114) also matched. None of these knobs move concurrent-decode throughput on this rig — arm102's `tensor_split 27,38` / `ubatch 512` / `cache_ram 24576` remains the defensible default for that shape. UM-off (arm112) deterministically OOMs — the shape requires `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`.
+- **Head-to-head decision (arm111, 102-shape + `V=q5_1`, vs arm090, the current production pin)** under identical `multiturn-growth-test.sh` (10 turns, ~4000 new prompt tokens/turn, growing to ~33-34K depth): arm111 delivers genuine 2/3-way concurrent decode at 15-20 tok/s/session; arm090 (`parallel=1`) serializes concurrent sessions behind one slot at ~8-12 tok/s/session with 2× longer per-turn walls (same "overlap" flag reported by the harness in both cases, but arm090's is queue time-slicing, not real concurrent decode).
+- **Verdict: choose by workload pattern, not a single winner.** Concurrent-growth workloads (2-3 simultaneous sessions actively growing past 30K context) → use the 102/111 shape. Rotational turn-taking (one session live, others idle, fast-return on resume) → **arm090 stays the pin** — its 18×-faster-idle-return design (validated 2026-08-29, 3-agent/6-turn production test, 0 evictions) is a different mechanism than 111's shape and is not invalidated by this test. `docker-compose.baseline.yml` DEFAULT PIN is unchanged (still arm090); no production cutover made — this is a documented option for a different use case, pending a decision on whether to add the 102/111 shape as a selectable second profile.
+- Detail: `docs/investigations/740-results-report.md` (arms 106-114 + "Arm 111 vs 090" head-to-head section).

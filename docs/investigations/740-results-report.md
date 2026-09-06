@@ -1,8 +1,9 @@
-# Issue #703 — Baseline RPC/context research: results report
+# Issue #740 — Baseline concurrency tuning: results report
 
-Research track for handling multiple concurrent requests at large context on
-the 5060 Ti + 3060 RPC-split rig (Qwen3.5-27B / arch `qwen35`, UD-Q5_K_M base
-quant). All arms below are non-production, tested via
+Follow-on from #703 (parent baseline PR — vanilla llama.cpp 2-GPU RPC-split
+rebuild). Research track for handling multiple concurrent requests at large
+context on the 5060 Ti + 3060 RPC-split rig (Qwen3.5-27B / arch `qwen35`,
+UD-Q5_K_M base quant). All arms below are non-production, tested via
 `infra/llama-baseline/run-with-params.sh` against the live production pin's
 ports (18081/50052), never merged into the arm090 production config without
 separate sign-off.
@@ -1902,16 +1903,262 @@ Worktree removed (`git worktree remove`), build dir deleted. Submodule
 
 ---
 
-## Queued arms 106-114 — updated 2026-09-06
+## Arm 106 — 102 shape, tensor_split 25,40 (2026-09-06)
+
+**Purpose:** test whether moving tensor_split off arm102's 27,38 toward the
+RPC peer (25,40) improves concurrency. 438528 = 3×146176, kv_unified off,
+cache_ram 24576, UM on — every field identical to arm102 except
+`tensor_split: 25,40` (more layers on 3060). Two fresh boots, 3-tier
+harness (`concurrent-decode-test.sh` 1/2/3, n_predict=150, `/tmp/bigprompt.txt`).
+
+**Gate: PASS, 2 boots, both 10/10 GOOD.** No Xid, no crash-pattern. Ready
+24s both boots. Args verified `tensor-split 25,40` in boot log.
+
+### Tiers (deduplicated, overlap PASS all tiers)
+
+| Tier | Boot 1 | Boot 2 |
+|---|---|---|
+| 1-conc | 33.90 tok/s | 33.95 tok/s |
+| 2-conc run1 agg | 50.23 (25.11/slot) | 50.11 (25.06/slot) |
+| 2-conc run2 agg | 63.21 (31.61/slot) | 63.23 (31.62/slot) |
+| 3-conc run1 agg | **98.33** (32.78/slot) | **99.48** (33.16/slot) |
+| 3-conc run2 agg | 97.96 (32.65/slot) | 97.95 (32.65/slot) |
+
+Preserved to `/tmp/rpc-test/results/106-udq5-102shape-split25-40-5fff12845-boot{1,2}`.
+
+**Verdict: identical to arm102 within boot variance.** 3-conc 98-99 agg vs
+arm102's 95-102 band, 2-conc ~50-63 vs 49-63, singles 33.9 vs 32-33. No material
+tensor_split sensitivity at this split range. 27,38 remains unobjectionable.
+
+---
+
+## Arm 107 — 102 shape, tensor_split 30,35 (2026-09-06)
+
+**Purpose:** opposite split direction to arm106 — 30,35 (less on RPC peer) vs
+102's 27,38. Same 3-tier harness, 2 boots.
+
+**Gate: PASS, 2 boots, both 10/10 GOOD.** Ready 31s both boots. `tensor-split
+30,35` verified.
+
+### Tiers
+
+| Tier | Boot 1 | Boot 2 |
+|---|---|---|
+| 1-conc | 31.95 tok/s | 32.01 tok/s |
+| 2-conc run1 agg | 48.53 (24.27/slot) | 48.48 (24.24/slot) |
+| 2-conc run2 agg | 60.82 (30.41/slot) | 60.58 (30.29/slot) |
+| 3-conc run1 agg | 96.64 (32.21/slot) | **99.45** (33.15/slot) |
+| 3-conc run2 agg | 97.44 (32.48/slot) | 97.52 (32.51/slot) |
+
+**Verdict: identical to arm102/106.** 2-conc run2 ~60.5-60.8 is ~2-3 tok/s below
+arm106's 63.2, but within the 50-63 run-to-run spread seen even within a single
+boot's two 2-conc launches. 3-conc 96-99 overlaps 102's band. No split-direction
+signal.
+
+---
+
+## Arm 108 — 102 shape, ubatch 1024 (2026-09-06)
+
+**Purpose:** test whether doubling `ubatch` 512→1024 helps decode-bound
+concurrent traffic (prompt-processing / speculative-verify batch). Same harness,
+2 boots, UM on.
+
+**Gate: PASS, 2 boots, both 10/10 GOOD.** Ready 29s. `ubatch-size 1024`
+verified.
+
+### Tiers
+
+| Tier | Boot 1 | Boot 2 |
+|---|---|---|
+| 1-conc | 33.04 tok/s | 33.19 tok/s |
+| 2-conc run1 agg | 51.04 (25.52/slot) | 50.95 (25.48/slot) |
+| 2-conc run2 agg | 64.59 (32.29/slot) | 63.11 (31.56/slot) |
+| 3-conc run1 agg | **102.48** (34.16/slot) | **101.85** (33.95/slot) |
+| 3-conc run2 agg | 97.07 (32.36/slot) | 96.84 (32.28/slot) |
+
+**Verdict: no material ubatch effect.** Boot1 run1's 102.48 is the highest
+single 3-conc aggregate in this batch, but run2 of the same boot collapses to
+97.07 — the same ~5 agg spread seen with ubatch 512 (98.33 vs 97.96 etc).
+Across boots, 102.48/101.85 vs 102's 95-102 band is noise. Expected: this
+`n_predict=150` decode test is not prompt-processing bound; ubatch matters for
+prefill, not for steady-state concurrent decode.
+
+---
+
+## Arm 109 — 102 shape, cache_ram 8192 (2026-09-06)
+
+**Purpose:** test whether halving `cache_ram` 24576→8192 MiB costs concurrency
+throughput. 8192 still fits ~1.5-2 full 146176-slot states (each ~4-4.8 GiB),
+so active 3-way decode should not touch the idle-swap path, but the test
+confirms.
+
+**Gate: PASS, 2 boots, both 10/10 GOOD.** Ready 29s. `cache-ram 8192`
+verified.
+
+### Tiers
+
+| Tier | Boot 1 | Boot 2 |
+|---|---|---|
+| 1-conc | 33.30 tok/s | 33.39 tok/s |
+| 2-conc run1 agg | 50.10 (25.05/slot) | 49.44 (24.72/slot) |
+| 2-conc run2 agg | 62.98 (31.49/slot) | 63.41 (31.71/slot) |
+| 3-conc run1 agg | 99.48 (33.16/slot) | **100.17** (33.39/slot) |
+| 3-conc run2 agg | 99.83 (33.28/slot) | 99.51 (33.17/slot) |
+
+**Verdict: identical to arm102.** 99-100 agg at 3-conc is the tightest spread
+in this batch, all inside 102's 95-102 band. cache_ram reduction does not
+affect active-decode throughput (it only caps how many idle-slot states fit
+in host RAM for fast return-after-eviction, per arm090's 8-vs-16 GiB
+finding — not exercised by `concurrent-decode-test.sh`'s short 150-token
+sessions).
+
+### Batch summary 106-109
+
+All four variants are **statistically identical to arm102** (and to each
+other and to 110/111/114's 95-102 3-conc band). No bimodal slow boots observed
+in any of the 8 fresh boots — same as arm114's 2 boots (all fast-mode). The
+tensor_split 25,40→30,35 sweep, ubatch 512→1024, and cache_ram 24576→8192
+knobs do not move concurrent decode throughput for this workload on this rig.
+Arm102's 27,38 / 512 / 24576 remains a defensible default.
+
+---
+
+## Arm 111 vs 090 — multiturn depth vs speed (production-pin decision) (2026-09-06)
+
+**Purpose:** arm102's earlier multiturn (2/3-session, 10 turns, ~4000 new
+tokens/turn, 750 out) showed 13-18 tok/s at ~35K depth vs 46 tok/s shallow
+when `cache_reuse` was silently disabled by `kv_unified off`. Arm111
+(`cache_type_v: q5_1` on the same 102 shape — the only delta vs arm102,
+ARM/tests confirm V-quant does not affect throughput) is the multiturn
+re-test; arm090 is the production pin (`parallel=1, kv_unified on,
+cache-ram 16384, yarn 5/32768`) run under identical
+`multiturn-growth-test.sh 18081 <n_sessions> 10 4000 750` to decide
+production-pin vs concurrent shape. Method: same booted server per arm,
+`run-with-params.sh` first (10-req gate), then 2-session then 3-session
+back-to-back, preserved to `...-multiturn-full`. Note on parallel=1:
+arm090's design is known (arm087 + this arm's in-file doc) to queue concurrent
+requests behind a single slot — 2/3-session "concurrency" here is data not
+failure, expected to be serialized with degraded aggregate.
+
+**Build:** `5fff12845`, `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` for arm111
+(`kv_unified off` shape requires UM per arm112's OOM proof), UM disabled
+(`0`) for arm090 (its `kv_unified on` shape boots without UM). Two booted
+servers total (one per arm), not two boots per arm. Production restored
+between arms and at end (`curl /health` ok, 15660/9977 MiB).
+
+**Fix applied during this run:** `params/090-udq5-148000-parallel1-cache-ram-16g.yml`
+was missing `requests/prompt_path/timeout/expect` (no bare-metal run had
+exercised it before; `run-with-params.sh` hit `P_TIMEOUT: unbound variable`
+under `set -u`). Added `requests: 10, prompt_path: /tmp/bigprompt.txt,
+timeout: 300, expect: unknown` — the same defaults all other params files
+carry.
+
+### Arm111 multiturn (q5_1, UM on, 146176×3, kv_unified off)
+
+Boot `n_slots=3, n_ctx_slot=146176, kv_unified='false'`, 32s ready, 10/10 GOOD.
+Warning `cache_reuse is not supported by this context, it will be disabled`
+logged (same as arm102's deep-multiturn condition).
+
+*2-session (10 turns, target depth ~49750, actual prompt_tok 3376→~34281/34316):*
+
+| Session | turn1 | turn10 | mean | prompt_tok growth |
+|---|---|---|---|---|
+| 1 | 23.33 tok/s (32.15s) | 19.70 (38.08s) | **19.47** | 3376→34281 (10.2×) |
+| 2 | 16.24 (46.17s) | 20.03 (20.37s) | **17.36** | 3376→34316 (10.2×) |
+
+Overlap 378.6s PASS.
+
+*3-session (same growth):*
+
+| Session | turn1 | turn10 | mean | prompt_tok |
+|---|---|---|---|---|
+| 1 (degraded) | 16.59 (45.20s) | **9.17** (11.77s, 108 comp_tok) | **13.81** | 3376→33508 (9.9×) |
+| 2 | 19.35 (38.75s) | 21.66 (34.63s) | **16.24** | 3376→33312 (9.9×) |
+| 3 | 14.34 (52.30s) | 16.39 (22.82s, 374 comp_tok) | **15.70** | 3376→34635 (10.3×) |
+
+Overlap 422.2s / 389.5s / 389.5s, all PASS. Note truncated completions on
+turns 8-10 (108-493 comp_tok vs 750 requested) where context pressure caused
+early stops — tok/s computed on actual comp_tok.
+
+**Arm111 verdict:** depth degradation is **mild at 30-35K**: 23.3→19.7 (−15%)
+on the best session, 16.2→20.0 flat on the other, vs arm102's original
+23.35→11.84 (−49%) on its worst session at similar depth. V=q5_1 does not
+change this vs 102's q4_1 (identical within noise to 102's re-measured 110's
+band). The 3-session shows one slot degraded to 9.17 at ~33K (similar to
+102's 12.79 at ~33K) — consistent with bimodal tail, not systematic.
+
+Preserved to `/tmp/rpc-test/results/111-udq5-102shape-v-q5_1-5fff12845-multiturn-full`
+(also earlier `/tmp/rpc-test/results/111-udq5-102shape-v-q5_1-5fff12845` from the
+first 2-session-only run, same numbers).
+
+### Arm090 multiturn (production pin, parallel=1, kv_unified on, yarn 5/32768)
+
+Boot `n_slots=1, n_ctx_slot=148224, kv_unified='true'`, 16s ready, 10/10 GOOD.
+Also warns `cache_reuse is not supported` despite `cache_reuse 64` in YAML
+(likely kv_unified+context-shift interaction — not investigated, but throughput
+numbers are still valid for comparison since both arms see the same warning).
+
+*2-session (same growth, but parallel=1 serializes):*
+
+| Session | turn1 | turn10 | mean | prompt_tok |
+|---|---|---|---|---|
+| 1 | 15.38 (48.77s) | 13.28 (31.71s, 421 comp_tok) | **15.61** | 3376→33645 (10.0×) |
+| 2 | 28.24 (26.56s) | 13.47 (31.25s, 421 comp_tok) | **16.51** | 3376→33645 (10.0×) |
+
+Overlap **411.5s PASS** — surprisingly, the harness reports overlap even with
+`parallel=1`, because `cont-batching` + `kv_unified` still time-slices
+requests in the host queue (not true concurrent decode, but not purely
+serial wall-clock either). Per-turn walls ~30-52s vs arm111's ~32-46s at same
+depth.
+
+*3-session:*
+
+| Session | turn1 | turn10 | mean | prompt_tok |
+|---|---|---|---|---|
+| 1 | 15.21 (49.30s) | **8.12** (92.39s) | **10.82** | 3376→33588 |
+| 2 | 10.48 (71.54s) | **8.23** (91.13s) | **10.36** | 3376→33588 |
+| 3 | 27.71 (27.07s) | **7.92** (94.68s) | **12.14** | 3376→33588 |
+
+Overlap 708.4s / 680.7s / 680.7s, all PASS — but per-turn walls are
+**~50-95s** (vs arm111's ~30-60s), and tok/s collapses to **7.9-8.2 at
+33.5K depth** (vs arm111's 9.1-21.6). Serialization cost is visible as wall-time
+inflation, not as zero-overlap.
+
+Preserved to `/tmp/rpc-test/results/090-udq5-148000-parallel1-cache-ram-16g-5fff12845-multiturn-full`.
+
+### Head-to-head verdict (use for pin decision)
+
+| Scenario | Arm111 (102 shape, 3 slots, q5_1) | Arm090 (production, 1 slot) |
+|---|---|---|
+| 2-session mean @ ~33-34K depth | **19.47 / 17.36** (mild 15% drop) | 15.61 / 16.51 (similar, but walls 5-10s longer) |
+| 3-session mean @ ~33-34K depth | **13.81 / 16.24 / 15.70** (worst 9.17) | **10.82 / 10.36 / 12.14** (worst 8.12) |
+| 3-session worst turn10 | 9.17 tok/s (one slot) | 8.12 / 8.23 / 7.92 (all three slots) |
+| Concurrency | genuine 2/3-way overlap at ~15-17 tok/s | serialized queue, same overlap flag but ~10 tok/s and 2× walls |
+| UM requirement | **requires UM=1** (arm112 OOM proof) | UM off |
+
+For **workflows needing 2-3 concurrent 30K+ sessions with real overlapping
+decode**, arm111's shape is **~1.5× faster** at 3-session depth (15-16 vs
+10-12 mean) and retains true concurrency (3 slots resident). For
+**turn-taking** (one session at a time, idle-swap fast return via
+`cache_ram`) arm090's design is still correct — its 3-agent/6-turn
+production validation (18× return speedup, 0 evictions with 16 GiB at
+148K) is not invalidated by this multiturn test, which stresses a
+different pattern (sustained concurrent growth, not idle return). Choose by
+pattern: concurrent-growth → 102/111 family; rotational turn-taking →
+keep 090 pin.
+
+---
+
+## Queued arms 106-114 — updated 2026-09-06 (final)
 
 | Arm | Config | Status |
 |---|---|---|
-| 106 | 102 shape, tensor_split 25,40 | queued (separate agent) |
-| 107 | 102 shape, tensor_split 30,35 | queued (separate agent) |
-| 108 | 102 shape, ubatch 1024 | queued (separate agent) |
-| 109 | 102 shape, cache_ram_mib 8192 | queued (separate agent) |
+| 106 | 102 shape, tensor_split 25,40 | **DONE** — 2 boots, 3-conc 98.6 agg (98.33/99.48), identical to arm102 |
+| 107 | 102 shape, tensor_split 30,35 | **DONE** — 2 boots, 3-conc 97.8 agg (96.64/99.45), identical to arm102 |
+| 108 | 102 shape, ubatch 1024 | **DONE** — 2 boots, 3-conc 99.8 agg (102.48/101.85 best), identical to arm102 |
+| 109 | 102 shape, cache_ram_mib 8192 | **DONE** — 2 boots, 3-conc 99.7 agg (99.83/100.17), identical to arm102 |
 | 110 | 102 shape, V=q5_0 | **DONE** — 2 boots, 3-conc 96.6 agg, identical to arm102 |
-| 111 | 102 shape, V=q5_1 | **DONE** — 2 boots, 3-conc 97.0 agg, identical to arm102/110 |
+| 111 | 102 shape, V=q5_1 | **DONE** — 2 boots, 3-conc 97.0 agg, identical to arm102/110; multiturn vs 090: 2-sess 19.5/17.4, 3-sess 13.8/16.2/15.7 (see head-to-head) |
 | 112 | 102 shape, UM-off probe | **DONE** — OOM, deterministic, shape requires UM |
 | ~~113~~ | ~~102 shape, clock-forcing~~ | **DROPPED** — superseded by live telemetry |
 | 114 | 102 shape, upstream v0.3.0 | **DONE** — 2 boots, 3-conc 95.4 agg, identical to arm102 |

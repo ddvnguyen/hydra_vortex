@@ -100,7 +100,7 @@ T5 (UD) shows slightly lower unique_ratio (0.89 vs 0.94 for standard) but both a
 - Results in `/tmp/rpc-test/results/045-049-5fff12845/`
 - Each contains: `llama-server.log`, `slots_before_*.json`, `slots_after_*.json`, `turn_*.json`, `turn_*_text.txt`, `history.json`, `evictions.log`
 - Script fix applied during execution: `--max-tokens` → `--n-predict` (invalid flag), and file-based JSON I/O (avoids ARG_MAX)
-- NOT written to `docs/investigations/703-results-report.md` ledger rows (per spec Out of scope)
+- NOT written to `docs/investigations/740-results-report.md` ledger rows (per spec Out of scope)
 
 ## Post-execution: Harness Bug Fix (2026-08-26)
 

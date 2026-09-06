@@ -3,7 +3,7 @@
 # Suggested arm #2 (2026-09-06), from cross-agent research (792db69b),
 # targeting the still-unsolved bimodal boot-mode variance first surfaced in
 # arm100 (same config landing in one of two ~2x-apart throughput regimes,
-# cause not yet identified — see 703-results-report.md).
+# cause not yet identified — see 740-results-report.md).
 #
 # NOTE: this overlaps with a boot-mode root-cause task already dispatched
 # to another agent (telemetry capture via
