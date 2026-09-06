@@ -1,0 +1,41 @@
+name: llama-baseline-64k
+
+# Fallback profile — same as docker-compose.baseline.yml but ctx 64K (guaranteed fit)
+# Use when 96K OOMs: podman compose -f infra/llama-baseline/docker-compose.baseline-64k.yml up -d --build
+# This is the Hydra dense-27b-combined cap (models.json n_ctx 65536, n_gpu_layers 65)
+
+services:
+  llama:
+    build:
+      context: ../..
+      dockerfile: infra/llama-baseline/Dockerfile.baseline
+    image: localhost/llama-baseline:upstream
+    network_mode: host
+    devices:
+      - nvidia.com/gpu=all
+    volumes:
+      - /mnt/SSD:/models:ro
+      - /mnt/WorkDisk/LLM-Models:/models2:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:/usr/local/lib
+    # Folded block (>) — same params, readable.
+    command: >
+      --model /models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf
+      --host 0.0.0.0 --port 18080
+      --n-gpu-layers 65 --split-mode layer --tensor-split 25,40
+      --ctx-size 65536 --rope-scaling yarn --rope-scale 4 --yarn-orig-ctx 32768
+      --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on
+      --parallel 2 --cont-batching
+      --jinja --chat-template-file /models/qwen3.6_merged_template.jinja
+      --metrics --slots --log-verbosity 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      component: llama-baseline
