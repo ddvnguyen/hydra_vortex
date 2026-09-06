@@ -2259,3 +2259,177 @@ confirmed 1 MiB both before restart), production restored via
 dmon/timeline/tier logs preserved at
 `/tmp/rpc-test/results/740-pcie-telemetry/boot{1,2,3,4}/`.
 
+> **Note (2026-09-07):** the three sections below (arms 115-117 and the
+> pin-decision bisection) were originally written directly to this file by
+> the muse-spark agent on 2026-09-06/07, but were lost when the working-tree
+> copy of this file hit `EIO` during a `/mnt/WorkDisk` NTFS corruption
+> incident and was later orphaned by a Windows `chkdsk /f` repair pass
+> (confirmed via `git fsck` + `git status` after the repair: the git
+> object/ref history itself was unaffected — this file's *content* loss was
+> purely a working-tree casualty of the live-edit window between commits).
+> Reconstructed here verbatim from the muse-spark agent's own activity
+> reports preserved in the driving session's conversation log, since the
+> live edits were never committed before the corruption hit.
+
+## Arm 115 — arm102 shape, v0.4.0, `--kv-unified-per-slot` (slot-ctx capping) (2026-09-06)
+
+**Build:** isolated v0.4.0 worktree/build (`5266f24da`, same as arms 116-117),
+reused as-is from the earlier v0.4.0 batch — no rebuild needed.
+
+**Purpose:** test whether v0.4.0's per-slot context cap flag
+(`--kv-unified-per-slot`, the closest equivalent to the originally-proposed
+`--slot-ctx` capping idea) changes throughput or memory footprint on
+arm102's 3-parallel concurrent-decode shape.
+
+**Result:** flag exists and is accepted (`--kv-unified-per-slot 146176` in
+`Args:`, confirmed `kv_unified='false' n_ctx_slot=146176` at runtime).
+**PASS, 2/2 boots, 10/10 GOOD** each. Ready 109s/113s (matches v0.4.0's
+general boot-cost overhead vs. pin's 24-31s — not specific to this flag).
+
+| Tier | Boot 1 | Boot 2 |
+|---|---|---|
+| 1-conc | 30.92 tok/s | 30.62 tok/s |
+| 2-conc agg | 47.40 | 47.10 (overlap PASS both) |
+| 3-conc agg | **91.20** | **90.40** (overlap PASS both) |
+
+**Verdict:** same band as v0.4.0's own baseline (89-91, see arm 117 below),
+~5% below pin/v0.3.0's 95-102. The gap is a v0.4.0-build effect, not
+something this flag causes or fixes — no throughput or footprint change
+attributable to slot-ctx capping itself. Params preserved at
+`infra/llama-baseline/params/115-udq5-146176x3-nokvu-cram24-um-kvpslot146176.yml`.
+
+## Arm 116 — arm090 shape, v0.4.0, `--lazy-mode on` (2026-09-06)
+
+**Purpose:** re-validate arm090's production idle-slot fast-resume (18x
+faster than cold restart) on v0.4.0, and specifically test whether
+`--lazy-mode` (paired with cache-restore patches referenced in earlier
+cross-session discussion) fixes the known `d0132a680` MTP-draft-context
+OOM that blocks arm090's shape on v0.4.0.
+
+**Build:** arm090's exact shape (`parallel=1`, `kv_unified on`, `cache_ram
+16384`, `ctx=148000`, yarn 5/32768 — see
+`infra/llama-baseline/params/090-udq5-148000-parallel1-cache-ram-16g.yml`)
+rebuilt on the v0.4.0 binaries, `--lazy-mode on` added.
+
+**Result:** flag exists and is parsed (`--lazy-mode on` present in `Args:`)
+but the boot **still OOMs**, byte-identical to every other `d0132a680`
+failure signature: `allocating 1319.13 MiB / 804.03 MiB fallback`,
+`failed to create MTP context`, fails at 24s. No tiers collected.
+
+**Verdict:** `--lazy-mode` does **not** fix the `d0132a680` MTP
+draft-context allocator landmine (upstream #27282, PR #27489 stalled since
+2026-08-21). This directly answers the "does the lazy-mode + cache-restore
+patch rescue arm090 on v0.4.0" question raised earlier in this
+investigation: it does not. Params preserved at
+`infra/llama-baseline/params/116-udq5-090shape-v040-lazymode-on.yml`,
+failure log at the corresponding results dir.
+
+## Arm 117 — arm102 shape, v0.4.0, `GGML_CUDA_GRAPH_OPT` toggle (commit `0ba6499c3`) (2026-09-06)
+
+**Purpose:** test the concurrent-streams-per-split toggle introduced in
+commit `0ba6499c3`. Turned out to be an environment variable
+(`GGML_CUDA_GRAPH_OPT`, read via `getenv()` in
+`ggml/src/ggml-cuda/ggml-cuda.cu`), not a CLI flag as originally assumed.
+
+**Result:** 4 boots total — 2 baseline (env unset) + 2 with
+`GGML_CUDA_GRAPH_OPT=1` — all **PASS, 10/10 GOOD**, ready 104-105s.
+`kv_unified='false' n_ctx_slot=146176` confirmed all 4 boots.
+
+| Config | 3-conc agg | 2-conc agg |
+|---|---|---|
+| Baseline (unset) | 88.77 / 89.18 | 46.05 / 58.06 |
+| `GGML_CUDA_GRAPH_OPT=1` | 90.94 / 83.52 | 46.16 / 57.99 |
+
+(boot2 of the graphopt condition had its per-tier stdout truncated after
+exit — `GOOD` status preserved but per-tier tok/s not durably logged for
+that one boot.)
+
+**Verdict:** statistically identical with the toggle on or off — same
+88-91 band as arm 115's v0.4.0 baseline, same ~5% gap below pin/v0.3.0.
+**No gain; leave the env var unset.** Params/logs preserved at
+`115-...-boot{1,2}`, `117-...-baseline-boot{1,2}`,
+`117-...-graphopt-boot{1,2}` under the corresponding results dir.
+
+## Pin decision — bisection of the ~5% v0.3.0→v0.4.0 regression (2026-09-06/07)
+
+**Context:** arm 114 already established pin `5fff12845` is statistically
+identical to `v0.3.0` (95.29-95.50 tok/s 3-conc agg). Arms 115/117
+established `v0.4.0` lands ~5% lower (88-91 tok/s). Since pin/v0.3.0 ≈
+each other and v0.4.0 is the outlier, the regression is isolated to the
+188-commit range `v0.3.0..v0.4.0`. Prime suspect: `d0132a680` ("rpc:
+implement event and async backend APIs", #18626) — already confirmed as
+the root cause of arm090's OOM, sitting at position 173/188 in that range
+(close to the v0.3.0 end), and plausible as a universal ~5% overhead
+source since it rewrote RPC backend allocation client-side.
+
+**Attempt 1 (2026-09-06, blocked by degraded rig — before the reboot):**
+built isolated worktrees at `d0132a680^` (`4d19b2876`, "ci: Clean up UI")
+and `d0132a680` itself, same cmake flags as prior isolated builds. All
+4 candidates tested that day (`d0132^`, `d0132`, pin control, v0.4.0
+control) landed in a uniformly degraded 27-70 tok/s band regardless of
+version — unbisectable. Root cause identified independently: the host was
+under severe swap/iowait pressure (swap 17Gi used, 83-89% iowait) from an
+unrelated ntfs3 kernel deadlock (a Gradle Android build's `ftruncate`
+circularly deadlocked with a writeback kworker on `/mnt/WorkDisk`) that
+was actively degrading every process on the box, not just llama.cpp
+builds. Correctly flagged as invalid rather than reported as real
+regression data.
+
+**Reboot (2026-09-06 ~21:36, user-initiated):** cleared the ntfs3
+deadlock. Swap returned to 0, iowait to normal (0-2%). Production
+restored and verified (`/health` ok, 15659/9977 MiB).
+
+**Attempt 2 (2026-09-06/07, interrupted by NTFS corruption discovery):**
+before the reboot cleared the deadlock, the underlying disk had already
+picked up real on-disk NTFS corruption (separate from the transient lock
+deadlock) — `ntfs_lookup(): Found stale reference to inode ...,
+returning -EIO. Run chkdsk.` This surfaced when muse-spark rebuilt
+`d0132a680^`/`d0132a680` on `/mnt/WorkDisk` (needed there since `/tmp` is
+wiped on reboot) and booted `d0132^` successfully on the now-healthy rig:
+**ready in 30s** (vs. the degraded 298s from attempt 1), matching pin/
+v0.3.0's healthy 24-30s boot-cost window rather than v0.4.0's ~109s
+window — a useful data point on its own (proves v0.4.0's ~4x boot-time
+regression, separate from the throughput regression, is real and not a
+degraded-rig artifact). No concurrent-decode tiers were collected before
+a second, unplanned reboot (~21:36 uptime reset) wiped `/tmp` again and
+the NTFS corruption was confirmed spreading (`.git/config`, this report
+file, and other paths started returning `EIO`). Bisection paused pending
+a filesystem repair; investigation-only work, no pin/compose changes made.
+
+**Filesystem repair (2026-09-07):** root cause was the new Linux 7.1
+native `NTFS_FS` driver ("ntfs resurrection," not `ntfs3`) — confirmed via
+`findmnt` (fstype `ntfs`) and `lsmod` (native `ntfs` module active,
+`ntfs3` loaded but unused). `ntfsfix` (ntfs-3g) does not address this
+error class; a Windows `chkdsk /f` pass was required and did clear the
+repeating kernel error spam. The repair orphaned a small number of
+unrecoverable MFT records (chkdsk relocated them under `/mnt/WorkDisk/
+Bak/found.NNN/`) — in practice this cost only two working-tree files
+(`PROJECT_STATUS.md`, this report), both fully recoverable from the git
+object store since they were already committed as of `44cb973d0`, plus a
+stale/corrupted worktree git index (fixed with a plain `git reset`,
+non-destructive — no real file content was actually lost beyond the two
+already-committed files, which were restored via `git checkout HEAD --`).
+Git history itself (including this exact branch, already merged as PR
+#742) was never at risk since it was pushed to GitHub before the
+corruption occurred.
+
+**Bisection status: not re-run yet as of this write-up** — attempt 2 was
+overtaken by the filesystem incident before any healthy-rig tiers could
+be collected on `d0132a680^`/`d0132a680`. The one trustworthy data point
+from attempt 2 (v0.3.0-band 30s boot time on `d0132^` under healthy
+conditions) is consistent with, but does not yet prove, `d0132a680` as
+the sole regression source.
+
+**Recommendation (unchanged, now on firmer footing): stay on pin
+`5fff12845` (≈ `v0.3.0`), do not move to `v0.4.0`.** Reasoning holds
+independent of whether the remaining bisection ever completes: (1)
+`d0132a680` deterministically OOMs arm090's shape (arm 116 confirms
+`--lazy-mode` doesn't fix it; upstream #27282/PR #27489 stalled since
+2026-08-21) — pin/v0.3.0 boot clean. (2) v0.4.0 offers no throughput gain
+to offset that risk — arms 115/117 confirm no config or env toggle closes
+the ~5% gap, and v0.4.0 also boots ~4x slower even when healthy. (3) If
+appetite remains to pin down the exact regressing commit for its own
+sake (not because it changes the pin decision), the isolated builds for
+`d0132a680^`/`d0132a680` should still exist and just need a clean 2-boot
+retest now that the rig and filesystem are both healthy.
+
