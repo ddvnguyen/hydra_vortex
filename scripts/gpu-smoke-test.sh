@@ -51,10 +51,11 @@ check_xid() {
     echo "    (journalctl unavailable, skipping Xid check)"
     return 0
   fi
-  local hits slot="PCI:${bus_id#PCI:}"
+  local hits slot="${bus_id#PCI:}"
   # NVRM logs Xid with the full domain, e.g. "Xid (PCI:0000:02:00.0): 13".
-  # Match both the fully-qualified form and a bare "PCI:02:00.0" if ever emitted.
-  hits=$(journalctl -k --since "$since" --until "$until_ts" 2>/dev/null | grep -iE "Xid \(PCI:[0]*${slot}" || true)
+  # ([0-9a-f]{4}:)? optionally absorbs the "0000:" domain prefix so both the
+  # fully-qualified and domain-less "PCI:02:00.0" forms match.
+  hits=$(journalctl -k --since "$since" --until "$until_ts" 2>/dev/null | grep -iE "Xid \(PCI:([0-9a-f]{4}:)?${slot}" || true)
   if [ -n "$hits" ]; then
     echo "    Xid errors found in kernel log during test window:"
     echo "$hits" | sed 's/^/      /'
