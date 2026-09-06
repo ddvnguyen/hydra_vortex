@@ -146,3 +146,7 @@ cache_ram_mib: 16384
 prio_batch: 1
 context_shift: 'on'
 n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

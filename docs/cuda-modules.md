@@ -109,7 +109,54 @@ cmake --build build_sm120 --target llama-bench 2>&1 | grep "CUDA"
 
 ```bash
 ssh hydra-p100 "nvidia-smi | head -3"
-ssh hydra-p100 "/opt/software/cuda/12.9/bin/nvcc --version"
+ssh hydra-p100 "/opt/software/cuda/12.9/bin/nvcc --version"   # guest-side toolkit (VM FS, unaffected by host cleanup)
 ```
 
-P100 sm_60 binaries are built with CUDA 12.9 at `/opt/software/cuda/12.9/`.
+P100 sm_60 binaries are built with CUDA 12.9 as a **minimal micromamba
+prefix** (~3.0 GB) at `~/opt/cuda-12.9-min`. 2026-08-27 owner cleanup: the old
+7.3 GB full-runfile `/opt/software/cuda/12.9/` was **removed** — this prefix is
+now the only CUDA 12.9 on the host. Proven build dir:
+`src/llama-cpp/build_sm60-min` (replaced the 7.3 GB full-runfile layout,
+2026-08-27).
+
+### CUDA 12.9 minimal install (micromamba recipe)
+
+```bash
+export PATH=/home/ddv/anaconda3/bin:$PATH
+micromamba create -y -p ~/opt/cuda-12.9-min \
+  -c nvidia/label/cuda-12.9.1 -c conda-forge \
+  'cuda-nvcc=12.9.*' 'cuda-cudart-dev=12.9.*' libcublas-dev nccl libgomp rdma-core
+# VERSION PINS MANDATORY: bare names let the solver pick CUDA 13.x from
+# conda-forge (label channels alone contribute nothing if satisfiable there).
+
+# MANDATORY HEADER PATCH — conda cudart-dev 12.9.79 ships crt/math_functions.{h,hpp}
+# missing noexcept qualifiers -> glibc mathcalls.h clash fails every C++ compile.
+# (Applied once to ~/opt/cuda-12.9-min; HEADER-PATCH-NOTICE.md carries md5s.)
+# NOTE 2026-08-27: the /opt/software/cuda/12.9 host copy used below as patch
+# SOURCE was removed — for a FRESH prefix, take the two files from the VM
+# (ssh hydra-p100 "cat /opt/software/cuda/12.9/include/crt/math_functions.h")
+# or any other CUDA 12.9 install:
+cp /opt/software/cuda/12.9/include/crt/math_functions.h   <prefix>/targets/x86_64-linux/include/crt/
+cp /opt/software/cuda/12.9/include/crt/math_functions.hpp <prefix>/targets/x86_64-linux/include/crt/
+# Full detail + md5 verify: ~/opt/cuda-12.9-min/HEADER-PATCH-NOTICE.md
+
+# Smoke (sm_60); nvcc 12.9 rejects system gcc-15 -> pass gcc-13 as ccbin:
+printf '__global__ void k(){}\nint main(){return 0;}\n' > main.cu
+<prefix>/bin/nvcc -arch=sm_60 -ccbin /usr/bin/g++-13 main.cu -o main && ./main && echo RUN_OK
+```
+
+Verified end-to-end 2026-08-27: `build_sm60-min` configured against this
+prefix (`CUDAToolkit_ROOT`, `CMAKE_CUDA_COMPILER=<prefix>/bin/nvcc`,
+`CMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13`) produced llama-engine whose ldd
+resolves cudart/cublas/cublasLt/nccl from the prefix; the binary was staged
+to the P100 VM and served real GPU inference at 183.8 tok/s (isolated :8088
+test, `~/hydra-min-test`).
+
+### lmod
+
+The toolkit is exposed as **`module load cuda/12.9-min`**
+(`~/modulefiles/cuda/12.9-min.lua`, micromamba pattern — `lib/`,
+`targets/x86_64-linux/include`, sets `CUDA_HOME/CUDA_PATH/CUDACXX`).
+`cuda/12.9.lua` is a deprecated alias to the same prefix (kept so old
+scripts/muscle memory keep working). Compiling sm_60 with either module
+still requires `-ccbin /usr/bin/g++-13`.
