@@ -2163,3 +2163,99 @@ keep 090 pin.
 | ~~113~~ | ~~102 shape, clock-forcing~~ | **DROPPED** — superseded by live telemetry |
 | 114 | 102 shape, upstream v0.3.0 | **DONE** — 2 boots, 3-conc 95.4 agg, identical to arm102 |
 
+---
+
+## #740 Thread 1 follow-up 2 — PCIe migration-storm telemetry, 4 boots (2026-09-06)
+
+**Purpose:** the deferred "boot 4 with PCIe throughput telemetry" follow-up
+from Thread 1 (arm112 turned out unable to test the migration-storm
+hypothesis, since arm102's shape OOMs outright without UM — see arm112
+verdict). Re-run arm102's exact shape across multiple fresh boots with
+`nvidia-smi dmon -s tpuc -d 1` (PCIe rx/tx, power, util, clocks) captured at
+1Hz through boot + tiers, epoch-timestamped via `ts '%.s'` for direct
+correlation against harness timing. Motivation restated for this addendum:
+Hydra production's `dense-27b-combined` COMBINED engine mode uses the same
+RPC-split 5060 Ti + 3060 transport as this baseline rig, so a persistent
+~2x compute-side slowdown triggered by concurrent load — if it's a UM
+page-migration artifact — is a real production risk, not just a benchmarking
+curiosity.
+
+**Method:** 4 fresh boots, `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`,
+`params/102-udq5-146176x3-nokvu-cram24-um.yml`. Each boot: dmon capture
+starts before `run-with-params.sh`, the script's own 10-request sequential
+gate is allowed to fully finish (avoids the arm085/092 methodology error of
+overlapping harness traffic sources), then two full rounds of 1/2/3-concurrent
+`concurrent-decode-test.sh` tiers, then teardown. Production stopped before
+and restored after (verified `/health` ok, 15659/9977 MiB, matches normal
+footprint).
+
+### Result: no bimodal slow-mode reproduction in 4/4 boots
+
+All four boots landed in the established **fast band**: single 28.7-41.6
+tok/s (first-request-after-boot variance only, no collapse), 2-conc agg
+48.6-50.2, 3-conc agg 92.7-104.6 — all inside arm102's own 92-104 range and
+statistically identical to arms 106-114. **None of the 24 tier
+measurements (4 boots × 2 rounds × 3 tiers) showed the historical slow
+signature** (12-27 tok/s/slot persistent collapse seen in 098-orig/099/100's
+slow-labeled boots). This is consistent with the ~25% historical hit rate
+(2/8 boots in arm100's sample) — missing on all 4 tries here has ~32%
+probability under that base rate, not evidence the bimodal behavior is gone.
+
+**Consequence: the migration-storm hypothesis could not be directly tested
+this round** — there was no slow-mode transition to correlate telemetry
+against. What follows is the fast-mode baseline characterization the run did
+produce, plus one unexplained secondary observation.
+
+### PCIe telemetry (fast-mode baseline)
+
+Per-phase GPU0(5060 Ti)/GPU1(3060 RPC peer) rx+tx MB/s (max/mean), all 4
+boots:
+
+| Phase | GPU0 rx max/mean | GPU0 tx max/mean | GPU1 rx max/mean | GPU1 tx max/mean |
+|---|---|---|---|---|
+| boot→ready (weight load) | 11304-14639 / 816-1995 | 11243-11657 / 720-1784 | 3290-5504 / 942-1329 | 5921-6096 / 899-1341 |
+| rwp_gate (10 sequential reqs) | 103-11634 / 25.6-593.6 | 255-11535 / 52.9-363.2 | 3483-5934 / 204-350 | 3214-4415 / 179-368 |
+| concurrent tiers (n=1/2/3, ×2 rounds) | 23-5756 / 7-1182 | 1-1953 / 0.8-832 | 0-2018 / 0-505 | 0-1353 / 0-339 |
+
+1. **PCIe traffic is nonzero during ordinary fast-mode concurrent decode,
+   on both GPUs, not just during weight loading.** Even single-request
+   tiers show host↔device bursts in the hundreds of MB/s, and 2/3-concurrent
+   tiers occasionally spike to 2-6 GB/s on GPU0. This means the presence of
+   PCIe traffic alone is **not** a distinguishing signature of the slow
+   mode — some baseline UM/RPC-driven page movement happens continuously,
+   even when throughput is fully healthy. A future telemetry run that
+   *does* catch a slow-mode boot would need to show traffic **substantially
+   above** this fast-mode baseline (not just "traffic present") to support
+   the migration-storm hypothesis.
+2. **Unexplained secondary finding: `rwp_gate`-phase PCIe peaks vary
+   sharply by boot, uncorrelated with final tier throughput.** Boots 1-2
+   show near-zero GPU0 peaks during the 10-request sequential gate (103-106
+   MB/s max); boots 3-4 show peaks (11508-11634 MB/s) almost as high as the
+   weight-load phase itself, sustained at 352-594 MB/s mean — yet all four
+   boots' subsequent concurrent tiers landed in the identical fast band.
+   Boot 3 was also the slowest to reach ready (50.6s vs 33-34s for the
+   other three), a weak echo of Thread 1's already-noted "slow boots
+   booted slower" secondary signal (finding #4) — but here it didn't
+   propagate into tier-level slowdown, so it's a boot-to-boot variance in
+   something (disk cache state? cache_idle_slots interaction with
+   cache_prompt on the fresh 10-req loop?) that is NOT the same thing as
+   the bimodal split, just further evidence this rig has more than one
+   independent source of boot-to-boot variance.
+
+**Verdict:** inconclusive on the migration-storm hypothesis specifically —
+this run did not reproduce the slow mode to test against. What it does add:
+a fast-mode PCIe baseline (so a future slow-mode capture has something to
+compare against) and a ruled-out clean story (traffic presence alone doesn't
+distinguish modes). **Recommendation:** if the bimodal slow mode still
+needs root-causing, the next attempt should run more boots back-to-back
+(6-10, given ~25% hit rate) with the same telemetry capture already
+validated here, rather than a fixed count of 4 — or accept this as a rare,
+uncharacterized tail risk and monitor for it in production rather than
+continuing to spend rig time chasing a ~25%-incidence lab repro.
+
+**Rig state after this run:** bare-metal processes torn down cleanly (GPUs
+confirmed 1 MiB both before restart), production restored via
+`podman compose up -d` and verified (`/health` ok, 15659/9977 MiB). Raw
+dmon/timeline/tier logs preserved at
+`/tmp/rpc-test/results/740-pcie-telemetry/boot{1,2,3,4}/`.
+
