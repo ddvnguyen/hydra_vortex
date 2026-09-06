@@ -1,0 +1,64 @@
+# Arm 110 — arm102's winning shape (146176x3, kv_unified off, cram24, UM),
+# V-cache quant swapped from q4_1 to q5_0. PRIORITY per user request
+# 2026-09-06: probe whether a slightly larger/more precise V quant changes
+# throughput or MTP accept rate on the current best-known concurrency config.
+#
+# Baseline: 102-udq5-146176x3-nokvu-cram24-um.yml (single 46.2-46.3 tok/s,
+# 3-conc 65-102 agg mean ~89). Only change: cache_type_v q4_1 -> q5_0.
+#
+# Validity check done before creating this arm: GGML_TYPE_Q5_0 is a real
+# --cache-type-v option in this fork (common/arg.cpp:305-314, kv_cache_types
+# list) and has compiled FA CUDA kernels for all K-pairings incl. Q8_0/Q5_0
+# (ggml/src/ggml-cuda/fattn.cu:294) under GGML_CUDA_FA_ALL_QUANTS=ON, already
+# enabled in build-cuda1322 — no rebuild needed.
+#
+# VRAM note: Q5_0 (5 bits/elem, per-block scale) is slightly larger than
+# Q4_1 (4 bits/elem + min/scale) per KV element on the V side — expect a
+# modest total-KV footprint increase vs 102. Watch VRAM headroom under UM;
+# if it fails to boot, that alone is the answer (K/V precision not worth the
+# VRAM at this shape) — do not chase it further.
+#
+# Same bimodal-boot-mode caveat as every arm in this ledger since arm100:
+# run at least 2 fresh boots before trusting any delta under ~2x vs 102.
+#
+# Test methodology: same 3-tier harness as 102 (1-req sequential, 2-req
+# concurrent, 3-req concurrent), same prompt, same ports (18081/50052).
+# Requires GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 exported in shell (not a yaml
+# field) — same as 102.
+---
+name: 110-udq5-102shape-v-q5_0
+description: "arm102 shape (146176x3, kv_unified off, cram24, UM) with cache_type_v swapped q4_1 -> q5_0. Baseline: 102's single 46.2-46.3, 3-conc 65-102 agg (mean ~89)."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 438528
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_0
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

@@ -1,0 +1,61 @@
+# Arm 111 — arm102's winning shape (146176x3, kv_unified off, cram24, UM),
+# V-cache quant swapped from q4_1 to q5_1. PRIORITY per user request
+# 2026-09-06, paired with arm110 (q5_0) — bracket both 5-bit V options
+# against the current production-candidate q4_1 baseline.
+#
+# Baseline: 102-udq5-146176x3-nokvu-cram24-um.yml (single 46.2-46.3 tok/s,
+# 3-conc 65-102 agg mean ~89). Only change: cache_type_v q4_1 -> q5_1.
+#
+# Q5_1 (5-bit + separate min, no shared scale block like Q5_0) is typically
+# marginally larger and marginally more accurate than Q5_0 — run both and
+# compare against each other AND against 102's q4_1 baseline, not just
+# against 102. GGML_TYPE_Q5_1 confirmed valid --cache-type-v value
+# (common/arg.cpp:305-314) with compiled FA kernels for Q8_0/Q5_1 pairing
+# (ggml/src/ggml-cuda/fattn.cu:302) under GGML_CUDA_FA_ALL_QUANTS=ON —
+# already enabled in build-cuda1322, no rebuild needed.
+#
+# Same VRAM-headroom and bimodal-boot-mode caveats as arm110 — watch for
+# boot failure (answer in itself) and run >=2 fresh boots before trusting
+# any delta under ~2x vs 102.
+#
+# Test methodology: same 3-tier harness as 102/110 (1-req sequential, 2-req
+# concurrent, 3-req concurrent), same prompt, same ports (18081/50052).
+# Requires GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 exported in shell (not a yaml
+# field) — same as 102/110.
+---
+name: 111-udq5-102shape-v-q5_1
+description: "arm102 shape (146176x3, kv_unified off, cram24, UM) with cache_type_v swapped q4_1 -> q5_1. Compare against both 102 (q4_1) and 110 (q5_0)."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 438528
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

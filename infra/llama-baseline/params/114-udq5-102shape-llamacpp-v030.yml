@@ -1,0 +1,71 @@
+# Arm 114 — arm102's exact shape, rebuilt against upstream llama.cpp tag
+# v0.3.0 instead of our pinned commit 5fff12845, as a regression/opportunity
+# check for the current best config. Requested 2026-09-06 (priority,
+# alongside 110/111's V-quant probes).
+#
+# Why v0.3.0 and not v0.4.0: v0.3.0 is only 66 commits ahead of our pin
+# (v0.4.0 is 254). Verified via `git merge-base --is-ancestor`: v0.3.0 does
+# NOT contain commit d0132a680 (RPC event/async backend), which separate
+# cross-agent research confirmed OOMs production's arm090 shape; v0.4.0
+# DOES contain it. v0.3.0 is the safer, smaller-diff upstream point to test
+# against arm102's shape without inheriting that regression.
+#
+# THIS IS A TEST-ONLY BUILD. Do not touch the tracked src/llama-cpp
+# submodule pin or the shared build-cuda1322 binary that every other arm in
+# this ledger (090-113) depends on. Isolate via a separate git worktree and
+# a separate build directory:
+#
+#   git -C src/llama-cpp worktree add ../../llama-cpp-v030-test v0.3.0
+#   cmake -S ../../llama-cpp-v030-test -B ../../build-cuda1322-v030 \
+#     <same CMake flags as build-cuda1322/CMakeCache.txt, incl.
+#      -DGGML_CUDA_FA_ALL_QUANTS=ON, -DCMAKE_CUDA_ARCHITECTURES matching
+#      sm_120;sm_86, -DCUDA_TOOLKIT_ROOT_DIR=/opt/software/cuda/13.2.2>
+#   cmake --build ../../build-cuda1322-v030 -j
+#
+# Point run-with-params.sh at the v030 binary explicitly (do not rely on
+# PATH/default binary resolution — confirm which server binary is actually
+# invoked before trusting results). After testing, remove the temporary
+# worktree (`git -C src/llama-cpp worktree remove ../../llama-cpp-v030-test`)
+# — never leave it registered against the shared submodule checkout.
+#
+# Yaml fields below are byte-identical to arm102's — only the binary
+# differs. Same bimodal-boot-mode caveat applies: run >=2 fresh boots
+# before trusting any delta under ~2x vs 102's baseline (single 46.2-46.3,
+# 3-conc 65-102 agg mean ~89).
+---
+name: 114-udq5-102shape-llamacpp-v030
+description: "arm102's exact shape (146176x3, kv_unified off, cram24, UM) rebuilt against upstream llama.cpp tag v0.3.0 (66 commits ahead of our 5fff12845 pin, does NOT include the d0132a680 RPC-async commit known to OOM arm090's shape). Test-only build in an isolated worktree — does not touch the tracked submodule pin."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 438528
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

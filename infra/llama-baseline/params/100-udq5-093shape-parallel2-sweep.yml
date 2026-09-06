@@ -1,0 +1,144 @@
+# Arm 093 — corrected retest of 091's 3×128K concurrency target with production-faithful K/MTP + UM
+#
+# Follow-up to arm091 (R-000 Unified Memory probe). User review 2026-09-05:
+#   arm091 used K=q4_0 and MTP disabled — this arm corrects both to match
+#   production arm090 defaults: K=q8_0 (V=q4_1), MTP enabled (draft-mtp,
+#   q8_0/q4_1 draft KV), all other globals unchanged.
+#
+# Roxe: K=q8_0 costs headroom vs arm091's K=q4_0. Arm091 already needed
+#       GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 for K=q4_0 at 3×131K; this arm
+#       needs it more — keep GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 exported
+#       in the shell (same as 091/092), not a YAML field.
+#
+# Roof: 2026-09-02/03 ggml_cuda_pool_vmm investigation already ruled out
+#       cuMemAddressReserve as host-RAM spill mechanism (device-only,
+#       CU_MEM_LOCATION_TYPE_DEVICE, only transient compute buffers). The
+#       UM path under test is GGML_CUDA_ENABLE_UNIFIED_MEMORY
+#       (cudaMallocManaged) — code at src/llama-cpp/ggml/src/ggml-cuda/ggml-cuda.cu:138-142
+#       — which backs ALL CUDA buffer allocations including the KV cache and
+#       supports oversubscription via driver demand paging on Pascal+ (both
+#       5060 Ti sm_120 and 3060 sm_86 qualify; confirmed earlier).
+#
+# ----------------------------------------------------------------------
+# RoPE / YaRN scaling decision — verified 2026-09-05 via actual model
+# metadata, NOT copied from stale 085/091/092 files.
+#
+#  * gguf header (qwen35.context_length) = 262144
+#  * llama_model_loader print_info: n_ctx_train = 262144
+#                               n_ctx_orig_yarn = 262144
+#                               rope scaling = linear, rope_yarn_log_mul 0
+#  * arm090 boot log (ctx 148000, parallel 1, kv_unified true, stale
+#    yarn scale 5 / orig 32768): n_ctx = 148224, n_ctx_seq = 148224
+#    (kv_unified true => n_ctx_seq = n_ctx), freq_scale = 0.2 (=1/5),
+#    log line: "n_ctx_seq (148224) < n_ctx_train (262144) -- full capacity
+#    will not be utilized" — confirms the stale yarn was active but
+#    unnecessary and over-interpolated at 148K (< native).
+#
+#  * src/llama-cpp/src/llama-context.cpp:290-293 — when kv_unified is true
+#    (this arm: true), cparams.n_ctx_seq = cparams.n_ctx (the TOTAL ctx,
+#    not divided by n_seq_max). When false, n_ctx_seq = n_ctx / n_seq_max.
+#    So total ctx 393216 with kv_unified true => n_ctx_seq 393216 > 262144
+#    native, which TECHNICALLY exceeds train and would need YaRN if the
+#    full 393K window were used as a single sequence.
+#
+#  * HOWEVER, parallel=3 with kv_unified means 3 slots share the pool but
+#    each slot's actual seq never exceeds 131072 (per-slot target). If
+#    kv_unified were false, n_ctx_seq would be 393216/3 = 131072 < 262144
+#    and no scaling would be needed — this is the per-slot interpretation
+#    behind the "131072 < native, so no YaRN" guess.
+#
+#  * Decision for THIS arm: DROP the three rope keys entirely (no
+#    rope_scaling / rope_scale / yarn_orig_ctx). Rationale:
+#    - Per-slot usage (131072) is < native (262144); YaRN is not needed
+#      for any single sequence's positions.
+#    - Setting total 393216 + yarn scale 1.5 / orig 262144 (the "correct
+#      for total" value arm091 used) would correctly support a 393K
+#      single-seq use, but it interpolates rope frequencies even for the
+#      0-131K range we actually use, slightly changing per-token behavior
+#      for no benefit.
+#    - Dropping yields freq_scale=1.0, no interpolation; the allocator
+#      still reserves 393K total KV capacity but each slot's 131K never
+#      touches the 262K+ extrapolation region. The boot log will warn
+#      "n_ctx_seq (393216) > n_ctx_train (262144) -- possible overflow"
+#      — expected and benign under this per-slot usage model; confirmed
+#      against model metadata before choosing.
+#    - If future work actually drives a SINGLE sequence to 300K+ on this
+#      pool, re-introduce yarn with scale= total/n_ctx_train and
+#      yarn_orig_ctx=262144 (not 32768 — see arm091's correction).
+#
+#   If the human later prefers the "total-window-correct" variant, add
+#   back: rope_scaling: yarn, rope_scale: 1.5, yarn_orig_ctx: 262144
+#   (NOT 5 / 32768) — that's the only correct non-stale setting for
+#   total 393216. No change to other fields needed.
+# ----------------------------------------------------------------------
+#
+# VRAM math vs arm091 (which was K=q4_0, no MTP, same 393216 total):
+#   - Main KV main cache (16 causal layers) — K=q4_0→q8_0 roughly doubles
+#     K-cache footprint (q4_0 ~4.5 bits/elem vs q8_0 8 bits) on the main
+#     pool. Prior arm091 K=q4_0/V=q4_1 main pool at 393216 total was not
+#     isolated, but 085's per-token accounting suggests ~1.4-1.6× total KV
+#     growth for K doubling; expected multi-hundred-MiB extra vs 091.
+#   - MTP draft context (new vs 091): draft KV + compute-graph reserve
+#     ~1 GiB on CUDA0 at 148K/1 slot (see 090 breakdown: 1048 MiB draft
+#     context at 148K). At 393K/3 slots this may be larger (n_seq_max
+#     scaling), but bounded by cache-unified sharing.
+#   - Recurrent state: n_seq_max 3 => ~3× baseline ssm state vs 1 slot
+#     (~598 MiB baseline → ~1.8 GiB), ~600 MiB more vs 085's parallel=2
+#     (~1.2 GiB). This term is unchanged vs 091 (same parallel/ctx).
+#   - NET vs 091: expect even tighter than 091; 091 needed UM for the
+#     lighter K=q4_0/no-MTP shape. This config must run under UM.
+#
+# Test methodology (per 2026-09-05 brief): same booted server, three tiers:
+#   1. 1 req sequential (warm + cold labelled separately; first after cold
+#      boot shows ~28% MTP accept vs ~37-58% warm — isolated ~10 tok/s swing)
+#   2. 2 req concurrent (verify wall-clock overlap)
+#   3. 3 req concurrent (verify overlap, per-slot + aggregate tok/s)
+#   Pitfall guards: pkill stale run-with-params curl loops before each tier
+#   (extra in-flight req would corrupt decode measurement), health-check
+#   between tiers, genuine overlap verification not turn-taking.
+#
+# Build requirement: GGML_CUDA_FA_ALL_QUANTS=ON (enables q8_0/q4_1 flash-attn
+#   kernels; already proven working in this exact K/V combo on arm090 at
+#   ctx 148K, production pin). Check: build-cuda1322/CMakeCache.txt already
+#   shows ON — no rebuild needed, just verified.
+#
+# Ports 18081/50052 (same as 085/090/091/092) — tested via in-place stop of
+# live arm090 container, never a second concurrent model load (nowhere near
+# enough free VRAM for two truth). Restart 090 before finishing regardless.
+---
+name: 100-udq5-093shape-parallel2-sweep
+description: "Arm093 exact shape at parallel=2 (ctx 393216, kv-unified, K=q8_0/V=q4_1, MTP, UM) for the parallel sweep."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 393216
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'on'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 8192
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

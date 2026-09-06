@@ -1,0 +1,81 @@
+# Arm 088 — parallel=1 + correctly-sized cache-ram (session-swap, not slot-split).
+#
+# Base = arm 084 (K=q8_0, V=q4_1, ctx 140000, cache-idle-slots, draft-mtp
+# q8_0/q4_1). Differs from 084 in the core design axis, not just tuning:
+#   1. parallel: 2 -> 1. 084 tried to hold 2 VRAM-resident slots at once
+#      (true dual-residency) and was VRAM-starved as a result (71 MiB free
+#      on CUDA0 at ctx=140032). This arm goes back to a single VRAM-resident
+#      slot and relies entirely on cache-idle-slots for session-swap
+#      instead — recovers ~1072 MiB of RS/compute-graph duplication that
+#      parallel=2 cost (empirically confirmed, see arm087).
+#   2. cache_ram_mib: 8192 -> 16384. THIS IS THE ACTUAL FIX, empirically
+#      verified 2026-08-29 via a controlled A/B/C test (083 vanilla vs
+#      084-style @ 8 GiB vs 084-style @ 20 GiB cache-ram), simulating a
+#      3-agent rotation with real ~104-122K-token sessions each:
+#        - @ 8 GiB (084 as committed): 4 evictions logged
+#          ("making room for prompt cache entry, removing oldest entry",
+#          sizes 4.0-4.8 GiB each) -- every return-after-eviction turn
+#          showed cached_tokens ~42 (0% reuse), IDENTICAL to vanilla 083
+#          with no cache-idle-slots at all. The feature was silently
+#          thrashing: cap only fits ~1.5-2 entries at this session size,
+#          so by the time any session returned its entry was already
+#          evicted by whichever session ran in between.
+#        - @ 20 GiB: 0 evictions, every return turn got cached_tokens
+#          ~99.97-100% and dropped from ~210-260s to ~13-15s (~18x faster).
+#      16 GiB is the requested middle ground: 3 sessions at ~4.0-4.8 GiB
+#      each = ~13.5-14.4 GiB total, fits under 16 GiB with a smaller but
+#      real margin (~1.6-2.5 GiB) vs the 20 GiB test's larger margin.
+#      Tighter than 20G -- if you add a 4th concurrently-rotating agent
+#      session, re-check headroom before assuming this still holds.
+#   3. No KV-cache quantization changes (K=q8_0, V=q4_1 unchanged) and MTP
+#      kept exactly as 084 (spec_type draft-mtp, draft KV q8_0/q4_1) --
+#      this design axis doesn't touch quantization or decode speed at all,
+#      unlike arms 085/086.
+#
+# What this buys you: NOT true simultaneous decode of 2 sessions (that's
+# architecturally impossible with parallel=1 -- proven in arm087: a second
+# concurrent request just queues fully behind the first, no overlap). What
+# it buys is near-free RETURN for agent sessions that go idle and come back
+# later in a rotation -- the realistic pattern for multiple agent workflows
+# taking turns, as opposed to two agents genuinely decoding at the same
+# instant. Sizing rule going forward: cache_ram_mib should be >=
+# (typical per-session KV size in MiB) x (number of concurrently-rotating
+# sessions to retain), with margin -- not a generic round number.
+#
+# Ports match live 083/084 (18081 / 50052).
+---
+name: 088-udq5-140000-parallel1-cache-ram-16g
+description: "parallel=1 + cache-idle-slots + 16 GiB cache-ram (correctly sized), ctx=140000, MTP kept, no KV quant change. Session-swap concurrency arm, empirically validated."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 140000
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 1
+cont_batching: 'on'
+kv_unified: 'on'
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 16384
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
