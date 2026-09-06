@@ -163,7 +163,7 @@ binary that actually gets deployed (LTO affects steady-state decode perf).
 | RTX 5060 Ti (sm_120) | 13.2 | `build_sm120_v3/` | `bin/llama-engine` (17 KB launcher) + `lib*.so` (~942 MB) | Head's `n-gpu-layers: all` |
 | RTX 3060 (sm_86)    | 13.2 | `build_sm86/`     | `bin/llama-engine` (10 MB launcher) + `lib*.so` | Peer's `n-gpu-layers: 99` (12 GB VRAM) |
 | FAT sm_86+sm_120    | 13.2 | `build_sm86_sm120/` | One SASS image with both archs (159 MB) | **Preferred** — same binary serves both 5060 Ti + 3060. See cmake below. |
-| P100 (sm_60)        | 12.9 | `build_sm60/`     | `bin/llama-server` (63 MB monolithic) | P100 stays on its own build (separate CUDA 12.9 toolchain) |
+| P100 (sm_60)        | 12.9 | `build_sm60-min`  | `bin/llama-server` (63 MB monolithic) | P100 stays on its own build (separate CUDA 12.9 toolchain). **Since 2026-08-27 use the minimal micromamba toolkit** — see `docs/cuda-modules.md` §P100 VM (`build_sm60/` full-runfile layout is deprecated). |
 
 ```bash
 # FAT sm_86+sm_120 — one binary, both archs. CMAKE_CUDA_ARCHITECTURES is the
@@ -206,13 +206,16 @@ cd src/llama-cpp && mkdir -p build_sm86 && cd build_sm86 && \
     -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 && \
   cmake --build . --config Release -j$(nproc) --target llama-engine
 
-# P100 — needs explicit CUDA 12.9 path (CMake cache cross-contamination)
+# P100 — needs explicit CUDA 12.9 path (CMake cache cross-contamination).
+# MINIMAL TOOLKIT VARIANT (2026-08-27): set CUDAToolkit_ROOT=~/opt/cuda-12.9-min
+# and CMAKE_CUDA_COMPILER=<prefix>/bin/nvcc, CMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13;
+# see docs/cuda-modules.md §P100 VM for the recipe + header patch.
 mkdir -p src/llama-cpp/build_sm60 && cd src/llama-cpp/build_sm60 && \
   cmake .. -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DGGML_CUDA_FA=ON \
     -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_RPC=ON -DGGML_NVML=ON \
-    -DCUDAToolkit_ROOT=/opt/software/cuda/12.9 \
-    -DCMAKE_CUDA_COMPILER=/opt/software/cuda/12.9/bin/nvcc \
+    -DCUDAToolkit_ROOT=/home/ddv/opt/cuda-12.9-min \
+    -DCMAKE_CUDA_COMPILER=/home/ddv/opt/cuda-12.9-min/bin/nvcc \
     -DCMAKE_INSTALL_RPATH=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/lib \
     -DCMAKE_BUILD_RPATH=/opt/software/llama-cpp-hydra-sm60/hydra-sm60/lib \
     -DLLAMA_CUDA_BY_DEFAULT=OFF -DLLAMA_RPC=ON -DLLAMA_SERVER=ON && \
@@ -280,7 +283,7 @@ reaches the binary.
 |---|---|---|
 | `invalid argument: --rpc-engine` at startup (in llama-server, not llama-engine) | using `llama-server` binary in the head's config; it doesn't have the COMBINED filter | switch `llama.binary` to `llama-engine` (see `infra/hydra-head/config/node-rtx.yaml`) |
 | `RPC backend not available in this build` | forgot `-DGGML_RPC=ON` | reconfigure with `-DGGML_RPC=ON` + rebuild |
-| `nvcc not found` when targeting sm_60 | CMake cache picked up CUDA 13.2 path | delete `build_sm60/CMakeCache.txt` and re-run with `CUDAToolkit_ROOT=/opt/software/cuda/12.9` |
+| `nvcc not found` when targeting sm_60 | CMake cache picked up CUDA 13.2 path | delete `build_sm60*/CMakeCache.txt` and re-run with `CUDAToolkit_ROOT=~/opt/cuda-12.9-min` |
 | `unsupported GNU version 15` | gcc too new for older CUDA | use CUDA 12.9 (P100) or install `gcc-13` and use `CXX=/usr/bin/g++-13` for the build |
 | `BUILD_SHARED_LIBS=OFF` causes `llama-engine` to hang on first request | static build has no libllama-server-impl.so, falls through to a broken code path | set `BUILD_SHARED_LIBS=ON` (default in our cmake calls above) |
 
@@ -290,7 +293,7 @@ Multiple CUDA versions installed under `/opt/software/cuda/`:
 
 | Version | Path | Used for |
 |---|---|---|
-| 12.9 | `/opt/software/cuda/12.9/` | P100 (sm_60) builds |
+| 12.9 | `~/opt/cuda-12.9-min/` (micromamba) | P100 (sm_60) builds — sole CUDA 12.9 since 2026-08-27 owner cleanup; legacy `/opt` copy removed |
 | 13.2 | `/opt/software/cuda/13.2/` | RTX (sm_120) builds |
 | 13.2.1 | `/opt/software/cuda/13.2.1/` | (extra copy) |
 | 13.3 | `/opt/software/cuda/13.3/` | (extra copy) |
