@@ -135,6 +135,7 @@ services:
       - nvidia.com/gpu=all
     volumes:
       - /mnt/SSD:/models:ro
+      - /mnt/SSD:/mnt/SSD:ro
       - /mnt/WorkDisk/LLM-Models:/models2:ro
       # Parametrized pin: the entrypoint reads this YAML and constructs
       # llama-server args. To fall back, change LLAMACPP_PARAMS_FILE (below)

@@ -1,0 +1,85 @@
+# Arm 094 — R001.1: fix arm093's ctx-capping, true 132K×3 with non-stale YaRN
+#
+# Follow-up to arm093 (R001). Arm093 requested --ctx-size 393216 (3×131072) with
+# kv_unified=true but dropped YaRN (per-slot 131K < native 262144). Result:
+# server capped the shared pool to n_ctx_train=262144 (log: "the slot context
+# (393216) exceeds the training context of the model (262144) - capping" →
+# "initializing, n_slots=3, n_ctx_slot=262144, kv_unified='true'"). Effective
+# KV allocation was 262144 total shared, not the nominal 393216 — benign for
+# small-prompt tests but not the requested 3×128K-resident capacity.
+#
+# This arm (R001.1) fixes the capping head-on, per user ask "move ctx to 132K":
+#   per-slot = 132000 → total --ctx-size = 396000 (3×132000).
+#   To make the server honor 396K instead of capping to 262144, add real
+#   (non-stale) YaRN scaling: rope_scaling=yarn, yarn_orig_ctx=262144 (model's
+#   real native ctx, confirmed via gguf header qwen35.context_length=262144 and
+#   llama_model_loader n_ctx_train=262144, n_ctx_orig_yarn=262144 on arm093),
+#   rope_scale = 396000/262144 ≈ 1.51062.
+#
+# Rope-scale choice: 1.511 → effective 262144*1.511≈396100 total
+# (≈132033/slot), +100 tokens vs nominal 396000 (+0.02%), just enough to
+# exceed the server's 396032 alignment rounding (396032/262144≈1.510803) and
+# avoid the capping seen with 1.51 (which gave 395837 and still capped).
+# Chose 1.511 over 1.51 because manual test with 1.51 still showed
+# "slot context (396032) exceeds training context (262144) - capping" →
+# n_ctx_slot=262144, while 1.511 should lift effective to ≈396100 >396032 and
+# eliminate the cap. Using 1.5 would give 393216 (131072/slot, arm093 nominal)
+# and would NOT test the explicit 132K ask. 1.51062 would also work (≈396000)
+# but 1.511 is the minimal three-decimal that clears the 396032 threshold.
+#
+# Everything else identical to arm093: K=q8_0/V=q4_1, MTP on
+# (draft-mtp q8_0/q4_1), parallel=3, GGML_CUDA_ENABLE_UNIFIED_MEMORY=1, globals
+# tensor-split 27,38 / ubatch 512 / cont-batching / kv-unified / jinja /
+# cache-prompt / cache-reuse 64 / prio-batch 1 / context-shift
+# (+ cache_idle_slots on, cache_ram 8192). Requires UM (heavier than 093's
+# 393216 nominal, so even more headroom-starved). Build already has
+# GGML_CUDA_FA_ALL_QUANTS=ON (required for q8_0/q4_1 FA; checked
+# build-cuda1322/CMakeCache.txt).
+#
+# Verification point (task's actual ask): confirm capping warning does NOT
+# appear this time and that log shows n_ctx = 396000 (or 395837 effective)
+# honored, not reduced to 262144. If it still caps, report as negative
+# result with exact log lines.
+#
+# Ports 18081/50052, tested via in-place stop of live arm090, restart 090
+# before finish regardless.
+---
+name: 094-udq5-132000x3-kq8-mtp-um-yarn
+description: "R001.1 fix arm093 capping: 132000×3=396000 total (3×132K), real YaRN yarn/262144/scale 1.511 (≈396100 effective, clears 396032 alignment cap), parallel 3, K=q8_0/V=q4_1, MTP draft-mtp q8_0/q4_1, kv-unified, UM. Verify no capping."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 396000
+rope_scaling: yarn
+rope_scale: 1.511
+yarn_orig_ctx: 262144
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'on'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 8192
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
