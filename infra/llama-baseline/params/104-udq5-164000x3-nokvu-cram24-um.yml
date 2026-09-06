@@ -1,0 +1,47 @@
+# Arm 104 — kv_unified OFF: separated 164000-token slots ×3 (492000 total)
+#
+# Push per-slot context from arm102's proven 146176 to 164000, with
+# kv_unified OFF (separated hard-fenced slots, same mechanism as arm102).
+# Tests whether the single-request throughput recovery and concurrent
+# aggregate of arm102 scale to larger per-slot ctx at parallel=3.
+#
+# Config: parallel=3, ctx=492000, K=q8_0/V=q4_1, MTP q8_0/q4_1,
+#   cache_idle_slots on, cache_ram 24576, UM on.
+# Ports 18081/50052, same rig (5060 Ti + 3060 RPC peer).
+---
+name: 104-udq5-164000x3-nokvu-cram24-um
+description: "kv_unified OFF, 3 separated 164000-token slots (492000=3x164000). Pushes per-slot ctx 12% beyond arm102's 146176 to test headroom. cache_ram 24576, UM on."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 492000
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

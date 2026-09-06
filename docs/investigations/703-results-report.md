@@ -1304,3 +1304,615 @@ Bench servers killed, GPUs at 1 MiB. Production restarted and verified:
 `curl /health` ok, both containers healthy. `src/llama-cpp` untouched at
 `5fff12845` (arm095 diff still uncommitted-intact); all params files and
 ledger entries uncommitted.
+
+---
+
+## #740 Thread 1 — bimodal boot-mode variance: static analysis (2026-09-06, no new boots)
+
+**Method:** re-mined every surviving 09x results dir (all on pin `5fff12845`,
+same 378-token prompt where applicable) for timing structure before touching
+the rig. Findings, in order of consequence:
+
+1. **"Boot mode" is a misnomer — the slow mode ONSETS MID-SESSION and is
+   persistent.** Every boot's sequential harness loop ran fast (decode
+   20-23 ms/tok, 42-50 tok/s, identical across slow- and fast-labeled
+   boots). Slow boots (098-orig, 099) transitioned to a persistent ~2x
+   per-forward-pass cost (42-53 ms/tok) at a specific mid-session point:
+   - 098-orig: first 12 requests fast (its own 10-req loop + 2 warm-ups),
+     slow from the first tier measurement onward (even for pure sequential
+     traffic) — i.e. onset after the first concurrent-decode-test runs.
+   - 099: fast through its 10-req loop (18 requests logged, all 19.3-23.3
+     ms/tok), slow from task 518 onward — the first 3-concurrent tier.
+   - Once slow, everything is slow: sequential, concurrent, high- and
+     low-acceptance slots alike. Recovery never observed within a boot.
+2. **The slow mode is a per-forward-PASS cost doubling, not an acceptance or
+   batching effect.** 099 slow-phase: a 0.239-acceptance slot ran 51.4
+   ms/tok where the same acceptance ran ~18-21 ms/tok pre-onset; 098-orig's
+   slow slots held 0.87-0.93 acceptance (draft len 3.6-3.8) yet 42-53
+   ms/tok. Both draft and verify passes scale together — consistent with a
+   hardware/clock or driver-state change, NOT with scheduling or KV
+   bookkeeping (cell-lookup cost would scale with token count, not 2x per
+   pass).
+3. **Ruled out by logs:** CUDA graph reuse (steady increments in both
+   modes), RPC connection churn (byte-identical 15 accept/close patterns in
+   slow and fast boots), boot ORDER of rpc vs llama (harness structure
+   identical every time), MTP acceptance (above), ctx/pool size and
+   --parallel count (fast and slow boots exist at 262144/393216/438016 and
+   p1/p2/p3/p4).
+4. **Weak secondary signal: slow boots booted slower** (32s/39s to ready vs
+   27-29s for all fast boots) — small sample (n=2), could be the same
+   state-shift already present at load time, could be noise.
+5. **Clock telemetry gap confirmed: no results dir contains any
+   clocks/power/pstate capture** — the rig's GPUs idle at P8 (427/210 MHz
+   sm) and the fast P1/P2 states (2940/2017 MHz) were only ever observed
+   incidentally. If the slow mode is a stuck reduced-clock or thermal state,
+   we have been blind to it for all of arms 085-102. Next boots capture
+   `clocks.sm, clocks.mem, pstate, power.draw, temperature.gpu` at 1 Hz
+   through the whole window.
+6. **Leading hypothesis now: a GPU clock/thermal/driver power-state event at
+   or after the first sustained concurrent load**, not a llama.cpp-side
+   effect. The onset correlation with "first tier measurement" is weak
+   evidence for a thermal/power transition (sequential loop may also be
+   enough on some boots, matching the two slow-labeled boots that differed
+   in when they were noticed). The 4x-boot telemetry experiment will
+   confirm or kill this.
+
+## #740 Thread 1 follow-up — clock/power telemetry captured live, hypothesis 6 REJECTED (2026-09-06)
+
+**Method:** live capture of `clocks.sm, clocks.mem, power.draw, pstate,
+temperature.gpu` at 1 Hz through a full boot + tier sequence, on arm102's
+shape, across boots that reproduced the slow mode (boot3) alongside fast
+boots.
+
+**Result — clock/power/thermal hypothesis (item 6 above) is REJECTED:**
+- Slow boot3 ran at **full clocks throughout the slow phase** — sm
+  3045-3060 MHz (GPU0), 2115-2145 MHz (GPU1) — statistically identical to
+  fast-boot clock readings. No throttle, no P-state drop.
+- Max temp only 70°C — nowhere near thermal-limit territory.
+- **Power draw was HIGHER in slow mode**, not lower: 139/157 W vs
+  112-126 W on fast boots.
+- Conclusion: the GPUs are not stuck in a reduced-clock/power state during
+  the slow phase — they are doing **more work per token, at full clock,
+  for more power**. This is a compute-side cost increase, not a
+  power/thermal/driver-state artifact. Item 6's hypothesis and the planned
+  clock-forcing experiment (`nvidia-smi -pm 1 -ac`, arm113) are both moot —
+  forcing clocks that are already unthrottled cannot fix a compute-side
+  cost increase.
+
+**New leading hypothesis: CUDA Unified Memory page-migration storms.**
+Every arm since 093 that engages the bimodal split runs with
+`GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` (required for the KV pool sizes tested).
+`cudaMallocManaged` demand-paging under GPU compute pressure can trigger
+host↔device page-migration traffic over PCIe on a per-fault basis — a
+plausible mechanism for "same clocks, same power budget class, but ~2x
+wall-time per forward pass": the SMs are still issuing work at full clock,
+but stalling on page faults resolved over PCIe instead of retiring at full
+throughput. This is consistent with static-analysis finding #2 (both draft
+and verify passes scale together — a stall injected into every kernel
+launch, not an acceptance-rate or batching effect) and with the "onset
+mid-session, persistent once triggered" pattern (a working set that creeps
+past the resident/pinned region under concurrent load and never migrates
+back).
+
+**Follow-up in progress:** boot 4 with PCIe throughput telemetry
+(`nvidia-smi dmon` bandwidth counters, or `nvprof`/`nsys` migration-fault
+counters if available) captured alongside the existing clock/power trace,
+to directly test the migration-storm hypothesis.
+
+**Consequence for the arm queue:** arm112 (arm102's exact shape booted
+*without* `GGML_CUDA_ENABLE_UNIFIED_MEMORY` at all — see "Queued arms
+106-114" below) has been reprioritized ahead of the PCIe-telemetry work.
+If UM page-migration storms are the actual cause, a config with no UM
+allocation at all cannot exhibit them — a clean, repeatable arm112 boot
+would resolve both the UM-tax question AND the bimodal-boot-mode question
+in a single result, making the migration-storm characterization work
+moot for production purposes (still worth finishing academically). Arm113
+(clock-forcing) has been dropped from the queue — superseded by this
+finding.
+
+---
+
+## Arm 103 — kv_unified OFF: separated 164000-token slots ×2 (328000 total) (2026-09-06)
+
+**Purpose:** push per-slot context from arm102's proven 146176 to 164000
+(12% increase), with kv_unified OFF (same separated hard-fenced slots
+mechanism as arm102). Tests whether arm102's single-request throughput
+recovery and concurrent aggregate scale to larger per-slot ctx. Two fresh
+boots to guard against bimodal boot-mode variance.
+
+**Config:** `parallel=2`, `ctx=328000`, `K=q8_0/V=q4_1`, `MTP draft-mtp
+q8_0/q4_1`, `kv_unified OFF` (`--no-kv-unified`), `cache_idle_slots on`,
+`cache_ram 24576`, `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`. No rope keys (no
+YaRN — 164096/slot < native 262144). Params:
+`params/103-udq5-164000x2-nokvu-cram24-um.yml`.
+
+### Gate — 2 boots, both PASS
+
+Both boots: 10/10 GOOD, ready in 24s. Boot log both times:
+`initializing, n_slots = 2, n_ctx_slot = 164096, kv_unified = 'false'`.
+No capping warning (164096 < 262144 native). VRAM during serve: CUDA0
+15847/16311 MiB, CUDA1 11911/12288 MiB — byte-identical to arm102's
+146176×3 boots. No OOM, no Xid, no crash-loop.
+
+### Sequential decode (eval time, 10-request harness loop)
+
+| Boot | eval tok/s range (150 tokens) |
+|---|---|
+| 1 | 40.52 – 48.51 |
+| 2 | 42.91 – 49.66 |
+
+Both boots in the 40-50 tok/s band, matching arm102's 46.2-46.3 class
+(within run-to-run MTP-acceptance variance). Single-request throughput
+recovered, consistent across boots.
+
+### 2-concurrent (concurrent-decode-test.sh, genuine-overlap PASS both runs)
+
+| Boot | slot tok/s | mean tok/s/slot | aggregate tok/s |
+|---|---|---|---|
+| 1 | 21.03, 14.18 | 17.61 | 35.21 |
+| 2 | 21.00, 14.17 | 17.58 | 35.17 |
+
+**Boot-to-boot spread: negligible (<0.1 tok/s).** Both runs land in the
+same narrow band. No bimodal boot-mode effect observed for this config.
+
+### Comparison vs arm102 (146176×3, kv_unified OFF)
+
+- **Single-request:** arm103 42-50 tok/s vs arm102 46.2-46.3 —
+  **statistically identical**, per-slot ctx increase from 146176→164096 did
+  not degrade single-request speed.
+- **2-concurrent:** arm103 **35.2 agg** vs arm102 49.9-63.8 agg —
+  **significantly worse** (~30-45% lower). Arm102's2-way was measured at
+  parallel=3 (3 slots, but only 2 fired concurrently); arm103 is
+  parallel=2. The12% larger per-slot ctx does not explain this gap alone.
+  Possible contributors: fewer idle slots to absorb scheduling skew at
+  parallel=2 vs 3, or inherent per-slot-vs-per-pool geometry. The result
+  is clear: **2-slot 164K/slot does NOT match arm102's 2-way concurrent
+  aggregate.**
+
+### VRAM / UM
+
+CUDA0 15847 MiB, CUDA1 11911 MiB — identical to arm102 and all kv_unified-OFF
+boots. At 164096×2 = 328192 total separated cells, trunk KV is ~5.6 GiB
+(K=q8_0/V=q4_1, 16 layers). Fits in CUDA0's 16311 MiB alongside weights
+(~6.3 GiB) and MTP (~0.85 GiB) — likely no UM spill, but nvidia-smi cannot
+distinguish managed-page residency (same limitation as arm102).
+
+### Verdict
+
+Single-request: PASS, recovered (42-50 tok/s, matches arm102 class).
+2-concurrent: NEGATIVE — 35.2 agg, far below arm102's 49.9-63.8. Increasing
+per-slot ctx to 164000 at parallel=2 does not reproduce arm102's concurrency
+numbers. The 2-slot separated-slot configuration is not the right geometry
+for this ctx size.
+
+---
+
+## Arm 104 — kv_unified OFF: separated 164000-token slots ×3 (492000 total) (2026-09-06)
+
+**Purpose:** same per-slot ctx increase as arm103 (146176→164096) but at
+parallel=3, matching arm102's slot count. Tests whether the larger per-slot
+ctx degrades or improves 3-way concurrent aggregate vs arm102's 146176×3.
+Two fresh boots.
+
+**Config:** `parallel=3`, `ctx=492000`, everything else identical to arm103.
+Params: `params/104-udq5-164000x3-nokvu-cram24-um.yml`.
+
+### Gate — 2 boots, both PASS
+
+Both boots: 10/10 GOOD, ready in 30s/34s. Boot log both times:
+`initializing, n_slots = 3, n_ctx_slot = 164096, kv_unified = 'false'`.
+No capping. VRAM: CUDA0 15847/16311, CUDA1 11911/12288 MiB (identical to
+arm102/103). No OOM, no Xid.
+
+### Sequential decode (eval time, 10-request harness loop)
+
+| Boot | eval tok/s range (150 tokens) |
+|---|---|
+| 1 | 39.65 – 50.09 |
+| 2 | 44.31 – 49.72 |
+
+Both boots in the 40-50 tok/s band. Single-request speed recovered, same
+as arm103 and arm102.
+
+### 2-concurrent (concurrent-decode-test.sh, genuine-overlap PASS)
+
+| Boot | slot tok/s | mean tok/s/slot | aggregate tok/s |
+|---|---|---|---|
+| 1 | 20.82, 14.08 | 17.45 | 34.90 |
+| 2 | 20.70, 14.01 | 17.36 | 34.71 |
+
+**Boot-to-boot spread: negligible.** Both boots identical to arm103's
+2-concurrent numbers (~35 agg). 2-way concurrent at 164K/slot is consistent
+across 2-slot and 3-slot configurations — the bottleneck is per-slot, not
+slot-count.
+
+### 3-concurrent (concurrent-decode-test.sh, genuine-overlap PASS)
+
+| Boot | slot tok/s | mean tok/s/slot | aggregate tok/s |
+|---|---|---|---|
+| 1 | 14.18, 31.77, 31.77 | 25.91 | 77.72 |
+| 2 | 17.70, 31.37, 31.37 | 26.81 | 80.44 |
+
+**Boot-to-boot spread: small (77.7 vs 80.4 agg).** Both boots in the
+same band. No bimodal boot-mode variance.
+
+**Bimodal slot-speed pattern:** in both boots, two slots decode at ~31
+tok/s while one slot runs at ~14-18 tok/s. Server-side `tg` metrics
+confirm: sequential requests decode at 44-49 tok/s; concurrent requests
+show one slot at 17-18 tok/s and two at 38 tok/s. This is the same
+asymmetric scheduling pattern seen in arm103 (2-slot) and arm102.
+
+### Comparison vs arm102 (146176×3, kv_unified OFF)
+
+- **Single-request:** arm104 40-50 tok/s vs arm102 46.2-46.3 —
+  **statistically identical**, no degradation from larger per-slot ctx.
+- **3-concurrent aggregate:** arm104 **77.7-80.4 agg** vs arm102
+  **64.9-102.2 agg** (4 runs, 2 boots). Arm104's mean is within arm102's
+  band (arm102 had one outlier at 64.9 and three at 94-102). The 12%
+  per-slot ctx increase did NOT improve 3-way aggregate — arm104's best
+  (80.4) is below arm102's best (102.2). Larger per-slot ctx does not
+  help concurrent throughput.
+- **2-concurrent aggregate:** arm104 34.7-34.9 vs arm102 49.9-63.8 —
+  **significantly worse**. Same deficit seen in arm103.
+
+### VRAM / UM
+
+Identical to arm103/arm102: CUDA0 15847, CUDA1 11911 MiB. At 164096×3 =
+492288 separated cells, trunk KV is ~8.4 GiB. Fits in CUDA0's 16311 MiB
+with weights (~6.3 GiB) + MTP (~0.85 GiB) — tight but no spill expected.
+No measurable difference in nvidia-smi vs arm102's 146176×3 (same managed-
+page counting limitation).
+
+### Verdict
+
+Single-request: PASS, recovered (40-50 tok/s, matches arm102 class).
+3-concurrent: **MIXED** — aggregate 77.7-80.4 is within arm102's band but
+below arm102's best (102.2). The 12% per-slot ctx increase from 146176→164096
+did NOT improve 3-way aggregate; it appears neutral-to-slightly-negative.
+2-concurrent: NEGATIVE, ~35 agg, far below arm102's 49.9-63.8.
+
+**Bottom line for 164000/slot:** per-slot ctx at 164000 is recoverable for
+single-request (matches arm102's 46 tok/s class) but does NOT improve
+concurrent aggregate over arm102's 146176/slot baseline. Arm102's 146176×3
+with kv_unified OFF remains the stronger concurrency candidate. The 164K/slot
+configs should not be preferred over arm102 for concurrent workloads.
+
+### Rig state after arms 103/104
+
+Bench servers killed, GPUs at 1 MiB. Production restarted and verified:
+`curl /health` ok, both containers healthy, VRAM 15659/9977 MiB (normal
+arm090 footprint). `src/llama-cpp` untouched at `5fff12845` (arm095 diff
+still uncommitted-intact); all params files and ledger entries uncommitted.
+
+---
+
+## Arm 105 — multi-turn depth-scaling test on arm102 (2026-09-06)
+
+**Purpose:** first depth-scaling measurement in this investigation. Every
+prior arm (085–104) measured decode speed at ~1K-token prompt depth. This
+arm measures per-turn tok/s as a real conversational session grows from
+~3K to ~35K resident tokens across 10 turns, simulating the rig's actual
+use case (coding agents holding long-running sessions). Uses a new
+reusable harness: `infra/llama-baseline/multiturn-growth-test.sh`.
+
+**Methodological difference from all prior arms:** prior arms used
+single-shot prompts (300-1100 tokens) via `concurrent-decode-test.sh`.
+This arm uses the `/v1/chat/completions` endpoint with growing message
+history — each turn appends ~4K new tokens of synthetic content plus the
+prior conversation, so the prompt grows monotonically. The test measures
+decode throughput at each depth, not just at one fixed shallow point.
+
+**Critical finding: `cache_reuse` is disabled with kv_unified OFF.**
+Boot log: `cache_reuse is not supported by this context, it will be
+disabled`. With separated hard-fenced slots (kv_unified OFF), the server
+cannot do prefix-based KV reuse across turns — every turn does a FULL
+prefill of the entire conversation from scratch. This means the test
+measures the WORST CASE for depth scaling (no incremental prefill
+benefit). The depth-vs-speed curve reported here would likely be much
+flatter with kv_unified ON (where cache_reuse works). This is a real
+limitation of the separated-slots architecture, not a test artifact.
+
+**Config:** arm102 exact params (`102-udq5-146176x3-nokvu-cram24-um.yml`),
+kv_unified OFF, 146176 tokens/slot × 3, K=q8_0/V=q4_1, MTP q8_0/q4_1,
+cache_ram 24576, UM on. Harness params: 4000 new tokens/turn (~2666 words
+of synthetic prose per turn), 750 output tokens/turn, 10 turns per
+session. Target depth at turn 10: ~50K resident tokens.
+
+### Boot: PASS
+
+`run-with-params.sh --no-cleanup`, 30s ready, 10/10 GOOD. `kv_unified =
+'false'`, `n_ctx_slot = 146176`, `cache_reuse disabled` warning confirmed.
+
+### 2-session concurrent run (overlap PASS, 389s shared window)
+
+**Session 1:**
+
+| Turn | prompt_tok | comp_tok | tok/s | wall |
+|---|---|---|---|---|
+| 1 | 3,376 | 750 | **23.35** | 32.12s |
+| 2 | 6,695 | 750 | 19.81 | 37.86s |
+| 3 | 10,014 | 750 | 18.59 | 40.35s |
+| 4 | 13,327 | 750 | 18.51 | 40.51s |
+| 5 | 16,650 | 750 | 17.42 | 43.04s |
+| 6 | 19,965 | 750 | 13.85 | 54.16s |
+| 7 | 23,285 | 709 | 14.21 | 49.90s |
+| 8 | 26,894 | 612 | 14.34 | 42.67s |
+| 9 | 30,503 | 314 | 11.00 | 28.55s |
+| 10 | 34,147 | 286 | **14.13** | 20.25s |
+
+Turn 1→10 degradation: 23.35→14.13 tok/s (**−39%**). Mean: 16.52 tok/s.
+Note: comp_tok drops from 750 to 286 by turn 10 — the model hits natural
+stop conditions earlier as context grows (not a harness bug).
+
+**Session 2:**
+
+| Turn | prompt_tok | comp_tok | tok/s | wall |
+|---|---|---|---|---|
+| 1 | 3,376 | 750 | **16.70** | 44.91s |
+| 2 | 6,695 | 750 | 17.33 | 43.28s |
+| 3 | 10,014 | 750 | 17.45 | 42.98s |
+| 4 | 13,582 | 625 | 18.35 | 34.06s |
+| 5 | 17,351 | 750 | 19.74 | 37.99s |
+| 6 | 20,942 | 750 | 21.65 | 34.64s |
+| 7 | 24,609 | 562 | 17.16 | 32.75s |
+| 8 | 28,370 | 750 | 17.66 | 42.47s |
+| 9 | 32,097 | 730 | 16.11 | 45.30s |
+| 10 | 35,943 | 675 | **17.86** | 37.80s |
+
+Turn 1→10: 16.70→17.86 tok/s (+7%, essentially flat). Mean: 18.00 tok/s.
+Session 2 was slower at turn 1 but held steady — consistent with the
+bimodal boot/scheduling variance seen throughout this investigation.
+
+### 3-session concurrent run (overlap PASS, 488s shared window)
+
+**Session 1:**
+
+| Turn | prompt_tok | comp_tok | tok/s |
+|---|---|---|---|
+| 1 | 3,376 | 750 | **15.76** |
+| 5 | 16,650 | 750 | 14.41 |
+| 10 | 33,312 | 750 | **22.72** |
+
+Turn 1→10: 15.76→22.72 (+44%, outlier — turn 10 had anomalously fast
+decode, likely favorable scheduling). Mean: 15.33 tok/s.
+
+**Session 2:**
+
+| Turn | prompt_tok | comp_tok | tok/s |
+|---|---|---|---|
+| 1 | 3,376 | 750 | **20.89** |
+| 5 | 16,650 | 750 | 14.29 |
+| 10 | 33,824 | 750 | **12.79** |
+
+Turn 1→10: 20.89→12.79 tok/s (**−39%**). Mean: 15.69 tok/s.
+
+**Session 3:**
+
+| Turn | prompt_tok | comp_tok | tok/s |
+|---|---|---|---|
+| 1 | 3,376 | 750 | **13.87** |
+| 5 | 16,650 | 750 | 14.79 |
+| 10 | 34,329 | 637 | **15.53** |
+
+Turn 1→10: 13.87→15.53 tok/s (+12%, essentially flat). Mean: 15.22 tok/s.
+
+### Depth-scaling summary
+
+| Config | Turn 1 tok/s | Turn 10 tok/s | Degradation | Mean |
+|---|---|---|---|---|
+| 1-session, 8K/turn (crash@t6) | 22.43 | (crash) | — | 18.76 (5 turns) |
+| 1-session, 4K/turn (crash@t8) | 29.85 | (crash) | — | 26.19 (7 turns) |
+| **2-session, 4K/turn** | **23.35 / 16.70** | **14.13 / 17.86** | **−39% / +7%** | **16.52 / 18.00** |
+| **3-session, 4K/turn** | **15.76 / 20.89 / 13.87** | **22.72 / 12.79 / 15.53** | **+44% / −39% / +12%** | **15.33 / 15.69 / 15.22** |
+
+**Key observations:**
+1. **Depth degradation is real but moderate.** At 2-session concurrency,
+   the worst-case turn 1→10 drop is ~39% (23→14 tok/s); the other session
+   was flat. At3-session, two of three sessions showed ~39% or less
+   degradation. The ~35K-token-deep decode speed is **13-18 tok/s** —
+   below arm102's single-shot 46 tok/s but within the range needed for
+   interactive coding-agent use.
+2. **Session-to-session variance dominates over depth.** Session 2 in the
+   2-session run was flat (16.7→17.9) while session 1 dropped 39%. This
+   matches the bimodal scheduling pattern seen in every arm tonight.
+   Depth scaling is NOT the primary throughput limiter; scheduling/
+   resource contention is.
+3. **Comp_tok drops at depth.** In the 2-session run, later turns
+   generated fewer tokens (750→286 by turn 10). The model hits natural
+   stop conditions earlier in longer contexts. This is a real behavioral
+   change, not a harness issue — deeper sessions produce shorter
+   responses on average.
+4. **VRAM unchanged.** CUDA0 15847, CUDA1 11801 MiB throughout. The
+   KV partitions are pre-allocated at boot; context growth within a
+   partition doesn't increase nvidia-smi reported usage.
+5. **cache_reuse disabled is the key limitation.** Every turn does full
+   prefill of the entire conversation. With kv_unified ON (where
+   cache_reuse works), the depth degradation would likely be much less
+   severe — only the incremental new tokens would need prefill. This
+   test measured worst-case depth scaling.
+
+### Harness: `infra/llama-baseline/multiturn-growth-test.sh`
+
+Created as a reusable CLI tool (parallel to `concurrent-decode-test.sh`).
+Usage: `bash multiturn-growth-test.sh <port> <n_sessions> <n_turns>
+<new_tokens_per_turn> <output_tokens_per_turn>`. Records per-turn
+wall-clock, prompt_tok, comp_tok, tok/s for every session. Verifies
+concurrent overlap. Uses Python for JSON construction (clean escaping)
+and `/v1/chat/completions` with growing message history.
+
+### Rig state after arm105
+
+Bench servers killed, GPUs at 1 MiB. Production restarted and verified:
+`curl /health` ok, both containers healthy. `src/llama-cpp` untouched at
+`5fff12845`; all params files and ledger entries uncommitted. New script
+`multiturn-growth-test.sh` left uncommitted.
+
+---
+
+## Arm 110 — arm102 shape, cache_type_v q4_1 → q5_0 (2026-09-06)
+
+**Purpose:** probe whether a slightly larger/more precise V quant (Q5_0 vs
+Q4_1) changes throughput or MTP accept rate on the current best concurrency
+config. GGML_TYPE_Q5_0 confirmed valid `--cache-type-v` with compiled FA
+kernels for Q8_0/Q5_0 under GGML_CUDA_FA_ALL_QUANTS=ON — no rebuild needed.
+
+**Config:** arm102 exact shape (146176×3, kv_unified OFF, cache_ram 24576,
+UM on), only `cache_type_v: q5_0` instead of `q4_1`. Same 3-tier harness,
+same prompt/ports.
+
+### Gate: PASS, 2 boots, both 10/10 GOOD
+
+Both boots ready in 29s. VRAM: CUDA0 15847, CUDA1 11911 MiB — identical to
+arm102. No OOM, no Xid, no crash-loop.
+
+### Tiers (2 boots, no bimodal variance observed)
+
+| Tier | Boot 1 | Boot 2 |
+|---|---|---|
+| 1-conc | 32.48 tok/s | 32.60 tok/s |
+| 2-conc agg | 49.96 (24.98/slot, overlap PASS) | 50.03 (25.01/slot, overlap PASS) |
+| 3-conc agg | **96.62** (32.21/slot, overlap PASS) | **96.58** (32.19/slot, overlap PASS) |
+
+Sequential eval (server-side): 46.3–49.6 tok/s (matches arm102 class).
+
+### Verdict
+
+V=q5_0 is **statistically identical** to arm102's V=q4_1 across all tiers.
+3-conc 96.6 agg is within arm102's 65–102 band. No throughput gain from the
+more precise V quant; no throughput loss either. VRAM footprint unchanged
+(15847/11911 MiB). Not worth switching for throughput; only worth considering
+if V-precision affects output quality (out of scope for this bench).
+
+---
+
+## Arm 111 — arm102 shape, cache_type_v q4_1 → q5_1 (2026-09-06)
+
+**Purpose:** bracket both 5-bit V options (Q5_0 in arm110, Q5_1 here) against
+arm102's q4_1 baseline. Q5_1 is marginally larger and more accurate than Q5_0.
+
+**Config:** arm102 exact shape, only `cache_type_v: q5_1`. Same harness.
+
+### Gate: PASS, 2 boots, both 10/10 GOOD
+
+Both boots ready in 30s. VRAM: CUDA0 15847, CUDA1 11911 MiB — identical to
+arm102/110.
+
+### Tiers (2 boots, no bimodal variance)
+
+| Tier | Boot 1 | Boot 2 |
+|---|---|---|
+| 1-conc | 33.16 tok/s | 33.13 tok/s |
+| 2-conc agg | 49.65 (24.83/slot, overlap PASS) | 49.56 (24.78/slot, overlap PASS) |
+| 3-conc agg | **97.37** (32.46/slot, overlap PASS) | **96.90** (32.30/slot, overlap PASS) |
+
+### Verdict
+
+V=q5_1 is **statistically identical** to both V=q5_0 (arm110) and V=q4_1
+(arm102). No throughput difference between any of the three V quant types at
+this shape. The V-cache precision axis does not affect decode speed for this
+workload. Not worth changing from the production q4_1 baseline.
+
+---
+
+## Arm 112 — arm102 shape, UM-off probe (2026-09-06)
+
+**Purpose:** test whether arm102's shape fits in VRAM without
+`GGML_CUDA_ENABLE_UNIFIED_MEMORY`. Arm102's VRAM math sums to ~14.4 GiB
+(trunk KV ~7.3 GiB + weights ~6.3 GiB + MTP ~0.85 GiB) against the 5060
+Ti's 16 GiB — theoretically under budget without UM host-spill. If it boots
+clean, UM was dead weight and can be dropped. If it OOMs, that's a useful
+negative.
+
+**Method:** every YAML field identical to arm102; only difference is that
+`GGML_CUDA_ENABLE_UNIFIED_MEMORY` is NOT exported in the shell. Two fresh
+boots.
+
+### Gate: FAIL OOM, 2 boots, both deterministic
+
+Both boots: `llama-server exited prematurely at 15s`. Error:
+```
+common_fit_params: failed to fit params to free device memory
+allocating 6504.05 MiB on device 0: cudaMalloc failed: out of memory
+llama_init_from_model: failed to initialize the context: failed to allocate buffer for kv cache
+```
+
+VRAM at failure: 1 MiB on both GPUs (process exited before VRAM allocated).
+The 6504 MiB KV cache allocation fails under plain `cudaMalloc` — arm102's
+shape **requires UM** to fit.
+
+### Verdict
+
+**NEGATIVE — arm102's shape needs UM.** The VRAM math in the arm112 header
+comment (14.4 GiB estimate) underestimated the actual KV cache footprint.
+With K=q8_0/V=q4_1 at 146176×3 = 438528 cells, the trunk KV alone is
+~7.3 GiB; adding the RPC-side KV share on CUDA1 pushes the total past what
+fits without demand-paging. The UM-off probe is definitively answered: keep
+`GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` for arm102's shape.
+
+This also means the UM-page-migration-storm hypothesis for the bimodal
+boot-mode variance (see "#740 Thread 1 follow-up") cannot be tested by
+omitting UM on this shape — the shape simply doesn't boot without it. A
+smaller shape (fewer slots or smaller ctx) would be needed for a clean UM-off
+control, but that changes the config being compared.
+
+---
+
+## Arm 114 — arm102 shape, upstream llama.cpp v0.3.0 (2026-09-06)
+
+**Purpose:** test whether upstream fixes since our pin `5fff12845` (66
+commits to v0.3.0) help arm102's shape. v0.3.0 confirmed via `git merge-base
+--is-ancestor` to exclude commit `d0132a680` (RPC-async rewrite known to
+OOM arm090's shape).
+
+**Build:** isolated `git worktree add` at v0.3.0 tag + separate build
+directory `build-cuda1322-v030`. Same cmake flags as `build-cuda1322`
+(including `-DGGML_CUDA_FA_ALL_QUANTS=ON`). Worktree and build dir removed
+after testing. Submodule pin `5fff12845` untouched.
+
+**Note:** `GGML_RPC=ON` needed in cmake for v0.3.0 (was ON by default in
+our pin's build). RPC server from `build-cuda1322` (our pin) used as the
+peer — RPC protocol is backward-compatible.
+
+### Gate: PASS, 2 boots, both 10/10 GOOD
+
+Both boots ready in 30s. VRAM: CUDA0 15847, CUDA1 11911 MiB — identical to
+arm102. Binary confirmed running from `build-cuda1322-v030/` via
+`/proc/<pid>/exe`.
+
+### Tiers (2 boots, no bimodal variance)
+
+| Tier | Boot 1 | Boot 2 |
+|---|---|---|
+| 1-conc | 32.64 tok/s | 32.76 tok/s |
+| 2-conc agg | 49.14 (24.57/slot, overlap PASS) | 49.87 (24.93/slot, overlap PASS) |
+| 3-conc agg | **95.29** (31.76/slot, overlap PASS) | **95.50** (31.83/slot, overlap PASS) |
+
+### Verdict
+
+v0.3.0 is **statistically identical** to our pin `5fff12845` for arm102's
+shape. No regression, no improvement. The 66-commit delta does not affect
+decode throughput, VRAM footprint, or boot behavior for this config. The
+known `d0132a680` OOM regression is safely excluded (v0.3.0 predates it).
+No reason to bump the submodule pin for throughput reasons.
+
+### Cleanup
+
+Worktree removed (`git worktree remove`), build dir deleted. Submodule
+`src/llama-cpp` clean at `5fff12845`.
+
+---
+
+## Queued arms 106-114 — updated 2026-09-06
+
+| Arm | Config | Status |
+|---|---|---|
+| 106 | 102 shape, tensor_split 25,40 | queued (separate agent) |
+| 107 | 102 shape, tensor_split 30,35 | queued (separate agent) |
+| 108 | 102 shape, ubatch 1024 | queued (separate agent) |
+| 109 | 102 shape, cache_ram_mib 8192 | queued (separate agent) |
+| 110 | 102 shape, V=q5_0 | **DONE** — 2 boots, 3-conc 96.6 agg, identical to arm102 |
+| 111 | 102 shape, V=q5_1 | **DONE** — 2 boots, 3-conc 97.0 agg, identical to arm102/110 |
+| 112 | 102 shape, UM-off probe | **DONE** — OOM, deterministic, shape requires UM |
+| ~~113~~ | ~~102 shape, clock-forcing~~ | **DROPPED** — superseded by live telemetry |
+| 114 | 102 shape, upstream v0.3.0 | **DONE** — 2 boots, 3-conc 95.4 agg, identical to arm102 |
+

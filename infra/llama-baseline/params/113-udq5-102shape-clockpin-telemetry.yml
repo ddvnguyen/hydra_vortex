@@ -1,0 +1,67 @@
+# Arm 113 — arm102's exact shape/yaml, rebooted repeatedly (>=4x) with GPU
+# clocks/P-state FORCED and full clock telemetry captured across every boot.
+# Suggested arm #2 (2026-09-06), from cross-agent research (792db69b),
+# targeting the still-unsolved bimodal boot-mode variance first surfaced in
+# arm100 (same config landing in one of two ~2x-apart throughput regimes,
+# cause not yet identified — see 703-results-report.md).
+#
+# NOTE: this overlaps with a boot-mode root-cause task already dispatched
+# to another agent (telemetry capture via
+# nvidia-smi --query-gpu=clocks.sm,clocks.mem,power.draw,pstate,temperature.gpu
+# through boot+tier). Check that agent's findings before running this arm —
+# do not duplicate a live investigation. The one NEW thing this arm adds on
+# top of passive telemetry: actively forcing clocks/persistence mode BEFORE
+# boot, to see if locking P-state kills the bimodal split outright:
+#
+#   nvidia-smi -pm 1                      # persistence mode on, both GPUs
+#   nvidia-smi -ac <mem_clock>,<sm_clock> # lock application clocks
+#     (query supported pairs first: nvidia-smi -q -d SUPPORTED_CLOCKS)
+#
+# Procedure: for each of >=4 fresh boots of the identical 102 yaml, run the
+# forcing commands above immediately before starting run-with-params.sh,
+# capture the query-gpu telemetry line above once per second through boot
+# and through the single-request tier, then compare throughput class
+# (fast ~46 tok/s vs slow ~22-27 tok/s) against the captured clock/pstate
+# trace. If forcing clocks collapses the bimodal split to one mode, that's
+# the root cause; if it doesn't, rule out clock/P-state and move to the
+# next hypothesis (RPC connection order, MTP warm-up state).
+#
+# Yaml is byte-identical to 102-udq5-146176x3-nokvu-cram24-um.yml — the
+# only variable under test is the boot procedure, not any server flag.
+---
+name: 113-udq5-102shape-clockpin-telemetry
+description: "arm102's exact shape, >=4 fresh boots with GPU clocks/persistence mode forced (nvidia-smi -pm 1 -ac) + full clock/pstate telemetry captured throughout, to test whether locking clocks collapses the bimodal boot-mode variance found in arm100."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 438528
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
