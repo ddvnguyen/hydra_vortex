@@ -1,0 +1,70 @@
+# Arm p100-9b — P100 solo baseline for A/B parity gate (#733 T5a).
+# Host: Tesla P100 16GB sm60, CUDA 12.9, VM 192.168.122.21
+# Model: Qwen3.5-9B-Q4_K_M.gguf — ~6.8 GB + KV, already resident on P100
+#   at ~/models/Qwen3.5-9B-Q4_K_M.gguf  (absolute: /home/vm1/models/Qwen3.5-9B-Q4_K_M.gguf)
+#   and /mnt/WorkDisk/LLM-Models fallback on host. Container mounts both
+#   as /models and /models-workdisk; this params file prefers the VM path
+#   but run-with-params.sh resolves fallback if missing.
+#
+# Purpose: A/B parity baseline for hydra vs upstream llama-server on the
+#   same GPU, same model, same params — sequential per #733 (§ Pipeline):
+#   hydra lane (core :19000 / head :19700 / engine :18086) → stop → baseline
+#   lane (llama-server :18080) → stop. No prod P100 lane (:8086) touched.
+#   Prod lane (35B Q5_K-Balanced, 5.9 GB VRAM) stays resident; A/B uses
+#   ~7 GB so sequential = 13 < 16 GB, zero prod impact.
+#
+# Params mirror the dev-test engine profile (docker-compose.hydra-devtest.yml
+#   hydra-engine-devtest: ctx 65536, q8_0 KV, flash-attn, cont-batching) so that
+#   A/B compares identical decode settings. Solo (no RPC) — P100 has one GPU.
+#   ctx 65536 covers all 4 A/B workloads (max ~26K, § A/B suite) with headroom;
+#   if VRAM pressure appears, fall back to 32768 via LLAMACPP_PARAMS_FILE override.
+#
+# Usage:
+#   # Host direct (run-with-params.sh, P100 VM):
+#   bash infra/llama-baseline/run-with-params.sh infra/llama-baseline/params/p100-9b.yml
+#   # Container (podman compose, P100 or RTX host):
+#   LLAMACPP_PARAMS_FILE=/etc/llama-baseline/p100-9b.yml \
+#     podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d --build
+#   # Dev-test A/B baseline side (compose profile, P100):
+#   podman compose -f docker-compose.hydra-devtest.yml --profile baseline up -d
+#   # then curl http://localhost:18080/health | jq
+#
+# Determinism for A/B: temp=0 + fixed seed is set by the harness (tests/ab/parity.py),
+#   not here — this file keeps sampling defaults for manual parity.
+#   Harness overrides via --temp 0 --seed 42 at request time.
+
+name: p100-9b
+description: "P100 solo 9B Q4_K_M — A/B parity baseline (ctx 65536, q8_0 KV, flash-attn, solo, no RPC). Model at ~/models/ on 192.168.122.21."
+
+# Model: prefer VM home, fallback to host WorkDisk for local runs
+model_path: /home/vm1/models/Qwen3.5-9B-Q4_K_M.gguf
+cuda_home: /opt/software/cuda/12.9
+rpc_port: 0
+rpc_cuda_device: '0'
+rpc_endpoint: 127.0.0.1
+server_port: 18080
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: ""
+n_gpu_layers: 99
+ctx: 65536
+rope_scaling: yarn
+rope_scale: 1
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q8_0
+ubatch: 512
+jinja: 'on'
+parallel: 4
+cont_batching: 'on'
+kv_unified: 'on'
+cache_reuse: 64
+cache_prompt: 'on'
+prio_batch: 1
+context_shift: 'on'
+n_predict: 2048
+requests: 40
+prompt_path: /tmp/bigprompt.txt
+timeout: 120
+expect: unknown
