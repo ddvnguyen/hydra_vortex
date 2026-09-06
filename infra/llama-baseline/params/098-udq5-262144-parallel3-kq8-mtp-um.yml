@@ -1,0 +1,67 @@
+# Arm 098 — parallel=3, pool shrunk to 262144 (3×87381 slot budget), cut UM paging
+#
+# Follow-up to arm093/094. Pool-size correction established from the pin's
+# code (llama-context.cpp:290-293): with kv_unified=true, n_ctx_seq = n_ctx
+# (the TOTAL pool). Arm093 passed ctx: 393216 → a 393216-cell pool (~10.4 GiB
+# trunk KV at q8_0/q4_1, 1728 B/token/layer × 16 full-attn layers) was
+# allocated on ~16 GiB + 12 GiB GPUs, forcing the managed allocator to spill
+# ~2+ GiB to host RAM and page it on every layer — the suspected cause of the
+# 093/094 concurrency numbers landing below the 30 tok/s aggregate target on
+# bad runs (42-49 agg at 2-way vs 093's better 49).
+#
+# This arm requests ctx: 262144 (the model's true native ceiling) so the
+# unified pool = 262144 cells (~6.9 GiB trunk KV + 432 MiB MTP draft KV at
+# q8_0/q4_1) fits fully in VRAM with NO host spill — the same total-KV shape
+# arm093's server actually capped itself to, but without paying for the extra
+# 131072 cells it never used. Per-slot logical cap stays 262144 (unchanged —
+# one slot can still use the whole pool when others are idle; the shared
+# budget under 3-way concurrency is ~87381 tokens/slot, vs arm093's identical
+# effective 262144 shared pool. NO usable-ctx loss vs 093 — 093's extra cells
+# were dead weight beyond the per-slot cap).
+#
+# Everything else identical to arm093 (production-faithful): K=q8_0/V=q4_1,
+# MTP draft-mtp q8_0/q4_1, parallel 3, kv-unified, no rope keys, tensor-split
+# 27,38, ubatch 512, cache-idle-slots on, cache_ram 8192. Requires
+# GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 (K=q8_0+MTP at 3 slots OOMs without it —
+# arm096 Gate 1a proved the 2-slot shape already OOMs).
+#
+# Expected empirical confirmation in boot log:
+#   n_ctx = 262144, n_ctx_seq = 262144, n_ctx_slot = 262144 (no capping warn)
+#   and KV self-estimates ~6.9 GiB (not 10.4 GiB as 093's pool would print).
+---
+name: 098-udq5-262144-parallel3-kq8-mtp-um
+description: "Pool-shrink concurrency probe: 262144-cell unified pool (native ceiling, full VRAM fit, no UM spill) at parallel 3, K=q8_0/V=q4_1 + MTP q8_0/q4_1. Same effective per-slot budget as arm093 (262144 shared), minus 131072 dead cells that caused host-RAM paging."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 262144
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'on'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 8192
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

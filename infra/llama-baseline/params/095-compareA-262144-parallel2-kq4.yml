@@ -1,0 +1,45 @@
+# Comparison A for Arm 095 R001.2 — cleanest UM tax signal, no oversubscription
+# Base = arm085 proven-fit no-UM config (262144 total, parallel 2, K=q4_0/V=q4_1,
+# no MTP, fits VRAM natively at ~890 MiB margin per original math). This is the
+# exact config arm091 used for its decomposition test: same binary/config but
+# with GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 forced on, zero real paging pressure.
+# Arm091 measured 15.1-15.5 tok/s/slot (mean 15.3) on UNPATCHED binary vs
+# arm085's no-UM ~20.1 tok/s/slot baseline (~24% fixed allocator tax).
+# This file is the patched-binary rerun of that same test — should be byte-
+# identical to arm085 except for name, with stale yarn removed (262144 is
+# native, no scaling needed; stale yarn 5/32768 would cap to 163840 on new
+# pin, not the intended 262144, so dropped for a true 262144 test).
+---
+name: 095-compareA-262144-parallel2-kq4
+description: "Comparison A: 262144 total parallel2 K=q4_0/V=q4_1 no MTP, UM forced, patched binary. Expect ~20.1 baseline."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 262144
+flash_attn: 'on'
+cache_type_k: q4_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'on'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 8192
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

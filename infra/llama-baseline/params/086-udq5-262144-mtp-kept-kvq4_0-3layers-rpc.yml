@@ -1,0 +1,64 @@
+# Arm 086 — keep MTP + K/V=q4_0 + ctx 262144 + move 3 causal-attention layers to RPC0.
+#
+# Base = arm 084 (K=q8_0, V=q4_1, ctx 140000, parallel 2, cache-idle-slots, draft-mtp).
+# Changes vs 084:
+#   1. Quantize BOTH K and V to q4_0 (084: K=q8_0, V=q4_1). Saves ~8+4 = 12
+#      KiB/token → ~1045 MiB freed on the current pool.
+#   2. Move 3 causal-attention layers (blk.59, blk.63, blk.64) from CUDA0 to
+#      RPC0 via override_tensors. These are the model's full-attention layers
+#      (Qwen3.5 hybrid: full_attention_interval=4, 17 causal layers total out
+#      of65 blocks). Tensor names verified: blk.N.attn_{k,k_norm,norm,output,
+#      q,q_norm,v}.weight exist only on causal layers; SSM layers have fused
+#      attn_qkv instead.
+#   3. Grow ctx 140000→262144 (model's n_ctx_train, native max).
+#
+# MTP kept: spec_type: draft-mtp, spec_draft_type_k: q8_0, spec_draft_type_v: q4_1
+# unchanged from 084. Decodes at +53% vs no-MTP.
+#
+# VRAM budget: tighter than 085. KV quant saves ~1045 MiB, layer moves free
+# ~300-400 MiB on CUDA0 (attention weights for 3 layers). Combined headroom
+# ≈170-290 MiB (known-accepted margin per user assessment).
+#
+# WARNING: override_tensors uses RPC0[127.0.0.1:50052] (full buft name), NOT
+# bare "RPC0" — verified in common/arg.cpp:273 and arms 028/030.
+---
+name: 086-udq5-262144-mtp-kept-kvq4_0-3layers-rpc
+description: "Keep MTP + K/V=q4_0 + ctx 262144 + move 3 causal layers to RPC0. Non-production test."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors:
+  - 'blk\.(59|63|64)\.attn_(k|k_norm|norm|output|q|q_norm|v)\.weight=RPC0[127.0.0.1:50052]'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 262144
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q4_0
+cache_type_v: q4_0
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'on'
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 8192
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 40
+prompt_path: /tmp/bigprompt.txt
+timeout: 120
+expect: unknown
