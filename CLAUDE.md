@@ -5,12 +5,16 @@ Multi-GPU LLM inference system. Routes requests across **RTX 5060 Ti** (sm_120,
 host), **RTX 3060** (sm_86, host), and **Tesla P100** (sm_60, KVM VM).
 Hydra.Core (C#) is the coordinator; Hydra Head (Go) manages llama-engine per GPU
 node. Migrates ~800 MB KV cache between GPUs. The 5060 Ti + 3060 are wired for
-COMBINED engine mode (expert-split).
+COMBINED engine mode (layer-split).
 
 ## Architecture
-Client → Hydra.Core :9000 [C#] → Hydra Head [Go] → llama-engine [C++ fork] →
-Hydra Store RPC :9500 + tmpfs. 5060 Ti + 3060 are same-host (pod_hydra-system);
-P100 is a separate KVM VM (192.168.122.21). Full reference: `docs/architecture.md`.
+Client → Hydra.Core :9000 [C#], which talks directly to llama-engine [C++ fork]
+per GPU node over HTTP (completions) + binary RPC (state ops) — Hydra Head is
+a sidecar process manager (launches/OCI-pulls llama-engine), not in this
+request path. Hydra.Core also serves Store RPC :9500 + tmpfs (same process)
+for chunked KV dedup, migrating ~800 MB KV cache between GPUs. 5060 Ti + 3060
+are same-host (pod_hydra-system); P100 is a separate KVM VM (192.168.122.21).
+Full reference: `docs/architecture.md`.
 
 ## Language Decisions (FINAL)
 | Service      | Language  | Why |
@@ -27,9 +31,11 @@ P100 is a separate KVM VM (192.168.122.21). Full reference: `docs/architecture.m
 - KV state at 60-80K context: ~800 MB.
 
 ## COMBINED engine mode (5060 Ti + 3060)
-Two modes: **COMBINED-OT** (expert-split, MoE default) and **COMBINED-static**
-(layer-split, Dense profile). Switch: `bash scripts/set-profile.sh {moe|dense}`.
-Details: `docs/combined-engine-mode.md`.
+Single mode now — layer-split only. The old COMBINED-OT (expert-split) variant
+has no model entry left in `models.json`; MoE now goes through P/D split with
+the P100 instead. COMBINED is `dense-27b-combined`: one named, auto-routed
+model in `infra/hydra-core/config/models.json`, selected per-request by
+`AutoRouter` — not a manually toggled profile. Details: `docs/combined-engine-mode.md`.
 
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host (CUDA0, primary)
@@ -105,10 +111,11 @@ Grafana :3000, Prometheus :9091, Loki :3100. Start: `bash scripts/start-env.sh`.
 Full reference: `docs/monitoring-observability.md`.
 
 ## Coding Agent Rules
-1. Ask for decisions when multiple options exist.
-2. Track tasks with `todowrite`, one `in_progress` at a time.
-3. Use sub-agents (2-3 parallel) for research/multi-file work >30s.
-4. End with a `---` + summary block.
+1. Always use the harness's native tool to send questions and decision-
+   confirmation requests — never assume and proceed.
+2. End with a `---` + summary block.
+3. Code quality — follow Clean Code + SOLID. Full checklist:
+   `.claude/skills/implement/SKILL.md`.
 
 ## Project Status File (MANDATORY)
 `PROJECT_STATUS.md` is the single source of truth for milestones, implementation
