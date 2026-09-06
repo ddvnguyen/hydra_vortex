@@ -4,7 +4,31 @@ name: llama-baseline
 # Two separate processes: ggml-rpc-server (3060) + llama-server (5060 Ti).
 # Model: Qwen3.8-27B-MTP-Q5_K_M 19.5GB — RPC-split across both GPUs.
 #
-# DEFAULT PIN: **Arm 083** (human-approved 2026-08-28).
+# DEFAULT PIN: **Arm 090** (human-approved 2026-08-29, supersedes arm 083 as
+#   the primary pin for multi-agent/concurrency workflows).
+#   parallel=1 + cache-idle-slots + 16 GiB cache-ram, ctx=148,000, q8_0/q4_1
+#   KV (unchanged from 083), MTP kept (draft-mtp q8_0/q4_1). Session-swap
+#   design: NOT true simultaneous 2-session decode (verified impossible at
+#   parallel=1 — see arm 087) — instead delivers ~18x faster RETURN for a
+#   session that goes idle and comes back later in a multi-agent rotation
+#   (100% cache hit on return vs 0% at the old 8 GiB cache-ram default).
+#   Evidence: 2026-08-29 3-agent/6-turn simulated-workload stress test
+#     (real ~104-122K-token sessions, real generation load not just boot):
+#     A/B/C rotation, 0 evictions, 0 crashes, VRAM held 167-191 MiB free
+#     CUDA0 throughout. Full fallback guidance (what to change if this pin
+#     doesn't hold up) is documented in-file at the top of
+#     params/090-udq5-148000-parallel1-cache-ram-16g.yml — read that before
+#     touching this pin during an incident.
+#   Params file: infra/llama-baseline/params/090-udq5-148000-parallel1-cache-ram-16g.yml
+#
+# FALLBACK PIN 1: **Arm 088** (same design family, safer VRAM margin).
+#   Identical to 090 except ctx=140,000 (407 MiB free CUDA0 vs 090's
+#   167-191 MiB). Same validated ~18x-faster-return behavior. Use this if
+#   090's thin margin causes an OOM under a real prompt larger than tested.
+#   Params file: infra/llama-baseline/params/088-udq5-140000-parallel1-cache-ram-16g.yml
+#
+# FALLBACK PIN 2: **Arm 083** (prior production pin, human-approved 2026-08-28;
+#   no concurrency features, single VRAM-resident slot, no idle-cache).
 #   UD-Q5_K_M @163,840 ctx (32768×5 YaRN), split 27/38, q8_0/q4_1 KV, ubatch 512,
 #   draft-mtp f16. NO mlock / cache-reuse 256 / checkpoint-min-step 4096
 #   (those were INERT per the post-059 audit).
@@ -13,15 +37,20 @@ name: llama-baseline
 #     - pi-harness 9/10 PASS, 0 Xid, 9/9 KV-cache growth (cache ratio 0% → 97.2%)
 #     - VRAM: CUDA0 15,069 used / 67 MiB min-free (single-request) /
 #             CUDA0 15,808 used / 43 MiB min-free (pi-harness multi-turn)
+#   Use this as the last-resort rollback if the entire parallel=1 +
+#   cache-idle-slots design (090/088) turns out to be unstable for reasons
+#   beyond VRAM sizing (e.g. a cache-ram/idle-slot correctness bug) — 083 has
+#   no idle-cache/session-swap machinery at all, so it can't inherit that
+#   failure mode, at the cost of losing the multi-agent fast-return benefit.
 #   Params file: infra/llama-baseline/params/083-udq5-163840-k-q8_0-v-q4_1-ubatch-512.yml
 #
-# FALLBACK PIN: **Arm 079** (for rollback if 083 fails in production).
+# FALLBACK PIN 3: **Arm 079** (deepest rollback, if 083 itself fails).
 #   UD-Q5_K_M @155,648 ctx, q8_0/q4_1 KV, ubatch 512, draft-mtp f16.
 #   Decode 37.57 t/s, acc 0.63, CUDA0 min-free 704 MiB (single-request).
 #   Params file: infra/llama-baseline/params/079-udq5-155648-v-q4_1-ubatch-512.yml
 #   Rollback: change LLAMACPP_PARAMS_FILE in this compose file (or override at
-#     podman-compose up time) to point at 079-*.yml, then `podman compose up -d --build`.
-#     No other file change required.
+#     podman-compose up time) to point at the desired fallback's params file,
+#     then `podman compose up -d --build`. No other file change required.
 #
 # PIN SWITCH ARCHITECTURE (added 2026-08-28, lead b10e501):
 #   The container's entrypoint is `llama-cpp-entrypoint.sh` (mirrors
@@ -59,7 +88,7 @@ name: llama-baseline
 # (Or set LLAMACPP_PARAMS_FILE as an env override when running podman compose.)
 #
 # Campaign state (2026-08-28T04:30Z): arm 080/081/082/083 + pi-harness 083 all DONE.
-#   Full ledger at docs/investigations/703-results-report.md and
+#   Full ledger at docs/investigations/740-results-report.md and
 #   orchestration/state/080-kcache-research.md. 6-candidate pin menu in
 #   infra/llama-baseline/params/README.md.
 
@@ -82,9 +111,9 @@ services:
     entrypoint: ["/usr/local/bin/ggml-rpc-server"]
     command: >
       -H 0.0.0.0
-      -p 18052
+      -p 50052
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/18052'"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/50052'"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -106,17 +135,19 @@ services:
       - nvidia.com/gpu=all
     volumes:
       - /mnt/SSD:/models:ro
+      - /mnt/SSD:/mnt/SSD:ro
       - /mnt/WorkDisk/LLM-Models:/models2:ro
       # Parametrized pin: the entrypoint reads this YAML and constructs
-      # llama-server args. To fall back to 079, change LLAMACPP_PARAMS_FILE
-      # (below) to point at infra/llama-baseline/params/079-*.yml.
+      # llama-server args. To fall back, change LLAMACPP_PARAMS_FILE (below)
+      # to point at 088-*.yml (same family, safer margin), 083-*.yml (prior
+      # stable pin, no concurrency), or 079-*.yml (deepest rollback).
       - /mnt/WorkDisk/workspace/worktree/1q3ry0vb/majestic-toad/infra/llama-baseline/params:/etc/llama-baseline:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
       - CUDA_VISIBLE_DEVICES=0
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib
-      # DEFAULT PIN = 083 (main). FALLBACK = 079 (edit this line for rollback).
-      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/083-udq5-163840-k-q8_0-v-q4_1-ubatch-512.yml
+      # DEFAULT PIN = 090. FALLBACKS = 088 > 083 > 079 (edit this line for rollback).
+      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/090-udq5-148000-parallel1-cache-ram-16g.yml
     entrypoint: ["/usr/local/bin/llama-cpp-entrypoint.sh"]
     # NOTE: no hardcoded `command:` — all args come from LLAMACPP_PARAMS_FILE.
     # To change the pin: edit the env var above, then `podman compose up -d --build`.
