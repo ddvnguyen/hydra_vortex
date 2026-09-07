@@ -3240,3 +3240,28 @@ Again **2/2 boots replicate slow r1 vs fast rest**, no nsys heisenbug (n=3 fast 
 
 **Verdict:** **Sync-dominated overall (88% Sync, ~50% per-decode in `synchronize`) but bimodal not localized to any probed call site — no per-site delta at UM, `send_rpc_cmd`, `sched splits`, or outer decode/sync/yield. No `review-finding` bar met; no code fix candidate from this thread. Honest signal is to stop with current probes.** Future reader: if revisiting, the remaining hypothesis is **inter-`update_slots` idle / sampler `post_decode` / KV-cache slot search / `queue_tasks` wake** (not inside `update_slots`), but that is a fourth speculative layer with diminishing returns per agreement — do not chase without a new bounded design. Production shape `111-udq5-102shape-v-q5_1.yml` unchanged, `src/llama-cpp 5fff12845` pin retained, isolated `/tmp/llama-cpp-instr` only, no `gh issue create` for this thread.
 
+
+---
+
+## Part 3 — arm111 n=2 bimodal: inter-`update_slots` gap probe (2026-09-07, fresh thread) — gap CLEARED, run-level bimodal = prompt-cache miss, per-slot eval split NOT reproduced
+
+**Chase (this thread, 3 boots, cap respected, production restored after each):** the prior thread's "future reader" hypothesis list started with **inter-`update_slots` idle** — instrumented it directly, plus GPU telemetry (the other assigned angle), plus per-slot spec-decode anatomy via the fork's existing `slot.stats` counters.
+
+**Instrumentation (isolated `/tmp/llama-cpp-instr`, pin `5fff12845` untouched):**
+- `server-queue.cpp` `start_loop()`: `[INSTR][LOOP] wall_ms us_gap_entry us_process us_update` per iteration (raw steady-clock; `us_gap_entry` = wait between loop wake and work start = the idle-gap candidate; the 1s-poll rows show up as `us_gap_entry≈999987`).
+- `server-context.cpp`: `[INSTR][RUN] start/done` (per task: `n_gen draft_total acc_total verif`), `[INSTR][TOK]` in `send_partial_response` (absent — `concurrent-decode-test.sh` posts `stream:false`), `[INSTR][STEP] accepted/draft_n/replay` at the spec-verify point. muse-spark's `[INSTR][OUTER]/[RPC]/[SCHED]` kept; note `decode_outer` wall_ms is relative to `_instr_global_start` (boot-scoped offset vs my raw-ms rows).
+- Rebuilt via ccache (10s); SHA resolves "unknown" (broken `.git` in the plain-copy build tree) → results dir `111-udq5-102shape-v-q5_1-unknown` (same dir reused across boots — logs append).
+
+**Assigned angle 1 — inter-`update_slots` gap: CLEARED.** During decode runs the gap between successive `update_slots` iterations is **med 1μs** (loop self-pumps via `SERVER_TASK_TYPE_NEXT_RESPONSE` self-post; the 1s poll only appears between runs). The slow run's wall is fully accounted by long `us_update` iterations (prefill chunks + verify steps), not idle wakes. Boot-1 4× n=2 lockstep: r1 19.7/19.9 slow, r2-r4 32-34 fast — replicated under instrumentation.
+
+**Assigned angle 2 — GPU telemetry: CLEARED.** 500ms-cadence nvidia-smi across slow+fast runs: GPU0 (5060 Ti) P1 sm 2565-3052 MHz, GPU1 (3060) P2 sm 1777-2145 MHz, temps ≤57C, zero pstate transitions, no clock drops. Slow run was not a cold-clock or throttle event.
+
+**New root cause for the RUN-LEVEL bimodal (client sees 1.3-1.7× slow on first n=2 run): prompt-cache miss.**
+- `concurrent-decode-test.sh`'s 10-request warm loop uses **4-token prompts** (print_timing: 169-171ms/4 tok) — it never primes the bigprompt KV cache.
+- First bigprompt run(s) therefore pay a full-prompt prefill: boot-1 run 1 = **2162 tok in 3 chunks** (588@618ms, 1058@1217ms, 516@564ms + 216ms sync, both slots); boot-2 tier2A = **1081 tok one slot** (+1.75s vs run B); boot-3 tier2A (batch-1's exact 2320-token prompt restored) = **2362 tok one slot @ 683 tok/s (3459ms)** while the other slot hit the tier1-primed sequence (4-tok eval).
+- Decode phase is **bit-identical** slow vs fast: 37-44 verify steps, ~107.4ms/step, spec acceptance **3/3 full** (`slot.stats` dist `{3: 37}`), replay 0. The client "tok/s" difference is purely prefill amortization on the first run; "slow then fast" = cache priming order.
+- Batch-1's per-slot split (slot 2 51 vs slot 1 30 ms/tok print_timing eval, same 8.07s window) **did not reproduce** in 3 boots today (all per-slot eval windows equal within runs, both prompt sizes, tier1→tier2×2→tier3 ladders). Client-side per-slot asymmetry is explained by cache asymmetry (which slot held the warm sequence), but the eval-window split specifically remains unexplained — if it recurs, the discriminating data to capture is per-task `print_timing` eval + `[INSTR][STEP]` rows in the same boot (this thread's tooling already provides both).
+
+**Disposition:** inter-update gap and GPU telemetry both cleared with hard numbers; run-level "first-run slow" root-caused to cache-miss prefill (not a decode anomaly); no `review-finding` — the protocol artifact (warm loop not priming the actual prompt) is test-harness level, not production. The production pin and shape are untouched.
+
+**Cap/production (this part):** 3 boots (1: instrumented lockstep ×4; 2: 1109-prompt ladder; 3: 2320-prompt ladder, batch-1 protocol), each followed by `HYDRA_HEAD_AUTH_TOKEN=$(cat …) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → both containers healthy, `{"status":"ok"}` on :18081, VRAM 15659/9977 (verified after boot 3). Telemetry logs: `/tmp/bimodal-telemetry-boot{1,2,3}.log`. Pin `5fff12845` untouched.
