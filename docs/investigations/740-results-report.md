@@ -2615,3 +2615,300 @@ Historical arm111 (2 boots, 2026-09-06) did not show this split (2-conc 49.6 agg
 
 **Next:** per the instruction, since reproduction was achieved in batch 1, batch 2 (additional 3-4 boots to 6-7 total) is not auto-started; this checkpoint preserves progress. If further incidence-rate refinement is desired, re-run the same `111` harness for 3-4 more boots and compare 2-conc vs 3-conc split rate. Any well-evidenced fix candidate (e.g., `cudaMemPrefetchAsync` pinning, slot-affinity or `GGML_CUDA_PEER_MAX_BATCH_SIZE` revert test) should be filed as a `review-finding` issue per `docs/workflow/07-issue-and-close.md`, not implemented blind in this investigation session. Production remains pinned to `090` (`15659/9977 MiB`, `{"status":"ok"}`).
 
+
+---
+
+## Attempt 4 prep — code archaeology over `d0132a680..v0.4.0` (NO boots performed) (2026-09-07)
+
+**Scope:** pure git/code analysis + re-reading the preserved attempt-3 logs
+(`/tmp/persist-results/*`, `/tmp/{pin,v030,v040}-alone*.log`). No server
+boots, no GPU access, no pin/compose/production changes. Production pin
+`5fff12845` untouched.
+
+### 1. The attempt-3 "65% collapse" (31.69 vs 89) is a HARNESS ARTIFACT — not a decode-throughput collapse
+
+Re-reading the attempt-3 server logs reorders the interpretation completely:
+
+- **Controls (pin / v0.3.0 / d0132^ / d0132)** ran the full tier ladder
+  (warm loop → tier1 → tier2 → tier3) per boot. Their tier3 walls (5.01-5.03s)
+  are **cache-hit** runs: server logs show tier3 prompt evals of **4 tokens**
+  (KV restored from the prompt cache populated by the earlier tiers), so
+  their 89-90 agg is essentially decode-only.
+- **v0.4.0** ran **tier3 ONLY** (no tier1/2 first). All 3 simultaneous
+  requests therefore cold-missed and **each computed a full ~2320-2362-token
+  prefill concurrently** (server logs: prompt evals of 2320/2362/2362 tokens,
+  all three, vs 4-token hits for every control boot). Walls 13.09-15.03s =
+  prefill (~9-11s) + decode (4.2-6.2s) → measured "tok/s" 10.0-11.5/slot →
+  agg 31.69. **The tier3 metric is prefill-dominated for v0.4.0 and
+  decode-dominated for every control. Not comparable.**
+
+Fair aggregate comparison of the same full-prefill work:
+v0.4.0's three concurrent full prefills moved 7044 tokens in ~10.8s ≈
+**653 tok/s aggregate**, vs pin's single-slot tier1 full prefill 766.8 tok/s
+(task 478, `2320 tokens @ 766.82 tok/s`) — i.e. **prefill ~-15%**, consistent
+with the clean single-slot task-0 comparison (`808 tokens: v0.4.0 157.06 vs
+pin 187.99 tok/s, -16%`).
+
+**Corrected v0.4.0 regression profile vs pin/v0.3.0 (same shape, same day):**
+
+| metric | pin/v030/d0132^/d0132 | v0.4.0 | delta |
+|---|---|---|---|
+| task-0 cold prefill (808 tok, single-slot) | 167.3-188.5 tok/s | 157.1 | ~-12 to -16% |
+| tier1 full prefill (2320 tok, single-slot, warm engine) | 761.4-770.2 tok/s | not measured (tier skipped) | est. ~-15% (aggregate) |
+| 3-conc full-prefill aggregate | n/a (controls never hit this path) | ~653 tok/s | ~-15% |
+| tier3 3-conc agg (cache-hit decode) | 89.06-89.97 | **31.69 = artifact** (see §1) | n/a |
+| decode eval (server-side, tier3) | 31.85-34.0 tok/s | 24.19-38.68 (n=3, noisy) | ~-5% band plausible |
+| historical 3-conc agg (arms 115/117, ORIGINAL prompt, cache-hit) | 95.29-102 | 88-91 | **~-5% (the real decode signal)** |
+| boot ready | 24-30s | 104-105s (09-06) / **27s (09-07)** | not commit-determined (see §6) |
+
+**Consequences for the bisection:** the target signature is the **~5%
+3-conc cache-hit gap** (arms 115/117 protocol) plus a milder **~15% prefill
+cost increase** (task-0 / tier1 prefill rates). Do NOT chase 31.69.
+
+### 2. Model-shape facts that gate candidate ranking (from ledger + GGUF inspection)
+
+Arm102 model = `/mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf`, arch `qwen35`,
+**DENSE** (no `ffn_*_exps` tensors — ledger's model-file correction stands):
+64 trunk layers + 1 MTP `nextn` layer; `full_attention_interval=4` → only
+**16 layers carry causal KV** (K=q8_0/V=q4_1 quantized), the other **48 are
+gated-delta-net (GDN) recurrent layers** (~150 MiB state/seq). Decode/prefill
+hot path = GDN ops (48 layers) + FA (16 layers, quantized KV) + dense FFN
+MUL_MAT, split across CUDA0 (5060 Ti) + RPC0 (3060, separate process via
+ggml-rpc :50052, tensor_split 27,38). MTP draft (q8_0/q4_1 draft KV) on.
+
+### 3. Static elimination sweep (172 commits `d0132a680..v0.4.0`)
+
+Verified-by-reading (commit + reason):
+
+- **All MoE commits are no-ops on this dense model** (no MUL_MAT_ID ops):
+  `f1793c1c4` (mm_ids fast path), `3466812d1` (MoE weighted reduction),
+  `41ef91f7c` (MoE fusion→specdec; its mmvq.cu changes only reach
+  MUL_MAT_ID / `ncols_dst==1` MUL_MAT — unchanged for us), `9a4843cf2`.
+- **Build flags identical** (CMakeCache diff of build-cuda1322-{pin,v030,v040}):
+  only `GGML_CUDA_PEER_MAX_BATCH_SIZE=128` absent in v040 because `24f5bf8a4`
+  removed the option entirely — and this rig has **no CUDA peer copies**
+  (3060 is a separate RPC process). Also verified `8c1a25166` is strictly
+  `cc == 870` (Orin) — no-op for sm_120/sm_86.
+- **FA is untouched for this config**: `8e93a9773` (sparse-fa) passes
+  `n_kv_max=0` for non-sparse models → `!use_sparse` restores the original
+  KV_max scan condition; its fattn-tile/vec diffs are only the new
+  `use_sparse=false` argument. `e4b9af007` (XOR swizzle) touches
+  fattn-mma-f16.cuh/fattn-swizzle.cuh — the **F16-KV mma path only**; our
+  K=q8_0/V=q4_1 uses the vec kernels (GGML_CUDA_FA_ALL_QUANTS=ON).
+- **GDN kernel + graph builder unchanged in range**: `git log` over
+  `gated_delta_net.{cu,cuh}` = empty; `delta-net-base.cpp`/`qwen35*.cpp`
+  only touched by `c61b98b87` (new model, additive) and `9d817213a`
+  (load-order correctness fix). `ggml_cuda_try_gdn_cache_fusion` exists at
+  pin already.
+- **`866322481` (auto_fgdn/auto_flid true→false)**: at pin the probe
+  (`resolve_fused_ops`) compares the fused node's device vs the layer's
+  device; CUDA `supports_op(GATED_DELTA_NET)` is unconditional-true (MUSA
+  only), and `dev_layer()`/`ggml_backend_get_device()` should both resolve to
+  the same RPC/CUDA device per layer → probe should keep fused at pin too →
+  statically a no-op. **BUT this is the one link not verifiable without a
+  boot log** (probe would log "resolving fused Gated Delta Net support" +
+  enabled/disabled at INFO verbosity; attempt-3 logs are truncated at 161
+  lines and lack it). **If the probe ever fired device-mismatch on the RPC
+  rig, pin ran non-fused GDN and v0.4.0 forces fused — the only
+  graph-composition change available for 48/64 layers.** Top candidate.
+- **`ggml-backend-scheduler.cpp`: zero commits in range** — split/scheduling
+  behavior unchanged. `ggml.c` diff = SWIGLU_CLAMP + FA n_kv_max plumbing
+  (SWIGLU_CLAMP unused by qwen35 — only bailingmoe3/deepseek4/dflash/step35
+  set the hparams).
+- **RPC**: `a7cc83bba` (skip serializing other servers' buffers) is a no-op
+  with a single dispatcher. `73f56d105` + `557614e02` + `64a155d24` expand the
+  RPC `rpc_get` alloc-size query list to {FA, MUL_MAT_ID, **MUL_MAT,
+  CUMSUM, ARGSORT, TOP_K**} but add a **shape-keyed cache** (pin had NO cache
+  — every FA/MMID query was an uncached round trip). Net round-trip delta is
+  bounded by new (tensor × shape) pairs; quantized-ne0%512 and FA/MUL_MAT_ID
+  behavior unchanged. Small but not zero — kept as candidate (CUMSUM exists
+  in the non-fused GDN builder, `delta-net-base.cpp:88`).
+- **Server/params**: `18443257a` (ctx-per-slot) is strictly opt-in
+  ("default: unset, behavior unchanged"); lazy-loading commits (`fac889fb3`,
+  `257813839`, `bebc9350e`, `50f068fff`) default off; `dfc29b64e` (yarn
+  autoscale) inactive (no yarn in arm102); `5ec4eab69`/`732707dff`
+  (model-load RAM behavior) are boot-time only.
+- **kv-cells trio**: `925e11799` (per-cell token-ID tracking — per-token
+  bookkeeping), `b356fa262` (n-gram history looked up in the seq position
+  index), `62acc89c2` (early-stop scan), `2d8d612e4` (non-contiguous cell
+  restore "optimization") — the last is directly on the **prompt-cache
+  restore path that the tier3 metric depends on**.
+- **`d230ddd76`** (rebuild fix), `86b351fd6` (version.h), vendor bumps,
+  Metal/SYCL/Vulkan/HIP/OpenCL/Hexagon/WebGPU commits — all irrelevant to
+  this CUDA+RPC rig.
+
+### 4. Ranked shortlist for the rig bisection
+
+**Tier A — most plausible for both the ~5% decode gap and ~15% prefill cost:**
+
+1. `866322481` — GDN/LID fused-op flip (`auto_fgdn`/`auto_flid` true→false).
+   Only commit that can change the op composition of the 48 GDN layers
+   (dominant prefill+decode component). **First-boot discriminator: boot any
+   candidate with `-lv 4` and grep the log for "resolving fused Gated Delta
+   Net" / "not supported, set to disabled"** — if pin shows "disabled" and
+   v0.4.0-era shows no probe line (or "enabled"), the flip is real and the
+   bisection narrows immediately.
+2. `73f56d105` + `557614e02` (as a pair, with `64a155d24`) — RPC alloc-size
+   query-list expansion + cache. Extra RPC round trips on shape changes for
+   MUL_MAT/CUMSUM/ARGSORT on the 3060 side; cache-miss frequency during MTP
+   batch-size churn is the unknown.
+3. `2d8d612e4` — KV non-contiguous restore "optimization": directly on the
+   per-request prompt-cache restore path the tier3 metric measures (restore +
+   decode); a restore regression would show exactly the tier3-only gap with
+   healthy server-side eval.
+
+**Tier B — small/medium decode-side suspects:**
+
+4. `925e11799` — per-cell token-ID tracking (per-token bookkeeping on
+   hot path).
+5. `b356fa262` — kv-cells n-gram history lookup restructure.
+6. `8e93a9773` — sparse-fa plumbing (statically a no-op for us; cheap to
+   bracket in a bisect, catches any missed dispatch change).
+
+**Tier C — low probability; include only as bisect brackets / sanity:**
+
+7. `62acc89c2` (kv-cells scan early-stop — an optimization, but touches the
+   same structures as 4/5),
+8. `0190529ec` (SWIGLU_CLAMP op addition — expect no-op),
+9. `e4b9af007` (FA swizzle — expect no-op for quantized KV),
+10. `24f5bf8a4` (peer-batch removal — expect no-op, no peer copies),
+11. `18443257a` (ctx-per-slot — expect no-op, default-preserving),
+12. `41ef91f7c` + `f1793c1c4` (MoE — expect no-op on dense model),
+13. `8c1a25166` (Orin-only crossover — expect no-op on sm_86/sm_120),
+14. `5ec4eab69` + `732707dff` + `fac889fb3`/`257813839`/`bebc9350e`
+    (model-loading path — boot-time suspects ONLY if boot cost reproduces).
+
+**Anchor note (correction):** the ledger's existing "mid" build
+`eab8ee41f` (build 10629, `build-cuda1322-mid`) **predates `d0132a680`** — it
+was an anchor for the old `v0.3.0..d0132` window and is NOT usable for
+`d0132..v0.4.0`. A proper mid must be built at ~86th commit of the range
+(e.g. `774ee0e20`, position 85 of 172). Cold-build cost ~384s observed for
+this fork+toolchain.
+
+### 5. Prompt reconstruction (original ~1109-token prompt)
+
+- The original `/tmp/bigprompt.txt` (~1109 tok, real-prose class, MTP
+  acceptance 0.32-0.68) was lost in the 2026-09-06 reboot; no copy exists in
+  git history, shell history, or the preserved results dirs (searched:
+  `git log -S`, `~/.bash_history`, `/tmp/persist-results`, results dirs).
+- The attempt-3 recreation is the 6200-char Hydra-deployment prose now at
+  `/tmp/bigprompt.txt` — **the ledger's "~1043 tok" estimate was wrong**;
+  server-measured = **2320 tokens** (tier1) / 2362 (tier2/3 entries;
+  +42-token template delta). Measured tokenizer ratio: 2000 chars → 808 tok
+  (2.475 c/t); 6200 chars → 2320 tok (2.672 c/t).
+- **Reconstructed and committed to the repo** (survives reboots):
+  - `infra/llama-baseline/prompts/bigprompt-1109.txt` — 2822-char sentence-
+    boundary truncation of the same prose ≈ **1085-1143 tokens** (target
+    1109). Use for the arms-115/117-style **~5% decode-gap measurement**
+    (historical-band comparability: 95-102 vs 88-91).
+  - `infra/llama-baseline/prompts/bigprompt-2320.txt` — byte-exact copy of
+    the current `/tmp/bigprompt.txt` (6200c ≈ 2320 tok) used in attempt 3.
+- Recommendation: always `cp` the chosen prompt to `/tmp/bigprompt.txt`
+  before the run (harness + tier scripts hardcode that path), and copy the
+  prompt file into the results dir in future arms.
+
+### 6. Ready-to-execute bisection plan (RIG-FREE phase)
+
+**Protocol per candidate boot (arm102 shape, params 102 file, isolated
+build via `LLAMA_CPP` env or `P_LLAMA_BIN`):**
+
+1. `export GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`; recreate
+   `/tmp/bigprompt.txt` from `infra/llama-baseline/prompts/bigprompt-2320.txt`.
+2. Boot (`run-with-params.sh <params> --no-cleanup`), record ready-time.
+3. 10-req sequential warm loop (built into the harness).
+4. tier1 = `concurrent-decode-test.sh 18081 1 150 /tmp/bigprompt.txt` →
+   **record server-side tier1 full-prefill tok/s** (2320-token entry) +
+   1-conc agg.
+5. tier2, tier3 = same with 2, 3 → **record tier3 3-conc agg + server-side
+   eval tok/s** (cache-hit decode).
+6. OPTIONAL one-off discriminator on the first two boots: add `-lv 4`
+   (or grep full log) for "resolving fused Gated Delta Net" /
+   "fused_lid" resolution outcome (§4 candidate 1).
+7. Xid check + overlap PASS as usual; logs to `/tmp/persist-results/`.
+
+**Metrics + expected bands:** controls must be re-established with the SAME
+protocol first (pin 2 boots, v0.4.0 2 boots — expect pin tier3 ~89-90;
+v0.4.0 tier3 = UNKNOWN on this protocol, likely ~84-85 if the ~5% gap
+persists on the 2320-token prompt, or ~89 if the gap is
+prompt-length-dependent — this first v0.4.0 ladder boot settles that).
+Bisect metric = tier3 3-conc agg (cache-hit decode); secondary = tier1
+full-prefill tok/s and task-0 prefill rate.
+
+**Sequence:**
+
+1. pin × 1 + v0.4.0 × 1 (same morning, interleaved) → establish both bands
+   on the corrected protocol. (+1 repeat boot each if the bands overlap
+   noise, ≤ ±2 tok/s.)
+2. `-lv 4` fused-op discriminator on pin + v0.4.0 (free — rides on step 1).
+3. Build mid `774ee0e20` (~86th commit; ~384s cold build or ccache), boot,
+   ladder → halves the range (d0132..mid vs mid..v0.4.0). Discard
+   `eab8ee41f` as anchor (predates d0132 — see §4).
+4. Binary search with Tier-A-priority: if the discriminator in step 2 shows
+   the GDN flip real, bracket `866322481` directly — boot its parent
+   `f5e85d43a` (position 36 of 172) and `866322481` itself before any other
+   midpoint.
+5. ~13-17 boots total worst case; stop early on a clean ≥4 tok/s step
+   between adjacent candidates.
+6. After locating the step commit(s), cross-check Regression A (prefill
+   rates) and, if boot-time differences appear between candidates, capture
+   them opportunistically (boot regression did NOT reproduce on 09-07:
+   v0.4.0 ready 27s vs 104-105s on 09-06 — same commit, same shape → treat
+   boot cost as environmental/cold-page-cache (19 GB NTFS model ≈ 95s cold
+   read) unless a candidate reliably reproduces it).
+
+**Rig handoff note:** muse-spark holds the rig; do NOT boot until the
+explicit "RIG FREE" message. All prep below is ready.
+
+### 7. Also prepped in this session (for the post-bisection phase)
+
+- **arm119 params file**: `infra/llama-baseline/params/119-udq5-146176x3-v040-kvpslot-graphopt.yml`
+  — arm102 shape on v0.4.0 binaries with BOTH `--kv-unified-per-slot 146176`
+  (arm115) AND `GGML_CUDA_GRAPH_OPT=1` (arm117) combined. v0.4.0 build exists
+  and is REUSED as-is (`/tmp/llama-cpp-v040` worktree +
+  `/mnt/WorkDisk/workspace/worktree/build-cuda1322-v040`; verified binaries
+  present, no rebuild needed).
+- **Harness support added** (`run-with-params.sh`, additive):
+  `kv_unified_per_slot` YAML field → `--kv-unified-per-slot N`; new `env:`
+  YAML map → exported to both child servers (arm117's toggle is now
+  reproducible from the params file alone); binary provenance (llama_bin /
+  rpc_bin paths + sha256-12) recorded in `summary.txt` to catch silent
+  RPC/client build mismatches during bisection.
+- **Staggered-start multiturn**: `multiturn-growth-test.sh` now takes an
+  optional 6th arg `stagger_seconds` (0 = lockstep, unchanged behavior);
+  sleeps between session launches; overlap check upgraded to report
+  per-pair overlap % with the **adjacent-pair mean** as the tuning metric
+  vs the ~70% target (±10pp verdict: "on-target / reduce delay / increase
+  delay"). Unit-tested offline with synthetic start/end files (70%/90%/FAIL
+  cases all correct). Stagger basis from arm 118: 16-turn × 3-session
+  lockstep T ≈ 855s → **stagger ≈ 257s** (0.3×T) for ~70% adjacent overlap;
+  10-turn × 3 → T ≈ 502s → stagger ≈ 150s. Same turn/output settings as
+  prior tests (16 turns, 4000 new tokens/turn, 750 out) for comparability.
+---
+
+## Arm 122 — 111 shape device-order swap probe (n=2 affinity test) — ruled out, catastrophic (2026-09-07)
+
+**Purpose:** targeted follow-up to #740 batch 1's deterministic n=2 per-slot bimodal (3/3 boots, one slot ~51-52 ms/tok ~19 tok/s vs other ~30 ms/tok ~33 tok/s, ratio ~1.7×, while n=3 stays uniformly fast ~28-30 ms/tok). Approved single-experiment budget 2-3 boots, focus n=2 tier only. Fastest slot-affinity toggle without rebuild is to swap the llama-server device order from default `RPC0,CUDA0` (via `-dev RPC0,CUDA0` in `run-with-params.sh:1`) to `CUDA0,RPC0` via `--device CUDA0,RPC0` (`P_DEVICE` in `params/122-udq5-102shape-v-q5_1-device-swap.yml:1`). If the slow slot moves to the other GPU or disappears, confirms RPC load-balancing picks an unlucky assignment at n=2; if bimodal persists identical, rules out simple order.
+
+**Config:** identical to `111` (`ctx 438528 = 146176×3, parallel 3, kv_unified off, cache_ram 24576, K q8_0 / V q5_1, MTP q8_0/q4_1, tensor_split 27,38, ubatch 512`) except `device: CUDA0,RPC0`. Same pin `5fff12845` at `/opt/software/cuda/13.2.2`, `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`, prompt `/tmp/bigprompt.txt`, harness `run-with-params.sh --no-cleanup` + `concurrent-decode-test.sh 2 150` ×2 runs per boot. Note: `run-with-params.sh:1` always emits `-dev RPC0,CUDA0` when `rpc_port !=0`; adding `--device CUDA0,RPC0` results in two device flags (`-dev RPC0,CUDA0 --device CUDA0,RPC0`) where the later wins per script comment — this was intentional to override without editing the script, but it means the RPC tensor-split path is evaluated under the swapped order.
+
+**Profiler note:** same as batch 1 — `nsys` unavailable (`Nsight Systems 2025.6.3 hasn't been installed`), `ncu` missing, no UM fault counters; no `dmon` capture for this run (focus was wall/clock, but `nvidia-smi` sanity shows no throttle).
+
+**Procedure — 2026-09-07 07:22-07:54+07:00:** 2 boots planned, 1 completed before catastrophic result terminated the experiment. Boot 1: `podman compose down` → `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 bash run-with-params.sh 122-...yml --no-cleanup` (ready 40 s, 10/10 GOOD) → `concurrent-decode-test.sh 2 150` twice. Boot 2 started identical (ready 39 s) but hung on the sequential loop with ~100 s+ per request; killed after 30 min timeout via `pkill -9 -f llama-server` (GPU freed to 1 MiB, confirmed via `nvidia-smi:1`). Only boot 1 provides interpretable data.
+
+### Result: FAIL — catastrophic 13× slowdown, not a subtle affinity shift
+
+| Boot | Attempt | Wall per slot (150 tok) | tok/s per slot | Server `eval time` ms/tok | vs control (batch 1 n=2) |
+|---|---|---|---|---|---|
+| 122-1 run1 | 2-conc | 123.55 s / 167.96 s | **1.21 / 0.89** (agg 2.11) | **670.11** (99845 ms/150, 1.49 tok/s), **677.58** (100959 ms/150) | **~13× slower** than control ~51 ms/tok |
+| 122-1 run2 | 2-conc | 180.01 s / 180.01 s | **0.83 / 0.83** (agg 1.67) | 704.94 (105035 ms/150), 707.53 (105422 ms/150), 587-591 ms/tok range | same |
+
+Server log excerpt (`llama-server.log:1`): `eval time = 99845.80 ms / 150 tokens (670.11 ms per token, 1.49 tokens per second)`, `100959.29 ms / 150 tokens (677.58 ms per token)`, `105035.48 ms / 150 tokens (704.94 ms per token)` — all slots uniformly slow, no bimodal split, but an order of magnitude worse than the 1.7× bimodal seen at n=2 control. Sequential loop before tiers also degraded (already 134-195 tok/s prompt eval vs control 700+ tok/s), indicating the device-swapped placement breaks the RPC-split tensor routing, not just concurrent scheduling.
+
+**Interpretation: ruled out.** `CUDA0,RPC0` order with this `tensor_split 27,38` and default `-dev RPC0,CUDA0` conflict does not isolate the bimodal to an unlucky slot — it makes **every** slot catastrophically slow. The n=2 bimodal at `RPC0,CUDA0` (batch 1) is not fixed by swapping order; the swapped order is not a viable configuration and cannot be a fix candidate. The `GGML_CUDA_PEER_MAX_BATCH_SIZE` revert angle was also evaluated: at pin `5fff12845` the define is present as `-DGGML_CUDA_PEER_MAX_BATCH_SIZE=128` in `build-cuda1322/compile_commands.json:1` / `CMakeCache.txt:683`, but `grep -rn PEER_MAX_BATCH_SIZE src/llama-cpp/ggml --include="*.cu" --include="*.cpp"` shows **no code use** at this pin — the option is a leftover build flag, removal in `24f5bf8a41` was doc/CMake only, so rebuilding with a different value would be a no-op without code change. Hence the device-order probe was the only fast non-rebuild affinity toggle available; it is conclusively not the path.
+
+**No fix candidate to file.** Per `docs/workflow/07-issue-and-close.md`, no `review-finding` issue is opened — there is no evidenced fix candidate from this experiment. The next well-evidenced candidate would require either (a) a real peer-path or scheduling code change (not just a leftover define) with a rebuild, or (b) `nsys` fault-counter capture to prove/rule out UM migration at n=2 (still blocked — `nsys` not installed on any `/opt/software/cuda/*/bin/nsys`). What this experiment **does** deliver is an honest ruled-out: simple device-order flip is not the remedy and should not be pursued.
+
+**Production:** restored after kill `HYDRA_HEAD_AUTH_TOKEN=$(cat /mnt/WorkDisk/Workplace/hydra_vortex/.hydra-head-token) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → loading → `15659/9977 MiB` within 8 s, `{"status":"ok"}` stable from 07:18:45+07:00 onward (post-boot-1) and again after abort at 07:54+07:00 (verified `curl /health` and `nvidia-smi:1` 15650/9968 MiB). Rig queued next for `glm-5.3-flash` v0.4.0 bisection + `arm119` test — no further batches started without check-in, per instruction. Params file kept at `infra/llama-baseline/params/122-udq5-102shape-v-q5_1-device-swap.yml:1` for reproducibility.
+
+**Main value preserved:** batch 1's root-cause refinement stands — bimodal is deterministically n=2-specific per-slot (~1.7×) on the `111` shape, not random boot state — and this follow-up honestly rules out the one fast affinity toggle without introducing a blind fix.
+
