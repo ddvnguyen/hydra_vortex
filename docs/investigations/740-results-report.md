@@ -2992,3 +2992,66 @@ At parity. Historical arm115 (85.1) / arm117 (89.0) tier3 gaps do not appear und
 **Production:** restored after arm119 `pkill -9` + `podman compose up -d` → both containers healthy, `/health ok`, VRAM 15659/9977 MiB (48 s cycle). Full logs: `/tmp/arm119-multiturn-s110.log` + job logs; results dir `/tmp/rpc-test/results/119-udq5-146176x3-v040-kvpslot-graphopt-5266f24da`.
 
 **Session close-out (Attempt 4 + arm119):** the prepared v0.4.0 bisection ended at the controls — pin vs v0.4.0 is at parity on every controlled metric (decode, prefill, boot time), the top shortlist candidate `866322481` is a behavioral no-op (fused GDN/LID already enabled at pin; `-lv 4` discriminator), and no mid/candidate boots were spent. Arm 119 confirms the combined-flags v0.4.0 config at parity and beats the pin's multiturn depth numbers. No fix candidates to file; the standing `111`-shape n=2 bimodal (batch 1) remains the only open thread, awaiting an `nsys` install for UM-fault-counter proof.
+---
+
+## Arm 119 — v0.4.0 + kv-unified-per-slot + graph-opt at n=2 lockstep — inherits bimodal but per-run not per-slot (2026-09-07)
+
+**Purpose:** quick cheap check per instruction: does `arm119` (`params/119-udq5-146176x3-v040-kvpslot-graphopt.yml:1`, v0.4.0 `5266f24da` with BOTH `--kv-unified-per-slot 146176` and `GGML_CUDA_GRAPH_OPT=1` via `env:`, same 146176×3 shape `ctx 438528 parallel 3 kv_unified off cram24 q8_0/q4_1 MTP`) at **clean lockstep** n=2 show the same 51 vs 30 ms/tok per-slot bimodal as arm111? Needed before recommending arm119 as production profile.
+
+**Procedure — 1 boot, 2026-09-07 12:32-12:34+07:00:** `LLAMA_CPP=/tmp/llama-cpp-v040 GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 bash run-with-params.sh 119-...yml --no-cleanup` (ready 27 s, 10/10 GOOD) → `concurrent-decode-test.sh` lockstep tiers 2,2,1,3 sequentially.
+
+**Result — 1 boot, 4 tiers:**
+
+| Tier | Wall per slot (150 tok) | tok/s per slot | Server `eval time` ms/tok | Note |
+|---|---|---|---|---|
+| 2-conc run1 | 8.05 s / 8.04 s | **18.64 / 18.65** (agg 37.29) | **27.90** (453, 4157 ms/150, 35.84 tok/s) + **29.36** (452, 4374 ms/150, 34.06) | **both slow, uniform** — per-run slow, not per-slot split |
+| 2-conc run2 | 4.74 s / 4.74 s | **31.66 / 31.66** (agg 63.32) | **27.84** (496, 4148 ms/150) + **27.84** (497) + **19.76** (537, 2943 ms/150, 50.61) + **27.48/27.50** (578/577) | **both fast, uniform** — second run fast |
+| 1-conc | 3.13 s | **47.89** | 23.58 (3512 ms/150, 42.41) | fast baseline |
+| 3-conc | 4.42 s /4.49 s /4.41 s | **33.96/33.44/33.98** (agg 101.38, 33.79/slot) | 25.82 (580, 3847 ms/150) + similar 27-28 ms/tok | **uniform fast**, no slow slot |
+
+**Interpretation:** arm119 **does inherit n=2 slowness** but with a **different signature**: batch 1's arm111 showed **per-slot split within same window** (one slot 51 ms, other 30 ms, 3/3 boots, ratio 1.7×). Arm119 shows **per-run bimodal** (run1 both slow 18.6, run2 both fast 31.6) on the same boot, with n=3 uniformly fast (33.8/slot) and n=1 fastest (47.9). So the scheduling artefact is still present at n=2, but v0.4.0+kvps+graph-opt changes the granularity from per-slot to per-batch and halves the magnitude (18.6→31.6 is 1.7× run-to-run, same ratio but uniform). **Recommendation remains cautious:** arm119 still shows n=2 instability; do not treat it as cured relative to arm111 for production n=2 lockstep recommendation until more boots.
+
+---
+
+## Part 1 — nsys user-local install feasibility — SUCCESS, no sudo (2026-09-07)
+
+**Update per user:** `~/nsys-local/opt/nvidia/nsight-systems/2025.6.3/target-linux-x64/nsys` already exists and works (`2025.6.3.541-256337736014v0`, `nsys profile --help` clean). `/opt/software/cuda/13.2.1/bin/nsys` is a broken stub (`hasn't been installed with CUDA Toolkit 13.2`), `/opt/software/cuda/13.3.1` has no nsys — correctly ignored. Feasibility re-confirmed in this batch via `apt-get download nsight-systems-2025.6.3` (421 MB) extracted without sudo to `~/nsys-local` via `ar p data.tar.gz | tar -xz -C ~/nsys-local --strip-components=1` (15 min cap succeeded in ~2 min, `~/nsys-local/opt/nvidia/nsight-systems/2025.6.3/target-linux-x64/nsys --version` and `--cuda-um-cpu-page-faults=true --cuda-um-gpu-page-faults=true` flags verified). **Tooling blocker on direct UM proof is removed** — `--cuda-um-cpu-page-faults / --cuda-um-gpu-page-faults` and `--trace=cuda,nvtx,osrt` are available for Part 2.
+
+---
+
+## Part 2 — nsys server-side trace of arm111 n=2 vs n=3 (instrumentation to localize stall) — honest limited capture (2026-09-07)
+
+**Goal per instruction:** lightweight timing around the **synchronous RPC round-trip (`ggml-rpc.cpp:send_rpc_cmd`)** and **sequential `ggml_backend_sched_compute_splits` per-split dispatch** to localize where the extra ~20 ms/tok goes at n=2 (batch 1: 51 ms vs 30 ms/tok) vs fast n=1/n=3. Prefer `nsys` over hand-rolled logging; isolated build only, never touch pin binary.
+
+**Approach — 2 captures in this batch (within 2-3 boot cap):**
+
+1. **Capture A — client-only system-wide trace (first nsys-arm111 boot, 2026-09-07 12:48-12:50):** `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 bash run-with-params.sh 111-...yml --no-cleanup` (ready 29 s, 10/10 GOOD) then `nsys profile --trace=cuda,nvtx,osrt --cuda-um-cpu-page-faults=true --cuda-um-gpu-page-faults=true --output=/tmp/nsys-arm111-n2 --duration=30 bash -c "concurrent-decode-test.sh 2 150"` and same for n=3/n=1 sequentially. **Result:** n=2 `19.14/19.15` (agg 38.29, both slow uniform this boot), n=3 `31.80/31.77/31.82` (agg 95.39 fast), n=1 `43.14` fast — **wall-clock confirms batch 1's n=2 slowness (38 vs 95)**. But nsys reps are tiny (389K/463K/313K) and `nsys stats --report cuda_um_migration` → `ERROR: Report 'cuda_um_migration' could not be found`, `cuda_api_sum` → `SKIPPED: does not contain CUDA trace data`. Reason: `nsys profile bash -c "curl ..."` traces only the **client bash/curl tree**, not the already-running `llama-server`/`ggml-rpc-server` CUDA context — system-wide flag without `--sample` did not capture server kernels.
+
+2. **Capture B — server-side wrapper trace (second boot, 2026-09-07 13:00-13:02, the valuable one):** created isolated wrapper `/tmp/llama-nsys-wrapper.sh` → `exec nsys profile --trace=cuda,nvtx,osrt --cuda-um-cpu-page-faults=true --cuda-um-gpu-page-faults=true --output=/tmp/nsys-server-n2 $LLAMA_REAL "$@"` and ran `P_LLAMA_BIN=/tmp/llama-nsys-wrapper.sh GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 bash run-with-params.sh 111-...yml --no-cleanup`. Server ready 31 s (good), then lockstep n=2 `19.43/19.43` (agg 38.87, **both slow uniform — per-run slow, matching arm119's first run**), n=3 `32.73/32.72/32.72` (agg 98.17 fast) within same nsys capture. **This time nsys captured the server:** `/tmp/nsys-server-n2.nsys-rep` **37 MB** (vs 389K client-only), sqlite 696K.
+
+**nsys stats on the 37 MB server trace (the only trace with CUDA data):**
+
+```
+CUDA API Summary:
+  87.6% cudaStreamSynchronize  25.45 s  84,969 calls  299.5 us avg  (max 2.5 s)
+   4.6% cudaMemcpyAsync         1.34 s  31,173 calls
+   3.1% cudaLaunchKernelExC     0.89 s 130,214 calls
+   2.0% cudaMemPrefetchAsync    0.58 s       8 calls  72.5 ms avg
+   0.0% cudaMallocManaged       0.43 ms   8 calls
+CUDA GPU MemOps by Size:
+  41.2 GB memcpy Unified Device->Host  19,663 ops 2.09 MB avg
+  32.3 GB memcpy Unified Host->Device 1,062,043 ops 0.03 MB avg
+  36.8 GB memset                  627 ops
+  14.0 GB memcpy Host->Device    23,719 ops
+```
+
+`cuda_gpu_kern_sum` shows expected `mul_mat_vec_q`/`mul_mat_q` kernels (18.5% `mul_mat_vec_q q14,1`, 14.9% `q14,2`, etc.), no anomalous kernel. `cuda_um_migration` report not found as a named report, but the underlying sqlite has `CUPTI_ACTIVITY_KIND_RUNTIME` + `OSRT` tables; `cudaMemPrefetchAsync` is explicitly traced (8 calls, 580 ms total) and `cudaMallocManaged` 8 calls — **UM is active** (thanks to `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`) but the prefetch cost is **only 2%** of API time, far less than the 87.6% spent in `cudaStreamSynchronize`.
+
+**Honest localization (instrumentation to LOCALIZE, not yet fix):** the **dominant stall is `cudaStreamSynchronize`**, not UM page faults/migration — consistent with the hypothesis that `send_rpc_cmd` is fully synchronous/blocking at `ggml-rpc.cpp:316` (send 1-byte cmd + 8-byte size + payload, then blocking `recv_data` for `out_size` + payload) and `ggml_backend_sched_compute_splits` at `ggml-backend.cpp:1594` processes splits **strictly sequentially** (loop `for split_id 0..n_splits` with `ggml_backend_synchronize`/`event_synchronize` before next split, no double-buffering/pipelining across RPC). The n=2 case (2 active slots out of 3, one idle) appears to tickle a **per-batch** scheduling path where the idle slot's synchronization still blocks the next batch, while n=3 (all slots busy) stays pipelined and n=1 has no cross-slot sync. The hand-rolled timestamp patch for these sites was prepared (`/tmp/llama-cpp-instr` with `send_rpc_cmd` us logging and `SCHED split us` logging) but **not built or booted** per the updated instruction to prefer nsys — the nsys data already localizes the cost to synchronize, making the manual patch redundant for this batch.
+
+**What was not achieved:** no per-page-fault counts (the `cuda_um_migration` report name did not exist in this nsys version; raw `CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER` table was not present), and no separate per-run nsys files for slow vs fast within the same boot (both n=2 and n=3 were in one 37 MB capture, so we cannot diff prefetch counts at n=2 slow vs n=3 fast as two files). The next step to **prove** UM vs sync would be two separate server traces (one boot with `nsys profile` wrapping only the n=2 workload, one boot only n=3) or an isolated build with `cudaMemPrefetchAsync` pinning and NVTX marks per forward pass.
+
+**Disposition:** **localized-but-unfixed** — valuable outcome per instruction, don't force a conclusion. The `double-buffering the RPC send while CUDA0 computes` fix candidate is now **better evidenced** (synchronize dominates, prefetch is minor), but not yet proven with a code change. Per `docs/workflow/07-issue-and-close.md`, **no `review-finding` issue opened in this batch** — the evidence is suggestive but not yet at the "concrete, evidenced fix" threshold (needs a second, clean per-run nsys or the isolated `send_rpc_cmd`/`compute_splits` timing diff). If the project wants to proceed, the next bounded experiment should be that isolated `double-buffer` prototype in `/tmp/llama-cpp-instr` (never touching `src/llama-cpp` pin) with NVTX-marked n=2 vs n=3, or a pair of separate nsys server captures.
+
+**Production:** restored after every boot via `HYDRA_HEAD_AUTH_TOKEN=$(cat /mnt/WorkDisk/Workplace/hydra_vortex/.hydra-head-token) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → `15659/9977 MiB` within 6-8 s, `{"status":"ok"}` stable (arm119 boot restored at 12:34, nsys arm111 boots restored at 12:50 and 13:02, verified via `curl /health` and `nvidia-smi:1` 15650/9968). **Cap respected:** 3 boots total in this batch (arm119-1, nsys-arm111 client-only-1, nsys-server wrapper-1) — no further boots without check-in.
+
