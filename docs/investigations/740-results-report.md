@@ -2912,3 +2912,52 @@ Server log excerpt (`llama-server.log:1`): `eval time = 99845.80 ms / 150 tokens
 
 **Main value preserved:** batch 1's root-cause refinement stands — bimodal is deterministically n=2-specific per-slot (~1.7×) on the `111` shape, not random boot state — and this follow-up honestly rules out the one fast affinity toggle without introducing a blind fix.
 
+
+## Attempt 4 — controlled pin-vs-v0.4.0 controls: PARITY (bisection moot) (2026-09-07)
+
+**Purpose:** rig freed 08:04+07:00. Execute the prepared v0.4.0 bisection protocol (§ "Attempt 4 prep") with the corrected `bigprompt-1109.txt` original-class prompt (not the confounded 2320-token one), full tier1→tier2→tier3 warm-up order every boot, `-lv 4` fused-op discriminator, and — before any candidate boots — the attempt-3 prefill signal re-measured under identical protocol on `bigprompt-2320.txt`. Production stop→boot→restore cycle after every boot.
+
+**Boots (arm102 shape, pin 5fff12845 vs v0.4.0 5266f24da, isolated builds, UM=1, same params `/tmp/bisect/102-lv4-{pin,v040}.yml` = 102 + `extra_server_args: -lv 4`):**
+
+| # | Build | Prompt | Ready | Warm loop | Result |
+|---|---|---|---|---|---|
+| 1 | pin 5fff12845 | bigprompt-1109 | 29 s | 10/10 GOOD | GOOD |
+| 2 | v0.4.0 5266f24da | bigprompt-1109 | 27 s | 10/10 GOOD | GOOD |
+| 3 | pin | bigprompt-2320 | 29 s | 10/10 GOOD | GOOD |
+| 4 | v0.4.0 | bigprompt-2320 | 27 s | 10/10 GOOD | GOOD |
+
+**1) Ladder on 1109-token prompt (client agg tok/s, `concurrent-decode-test.sh` 1/2/3 × 150):**
+
+| Tier | pin | v0.4.0 | Δ |
+|---|---|---|---|
+| tier1 1-conc | 31.61 | 31.36 | −0.8% |
+| tier2 2-conc | 48.78 | 48.44 | −0.7% |
+| **tier3 3-conc** | **104.73** (34.91/slot) | **103.34** (34.45/slot) | **−1.3%** |
+
+Server-side: tier1 prefill 1062 tok @ 581.9 vs 577.1 tok/s; tier2 1104 tok @ 519.6 vs 517.3; tier3 eval 40.44 vs 39.86 tok/s (24.73 vs 25.09 ms/tok). All ≤1.4% — matched-pair parity. **The arms 115/117 "−5% decode gap" does not reproduce** under controlled protocol (their original-prompt file was lost in the 09-06 reboot; content-difference cannot be ruled out, but today's reconstruction shows no gap, and attempt-3's tier3s ran cold-cache which today's protocol avoids).
+
+**2) Prefill probe on 2320-token prompt (tier1 single-slot after identical warm loop):**
+
+| Build | Full-prefill rate | vs pin |
+|---|---|---|
+| pin | **766.57 tok/s** (2320 tok, 3026 ms) | — |
+| v0.4.0 | **762.10 tok/s** (2320 tok, 3044 ms) | **−0.6%** |
+
+Pin reproduces attempt-3's 766 exactly. v0.4.0 shows **no gap** — attempt-3's "653 vs 766 = −15%" was a cold-3-conc-vs-warm-1-conc protocol confound, as suspected in § "Attempt 4 prep".
+
+**3) Discriminator — `resolve_fused_ops` at `-lv 4` (positions 37/172 candidate 866322481):**
+
+- pin log: `fused Gated Delta Net (autoregressive) enabled`, `(chunked) enabled`, `Lightning Indexer enabled` (plus DeepSeek V4 HC pre/comb/post enabled).
+- v0.4.0 log: **no GDN/LID resolve lines at all** (auto_fgdn/auto_flid=false → skip resolve → cparams stay fused-true unconditionally) — same effective behavior as pin's resolved outcome.
+- **No device-mismatch fallback fired on either side. → 866322481 is a behavioral no-op on this dense model — eliminated WITHOUT boots.** DeepSeek HC resolve lines present on both, equally irrelevant (no such nodes in qwen35).
+
+**Conclusion — bisection moot.** Under identical builds/params/protocol, pin and v0.4.0 are at parity on every controlled metric today: decode (tier2/tier3), prefill (1062/1104/2320-token), boot time (29/27 s). With no endpoint gap to bisect, the 14-entry shortlist (ranked for a regression that doesn't exist under controlled measurement) is not actionable and no mid (`774ee0e20`) or candidate boots are spent. Honest reframe: the "v0.4.0 regression" on this rig was never reproducible — it was measurement artifacts: (a) arms 115/117 used the lost original prompt (content unknown), (b) attempt-3 v0.4.0 tier3s ran cold-cache (3× full prefill) vs controls' warm tier3s, (c) the 653-vs-766 prefill compare was cold-3conc vs warm-1conc. The persistent real finding remains batch 1's n=2 bimodal on the `111` shape (device/RPC scheduling, arm122's device-swap ruled out), NOT a v0.4.0 code regression.
+
+**n=2 note (111-shape bimodal not reproducible on 102 shape):** today's tier2s show no strong bimodal (pin 25.0/23.8, v0.4.0 23.6/24.8) — consistent with batch 1's finding that the bimodal is `111`-shape-specific, not present on the `102` shape.
+
+**Operational lessons (recorded for runbook):**
+1. `pkill -f "llama-server"`/`"ggml-rpc-server.*PORT"` in interactive shells **self-matches the shell's own cmdline and kills it** — silent partial cleanup. Use bracket patterns (`pkill -9 -f "[b]uild-cuda1322/bin/llama-server"`) or the harness's [1/6] step.
+2. A bare-metal rpc-server that survives pkill squats :50052 → containerized rpc_1 restart-loops (exit 0 after `ggml_cuda_init`) → `podman compose up -d` blocks >7 min on depends_on; llama_1 stays "Created". After killing the squatter, compose completes normally (~47 s total).
+3. Production restore verified after every boot: both containers healthy, `/health ok`, VRAM 15659/9977 MiB = resting baseline.
+
+Results dirs: `/tmp/rpc-test/results/102-lv4-{pin-5fff12845,v040-5266f24da}` (1109) and the same names re-run for the 2320 probe (superseded summaries; server logs preserved).
