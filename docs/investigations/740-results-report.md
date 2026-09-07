@@ -3155,3 +3155,88 @@ Boot 2 (13:34:38-13:37:06) **replicates**: r1 **17.89** (19.25/16.52), r2 28.88,
 
 **Cap/production:** 2 boots used (boot1 13:30, boot2 13:34) as instructed, each restored via `HYDRA_HEAD_AUTH_TOKEN=$(cat …) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → `15659/9977` within 5s (`curl /health {"status":"ok"}` 13:37:06, `nvidia-smi` 15659/9977, 5W/0%). No further boots. No `gh issue create`.
 
+---
+
+## Part 2d — Outer-loop chrono (llama_server) — tracer-free, 2 boots, 2-3 layer cleared (2026-09-07 13:43-13:48)
+
+**Goal per instruction:** if UM (Part 2b) + ggml RPC/SCHED (Part 2c) show no per-site delta, instrument **outer `llama_server` decode loop** (`update_slots` / `pre_decode` / `decode` / `post_decode` / `llama_decode+synchronize` vs queue yield) with wall-anchored `chrono` and re-boot arm111 `n=2` lockstep (4×) to diff slow vs fast at that layer. Isolated build `/tmp/llama-cpp-instr` (never pin `src/llama-cpp 5fff12845`), no nsys.
+
+**Instrumentation (still isolated, incremental on Part 2c patches):**
+
+- `tools/server/server-context.cpp:20` `#include <chrono>` + `+ <cstdio>` + `static auto _instr_global_start = steady_clock::now()` + `struct instr_outer_scope { wall_ms = now - _global_start, us }` that logs `[INSTR][OUTER] <name> wall_ms=… us=…` on scope exit.
+- `update_slots():2738` `instr_outer_scope _instr_update_slots("update_slots")` (total per iteration).
+- `pre_decode():2854` `instr_outer_scope("pre_decode")`.
+- `decode():3594` `instr_outer_scope("decode")` + **fine-grained around `llama_decode+synchronize`**: inside `decode()` capture `_t0` before `llama_decode`, `_t1` after, `_t2/_t3` around `llama_synchronize` if `has_output`, then `us_outer = now-_t_decode_outer`, `us_yield_overhead = us_outer - us_decode - us_sync`, log `[INSTR][OUTER] decode_outer wall_ms=… n_batch=… off=… n_tokens=… has_output=… ret=… us_decode=… us_sync=… us_yield_overhead=… us_outer=…`.
+- `post_decode():3729` `instr_outer_scope("post_decode")`.
+- Kept prior `RPC-SEND`/`SCHED` probes (so 3 layers in one log).
+
+**Build:** `cmake --build /tmp/llama-cpp-instr/build-cuda1322 --target llama-server -j16` → `100%` `server-context.cpp.o` relink `libllama-server-impl.so` + `llama-server`.
+
+**Procedure — 2 boots, cap respected, production restored, no nsys (script `/tmp/outer-one.sh`, same shape as `instr-one.sh` but greps `OUTER`):**
+
+- `LLAMA_CPP=/tmp/llama-cpp-instr GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 run-with-params.sh 111…yml --no-cleanup` ready 30s 10/10, then 4× `concurrent-decode-test.sh 18081 2 150`, `3 150`, `1 150` (2 s gap), collect `llama-server.log`, `podman compose up -d` → `{"status":"ok"}` `15659/9977`.
+
+**Boot 1 (13:43:?? `outer-one-boot1.log` 4032 OUTER 803 decode_outer 820 update_slots) — no wall_ms yet (pre-timestamp build):**
+
+| run | tok/s per slot (150) | mean | agg | wall |
+|---|---|---|---|---|
+| n=2 r1 | 19.23/16.49 | 17.86 | 35.71 | 7.80/9.10 |
+| n=2 r2 | 32.11/25.48 | 28.80 | 57.59 | 4.67/5.89 |
+| n=2 r3 | 26.64/34.02 | 30.33 | 60.66 | 5.63/4.41 |
+| n=2 r4 | 26.62/33.41 | 30.01 | 60.03 | 5.63/4.49 |
+| n=3 | 34.48/34.48/23.96 | 30.97 | 92.92 | 4.35/4.35/6.26 |
+| n=1 | 45.89 | 45.89 | 45.89 | 3.27 |
+
+Slow r1 vs fast r2-4 **1.7×** replicates Part 2c/Batch 1.
+
+OUTER tail (no wall, via counts): `decode_outer` 803 rows `us_decode~33-34ms us_sync~31ms us_outer~64-65ms us_yield_overhead~100-150us`, `pre_decode~10ms`, `update_slots~77ms` (includes pre+decode+post), `SCHED 79-node ~195us` etc — **no per-run wall to diff**, but totals show `OUTER counts 4032`.
+
+**Boot 2 (13:44:56-13:48:16 `outer-one-boot2.log` 3867 OUTER 770 decode_outer 787 update_slots) — wall-anchored build:**
+
+| run | tok/s per slot | mean | agg | wall |
+|---|---|---|---|---|
+| n=2 r1 | 19.21/16.47 | **17.84** | 35.68 | 7.81/9.11 |
+| n=2 r2 | 32.08/25.48 | 28.78 | 57.57 | 4.68/5.89 |
+| n=2 r3 | 26.80/34.26 | 30.53 | 61.06 | 5.60/4.38 |
+| n=2 r4 | 26.65/34.02 | 30.34 | 60.67 | 5.63/4.41 |
+| n=3 | 23.72/33.96/34.84 | 30.84 | 92.52 | 6.32/4.42/4.30 |
+| n=1 | 45.83 | 45.83 | 45.83 | 3.27 |
+
+Again **2/2 boots replicate slow r1 vs fast rest**, no nsys heisenbug (n=3 fast 30.84, n=1 45.83).
+
+**OUTER per-run with `wall_ms` (boot2, `decode_outer` split by `n_tokens` and `wall_ms` gaps >800ms = idle 2 s sleeps):**
+
+- By `n_tokens` histogram: `4:552 (n=1+MTP tail)`, `8:152 (n=2)`, `12:37 (n=3)`, `42/250/512` prefill 3. `n_tokens=8` is the `n=2` work: **152 rows = 4 runs ×38/37 decodes** wall windows: `72063->75939 94843/93406`, `79980->83956 94009/93397`, `87637->91586 93747/93382`, `95285->99258 94058/93379` — **outer avg 93747-94843 med 93379-93406, Δ <1.1%** between any slow vs fast run, `us_decode 59181 med57807`, `us_sync 34933 med35492` also <2%.
+
+- `n_tokens=12` (n=3 single run 37 rows `103261->106781`) outer `84396 med81695` `decode 44799 med41366` `sync 39484 med40214`.
+
+- `n_tokens=4` (552 rows) outer `65167 med64862` — run0 `429` rows `33533->68099 65075/64815`, later tails 16/15/15/15/62 rows `65661/65031` etc — **all 65k ±1%**, no delta.
+
+- `pre_decode`/`update_slots`/`decode` scopes similarly: `pre_decode ~10ms/10398 med`, `update_slots ~102-113ms`, `decode ~86-98ms` per iteration — **per-run windows for the four n=2 runs are indistinguishable** (e.g. `update_slots` runs 3-6: `113350/106627`, `102120/106873`, `101532/106008`, `102121/106617` — Δ <11% max, median within 0.5%).
+
+- `decode_outer` fine-grained: `us_decode` (llama_decode) 33-34ms for n=2-4-token decodes, `us_sync` 30-31ms (sync-dominated, ~48% of outer), `us_yield_overhead` 80-150us (negligible) — **identical slow vs fast**: slow r1's `us_decode`/`us_sync`/`us_outer` not larger; e.g. boot2 n=2 run windows above show `us_outer` 93-94k for both slow and fast.
+
+**Interpretation:**
+
+1. **Outer layer also cleared.** The 1.7× client wall difference (17.8 vs 28-30 tok/s, ~22ms extra per token) is **not in** `pre_decode`, `llama_decode`, `llama_synchronize`, `yield_to_queue` overhead, nor `update_slots` total — all per-token outer timings are within 1-2% across slow vs fast runs in same boot.
+
+2. **Three layers now all show no per-site delta:** UM `cudaMemPrefetchAsync 1.9% 8×` vs `cudaStreamSynchronize 88%` (Part 2b), `RPC-SEND 60-80us` + `SCHED 79-node 197us` (Part 2c), `OUTER decode_outer 64-94k` (this part) — **all indistinguishable slow vs fast**, so **bimodal is not a per-call latency spike** at any instrumented site.
+
+3. **Sync-dominated remains final word.** Each decode still spends ~50% in `synchronize` (31ms of 65ms) and total CUDA runtime is 88% `StreamSynchronize` (Part 2b), but that sync time itself does not bloat in slow runs — the extra wall must be at a higher level not captured (e.g. inter-token slot scheduling gap, sampler `common_sampler`, KV-cache slot search `llama_kv_cache` / `cache_ram` / `srm` swamping, or CPU-side `queue_tasks` wake latency between `update_slots` iterations). Further instrumentation would need to wrap the **inter-`update_slots` idle** (time between successive `update_slots` returns) and `post_decode` sampler + `slot` state machine, not just inside `update_slots`.
+
+**Disposition:** **Do not file `review-finding`.** No specific call site (UM, RPC, SCHED, outer decode/sync/yield) shows clear slow-vs-fast delta (all <2% median, max outliers are load). Bank three-layer `sync-dominated, not UM-storm, not RPC, not outer` as final word per instruction and stop rig cycles.
+
+**Cap/production (this part):** 2 boots `outer-one boot1 13:43` (`4032 OUTER`) + `boot2 13:44:56-13:48:16 wall_ms` as instructed, each restored via `HYDRA_HEAD_AUTH_TOKEN=$(cat …) podman compose -f … up -d` → `{"status":"ok"}` `15659/9977` `nvidia-smi 15659/16311 9977/12288 427/210MHz 5W` (verified 13:48:16). Pin `src/llama-cpp 5fff12845` untouched (isolated `/tmp/llama-cpp-instr` only). No `gh issue create`. Ledger now 3157→ +~80 lines.
+
+---
+
+## Closing — arm111 n=2 bimodal thread (2026-09-07) — banked, no fix candidate
+
+**Chase:** `n=2` 1.7× bimodal (Batch 1: 51 vs 30 ms/tok, 19→33 tok/s; replicated 4×/boot across 5 boots) falsified address-filter/bisection paths, then localized via three tracer-free layers under bounded caps (2 boots/layer, production restored):
+
+- **Part 2 / 2b (CUDA/UM):** `nsys` (client-only 389K skipped, server-wrapper 37M, then clean separate `n2-only 35M` vs `n3-only 37M`) → `cudaStreamSynchronize 87-88% (25-26s)`, `cudaMemPrefetchAsync 1.9% 8×0.58s`, no per-call spike (`-1.4% avg`), **not UM-storm**; heisenbug (n=3 also slow under nsys) identified.
+- **Part 2c (ggml RPC/SCHED):** isolated `chrono` in `/tmp/llama-cpp-instr` (no nsys) → 2 boots catch slow r1 17.8 vs fast 28-30 in same boot; `RPC-SEND GRAPH 60-80us`, `SCHED 79-node 197us med179`, `2425-node 33ms` **indistinguishable slow vs fast** (<5%).
+- **Part 2d (outer llama_server):** `update_slots/pre_decode/decode/post_decode` + `decode_outer` (`llama_decode 33-34ms + sync 30-31ms + yield 0.1ms = 64-94k outer`) wall-anchored → **4× n=2 runs 93-94k med Δ<1.1% slow vs fast**, `pre 10ms`/`update 102-113ms` also flat.
+
+**Verdict:** **Sync-dominated overall (88% Sync, ~50% per-decode in `synchronize`) but bimodal not localized to any probed call site — no per-site delta at UM, `send_rpc_cmd`, `sched splits`, or outer decode/sync/yield. No `review-finding` bar met; no code fix candidate from this thread. Honest signal is to stop with current probes.** Future reader: if revisiting, the remaining hypothesis is **inter-`update_slots` idle / sampler `post_decode` / KV-cache slot search / `queue_tasks` wake** (not inside `update_slots`), but that is a fourth speculative layer with diminishing returns per agreement — do not chase without a new bounded design. Production shape `111-udq5-102shape-v-q5_1.yml` unchanged, `src/llama-cpp 5fff12845` pin retained, isolated `/tmp/llama-cpp-instr` only, no `gh issue create` for this thread.
+
