@@ -3265,3 +3265,30 @@ Again **2/2 boots replicate slow r1 vs fast rest**, no nsys heisenbug (n=3 fast 
 **Disposition:** inter-update gap and GPU telemetry both cleared with hard numbers; run-level "first-run slow" root-caused to cache-miss prefill (not a decode anomaly). **`review-finding` filed: #743** (harness defect — `concurrent-decode-test.sh` warm loop uses 4-token prompts, never primes the bigprompt KV cache; fix direction: prime with the actual test prompt; harness-level, no production/fork change). Batch-1's per-slot eval-window split (51 vs 30 ms/tok) is **explicitly unresolved / not reproduced** — left in the open per thread close-out, no separate issue (nothing actionable while it does not reproduce; discriminating data to capture if it recurs is documented above). The production pin and shape are untouched.
 
 **Cap/production (this part):** 3 boots (1: instrumented lockstep ×4; 2: 1109-prompt ladder; 3: 2320-prompt ladder, batch-1 protocol), each followed by `HYDRA_HEAD_AUTH_TOKEN=$(cat …) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → both containers healthy, `{"status":"ok"}` on :18081, VRAM 15659/9977 (verified after boot 3). Telemetry logs: `/tmp/bimodal-telemetry-boot{1,2,3}.log`. Pin `5fff12845` untouched.
+
+---
+
+## Part 4 — #743 correction + properly-primed rerun (2026-09-07): run-level 1.7× disappears with priming; per-slot draft-acceptance split discovered (batch-1 anomaly reproduced)
+
+**Correction to Part 3 / #743's location claim (user-challenged, verified):** `concurrent-decode-test.sh` has **no warm loop** (single-shot, by design). `run-with-params.sh` [5/6] sends `head -c 2000` of the real prompt = **757-808 tokens** (not 4) — its warm repeats showing `prompt eval = 4 tokens` were cache **hits**, which I misread as "4-token prompts". Neither committed harness sends 4-token prompts.
+
+**The real mechanism (production server probe, 8-token requests, `cached_tokens` from usage):** exact-repeat requests reuse fully (804/808 cached); **any prompt extension or shrinkage collapses reuse to ~42 tokens** (full 2362-tok prompt after a 808-tok prefix prime: cached 42, eval 2320 @ 3016ms; the 808-prefix again after the full prime: cached 42, eval 766). So [5/6]'s 2000-char prime cannot carry to the measured full prompt — and only one slot is ever primed (sequential requests stick to the best-matching slot). First measured concurrent run pays 1-2 full slot prefills.
+
+**Harness fix (landed):** `concurrent-decode-test.sh` now primes by default — N_SLOTS concurrent **full-prompt** requests (n_predict=8) before measuring, so every measured slot holds the real sequence; `--no-warm` preserves cold-cache measurement. Priming verified: all primed measured runs show 4-token evals.
+
+**Rerun (boot: standard pin build `5fff12845`, arm111 params, 3 boot attempts — 2 wasted on a missing `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` export → KV alloc OOM at 15s; 1 good):**
+
+| protocol | per-slot tok/s | agg | server-side |
+|---|---|---|---|
+| n=2 `--no-warm` (old behavior) | 11.89 / 13.62 | 25.5 | **both slots full prefill** 5214ms/2320 + 4198ms/2362; decode overlapped by prefill |
+| n=2 primed ×3 | 23.1 & 30.2 (split) | 52.3-53.1 | 4-tok evals; **draft acceptance split: slow slot 0.452 (85/188, mean len 2.35) vs fast slot 0.835 (106/127, mean len 3.47)** |
+
+**Run-level verdict:** the 1.7× first-run slowdown **disappears with proper priming** — it was prefill amortization (Part 3 conclusion confirmed end-to-end). Residual: the primed runs sit at agg 52-53 vs Part-3's unprimed-fast 57-66 because of the new per-slot split below.
+
+**Per-slot draft-acceptance split (NEW, reproduces batch-1's 51-vs-30 anomaly):** after a **concurrent 2-slot priming burst**, measured n=2 runs split deterministically — one slot ~23 tok/s (43 ms/tok), the other ~30 (31 ms/tok), 3/3 runs, byte-identical acceptance counts per slot (greedy + same prompt). The slow slot **flips between bursts** (E1 prime-150: slot 1 slow; E2 prime-8: slot 2 slow) — a race, not slot identity. Part-3-style single-slot priming (tier1) yields full acceptance (1.0) and uniform speed — the anomaly needs the concurrent-burst path. Suspected mechanism: the fork's draft (MTP nextn) KV swap-out/restore after a concurrent burst is lossy/racy per slot, while the target KV restores fine (4-tok evals prove target-side reuse). Needs one instrumented boot to pin the exact restore path — not chased further this thread (boot cap).
+
+**Scope of affected past numbers:** arm ladder/decision numbers (tier1/2/3 across arms) all ran through the same [5/6]-then-concurrent-test sequence, so they share the same first-run prefill bias — but the bias is symmetric across arms (same harness both sides), so arm-vs-arm deltas stand. The Part-3 bimodal-chase numbers are reinterpreted by Part 3/4 (prefill amortization + the acceptance split), not invalidated as arm comparisons. No wholesale rerun warranted.
+
+**Disposition:** #743 corrected (location + mechanism + fix state). The per-slot draft-acceptance split is a **separate fork-level finding** — candidate new `review-finding`, pending user confirmation (needs instrumented boot to pin the draft-KV restore path before filing).
+
+**Cap/production:** 3 boot attempts (2 OOM-failures from missing UM env — operator error, no measurements; 1 good with measurements). Production restored after final boot: both containers healthy, `{"status":"ok"}`, VRAM 15659/9977. Pin `5fff12845` untouched (standard build used).
