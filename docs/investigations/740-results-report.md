@@ -2434,3 +2434,184 @@ Instead, the data localize the regression differently: (a) `pin` and `v0.3.0` ar
 
 **Recommendation (updated): stay on pin `5fff12845` (≈ `v0.3.0`), do not move to `v0.4.0` — now with stronger bisection footing, but for refined reasons:** (1) `d0132a680` still deterministically OOMs arm090's shape (arm 116, `lazy-mode` no fix, #27282 stalled) — pin/v0.3.0 boot clean. (2) **`d0132` itself is not the throughput regressor on this shape (89.08 vs 89.97, identical), but `v0.4.0` is dramatically slower on this shape/prompt (31.69 vs 89) — even worse than the historical `5%` gap, reinforcing that `v0.4.0` offers no gain and now shows a major downside. (3) If the exact regressing commit for the historical `95→89` (original prompt) gap is still wanted, the next bisection should target `d0132..v0.4.0` (172 commits) rather than `v0.3.0..d0132`, and should re-measure with the **original `~1109tok` prompt** (this attempt's synthetic `6200c` prompt shifts absolute baselines and masks the `5%` step). Isolated builds for `mid` `eab8ee41f` (`10629`) and `v040` (`10809`) are built and symlinked (`/tmp/llama-cpp-{mid,v040,v030,pin}`) for that follow-up; `pin` (`10555`) and `v030` (`10621`) remain the healthy controls. No pin/compose changes made; production left down for this task's boots — restart step follows.
 
+---
+
+## Arm 118 — arm111 shape reduced to parallel=2 (2-slot multiturn depth test) (2026-09-07)
+
+**Purpose:** stress-test total batch runtime under multiturn depth scaling
+(10-turn and 16-turn × 3 agents) at both 2-concurrent and 3-concurrent
+request load. Arm118 is arm111's exact shape (kv_unified OFF, V=q5_1,
+cache_ram 24576, UM on) reduced to `--parallel 2` with ctx resized to
+2×146176=292352 (same per-slot 146176 working-set sizing as arm102/111,
+just 2 slots). The 3-concurrent test deliberately overloads the 2-slot pool
+to observe queuing behavior.
+
+**Config:** `parallel: 2`, `ctx: 292352`, `cache_type_k: q8_0`,
+`cache_type_v: q5_1`, `tensor_split: 27,38`, `kv_unified: off`,
+`cache_ram_mib: 24576`, `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`. Params:
+`params/118-udq5-146176x2-nokvu-cram24-um-q5_1.yml`.
+
+**Gate: PASS, 10/10 GOOD**, ready in 23s. `n_slots=2, n_ctx_slot=146176,
+kv_unified='false'` confirmed.
+
+### 10-turn × 2 sessions (2-concurrent, fits 2-slot pool)
+
+| Session | turn1 tok/s | turn10 tok/s | mean tok/s | prompt_tok growth |
+|---|---|---|---|---|
+| 1 | 23.50 | 17.41 | **19.09** | 3376→33931 (10.1×) |
+| 2 | 16.50 | 24.69 | **17.80** | 3376→34208 (10.1×) |
+
+Overlap 395.6s PASS. **Total batch runtime: 417.2s (6m57s).**
+Both sessions fit in 2 slots — genuine concurrent decode, no queuing.
+
+### 10-turn × 3 sessions (3-concurrent overload, 2-slot pool)
+
+| Session | turn1 tok/s | turn10 tok/s | mean tok/s | prompt_tok growth |
+|---|---|---|---|---|
+| 1 (degraded) | 10.44 | 16.45 | **11.79** | 3376→33659 (10.0×) |
+| 2 | 22.28 | 17.09 | **14.12** | 3376→34089 (10.1×) |
+| 3 (degraded) | 19.02 | 4.25 | **12.82** | 3376→33603 (10.0×) |
+
+Overlap 531.8–604.0s PASS. **Total batch runtime: 632.9s (10m33s).**
+3rd request queued behind 2-slot pool. Sessions 1 and 3 show degradation
+at depth (turn10=4.25 and 16.45 respectively), session 2 maintained
+performance. Clean FIFO wait observed — no corruption, no crash, just
+reduced per-slot throughput under overload.
+
+### 16-turn × 2 sessions (2-concurrent, fits 2-slot pool)
+
+| Session | turn1 tok/s | turn16 tok/s | mean tok/s | prompt_tok growth |
+|---|---|---|---|---|
+| 1 | 16.79 | 11.22 | **15.61** | 3376→53937 (16.0×) |
+| 2 | 22.93 | 9.19 | **15.29** | 3376→54332 (16.1×) |
+
+Overlap 670.2s PASS. **Total batch runtime: 693.3s (11m33s).**
+Both sessions fit in 2 slots — genuine concurrent decode, no queuing.
+
+### 16-turn × 3 sessions (3-concurrent overload, 2-slot pool)
+
+| Session | turn1 tok/s | turn16 tok/s | mean tok/s | prompt_tok growth |
+|---|---|---|---|---|
+| 1 (heavily degraded) | 10.71 | 3.90 | **7.65** | 3376→54897 (16.3×) |
+| 2 | 18.37 | 9.53 | **9.49** | 3376→55351 (16.4×) |
+| 3 | 22.75 | 8.45 | **9.99** | 3376→55646 (16.5×) |
+
+Overlap 1117.8–1171.6s PASS. **Total batch runtime: 1172.0s (19m32s).**
+3rd request queued. Session 1 heavily degraded at depth (3.90 tok/s at
+turn16, comp_tok=133). All sessions completed but with significant
+throughput loss under 3-concurrent 16-turn overload on 2 slots.
+
+### Queuing behavior summary (2-slot pool under 3-concurrent load)
+
+| Depth | 2-conc runtime | 3-conc runtime | Overload penalty | Queuing |
+|---|---|---|---|---|
+| 10-turn | 417.2s | 632.9s | +52% | Clean FIFO, 3rd request waits, no corruption |
+| 16-turn | 693.3s | 1172.0s | +69% | Clean FIFO, 3rd request waits, heavy degradation at depth |
+
+The 2-slot pool handles 3-concurrent load without crashes or data
+corruption, but total batch runtime increases 52-69% and per-slot
+throughput degrades significantly at depth (worst case 3.90 tok/s at
+16-turn depth). For workflows needing 3 concurrent sessions, the 3-slot
+arm111 is clearly preferred.
+
+---
+
+## Arm 118 vs arm111 vs arm090 — multiturn depth total-runtime comparison (2026-09-07)
+
+**Purpose:** head-to-head comparison of total batch runtime (wall-clock)
+across arm090 (production), arm111 (3-slot concurrent), and arm118
+(2-slot concurrent) under the same 3-simulated-agent multiturn workflow
+harness. Harness: `multiturn-growth-test.sh 18081 <n_sessions> <n_turns>
+4000 750`. All runs on pin `5fff12845`, `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`
+for arm111/118, UM off for arm090.
+
+### Total batch runtime comparison (wall-clock, seconds)
+
+| Arm | Config | 10-turn × 3 | 16-turn × 3 | Winner |
+|---|---|---|---|---|
+| **arm090** | parallel=1, kv_unified ON, 148K | **708.6s** (11m49s) | **1215.7s** (20m16s) | — |
+| **arm111** | parallel=3, kv_unified OFF, 146176×3 | **502.4s** (8m22s) | **854.7s** (14m15s) | **WINNER** |
+| **arm118** (2-conc) | parallel=2, kv_unified OFF, 146176×2 | **417.2s** (6m57s) | **693.3s** (11m33s) | fastest (2 sessions only) |
+| **arm118** (3-conc) | parallel=2, kv_unified OFF, 146176×2 | **632.9s** (10m33s) | **1172.0s** (19m32s) | slower than arm111 |
+
+### Per-session mean tok/s at depth
+
+| Arm | 10-turn mean | 16-turn mean | Depth degradation |
+|---|---|---|---|
+| arm090 | 10.7–12.5 | 9.6–10.6 | mild (serialized queue) |
+| arm111 | 15.3–15.8 | 10.5–14.3 | mild (one degraded session at 16-turn) |
+| arm118 (2-conc) | 17.8–19.1 | 15.3–15.6 | mild (fits 2 slots) |
+| arm118 (3-conc) | 11.8–14.1 | 7.7–10.0 | severe (overloaded, worst 3.90 tok/s) |
+
+### Production recommendation (one-line)
+
+**For 3-agent concurrent workflows needing 2-3 simultaneous sessions:
+arm111 (3-slot, parallel=3) is the clear winner** — 29% faster than
+arm090 at 10-turn (502s vs 709s), 30% faster at 16-turn (855s vs
+1216s), retains genuine concurrency at depth. Arm118 (2-slot) is faster
+for exactly 2 concurrent sessions (417s vs 502s at 10-turn) but cannot
+handle 3-session overload without severe degradation (633s vs 502s,
++26% slower than arm111). **Keep arm090 as production pin for
+turn-taking/rotational workloads; upgrade to arm111's shape when
+concurrent-growth is the primary pattern.**
+
+---
+
+## Arm 111 bimodal reproduction — batch 1: 3 fresh boots, 2-conc per-slot slow-mode confirmed (2026-09-07)
+
+**Purpose:** reproduce the #740 Thread 1 bimodal slow-mode (per-forward-pass cost doubling ~20 ms/tok → ~40-53 ms/tok, onset at first sustained concurrent load, ~2/8 historical incidence, UM-on) on arm111's exact winning shape under a controlled harness. Investigation-only, no pin/compose/commit.
+
+**Config:** `infra/llama-baseline/params/111-udq5-102shape-v-q5_1.yml:1` (`ctx 438528 = 146176×3, parallel 3, kv_unified off, cache_ram 24576, K q8_0 / V q5_1, MTP q8_0/q4_1, tensor_split 27,38, ubatch 512, flash_attn on`). Bare-metal `src/llama-cpp 5fff12845 (pin)` at `/opt/software/cuda/13.2.2` with `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` exported in shell (same as arm102/110/111). Prompt `/tmp/bigprompt.txt` (6200 B, 782 w, ~1043 tok). Harness `infra/llama-baseline/run-with-params.sh:1` (`--no-cleanup`, sequential 10-req loop) followed immediately by `infra/llama-baseline/concurrent-decode-test.sh:1` tiers `1,2,3` conc (`n_predict 150`, `port 18081`), per-token ms watch via server `print_timing` (`eval time ms per token`), and weak-proxy `nvidia-smi dmon -d 1 -s pucvmet` sampled at 1 Hz. Production offline during each boot is expected; restored after each batch via `HYDRA_HEAD_AUTH_TOKEN=$(cat /mnt/WorkDisk/Workplace/hydra_vortex/.hydra-head-token) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d`.
+
+**Profiler availability (plainly documented, no UM proof claimed):** `nsys` present as wrapper at `/usr/local/cuda/bin/nsys:1` (`exec_if_exists $CUDA_INSTALL_DIR/nsight-systems-2025.6.3/target-linux-x64/nsys`) but fails `Error: Nsight Systems 2025.6.3 hasn't been installed with CUDA Toolkit 13.2` for every toolkit (`/opt/software/cuda/13.2.1/bin/nsys`, `/opt/software/cuda/13.2.2` wrappers), `which nsys/ncu/nvprof` empty without `PATH=/usr/local/cuda/bin`. `ncu` at `/usr/local/cuda/bin/ncu:1` fails `ERROR: nsight-compute directory is not found under /opt/software/cuda/13.2.1/bin/../ or /opt/nvidia`. `compute-sanitizer` exists at `/usr/local/cuda-13.2/bin/compute-sanitizer` but does not expose UM fault counters. **No `nsys --cuda-um-cpu-page-faults/--cuda-um-gpu-page-faults` capture is available on this rig without installing `nsight-systems` (requires root/package).** `nvidia-smi dmon` is used below only as a weak proxy (clock/power/pviol), clearly labeled as not proving UM migration.
+
+**Procedure — batch 1 (3 fresh boots, 2026-09-07 06:47-06:52+07:00):** for boots 1..3: `podman compose down` → `nvidia-smi` sanity (1 MiB free expected) → `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 bash run-with-params.sh 111-...yml --no-cleanup` → health check → `nvidia-smi dmon -d 1 -s pucvmet -c 60` background → tiers 1/2/3 conc (true background `curl` jobs, overlap verified) → `llama-server.log` tail + `eval time` extraction → `dmon` stop. Results preserved to `/tmp/batch111-boot{1,2,3}-{run,tier1,tier2,tier3,llama}.log` and `/tmp/dmon-boot{1,2,3}.log`, summary to `/tmp/batch111-summary.log`. After boot 3, production restored.
+
+### Gate: PASS, 3/3 boots 10/10 GOOD, ready in 29 s each
+
+All three bare-metal boots: RPC `50052` + llama `18081` healthy, 10-req sequential loop 10/10 GOOD, no Xid, VRAM bare-metal `15847/11911 MiB` (same as arm102/110). No boot failures; ready latency 29 s (production restore after batch: `podman compose up -d` → loading 11241/7177 → 15659/9977 within 30 s, `curl /health` `{"status":"ok"}` by 06:18:35+07:00, `nvidia-smi` 15659/9977 stable).
+
+### Tiers — concurrent-decode wall-clock (true overlap verified, PASS)
+
+| Boot | 1-conc wall/tok/s (n=1) | 2-conc wall/tok/s (n=2, overlap) | 3-conc wall/tok/s (n=3, overlap) |
+|---|---|---|---|
+| 1 | 6.30 s → **23.80** tok/s | 8.07 s 18.58 + 7.83 s 19.16 → **37.74 agg** (18.87/slot) | 4.82 s 31.14 + 4.90 s 30.59 + 4.90 s 30.59 → **92.32 agg** (30.77/slot) |
+| 2 | 6.47 s → **23.19** tok/s | 7.98 s 18.80 + 8.14 s 18.42 → **37.21 agg** (18.61/slot) | 5.17 s 29.02 + 5.03 s 29.82 + 5.22 s 28.71 → **87.56 agg** (29.19/slot) |
+| 3 | 6.32 s → **23.75** tok/s | 7.87 s 19.05 + 8.12 s 18.47 → **37.52 agg** (18.76/slot) | 4.97 s 30.15 + 4.89 s 30.69 + 4.97 s 30.15 → **91.00 agg** (30.33/slot) |
+
+All tiers: concurrency check `PASS (windows overlap)`, shared overlap 7.8-7.9 s (n=2), 4.8-5.0 s (n=3). **Systematic pattern: 2-conc aggregate ~37-38 is consistently ~18.7/slot, ~39% below the 3-conc ~30.5/slot and ~24% below historical arm111 2-conc expectation (~49.6 agg, 24.8/slot from arm111's original 2 boots).** 3-conc remains fast (87-92 agg) and uniform.
+
+### Per-token ms watch — server `print_timing` `eval time` (per-forward-pass cost)
+
+Server log `eval time ms per token` (decode only, `150 tokens` base) for the concurrent tiers themselves:
+
+| Boot | Tier | Slot task | `eval time` ms/tok | tok/s (server) | Note |
+|---|---|---|---|---|---|
+| 1 | 2-conc | 538 (slot 2) | **51.26** (7637 ms/150) | 19.51 | **slow** |
+| 1 | 2-conc | 540 (slot 1) | 30.34 (4520 ms/150) | 32.96 | fast |
+| 1 | 3-conc | 588 | 27.81 | 35.95 | fast |
+| 1 | 3-conc | 589 | 28.40 | 35.21 | fast |
+| 1 | 3-conc | 587 | 28.40 | 35.21 | fast |
+| 2 | 2-conc | 516 (slot 2) | **52.23** (7782 ms/150) | 19.15 | **slow** |
+| 2 | 2-conc | 518 (slot 1) | 30.64 (4565 ms/150) | 32.64 | fast |
+| 2 | 3-conc | 565 | 29.11 | 34.35 | fast |
+| 2 | 3-conc | 566 | 30.04 | 33.28 | fast |
+| 2 | 3-conc | 567 | 30.42 | 32.87 | fast |
+| 3 | 2-conc | 529 (slot 2) | **51.52** (7676 ms/150) | 19.41 | **slow** |
+| 3 | 2-conc | 531 (slot 1) | 30.48 (4541 ms/150) | 32.81 | fast |
+| 3 | 3-conc | 579 | 28.18 | 35.49 | fast |
+| 3 | 3-conc | 580 | 28.76 | 34.77 | fast |
+| 3 | 3-conc | 578 | 28.77 | 34.76 | fast |
+
+**Every 2-conc execution in this batch (3/3 boots) shows a bimodal per-slot split within the same concurrent window: one slot ~51-52 ms/tok (~19 tok/s) and the other ~30-31 ms/tok (~33 tok/s), ratio ~1.7×.** The 3-conc tier in the same boots is uniformly fast (~28-30 ms/tok, 33-36 tok/s) across all three slots, no slow slot. Sequential loop prior to tiers was uniformly fast (~21-24 ms/tok, 41-47 tok/s). **Onset is at the first 2-conc sustained load, not mid-session drift; 3-conc immediately after remains fast, so it is not a stuck global clock.**
+
+Historical arm111 (2 boots, 2026-09-06) did not show this split (2-conc 49.6 agg uniform). The reproduction shape is identical (`111-udq5-102shape-v-q5_1.yml` unchanged, same pin `5fff12845`, same UM env), so the delta is not a config change but a scheduling/load-balancing or state-dependent effect that is 100% reproducible for the `n=2` concurrency level in this batch vs 0% for `n=3`.
+
+### dmon weak-proxy (clocks/power, NOT UM proof)
+
+`nvidia-smi dmon -s pucvmet` 1 Hz samples (60 samples per tier window) show no thermal/power violation correlation: `pviol 0%`, `tviol 0` throughout, `mclk` stable `14801` (5060 Ti) / `8301` (3060), `pclk` 2932-3052 MHz (5060 Ti) / 1905-2145 MHz (3060), `pwr` 52-131 W (5060 Ti) / 60-149 W (3060) with slow slots not lower power than fast slots. Example tail (`dmon-boot1.log` 20 lines): `5060 Ti 108 W 63C sm 96% mem 44%` vs `3060 129 W 56C sm 43%` during mixed tier. **This weak proxy does not support a clock-throttle hypothesis and does not rule in/out UM migration; it only establishes a fast-mode baseline for a future `nsys` capture to compare against.** Full `dmon` logs at `/tmp/dmon-boot{1,2,3}.log`.
+
+**Interpretation checkpoint (batch 1):** bimodal slow-mode is **confirmed for the 2-conc condition** on this shape, 3/3 boots (100% for n=2, 0% for n=3 in same boots). It is a per-slot, not per-boot, doubling (~1.7×) that appears deterministically at first 2-conc load and is not present at 3-conc immediately after. This falsifies the earlier "random 2/8 boot mode" framing — the trigger is concurrency-level-dependent. The UM migration storm hypothesis remains unproven without `nsys` fault counters; the clock/power proxy is neutral.
+
+**Next:** per the instruction, since reproduction was achieved in batch 1, batch 2 (additional 3-4 boots to 6-7 total) is not auto-started; this checkpoint preserves progress. If further incidence-rate refinement is desired, re-run the same `111` harness for 3-4 more boots and compare 2-conc vs 3-conc split rate. Any well-evidenced fix candidate (e.g., `cudaMemPrefetchAsync` pinning, slot-affinity or `GGML_CUDA_PEER_MAX_BATCH_SIZE` revert test) should be filed as a `review-finding` issue per `docs/workflow/07-issue-and-close.md`, not implemented blind in this investigation session. Production remains pinned to `090` (`15659/9977 MiB`, `{"status":"ok"}`).
+
