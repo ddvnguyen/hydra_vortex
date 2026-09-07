@@ -3096,3 +3096,62 @@ Full `n2-only` also matches Part 2's mixed capture (87.6% 25.45s 84,969× 299.5u
 **Next step if the project wants to proceed (would need a new bounded batch):** pair a **non-nsys fast baseline** (reproduce n=3 fast outside nsys, capture `concurrent-decode` wall times) against an **NVTX-marked isolated build** in `/tmp/llama-cpp-instr` (instrument `ggml-rpc.cpp:send_rpc_cmd:316` and `ggml-backend.cpp:1594` with `nvtxRangePushA` per rank + per-split, plus chrono `LOG`) to break the `cudaStreamSynchronize` bucket into RPC vs split sites. Alternatively, a **pair of per-workload nsys captures where one is provably fast** (e.g., retry until n=3 hits the 32 tok/s fast mode under nsys, or capture n=1 fast 47 tok/s as reference) to get the missing fast-vs-slow diff. No code in `src/llama-cpp` pin was touched; isolated patch was not built this batch.
 
 **Cap/production:** 2 boots used (n2-only 13:14, n3-only 13:16), each restored via `HYDRA_HEAD_AUTH_TOKEN=$(cat /mnt/WorkDisk/Workplace/hydra_vortex/.hydra-head-token) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → `15660/9977` within 5-8 s, `{"status":"ok"}` verified at 13:19 (nvidia-smi 15660/9977, 5W/0%). No further boots.
+
+---
+
+## Part 2c — Tracer-free chrono instrumentation (isolated build, no nsys) — 2 boots, captures slow+fast but per-site delta absent (2026-09-07 13:30-13:37)
+
+**Goal per instruction:** one more bounded batch (cap 2 boots), code-level `chrono` logs **with NO external tracer** (eliminate observer effect that made n=3 also slow under nsys). In `/tmp/llama-cpp-instr` (isolated, never touch pin `src/llama-cpp 5fff12845`) add lightweight `fprintf(stderr,"[INSTR]…")` around:
+- `send_rpc_cmd` at `ggml/src/ggml-rpc/ggml-rpc.cpp:316` (blocking send+recv)
+- per-split loop at `ggml/src/ggml-backend.cpp:1594` (`ggml_backend_sched_compute_splits`)
+
+Build, boot arm111 shape (`111-udq5-102shape-v-q5_1.yml:1` `ctx438528=3×146176 parallel3 kv_unified off cache_ram24576 q5_1 UM on`), run n=2 lockstep repeatedly to catch both slow and fast (Batch 1 showed slow/fast alternates), then n=3 for comparison — all **without nsys**, just binary's own log. Diff per-call timings; if a specific call shows outlier, file `review-finding`; otherwise bank `sync-dominated, not UM-storm` and stop.
+
+**Isolated build steps (no boot cost):**
+- Reverted `ggml/src/ggml-cuda/ggml-cuda.cu` in `/tmp/llama-cpp-instr` to `HEAD` (removed the `cudaMemAdvise/cudaMemPrefetchAsync` prefetch patch that was dirty in both pin and instr — avoids confounding; pin remains dirty `M ggml/src/ggml-cuda/ggml-cuda.cu` but not used).
+- Instrumented `ggml-rpc.cpp:301` (3-arg `send_rpc_cmd` fire-and-forget for `GRAPH_COMPUTE/RECOMPUTE`) with `chrono` + `[INSTR][RPC-SEND] cmd=… in=… us=…` for `cmd==10/16`; and `ggml-rpc.cpp:317` (5-arg with `recv`) already had `[INSTR][RPC] cmd=… in=… out=… us=…` for `GRAPH_*` or `>5000us`; and `ggml-backend.cpp:1594` per-split loop with `[INSTR][SCHED] split=…/… backend=… n_nodes=… n_inputs=… us=…`.
+- Reconfigured `cmake -S /tmp/llama-cpp-instr -B /tmp/llama-cpp-instr/build-cuda1322 -DGGML_CUDA=1 -DLLAMA_CURL=ON -DCMAKE_CUDA_ARCHITECTURES="86;120" -DCUDAToolkit_ROOT=/opt/software/cuda/13.2.2 -DGGML_CUDA_FA_ALL_QUANTS=ON -DGGML_RPC=ON` (previous `build-cuda1322` had stale `CMakeCache.txt` pointing to pin source, wiped and reconfigured) and rebuilt `-j16` to `100%` (llama-server 99%).
+
+**Procedure — 2 boots, cap respected, production restored each time, NO nsys wrapping:**
+- Script `/tmp/instr-one.sh`: `podman compose down` → `LLAMA_CPP=/tmp/llama-cpp-instr GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 bash run-with-params.sh 111…yml --no-cleanup` (finds both `ggml-rpc-server`+`llama-server` from `instr/build-cuda1322/bin`, ready 30s, 10/10 GOOD both boots) → 4× `concurrent-decode-test.sh 18081 2 150 /tmp/bigprompt.txt` (2 s gap), then `3 150`, then `1 150` → grep `[INSTR]` from `llama-server.log` → `pkill` + `podman compose up -d` → `{"status":"ok"}` `15659/9977` (verified 13:37:06 `15659/9977`).
+
+**Boot 1 (13:30:16-13:32:45):**
+| run | tok/s per slot (150 tok) | mean | agg | wall |
+|---|---|---|---|---|
+| n=2 r1 | **19.24 / 16.50** | **17.87** | 35.73 | 7.80s/9.09s |
+| n=2 r2 | 25.48 / **32.13** | 28.80 | 57.60 | 5.89s/4.67s |
+| n=2 r3 | 26.62 / **33.40** | 30.01 | 60.02 | 5.63s/4.49s |
+| n=2 r4 | **33.99** / 26.62 | 30.31 | 60.62 | 4.41s/5.63s |
+| n=3 | 34.51 / 23.95 / 34.50 | 30.99 | 92.96 | 4.35s/6.26s |
+| n=1 | 45.73 | 45.73 | 45.73 | 3.28s |
+**Caught slow+fast in same boot without tracer** — r1 slow 17.87 vs r2-4 fast 28.8-30.3 (1.7× run-to-run, same ratio as Batch 1 per-slot but now per-run; replicates Batch 1's 51 vs 30 ms/tok bimodal in wall-clock). n=3 and n=1 fast (30.99, 45.73) — **no heisenbug**: without nsys, n=3 stays fast as in Batch 1, confirming nsys was contaminating.
+
+Boot 2 (13:34:38-13:37:06) **replicates**: r1 **17.89** (19.25/16.52), r2 28.88, r3 30.39, r4 30.05, n=3 31.77, n=1 45.80 — same slow r1 vs fast rest, 2/2 boots.
+
+**INSTR logs — boot1 587K lines (804 RPC + 8536 SCHED), boot2 628K (822 RPC-SEND + 8728 SCHED):**
+
+*RPC* (5-arg `GET_TENSOR` etc, >5000us filter): 804 rows boot1, cmd histogram `{8:795,5:8,4:1}` (8=`GET_TENSOR`), e.g. `cmd=8 in=312 out=245760 us=40821` etc. Top `us` are load spikes `3,014,416` (40960) during model load, not decode. Did **not** initially log `GRAPH_COMPUTE` (10) because it uses the 3-arg fire-and-forget path; after patch, boot2 adds `[INSTR][RPC-SEND]` 820 rows: `cmd=10 in=702404 us=60-82` and `cmd=16 in=4 us=4-5` — **all tens of µs, no slow outlier**.
+
+*SCHED* per-split: 3867 backend1 + 3867 backend2 + 802 backend0. For decode:
+- `n_nodes=79, backend=1` (small decode split): count 3065, **avg 197us median 179us min70 max43427 q90 231us**. Grouped as tokens (2 splits per token) → `ns=2` tokens 3065, **avg 202us median182 p95 259 max43445** (max is load).
+- `n_nodes=2425, backend=1` (full): 802, avg 53.6ms median33.8ms max3.4s (load), but decode-phase `2425` avg ~33-34ms.
+
+**Per-run diff (the core test):** Split the 79-node and 2425-node SCHED streams chronologically into windows proportional to token counts (300,300,300,300,450,150):
+- 79-node windows (boot1): w1 159.2, w2 156.2, w3 163.5, w4 239.7, w5 185.0, w6 158.6 — **w4 outlier 239 vs 159 is due to including a single 9412us split, but median 182 vs 172 not dramatic; windows 1-3 (r1-r3) are indistinguishable (159-163)**. Proper token-grouped `ns=2` windows 1-4: **w1 363us (includes load outlier 43445), w2 160.4, w3 159.9, w4 158.7** — **no slow vs fast delta**: r1 slow (17.87) and r2 fast (28.8) both show ~160us per-token SCHED.
+- 2425-node full windows: w1 33.6ms, w2 33.7ms, w3 33.8ms, w4 69.1ms (includes 488k outlier), w5 46.8ms, w6 33.9ms — again **no systematic slow vs fast**; token-grouped `ns=3` vs `ns=2` totals also overlap.
+- RPC-SEND `GRAPH_COMPUTE` 60-80us all runs, no outlier in r1 slow; RPC 5-arg `GET` 33-41ms all windows identical.
+
+**Interpretation — honest, per instruction:**
+
+1. **Tracer-free confirms bimodal persists** and that **nsys heisenbug is real**: without nsys, n=2 shows clean slow r1 (17.8, both boots) vs fast r2-4 (28-30) and n=3 stays fast 30-31, whereas with nsys both n=2 and n=3 fell to ~14-17 slow — **observer effect eliminated by this batch**.
+
+2. **But per-site chrono fails to localize:** `send_rpc_cmd` (both 3-arg `GRAPH` 60-80us and 5-arg `GET` ~40ms) and `SCHED` per-split (79-node ~160us, 2425-node ~33ms) are **indistinguishable between a slow n=2 run (17.8 tok/s) and a fast n=2 run (30 tok/s) in the same boot** — median/avg differ <5%, max outliers are load not run-specific, and the ~12ms extra wall per token (52ms vs 30ms) is **not in backend compute**. The remaining wall time (~30ms of 30-50ms) is outside `SCHED` — likely queueing/scheduling between tokens, KV cache, or sampler, not captured by these two probes.
+
+3. **No specific call site shows outlier latency** (neither `RPC-SEND`, nor `RPC` recv, nor which `split_id`/`backend`/`n_nodes`). Therefore **does not meet the "clear slow-vs-fast delta at a specific call" bar for a `review-finding`**.
+
+**Disposition:** **Do not file `review-finding`.** Per instruction: if this localizes to a specific call site with clear delta, file it; if still ambiguous after this, **bank the `sync-dominated, not UM-storm` finding as the final word**. That is what we do: ledger's final word is Part 2 + 2b's **87-88% `cudaStreamSynchronize` vs 2% `cudaMemPrefetchAsync`** (replicated 3 captures) + this tracer-free batch's proof that **bimodal is real without tracer but not in per-split/RPC send**, so the sync is at a higher level (likely `sched` outer loop / `llama_context` decode queuing) with diminishing returns for further rig cycles.
+
+**Next step if the project wants to pursue:** instrument the **outer decode loop** (`llama_server` / `common` sampler `decode` inter-token interval, `slot` queue wait, `kv_cache` `cache_ram` swap) with `chrono` around `llama_decode` / `slot` `inflight` rather than `ggml` backend — not in this batch, would need a new bounded experiment.
+
+**Cap/production:** 2 boots used (boot1 13:30, boot2 13:34) as instructed, each restored via `HYDRA_HEAD_AUTH_TOKEN=$(cat …) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → `15659/9977` within 5s (`curl /health {"status":"ok"}` 13:37:06, `nvidia-smi` 15659/9977, 5W/0%). No further boots. No `gh issue create`.
+
