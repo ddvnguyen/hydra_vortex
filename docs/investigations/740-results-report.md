@@ -2961,3 +2961,34 @@ Pin reproduces attempt-3's 766 exactly. v0.4.0 shows **no gap** — attempt-3's 
 3. Production restore verified after every boot: both containers healthy, `/health ok`, VRAM 15659/9977 MiB = resting baseline.
 
 Results dirs: `/tmp/rpc-test/results/102-lv4-{pin-5fff12845,v040-5266f24da}` (1109) and the same names re-run for the 2320 probe (superseded summaries; server logs preserved).
+
+## Arm 119 — v0.4.0 combined flags (kv-unified-per-slot + graph-opt) + staggered multiturn (2026-09-07)
+
+**Purpose:** final planned arm of the RIG FREE session: `v0.4.0` (`5266f24da`) with BOTH flags combined — `--kv-unified-per-slot 146176` (arm115's flag) + `GGML_CUDA_GRAPH_OPT=1` (arm117's flag) — on the 146176×3 shape, then the staggered-start 16-turn×3-agent multiturn (new 6th arg to `multiturn-growth-test.sh`) vs the arm090/arm111/arm118 baselines. Same boot used for both multiturn runs; production stop→boot→restore bracket.
+
+**Boot:** `podman compose down` → `LLAMA_CPP=/tmp/llama-cpp-v040 run-with-params.sh params/119-udq5-146176x3-v040-kvpslot-graphopt.yml --no-cleanup` → ready 27 s, 10/10 GOOD. Both flags verified in the emitted args (`--no-kv-unified --kv-unified-per-slot 146176`; graph-opt via the harness `env:` map). **Binary provenance recorded** in `summary.txt` (new harness feature): llama `f3b874774326`, rpc `fe4d9fcee019` (sha256-12 of the v040 isolated builds). Graph-opt confirmed ACTIVE by the `graphs reused` print_timing counter climbing 50→217 during the warm loop (arm117's signature). No Xid.
+
+**Ladder (1109-token prompt, after warm loop):**
+
+| Tier | arm119 (v040 kvpslot+graphopt) | today's controls |
+|---|---|---|
+| tier1 1-conc | 30.99 | pin 31.61 / v040-102 31.36 |
+| tier2 2-conc | 47.72 | pin 48.78 / v040-102 48.44 |
+| **tier3 3-conc** | **103.30** | pin 104.73 / v040-102 103.34 |
+
+At parity. Historical arm115 (85.1) / arm117 (89.0) tier3 gaps do not appear under the warm ladder — consistent with Attempt 4's artifact conclusion.
+
+**Staggered multiturn run 1 — `multiturn-growth-test.sh 18081 3 16 4000 750 257` (stagger 257s, from the arm111-lockstep estimate 0.3×855s):** sessions ran only ~330-420 s each (arm119's depth throughput is ~2× arm111's — per-session means 16.19/16.80 tok/s at 16-turn depth vs arm111's 10.5-14.3). Result: adjacent overlap 21%/39% (mean pairwise 30%) → harness verdict `too staggered (reduce delay)` — the 257s stagger overshot because T was calibrated on arm111's slower lockstep sessions, not arm119's.
+
+**Run 2 — retuned stagger 110s (≈0.3× measured ~375s session duration):** adjacent overlap **75%/82%** (mean pairwise **69%**) → `on-target (off by +9pp)`. Session means 15.99/12.48/13.68 tok/s (turn16 floor 3.04/9.52/13.34 — session 1 finished early into a 3-way-contended tail). Prompt depth growth identical across sessions (3376 → ~54.4K resident tokens, 16.1×).
+
+| Multiturn (16-turn × 3 agents) | arm090 (lockstep) | arm111 (lockstep) | arm119 s=257 | arm119 s=110 |
+|---|---|---|---|---|
+| Total wall | 1215.7 s | 854.7 s | 933 s (30% overlap) | 894 s (69% overlap) |
+| Per-session mean tok/s | 9.6–10.6 | 10.5–14.3 | 16.19 / 16.80 (2-way) | 15.99 / 12.48 / 13.68 (3-way) |
+
+**Read:** arm119 (v0.4.0 + combined flags) matches or beats arm111 (pin) at multiturn depth — no regression at depth; the two flags coexist cleanly with kv-unified-per-slot's per-slot pools. Stagger tuning rule (validated): **S ≈ 0.3 × measured per-session duration**, not the historical batch total. Caveat: run 2 executed on the same warm server as run 1 (cache-reuse effects possible); lockstep-vs-stagger totals are not directly comparable, per-session tok/s is the honest metric.
+
+**Production:** restored after arm119 `pkill -9` + `podman compose up -d` → both containers healthy, `/health ok`, VRAM 15659/9977 MiB (48 s cycle). Full logs: `/tmp/arm119-multiturn-s110.log` + job logs; results dir `/tmp/rpc-test/results/119-udq5-146176x3-v040-kvpslot-graphopt-5266f24da`.
+
+**Session close-out (Attempt 4 + arm119):** the prepared v0.4.0 bisection ended at the controls — pin vs v0.4.0 is at parity on every controlled metric (decode, prefill, boot time), the top shortlist candidate `866322481` is a behavioral no-op (fused GDN/LID already enabled at pin; `-lv 4` discriminator), and no mid/candidate boots were spent. Arm 119 confirms the combined-flags v0.4.0 config at parity and beats the pin's multiturn depth numbers. No fix candidates to file; the standing `111`-shape n=2 bimodal (batch 1) remains the only open thread, awaiting an `nsys` install for UM-fault-counter proof.
