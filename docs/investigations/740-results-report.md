@@ -3311,3 +3311,50 @@ Again **2/2 boots replicate slow r1 vs fast rest**, no nsys heisenbug (n=3 fast 
 **Disposition:** **#744 filed** (review-finding, corrected mechanism; no llama-cpp code change identified — no buggy path found; records the behavior + the measurement hazard for per-slot tok/s under concurrent greedy). Sequential single-slot runs stay pristine (3/3 every step) because the continuation matches the cached draft state; concurrent runs diverge. Harness guidance: report mean acceptance + aggregate; treat per-slot deltas < ~1.5× under same-prompt greedy as suspect.
 
 **Cap/production:** 1 boot (instrumented), restored → both containers healthy, `{"status":"ok"}`, VRAM 15659/9977. Pin `5fff12845` untouched.
+
+---
+
+## Spot-check — fixed-harness verification of ladder numbers (2026-09-07, 4 boots, #743)
+
+**Purpose (per task):** independently verify the claim in #743/Part 4 that the `concurrent-decode-test.sh` cold/mismatched-prime bug (ladder tier1/tier2/tier3 measured against a cold/mismatched slot, bias = full prefill 1-3 s on first run) was **symmetric across arms**, so arm-vs-arm deltas stand even though absolute tok/s were biased low on early tiers. Spot-check 4 boots with the fixed harness (commit `3355a032e`, primes by default: N_SLOTS concurrent full-prompt `n_predict=8` warm requests before measuring) against the exact configs/numbers already in the ledger.
+
+**Method (cap 4, all on `bigprompt-1109.txt` = 2822c, the prompt used in Attempt 4's parity controls):**
+
+- `cp infra/llama-baseline/prompts/bigprompt-1109.txt /tmp/bigprompt.txt` before each boot (so `run-with-params.sh`'s sequential 10-req loop and the measured `concurrent-decode-test.sh` tiers share the same prompt class). `concurrent-decode-test.sh` called as `bash concurrent-decode-test.sh <port> <n_slots> 150 <prompt>` with **default priming ON** (no `--no-warm`).
+- 4 boots, production stopped/restored each time, `/health` verified, `nvidia-smi` checks, results preserved under `/tmp/rpc-test/results/` and `/tmp/spot-check-*.log`.
+
+| Boot | Params | Binary | Tiers |
+|---|---|---|---|
+| 1 | `090-udq5-148000-parallel1-cache-ram-16g.yml` (arm090, parallel=1) | pin `5fff12845` (`src/llama-cpp/build-cuda1322`) | tier1 (`n=1`) |
+| 2 | `102-udq5-146176x3-nokvu-cram24-um.yml` (arm102 shape = 111 shape, pin) | pin `5fff12845` | tier1/2/3 |
+| 3 | same `102` shape | `v0.4.0` `5266f24da` (`/tmp/llama-cpp-v040/build-cuda1322`, `LLAMA_CPP=/tmp/llama-cpp-v040`) | tier1/2/3 |
+| 4 | `119-udq5-146176x3-v040-kvpslot-graphopt.yml` (arm119, 102 shape + `--kv-unified-per-slot 146176` + `GGML_CUDA_GRAPH_OPT=1`) | `v0.4.0` `5266f24da` (`LLAMA_CPP=/tmp/llama-cpp-v040`, `env:` from params) | tier1/2/3 |
+
+`GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` exported for boots 2-4 (102/119 shapes require UM per arm112 OOM proof), unset for arm090 (UM off, as ledger).
+
+**Results — new (fixed harness) vs old (ledger, Attempt 4 / arm119):**
+
+| Config | Tier | Old (ledger) | New (fixed, primed) | Δ | Note |
+|---|---|---|---|---|---|
+| **arm090** (090-...) | tier1 1-conc | **31.6** tok/s (pin known single, Attempt 4 tier1 31.61) | **48.29** (wall 3.11s, priming: 1×8) | **+52.8%** | prefill bias removed |
+| **arm102/pin** (102 shape, pin) | tier1 | **31.61** | **48.24** (3.11s) | **+52.6%** | |
+|  | tier2 2-conc agg | **48.78** | **65.29** (32.65/slot, overlap 4.59s) | **+33.8%** | |
+|  | **tier3 3-conc agg** | **104.73** (34.91/slot) | **104.96** (34.99/slot, 4.29s) | **+0.2%** | **identical** |
+| **v0.4.0 control** (102 shape, v040) | tier1 | **31.36** | **47.77** (3.14s) | **+52.3%** | |
+|  | tier2 agg | **48.44** | **65.23** (32.62/slot) | **+34.7%** | |
+|  | **tier3 agg** | **103.34** (34.45/slot) | **104.22** (34.74/slot) | **+0.9%** | **identical** |
+| **arm119** (v040 kvpslot+graphopt) | tier1 | **30.99** | **47.74** (3.14s) | **+54.1%** | |
+|  | tier2 agg | **47.72** | **65.44** (32.72/slot) | **+37.1%** | |
+|  | **tier3 agg** | **103.30** (34.43/slot) | **104.06** (34.69/slot) | **+0.7%** | **identical** |
+
+Raw logs: `/tmp/spot-check-boot*-results.log` and `/tmp/spot-check-*.log`; `run-with-params` summaries preserved per params SHA (e.g. `/tmp/rpc-test/results/090-...-5fff12845`, `102-...-5fff12845`, `102-...-5266f24da`, `119-...-5266f24da`).
+
+**Verdict — honest, per instruction:**
+
+- **Tier3 (the decisive aggregate for the "v0.4.0 = parity" and arm-ranking conclusions) is unchanged.** Pin tier3 104.96 vs old 104.73 (+0.2%), v0.4.0 tier3 104.22 vs old 103.34 (+0.9%), arm119 tier3 104.06 vs old 103.30 (+0.7%) — **all within run-to-run noise (<1%)**, and the pin vs v0.4.0 delta stays **Δ -0.7%** (new: pin 104.96 vs v0.4.0 104.22) vs **Δ -1.3%** (old: 104.73 vs 103.34). **The "v0.4.0 is at parity, no regression" verdict stands — if anything, the gap shrinks.** Ladder tier1/tier2 absolute values shift **+52-54% (tier1) and +34-37% (tier2)** from proper priming, but **symmetrically across pin and v0.4.0** (pin +52.6%/+33.8%, v0.4.0 +52.3%/+34.7%), so the **arm-vs-arm deltas remain -1.0% (tier1) and -0.09% (tier2)** now vs -0.8%/-0.7% before — still parity.
+
+- **Mechanism matches #743:** the old harness's `run-with-params.sh` [5/6] `head -c 2000` (757-808 tok) prime on a single slot could not carry to the measured full 1109-ctx prompt (reuse collapses to ~42 tok on extension), so the first measured tier(s) paid 1-2 full prefills. With tier1→tier2→tier3 sequential order, **tier1 always paid, tier2 often partially, tier3 never** (already warm from prior tiers). Proper N_SLOTS concurrent full-prompt priming removes the tier1/tier2 deficit; tier3 was already warm, so it shows no shift. This explains why the shift is tier-dependent and symmetric.
+
+- **Arm ranking:** **does not materially change.** For the concurrent aggregate that mattered (tier3 3-conc), arm090 was never ranked (parallel=1, N/A for agg), and 102/pin, v0.4.0 control, and arm119 were all at parity before (104.73/103.34/103.30) and remain at parity now (104.96/104.22/104.06). The tier1 single-request number for arm090 now reads **48.29 parity with 102 shapes (48.24)**, vs old 31.6 appearing slower — but arm090's documented production win was never tier1 speed (it was 18× cache-reuse on return, arm090's own bisection), so no decision flips. **No overturn; do not file `review-finding`.** The ledger's prior statement that historical ladder deltas stand is **confirmed**.
+
+**Cap/production:** 4 boots used as scoped (`boot1-arm090` 15s ready, `boot2-102pin` 29s, `boot3-v040-102` 27s, `boot4-arm119` 27s), each `10/10 GOOD`, production restored after each (`podman compose up -d`, `/health ok`, `nvidia-smi 15659/16311 9977/12288` normal, verified after boot4 at 16:23:59 `{"status":"ok"}`). No `src/llama-cpp` pin change, no params change, no `review-finding` needed. Ledger appended; this closes the spot-check task.
