@@ -3055,3 +3055,44 @@ CUDA GPU MemOps by Size:
 
 **Production:** restored after every boot via `HYDRA_HEAD_AUTH_TOKEN=$(cat /mnt/WorkDisk/Workplace/hydra_vortex/.hydra-head-token) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → `15659/9977 MiB` within 6-8 s, `{"status":"ok"}` stable (arm119 boot restored at 12:34, nsys arm111 boots restored at 12:50 and 13:02, verified via `curl /health` and `nvidia-smi:1` 15650/9968). **Cap respected:** 3 boots total in this batch (arm119-1, nsys-arm111 client-only-1, nsys-server wrapper-1) — no further boots without check-in.
 
+
+---
+
+## Part 2b — Clean separate nsys server traces n=2-only vs n=3-only (2026-09-07 13:14-13:19+07:00) — honest ambiguous/contradictory
+
+**Goal per 2026-09-07 instruction:** two clean **separate** wrapper-traced server captures (not mixed like Part 2's 37 MB capture) to diff `cuda_api_sum` between n=2 and n=3: specifically `cudaStreamSynchronize` call count / total / avg per call, plus `cudaMemcpyAsync` and `cudaLaunchKernelExC` — test *per-call latency spike* (blocking-wait-on-idle-slot) vs *proportional call count* (more RPC round-trips). If clean sync-dominated + per-call spike, open `review-finding`; if ambiguous/contradictory, stop.
+
+**Procedure — 2 boots, cap respected, production restored each time:**
+- Script `/tmp/nsys-one.sh` reused: `podman compose down` → `P_LLAMA_BIN=/tmp/llama-nsys-wrapper-one.sh` (exec `nsys profile --trace=cuda,nvtx,osrt --cuda-um-cpu-page-faults=true --cuda-um-gpu-page-faults=true --output=/tmp/nsys-server-${MODE}-only --force-overwrite=true $LLAMA_REAL "$@"`) → `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 bash run-with-params.sh 111-udq5-102shape-v-q5_1.yml --no-cleanup` (ready 31 s, 10/10 GOOD both boots) → single workload tier only → `pkill llama-server` to flush nsys → `nsys stats --report cuda_api_sum` → `podman compose up -d` → `curl /health {"status":"ok"}` + `nvidia-smi 15660/9977`.
+- Boot 1 (n2-only, 13:14-13:16): `concurrent-decode-test.sh 18081 2 150 /tmp/bigprompt.txt` → `slot1 9.22s 16.28 tok/s, slot2 7.91s 18.95 tok/s, agg35.23, mean17.62` (both slow uniform this boot, per-run slow — matches Part 2's n=2 slow). Nsys rep `/tmp/nsys-server-n2-only.nsys-rep` 35 MB (vs earlier race `ls: No such file` was a flush-timing artefact; file appeared 3 s later, sqlite 133 MB).
+- Boot 2 (n3-only, 13:16-13:19): `concurrent-decode-test.sh 18081 3 150` → `16.79/13.78/13.30 tok/s, agg43.87, mean14.62` (**n=3 also slow under nsys** — 3/3 slots 13-16 tok/s, slower than n=2's 17.62 and far from the non-nsys fast baseline of 32-33 tok/s; heisenbug).
+
+**nsys stats diff (the core of the instruction):**
+
+| metric | n2-only (slow, agg35.23, mean17.62) | n3-only (slow, agg43.87, mean14.62) | delta |
+|---|---|---|---|
+| `cudaStreamSynchronize` total | 26.26 s (88.4%) | 26.21 s (87.5%) | -0.19% |
+| `cudaStreamSynchronize` calls | 83,822 | 84,871 | +1.25% |
+| `cudaStreamSynchronize` avg | 313,288 ns | 308,825 ns | -1.42% |
+| `cudaStreamSynchronize` med | 442 ns | 431 ns | -2.5% |
+| `cudaStreamSynchronize` max | 2,552,751,143 ns | 2,549,567,338 ns | -0.12% |
+| `cudaMemcpyAsync` | 1.25 s (4.2%) 31,989× avg39,197 | 1.29 s (4.3%) 31,379× avg41,187 | +3.1% total |
+| `cudaLaunchKernelExC_v11060` | 0.86 s (2.9%) 133,610× avg6,464 | 1.05 s (3.5%) 139,998× avg7,513 | +21.8% total |
+| `cudaLaunchKernel` | 0.37 s (1.3%) 23,611× | 0.42 s (1.4%) 28,246× | +14% |
+| `cudaMemPrefetchAsync_v12020` | 0.578 s (1.9%) 8× avg72,254,419 | 0.583 s (1.9%) 8× avg72,963,141 | +1% |
+| `cudaGraphLaunch` | 0.11 s 1,571× | 0.12 s 1,502× | +0.3% |
+
+Full `n2-only` also matches Part 2's mixed capture (87.6% 25.45s 84,969× 299.5us) within 1-2% — stable sync dominance across captures.
+
+**Interpretation — honest, per instruction to not force a conclusion:**
+
+1. **Sync-dominated confirmed, now twice over:** both separate captures are 87-88% `cudaStreamSynchronize`, re-confirming Part 2's pivot away from UM-migration-storm (prefetch stays 1.9-2.0%, 8 calls, 0.58 s, identical). `cudaMemcpyAsync` (4.2-4.3%) and `cudaLaunchKernelExC` (2.9-3.5%) are minor — **rule out memcpy/launch as driver** of the extra ~20 ms/tok.
+2. **But per-call latency test FAILS to differentiate n=2 vs n=3:** avg per-call sync is essentially identical (313k vs 308k ns, -1.4%), median 442 vs 431 ns (-2.5%), total time -0.19% — **no dramatic per-call spike at n=2**. Call count is also not proportional (+1.25%, not scaling with slots). So neither "blocking-wait-on-idle-slot shows higher per-call latency" nor "just more RPC round-trips at n=2" is supported by this pair.
+3. **Heisenbug / contradiction with non-nsys baseline:** under nsys wrapping, **n=3 is now also slow** (14.6/slot vs non-nsys fast 32-33/slot in Batch 1 and Part 2 boot1's fast 31.8/slot). The earlier clean narrative "n=2 is 1.7× slow per-slot while n=3 uniformly fast 3/3 boots" **does not reproduce under server-side nsys** — both fall into slow mode with near-identical profiles. This suggests nsys overhead (extra synchronization for tracing, or the wrapper's `--force-overwrite` serialization) either masks the scheduling artefact or pushes both concurrencies into the same slow path. We did not obtain a fast nsys trace to compare against — both captures are slow-mode, so the intended fast-vs-slow diff is missing.
+4. **No further localization:** we cannot point to a specific sync call site (e.g., `send_rpc_cmd:316 recv_data` vs `compute_splits:1594 event_synchronize`) — both traces lack NVTX marks per forward pass, and the 37 MB mixed capture and these two separate captures all show the same coarse `cudaStreamSynchronize` bucket. The `cudaLaunchKernelExC` +21% at n=3 is the only notable secondary delta, but at 3-3.5% of total it is not explanatory for a 2× wall-clock gap.
+
+**Disposition:** **ambiguous / contradictory — do not open `review-finding`.** Per instruction, "If this cleanly confirms sync-dominated + localizes further (e.g., which specific sync call site, or a clear per-call latency spike), open the review-finding … If it's ambiguous or contradicts the first capture, say so honestly and stop." This batch **does confirm sync-dominated (87-88% vs 2% prefetch) a second time**, but **fails the per-call latency spike test** and **contradicts the n=2-specific bimodal narrative** by showing n=3 also slow under nsys with an indistinguishable profile. We report this honestly and stop — no `gh issue create --label review-finding`.
+
+**Next step if the project wants to proceed (would need a new bounded batch):** pair a **non-nsys fast baseline** (reproduce n=3 fast outside nsys, capture `concurrent-decode` wall times) against an **NVTX-marked isolated build** in `/tmp/llama-cpp-instr` (instrument `ggml-rpc.cpp:send_rpc_cmd:316` and `ggml-backend.cpp:1594` with `nvtxRangePushA` per rank + per-split, plus chrono `LOG`) to break the `cudaStreamSynchronize` bucket into RPC vs split sites. Alternatively, a **pair of per-workload nsys captures where one is provably fast** (e.g., retry until n=3 hits the 32 tok/s fast mode under nsys, or capture n=1 fast 47 tok/s as reference) to get the missing fast-vs-slow diff. No code in `src/llama-cpp` pin was touched; isolated patch was not built this batch.
+
+**Cap/production:** 2 boots used (n2-only 13:14, n3-only 13:16), each restored via `HYDRA_HEAD_AUTH_TOKEN=$(cat /mnt/WorkDisk/Workplace/hydra_vortex/.hydra-head-token) podman compose -f infra/llama-baseline/docker-compose.baseline.yml up -d` → `15660/9977` within 5-8 s, `{"status":"ok"}` verified at 13:19 (nvidia-smi 15660/9977, 5W/0%). No further boots.
