@@ -57,13 +57,23 @@ for key in ('name', 'description', 'model_path', 'cuda_home', 'rpc_port',
             'spec_draft_type_k', 'spec_draft_type_v',
             'kv_unified', 'llama_bin', 'device', 'ubatch',
             'cache_reuse', 'cache_prompt', 'prio', 'prio_batch', 'context_shift', 'mlock', 'checkpoint_min_step',
-            'cache_idle_slots', 'cache_ram_mib'):
+            'cache_idle_slots', 'cache_ram_mib', 'kv_unified_per_slot',
+            'extra_server_args'):
     val = p.get(key)
     if val is not None:
         print(f"P_{key.upper()}={q(val)}")
 
 tensors = p.get('override_tensors') or []
 print(f"P_OVERRIDE_TENSORS={q(','.join(str(t) for t in tensors))}")
+
+# Optional env: map (KEY: VAL) — exported into this shell so BOTH child
+# servers (ggml-rpc-server + llama-server) inherit it. Example:
+#   env: { GGML_CUDA_GRAPH_OPT: '1', GGML_CUDA_ENABLE_UNIFIED_MEMORY: '1' }
+# Precedent: arm091-092 exported UM via the shell; this makes it explicit
+# and reproducible from the params file itself.
+env_map = p.get('env') or {}
+for k, v in env_map.items():
+    print(f"export {k}={q(v)}")
 PYEOF
 )"
 
@@ -106,6 +116,18 @@ if [[ -n "${P_LLAMA_BIN:-}" && -x "$P_LLAMA_BIN" ]]; then
 else
   LLAMA_BIN=$(find_binary "llama-server")
 fi
+
+# Binary provenance: bisection runs mix isolated builds (pin/v030/v040/...);
+# recording which exact binaries served the run prevents silent RPC/client
+# build mismatches from polluting results.
+_sha_short() {
+  local bin="$1"
+  if [[ -n "$bin" && -x "$bin" ]]; then
+    sha256sum "$bin" 2>/dev/null | cut -c1-12
+  else
+    echo "missing"
+  fi
+}
 
 echo "=== run-with-params: $PARAMS_NAME (SHA: $SHA) ==="
 echo "Date: $(date --iso-8601=seconds)"
@@ -255,6 +277,13 @@ elif [[ "${P_KV_UNIFIED:-}" == "off" || "${P_KV_UNIFIED:-}" == "false" ]]; then
   LLAMA_ARGS+=(--no-kv-unified)
 fi
 
+# Per-slot context cap (v0.4.0+ flag, arm115; sizes the shared KV pool to
+# n_parallel * N when -c is unset). Older builds reject the flag — only set
+# it in params files pinned to v0.4.0+ binaries.
+if [[ -n "${P_KV_UNIFIED_PER_SLOT:-}" ]]; then
+  LLAMA_ARGS+=(--kv-unified-per-slot "$P_KV_UNIFIED_PER_SLOT")
+fi
+
 # Chat template
 if [[ "${P_JINJA:-}" == "on" || "${P_JINJA:-}" == "true" ]]; then
   LLAMA_ARGS+=(--jinja)
@@ -282,6 +311,14 @@ if [[ -n "${P_SPEC_DRAFT_DEVICE:-}" ]]; then
 fi
 if [[ -n "${P_SPEC_DRAFT_NGL:-}" ]]; then
   LLAMA_ARGS+=(--spec-draft-ngl "$P_SPEC_DRAFT_NGL")
+fi
+
+# Free-form extra llama-server args (space-separated string), e.g. `-lv 4`
+# for fused-op resolution diagnostics (see ledger "Attempt 4 prep" §4).
+# Appended LAST so explicit flags win.
+if [[ -n "${P_EXTRA_SERVER_ARGS:-}" ]]; then
+  # shellcheck disable=SC2206
+  LLAMA_ARGS+=(${P_EXTRA_SERVER_ARGS})
 fi
 if [[ -n "${P_SPEC_DRAFT_TYPE_K:-}" ]]; then
   LLAMA_ARGS+=(--spec-draft-type-k "$P_SPEC_DRAFT_TYPE_K")
@@ -479,6 +516,8 @@ rpc_port: ${P_RPC_PORT}
 ctx: ${P_CTX}
 flash_attn: ${P_FLASH_ATTN}
 override_tensors: ${P_OVERRIDE_TENSORS:-none}
+llama_bin: $LLAMA_BIN ($(_sha_short "$LLAMA_BIN"))
+rpc_bin: ${RPC_BIN:-none} ($(_sha_short "${RPC_BIN:-}"))
 EOF
 
 echo ""
