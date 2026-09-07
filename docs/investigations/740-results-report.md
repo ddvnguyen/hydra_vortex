@@ -3292,3 +3292,22 @@ Again **2/2 boots replicate slow r1 vs fast rest**, no nsys heisenbug (n=3 fast 
 **Disposition:** #743 corrected (location + mechanism + fix state). The per-slot draft-acceptance split is a **separate fork-level finding** — candidate new `review-finding`, pending user confirmation (needs instrumented boot to pin the draft-KV restore path before filing).
 
 **Cap/production:** 3 boot attempts (2 OOM-failures from missing UM env — operator error, no measurements; 1 good with measurements). Production restored after final boot: both containers healthy, `{"status":"ok"}`, VRAM 15659/9977. Pin `5fff12845` untouched (standard build used).
+
+---
+
+## Part 5 — instrumented boot: per-slot split localized to content-divergence, draft-KV-restore disproven (2026-09-07) — filed #744
+
+**Boot (1 of 1 approved, instrumented build):** arm111 params, port 18081, protocol = concurrent 2× full-prompt prime (n_predict=8) → measured n=2 ×2 (`--no-warm`). Reproduced the split: client 28.45/21.81 then 22.26/28.82 (client labels flip; server side does not).
+
+**New instrumentation:** `[INSTR][SAVE]` (prompt_save tgt/dft sizes), `[INSTR][PC-LOAD]` (cache_ram restore), `[INSTR][TRIM]` (n_past/p0 + `tgt_pos_max`/`dft_pos_max` at the reuse trim), `[INSTR][DFT-PP]` in `common_speculative_impl_draft_mtp::process()` (per-batch per-seq rows/positions/contiguity), `[INSTR][DRAFT]` in `draft_mtp::draft()` (per-seq begin n_past/id_last/n_max + per-iteration top candidate prob).
+
+**Findings:**
+1. **Server slot 1 always the slow one for a given content** (63 vs 43 verify steps, acc 85/188 vs 106/127). The client-visible "flip" between runs = response-arrival labeling, not server behavior.
+2. **Acceptance curves byte-identical per slot across repeat runs** (greedy determinism) and **identical between slots for the first ~6 steps** — they diverge exactly where the two slots' generated CONTENT diverges. Draft state is pristine at run start (first two steps 3/3 both slots).
+3. Draft confidence flat per slot through the run (top_p ≈ 0.82-0.85 vs 0.87-0.91) — content-property, not accumulating damage.
+4. **Draft-KV-restore hypothesis disproven:** tgt/dft positions symmetric at every trim (2357/2357); cache_ram load never fired (in-KV reuse); all catch-up batches per-seq contiguous (the `process()` shift assumption held); #469/#641 machinery not implicated by any probe.
+5. Mechanism: co-batching changes kernel reduction order → greedy argmax flips at low-margin positions → the two slots generate different texts → **MTP acceptance is content-dependent** (0.45 vs 0.83) → 1.4× per-slot tok/s asymmetry. Batch-1's original 51-vs-30 anomaly = same effect.
+
+**Disposition:** **#744 filed** (review-finding, corrected mechanism; no llama-cpp code change identified — no buggy path found; records the behavior + the measurement hazard for per-slot tok/s under concurrent greedy). Sequential single-slot runs stay pristine (3/3 every step) because the continuation matches the cached draft state; concurrent runs diverge. Harness guidance: report mean acceptance + aggregate; treat per-slot deltas < ~1.5× under same-prompt greedy as suspect.
+
+**Cap/production:** 1 boot (instrumented), restored → both containers healthy, `{"status":"ok"}`, VRAM 15659/9977. Pin `5fff12845` untouched.
