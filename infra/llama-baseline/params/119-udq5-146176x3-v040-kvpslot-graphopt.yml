@@ -1,0 +1,82 @@
+# Arm 119 — arm102 shape on v0.4.0 binaries with BOTH arm115's
+# --kv-unified-per-slot 146176 AND arm117's GGML_CUDA_GRAPH_OPT=1 set
+# TOGETHER (combination test; both were null individually).
+#
+# Purpose: arm115 (--kv-unified-per-slot 146176 alone) and arm117
+# (GGML_CUDA_GRAPH_OPT=1 alone) both showed the same 88-91 band as v0.4.0's
+# own baseline — no individual gain. This arm rules out (or in) an
+# interaction effect: per-slot ctx capping + concurrent-streams-per-split
+# graph optimization enabled simultaneously. Low prior probability, but the
+# combination has never been measured and interaction effects are possible.
+#
+# Shape: identical to arm102/111 (kv_unified OFF, 146176 tokens/slot x 3,
+# 438528 total, cache_ram 24576, K q8_0 / V q4_1, MTP q8_0/q4_1,
+# tensor_split 27,38, ubatch 512, UM on).
+#
+# Binaries: v0.4.0 (5266f24da). Reuse the existing isolated build —
+# /tmp/llama-cpp-v040 (worktree with build-cuda1322/bin from attempt 3,
+# persistent copy at
+# /mnt/WorkDisk/workspace/worktree/build-cuda1322-v040). Run with:
+#   export GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
+#   LLAMA_CPP=/tmp/llama-cpp-v040 \
+#     bash infra/llama-baseline/run-with-params.sh \
+#     infra/llama-baseline/params/119-udq5-146176x3-v040-kvpslot-graphopt.yml
+# (If /tmp was wiped: recreate the worktree at 5266f24da and symlink its
+# build-cuda1322 to the persistent build dir, or let run-with-params.sh
+# find the binaries via P_LLAMA_BIN / LLAMA_CPP pointing at the persistent
+# build — GGML_CUDA_GRAPH_OPT=1 comes from the `env:` map below, no shell
+# export needed for it.)
+#
+# Baselines for comparison (same shape, same synthetic prompt era):
+#   pin 5fff12845  3-conc agg 89.43 / 95.29-95.50 (original prompt)
+#   v0.3.0         3-conc agg 89.73
+#   v0.4.0 alone   88-91 (arms 115/117, original prompt) / 31.69 on
+#                  attempt-3 synthetic prompt (prefill-cold tier-1 run)
+#   arm115 (+kvpslot alone)   91.20 / 90.40
+#   arm117 (+graphopt alone)  90.94 / 83.52
+#
+# Requires GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 exported in the shell (same as
+# 091/092/093/102/111/118 — kept as shell export per established precedent).
+---
+name: 119-udq5-146176x3-v040-kvpslot-graphopt
+description: "arm102 shape on v0.4.0 with BOTH --kv-unified-per-slot 146176 (arm115) AND GGML_CUDA_GRAPH_OPT=1 (arm117) combined. Interaction test: both flags were null individually on the 88-91 band."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 438528
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q4_1
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'off'
+kv_unified_per_slot: 146176
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
+
+# arm117's toggle, now declared in-file so the boot is reproducible from
+# the params file alone (applies to both child servers).
+env:
+  GGML_CUDA_GRAPH_OPT: '1'
