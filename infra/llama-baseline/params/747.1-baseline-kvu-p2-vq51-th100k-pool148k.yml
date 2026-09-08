@@ -1,52 +1,66 @@
 # Arm 747.1 — feature test for hydra_vortex#747: dynamic parallel-slot
-# admission by combined-ctx threshold (--parallel-ctx-threshold).
+# admission by combined-ctx threshold (--parallel-ctx-threshold), PLUS
+# --kv-unified-per-slot (upstream commit 18443257a).
 #
-# Base = 747.0-baseline-nokvu-p2-vq51-th100k.yml, with ONE change: restores
-# kv_unified: on (747.0 diverged to kv_unified=off + ctx=296000 = 2×148000
-# separate per-slot fences, the arm102 approach). This arm goes back to
-# 747.0's OWN header intent (line 4-6 of that file): "Base = arm090-
-# equivalent (... kv_unified=on, ctx=148000 ...) ... lets a single sequence
-# use the whole pool."
+# REVISED (2026-09-08): earlier draft of this file used bare `kv_unified: on,
+# ctx: 148000` with no per-slot cap — that tests the UNGOVERNED shared-pool
+# case (one request could hog the whole 148K pool, starving the other slot).
+# User direction: 747.1 should specifically exercise --kv-unified-per-slot,
+# not bare kv_unified:on. Revised design below.
 #
-# WHY THIS MATTERS: with kv_unified=on, n_ctx_seq = n_ctx (the TOTAL is the
-# per-sequence ceiling — src/llama-cpp/src/llama-context.cpp:290-293), so
-# ctx: 148000 here means EITHER slot can use up to the full 148K, and the
-# two slots share ONE physical pool instead of two separate 148K fences
-# (296K total VRAM reservation in 747.0 vs 148K here — roughly half the KV
-# footprint). This is also the scenario 747.0's own "Budget logic" comment
-# describes ("threshold (100K) < pool (148K) guarantees the combined
-# resident ctx can never exceed the static kv_unified pool") — that
-# description was written for a shared 148K pool, not 747.0's actual
-# doubled-fence implementation. 747.1 tests the gate against the design it
-# was originally described against.
+# WHAT --kv-unified-per-slot ACTUALLY DOES (verified at source,
+# tools/server/server-context.cpp n_ctx_slot() + server.cpp ctx_pool_auto_sized):
+#   it caps EVERY slot's usable ctx at min(pool_size, N, n_ctx_train) even
+#   though all slots draw from ONE shared physical KV buffer. Without it,
+#   kv_unified:on has no such cap — a single deep request can consume the
+#   entire pool. With a pool LARGER than N, the cap is the interesting part
+#   (with pool == N, as the earlier draft had it, the cap can never bind —
+#   the pool itself is already the ceiling, so the flag would do nothing).
+#
+# THIS ARM: kv_unified: on, ctx: 296000 (SAME total pool as 747.0 — one
+# shared 296K buffer, not two separate 148K fences), plus
+# --kv-unified-per-slot 148000 added to extra_server_args. This is the
+# actual novel combination: shared-pool VRAM flexibility (idle-slot headroom
+# isn't dead-reserved the way 747.0's hard fences are) WITH a hard guarantee
+# that no single request can exceed 148K and starve the other slot — the
+# middle ground between 747.0 (hard fences, no starvation risk, no sharing)
+# and the ungoverned kv_unified:on case (full sharing, real starvation risk).
 #
 # CHANGES vs 747.0:
 #   kv_unified: off -> on
-#   ctx: 296000 -> 148000 (total = per-slot ceiling under kv_unified=on;
-#     this is NOT "148000 per slot with a 296000 total" — it's a single
-#     148000 shared pool, matching arm090 exactly)
+#   ctx: 296000 (unchanged — still ONE shared pool of this size now, not
+#     2x148000 separate fences)
+#   kv_unified_per_slot: 148000 (dedicated harness field,
+#     run-with-params.sh:281-283, emits --kv-unified-per-slot 148000;
+#     --parallel-ctx-threshold 100000 stays as-is in extra_server_args)
 #   Everything else byte-identical: parallel 2, tensor_split 27,38, K q8_0/
-#   V q5_1 main+draft MTP, UM env, cache_ram 16384, threshold 100000.
+#   V q5_1 main+draft MTP, UM env, cache_ram 16384.
 #
-# EXPECTED BEHAVIOR (same acceptance criteria as 747.0):
-#   1. Single request: arm090-parity tg (~37-40 tok/s).
-#   2. n=2 concurrent small (combined <<< 100K): genuine parallel decode.
-#   3. n=2 concurrent deep (combined >= 100K): 2nd request DEFERS at
-#      admission until the 1st releases (same gate log line as 747.0).
-#   4. 4-phase VRAM margins (boot/warm/fill/decode); expect meaningfully
-#      LOWER KV footprint than 747.0 (shared 148K pool vs doubled 296K) —
-#      record the free-VRAM delta vs 747.0's boot numbers explicitly, this
-#      is the primary new data point this arm adds.
-#   5. WATCH FOR: with kv_unified=on, a single slot pinned near 148K could
-#      leave near-zero room for the 2nd slot even under the 100K admission
-#      threshold (100K + 100K candidate could still admit two requests that
-#      together approach the 148K ceiling before either finishes prefill —
-#      the threshold gates ADMISSION on resident-sum, not final size). If
-#      this arm shows OOM or KV-shift thrashing that 747.0 didn't, that is
-#      itself the finding (shared-pool vs per-slot-fence tradeoff).
+# EXPECTED BEHAVIOR:
+#   1. Boot log: confirm "capping per-slot context (296000) to
+#      --kv-unified-per-slot (148000)" appears (server-context.cpp's
+#      SRV_INF line) — proves the cap is actually binding, not a no-op.
+#   2. Single request: arm090-parity tg (~37-40 tok/s), and confirm a
+#      SINGLE request cannot exceed 148000 tokens even though the shared
+#      pool is 296000 (the cap enforces this, unlike bare kv_unified:on).
+#   3. n=2 concurrent small (combined <<< 100K): genuine parallel decode.
+#   4. n=2 concurrent deep (combined >= 100K): 2nd request DEFERS at
+#      admission (same gate behavior as 747.0/original-747.1-draft).
+#   5. 4-phase VRAM margins — compare against BOTH 747.0 (296K, 2 hard
+#      fences) and record whether the shared-296K-pool-with-148K-cap uses
+#      less/more/same VRAM at boot (the two configs allocate the same raw
+#      pool size, so expect similar footprint; the difference this arm
+#      tests is BEHAVIORAL — starvation resistance — not VRAM savings).
+#   6. WATCH FOR: with two slots concurrently near their 148K per-slot cap
+#      inside the shared 296K pool, confirm the SECOND slot still gets its
+#      full 148K (the point of the cap) rather than being starved by the
+#      first slot's growth — this is the property bare kv_unified:on cannot
+#      guarantee and 747.0's hard fences guarantee structurally. If this
+#      arm shows the same guarantee via the cap instead of via separate
+#      buffers, that's the finding.
 ---
 name: 747.1-baseline-kvu-p2-vq51-th100k-pool148k
-description: "hydra_vortex#747 arm 747.1: same as 747.0 (clean v0.4.0 5266f24da + admission gate port + UM prefetch net, parallel=2, V q5_1 main+draft, threshold 100000) but kv_unified ON with ctx=148000 as a single SHARED pool (matches arm090/747.0's own stated design intent) instead of 747.0's kv_unified OFF + 296000 total (=2x148000 separate per-slot fences)."
+description: "hydra_vortex#747 arm 747.1: same as 747.0 (clean v0.4.0 5266f24da + admission gate port + UM prefetch net, parallel=2, ctx=296000, V q5_1 main+draft, threshold 100000) but kv_unified ON (one shared 296000 pool instead of 747.0's 2x148000 separate fences) plus --kv-unified-per-slot 148000 (hard per-slot cap enforced inside the shared pool, preventing one request from starving the other) — tests the actual novel capability of --kv-unified-per-slot, not bare kv_unified:on."
 
 model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
 cuda_home: /opt/software/cuda/13.2.2
@@ -60,7 +74,7 @@ env:
   GGML_CUDA_ENABLE_UNIFIED_MEMORY: '1'
 tensor_split: 27,38
 n_gpu_layers: 99
-ctx: 148000
+ctx: 296000
 rope_scaling: yarn
 rope_scale: 5
 yarn_orig_ctx: 32768
@@ -72,6 +86,7 @@ jinja: 'on'
 parallel: 2
 cont_batching: 'on'
 kv_unified: 'on'
+kv_unified_per_slot: 148000
 spec_type: draft-mtp
 spec_draft_type_k: q8_0
 spec_draft_type_v: q5_1
