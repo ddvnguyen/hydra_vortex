@@ -1,0 +1,71 @@
+# Arm 123 — arm122 + kv_unified back to 'on' (was 'off' in the whole
+# 102/110/111/119/120/121/122 UM-family). Everything else unchanged: 2
+# slots, ctx=262144 total (131072/slot nominal), draft bf16, YaRN, UM-backed.
+#
+# WHY: arm090 (production pin, never paging-collapses) uses kv_unified=on
+# with parallel=1. Every UM-family arm tested so far (119/120/121/122) used
+# kv_unified=off (fixed per-slot KV split). This arm isolates kv_unified
+# itself as a variable at parallel=2: does unified KV management (single
+# shared buffer / dynamic sequence placement) change the paging-collapse
+# behavior at the same combined depth (~157K across 2 slots), or is it
+# indifferent like YaRN turned out to be (arm122 vs arm121: no measurable
+# difference in decode speed or draft acceptance)?
+#
+# NOTE: with kv_unified=on, --ctx-size is the TOTAL shared pool across all
+# n_seq_max sequences, not divided per-slot the way arm119-122's
+# --no-kv-unified was. Same nominal 262144-cell capacity, same UM
+# requirement expected (this doesn't change KV byte-size math, only how
+# the buffer is organized/shared).
+#
+# TEST PLAN (same as arm122, for direct comparison):
+#   1. Single request at ~88.8K depth.
+#   2. n=2 concurrent (~88.8K + ~68.7K, same two prompts as arm121/122).
+#
+# Base: params/122-udq5-131072x2-nokvu-cram24-um-draftbf16-yarn.yml
+# (unchanged: cram24, split 27,38, main K=q8_0/V=q5_1, MTP kept, draft
+# K/V bf16, YaRN yarn/scale=5/orig_ctx=32768, 2 slots).
+#
+# Requires GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 exported in the shell for the
+# bare-metal run-with-params.sh path -- set for BOTH child processes since
+# the RPC-side KV buffer allocation happens in the separate rpc-server
+# process, not llama-server itself.
+---
+name: 123-udq5-131072x2-kvu-cram24-um-draftbf16-yarn
+description: "arm122 (2x131072, draft bf16, YaRN, UM-backed) with kv_unified switched back to 'on' (was 'off'). Isolates whether unified-KV management changes the paging-collapse behavior at the same combined depth vs the fixed per-slot split used by 119-122."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 262144
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'on'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: bf16
+spec_draft_type_v: bf16
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

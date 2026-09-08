@@ -1,0 +1,73 @@
+# SPIKE-contig8 (research spike, NOT an arm) - adjacency A/B leg (a): CONTIGUOUS
+# 8-block offload window, blocks 43-50 (the cheapest contiguous 8-window in
+# CUDA0's 28-63 range, family selection rule unchanged).
+#
+# PURPOSE (docs/investigations/740-results-report.md Part 2 note): test whether
+# ggml's backend-scheduler treats CPU-offloaded FFN islands differently based
+# on ADJACENCY. Leg (b) spike-scatter8 offloads 8 ISOLATED blocks with an
+# IDENTICAL byte mass; any free-margin / split-count / speed difference
+# between the two legs is a pure position/adjacency effect.
+#
+# BYTE MATCHING (exact, from the arm125-header GGUF parse):
+#   contig 43-50 = 186.60 (43) + 175.31 x6 (44-49) + 186.60 (50) = 1425.06 MiB
+#   scatter      = 175.31 x7 (30,32,34,38,45,47,49) + 197.89 (40) = 1425.06 MiB
+#   => identical CPU bytes/step and identical freed VRAM by construction.
+#
+# Base: arm124 (124-udq5-98304x2-nokvu-cram24-ffncpu8-noum.yml) with ONLY the
+# override window, ctx, and probe runtime changed. NO UM, parallel 2, same KV
+# quants, same MTP draft config. Short shallow prompts only - this is a
+# buffer-line / graph-split / short-decode probe, not a margin arm.
+#
+# CTX 98304 (2 x 49152), NOT arm124's 196608: at 196608 an 8-block window must
+# free >= 1512.23 MiB (arm124 header margin math) or CUDA0 compute reserve
+# OOMs - the first contig attempt at 196608 with 1425.06 freed died exactly
+# that way ("cudaMalloc failed: out of memory" at pp reserve; the failed boot
+# is preserved in results/spike-contig8-FAILED-ctx196608-oom). The A/B
+# comparison is internal (both legs identical ctx), so ctx is free to shrink;
+# 98304 leaves ~2 GiB of CUDA0 headroom for the same 1425.06 freed.
+#
+# Expected from source (ggml-backend.cpp:1055-1440): tg graph splits = 2N+3
+# (each CPU FFN island adds 2 splits regardless of position) => BOTH legs
+# should log "graph splits = 19 (with bs=1)". Deviation = finding.
+---
+name: spike-contig8
+description: "A/B leg (a): contiguous 8-block FFN offload 43-50 (1425.06 MiB), ctx 98304 (2x49152), no UM. Byte-matched vs spike-scatter8."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors:
+  - 'blk\.(4[3-9]|50)\.ffn_(gate|up|down)\.weight=CPU'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 98304
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 64
+requests: 5
+prompt_path: /tmp/bigprompt.txt
+timeout: 900
+extra_server_args: '-lv 4'
+expect: unknown

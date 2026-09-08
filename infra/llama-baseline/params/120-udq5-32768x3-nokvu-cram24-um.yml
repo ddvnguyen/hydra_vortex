@@ -1,0 +1,89 @@
+# Arm 120 — arm111/102 shape right-sized to the no-paging VRAM envelope:
+# 32768x3 = 98304 total cells (vs 146176x3 = 438528), kv_unified off, cram24,
+# UM on, split unchanged 27,38, K=q8_0/V=q5_1, MTP unchanged.
+#
+# WHY (evidence: 740-results-report.md "Live finding 2026-09-07"):
+#   The 438528-cell shape allocates CUDA0 21.76 GiB vs 16.31 GiB physical
+#   (model 11101 + main-KV 6986 + draft-KV 723 + RS 1010 + compute 1936 MiB)
+#   and RPC0 15.22 GiB vs 12.29 GiB. UM backs the difference with host RAM,
+#   so the boot fit is blind to it ("36250 MiB vs 171460 MiB free — no changes
+#   needed"). KV residency on CUDA0 caps at ~1.0-1.5 GiB → the paging cliff
+#   sits at ~61-88K COMBINED filled tokens (~20-29K mean depth across 3
+#   slots). Real 3-agent traffic at 34/64/66K (164K combined) measured
+#   2.24 tok/s combined with CUDA0 PCIe thrash at 10.7-13.5 GB/s rx /
+#   6.7-11.3 GB/s tx (vs ~104 tok/s shallow-harness aggregate on the same
+#   shape). Compute-bound counterfactual at that depth is ~30-40 tok/s —
+#   paging dominates by 5-15x.
+#
+# MATH for 98304 cells (from measured per-layer sizes, 9:7 attn split,
+#   +3.56% cell overhead; full-attn layer = 1792 B/token, draft 1730 B/token):
+#   CUDA0 worst case (9 attn layers): 11101 + 1566 + 170 + 1010 + 1936
+#     = 15783 MiB → ~528 MiB free at FULL fill (both placement outcomes OK).
+#   RPC0 worst case (9 attn layers): 7062 + 1566 + 786 + 1936
+#     = 11350 MiB → ~938 MiB free.
+#   32K/slot × 3 is the largest total that keeps >=400 MiB margin on CUDA0
+#   in BOTH layer-placement outcomes; sessions deeper than 32K get
+#   context-shifted (context_shift is on, as in 102/111).
+#
+# EXPECTED: shallow tiers unchanged (arm106/107/110/111/114 all prove shallow
+#   speed is insensitive to split/ctx/V-quant; only residency changed). Deep
+#   3x32K concurrent: ~30-50 tok/s combined expected vs 2.2-8 on the 438528
+#   shape — that delta IS the acceptance test, via multiturn-growth-test.sh
+#   at 3 sessions x 10 turns.
+#
+# GATE (>=2 fresh boots, per house rule):
+#   1. Boot PASS, log shows n_ctx_slot = 32768, kv_unified = 'false'.
+#   2. Boot-log breakdown lines: CUDA0 self <= ~15800 MiB, RPC0 <= ~11400.
+#   3. nvidia-smi: >= 400 MiB free on BOTH GPUs after warmup.
+#   4. Tiers within arm111's band (1-conc ~33, 2-conc ~50, 3-conc ~97 agg).
+#   5. multiturn 3x10 growth: no thrash signature (per-slot tok/s >= arm111
+#      multiturn's 9-21 band at similar depth).
+#
+# FOLLOW-UPS (do not fold into this arm):
+#   - UM-off probe on this exact shape (arm112 analog). At 98304 cells it
+#     should boot without GGML_CUDA_ENABLE_UNIFIED_MEMORY — if it does,
+#     prefer UM off permanently (removes the fit-blindness and the
+#     missing-env OOM crash-loop incident class).
+#   - 3x49152 (147456 total) is provable only with draft-MTP dropped.
+#   - Split-rebalance x K=q5_x combo if >131K combined residency is ever
+#     required (needs accuracy parity re-eval; arm080/081 acc tax).
+#   - Same UM requirement note as 111: GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 must
+#     be set for BOTH compose services (llama AND rpc) — see the 62-restart
+#     OOM incident. This shape may not need it at all pending the probe.
+---
+name: 120-udq5-32768x3-nokvu-cram24-um
+description: "arm111/102 shape right-sized to no-paging envelope: 32768x3 (98304 cells), split 27,38, K=q8_0/V=q5_1, MTP kept. Fixes UM paging collapse at real 34-66K depths (2.24 tok/s observed) at the cost of context-shift above 32K/slot."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 98304
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 3
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

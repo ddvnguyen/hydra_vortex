@@ -1,0 +1,236 @@
+# Arm 125 — ctx push: 2 x 114688 slots (229376 total cells, +16.7% over
+# arm124's 196608) via a REALLOCATED FFN offload — 13 CUDA0 blocks (43-55,
+# chosen through the mid-band, 2425.80 MiB) + 2 RPC0 blocks (14-15, 273.59
+# MiB) = 15 offloaded blocks, 2699.39 MiB total CPU bytes/step. NO UM.
+#
+# GOAL (issue #746 thread, next iteration after VERIFIED arm124):
+#   push BOTH axes: n=2 combined ctx size AND decode speed. arm124 proved
+#   the mechanism (20.58 tok/s combined @ 157480 filled, no UM). This arm
+#   converts the speed gained arm124-cum + spare margins into ctx.
+#   Tradeoff direction (openly stated): ctx +16.7% costs CPU tax +61%
+#   (1.67 -> 2.70 GiB/step); expected combined ~13-17 tok/s at 157.5K fill,
+#   ~11-15 at ~203K fill — far above UM-family 0.9-2.7 at >150K.
+#
+# ============ NEW EVIDENCE 2026-09-08: EXACT GGUF PARSE ============
+# Parsed the GGUF header of /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+# (10996621 bytes header + tensor table, 866 tensors, n_vocab 248320;
+# sizes derived from next-tensor-offset diffs, cross-checked: trunk
+# 16.44 GiB + output 994.6 + MTP 334.7 + tok_embd 682.0 = 18.40 GiB file).
+#
+# Per-block FFN (3 tensors gate|up|down) EXACT MiB — model is NOT uniform:
+#   blk  0-1   162.03 162.70      blk 10   164.69
+#   blk   2   175.98             blk 11   148.75
+#   blk 3-4   197.89 (x2)        blk 12-13  162.03 162.03
+#   blk  5    186.60             blk 14-17  138.12 135.47 138.12 140.78  (CHEAPEST band)
+#   blk 6-9   175.31 (x4)        blk 18-19  162.03 151.41
+#   blk 20-21 186.60 175.31      blk 22-27  197.89 197.89 197.89 186.60 186.60 175.31
+#   blk 28-63: 186-208 band, rising toward the tail:
+#     175.31 x13  (30,32,34,35,37,38,39,44,45,46,47,48,49)
+#     186.60 x8   (29,31,33,36,41,42,43,53)
+#     197.89 x4   (28,40,51,52)
+#     209.18 x10  (54-63, ALL-q6_K UD bump — THE most expensive 10 blocks)
+#   FFN total 11.36 GiB; trunk (attn+ssm+FFN) 16.44 GiB.
+#
+# ARM124 CORRECTION from exact data: blocks 56-63 = 8 x 209.18 = 1673.44 MiB
+#   freed (header estimated ~1492). exact paper margin = 16311 - [(11101.01 -
+#   1673.44) + 1936.47 + 673.31 + 3455.90(KV+draft @196608)] = 817.7 MiB, not
+#   ~636. MEASURED free post-warmup = 161 MiB -> CONSTANT RUNTIME GAP
+#   ~657 MiB (CUDA context + loader/quant shape slack, NOT fill-dependent:
+#   KV buffers are committed at cudaMalloc). Calibration used below:
+#   predicted_measured ~= paper_margin - 657 (+/- ~100).
+#   => arm124's contiguous-tail choice was the most expensive 8-block choice
+#   in the model; the cheapest same-count choice (44-51, 1402.48) would have
+#   freed LESS VRAM (1402.48 < 1512.23 needed) -> arm124 was near-minimal
+#   tax for its T — no free speed win at 196608 exists inside this lever set.
+#
+# LAYER->GPU BOUNDARY NOW CONFIRMED (was inferred in arm124):
+#   cum(bytes, blocks 0..27 from GGUF) = 7063 MiB == RPC0 model buffer
+#   7062.06 measured (arm111 boot) within ~1 MiB; remainder + output 994.6 +
+#   MTP 334.7 = 11101.0 == CUDA0 model buffer 11101.01. So RPC0 hosts blocks
+#   0-27, CUDA0 hosts blocks 28-63 + output + MTP. CPU buffer 682.03 ==
+#   tok_embd (682.0 exactly, q4_K). Offload below therefore CAN use blocks
+#   28-63 for CUDA0 relief and 0-27 for RPC0 relief.
+#
+# VRAM MATH at T = 229376 cells (2 x 114688 per-slot; per-slot < yarn
+#   cap 163840 OK), NO UM:
+#
+#   CUDA0 (16311 MiB physical). Per-cell KV+draft = 18433 B/token
+#   (16703 main + 1730 draft, measured):
+#     model        11101.01 - 2425.80   =  8675.21 MiB
+#     main KV      229376 x 16703 B     =  3654.74 MiB
+#     draft KV     229376 x 1730  B     =   378.42 MiB
+#     RS (2 seqs)  1197 x 9/16          =   673.31 MiB
+#     compute      (3-seq measured)     =  1936.47 MiB
+#     TOTAL                             = 15318.15 -> paper margin ~992.9
+#     PREDICTED measured free ~= 992.9 - 657 ~= 335 (+/-100) — clears
+#     arm124's 161 with room while adding only +1 block vs Nc=12
+#     (which predicted ~148 +/-100, a coin flip).
+#
+#   RPC0 (12288 MiB physical) at T=229376, offload blocks 14-15:
+#     model 7062.06 - 273.59 = 6788.47
+#     main KV 229376 x 12986 B = 2841.0  (12.99 KiB/token measured)
+#     + compute 1936.47 + RS 523.70
+#     TOTAL                          = 12089.64 -> margin ~198 MiB
+#     (>= arm090's proven-stable 167-191 floor). Without the 273.59 MiB
+#     offload RPC0 would be -75 MiB OVER physical -> the RPC0-side offload
+#     is REQUIREMENT, not optional, for this ctx size.
+#     (RPC0 nvidia-total basis 12288; the crash-era 11911 'used' basis was a
+#     different shape — arm124's clean boot at 11957 used < 12288 confirms.)
+#
+# CPU COST (the trade, quantified):
+#   - Decode: 2699.39 MiB DDR reads per verify-step (+61.3% vs arm124's
+#     1673.44; both GPUs' offloads run on the SAME host CPU/DDR inside
+#     llama-server, additive). At ~40-50 GB/s effective: ~54-68 ms/step
+#     CPU-side vs arm124's ~33-42. Expect combined 13-17 tok/s @ 157.5K
+#     fill and ~11-15 @ ~203K fill (fill adds GPU-side KV reads too).
+#     MTP amortizes the tax over accepted tokens; acceptance canary below.
+#   - PREFILL: 15 CPU FFN layers x 512 ubatch ~ 4.1 TFLOP CPU/ubatch ->
+#     ~4-8 s/ubatch. 88805 tok ~ 174 ub ~ 12-22 min; the new ~112K prompt
+#     ~ 226 ub ~ 15-25 min ONE-TIME per prompt (cache_prompt + cache_ram
+#     24576 MiB / cram hold states afterwards). Set curl timeouts >= 3600s.
+#   - Loader warns "tensor overrides to CPU are used with mmap" — expected.
+#   - Rejected: output-head (output.weight 994.6 MiB) CPU offload frees the
+#     same MiB at the same ~ms/MiB (BW-bound) but serializes a vocab-GEMM
+#     after the last block and adds logits copies — no efficiency win.
+#   - Rejected: cheapest-N scattered selection (mix blocks to minimize CPU
+#     bytes, ~-10-15% more): changes TWO variables (selection pattern AND
+#     count) in one arm; documented as follow-up lever with exact data
+#     available for it.
+#   - Rejected: spec draft n_max extension — per-position acceptance data
+#     (0.78/0.615/0.493 shallow; arm124 64.6%/51.5% deep) decays fast;
+#     deeper drafting yields <= +5% tokens/step. Not set.
+#
+# WHY BLOCKS 43-55 (CUDA0) + 14-15 (RPC0):
+#   Contiguous CHEAPEST windows within each GPU's own block range:
+#   - CUDA0 needs 2425.80 freed... Nc=13 window 43-55 is the cheapest
+#     13-block contiguous run in 28-63 (43:186.60 + 44-49:175.31x6 +
+#     50:186.60 + 51,52:197.89x2 + 53:186.60 + 54,55:209.18x2 = 2425.80;
+#     adding block 43 costs only 186.60 for +186.6 margin). Blocks 54-63
+#     (arm124's tail) are deliberately EXCLUDED — they are the model's most
+#     expensive FFN blocks (209.18 each); offloading them for the same count
+#     costs +96 MiB/block more CPU bytes with no extra VRAM benefit ratio.
+#   - RPC0 needs 273.59: blocks 14-15 = model's cheapest contiguous pair
+#     (138.12 + 135.47). Nr=1 (block 15 alone, 135.47) leaves margin 60 MiB
+#     — below the arm090 floor; Nr=2 puts RPC0 at ~198 MiB free.
+#   - Quality canary: scattered mid-band offload (43-55 + 14-15) spans both
+#     GPUs' halves. Watch MTP acceptance vs arm119 cumulative ~0.636 and
+#     arm124's 64.6%/51.5%: a large drop flags damage. arm124's "last-blocks
+#     for VRAM geometry" rationale applied in reverse: with the boundary
+#     now confirmed, ANY blocks inside a GPU's own range are equivalent for
+#     mapping purposes.
+#
+# STRATEGY CEILING (documented for the follow-up debate):
+#   Next ctx step, T = 262144 (arm121's allocation), needs CUDA0 offload
+#   >= 2828 (Nc=15, ~2867 MiB) and RPC0 Nr=5 (KV 3247.2; margin ~207 with
+#   cheapest window 14-18, 549.83 MiB) -> 20 blocks ~ 3473 MiB/step (+29% on
+#   top of this arm) -> expected combined maybe 10-13 tok/s. Strictly more
+#   ctx for ~25-40% less speed. Defer until arm125 telemetry (dmon +
+#   spec stats + margins) lands; that data refines the CPU-vs-GPU step
+#   split and decides whether 262K is worth a run.
+#
+# !!! UM MUST BE OFF (same as arm124) !!!
+#   No GGML_CUDA_ENABLE_UNIFIED_MEMORY on the bare-metal run-with-params
+#   path; if booting via docker-compose.baseline.yml, override the env in
+#   both services to "0". This arm's margins are physical-VRAM math —
+#   UM would silently repaginate and collapse decode again.
+#
+# GATE CHECKLIST (>=2 fresh boots, per house rule):
+#   1. Boot log buffers (verbosity >= 4 — arm124's preserved logs lacked
+#      per-buffer lines, leaving its margin unexplained; do NOT trim):
+#        CUDA0 model ~ 8675 MiB (drop 2425.80 vs 11101.01)
+#        RPC0 model ~ 6788 MiB (drop 273.59 vs 7062.06)
+#        CPU model ~ 3381 MiB (682.03 + 2699.39)
+#        CUDA0 KV main ~ 3654.7 + draft ~ 378.4
+#        RPC0 KV main ~ 2841.0
+#        RS ~ 673.31 (CUDA0) + 523.70 (RPC0); compute ~1936.47 each
+#      -> this single gate CONFIRMS the layer->GPU boundary empirically.
+#   2. n_ctx_slot = 114688, kv_unified = false; ready ~15-25s (+load of
+#      2.7 GiB CPU tensor data vs arm124's 1.7).
+#   3. Boots WITHOUT UM env; no OOM; no crash-loop.
+#   4. nvidia-smi per GPU after boot, after warmup, after fill; PASS gate:
+#      CUDA0 free >= ~200 MiB at warm + full ~203K fill; RPC0 free >= ~120.
+#      (If CUDA0 < 100 at partial fill, STOP and report — the 657-gap
+#      calibration failed; capture full nvidia-smi + boot log first.)
+#   5. Decode telemetry dmon during n=2 decode: PCIe < ~3 GB/s (no paging
+#      storm). Capture ogbench-free decode margin while at it.
+#
+# TEST PLAN (handoff; boot-rig agent executes, 740-reporters record):
+#   Test prompts 2026-09-08 state:
+#     /tmp/bigprompt_90k_a.txt  88805 tok   (slot A)
+#     /tmp/bigprompt_90k_b.txt  68675 tok   (alternates/sanity)
+#     NEW slot-B prompt: BUILD FIRST — target ~313-317 KB of text
+#     (~112-114.5K tokens at 2.77 B/token measured family-wide), path
+#     /tmp/bigprompt_112k.txt, MUST be <= 114688 tokens (per-slot cap),
+#     buildable by concatenating large sources under src/llama-cpp
+#     (server.cpp, llama-vocab.cpp, ggml.c, unicode.cpp etc.), then verify
+#     token count < 114688 via a short tokenize probe before priming.
+#   0. Boot; run gates 1-5. Confirm spec stats healthy on a short request.
+#   1. PRIME slot A: bigprompt_90k_a (max_tokens ~256, stream, timeout
+#      >= 3600s). Record print_timing tg.
+#   2. PRIME slot B: bigprompt_112k (server assigns idle slot; cram keeps
+#      slot A warm). Record tg + prefill wall time.
+#   3. n=2 CONCURRENT at deep fill: both prompts as fresh completions
+#      simultaneously (max_tokens 256-512 each). Combined fill = 88805 +
+#      ~112K ~= 201K of 229376 committed (~28K cells generation headroom).
+#      Record per-slot tg + combined + margins + dmon + spec stats.
+#      PASS: combined >= ~13 tok/s at ~201K filled (arm124: 20.58 @ 157.5K
+#      filled; UM-family at this depth: 0.9-2.7) AND gates 4-5 clean AND
+#      no context-shift events AND acceptance within canary band.
+#   4. Regression check vs arm124: rerun the SAME two 90K prompts n=2
+#      (157.5K filled) once; record combined (expect ~13-17 vs arm124's
+#      20.58 — the +61% CPU tax is the accepted cost; this number ranks
+#      the arm on the frontier alongside its +16.7% ctx).
+#   5. Report everything to docs/investigations/740-results-report.md
+#      (append-only): per-block buffer lines, margins (boot/warm/fill),
+#      per-slot + combined tok/s, acceptance, prefill wall times, dmon.
+#      If step-time decomposition is possible from dmon (GPU busy vs
+#      total), capture it — it settles the unresolved CPU-BW vs RPC-
+#      serialization vs sampling split left open since arm124.
+#
+# Base: params/124-udq5-98304x2-nokvu-cram24-ffncpu8-noum.yml, with:
+#   ctx 196608 -> 229376 (2 x 114688), override_tensors & offload set ->
+#   blocks 43-55 (CUDA0) + 14-15 (RPC0) = 15 blocks (cheapest contiguous
+#   windows, exact GGUF sizes), everything else unchanged.
+---
+name: 125-udq5-114688x2-nokvu-cram24-ffncpu15-cheap-noum
+description: "2x114688 slots (229376 cells, +16.7% vs arm124) via REALLOCATED FFN offload to the cheapest contiguous runs: 13 CUDA0 blocks 43-55 (2425.80 MiB — excluding the model's most-expensive 54-63 tail arm124 used) + 2 RPC0 blocks 14-15 (273.59, required — RPC0 alone is -75 MiB over at this ctx). 15 blocks, 2699.39 MiB CPU/step (+61%), NO UM. Holds up to ~201K combined filled (n=2 near-deep) without paging; expected combined ~13-17 tok/s at 157.5K fill, ~11-15 at ~201K (vs UM-family 0.9-2.7). Prefill ~12-25 min/prompt one-time."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors:
+  - 'blk\.1[4-5]\.ffn_(gate|up|down)\.weight=CPU'
+  - 'blk\.(4[3-9]|5[0-5])\.ffn_(gate|up|down)\.weight=CPU'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 229376
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
+extra_server_args: "-lv 4"

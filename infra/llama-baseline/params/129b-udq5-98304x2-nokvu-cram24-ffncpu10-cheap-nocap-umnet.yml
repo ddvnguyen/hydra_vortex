@@ -1,0 +1,154 @@
+# Arm 129b — the clean cap-cost A/B counterpart to arm129: IDENTICAL N=10
+# window (CUDA0 blocks 30-39, 1,786.97 MiB freed, T=196608), UM net ON,
+# everything unchanged EXCEPT the CPU core reservation is REMOVED
+# (extra_server_args drops --cpu-range/--cpu-range-batch/--threads/
+# --threads-batch, keeping only -lv 4 for gate-1 buffer visibility).
+#
+# ======================================================================
+# USER DIRECTION (2026-09-08): "Change no cpu cap" — after arm129 (6-core
+# capped) landed at ~12 tok/s combined decode, well below the family's
+# N=10 interpolated prediction (17.0-19.6) and below arm127's uncapped
+# N=12 (16.01), isolate how much of that shortfall is the cap vs. N=10
+# itself by re-running the EXACT SAME offloaded window with no thread/
+# affinity cap at all (server default: --threads -1 = auto).
+# ======================================================================
+#
+# WHAT STAYS IDENTICAL TO ARM129 (verified against arm129's file, byte
+# for byte on every other field): override_tensors (blk\.3[0-9]\., same
+# 30-39 window), ctx 196608 (2x98304), kv_unified off, UM env ON, KV
+# quants, MTP/draft config, cache_prompt/cache_idle_slots/cram24, tensor
+# split 27/38. Only extra_server_args changes.
+#
+# EXPECTED VRAM MATH — UNCHANGED from arm129 (the cap does not touch any
+# buffer size; compute/KV/model buffers are independent of --cpu-range):
+#   CUDA0 model 9314.04 MiB (11101.01-1786.97), main KV 3132.40, draft KV
+#   324.30, RS 673.31, compute 1144.01 -> used 14588.06, gap band
+#   1448.4-1505.6 -> FREE BAND ~217-275 MiB (arm124-class, thin, UM net
+#   is the safety catch). RPC0 unchanged ~771 free (no RPC0 offload at
+#   this ctx). Gate thresholds UNCHANGED from arm129: phase-a PASS >=250
+#   / HARD STOP <150 (gray 150-219 = capture one more phase + report,
+#   do not deep-fill on your own judgment); phase-c PASS >=140 / HARD
+#   STOP <100.
+#
+# WHAT THIS ARM TESTS: arm129 (verified 2026-09-08, see ledger) showed
+# prefill UNAFFECTED by the 6-core cap (401/433 tok/s, matching the
+# DDR-bandwidth-bound prediction) but decode HARD HIT (~12 tok/s combined
+# vs 17.0-19.6 predicted, the worst in the family despite N=10 sitting
+# between arm124's N=8 [20.58] and arm127's N=12 [16.01]). Hypothesis:
+# decode's tiny per-step batches (batch=1/slot, 2 slots interleaved) are
+# thread/dispatch-bound in a way prefill's large 512-token ubatches are
+# not. This arm removes the cap entirely to test that hypothesis
+# directly: if combined decode lands near the original 17.0-19.6 band
+# (or interpolates cleanly between arm124/127 by N alone), the cap was
+# the dominant cause of arm129's shortfall. If it's still well below
+# that band, N=10's window selection (not the cap) explains more of the
+# gap than previously thought, and the phase-split hypothesis needs
+# revision.
+#
+# ALSO RECORD (comparability with arm129): prefill wall time for slot A
+# (bigprompt_90k_a.txt) should be similar to or faster than arm129's
+# 221.5s / 401.2 tok/s (uncapped = same-or-more usable threads, should
+# not regress prefill). If it's slower, that itself would be a surprise
+# worth flagging.
+#
+# CAUTION — HOST COURTESY: uncapped means --threads -1 = auto, likely
+# picking most/all of the host's 20 cores during CPU-offload decode
+# (this is exactly the behavior arm129's cap was introduced to avoid,
+# per standing user direction that the host runs many concurrent agent
+# worktrees). This arm is an explicit, deliberate, ONE-TIME measurement
+# to isolate the cap's cost — not a reversion to the no-cap policy.
+# Boot-test agent: keep this boot SHORT (design/measurement purpose
+# only — the standard single + n=2 test plan below, not extended
+# exploration) and tear down promptly after gate 4 to minimize the
+# window where the shared host is impacted.
+#
+# GATE CHECKLIST (same as arm129, 4-phase protocol):
+#   1. Boot log buffers (verbosity >= 4): CUDA0 model ~9314, RPC0 ~7062.06
+#      unchanged, KV ~3132.4 main + ~324.3 draft, RS 673.31+523.69,
+#      compute CUDA0 1144.01 / RPC0 1088.28 / CPU 132.28. system_info
+#      line: n_threads should show the AUTO-detected value (NOT 6) —
+#      confirm the cap did NOT carry over from any stale env/systemd
+#      unit.
+#   2. n_ctx_slot = 98304, kv_unified = false; ready; UM env = 1; no OOM.
+#   3. PHASE MARGINS (PRIMARY go/no-go, same thresholds as arm129):
+#      a. ready+self-test: CUDA0 free >= 250 PASS / <150 HARD STOP /
+#         150-219 gray -> capture + report, no unilateral deep-fill.
+#      b. post-warmup: within ~100 of phase-a.
+#      c. full 157.5K fill: CUDA0 free >= 140 PASS / <100 HARD STOP.
+#   4. Decode telemetry: dmon across decode; PCIe < ~3 GB/s. NOTE: arm129
+#      showed one unexplained single-sample 15.3 GB/s tx spike at
+#      concurrent-test start that did not reproduce on repeat and did
+#      not correlate with margin drift — if this arm sees the same
+#      signature at the same moment (both slots' cached-checkpoint
+#      restore firing together), treat it the same way: report fully,
+#      check margin stability before/after, do not treat a bare repeat
+#      of that signature as automatic failure OR automatic pass.
+#
+# TEST PLAN (handoff to muse-spark after design review; design-only from
+#   here): same prompts and structure as arm129 for direct comparability
+#   — /tmp/bigprompt_90k_a.txt (88805 tok), /tmp/bigprompt_90k_b.txt
+#   (68675 tok).
+#   0. Boot; gates 1-2; phase-a margins; short-request spec stats;
+#      CONFIRM system_info shows an uncapped/auto thread count (not 6).
+#   1. PRIME slot A (bigprompt_90k_a, max_tokens ~256, curl timeout
+#      >=3600s). Record prefill wall time + tg via print_timing (FINAL
+#      settled rate from the eval-time line, not an intermediate n_gen
+#      checkpoint — arm129's report conflated the two).
+#   2. PRIME slot B (bigprompt_90k_b, same).
+#   3. n=2 CONCURRENT (max_tokens 256-512 each): per-slot tg (final
+#      eval-time rate) + combined, acceptance per slot, margins post-run,
+#      dmon trace, KV-shift events. Report BOTH the final-rate sum and
+#      the total-gen-tokens/wall-clock aggregate (arm128/129's dual
+#      convention) for direct comparability.
+#   4. Rank against arm129 (same N, capped) and arm124/126/127 (different
+#      N, uncapped) on the family frontier. Append 4-phase margins,
+#      buffer lines, tok/s (both methods), acceptance, prefill wall
+#      times, PCIe trace to docs/investigations/740-results-report.md
+#      as the arm129 vs 129b side-by-side the ledger's arm129 note
+#      already anticipates.
+#
+# Base: params/129-udq5-98304x2-nokvu-cram24-ffncpu10-cheap-cpu6-umnet.yml,
+#   with: extra_server_args CPU cap REMOVED (kept -lv 4 only), everything
+#   else byte-identical.
+---
+name: 129b-udq5-98304x2-nokvu-cram24-ffncpu10-cheap-nocap-umnet
+description: "Clean cap-cost A/B counterpart to arm129: IDENTICAL N=10 window (CUDA0 blocks 30-39, 1,786.97 MiB freed, T=196608, UM net ON) with the CPU core reservation REMOVED (server default --threads -1 = auto, no --cpu-range). arm129 (6-core capped) measured ~12 tok/s combined decode, well below the family's 17.0-19.6 prediction and the worst in the family despite N=10 sitting between arm124 (20.58, N=8) and arm127 (16.01, N=12); prefill was unaffected by the cap (401/433 tok/s, matching DDR-bound prediction). This arm isolates whether the cap or the window selection explains arm129's shortfall."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors:
+  - 'blk\.3[0-9]\.ffn_(gate|up|down)\.weight=CPU'
+extra_server_args: '-lv 4'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 196608
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

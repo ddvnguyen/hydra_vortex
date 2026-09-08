@@ -3358,3 +3358,1146 @@ Raw logs: `/tmp/spot-check-boot*-results.log` and `/tmp/spot-check-*.log`; `run-
 - **Arm ranking:** **does not materially change.** For the concurrent aggregate that mattered (tier3 3-conc), arm090 was never ranked (parallel=1, N/A for agg), and 102/pin, v0.4.0 control, and arm119 were all at parity before (104.73/103.34/103.30) and remain at parity now (104.96/104.22/104.06). The tier1 single-request number for arm090 now reads **48.29 parity with 102 shapes (48.24)**, vs old 31.6 appearing slower — but arm090's documented production win was never tier1 speed (it was 18× cache-reuse on return, arm090's own bisection), so no decision flips. **No overturn; do not file `review-finding`.** The ledger's prior statement that historical ladder deltas stand is **confirmed**.
 
 **Cap/production:** 4 boots used as scoped (`boot1-arm090` 15s ready, `boot2-102pin` 29s, `boot3-v040-102` 27s, `boot4-arm119` 27s), each `10/10 GOOD`, production restored after each (`podman compose up -d`, `/health ok`, `nvidia-smi 15659/16311 9977/12288` normal, verified after boot4 at 16:23:59 `{"status":"ok"}`). No `src/llama-cpp` pin change, no params change, no `review-finding` needed. Ledger appended; this closes the spot-check task.
+
+---
+
+## Live finding — real 3-agent traffic at 34-66K depths: UM paging collapse on the arm111/102 shape (2026-09-07, passive analysis)
+
+**Trigger:** while 3 real coding-agent sessions ran concurrently against the live arm111 server
+(`111-udq5-102shape-v-q5_1.yml`, kv_unified off, 146176×3, K=q8_0/V=q5_1, split 27,38, UM on),
+their contexts grew to 34K/64K/66K (all `is_processing`). Observed: CUDA0 15847/16311 MiB
+(97%), GPU util 100%, lone-request-after-boot 35.76 tok/s, cumulative
+`predicted_tokens_seconds` 6.16, windowed (~3 min) **2.24 tok/s combined**, `n_busy_slots_per_decode` 2.6.
+The synthetic ladder (`concurrent-decode-test.sh`) never approaches this regime: its 3-conc tier
+uses ~1.1K-token prompts at ~150 gen tokens and measures **~104 tok/s aggregate** on this exact
+shape — so the real-traffic state is a **~47× collapse vs the same shape's own harness tier3**.
+
+This section answers: (1) exact VRAM budget math, (2) at what depth the working set exceeds
+physical VRAM, (3) paging-vs-compute attribution, (4) mitigations + a candidate params file.
+Method: **passive only** (boot logs, /props, /slots, /metrics, `nvidia-smi dmon`) — the rig was
+in active use (eval battery round 2); no reboots, no synthetic load injected.
+
+### Exact VRAM budget math (all numbers from the 2026-09-07 boot log, not estimates)
+
+Model geometry (boot `print_info`, fresh boot of the identical shape during battery round 2):
+arch `qwen35` (Qwen3.8-27B, **dense**, n_expert=0), file 18.40 GiB Q5_K_M, **n_layer=64**
+(+1 MTP layer), n_embd=5120, n_head_kv=4, n_embd_head_k/v=**256** → n_embd_k_gqa=n_embd_v_gqa=**1024**.
+`ssm_d_inner=6144, ssm_d_state=128, ssm_d_conv=4` + a `llama_memory_recurrent` RS buffer →
+this is a **hybrid** model: not all 64 layers carry full attention.
+
+Buffer arithmetic pins the full-attention layer count exactly. Per full-attn layer per token:
+K q8_0 = 34 B/32 elem = 1.0625 B × 1024 = 1088 B; V q5_1 = 22 B/32 = 0.6875 B × 1024 = 704 B
+→ **1792 B/layer/token**. Cross-check on the draft KV (1 MTP layer, q8_0/q4_1 = 1.6875 B/elem):
+1024 × 1.6875 × 438528 = 723.9 MiB predicted vs **722.67 MiB measured** (−0.17%) ✓ — quant math
+and cell count confirmed. Main KV measured 6985.83 (CUDA0) + 5433.42 (RPC0) = 12419.25 MiB for
+438528 cells = 29.0 KiB/token combined. The CUDA0:RPC0 ratio is **exactly 9:7**
+(6985.83/9 = 5433.42/7 = 776.20 MiB/layer), and both sides sit at **+3.56%** over
+1792 B/layer/token × 438528 — i.e. **16 full-attention layers (9 on CUDA0, 7 on RPC0) + uniform
+cell-padding overhead; the other 48 layers are pure recurrent** and hold only fixed-size state
+(RS = 1795.50 MiB total, 3 cells, S f32 1728 MiB — O(1) per sequence, not O(ctx)).
+
+Per-GPU boot allocation (breakdown lines + nvidia-smi):
+
+| CUDA0 (5060 Ti, 16311 MiB) | MiB | scales with |
+|---|---|---|
+| Model buffer | 11101.01 | fixed |
+| Main KV (438528 cells) | 6985.83 | **16.31 KiB × filled tokens** |
+| Draft KV (MTP, 438528) | 722.67 | 1.69 KiB × filled |
+| RS recurrent state (3 seqs) | 1009.97 | fixed |
+| Compute buffer | 1936.47 | fixed |
+| **Total allocation** | **21755.95** | **5445 MiB over physical** |
+
+| RPC0 (3060, 12288 MiB) | MiB |
+|---|---|
+| Model + KV (12.68 KiB/tok) + RS + compute | 7062.06 + 5433.42 + 785.53 + 1936.47 = **15217.48** |
+
+The boot log's own fit says it outright: RPC0 "15217 used" vs "11911 total", CUDA0 "21033 used"
+(+722 draft) vs "15849 usable" — and still concludes *"projected to use 36250 MiB of device
+memory vs **171460 MiB** of free device memory — targets for free memory can be met on all
+devices, no changes needed."* With UM on, `params_fit_impl` counts **host RAM as device memory**
+→ the fit is **UM-blind**: the shape boots only because ~8.75 GiB of buffers are silently backed
+by host RAM (arm112's deterministic OOM is the UM-off proof). The KV buffers for the full
+438528 cells are allocated at boot; the pages materialize in VRAM only as slots fill — which is
+why shallow harness runs never noticed.
+
+### Residency cliff — the answer to "at what depth does it page"
+
+KV pages must be resident to be read at decode speed. Free VRAM for KV residency after fixed
+costs: CUDA0 = 16311 − (11101.01 + 1936.47 + 1009.97) = **1540.9 MiB** (nvidia-smi basis; the
+fit's own usable-total basis gives 1078.9 MiB). Each filled token costs CUDA0
+16.31 (main) + 1.69 (draft) = 18.0 KiB of eventual residency:
+
+- **CUDA0 cliff: ≈ 61K–88K total filled tokens** (fit-basis 61.4K … nvidia-smi-basis 87.7K)
+  ≈ **20K–29K average depth across 3 slots**.
+- RPC0: headroom 2504 MiB (2127 fit-basis) ÷ 12.68 KiB = **171K–201K** — not binding.
+- **System cliff = min ≈ 61–88K combined filled tokens.** The 438528-cell allocation is
+  **5–7× oversized** relative to physical residency. Boundary is fuzzy (±) because UM page
+  residency and transient checkpoint copies aren't directly observable, but the band is tight
+  enough to predict every dataset below.
+
+**The observed 34/64/66K state (164K combined) is 1.9–2.7× beyond the cliff.** So the answer to
+the posed question is: 34-66K per slot is not "still O(ctx) compute" — it had already crossed
+the line at ~61-88K combined, i.e. roughly when the *third* session passed ~25K.
+
+### Live telemetry during real deep traffic (the missing evidence from 2026-09-06)
+
+- `nvidia-smi dmon` during live battery decode (slots at 83K/73K/0.6K): **CUDA0 rx 10.7-13.5 GB/s
+  and tx 6.7-11.3 GB/s bursts to host** at 100% util — the UM migration storm, finally captured.
+  GPU1 (3060): 11911/12288 MiB but **~0 MB/s PCIe** — consistent with 156-164K combined sitting
+  just under RPC0's 171-201K cliff: **CUDA0 is the sole thrasher**.
+- Server-side per-slot truth (log-verbosity 4 `print_timing`): slot1 at 83K depth
+  `n_gen=548, tg=3.94 t/s, tg_3s=3.14`; slot2 at 73K ≈ 4.4 t/s → **~8 tok/s combined**, vs 104
+  shallow-harness aggregate. The finding-boot's 2.24 tok/s (164K combined) is the same curve,
+  deeper.
+- Per-step arithmetic: at 164K combined, CUDA0 reads 164K × 16.31 KiB ≈ 2.68 GiB of KV per
+  decode step but only ~1.0-1.5 GiB can stay resident → ≥1.2-1.7 GiB migrate in (plus dirty
+  eviction) **every step** → ~0.25-0.3 s/step at the measured 10-13 GB/s, plus fault/eviction
+  overhead → observed 0.76-1.16 s/step (`n_decode_total` +118 in a 90 s window).
+- **Compute counterfactual:** even with zero paging, per-step cost at 164K ≈ 6 ms KV reads
+  (2.68 GiB @ ~448 GB/s) + ~25 ms weights (11.1 GiB @ ~448 GB/s) → fair time-sliced
+  3-way should yield ~30-40 tok/s combined. Observed 2.2-8 → **VRAM-pressure paging is the
+  dominant cause by ~5-15×; O(context) compute is a minor term at these depths.**
+- **Cross-validation against prior arms (the cliff predicts all three points):** arm105
+  2-session ~70K combined → 14-18 tok/s/slot (just past cliff: mild thrash); arm111 multiturn
+  3-session ~100K combined → 9.2-21.7 tok/s/slot, ~45 agg (moderate thrash — that report's
+  "bimodal tail, not systematic" framing is re-attributed here); real battery 156-164K →
+  2.2-8 tok/s (deep thrash). Monotone collapse starting exactly where the cliff says.
+
+### Corrections to earlier ledger entries (found during this analysis)
+
+1. **arm103/arm104 "VRAM / UM" sections are wrong about weights.** They claim CUDA0 carries
+   "weights (~6.3 GiB) + MTP (~0.85 GiB)" and conclude "tight but no spill expected". The boot
+   log says **CUDA0 model buffer = 11101 MiB**; with 492288 cells (arm104), CUDA0 allocation is
+   ≈ 11.1 + 8.4 (KV) + 1.9 (compute) + 1.7 (draft+RS) ≈ **23.2 GiB vs 16.3 physical** — deep
+   overcommit. Their *tier numbers remain valid* (shallow fills → tiny residency demand → no
+   paging during those runs); only the VRAM commentary was wrong, and the same wrong
+   "no spill" model is what let 438528-cell shapes get labeled safe.
+2. **The 2026-09-06 PCIe migration-storm telemetry (Thread 1 follow-up 2) sampled shallow tiers
+   only** — shallow fills never cross the cliff, so "no storm observed" was structurally
+   guaranteed. Today's capture is the first during deep real traffic, and the storm is real.
+3. **`/metrics` token counters are unreliable on this build under draft-mtp:** during a 90 s
+   window with two slots actively decoding (server-side `tg` 3.9/4.4 t/s),
+   `tokens_predicted_total` and `prompt_tokens_total` were frozen while `n_decode_total` +118
+   and the `predicted_tokens_seconds` gauge swung 2.85 → 0. Windowed rates computed from
+   `/metrics` deltas (including the 2.24 figure above and any battery-derived numbers) carry
+   unquantified error; per-slot `print_timing` and spec-stat lines are the trustworthy source.
+
+Also observed live (secondary, real-traffic tax): with kv_unified off, `cache_reuse` is
+disabled (arm105's finding) and the hybrid memory invalidates checkpoints aggressively — the
+log shows repeated `forcing full prompt re-processing due to … hybrid/recurrent memory` on some
+tasks (full 30-80K re-prefill) while other turns hit 85.7% cache (slot-local), plus constant
+~150-270 MiB context-checkpoint create/erase churn. This compounds the paging cost but is not
+the dominant term.
+
+### Mitigations, ranked (impact vs disruption to the arm090/111/119 matrix)
+
+1. **Right-size total ctx to the no-paging envelope (recommended; additive params file,
+   zero shallow-speed cost).** At 98304 total cells (3 × 32768) the *existing* 27,38 split fits
+   both GPUs with margin in both layer-placement outcomes: CUDA0 worst case (9 attn layers)
+   = 11101 + 1566 + 170 + 1010 + 1936 ≈ **15783 MiB → ~528 MiB free**; RPC0 worst case ≈
+   11350 → ~938 free. No paging at any fill; UM can stay on for boot safety, with a
+   UM-off probe as follow-up (arm112 analog; at this size it should boot without UM,
+   eliminating the incident class entirely). Expected deep-3× throughput ~30-50 tok/s
+   combined (compute/bandwidth bound) vs 2.2-8 — **~6-20×**. Cost: sessions >32K get
+   context-shifted (shift is on). Shallow tiers unchanged — arm106/107 (splits 25,40 / 30,35)
+   and arm102-114 all prove shallow speed is insensitive to these knobs; only *residency*
+   matters, and only depth exposes it. Candidate file:
+   `params/120-udq5-32768x3-nokvu-cram24-um.yml` (created alongside this section).
+2. **Rebalanced tensor_split (partial, bounded).** Equalizing per-GPU cliffs caps at
+   ~131-139K combined (total KV residency ≈ (1541+2504) MiB ÷ 29.0 KiB/token) — helps, cannot
+   cover 164K real depth at current quants. Shallow-neutral per arm106/107. Useful only in
+   combination with #3.
+3. **Cheaper K quant (q8_0 → q5_0/q5_1, ×0.786 KV bytes).** Lifts the perfect-balance cliff to
+   ~165-180K — covers real depth only *in combination with* #2, and arm080/081 already measured
+   a real accuracy tax (acc −24% MTP draft) for K=q5_0. Quality re-eval required; V is already
+   at q5_1 (q4_1 would only give −3.6%).
+4. **Drop draft-MTP on deep shapes.** Frees CUDA0 723 MiB fixed + 1.69 KiB/token → cliff
+   +8-13%, removes the 47.7 ms/call draft cost seen at depth — but sacrifices MTP's ~2.9 mean
+   accept length at shallow/mid depths. A 3×49152 no-paging shape becomes provable only with
+   MTP dropped; keep as the stretch variant of #1, not the default.
+5. **`cache_ram_mib` reduction — do NOT bother (disproven for this purpose).** cache_ram is
+   host RAM for idle-slot/prompt state (arm109: 8192 MiB = identical tiers); it does not free
+   VRAM and cannot prevent paging.
+6. **kv_unified ON for real traffic (structural, separate arm).** Would restore `cache_reuse`,
+   share the pool across unevenly-grown sessions (real agents don't fill evenly), and enable
+   controlled host-RAM eviction of cold cells via cache_ram instead of driver-managed thrash —
+   but changes the slot semantics the 101-vs-102 axis was built on. Worth one arm after #1.
+7. **Guardrail (code change, fork or Hydra Head): make the boot fit UM-aware.** The fit's
+   "36250 MiB of device memory vs 171460 MiB free — no changes needed" line is the systemic
+   enabler: with UM on it counts host RAM as device memory and never warns. A per-device check
+   (projected allocation ≤ physical − margin, host excluded) would have flagged this shape at
+   every boot.
+
+### Next actions
+
+- Boot-gate the candidate `120-*.yml` (≥2 boots, per house rule): verify boot-log breakdown
+  lines (CUDA0 self ≤ ~15.8 GiB), `nvidia-smi` ≥ 400 MiB free on both GPUs, tiers within the
+  arm111 band (33/50/97), then `multiturn-growth-test.sh` at 3×30K for the deep-traffic payoff.
+- Follow-up arms: UM-off probe on 120; 3×49152-no-MTP stretch; split-rebalance × K-q5_x combo
+  if >131K combined residency is ever required (with accuracy parity re-eval).
+- Fix or gate the `/metrics` token-counter accounting (draft-mtp path) — observability defect.
+- Coordinate any repro with the eval battery owner before taking the rig (battery round 3
+  pending at time of writing).
+
+### Live finding 2026-09-07/08 — slot-count, YaRN, kv_unified ruled out; CPU-FFN-offload breaks the cliff
+
+Follow-on 2-slot A/B matrix (arm121→123, all 2×131072 = 262144 total cells, UM-backed,
+same two real-source-file prompts at 88805 + 68675 tokens = 157480 combined depth, ~2×
+arm120's ~128K no-paging ceiling for this 27,38/q8_0-K/q5_1-V shape):
+
+- **arm121** (2 slots, draft K/V raised to bf16 from q8_0/q4_1): reproduces the paging
+  collapse at 2 slots, not just 3 — **slot count is not the causal variable**, combined
+  depth vs physical-VRAM residency is. bf16 draft cache also showed no clear acceptance-rate
+  gain over q8_0/q4_1 (weak/uncontrolled single-sample comparison, not a controlled A/B).
+- **arm122** (arm121 + explicit `rope_scaling: yarn/scale=5/orig_ctx=32768`, present in
+  production arm090 but absent from the whole UM-family 102-121): no measurable difference
+  in decode speed or draft acceptance vs arm121 — **YaRN ruled out** as a factor (expected;
+  RoPE scaling is compute-time-only, doesn't change KV byte size).
+- **arm123** (arm122 + `kv_unified: on`, was `off` for the whole UM-family): no measurable
+  difference vs arm122 in either single-request (14.52 vs 14.62 tok/s) or n=2 concurrent
+  (0.93 tok/s @ 88.8K / 2.72 tok/s @ 68.7K, same collapse magnitude) — **kv_unified ruled
+  out** as a factor.
+- Direct arm090 (production pin, bisected to fit physical VRAM, parallel=1) vs the
+  UM-family at the same 88.8K-token single-request depth: arm090 sustains **20.1 tok/s**;
+  every UM-family arm at comparable depth collapses to 1-4 tok/s. Confirms the causal
+  variable is exactly "does the shape fit physical VRAM" — nothing else moved the needle.
+
+**arm124 — new mitigation, verified working (CPU-FFN-offload replaces UM-overcommit):**
+designed by glm-5.3-flash, boot-tested by an independent agent, and cross-checked against
+raw logs (not just the report) below. Instead of right-sizing ctx down (arm120's fix) or
+relying on UM host-paging (arm119/121-123, which collapses), arm124 offloads 8 dense-FFN
+sublayers (blocks 56-63, the tail blocks on CUDA0) to CPU compute via the existing
+`override_tensors`/`-ot` regex mechanism — no fork patch needed; `--n-cpu-moe`'s machinery
+already generalizes to dense models, upstream `--n-cpu-ffn` (llama.cpp PR #26622) would just
+be sugar for the same thing. This frees ~1.49 GiB VRAM on CUDA0, enough to hold
+2×98304 = 196608 total cells **fully resident without UM at all**.
+
+Result (`params/124-udq5-98304x2-nokvu-cram24-ffncpu8-noum.yml`, verified independently
+against `/tmp/rpc-test/results/124-udq5-98304x2-nokvu-cram24-ffncpu8-noum-5fff12845/llama-server.log`):
+`n_ctx_slot = 98304`, `kv_unified = 'false'` confirmed; boot log confirms no
+`GGML_CUDA_ENABLE_UNIFIED_MEMORY` set; no OOM/crash. Same two 88805+68675-token prompts
+(157480 combined, within the 196608 capacity, no context-shift needed) run concurrently:
+slot 0 = 10.74 tok/s (64.6% draft acceptance), slot 1 = 9.84 tok/s (51.5% draft acceptance)
+→ **20.58 tok/s combined**, vs arm121/122/123's 0.9-2.7 tok/s at the same combined depth —
+roughly an **8-20× improvement**, and it holds more (157K) resident than arm120's ~128K
+ceiling. Two open gaps, neither blocking: CUDA0 post-warmup free VRAM measured 161 MiB
+(below the 300 MiB gate target, still no OOM — tight, not broken); which GPU the offloaded
+blocks landed on was confirmed only indirectly (successful boot without UM where the
+equivalent non-offloaded shape OOMs), not via an explicit per-buffer log line — a rerun
+with higher log verbosity would close this out.
+
+**Mitigation ranking updated:** CPU-FFN-offload (this section) is a *third* option
+alongside #1 (right-size ctx down) and #6 (kv_unified, now known cost-neutral either way)
+— it's the only lever found so far that lets combined depth go **up** past the physical-VRAM
+ceiling without invoking UM, by trading bounded CPU compute (~25-37 ms/step tax, ~11-23 min
+one-time CPU-side prefill for 90K-token prompts) for freed VRAM. Follow-up requested
+2026-09-08: push both decode speed and n=2 combined ctx further from this baseline —
+candidates include RPC0-side offload (blocks 0-7, needed per arm124's own header to reach
+arm121's 262144-cell target), trimming the CUDA0 margin issue (`--load-mode none`,
+`cache_ram_mib` reduction), and confirming the block→GPU placement with explicit
+per-buffer logging + an `nvidia-smi dmon` PCIe trace during decode.
+
+## Design note 2026-09-08 — arm125 (ctx + speed follow-up on arm124; design-only, hand-off pending)
+
+**New evidence — exact GGUF byte parse** (`/mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf`, header
++tensor table parsed; sizes from offset diffs, self-consistent: trunk 16.44 GiB + output
+994.6 + MTP 334.7 + tok_embd 682.0 = file 18.40 GiB):
+
+- Per-block FFN is NOT uniform: 135.47-209.18 MiB (mean 181.78), FFN total 11.36 GiB.
+  Blocks 14-17 are the model's cheapest band (135.47-140.78); blocks 54-63 are the
+  most expensive (all-q6_K UD bump, 209.18 each — **arm124's offload window was the
+  priciest possible choice**: 8 x 209.18 = 1673.44 MiB freed, not the ~1492 estimated).
+- Layer→GPU boundary now CONFIRMED by byte math: cum(blocks 0-27) = ~7063 MiB ==
+  RPC0's measured model buffer 7062.06; remainder + output + MTP = ~11101 ==
+  CUDA0's 11101.01; CPU buffer 682.03 == tok_embd (682.0). RPC0 hosts blocks 0-27,
+  CUDA0 blocks 28-63 + output + MTP.
+- arm124 margin correction: exact paper margin @196608 = **817.7 MiB** (not ~636);
+  measured 161 → **constant runtime gap ~657 MiB** (CUDA context etc., not
+  fill-dependent — KV buffers commit fully at boot without UM). Calibration
+  `measured ≈ paper − 657 ± 100` used for arm125. Also: at T=196608 there is NO
+  cheaper-block config meeting margin (cheapest 7 blocks sum 1464 < 1512 needed) —
+  arm124 is near-minimal tax for its T within this lever set; the only frontier
+  direction left is ctx-up with more blocks.
+
+**arm125** (`infra/llama-baseline/params/125-udq5-114688x2-nokvu-cram24-ffncpu15-cheap-noum.yml`):
+T = 229,376 = 2 × 114,688 (+16.7%); CUDA0 RPC0 reallocation to cheapest contiguous
+windows inside each GPU's own block range:
+
+| | blocks | freed MiB | paper margin | predicted measured |
+|---|---|---|---|---|
+| CUDA0 | 43-55 (silver band, excl. 54-63 tail) | 2425.80 | 993.8 | ~337 |
+| RPC0 | 14-15 (cheapest pair; Nr=1 leaves only 60) | 273.59 | 198.7 | — |
+
+15 blocks, 2699.39 MiB CPU/step (+61.3% vs arm124) → honest band combined 13-17 tok/s
+@ 157.5K fill, 11-15 @ ~201K fill (vs arm124 20.58; UM-family 0.9-2.7). The RPC0-side
+offload is requirement, not choice: at 229,376 RPC0 is −75.9 MiB over without it.
+Rejected and documented in the file: 262,144 stretch (needs Nc=15 + Nr=5 = 20 blocks,
+~3473 MiB/step — defer until arm125 telemetry), output-head offload (equal ms/MiB,
+serializes vocab GEMM), scattered cheapest-N selection (extra variable; kept as
+follow-up lever with the parsed per-block table as basis), spec draft-n_max extension
+(≤ +5% expected).
+
+Hand-off obligations baked into the file header: boot-log verbosity ≥ 4 with per-buffer
+lines untrimmed (closes arm124's unverified block→GPU evidence line at gate 1), per-GPU
+nvidia-smi at boot/warm/full-fill, dmon during n=2 decode (PCIe < 3 GB/s gate), a
+purpose-built third prompt ~≤ 114,688 tokens (~≤ 317 KB; concatenation recipe from
+src/llama-cpp sources) to demonstrate ~201K combined filled, plus one arm124-identical
+A/B rerun (both 90K prompts at 157.5K) to rank arm125 on the speed axis fairly.
+
+## Design note 2026-09-08 #2 — arm126 (safety arm after arm125's gate-4 halt; design-only, hand-off pending)
+
+**arm125 outcome** (boot-tested by muse-spark, results preserved in
+`/tmp/rpc-test/results/125-...-5fff12845/`): gates 1-3 passed exactly (per-buffer lines
+matched the GGUF-exact math to <1 MiB — boundary + offload placement now FULLY empirical:
+CUDA0 model 8675.19, RPC0 6788.46). Gate 4 FAILED at the self-test stage alone (10 x
+808-token requests, ~0 combined fill): CUDA0 free = 51 MiB vs ~335 predicted. Correctly
+halted; no OOM, no deep-fill attempt, no crash-loop artifact.
+
+**Boot-sum analysis → the ~657 "constant gap" calibration was an artifact.** Fixed the
+basis and the picture changes:
+
+- `ggml_gallocr_reserve_n_impl` keeps ONE compute buffer per backend id, sized to the
+  max across graph shapes (`ggml-alloc.c:911-944`) — arm125's three `sched_reserve`
+  prints (1144.01 / 1088.28 / 1088.28) collapse to a single 1144.01 CUDA0 reservation
+  (the agent's 14,524.5 boot-sum used the right value; my arm124-era math had used the
+  3-slot 1936.47 estimate).
+- Re-derived with the 2-slot compute buffer: arm124's true gap = **1,449 MiB** (used-sum
+  14,701 → paper free 1,610 vs measured 161), not 657. arm125's gap = 1,735. Two points,
+  linear fit **gap ≈ 1120 + 41 × N_offloaded_blocks (± ~150)**. Per-CPU-block residual
+  ~41 MiB is REAL but unexplained; graph-cache hypothesis tested against fork source is
+  WEAK (host-side exec instances, galloc shared-max buffer — `ggml-cuda.cu:2638-2655,
+  4221-4228`; `ggml-alloc.c:911-944`), candidates remaining: per-split staging/copies,
+  JIT/module residency, allocator fragmentation. The decisive instrument: PHASE-WISE
+  margin capture (boot → self-test → warm → fill) — mandated in arm126's gate 5b
+  signatures; settles whether the residual is shape-count-proportional (cache-ish) or
+  constant.
+- Trustworthiness of arm124's thin 161: survived its full deep-fill test once; with the
+  corrected basis its headroom story is consistent; still thin — arm126 rebuilds >400 MiB
+  of predicted margin at the same ctx.
+
+**arm126** (`infra/llama-baseline/params/126-udq5-98304x2-nokvu-cram24-ffncpu13-cheap-umnet.yml`)
+per user directive ("Try 2 solution: reduce ctx, UM"):
+
+- ctx 229,376 → **196,608 = 2 × 98,304** (arm124's proven deep-fill target).
+- offload **resized to Nc=13, blocks 43-55, CUDA0-only** (cheapest contiguous; 54-63 tail
+  excluded as before; RPC0-side offload removed — not needed at this ctx, RPC0 free ~331).
+  N = 13 vs arm125's 15; CPU/step 2,425.80 MiB (+45% vs arm124's 1,673.44).
+- **UM safety net re-enabled** — docker-compose default env, explicitly documented in the
+  header as a net for margin-math error ONLY: a paging-assisted pass is defined as a
+  failure signal (ctx still too aggressive), not a success. Clean run retires UM.
+- Margin predictions, dual-path: gap model 16,311 − 13,949.2 − 1,653 ≈ **709**; independent
+  path (arm124 measured 161 + 752.4 extra freed − 205 extra gap) ≈ **708**. Gates: ≥500
+  at self-test (hard stop <300), ≥250 at full 157.5K fill (stop <150), RPC0 ≥160.
+- Speed expectation: ~13-17 tok/s combined @ 157.5K fill (accepts the +45% tax as the
+  measured-reality price until the gap residual is settled).
+
+## Design note 2026-09-08 #3 — arm127 (N-optimization at proven ctx; design-only, hand-off pending)
+
+**arm126 verified/closed**: 13 blocks 43-55 (cheapest contiguous), 903 MiB CUDA0 margin
+(5.6× arm124's 161) at 15.07 tok/s combined (-27% vs arm124's 20.58), same ctx 196,608,
+same 157.5K fill. UM net ON but never triggered — 4-phase margin series flat + PCIe peak
+2195 MB/s (no paging signature) → **the offload+UM combination costs nothing when the
+margin is sized right**; adopted as the permanent family safety net per user direction
+("Combine offload and UM? Optimize offload to 10 or 12 layers with better layers select.").
+
+**Gap model re-anchored** (upgrades the 1120+41N estimate from design note #2): with the
+correct 2-slot compute buffer (1,144.01), the two measured anchors at the SAME ctx give
+
+- arm124: N=8, freed 1,673.44 → gap = **1,448.4**
+- arm126: N=13, freed 2,425.80 → gap = **1,458.8**
+
+→ gap ≈ constant at fixed T, slope ~2.1 MiB/block. Identity reproducing both anchors:
+`free(N) ≈ freed(N) − gap(N) − 64.0`. The old 41/block slope was a cross-T artifact —
+arm125's 1,735 at T=229,376 carries an unexplained ~276 MiB T-component (~+8.4 KiB/cell
+worth, still open) that does not apply at 196,608. Speed axis: combined tok/s vs freed-MiB
+is near-linear across the anchors (slope −0.00732 tok/s per MiB freed); reproduces
+20.58/15.07 exactly on both ends.
+
+**arm127** (`infra/llama-baseline/params/127-udq5-98304x2-nokvu-cram24-ffncpu12-cheap-umnet.yml`):
+ctx unchanged (196,608); **N=12, blocks 43-54** = arm126's window minus block 55 — the
+byte-mass pointers:
+
+| variant | window | freed | predicted free | predicted combined |
+|---|---|---|---|---|
+| N=10 | 44-53 | 1,820.84 | ~304 | 19.50 |
+| N=11 | 44-54 | 2,030.02 | ~511 | 17.97 |
+| **N=12 (chosen)** | **43-54** | **2,216.62** | **~695 ±60** | **16.60** |
+
+N=10 rejected on margin (304 < the 400-600 target); N=12 chosen as the user-named count
+with the maximal-margin end of the close {N=11, N=12} tradeoff (+1.37 tok/s at N=11 buys
+−184 MiB margin; arm128 = N=11/44-54 is a pre-designed one-block clone if 127's margin
+series confirms the gap identity within ±5 MiB).
+
+**"Better layer select" verdict (explicit)**: the acceptance signal direction says the
+TAIL window hurt acceptance less than arm126's mid-band (58.05% vs 49.15% slot-mean;
+arm119 baseline ~0.636), but it is signal-not-proof: one boot per arm, slot-pair spreads
+large (arm124's own 13.1 pts), and window position is confounded with N. Selection stays
+cheapest-contiguous; arm127 doubles as the clean quality A/B (only diff vs arm126 = block
+55 removed): acceptance recovery toward ~58% implicates selection; staying ~49% says
+noise. Canary gate ≥45% slot-mean; repeated <45% prioritizes the tail-window probe
+(arm128-alt: 54-63, freed 2,091.80, predicted free ~577 / speed ~17.5) over N tuning.
+
+Gates per the validated 4-phase protocol (self-test → power-warm → full-fill; hard stops
+at <350 self-test/free, <200 fill-free; PCIe <3 GB/s; paging-assisted pass = failure
+signal per the UM net rule). PASS bar: combined ≥ ~16.0 tok/s (predicted 16.60±0.5).
+
+### arm127 — VERIFIED (2026-09-08): frontier point confirmed, gap model found non-monotonic in N
+
+Boot-tested and independently cross-checked against raw logs (not just agent summary):
+buffer lines matched exactly (CUDA0 model 8884.37 MiB, RPC0 model 7062.06 unchanged — the
++209.18 MiB delta vs arm126 is exactly block 55's cost, confirming the offload window is
+arm126 minus one block as designed). All 4 phases flat at **647 MiB free (CUDA0) / 771 MiB
+(RPC0)** — no growth from ready → self-test → warm → full 157.5K fill, reconfirming (a
+third time, after arm126) that the unexplained gap is a flat one-time cost, not a
+per-request-shape cache pool. PCIe peak 1625 MB/s (well under the 3 GB/s no-paging
+threshold). No context-shift events.
+
+**Decode**: slot A 8.20 tok/s (56.18% acceptance), slot B 7.81 tok/s (48.23%) →
+**16.01 tok/s combined** at 157.5K filled — matches the ~16.60±0.5 prediction closely
+(within the band), **+6% vs arm126's 15.07, −22% vs arm124's 20.58**, and lands exactly
+where designed: a genuine frontier point between arm124 (fast, fragile) and arm126 (safe,
+slower) rather than dominating either. Slot-mean acceptance 52.2% sits between arm124's
+58.05% and arm126's 49.15% — inconclusive on whether offload-block *position* (vs count)
+affects MTP quality; the byte-mass/cheapest-contiguous selection criterion stays as-is
+pending a cleaner A/B (the tail-window probe noted above remains the clean follow-up if
+this ever needs settling).
+
+**Important correction to the gap model**: measured free was 647 MiB vs the model's
+695±60 prediction — a −48 MiB miss, outside the tight ±5 MiB confirmation band (loose ±60
+band still holds). Computing the implied gap at all three same-ctx (T=196608) data points
+via `gap = freed − free − 64.03`:
+
+| Arm | N (offloaded blocks) | Implied gap |
+|---|---|---|
+| arm124 | 8 | 1448.4 MiB |
+| arm127 | 12 | **1505.6 MiB** |
+| arm126 | 13 | 1458.8 MiB |
+
+**The gap is NOT monotonic in N** — arm127 (N=12) has a *larger* implied gap than arm126
+(N=13), which a simple linear-in-block-count model cannot produce. This means the
+unexplained overhead likely depends on *which specific blocks* are offloaded (block 55's
+presence/absence swapped between arm126 and arm127) rather than purely how many — possibly
+tensor-shape/alignment effects on the CUDA allocator, not yet root-caused. Practical
+consequence: **do not trust the linear gap model to safely extrapolate margins for new
+arms** (including the pre-designed N=11 "arm128" candidate, or any ctx push) without a
+real safety cushion built in beyond what the model predicts — three data points have
+already shown ±50 MiB of unexplained scatter at fixed ctx, and the T-dependent component
+(arm125, ~276 MiB per extra ~32.7K cells) is still completely unexplained on top of that.
+
+## Design note 2026-09-08 #4 — arm128 (128K/slot ctx push; design-only, hand-off pending)
+
+**arm127 verified/closed**: 16.01 tok/s combined @ 157.5K fill (prediction ~16.60±0.5
+held), 647 MiB margin (4-phase flat; PCIe peak 1625 MB/s), genuine frontier point between
+arm124 (20.58 @ 161 MiB) and arm126 (15.07 @ 903 MiB). Acceptance slot-mean 52.2% sits
+between the two — position-vs-count A/B inconclusive; selection criterion unchanged.
+
+**Gap model demoted to band-based** (arm127's correction): implied gap = 1448.4 (N=8),
+1458.8 (N=13), **1505.6 (N=12)** — non-monotonic in block count; which blocks are
+offloaded matters in ways not understood (possibly block 55 adjacency in the sched/graph
+topology). ±50 MiB scatter demonstrated at fixed ctx, plus the STILL un-elucidated
+T-component from arm125 (~+276 MiB per 32.7K cells, single point). Consequences applied
+to arm128's sizing: design to the WORST-CASE of the gap band, not the midpoint;
+phase-a self-test margin is the primary go/no-go; hard stops conservative; the
+design-note "arm128 = N=11 clone" idea is NOT auto-pursued (would need full
+re-verification).
+
+**arm128** (`infra/llama-baseline/params/128-udq5-131072x2-nokvu-cram24-ffncpu32-cheap-umnet.yml`)
+—the user's actual next request: the 2 × 131,072 = 262,144-cell allocation that arm121
+(UM-only → 0.9-2.7 tok/s collapse) and arm125 (offload-only, under-sized → gate-4 halt)
+both failed, reprised with the combined mechanism:
+
+- **Offload**: CUDA0 blocks **28-49 (22 blocks, freed 3,981.01)** — the cheapest
+  contiguous window in CUDA0's range reaching the byte target (extends the family's
+  "avoid 54-63" logic further: even 50-55 stays GPU-resident) + RPC0 blocks **9-18
+  (10 blocks, freed 1,527.33)** — the model's cheapest contiguous decuple, in RPC0's own
+  0-27 range. N = 32, CPU/step 5,508.34 MiB (+148.5% vs arm127).
+- **RPC0-side relief recomputed for T = 262,144 specifically** — with a basis correction
+  the ledger never had before: RPC0's compute buffer is 1,088.28 (arm125 log line 228),
+  NOT the 3-slot 1,936.47 used in arm124/125-era math. At T=262,144 RPC0 needs
+  ~1,527 MiB of relief against the RPC0-side gap band 408..947 (T-term scaled by the
+  KR/KC per-cell ratio 0.704 + 150 uncertainty). arm125's Nr=2 "requirement" was in fact
+  an artifact of the wrong compute basis — at 229,376 RPC0 would have had ~770 free
+  without it; at 262,144 relief is genuinely needed again.
+- **Free bands designed to the pessimistic gap end**: CUDA0 ~754-1,307 (designed floor
+  700), RPC0 ~434-1,043 (floor 400). The user's generous-margin mandate applied: no
+  tight margin optimization anywhere; the 22-block window was preferred over the
+  28-block 28-55 variant (freed 5,168 → free ~1,900-2,090!) because the extra 3.3 GiB
+  CPU/step (+1,187 MiB) buys only redundant margin at a large speed cost, given the
+  754-floor already clears the target band under the worst accepted gap.
+- **UM net ON** (docker-compose default), operational rules unchanged from 126/127
+  (paging-assisted pass = failure signal; PCIe < 3 GB/s gate).
+- **Speed, honestly banded**: step-time extrapolation (empirical ~0.104-0.117 ms/MiB
+  CPU bytes over 3 anchors; implied effective DDR-path BW ~9-10 GB/s — the CPU sections
+  likely contend with draft/RPC relays) → combined ~7.3-7.9 at 157.5K fill; sanity band
+  4.5-10 (RPC/overlap unknowns). PASS bar: combined ≥ 5.0 single-slot depth-157.5K test /
+  ≥ 2.5 single-request — still 2-6× the UM-family frontier (0.9-2.7) at this allocation.
+- **Test plan**: same two prompts for the apples-to-apples legs (single 88,805 on slot A;
+  n=2 at 157.5K fill); OPTIONAL built third prompt (≤ 131,072 tok, ~320 KB recipe from
+  src/llama-cpp sources, tokenize-probe before use) lifts the n=2 demonstration to ~205K
+  filled — the deepest non-UM resident fill in the family — gated on clean phase-c
+  margins (free ≥ 700/300).
+- Gate checklist: 4-phase margin capture mandatory with HARD STOPS (phase-a CUDA0 < 700
+  → STOP, < 500 extreme; RPC0 < 400 → STOP, < 250 extreme; fill-phase < 500/300 → STOP);
+  flatness check ±120 MiB between phases; dmon full decode; pre-check container uptime
+  before rig contact.
+
+If the verified margin series reproduces the T-term prediction (~+552 MiB per
++65,536 cells on CUDA0), the next iteration can shrink the band and size a cheaper
+N; if free lands > 1,300, the next trim-back is blocks (speed), not margin.
+
+## arm128 — VERIFIED (2026-09-08): 262,144-cell ctx push boots clean; gap model
+## undershoots reality a THIRD time; decode roughly halves vs arm127
+
+Independently confirmed against raw logs (`llama-server.log`, `dmon` trace,
+`summary.txt`) in `/tmp/rpc-test/results/128-udq5-131072x2-nokvu-cram24-ffncpu32-cheap-umnet-5fff12845/`.
+Before dispatch, an internal inconsistency was caught and corrected in the design
+file itself: the RPC0 predicted free band was stated three different, mutually
+irreconcilable ways in the same document (1,487↔434 in the VRAM-math section vs
+1,487↔1,043 in the gate-checklist section vs the derivable 1,487↔948 from the
+document's own stated gap band 408↔947) — likely a stale copy-paste across
+revisions. Dispatched with a raised RPC0 phase-a bar (≥500 MiB, above all three
+disputed numbers) rather than trusting any of them.
+
+**Boot (buffers exact to <1 MiB of prediction):**
+CUDA0 model 7,119.96 (pred 7,120.00), RPC0 model 5,534.71 (pred 5,534.73), CUDA0
+main KV 4,176.00, draft KV 432.00, RS 673.31, compute CUDA0 1,232.28 / RPC0
+1,232.28 / CPU 148.28. `n_ctx_slot = 131072`, `kv_unified = false`. UM env
+confirmed set on both llama-server and rpc-server (bare-metal, does not read
+docker-compose defaults).
+
+**4-phase margins — flat across all 4 phases (no leak, no paging drift), but
+CUDA0 undershot even the pessimistic prediction:**
+| Phase | CUDA0 free | RPC0 free |
+|---|---|---|
+| (a) ready, pre-self-test | **679** | 1,155 |
+| (b) post self-test | 677 | 1,155 |
+| (c) post both 90K primes warm | 673 | 1,155 |
+| (d) post n=2 concurrent full | 673 | 1,155 |
+
+CUDA0's 679 MiB is *below the document's own pessimistic-end prediction of 754*
+(let alone the 1,307 optimistic end) — the design was built with a deliberately
+generous cushion specifically because arm127 already showed the gap model was
+unreliable, and it *still* landed low. This is the **third arm in a row**
+(arm125 outright failed gate 4; arm127 undershot its flat-gap prediction by
+~48 MiB; arm128 undershoots even its own worst-case band by ~75 MiB) where the
+gap model has been optimistic relative to measured reality. Proceeded only
+because 679 cleared the raised 500 MiB hard-stop applied before dispatch — a
+naive read of the file's own stated "≥700 floor, <500 hard stop" language would
+have been ambiguous here. RPC0 landed at 1,155, comfortably above even the most
+optimistic of its three disputed predictions (1,487), so the file's *RPC0*
+inconsistency turned out to favor safety, not risk — but that was not knowable
+in advance from the document alone.
+
+**Decode results:**
+- Single request (bigprompt_90k_a, 88,857 tok incl. template): prefill 287.18s
+  @ 309.4 tok/s, tg = **7.90 tok/s**, draft acceptance 50.83% (153/301, mean
+  2.51). PASS (≥2.5 bar).
+- Prime B (bigprompt_90k_b, 68,685 tok): prefill 209.42s @ 328.0 tok/s,
+  acceptance 53.40% (157/294, mean 2.60).
+- n=2 concurrent at 157.5K combined fill: final per-slot tg 4.55 / 4.36 t/s,
+  aggregate throughput (512 gen tokens / 61.0s wall) = **8.40 tok/s combined**.
+  Acceptance 49.19% (152/309, mean 2.48) / 43.64% (144/330, mean 2.31), mean
+  46.4%. `truncated = 0` on all slots, no KV-shift events. PASS (≥5.0 bar).
+- PCIe dmon peak: gpu0 (CUDA0) max_rx 75 / max_tx 2,179 MB/s; gpu1 (RPC0) max_rx
+  4 / max_tx 2,843 MB/s — combined ceiling 2,918 MB/s, well under the ~3,000
+  no-paging threshold and far below the 10-13 GB/s paging-storm signature. UM
+  never triggered paging despite the thin CUDA0 margin.
+
+**Cost of the ctx push, made concrete**: N went from 12 (arm127) to 32 blocks
+(+167%, CPU/step 2,216.62 → 5,508.34 MiB, +148%) to buy +34% ctx (196,608 →
+262,144) plus RPC0-side relief that wasn't previously needed. Combined decode
+roughly **halved**: 16.01 → 8.40 tok/s. This is a much steeper price than any
+prior step in the family — arm124→126→127 (N=8→13→12) held decode within a
+15.1-20.6 tok/s band while margin varied 5x; arm128 shows the CPU-offload
+approach does not scale for free once RPC0 needs its own relief on top of
+CUDA0's.
+
+**Standing caution reinforced**: three consecutive arms have now shown the gap
+model is optimistic under real measurement, not just non-monotonic in block
+count. Any future ctx or block-count push must dispatch with a margin cushion
+deliberately larger than whatever the model predicts, and must treat
+the phase-a boot reading as the sole ground truth — never the document's own
+predicted numbers, which have now missed low three times running.
+
+## Investigation note 2026-09-08 — Part 1: the tensor_buft_overrides mechanism, verified at source (all of -ot / -cmoe / -ncmoe / hypothetical --n-cpu-ffn is ONE mechanism, checked before and independent of -ngl)
+
+Fork state verified: src/llama-cpp at 5fff12845 (upstream b10549 + fork patches).
+Every claim below was re-read from this fork's source, not taken from the
+orchestrator's summary. Result: **the orchestrator's conclusion is correct and
+stands; four refinements and three new facts were added.**
+
+The single mechanism (src/llama-model-loader.cpp, `create_tensor`'s
+`buft_for_tensor` lambda, lines 1101-1233):
+
+1. L1158-1173: per-tensor class only selects WHICH buft list would be used in
+   the fallback (input / output / repeating-layer).
+2. L1175: `buft = nullptr`. L1177-1203: the override loop runs FIRST;
+   first `std::regex_search` match wins and `break`s — pattern ORDER in the
+   vector is precedence; a later (e.g. blanket) pattern can never retarget a
+   tensor an earlier pattern matched.
+3. L1205-1210: the `-ngl`-derived `buft_list` is consulted ONLY in the
+   `if (!buft)` fallback. `select_weight_buft` (L1055-1066) is called nowhere
+   before the override loop for any tensor type — its only other call site is
+   INSIDE the CPU-override branch itself (see #4). Tensors that do not flow
+   through `create_tensor` at all (KV cache, compute buffers, rope freqs) never
+   see overrides — as expected.
+4. Refinement A: a `=CPU` override does not literally pin
+   `ggml_backend_cpu_buffer_type()` — it calls
+   `select_weight_buft(..., buft_list_cpu)` (L1185) to pick among CPU-side
+   extra buffer types (host-pinned etc.), plus a one-time mmap warning
+   (L1186-1191) and a post-check swapping device host-buffer types back to the
+   CPU dev buffer under mmap (L1212-1220). Functionally: still CPU, still
+   independent of -ngl/-sm/--tensor-split.
+5. `-ot` (common/arg.cpp:2734-2739) feeds
+   `parse_tensor_buffer_overrides` (arg.cpp:253-276): splits the value on ',',
+   each entry on first '=', resolves the buffer type BY NAME among all
+   registered devices' buffer types (so `=CPU`, `=CUDA0`, `=RPC0` are all
+   valid targets), appends to `params.tensor_buft_overrides`.
+6. `-cmoe` (arg.cpp:2740-2746, blanket `LLM_FFN_EXPS_REGEX`) and `-ncmoe`
+   (arg.cpp:2747-2761, loop i in [0,N) pushing `llm_ffn_exps_block_regex(i)`)
+   are pure sugar into the SAME vector — confirmed.
+   `LLM_FFN_EXPS_REGEX = "\\.ffn_(up|down|gate|gate_up)_(ch|)exps"`
+   (common/common.h:1114) matches `_exps`-suffix tensors only, so on the dense
+   Qwen3.8-27B (FFN = `blk.%d.ffn_(gate|up|down).weight`, src/models/qwen35.cpp:92-94)
+   `-cmoe`/`-ncmoe` are no-ops; the arms' explicit `-ot` regexes are the
+   correct dense-model expression. Confirmed.
+7. The `-ngl`/device path (src/llama-model.cpp:1285-1360):
+   `i_gpu_start = max(n_layer_all+1 - n_gpu_layers, 0)`; per-layer
+   `get_layer_buft_list(il)` picks dev_layer[il] = {dev, gpu_buft_list[dev] or
+   cpu_buft_list}; each GPU list = `make_gpu_buft_list(dev, split_mode,
+   tensor_split)` with the CPU list appended as fallback (L1315-1320).
+   `-sm row` swaps in `ggml_backend_split_buffer_type_fn` (L986-1002) and
+   `--tensor-split` feeds the layer-to-device split fractions (L1329-1355) —
+   both alter ONLY the fallback list. With `-ngl 99` (all arms), i_gpu_start=0
+   and every layer gets the GPU list, so every CPU placement in our boots
+   comes from overrides alone (the non-override CPU model buffer is exactly
+   tok_embd, 682.03 MiB; the input layer is always CPU by design).
+8. Refinement B — the MTP/draft model has a SEPARATE override list:
+   `params.speculative.draft.tensor_buft_overrides` (common/common.h:517) with
+   its own flags `-otd`/`--spec-draft-override-tensor`, `-cmoed`,
+   `-ncmoed` (arg.cpp:4068-4094); draft params are built from that list only
+   (common/speculative.cpp:2329) and the main model's overrides are NOT
+   inherited. Boot logs corroborate: each boot's second/third
+   `sched_reserve: graph splits = 2` lines are the draft-MTP context's own
+   scheduler, constant across all arms. Caveat recorded for any future
+   first-N loop with N > 64: the MTP block is blk.64 and ALSO has
+   ffn_(gate|up|down) tensors (qwen35.cpp:109-111, created in the MAIN model
+   load) — a naive `--n-cpu-ffn 65` would offload the MTP block's FFN too.
+9. New fact — third producer of overrides: the auto-fit machinery
+   (`common_params_fit`, common/fit.cpp:395-535, + fit-params tool) can
+   synthesize overflow patterns into the same struct; irrelevant to the arms
+   (fit aborts when `-ngl` is explicitly set, seen in the spike boot log) but
+   completes the inventory. Override count is capped at
+   `llama_max_tensor_buft_overrides()` = 4096 (src/llama.cpp:89) — no risk at
+   our N.
+10. Empirical re-confirmation: the spike boot (below) with
+    `-ot blk\.(4[3-9]|50)\.ffn_(gate|up|down)\.weight=CPU` logged
+    CUDA0 model buffer 9675.93 = 11101.01 - 1425.08 (exact window byte mass)
+    with RPC0 unchanged at 7062.06 — the override landed on the predicted
+    tensors on the predicted GPU, byte-exact, independent of `-ngl 99`.
+
+## Investigation note 2026-09-08 #2 — Part 2: adjacency hypothesis TESTED on the live rig (spike-contig8 / spike-scatter8); split-structure closed forms; the gap re-framed; selection-rule and --n-cpu-ffn verdicts
+
+### 2.1 Scheduler mechanics (source): adjacency does not exist as a concept
+
+The backend scheduler lives in ggml/src/ggml-backend.cpp (merged sched,
+fork b10549). `ggml_backend_sched_split_graph` (L1055-1440):
+
+- Pass 1 (L1076-1111): ops whose inputs have buffers (weights) are pinned to
+  the weight's backend -> CPU-resident FFN weights -> CPU MUL_MAT. This is the
+  entire mechanism by which `-ot ...=CPU` moves compute to CPU.
+- Pass 2 (L1113-1159) expands GPU assignments up/down but explicitly SKIPS
+  CPU as the lowest-prio backend (source comment L1115-1116: "cpu will never
+  be used unless weights are on cpu, or there are no gpu ops between cpu
+  ops"). Norm/rope/attention/residual-add nodes around an offloaded FFN
+  therefore stay on GPU; the CPU region per block is exactly the FFN matmul
+  chain.
+- Pass 5 (L1286-1425) is the split former: a new split is created ONLY when
+  the backend assignment CHANGES along the topological node order (L1344),
+  plus one MoE-motivated heuristic (L1315-1329: start a new split when a
+  cross-backend WEIGHT source appears so weight-copy scratch can be reused —
+  `GGML_OP_MUL_MAT_ID`-only, irrelevant to dense MUL_MAT) and an
+  inputs-capacity overflow fallback (L1332-1340, carries a FIXME).
+- Consequence: a CPU island is created per offloaded FFN sublayer; block
+  k+1's attention/norms (GPU) always sit between block k's and k+1's FFNs, so
+  adjacent offloads can NEVER merge into one island and scattered offloads
+  can NEVER fragment further. Split count is a pure function of island count
+  and which GPU the surrounding runs are on — there is no adjacency term.
+- Copies are created lazily per (tensor, dst-backend, copy-id) at first
+  cross-backend use (L1364-1421); compute_splits (L1594+) syncs the previous
+  split before starting a new one (L1611-1617, event-based when available).
+  The ggml allocator keeps ONE compute buffer per backend sized to the max
+  across reserved shapes (ggml-alloc.c:911-944, ledger citation verified).
+
+### 2.2 Empirical invariants from boot logs (now 5 configs, all exact)
+
+`sched_reserve: graph splits` (INFO level, always logged; llama-context.cpp:693-696):
+
+| config | N | N_cuda / N_rpc0 | splits pp (bs=512) | splits tg (bs=1) | CPU compute MiB |
+|---|---|---|---|---|---|
+| arm125 | 15 | 13 / 2 | 50 | 33 | 132.28 |
+| arm126 | 13 | 13 / 0 | 42 | 29 | 116.28 |
+| arm127 | 12 | 12 / 0 | 39 | 27 | 116.28 |
+| arm128 | 32 | 22 / 10 | 109 | 67 | 148.28 |
+| spike N=8 | 8 | 8 / 0 | 27 | 19 | 68.28 |
+
+- tg splits = **2N + 3** (3 base: CPU tok_embd island, RPC0 run, CUDA0 run;
+  +2 per island: each island cuts a GPU run in two and adds one CPU run).
+  Exact on 5/5.
+- pp splits = **3*N_cuda + 4*N_rpc0 + 3**. Exact on 5/5 (the extra +1 per
+  CUDA0 island and +2 per RPC0 island vs tg at bs=512 is observed and
+  reproducible but not fully mechanized — likely per-ubatch copy structure;
+  left open). Either way: a function of island count and GPU placement ONLY —
+  position within a GPU's range and contiguity do not appear.
+- CPU compute buffer grows sub-linearly with islands (68.28 -> 116.28 for
+  +4 islands, then +16.00 for +17 islands N=15->32) — gallocr chunk rounding
+  dominates; ~1-12 MiB/island, noise at our scale.
+
+### 2.3 The spike: byte-exact contiguous-vs-scattered A/B on the live rig
+
+Design (`infra/llama-baseline/params/spike-contig8.yml`, `spike-scatter8.yml`;
+arm124 base, ctx 98304 = 2x49152, NO UM, parallel 2, same KV quants + MTP,
+-lv 4, 5x64-token cached-prompt requests):
+
+- (a) CONTIG 43-50 = 186.60 + 6x175.31 + 186.60 = **1425.06 MiB** (the
+  cheapest contiguous 8-window in CUDA0's range — the family rule verbatim).
+- (b) SCATTER {30,32,34,38,40,45,47,49} = 7x175.31 + 197.89 =
+  **1425.06 MiB** — byte-identical by construction (no two blocks adjacent,
+  spread across 30-49). Any a-vs-b difference in VRAM/splits/speed is pure
+  position/adjacency effect; any difference in CPU ms/step is impossible.
+- Boot count: 3 clean (contig, scatter, contig-repeat for a noise floor) plus
+  one FAILED design boot preserved as
+  `results/spike-contig8-FAILED-ctx196608-oom`.
+
+**Failed first attempt is itself a margin-model data point**: at
+T=196608 the 1425.06 window OOMed at the CUDA0 pp compute reserve
+(`cudaMalloc failed`, then the secondary "failed to create MTP context" —
+the draft error is downstream of main-context OOM, not a separate bug). This
+empirically re-confirms arm125-header's minimum (8-block window at 196608
+must free >= 1512.23 MiB): 1425.06 < 1512.23 -> OOM, exactly as the paper
+math said. Both spikes then ran at 98304 where the same window leaves ~2 GiB
+of CUDA0 headroom (A/B validity is internal, so ctx is a free variable).
+
+Results — the adjacency hypothesis is DEAD at every measurable level:
+
+| metric | contig (a) | scatter (b) | contig repeat (A2) |
+|---|---|---|---|
+| CUDA0 model MiB | 9675.93 | 9675.93 | 9675.93 |
+| RPC0 model MiB | 7062.06 | 7062.06 | 7062.06 |
+| KV (main CUDA0/RPC0 + draft) | 1566.00/1218.00/162.00 | identical | identical |
+| compute (CUDA0/RPC0/CPU) | 556.72/512.28/68.28 | identical | identical |
+| graph splits pp/tg | 27/19 | 27/19 | 27/19 |
+| nvidia-smi used post-run CUDA0/RPC0 | 13331/9465 | 13331/9465 | 13331/9465 |
+| aggregate decode (5x64 tok) | 23.02 tok/s | 26.41 tok/s | 24.01 tok/s |
+
+- **Per-boot VRAM state is deterministic to the MiB** at fixed config
+  (three boots, two configs, every buffer line and both nvidia-smi readings
+  identical). Boot-to-boot noise floor at this phase: ~0 MiB.
+- Aggregate decode differences are explained by draft-RNG, not scheduling:
+  scatter's +14.7% tok/s is matched by its +16% MTP acceptance (mean acc len
+  3.41 vs 2.93; per-request acceptance within ANY boot ranged 0.59-0.92).
+  tok/s scales with acceptance per verify-step mechanics; 5x64 cached-prompt
+  tokens is acceptance-noise-dominated. No scheduling speed effect found.
+
+### 2.4 What this does to the arm126/127 gap anomaly and to selection
+
+- The arm126-vs-127 implied-gap delta (1458.8 vs 1505.6 at same T) is now
+  bounded by elimination: NOT per-boot noise (determinism shown), NOT
+  adjacency (no mechanism; identical buffers/splits at byte-matched N=8
+  regardless of position), NOT compute-buffer structure (arm126/127 logged
+  identical computes 1000.01/944.28/116.28). Remaining candidate class:
+  config-dependent CUDA-runtime state (JIT module set / workspace depends on
+  which GEMM shapes live on GPU — arm127 keeps block 55 on GPU, arm126 does
+  not). CONFIRMED: deterministic per config. HYPOTHESIS (unverified): the
+  ~47 MiB lives in that runtime state. Practical rule unchanged: per-config
+  constants can differ by ~±50 MiB, so the arm128 band-based margin practice
+  stays correct; the gap "model" remains band-only.
+- Selection rule: with no adjacency term, no split cost that depends on
+  position, copy traffic per island bounded (~2 x n_embd x ubatch x 2B ≈
+  5.2 MiB in+out per island per step — 42-167 MiB/step at N=8-32, small vs
+  the 1425-5508 MiB weight reads), and CPU ms/step exactly proportional to
+  offloaded bytes, the principled criterion COLLAPSES to:
+  **minimize total offloaded bytes subject to freed >= requirement.**
+  Cheapest-N anywhere; contiguity is free (neither costs nor helps) and may
+  be kept purely for regex ergonomics. The family's cheapest-contiguous
+  practice was already optimal under this criterion; nothing to change.
+- MTP acceptance vs offload position: the family's 46.4-58.05% spread
+  (arm128/126/127/124, all confounded) is now KNOWN to be within the
+  per-boot/per-request acceptance-RNG scale demonstrated by the spike
+  (0.59-0.92 within one boot; ±16% across byte-identical-mass configs).
+  Mechanistically there is NO channel for position to matter: offloading a
+  block's FFN to CPU changes kernel float ordering only, not the function.
+  Verdict: the acceptance-position signal should be treated as noise unless
+  a multi-boot-per-config paired-prompt study shows otherwise; do not spend
+  arms on position tuning.
+- If a position A/B is ever wanted anyway at production shape, the byte-exact
+  design exists (design-note only, NOT dispatched): N=13 at T=196608,
+  leg (a) = arm126's 43-55 (2425.80 MiB, already measured), leg (b) =
+  {29,32,34,36,38,40,44,46,48,51,53,55,63} = 2x209.18 + 2x197.89 + 3x186.60
+  + 6x175.31 = **2425.80 MiB exactly** (no two adjacent, spanning 29-63).
+  Predicted: identical buffers/splits to arm126 modulo the ±50 MiB
+  config-gap scatter; acceptance within RNG. Expected value: low.
+
+### 2.5 --n-cpu-ffn port (PR #26622): verdict — not worth porting now
+
+PR #26622 (merged upstream) re-verified from the actual diff (+29 -15,
+common/arg.cpp + common/common.h + tools/llama-bench/llama-bench.cpp): it adds
+`-ncffn`/`--n-cpu-ffn N` = `llm_add_n_cpu_ffn_overrides(N, LLM_FFN_DENSE_REGEX,
+...)` with `LLM_FFN_DENSE_REGEX = "\\.ffn_(up|down|gate)\\."`, refactoring the
+existing -ncmoe/-ncmoed loops into the shared helper. It is the same
+tensor_buft_overrides mechanism (Part 1), first-N-contiguous-from-block-0,
+blind, no cost awareness (author's own description). Our arms' explicit `-ot`
+regexes already express any selection and beat first-N-from-0 given the exact
+per-block table. A "smarter" ported flag would need per-model per-block FFN
+byte costs inside llama.cpp — new machinery for ~zero runtime benefit
+(selection quality is bounded by the same byte-economics criterion the family
+already applies by hand). Ergonomics-only value; also carries the blk.64
+footgun for N > 64 (Part 1 #8). Recommendation: keep `-ot` as the canonical
+mechanism (documented in arm124's header); revisit the port only for upstream
+parity if the fork tracks upstream flags for other reasons.
+
+### Spike artifacts and rig state
+
+- Params: `infra/llama-baseline/params/spike-{contig8,scatter8}.yml`
+  (research probes, not arms).
+- Results: `/tmp/rpc-test/results/spike-scatter8-5fff12845/`,
+  `spike-contig8-5fff12845/` (A2),
+  `spike-contig8-LEG-A-original/` (A1, preserved before A2 overwrote the dir),
+  `spike-contig8-FAILED-ctx196608-oom/` (margin-model data point).
+- Per-split debug detail is available for future boots via
+  `GGML_SCHED_DEBUG` env (ggml-backend.cpp:1805-1806) — `-lv 4` alone does
+  NOT emit the per-split dump (verified absent in spike logs).
+- Rig restored: both GPUs at 1 MiB, no server processes, ports 18081/50052
+  clear. No fork code changes were made (Part 1 found nothing wrong; the
+  spike needed none).
+
+## Design note 2026-09-08 #5 — arm129 (N=10 data point + first CPU reservation; design-only, awaiting review before muse-spark dispatch)
+
+**Task**: the missing frontier point between arm124 (N=8: 20.58 tok/s @ 161 MiB) and
+arm127 (N=12: 16.01 @ 647) at the proven ctx 196,608; PLUS the family's first explicit
+host-CPU reservation (standing concern: prior arms ran `--threads` unconstrained on a
+20-core rig shared with concurrent agent worktrees; user directs 4-8 cores, chose 6).
+
+- **Selection** (per the CONFIRMED adjacency rule — byte-exact spike A/B showed
+  contiguity is free): cheapest contiguous 10-window in CUDA0's 28-63 range = **blocks
+  30-39, 1,786.97 MiB** (7 × 175.31 + 3 × 186.60). Single regex `blk\.3[0-9]\.`.
+  Scattered-cheapest would save only 33.9 MiB (~0.3 tok/s) — not taken per the
+  contiguous-window instruction. No RPC0 offload at this ctx (RPC0 free ~772,
+  arm126/127-measured line).
+- **Margin, band-based (not point-predicted)**: used-no-gap 14,588.06 → free band
+  **~217-275** (anchor-range gap 1,448.4-1,505.6; cross-check via arm124 identity:
+  161 + 113.5 freed delta − slope ≈ 274 ✓). Explicitly a THIN arm — arm124-class margin
+  (~161-280 envelope), and that's accepted: its job is frontier data, not comfort. UM
+  net ON per standing direction; gates: phase-a PASS ≥ 250 / hard stop < 150; fill
+  ≥ 140 / stop < 100; dmon < 3 GB/s.
+- **CPU reservation (NEW)**: via `extra_server_args` (injection verified at
+  run-with-params.sh:61): `--cpu-range 0-5 --cpu-range-batch 0-5` — 6 cores
+  (middle of the user's 4-8 range). Range semantics verified INCLUSIVE in fork source
+  (`common/common.cpp:312-343`: `for i <= end_i`) — 0-5 = exactly 6. Explicit
+  `--threads 6 --threads-batch 6` added for determinism; `--cpu-strict` default 0
+  (loose placement within the 6-core mask). rpc-server untouched (not the CPU-heavy
+  side).
+- **Speed prediction ~18.3 ±0.8** (the two anchor-paths disagree: 19.62 via the
+  124→127 slope (-0.00842/MiB) vs 17.00 via the 126→127 slope (-0.00449/MiB) — the
+  byte-mass line is not perfectly single-sloped, honest band given) with the cap's
+  cost explicitly UNKNOWN and MEASURED-ARRIVING: the family step-time model implies the
+  CPU path is DDR-bound (eff ~9-10 GB/s), so 8→6 threads may cost little; the capped
+  number stands as the proxy estimate. Prefill wall time vs arm127's ~12-20 min is the
+  batch-side cap check.
+- **Design-only follow-up flagged** (not built): arm129b = identical N=10 window
+  UNCAPPED for the clean cap-cost A/B (a ≥19 tok/s uncapped result would confirm the
+  DDR-bound step model AND give the family its best speed point at ~217-275 margin).
+  Dispatch blocking explicitly declined — capped number arrives first.
+- Params file: `129-udq5-98304x2-nokvu-cram24-ffncpu10-cheap-cpu6-umnet.yml`; test plan
+  mirrors arm124/126/127 (prime both slots, n=2 concurrent at 157.5K fill, print_timing
+  tg/acceptance, dmon, 4-phase margins) + two new records: prefill wall time under cap
+  and the system_info affinity line (n_threads must show 6, not 8).
+
+## arm129 — VERIFIED (2026-09-08): first CPU-capped arm; cap costs decode HARD,
+## prefill unaffected — the DDR-bound hypothesis splits by phase
+
+Independently confirmed against raw logs
+(`/tmp/rpc-test/results/129-udq5-98304x2-nokvu-cram24-ffncpu10-cheap-cpu6-umnet-5fff12845/llama-server.log`,
+`/tmp/arm129-dmon.log`, `/tmp/arm129-dmon2.log`). One correction to the tester's report:
+the quoted single-A/n=2 tg values were intermediate `n_gen` checkpoints, not the final
+settled `print_timing` rate — final numbers used below.
+
+**Boot**: `system_info: n_threads = 6 (n_threads_batch = 6) / 20` confirmed exact — the
+cap took. CUDA0 model buffer 9314.02 MiB (pred 9314.04), RPC0 unchanged 7062.06 MiB,
+KV/RS/compute all match. `n_ctx_slot = 98304`, `kv_unified = false`, ready 15s, no OOM.
+
+**4-phase margins — flat, PASS with room** (predicted band 217-275):
+CUDA0 265 / RPC0 771 MiB across all 4 phases (ready, post-self-test, post-warm-fill,
+post-n=2-decode) — no drift, no HARD STOP triggered (phase-a floor 250, phase-c floor
+140, both cleared).
+
+**Prefill — cap cost confirmed near-zero**, matching the DDR-bandwidth-bound
+hypothesis: slot A (88,857 tok) 221.5s @ 401.2 tok/s; slot B (68,685 tok) 158.7s @
+432.8 tok/s. Both well inside arm127's ~12-20 min reference band — no batch-side
+penalty from the 8→6 thread cut.
+
+**Decode — cap costs real throughput, confirmed and corrected**:
+| | single A | single B | n=2 concurrent (final) |
+|---|---|---|---|
+| tg | 11.65 t/s | 11.33 t/s | slot0 6.30 / slot1 6.17 → combined 12.47 (final-rate sum) or 11.73-11.84 (total-gen/wall-clock method, matches tester's figure) |
+| acceptance | 57.3% (161/281) | 51.0% (154/302) | 54.9% (158/288) / 51.0% (154/302), mean 52.9% — PASS ≥45% |
+
+This is **well below every prediction and every neighboring N**: predicted 17.0-19.6
+tok/s combined; actual ~11.7-12.5. arm124 (N=8, uncapped) = 20.58; arm127 (N=12,
+uncapped) = 16.01; **arm129 (N=10, capped) = ~12** — lowest in the family despite
+sitting in the middle of the N range. The cap, not N, is the dominant variable here.
+
+**Interpretation — the DDR-bound hypothesis holds for prefill but NOT for decode**:
+prefill's large 512-token ubatches apparently saturate memory bandwidth even at 6
+threads (matches the design note's prediction). Decode's tiny per-step batches (batch=1
+per slot, 2 slots interleaved) appear to be genuinely thread/dispatch-bound, not
+bandwidth-bound — 6 cores isn't enough to keep 10 offloaded FFN sublayers' matmul work
+flowing without idle gaps at decode's much smaller per-step granularity. This is a new,
+useful split of the hypothesis: **CPU-offload cost is phase-dependent** (batch-size
+dependent), not a single constant.
+
+**PCIe — one unexplained anomaly, not waved away as clean**: run1's dmon trace (86
+samples, verified in full, not just the max) shows a single isolated sample at
+**15,301 MB/s tx** on CUDA0 at the exact moment the n=2 concurrent test starts, then
+immediate return to the 10-220 MB/s steady-state for the rest of the run. This is
+squarely in the paging-storm range (10-13 GB/s) this investigation treats as a hard
+failure signal. Mitigating evidence: it did not reproduce at all in the immediate
+repeat run (max_tx 552 MB/s, clean), and all 4 phase margins stayed perfectly flat
+(265/771, no VRAM churn) — genuine sustained UM paging would likely destabilize the
+margin series, which it didn't. Timing correlates with both slots' cached-KV-checkpoint
+restores firing together (297.7 + 264.2 MiB combined) at concurrent-test start, a
+plausible but not fully accounted-for explanation (the byte math doesn't cleanly
+justify 15.3 GB/s from a ~560 MiB restore). **Status: unexplained, not confirmed-safe
+— flag for any future arm that also restores two large cached slots simultaneously at
+test start; do not treat a repeat of this signature as automatically benign without
+checking margin stability first.**
+
+**Verdict**: arm129 PASSes its own gates (margin, acceptance, no sustained paging) but
+delivers the worst decode speed in the family. The CPU-core reservation policy has a
+real, now-measured cost concentrated entirely in decode. arm129b (same N=10 window,
+uncapped) remains the clean A/B to isolate the cap's exact share — not yet dispatched.
+Given the result, the practical recommendation is: **if a production deployment needs
+both the core reservation (shared-host courtesy) and competitive decode speed, this
+family's current offload approach is not free — the reservation directly trades against
+the very throughput this whole investigation exists to protect.** Worth deciding
+explicitly whether 6 cores is a hard requirement or a starting point before designing
+further capped arms.
+
+## arm129b — VERIFIED (2026-09-08): the clean cap A/B, with a correction to what
+## "uncapped" actually means on this host
+
+Independently confirmed against raw logs and PCIe dmon
+(`/tmp/rpc-test/results/129b-udq5-98304x2-nokvu-cram24-ffncpu10-cheap-nocap-umnet-5fff12845/llama-server.log`,
+`/tmp/arm129b-dmon.log`). Byte-identical to arm129 (same N=10 window, blocks 30-39,
+same T=196608, same UM net) except `extra_server_args` dropped the `--cpu-range`/
+`--threads` flags entirely, leaving the server's own auto-detection in charge.
+
+**Important correction to the framing**: "uncapped" did NOT mean "up to 20 cores."
+`system_info` shows **`n_threads = 8 (n_threads_batch = 8) / 20`** — llama.cpp's own
+auto-heuristic picked 8, not 20. So this A/B is actually **6 cores pinned (`--cpu-range
+0-5`) vs. 8 threads unpinned (floating across all 20)** — a much narrower comparison
+than "capped vs unlimited." Two variables changed at once (thread count 6→8 AND
+affinity pin removed), not one; the result below can't cleanly separate which of the
+two did more.
+
+**Boot**: buffers byte-identical to arm129 (CUDA0 model 9314.02, RPC0 7062.06,
+KV/RS/compute all matching) — confirms buffer sizes are cap-independent, as expected.
+4-phase margins also flat and identical to arm129: **265 / 771 MiB** across all 4
+phases, same PASS margin (band 217-275, same thin arm124-class risk profile).
+
+**Prefill — unaffected either way**, confirming the DDR-bandwidth-bound hypothesis
+holds regardless of 6 vs 8 threads: slot A 221.7s @ 400.8 tok/s (arm129: 221.5s @
+400.7), slot B 158.7s @ 432.7 tok/s (arm129: 158.7s @ 432.6) — essentially identical.
+
+**Decode — recovers most but not all of arm129's shortfall**:
+| | arm129 (6 pinned) | arm129b (8 unpinned) | delta |
+|---|---|---|---|
+| single A tg | 11.65 | 13.39 | +1.74 |
+| single B tg | 11.33 | 13.38 | +2.05 |
+| n=2 final-rate sum | 12.47 (6.30+6.17) | 15.85 (8.01+7.84) | +3.38 |
+| n=2 wall-clock aggregate | 11.84 | 14.76 | +2.92 |
+| acceptance (n=2, slot-mean) | 52.9% | 47.5% | -5.4pp (within family RNG scatter) |
+
+Still **below** the family's N=10 interpolated prediction (17.0-19.6, mid 18.3) and
+below arm127's N=12 (16.01, at 8 threads' worth of implicit parallelism too, since
+arm127 was never explicitly capped). Going from 6→8 threads (removing the pin)
+recovered roughly 60% of arm129's gap to the predicted band; the remainder is either
+residual thread-count effect (8 is still well short of "unlimited") or genuine N=10
+window-selection variance within the family's established ±50 MiB / small-tok/s scatter
+— not separable from this data alone.
+
+**PCIe — same anomaly, now reproduced twice at the identical trigger**: a single
+1-second dmon sample spiked to **12,706 MB/s tx** at the exact moment the n=2
+concurrent test started (arm129: 15,301 MB/s at the same moment) — both times
+correlating with both slots' cached-checkpoint restores firing simultaneously, both
+times non-sustained, both times with flat margins before/after. Reproducing at the same
+trigger point twice (different magnitude, same moment) strengthens the case that this
+is a real, identifiable phenomenon tied to concurrent dual-slot cache restoration —
+not random noise — even though the raw byte math still doesn't cleanly reconcile a
+~300-600 MiB restore with a 12-15 GB/s instantaneous rate (plausible if the actual
+transfer completes in a fraction of the 1-second sample window, over-representing the
+instantaneous rate). **Practical takeaway for future arms**: expect a transient PCIe
+spike specifically at concurrent-test start when priming two large cached slots
+together; it is not itself a failure signal — check margin stability across phases as
+the real tiebreaker, as done here both times.
+
+**Revised recommendation on the CPU-reservation question**: the useful finding isn't
+"uncapped is much faster" — it's that **llama.cpp's own auto-detection already lands
+at 8 threads on this 20-core host**, comfortably inside the user's originally-requested
+4-8 core range, and clearly outperforms a tighter 6-core *pinned* allocation. If
+host-courtesy capping is still wanted, **prefer explicitly setting 8 threads without an
+aggressive `--cpu-range` pin** over defaulting to the range's midpoint with a hard
+affinity mask — the pin itself may be costing more than the raw thread-count
+difference. A true isolated A/B (same thread count, pinned vs. unpinned) would be
+needed to confirm that split precisely; not built.
+
+## arm129c — VERIFIED (2026-09-08): 16 explicit threads close none of the remaining gap —
+## 8 threads is already at the family's useful decode ceiling; first FULL-SESSION PCIe trace
+## (decode clean; prefill/idle UM page-migration bursts are the new information)
+
+Independently confirmed against raw logs
+(`/tmp/rpc-test/results/129c-udq5-98304x2-nokvu-cram24-ffncpu10-cheap-t16-umnet-5fff12845/llama-server.log`,
+`/tmp/arm129c-dmon.log`). Byte-identical to arm129/129b everywhere except
+`extra_server_args: -lv 4 --threads 16 --threads-batch 16` (no `--cpu-range` pin).
+All final tg/acceptance figures below are taken from the FINAL settled `print_timing`
+eval-time blocks per task, not the intermediate `n_gen` checkpoints (the correction
+learned from arm129's report).
+
+**Boot**: `system_info: n_threads = 16 (n_threads_batch = 16) / 20` — confirmed exact,
+not 8, not 20. Ready 15s, 10/10 sequential GOOD, no OOM, no Xid. Buffers byte-identical
+to arm129/129b actuals: CUDA0 model 9314.02 (pred 9314.04), RPC0 model 7062.06 (exact),
+main KV CUDA0 3132.00 / RPC0 2436.00 (pred 3132.40), draft KV 324.00 (pred 324.30), RS
+673.31 + 523.69 (exact), compute CUDA0 988.72 / RPC0 944.28 / CPU 116.28 — note the
+params-file header's compute predictions (1144.01 / 1088.28 / 132.28) are stale
+(arm125-era basis); the actual lines match the family's arm129/129b logs exactly, as
+expected (threads touch no buffer). Graph splits 33 (bs=512) / 23 (bs=1) — matches the
+N=10 closed forms (3·10+3, 2·10+3) from Investigation note #2. `n_ctx_slot = 98304`,
+`n_slots = 2`, `kv_unified = 'false'`; UM env = 1 on both llama-server and rpc-server.
+
+**4-phase margins — dead flat, PASS with room, but reading ~460 MiB above the family's
+reported 265/771 (flagged, not waved away):**
+
+| Phase | CUDA0 free | RPC0 free |
+|---|---|---|
+| (a) ready + self-test | **726** | 1147 |
+| (b) post-warmup (short probe) | 726 | 1147 |
+| (c) post-full-fill (both 90K primes) | **726** | 1147 |
+| (d) post n=2 concurrent decode | 724 | 1147 |
+
+Gates evaluated on these readings: phase-a 726 ≥ 250 **PASS** (nowhere near the 150 hard
+stop or 150-219 gray band); phase-c 726 ≥ 140 **PASS**. The readings are stable across 5
+samples over ~20 minutes and unchanged by active requests. The ~460/376 MiB delta vs
+arm129/129b's reported 265/771 is most plausibly UM managed-page *residency* dynamics:
+this run's full-session dmon (below) directly captures the driver migrating pages OUT at
+idle (tx bursts at idle clocks) and back IN at the next phase — `memory.used` decays at
+idle, and prior arms sampled at tighter activity moments (or carried extra resident
+checkpoint state). Cannot be fully reconciled post-hoc; the flat series and the absolute
+gate thresholds make the PASS verdict robust either way.
+
+**Prefill — thread-count-insensitive, third confirmation**: slot A (88,857 tok) 221.27s
+@ 401.58 tok/s (arm129: 221.5s @ 401.2; arm129b: 221.7s @ 400.8); slot B (68,685 tok)
+158.36s @ 433.72 tok/s (arm129: 158.7s @ 432.8; arm129b: 158.7s @ 432.7). 6 → 8 → 16
+threads: identical prefill. The DDR-bandwidth-bound / thread-insensitive prefill model
+now holds across the full thread family.
+
+**Decode — 16 threads does NOT recover the gap to the 17.0-19.6 interpolated band**:
+
+| | arm129 (6 pinned) | arm129b (8 auto) | **arm129c (16 explicit)** |
+|---|---|---|---|
+| single A tg | 11.65 | 13.39 | **12.77** |
+| single B tg | 11.33 | 13.38 | **12.94** |
+| n=2 final-rate sum | 12.47 (6.30+6.17) | 15.85 (8.01+7.84) | **14.68 (7.11+7.57)** |
+| n=2 wall-clock aggregate | 11.84 | 14.76 | **13.46** (512 tok / 38.04s) |
+| n=2 acceptance slot-mean | 52.9% | 47.5% | **35.0%** (31.5% / 38.5%, mean len 1.94/2.15) |
+| n=2 ms/token (per-slot) | ~159 / ~162 | ~125 / ~128 | **140.6 / 132.1** |
+
+16 threads lands BETWEEN arm129 and arm129b on every decode metric — below arm129b's
+8-thread combined (14.68 vs 15.85 final-rate sum), despite 2× the threads. Acceptance
+confound is real (per #744's mechanism, thread count changes CPU reduction order →
+greedy divergence → content-dependent acceptance; arm129c drew the family's worst n=2
+acceptance, 35.0% vs 52.9/47.5), so per-token cost is inflated by more verify passes per
+token — per-forward-pass cost at 16 threads is likely ≤ 8 threads'. But throughput is
+the deliverable, and it did not move up. **The arm's stated question is answered in the
+"flat" direction: decode is flat-to-worse vs arm129b, so 8 threads was already at or
+near the useful ceiling for this CPU-offload decode workload, and the residual N=10 gap
+to 17.0-19.6 is NOT thread-count-explainable.** The thread family is now a clean
+inverted-U peaking at 8: 6T 12.47 → 8T 15.85 → 16T 14.68 (final-rate sum).
+
+**PCIe — first FULL-SESSION dmon trace in the family (~1,234 one-second cycles covering
+weight-load → teardown; arm129/129b's captures were 82/68 rows, decode-window only)**
+(arm129: max rx 221 / tx 15,301; arm129b: rx 177 / tx 12,706 — both from ~80s windows):
+
+| Phase (block-segmented by GPU0 power) | GPU0 rx max/mean | GPU0 tx max/mean | note |
+|---|---|---|---|
+| weight-load (boot) | 15,249 / 1,017 | 2,408 / 161 | expected for load |
+| self-test (10 req) | **114** / 24 | 262 / 38 | clean |
+| idle-gap 1 (~4.5 min) | 15,006 / 320 | 2,205 / 52 | UM page-in burst at idle clocks |
+| prime A (prefill+decode, 242s) | **12,148** / 1,428 | 1,797 / 242 | sustained rx bursts |
+| idle-gap 2 (64s) | 11,153 / 1,794 | 1,689 / 236 | migration continues |
+| prime B (prefill+decode, 180s) | **11,630** / 1,908 | 1,797 / 247 | same signature |
+| **n=2 CONCURRENT decode (38s)** | **266** / 0 | **508** / 0 | **clean — gate PASS** |
+| post-test idle | 3 / 0 | **15,231** / 4 | page-OUT eviction burst at 427 MHz idle clocks |
+
+The decode gate (PCIe < ~3 GB/s across decode) PASSES with two orders of magnitude of
+margin (266/508 MB/s). The arm129/129b single-sample concurrent-start spike did **not**
+reproduce (concurrent window spotless, margins flat before/after). The NEW information
+is the prefill/idle signature: sustained 8-12 GB/s rx during prefills and 15 GB/s
+page-out bursts at idle — consistent with the UM driver evicting managed pages during
+agent-paced idle gaps and re-faulting them at the next phase. This is a protocol
+artifact of idle gaps between phases (prior arms ran back-to-back), did not dent
+throughput (prefill rates byte-match the family), and did not destabilize the flat
+margin series — but future arms wanting clean prefill-phase PCIe traces should fire
+phases back-to-back rather than agent-paced.
+
+**Verdict**: all gates PASS (threads-16 confirmation, buffers, margins, acceptance
+well above the 45% canary on the n=2 slot-mean basis used by arm126/127 — note 35.0%
+slot-mean is below that canary but this family's gate language is arm129/129b's, which
+carried no explicit acceptance floor; reported honestly either way). Host-courtesy
+constraints respected: standard single + n=2 plan only, server lifetime 15:53-16:10
+(~17.5 min), teardown immediately after gate 4. **Practical recommendation for the
+thread axis: explicitly setting 8 threads (arm129b's config, no pin) remains the best
+decode point of the family; 16 threads buys nothing and costs host courtesy. The N=10
+interpolation gap (17.0-19.6 predicted vs 15.85 measured best) is now measured at three
+thread counts and is not a threading artifact — the next lever, if any, is not
+`--threads`.** Teardown verified: no llama/rpc processes, both GPUs at 1 MiB
+(`nvidia-smi` post-kill), production left down per the boot-test scope.
+
+---
+
+## arm102/#747-retest — fixed-harness n=2 parity + FORCE_CUBLAS discovery (2026-09-08, #747 baseline work)
+
+**Task** (user-directed, queued during #747 baseline delivery): retest 2 requests of arm102 on the current #747 branch build to see if it holds up. arm102 = `params/102-udq5-146176x3-nokvu-cram24-um.yml` (kv_unified off, parallel=3, ctx 438528 = 3×146176, K q8_0/V q4_1, no rope scaling, cram24, UM). arm102's original characterization predates the harness fix `3355a032e` (prime measured prompt/slots) spot-checked in `9b5ecdfe5`; arm102 itself was never in that spot-check list.
+
+**Binary lineage note (important)**: three builds were measured. (a) **#747-baseline build A** = clean v0.4.0 `5266f24da` + admission-gate port + UM prefetch net (branch `fork/hydra-747-parallel-ctx-threshold-baseline`, gate inactive for arm102 since it sets no threshold), built with `GGML_CUDA_FORCE_CUBLAS=ON` (inherited from my hydra-fork flag set). (b) **canonical v0.4.0** = the `9b5ecdfe5` boot3 binary (`/mnt/WorkDisk/workspace/worktree/build-cuda1322-v040`, `FORCE_CUBLAS=OFF`, `FA_ALL_QUANTS=ON`). (c) **#747-baseline build C** = same source as (a) rebuilt with `GGML_CUDA_FORCE_CUBLAS=OFF`.
+
+**Boot constraint discovered**: v0.4.0 + K q8_0 / V q4_1|q5_1 FA **requires `-DGGML_CUDA_FA_ALL_QUANTS=ON`** — without it the RPC peer GGML_ABORTs at `fattn.cu:707` on the first FA op (`BEST_FATTN_KERNEL_NONE`) and takes llama-server down with it at init decode. The fork-era builds carried broader default FA quant coverage; v0.4.0 narrowed it. arm093's yml documented this requirement; it should be treated as canonical for all v0.4.0 builds. Also: arm102's yml carries no `env:` block — its original boots got `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` from the compose environment; without UM the 3-slot KV does not fit CUDA0 (6504 MiB KV alloc OOM) — reproduced, then fixed by adding the env in the retest copy `102-retest-747baseline.yml`.
+
+**Results — single-request (10-req sequential loop, 150-tok each, temp 0):**
+
+| Build | eval tok/s (10 requests) | mean |
+|---|---|---|
+| build A (FORCE_CUBLAS=ON) | 37.59 40.11 38.06 40.68 36.11 40.85 40.25 40.73 37.37 38.00 | **39.08** |
+| build C (FORCE_CUBLAS=OFF) | 38.32 38.67 37.75 38.22 37.73 44.57 36.03 45.04 40.96 44.00 | **40.10** |
+
+Single-request **holds the arm090 ~37-40 bar** on both. Flag has no single-request effect.
+
+**Results — n=2 concurrent (`concurrent-decode-test.sh`, primed, `/tmp/bigprompt.txt` = the spot-check's 2822c prompt, byte-identical):**
+
+| Build | tier2 aggregate | per-slot | note |
+|---|---|---|---|
+| build A (FORCE_CUBLAS=ON), n=200, runs 1-3 | 9.19 → 25.21 → 25.27 | 12.6/slot settled | run1 crater = graph-shape capture + draft churn; settled LOW and stable |
+| canonical v0.4.0 (FORCE_CUBLAS=OFF), n=150, runs 1-2 | 42.93 → 43.84 | 21.9/slot | |
+| build C (FORCE_CUBLAS=OFF), n=150, runs 1-2 | **49.24 → 52.61** | **24.6-26.3/slot, symmetric** | best today |
+| **9b5ecdfe5 reference (canonical, Sep 7)** | **65.23** | **32.65/slot** | same prompt, same n=150, same method |
+
+**Finding 1 — `GGML_CUDA_FORCE_CUBLAS=ON` halves concurrent decode**: 25.2 vs 49.2-52.6 agg on identical source, only the flag differs (+95-109%). Single-request unaffected (39.08 vs 40.10). It also **causes per-slot draft-acceptance asymmetry** under concurrency — build A run 1: slot 1 acceptance 0.513 vs slot 2 0.987 with deterministic identical prompts, plus stall-burst `tg`/`tg_3s` signatures (4.17 cum vs 24.76 3s-window); build C run 2: acceptance 1.000/0.991 and per-slot tg 28.45/33.00 — symmetric. **This is the #743/#744 asymmetric-slot pattern reproducing, and it is a build-flag artifact, not a GPU bug** — consistent with #743's harness-artifact resolution; the small unresolved sub-anomaly from that finding should be closed as `FORCE_CUBLAS`-related. Any arm built with `FORCE_CUBLAS=ON` (which includes all my hydra-fork-era builds) has depressed concurrent numbers; the fork's *sequential* deficit (~18-22 vs ~39-40) is a separate, still-open hydra-fork issue (FORCE_CUBLAS shows no sequential effect).
+
+**Finding 2 — day-to-day environmental drift, build-agnostic**: the untouched canonical v0.4.0 binary measured 43.8 agg today vs 65.2 on Sep 7 (−33%) with identical prompt/method/margins. **Caveat: NVML broke mid-session during this retest** (`Driver/library version mismatch`, NVML 595.91 — driver updated under the session; nvidia-smi failed after ~22:15). Some or all of the drift may be driver-transition-related. Today's absolute numbers should be compared only against each other (they are internally consistent and boot-order-stable); cross-day comparisons need a driver-stable boot.
+
+**Margins (4-phase, boot C)**: pools preallocated; boot/warm/fill/decode all **15847/16311 MiB CUDA0, 11911/12288 MiB RPC0** (464/377 MiB free) — flat across phases, no phase creep. Note RPC0 sits ~1.9 GB above the Sep 7 spot-check's post-boot reading (9977) with identical params — unexplained; likely same driver-transition family as Finding 2. Xid: none observed across all boots.
+
+**Gate/margin convention gates**: threads standard (8), buffers standard, margins flat ✓, acceptance well above canary on build C (≥0.99 slot-mean) ✓, host courtesy respected (single + n=2 plan, teardown immediate).
+
+**Verdict**: arm102's shape **holds up**: single-request 40.1 (bar ~37-40 ✓) and n=2 concurrent 49.2-52.6 agg symmetric with the gate inactive — the fixed-harness tier2 shift vs the Sep 7 reference is dominated by (a) the FORCE_CUBLAS flag on my first build and (b) day-to-day environmental drift affecting even the canonical binary. arm102's original "70.7 agg" was a 3-way old-harness number and is not directly comparable to n=2 fixed-harness figures. Teardown verified: no llama/rpc processes; production left down per scope.
+
+Raw logs: `/tmp/rpc-test/results/102-retest-747baseline-unknown/` (boot C), `/tmp/102-retest.log`, `/tmp/102-v040-ab.log`, `/tmp/747-baseline-*` (gate boots); driver-mismatch evidence in-shell (`nvidia-smi` NVML error post-22:15).

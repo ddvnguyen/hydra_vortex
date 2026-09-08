@@ -1,0 +1,223 @@
+# Arm 126 — SAFETY RE-TUNE of the family: ctx 229376 -> 196608 (2 x 98304),
+# CUDA0-only offload blocks 43-55 (13 blocks, cheapest contiguous window in
+# CUDA0's range, NO RPC0-side offload — not needed at this ctx), UM back ON
+# as a safety net. Design-only; hand-off for boot/deep tests.
+#
+# ======================================================================
+# USER DECISION (2026-09-08, verbatim): "Try 2 solution: reduce ctx, UM".
+# ======================================================================
+#
+# WHAT HAPPENED IN arm125 (summary — full playbook in params/125-*.yml +
+#   docs/investigations/740-results-report.md "Design note 2026-09-08"):
+#   Gates 1-3 PASSED exactly (per-buffer lines matched the GGUF-exact math
+#   to <1 MiB — the layer->GPU mapping is now fully empirical). Gate 4
+#   FAILED: only the 10-request self-test ran (808-token prompts, ~0
+#   combined fill) and CUDA0 free measured 51 MiB (predicted ~335 from a
+#   WRONG calibration). Correctly halted per STOP rule; no OOM was risked.
+#
+# ROOT-CAUSE UPDATE (this design's reason for being):
+#
+# (1) The old "constant gap ~657" calibration was WRONG — self-inflicted
+#     basis error, not a mystery. It used compute buffer = 1936.47 MiB
+#     (the 3-slot sched_reserve value from a prior boot). The CORRECT
+#     2-slot compute buffer is 1144.01 MiB (arm125 boot log line 229;
+#     arm124's true used-sum with it = 9427.57 + 3455.90 + 673.31 +
+#     1144.01 = 14700.79 -> paper free 1610 vs measured 161 -> REAL gap
+#     ~1449 on the 16311 MiB nvidia basis, NOT 657).
+# (2) With that basis fixed, arm124 gap 1449 and arm125 gap 1735 fit a
+#     two-point linear model:
+#         gap(N) ~= 1120 + 41 x N_blocks      (+/- ~150)
+#     i.e. ~41 MiB of unaccounted VRAM per CPU-offloaded block, on top of
+#     ~1.12 GiB of baseline runtime overhead. arm125's "3x growth" was
+#     mostly the compute-basis error, not topology explosion — but the
+#     41 MiB/block slope itself is UNEXPLAINED.
+#
+# CUDA-GRAPH-CACHE HYPOTHESIS — investigated in fork source, verdict:
+#     WEAK as the primary cause. Evidence:
+#     - Graph executor instances live on the HOST side: ggml-cuda.cu
+#       keeps `graph->instance` (cudaGraphExec) with node params
+#       referencing EXISTING device pointers (cudaGraphExecUpdate reuse,
+#       ggml-cuda.cu:2638-2655, 4221-4228) — instantiation allocates no
+#       meaningful device memory (kernel-param descriptors are host MBs).
+#     - The compute buffers are NOT per-graph: ggml_gallocr_reserve_n_impl
+#       keeps ONE buffer per backend id, sized to the max across graph
+#       shapes (ggml-alloc.c:911-944 — "buffers are reused, resized only
+#       when a chunk's max grows"). So the 3 sched_reserve prints
+#       (1144.01/1088.28/1088.28) collapse to ONE 1144.01 reservation on
+#       CUDA0 — verified — steady-state VRAM does not grow with shape
+#       count through the galloc either.
+#     - `graphs reused = N` counters in print_timing are per-task reuse
+#       counters, NOT a cache-size signal (arm124 log: monotonically
+#       growing with task count; useless as a memory probe).
+#     What WOULD prove a graph/shape-memory mechanism: per-PHASE nvidia-smi
+#     (see gate 5b): if free VRAM drops as NEW request shapes appear (batch
+#     1 vs 2 vs prefill) but is stable after the first occurrence of each
+#     shape, a bounded-but-larger-than-static cache pool is implicated. If
+#     free is ~constant after boot complete, the 41/block residual lives in
+#     loader/runtime costs (candidates: per-split staging/copy buffers for
+#     CPU-repetition runs of ~40 MiB, CUDA JIT/module residency, allocator
+#     fragmentation/orcuda — none yet pinned). Capture the phases either way.
+#
+# (2b) TRUSTWORTHINESS OF arm124's 161 MiB (user asked): with the corrected
+#     basis, arm124's own unexplained is ~1449 — its 161 was arm124's
+#     measured free AFTER all that overhead, at full 196608 commit. For
+#     sustained varied traffic, the risk is NOT graph-cache pool growth per
+#     se (see above), but any per-shape additions. arm126's target keeps
+#     free >= ~700 predicted so a 300-500 MiB shape-growth soak still leaves
+#     > 200 MiB — measurable protection while the residual is root-caused.
+#
+# ================= arm126 SHAPE =================
+# ctx: 196608 total = 2 x 98304 per-slot (arm124's PROVEN deep-fill ctx —
+#   30% down from arm125's 229376, gated by the REAL measured gap, not a
+#   token shrink: see free prediction below).
+# offload: SAME logic as arm125 (cheapest contiguous window, no expensive
+#   54-63 tail) but RESIZED — Nc=13 (blocks 43-55, 2425.80 MiB) on CUDA0
+#   only, NO RPC0 blocks (at T=196608 RPC0 needs no relief: 11957.4 used,
+#   330.6 free — arm124-proven line). N = 13 (not 15).
+#
+# VRAM MATH at T = 196608, 2 slots, NO UM required for the math:
+#   CUDA0 (16311 MiB nvidia basis):
+#     model        11101.01 - 2425.80   =  8675.21 MiB
+#     main KV      196608 x 16703 B     =  3455.90 MiB
+#     draft KV     196608 x 1730  B     =   324.30 MiB
+#     RS (2 seqs)  673.31     |  compute 1144.01   (2-slot sched_reserve)
+#     gap model    ~1120 + 41x13         = ~1,653 MiB  (+/-150)
+#     predicted FREE ~= 16311 - (8675.21 + 3132.40 + 324.30 + 673.31
+#                     + 1144.01) - 1653  ~=   709 MiB   [+/- 150 band:
+#                                            ~560 min if gap hits +150 off]
+#     Independent cross-check (no gap model needed): arm124's measured
+#     free at N=8/1673.44-freed was 161. arm126 adds +5 blocks (+752.40
+#     freed) but +5 x 41 gap (+205) -> predicted = 161 + 752.40 - 205
+#     =~ 708. Both paths agree to 1 MiB — this is the arm's headline
+#     prediction and the boot agent's primary gate-4 reference.
+#     (empirics: same shape family measured free 161 at N=8/1673.44 freed.
+#      interchangeable: +3 x 209 = 627 more freed (13 vs 8 blocks) at
+#      +5 blocks x 41 gap = +205 gap -> +422 net vs arm124's 161 -> ~583.
+#      our 709 and 708 agree; the +/- band covers drift — PRINT PHASES.)
+#   RPC0 (12288 MiB): 7062.06 + 2435.20 + 1936.47 + 523.70 -> margin ~331
+#     (arm124-identical, proven clean at deep fill).
+#   Fill capacity: 157480 (88805+68675) + ~39K cells generation headroom.
+#
+# WHY NOT MORE ctx: the gap model has ONE good point per config; with the
+#   self-test-then-halt protocol that's affordable, but building the deep
+#   test on a shape-never-verified fill envelope needs the FIRST-level
+#   margin back. arm124's 196608/8-block shape ran the full deep test with
+#   161 free. arm126 targets ~560-860 free with an explicit STOP at <300
+#   (vs arm125's stop-at-rule) — this is the measured-reality margin, with
+#   unknown-variance headroom reserved behind it. Next ctx step (arm127+)
+#   waits for phase-wise margins from this boot.
+#
+# !!! UM = SAFETY NET THIS ARM ONLY — NOT THE FIX !!!
+#   GGML_CUDA_ENABLE_UNIFIED_MEMORY stays enabled through the
+#   docker-compose.baseline.yml default env (=1, both services) so that a
+#   mis-priced margin DEGRADES to host-backed paging (slow but alive)
+#   instead of an OOM crash-loop. Intent per user: 124/125's whole purpose
+#   is avoiding UM paging collapse; UM here only catches residual math
+#   error. OPERATIONAL SIGNAL (log prominently in the handoff): if the
+#   deep-fill test shows PCIe > ~3 GB/s dmon during decode, per-slot tg
+#   collapsing to single-ish digits, or output_tunnel "KV cache shifting"
+#   events while filled, THE CTX IS STILL TOO AGGRESSIVE — record the
+#   exact free margin at which paging began and bring ctx down next round;
+#   do not accept a paging-assisted "pass". A clean run that never
+#   triggers paging is what retires UM from this family.
+#
+# GATE CHECKLIST (>= 2 fresh boots, house rule):
+#   1. Boot log buffers (verbosity >= 4, DO NOT TRIM):
+#        CUDA0 model ~ 8675 MiB | RPC0 model ~ 7062 MiB (NO RPC0 offload —
+#        its buffer must be ~7062, NOT 6788 — distinguishing this arm's
+#        layout from 125's) | CPU_Mapped ~ 14312 (682.03 + 2425.80 + mmap
+#        overhead lines) | CUDA0 KV main ~ 3132.4 + draft ~ 378 (NOTE: the
+#        draft-KV line sometimes prints lower at discard; main+draft must
+#        sum to ~3456.7 = 196608 x 18433 B) | RS 673.31 + 523.70 |
+#        compute CUDA0 1144.01 / RPC0 1088.28 / CPU 132.28 (the 3
+#        sched_reserve prints collapse to ONE 1144.01 reservation —
+#        verify against free-memory counters, see gate 5b).
+#   2. n_ctx_slot = 98304, kv_unified = false; ready ~15-25 s.
+#   3. UM env = 1 (docker-compose default). NO OOM/crash-loop; if the
+#      self-test OOMs DESPITE UM, stop immediately (something bigger than
+#      margin math is wrong).
+#   4. MARGIN GATES (nvidia-smi, 16311 basis):
+#      a. after ready + self-test (10 small reqs): CUDA0 free >= 500 MiB
+#         PREDICTED ~709 +/- 150 (two independent paths agree: see math
+#         above). HARD STOP at < 300 (= gap model wrong; no deep fill,
+#         capture phases + log, escalate to design revision).
+#      b. after warm + full 157.5K fill: CUDA0 free >= 250 MiB PASS,
+#         300+ preferred. STOP below 150.
+#      c. RPC0 free at all phases >= 160 MiB.
+#   5. Decode telemetry: dmon during n=2 decode — PCIe < ~3 GB/s; UV: any
+#      PCIe elevation? treat as paging signal per UM section (do NOT score
+#      a paging-assisted run as success).
+#
+# TEST PLAN (handoff; another agent executes, renders to 740 ledger):
+#   Test prompts (2026-09-08 state): /tmp/bigprompt_90k_a.txt 88805 tok,
+#     /tmp/bigprompt_90k_b.txt 68675 tok. Per-slot cap is now 98304 —
+#     a NEW third prompt is optional (<= 98304 tok, ~<= 274 KB); if built,
+#     n=2 fill = 88805 + ~96K ~= 184.7K <= 196608 (12K headroom — thin;
+#     only run if phase margin gate 4b passes first).
+#   0. Boot; gates 1-3. Phase-margin capture (gate 4) BEFORE any deep
+#      request. Verify spec stats healthy on a short request.
+#   1. PRIME slot A: bigprompt_90k_a (max_tokens ~256, stream, timeout
+#      >= 3600 s — CPU prefill 13 CPU FFN blocks x 512-token ubatches is
+#      ~4-7 s/ub ~ 12-20 min one-time; cache_prompt + cram24 keep warm).
+#   2. PRIME slot B: bigprompt_90k_b (same care, ~9-15 min).
+#   3. n=2 CONCURRENT (max_tokens 256-512 each): record per-slot tg +
+#      combined via print_timing (NOT /metrics — #746), acceptance,
+#      margins post-run, dmon trace, KV-shift events.
+#      PASS: combined >= ~13 tok/s at 157.5K filled AND gate-5 (PCIe
+#      < 3 GB/s) clean AND margins within predicted bands AND no shift.
+#   4. (optional stretch, only if gate-4b passed AND free >= 1600 at
+#      phase-b): third-prompt n=2 as above; same PASS gates at ~185K
+#      fill. Otherwise skip — do not risk a thin-margin read.
+#   5. Report phases (boot/self-test/warm/fill) per GPU margins,
+#      per-buffer lines, tok/s, acceptance, prefill wall times, and the
+#      PCIe trace to docs/investigations/740-results-report.md. The
+#      phase-wise margin series is THE data for settling the 41/block
+#      residual; without it the next ctx push stays blind.
+#
+# Base: params/125-udq5-114688x2-nokvu-cram24-ffncpu15-cheap-noum.yml, with:
+#   ctx 229376 -> 196608 (2 x 98304), override_tensors 43-55 only (13
+#   CUDA0 blocks; RPC0-side 14-15 removed — not needed), UM net ON,
+#   everything else unchanged. Naming keeps the -umnet marker for the
+#   ledger's searchability.
+---
+name: 126-udq5-98304x2-nokvu-cram24-ffncpu13-cheap-umnet
+description: "SAFETY ARM after arm125's gate-4 halt (51 MiB measured free vs ~335 predicted — the 657-gap calibration had a compute-basis error; real gap ~= 1120 + 41 x N_blocks). ctx back to arm124's proven 196608 (2x98304); offload resized to Nc=13 blocks 43-55 CUDA0-only (cheapest contiguous, no 54-63 tail, no RPC0 offload needed); 2425.80 MiB CPU/step (+45% vs arm124). UM re-enabled as a degradation safety net ONLY — a paging-assisted pass is a signal to reduce ctx next round, not a success. Predicted CUDA0 free ~709 +/-150 at self-test (two independent prediction paths agree at 708/709), >= 250 required at full 157.5K fill."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors:
+  - 'blk\.(4[3-9]|5[0-5])\.ffn_(gate|up|down)\.weight=CPU'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 196608
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
+extra_server_args: "-lv 4"

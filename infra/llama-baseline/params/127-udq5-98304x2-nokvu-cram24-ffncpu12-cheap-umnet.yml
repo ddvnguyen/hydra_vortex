@@ -1,0 +1,232 @@
+# Arm 127 — offload-count optimization at arm124/126's proven ctx
+# (196608 = 2 x 98304): N=12 CUDA0-only offloaded blocks 43-54 — the
+# frontier point between arm124's N=8 (fast 20.58 combined but fragile
+# 161 MiB margin) and arm126's N=13 (903 MiB margin but 15.07 tok/s).
+# UM stays ON as the PERMANENT safety net (user decision "Combine
+# offload and UM?"): arm126 proved it costs nothing when never triggered
+# (flat phase margins, PCIe peak 2195 MB/s = no paging signal).
+#
+# ======================================================================
+# USER DIRECTION (verbatim): "Combine offload and UM? Optimize offload
+# to 10 or 12 layers with better layers select."
+# ======================================================================
+#
+# DESIGN BASIS — RECONCILED GAP MODEL (upgrades arm126's 1120+41N model):
+#   With the correct 2-slot compute buffer (1144.01), the two SAME-CTX
+#   measured anchors give:
+#     arm124 (N=8,  freed 1673.44): gap = 16311 - used - 161.0 = 1448.4
+#     arm126 (N=13, freed 2425.80): gap = 16311 - used - 903.0 = 1458.8
+#   -> gap is nearly CONSTANT at fixed T: slope ~2.1 MiB per offloaded
+#   block (the old 41/block estimate came from comparing anchors at
+#   DIFFERENT T — arm125's 1,735 at T=229,376 carries a T-dependent
+#   component (~276 MiB per extra 32.7K cells, mechanism still open) that
+#   does NOT apply at 196608. New model, T=196608 family:
+#         gap(N) ~= 1448.7 + 2.2 x (N - 8)      [use +/- ~60]
+#   Identity that reproduces both anchors to <2 MiB:
+#         free(N) ~= freed(N) - gap(N) - 64.03
+#   (the -64 is llama-basis slack constant, same on both anchors).
+#
+# WHY N=12 AND WINDOW 43-54:
+#   Byte-mass frontier (exact GGUF per-block FFN data, arm125 parse —
+#   reusing, not re-deriving): candidate cheapest-contiguous windows:
+#     N=10 (44-53): freed 1820.84 -> predicted free ~304 (BELOW the
+#       400-600 target band; would trade back the safety arm126 bought)
+#     N=11 (44-54): freed 2030.02 -> predicted free ~511, speed ~17.97
+#       (inside the band — the true frontier optimum; see arm128 note)
+#     N=12 (43-54): freed 2216.62 -> predicted free ~695, speed ~16.60
+#   Chosen: N=12, blocks 43-54 (2,216.62 MiB freed). Justification:
+#   it meets the user's margin target WITH headroom (~695 predicted,
+#   >4x arm124's fragile 161) while still recovering +10.2% speed vs
+#   arm126 (15.07 -> 16.60 predicted). It is ALSO the maximal-margin
+#   end of the {N=11, N=12} pair awaiting arm126-anchored gap
+#   confirmation — picking the safer variant first costs only ~1.4
+#   tok/s and arm128 (N=11, 44-54) is pre-designed with identical
+#   structure if this verifies (one-block diff, same window family):
+#   arm128 predicted 17.97 tok/s @ ~511 MiB free (see "arm128 candidate"
+#   below). If this arm's margin series lands < 700 at any phase, SKIP
+#   arm128 and re-anchor the gap model instead.
+#
+# SPEED PREDICTION (byte-mass weighting, not block count):
+#   Combined-tok/s vs freed-MiB is near-linear across the two verified
+#     anchors: slope = -(20.58 - 15.07) / (2425.80 - 1673.44)
+#                    = -0.00732 tok/s per freed MiB.
+#     arm126 = 15.07 @ 2425.80 (+752.36 vs arm124) => line reproduces
+#     arm126 at 15.07 exactly and arm124 at 20.58 exactly.
+#   arm127 at freed 2216.62 (2,425.80 - 209.18 = block 55 only difference):
+#     predicted combined = 15.07 + 0.00732 x 209.18 = 16.60 tok/s
+#     (+/- ~0.5 band; +10.2% vs arm126, -19% vs arm124, and ~6-18x the
+#     UM-family 0.9-2.7 at this depth). Per-slot ~7-9.
+#   Note arm126's speed loss was NOT ONLY tax: its slot-mean acceptance
+#     (49.15%) sat below arm124's (58.05%) — if arm127's acceptance
+#     recovers toward arm124's ~58% it will outperform the pure-byte
+#     prediction; if not, byte-model stands. Do NOT mix the two axes in
+#     the post-run analysis before checking acceptance first.
+#
+# WHY BLOCKS 43-54 (SAME selection criterion as arm126, drop one block):
+#   Cheapest contiguous window inside CUDA0's range (28-63) reaching the
+#   byte target; keeps 54 (one tail block, 209.18) but EXCLUDES 55-63 —
+#   avoiding the single most expensive 55-63 tail (arm124's original
+#   range) while keeping the window's mean block cost at 184.7 MiB vs
+#   arm126's 186.6. Regex: (4[3-9]|5[0-4])\. matches 43-54 exactly.
+#   Gate 1 buffer expectation: CUDA0 model = 11101.01 - 2216.62 =
+#   8844.39 (vs arm126's 8675.19, +209.18; RPC0 model ~7062 UNCHANGED
+#   — no RPC0-side offload at this ctx).
+#
+# "BETTER LAYER SELECT" — QUALITY CRITERION (user asked explicitly):
+#   Acceptance data: arm124 (tail 56-63 offloaded) slot-mean acceptance
+#     58.05% (64.6/51.5); arm126 (mid-band 43-55) 49.15% (51.3/47.0);
+#     arm119 baseline (no offload) ~0.636 cumulative. Direction of the
+#     data says TAIL offload hurt acceptance LESS — BUT this is a
+#     signal, NOT proof: (a) one boot per arm; (b) arm124's own
+#     slot-pair spread was 13.1 pts vs arm126's 4.3 — slot variance is
+#     large; (c) N differs between the anchors (8 vs 13) so window
+#     position and count are CONFOUNDED; (d) draft-cache quant and
+#     depth/fill are controlled (both tested at T=196608, 157.5K fill).
+#   DECISION: keep cheapest-contiguous as the selection criterion for
+#     arm127 (byte-optimized); arm127 doubles as the quality A/B: its
+#     window is arm126's minus block 55 — the ONLY design difference.
+#     If arm127's acceptance recovers toward ~58% slot-mean, that
+#     implicates the mid-band selection (or the extra block); if it
+#     stays ~49%, the acceptance spread is mostly noise/other factors.
+#     EITHER WAY the data settles it. The follow-up tail-window probe
+#     (arm128-alt: blocks 54-63, freed 2091.80, predicted free ~577 and
+#     speed ~17.5 — MORE freed per block, FEWER blocks) is the clean
+#     quality-vs-position experiment and rides the same protocol if
+#     acceptance stays low here. Do not re-design selection on the
+#     current 2-anchor acceptance data alone.
+#   CANARY GATE: slot-mean acceptance >= ~45% is neutral-pass; if
+#     < ~45% mid-band quality damage is implicated enough to prioritize
+#     the tail-window follow-up over faster N tuning.
+#
+# UM = PERMANENT SAFETY NET (user direction, documented for every future
+#   arm in this family): GGML_CUDA_ENABLE_UNIFIED_MEMORY = 1 stays
+#   enabled via the docker-compose.baseline.yml default in both
+#   services. Cost when never triggered: ZERO (arm126 measured: flat
+#   4-phase margin series, PCIe peak 2195 MB/s vs the 10-13 GB/s
+#   paging-storm signature, no output_tunnel "KV cache shifting" events).
+#   OPERATIONAL RULE (unchanged from arm126): PCIe > ~3 GB/s during
+#   decode, per-slot tg collapse, or KV-shift events while filled get
+#   logged as FAILURE signals — the margin was mis-sized — a
+#   paging-assisted run is NOT a pass; ctx or N comes down next round.
+#
+# VRAM MATH at T = 196608 (2 x 98304), NO UM required for the math:
+#   CUDA0 (16311 MiB nvidia basis; 2-slot compute buffer 1144.01):
+#     model        11101.01 - 2216.62   =  8844.39 MiB
+#     main KV      196608 x 16703 B     =  3132.40 MiB
+#     draft KV     196608 x 1730  B     =   324.30 MiB
+#     RS (2 seqs)  673.31
+#     gap model    ~1448.7 + 2.2x(12-8)  = ~1457.5 MiB   (2-anchor fit)
+#     PREDICTED FREE ~= 695 MiB   (+/-60: two independent identities —
+#     arm126-anchored delta 903 - 209.18 - 2.2x2 =~ 694; direct sum
+#     16311 - 14158.4 - 1457.5 =~ 695 — agree).
+#   RPC0 (12288): 7062.06 + 2435.20 + 1936.47 + 523.70 -> margin ~331
+#     (no RPC0 offload anywhere in this arm; arm124/126 line, proven).
+#   Fill capacity: 157480 combined + ~39K generation headroom (same as
+#     arm124/126's test).
+#
+# CPU COST: 2216.62 MiB DDR reads per verify-step (-8.6% vs arm126's
+#   2425.80, +32.5% vs arm124's 1673.44). Prefill: 12 CPU blocks x
+#   512-token ubatches ~4-7 s/ub — ~12-20 min one-time per ~89-90K
+#   prompt (cache_prompt + cram24 hold states after). Loader warns the
+#   CPU-tensor-mmap warning — expected, harmless.
+#
+# GATE CHECKLIST (>= 2 fresh boots, house rule; same 4-phase protocol
+#   that validated arm126's gap constancy):
+#   1. Boot log buffers (verbosity >= 4, DO NOT TRIM):
+#        CUDA0 model ~ 8844 MiB (delta vs arm126: +209.18 — block 55 is
+#        the ONLY offload diff); RPC0 model ~ 7062.06 unchanged; CPU
+#        KV main ~ 3132.4 + draft ~ 378 -> main+draft ~ 3456.7 | RS
+#        673.31 + 523.70 | compute CUDA0 1144.01 / RPC0 1088.28 / CPU
+#        132.28 (sched_reserve prints remain shared-max — NOT additive).
+#   2. n_ctx_slot = 98304, kv_unified = false; ready ~15-25 s.
+#   3. UM env = 1 (docker-compose default), no OOM/crash-loop; if the
+#      self-test OOMs DESPITE UM: stop immediately (bigger problem).
+#   4. PHASE MARGINS (nvidia-smi per phase, 16311 basis — the four
+#      phase series is the gap-model's strongest evidence):
+#      a. ready + self-test: CUDA0 free >= 500 (predicted ~695 +/- 60);
+#         HARD STOP < 350 (no deep fill; escalate to design revision).
+#      b. post-warmup: within ~100 of phase-a (a flat phase series IS
+#         the UM-costs-nothing + no-shape-growth validation for N=13;
+#         keep it true for N=12).
+#      c. full 157.5K fill: CUDA0 free >= 300 predicted (~675); STOP
+#         < 200; RPC0 free >= 160 at every phase.
+#   5. Decode telemetry: dmon during n=2 decode, PCIe < ~3 GB/s; accept
+#      below the threshold signal per UM section above (page-assisted
+#      pass = failure). Record the phase series margins + PCIe trace.
+#
+# TEST PLAN (handoff; boot/deep-test agent executes; ledger recorder
+#   appends to docs/investigations/740-results-report.md):
+#   Prompts 2026-09-08 state: /tmp/bigprompt_90k_a.txt 88805 tok,
+#     /tmp/bigprompt_90k_b.txt 68675 tok (per-slot cap 98304 unchanged;
+#     no third prompt needed for the primary PASS — this arm is an
+#     N-optimization at fixed ctx).
+#   0. Boot; gates 1-3; capture phase-a margins; short-request spec
+#      stats healthy.
+#   1. PRIME slot A: bigprompt_90k_a (max_tokens ~256, stream, timeout
+#      >= 3600 s; ~12-20 min one-time CPU prefill; cram keeps warm).
+#   2. PRIME slot B: bigprompt_90k_b (~9-15 min).
+#   3. n=2 CONCURRENT (max_tokens 256-512 each): per-slot tg +
+#      combined via print_timing (NOT /metrics, #746), acceptance per
+#      slot AND slot-mean, margins post-run, dmon trace, KV-shift
+#      events. PASS: combined >= ~16.0 tok/s (predicted 16.60 +/- 0.5;
+#      -22% band vs arm124's 20.58; +6% minimum vs arm126's 15.07) AND
+#      gate-5 clean AND margin bands hold AND slot-mean acceptance
+#      >= 45%.
+#   4. Quality A/B record: compare slot-mean acceptance vs arm126
+#      (49.15%) and arm124 (58.05%); report the number even if speed
+#      fails — the mid-band-selection quality question rides on it
+#      (see "BETTER LAYER SELECT").
+#   5. Report everything to docs/investigations/740-results-report.md:
+#      4-phase margin series, per-buffer lines, per-slot + combined
+#      tok/s, acceptance, prefill wall times, dmon trace. The gap
+#      identity free = freed - gap - 64.03 should reproduce within ±5
+#      MiB of arm127's margin series — if it does, arm128 (N=11 @
+#      44-54, predicted 17.97 tok/s @ ~511 free) is a one-line clone.
+#
+# Base: params/126-udq5-98304x2-nokvu-cram24-ffncpu13-cheap-umnet.yml,
+#   with: override_tensors 43-55 -> 43-54 (N 13 -> 12, drop block 55
+#   only — byte mass 2425.80 -> 2216.62), everything else bit-identical
+#   (ctx, draft quants, cram24, UM net via compose default, tuning
+#   knobs unchanged).
+---
+name: 127-udq5-98304x2-nokvu-cram24-ffncpu12-cheap-umnet
+description: "N-optimization at fixed proven ctx 196608 (2x98304): 12 CUDA0 blocks 43-54 (cheapest contiguous minus arm126's block 55; 2216.62 MiB CPUs step -8.6% vs arm126). Gap model re-anchored on TWO same-T measured points (arm124 1448.4, arm126 1458.8 — slope 2.1/block; the old 41/block was a cross-T artifact). Predicted: free ~695 +/-60 (>4x arm124's 161), combined ~16.60 tok/s (+10% vs arm126, byte-mass-slope projection -0.00732/MiB). UM per permanent safety net (zero cost when unused, arm126-proven). Doubles as the mid-band-selection quality A/B vs arm124's tail-offload acceptance (58% vs 49% slot-mean — confounded with N; canary >= 45%)."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors:
+  - 'blk\.(4[3-9]|5[0-4])\.ffn_(gate|up|down)\.weight=CPU'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 196608
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
+extra_server_args: "-lv 4"

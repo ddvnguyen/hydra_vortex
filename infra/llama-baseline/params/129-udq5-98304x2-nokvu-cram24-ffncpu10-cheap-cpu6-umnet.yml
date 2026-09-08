@@ -1,0 +1,214 @@
+# Arm 129 — the N=10 data point: T = 196608 (2 x 98304, same proven ctx
+# as arm124/127), NO RPC0 relief, CUDA0-only offload blocks 30-39 — the
+# cheapest contiguous 10-block window inside CUDA0's 28-63 range
+# (1,786.97 MiB freed, exact GGUF costs). NEW IN THIS ARM: explicit CPU
+# reservation via `--cpu-range`/`--cpu-range-batch` (6 of 20 host cores
+# for this container) — first arm in the family to cap CPU usage, passed
+# through extra_server_args.
+#
+# ======================================================================
+# USER DIRECTION (2026-09-08): N=10 data point between arm124 (N=8,
+# 20.58 tok/s @ 161 MiB) and arm127 (N=12, 16.01 @ 647 MiB); confirmed
+# adjacency rule "minimize offloaded bytes, contiguity free"; reserve
+# 4-8 cores -> 6 concrete; UM stays ON as the permanent safety net;
+# the cap's decode-speed effect is UNKNOWN and must be measured here.
+# ======================================================================
+#
+# SELECTION (per the CONFIRMED rule, docs/investigations/
+#   740-results-report.md "Investigation note 2026-09-08 #2": adjacency
+#   is byte-neutral, verified by the live spike A/B — so the criterion
+#   collapses to window byte cost):
+#   CUDA0 blocks 30-39 (cheapest contiguous 10-window; exact costs:
+#     7 x 175.31 + 3 x 186.60 = 1,786.97 MiB). Regex: blk\.3[0-9]\.
+#     — one line, blocks 30-39 exactly.
+#   (Scattered-cheapest 10 = 1,753.10 would save another 33.9 MiB
+#     — deliberately NOT taken: the user requested the
+#     cheapest-contiguous window; the scattered delta is ~0.3 tok/s
+#     and a 10-fragment regex list adds rig complexity for it.)
+#
+# VRAM MATH at T = 196608 (2 slots; 2-slot compute buffer 1144.01 CUDA0
+#   / 1088.28 RPC0 / 132.28 CPU; RS 673.31 + 523.69; gap = the
+#   BAND-based model, NOT a point estimate — arm127 proved ±50 MiB
+#   config-dependent scatter and non-monotonicity in N):
+#
+#   CUDA0 (16311 MiB nvidia basis):
+#     model        11101.01 - 1786.97   =  9314.04 MiB
+#     main KV      196608 x 16703 B     =  3132.40 MiB
+#     draft KV     196608 x 1730  B     =   324.30 MiB
+#     RS (2 seqs)  673.31     |  compute 1144.01
+#     used (no gap)                   = 14588.06 MiB
+#     gap band (anchor range 1448.4 @arm124 .. 1505.6 @arm127):
+#       FREE BAND ~= 217..275 MiB  (anchor-path cross-check:
+#       arm124's measured 161 + (1786.97-1673.44 freed delta) - ~2.1x2
+#       gap slope delta = ~274 ✓ agrees with the band high end).
+#   This is a DELIBERATELY THIN arm — its margin profile belongs to
+#   arm124's class (~160-280), not arm127's comfort class (647). The
+#   family rule STILL applies: the margin series + UM net catch any
+#   under-prediction before it becomes an OOM; do NOT deep-fill unless
+#   the phase margins clear the gates below.
+#
+#   RPC0 (12288): 7062.06 + 2435.20 + 1088.28 + 523.69 = 11109.24
+#     -> free ~772 (arm126/127-measured line, no RPC0 offload at this
+#     ctx — consistent with prior arms' predictions and boot data).
+#   Fill capacity: 157480 combined + ~39K generation headroom (the
+#     family test shape).
+#
+# SPEED PREDICTION (byte-mass interpolation, TWO anchor paths — the
+#   124->127 pair and the 126->127 pair disagree by ~2.6 tok/s, so the
+#   point prediction is a midpoint band):
+#     via arm124->arm127 slope (-0.00842/MiB): 19.62 tok/s
+#     via arm126->arm127 slope (-0.00449/MiB): 17.00 tok/s
+#     design point ~18.3 (+/-0.8) combined at 157.5K fill, 9-10 per
+#     slot, acceptance canary slot-mean >= 45% (family band 49-58%).
+#   THREAD-CAP UNKNOWN (explicitly flagged for measurement): the
+#     family's step-time model says the CPU-offload path is
+#     DDR-BANDWIDTH-bound (effective ~9-10 GB/s vs ~40+ physical per
+#     arm128's design note) — if that holds, capping 8 -> 6 threads
+#     should cost LITTLE (the bottleneck may already be memory
+#     bandwidth, not core parallelism). This arm measures it directly:
+#     report decode tok/s at N=10 WITH the 6-core cap and treat the
+#     number as the cap's cost estimate by proxy (N=10 uncapped is not
+#     a built data point — see follow-up note below). If capped speed
+#     lands near/below arm127's 16.01, the cap costs real throughput;
+#     if ~18+, the memory-bound theory holds and capping is cheap.
+#
+# CPU RESERVATION (new this arm; user direction):
+#   - Host runs many concurrent agent worktrees; prior arms ran
+#     UNCONSTRAINED (`--threads` defaults -1 = auto on 20 threads),
+#     which can starve unrelated work during CPU-offload decode.
+#   - Choice: 6 cores (middle of the user's 4-8 range).
+#   - Mechanism: `extra_server_args` (injection point confirmed
+#     run-with-params.sh:61, P_EXTRA_SERVER_ARGS; already proven for
+#     `-lv 4` in arm125) passing:
+#       --cpu-range 0-5 --cpu-range-batch 0-5
+#     Inclusive range semantics verified in fork source
+#     (common/common.cpp:312-343, parse_cpu_range: `for i <= end_i`),
+#     so 0-5 = exactly 6 cores. Plain `-t`/`-tb` cap thread COUNT only
+#     and do not pin affinity; `-Cr`/`-Crb` pin real cores (user
+#     guidance). Explicit `--threads 6 --threads-batch 6` added for
+#     determinism (mask + counts must agree: 6 cores <-> 6 threads).
+#     `--cpu-strict` left at default 0 (loose placement: the 6-server
+#     threads float within cores 0-5 — coexists with co-tenants
+#     without dedicated-core lock).
+#   - (rpc-server, a separate process, is untouched — it is not the
+#     CPU-heavy side; CPU-offload compute lives in llama-server).
+#   - Core indices 0-5 are accepted as-is (OS-logical numbering;
+#     the P/E-cluster layout of this i7-12700K is not read here — if
+#     a gate shows the pinned set is all E-cores and prefill crawls,
+#     flag it in the report; range is a one-line change).
+#
+# UM = PERMANENT SAFETY NET (standing user direction): env stays ON
+#   (docker-compose.baseline.yml default). Zero-cost when unused
+#   (arm126/127/128-per-protocol: flat phase margins, PCIe peak
+#   1625-2195 MB/s vs the 10-13 GB/s paging signature). RULE:
+#   PCIe > ~3 GB/s during decode, per-slot tg collapse, or KV-shift
+#   events while filled = paging begun = ARM FAILS as a design (the
+#   margin was under-sized); paging-assisted passes are NOT passes.
+#
+# GATE CHECKLIST (>= 2 fresh boots; 4-phase protocol):
+#   1. Boot log buffers (verbosity >= 4, DO NOT TRIM):
+#        CUDA0 model ~ 9314 MiB (drop 1786.97 vs 11101.01)
+#        RPC0 model ~ 7062.06 (unchanged — CUDA0-only offload)
+#        CPU_KV ~ 3132.4 + draft ~ 324.3 (main+draft ~ 3456.7)
+#        RS 673.31 + 523.69 | compute CUDA0 1144.01 / RPC0 1088.28 /
+#        CPU 132.28 (sched_reserve shared-max, NOT the 3-print sum)
+#        AND the cpu-affinity line: the server's system_info must
+#        show the mask applied (n_threads = 6, not 8; batch also 6).
+#   2. n_ctx_slot = 98304, kv_unified = false; ready ~15-25 s; UM env
+#      = 1; no OOM/crash-loop (self-test OOM under UM = escalate, do
+#      not iterate locally).
+#   3. PHASE MARGINS (nvidia-smi, 16311/12288 bases — PRIMARY go/no-go):
+#      a. ready + self-test: CUDA0 free >= 220 predicted band 217-275
+#         hmm — tighten: PASS >= 250 (band mid-point 275 - slack);
+#         HARD STOP < 150 (arm124's proven 161 is the reference). If
+#         free lands 150-219, capture ONE more phase and report; a
+#         deep-test go-ahead then needs the designer's explicit nod.
+#      b. post-warmup: within ~100 of phase-a; > 120 drop = capture
+#         new-shape behavior, note, proceed phase-by-phase.
+#      c. full 157.5K fill: CUDA0 free >= 140; HARD STOP < 100 (below
+#         that the arm is arm124-class or worse — take the data and
+#         stop filling).
+#   4. Decode telemetry: dmon across decode; PCIe < ~3 GB/s (paging
+#      begun = arm failed its design; UM absorbed it; record and stop).
+#
+# TEST PLAN (handoff to muse-spark (agent 4bc5960b-5bd3-4793-b5fa-
+#   3e58eabe6713) after design review; design-only from here):
+#   Prompts (2026-09-08 state): /tmp/bigprompt_90k_a.txt 88805 tok,
+#     /tmp/bigprompt_90k_b.txt 68675 tok.
+#   0. Boot; gates 1-2; phase-a margins; short-request spec stats.
+#   1. PRIME slot A: bigprompt_90k_a (max_tokens ~256, stream, curl
+#      timeout >= 3600 s — 10 CPU FFN blocks x 512-ubatches ~4-7 s/ub,
+#      ~12-20 min one-time; prefill wall time IS a thread-cap datum —
+#      record it and compare against arm127's ~12-20 min reference:
+#      if capped prefill is ~1.5x SLOWER that brackets the cap's
+#      batch-side cost directly).
+#   2. PRIME slot B: bigprompt_90k_b (same).
+#   3. n=2 CONCURRENT (max_tokens 256-512 each): per-slot tg +
+#      combined via print_timing (NOT /metrics — #746), acceptance
+#      per slot, margins post-run, dmon trace, KV-shift events.
+#      PASS: combined >= ~17.5 tok/s (predicted 18.3 +/- 0.8 BEFORE
+#      any cap effect) AND gates 3-4 clean AND no context shift AND
+#      slot-mean acceptance >= 45%. IF the cap costs speed: the
+#      number stands as the N=10+cap data point; record side-by-side
+#      with arm124's 20.58 (uncapped N=8) and arm127's 16.01
+#      (uncapped N=12) so the cap's share is visible in the ledger.
+#   4. Rank on the frontier (N vs tok/s vs margin) and append the
+#      usual 4-phase margin series + buffer lines + tok/s + accept +
+#      prefill wall times + PCIe trace to
+#      docs/investigations/740-results-report.md.
+#
+# FOLLOW-UP (design-only, DO NOT build now): the clean cap-cost A/B is
+#   the SAME N=10 window 30-39 uncapped (extra_server_args dropped)
+#   as arm129b — worth dispatching after this arm's number if the
+#   capped-to-uncapped delta matters for the reservation policy
+#   (the family SSR... hypothesis: DDR-bound -> delta small; an
+#   arm129b PASS >= 19 tok/s would CONFIRM the DDR-bound step model
+#   and give the family its best speed point at ~218-275 MiB margin
+#   — same thinness class as arm124).
+#
+# Base: params/127-udq5-98304x2-nokvu-cram24-ffncpu12-cheap-umnet.yml,
+#   with: override_tensors 43-54 -> 30-39 (N 12 -> 10, window bytes
+#   2216.62 -> 1786.97), + extra_server_args CPU reservation (6
+#   cores, ranges + thread counts), everything else identical.
+---
+name: 129-udq5-98304x2-nokvu-cram24-ffncpu10-cheap-cpu6-umnet
+description: "N=10 data point between arm124 (20.58 @ 161) and arm127 (16.01 @ 647) at proven ctx 196608: CUDA0 blocks 30-39, cheapest contiguous 10-window (1,786.97 MiB freed, exact GGUF costs); predicted free band ~217-275 (thin — arm124-class, UM net ON); speed interpolated ~17.0-19.6 (design ~18.3+/-0.8 at 157.5K fill). NEW: explicit CPU reservation via extra_server_args (--cpu-range 0-5 --cpu-range-batch 0-5 --threads 6 --threads-batch 6 — inclusive range semantics verified in fork source); the 6-core cap's decode cost is flagged as UNKNOWN and this arm measures it."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors:
+  - 'blk\.3[0-9]\.ffn_(gate|up|down)\.weight=CPU'
+extra_server_args: '--cpu-range 0-5 --cpu-range-batch 0-5 --threads 6 --threads-batch 6 -lv 4'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 196608
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

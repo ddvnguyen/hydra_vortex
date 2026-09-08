@@ -108,6 +108,10 @@ services:
       - NVIDIA_VISIBLE_DEVICES=1
       - CUDA_VISIBLE_DEVICES=1
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib
+      # arm111 requires UM — the actual cudaMalloc for the RPC-side KV
+      # buffer happens in THIS process, not llama-server's. See matching
+      # note on the llama service below.
+      - GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
     entrypoint: ["/usr/local/bin/ggml-rpc-server"]
     command: >
       -H 0.0.0.0
@@ -147,7 +151,12 @@ services:
       - CUDA_VISIBLE_DEVICES=0
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib
       # DEFAULT PIN = 090. FALLBACKS = 088 > 083 > 079 (edit this line for rollback).
-      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/090-udq5-148000-parallel1-cache-ram-16g.yml
+      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/111-udq5-102shape-v-q5_1.yml
+      # arm111 requires UM (KV cache doesn't fit in physical VRAM otherwise —
+      # see params/111-*.yml line 23). Compose has no per-arm env mechanism,
+      # so this is set manually for this round; unset/remove when reverting
+      # to an arm that doesn't need it (090/119 don't).
+      - GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
     entrypoint: ["/usr/local/bin/llama-cpp-entrypoint.sh"]
     # NOTE: no hardcoded `command:` — all args come from LLAMACPP_PARAMS_FILE.
     # To change the pin: edit the env var above, then `podman compose up -d --build`.

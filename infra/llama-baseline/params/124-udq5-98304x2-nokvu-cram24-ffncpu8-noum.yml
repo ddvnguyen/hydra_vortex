@@ -1,0 +1,173 @@
+# Arm 124 — arm121-class 2-slot deep-context shape with DENSE-FFN CPU offload
+# (blocks 56-63) instead of UM host-RAM paging. 98304 x 2 slots = 196608 total
+# cells — ~2x arm120's no-paging ceiling (~128K total) and enough to hold the
+# session's two 90K prompts (88805 + 68675 = 157480 combined) FULLY RESIDENT,
+# which no UM-family arm (119/121/122/123) could do without paging collapse.
+#
+# GOAL (issue #746 thread): keep 2-slot decode speed at deep combined context.
+# #746 root cause: past the physical-VRAM KV residency ceiling, UM silently
+# backs the KV buffer with host RAM and decode collapses to ~1-9 tok/s
+# (PCIe thrash 10-13 GB/s). arm120 avoided UM by right-sizing ctx DOWN;
+# this arm instead frees VRAM with bounded CPU compute so ctx can go UP.
+# Strategy per upstream PR #26622 ("--n-cpu-ffn", author reports 15-25 tok/s
+# at >90K ctx on a 16GB card): offload N dense FFN sublayers to CPU compute,
+# trading known CPU cost for VRAM that holds a larger RESIDENT KV cache.
+#
+# MECHANISM — NO FORK PATCH REQUIRED:
+#   Our fork does NOT have --n-cpu-ffn (grep: absent; --n-cpu-moe exists at
+#   common/arg.cpp:2748). But --n-cpu-moe is pure sugar: it emits one regex
+#   override per block (llm_ffn_exps_block_regex(i), common/common.h:1116)
+#   into params.tensor_buft_overrides, which llama-model-loader.cpp:1178-1194
+#   applies via std::regex_search -> CPU buft. The same machinery is already
+#   reachable from this params schema: override_tensors -> --override-tensor
+#   in BOTH llama-cpp-entrypoint.sh (line 234) and run-with-params.sh
+#   (line 234). qwen35 dense FFN tensors are blk.%d.ffn_(gate|up|down).weight
+#   (src/models/qwen35.cpp:92-94, one FFN sublayer on EVERY trunk block 0-63;
+#   MTP block is blk.64 and is NOT touched). So the offload is expressed as
+#   two regexes below covering blocks 56-63. Porting PR #26622's sugar
+#   (~29 lines: common.h regex helper + arg.cpp handler + llama-bench field,
+#   mirroring the -ncmoe handler) remains a nice-to-have for ergonomics and
+#   upstream parity, but is NOT needed to test this arm.
+#
+# WHY BLOCKS 56-63 (must land on CUDA0 — the binding GPU):
+#   Layer->GPU mapping deduced from the 2026-09-07 boot log (arm111 shape):
+#   CUDA0 model buffer 11101.01 MiB = 58.5% (38/65 parts) + ~483 MiB excess
+#   = output head adjacency -> CUDA0 hosts the TAIL blocks + output head;
+#   RPC0 (7062.06) hosts the first ~27-28 blocks. Cross-check: main-KV splits
+#   exactly 9:7 (6985.83 : 5433.42 MiB = 776.20 MiB/attn-layer), consistent
+#   with CUDA0 hosting blocks ~28-63 (9 of 16 full-attn layers at every-4th
+#   spacing) and RPC0 blocks 0-27 (7). Blocks 56-63 are therefore CUDA0's
+#   under the only mapping consistent with both measurements. BOOT GATE 1
+#   below verifies this empirically; if RPC0's model buffer drops instead,
+#   flip the block range to 0-7 and re-boot.
+#
+# VRAM MATH (per-layer FFN = 3 x 5120 x 17408 = 267.39M params; at file
+#   average 5.79 BPW (18.40 GiB / 27.32B) = ~184.5 MiB/layer; Q5_K_M-style
+#   gate/up q5_K + down q6_K gives ~186.5; UD bump to q6_K worst case ~209.
+#   Used 186.5 -> 8 layers frees ~1492 MiB. Margins stay >= ~450 MiB across
+#   the whole 184-209 band):
+#
+#   CUDA0 (16311 MiB physical), T = 196608 cells, 2 slots:
+#     model        11101.01 - 1492      =  9609.0 MiB
+#     main KV      196608 x 16.31 KiB   =  3131.6 MiB (16703 B/token, 9 attn layers + 3.56% overhead, measured 2026-09-07)
+#     draft KV     196608 x 1.70 KiB    =   324.3 MiB (q8_0/q4_1, 1730 B/token measured)
+#     RS (2 seqs)  1197 x 9/16          =   673.3 MiB (fixed, O(1)/seq; 3-seq value 1009.97 x 2/3)
+#     compute                           =  1936.5 MiB (unchanged; CPU-side scratch goes to host RAM)
+#     TOTAL                             = 15674.7 MiB -> margin ~636 MiB
+#
+#   RPC0 (12288 MiB physical), unchanged by the offload:
+#     model 7062.06 + compute 1936.47 + RS 523.7  =  9522.2 MiB
+#     main KV      196608 x 12.99 KiB            =  2435.2 MiB
+#     TOTAL                                        = 11957.4 -> margin ~331 MiB
+#     (> arm090's proven-stable 167-191 MiB floor)
+#
+#   Filled-depth check: 88805 + 68675 = 157480 combined + generation headroom
+#   (36.6K cells spare) — holds both test prompts fully resident, no paging.
+#
+# CPU COST (accepted, bounded — this is the trade):
+#   - Decode: 8 x ~186.5 MiB = ~1.49 GiB DDR reads per decode step (shared
+#     across the 2 batched sequences) -> ~25-37 ms/step at 40-60 GB/s,
+#     partially overlapped with ~25-30 ms GPU step. Expect ~15-30 tok/s
+#     combined at 157K combined depth (vs 1-4 tok/s UM-family collapse).
+#   - PREFILL IS SLOW: 8 CPU FFN layers x 512-token ubatch = ~2.2 TFLOP of
+#     CPU matmul per ubatch -> ~2.5-5 s/ubatch -> ~11-23 min ONE-TIME priming
+#     for the two 90K prompts (308 ubatches total). Use generous request
+#     timeouts; prime once per boot and rely on cache_prompt + cache_ram
+#     (24 GiB host cache holds both ~3.4 GiB slot states) afterwards.
+#   - Loader warns "tensor overrides to CPU are used with mmap enabled" —
+#     expected, harmless (optionally --load-mode none for faster load).
+#
+# QUALITY CANARY: last-8-block FFN offload is chosen for VRAM geometry (CUDA0
+#   hosts the tail), not quality. Watch MTP draft acceptance vs arm119's
+#   cumulative ~0.636: a large drop would flag FFN-offload quality damage
+#   (independent of speed). If unacceptable, the follow-up is RPC0-side
+#   offload (blocks 0-7) + re-split, NOT reverting to UM.
+#
+# STRATEGY CEILING: RPC0's KV headroom (~2504 MiB / 12.99 KiB per token) caps
+#   this shape family at ~196-200K total cells with margin. Reaching arm121's
+#   262144 allocation would additionally need RPC0-side FFN offload (blocks
+#   0-3+, ~+5-10 CPU layers) — follow-up only, not needed for 157.5K filled.
+#
+# !!! UM MUST BE OFF FOR THIS ARM !!!
+#   Do NOT export GGML_CUDA_ENABLE_UNIFIED_MEMORY (bare-metal run-with-params
+#   path), and if booting via docker-compose.baseline.yml, override the
+#   GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 env that is currently hardcoded in BOTH
+#   services (llama + rpc) to "0"/unset. Proving this boots without UM at all
+#   is part of the test (arm112 proved the 438528-cell shape OOMs without UM;
+#   this one should NOT OOM — margins above are physical-VRAM math).
+#
+# GATE CHECKLIST (>=2 fresh boots, per house rule):
+#   1. Boot log: CUDA0 model buffer ~9609 MiB (drop of ~1492 vs 11101.01) and
+#      RPC0 model buffer ~7062 unchanged; if RPC0 drops instead -> wrong-GPU
+#      blocks, flip pattern to 0-7, re-boot.
+#   2. Boot log: n_ctx_slot = 98304, kv_unified = 'false'; KV lines ~3132
+#      (CUDA0 main) / ~2435 (RPC0 main) / ~324 (draft) / RS 673.3 + 523.7.
+#   3. Boots WITHOUT UM env; no OOM, no crash-loop.
+#   4. Warm full-fill nvidia-smi: >= ~300 MiB free on BOTH GPUs.
+#   5. Decode telemetry (dmon): PCIe < ~3 GB/s (vs 10-13 GB/s paging storm).
+#
+# TEST PLAN (hand-off; same two files as arm121/122/123, both verified
+#   present 2026-09-08: /tmp/bigprompt_90k_a.txt [88805 tok],
+#   /tmp/bigprompt_90k_b.txt [68675 tok]):
+#   0. Boot per above; run gate 1-5. Confirm server-side spec stats healthy
+#      on a short request before priming.
+#   1. PRIME slot 0: chat-completions with bigprompt_90k_a.txt, max_tokens
+#      ~256, stream, curl timeout >= 1800s (CPU prefill ~6-12 min). Record
+#      server print_timing tg (target >= ~15 tok/s; UM-family at this depth:
+#      1-4).
+#   2. PRIME slot 1: same with bigprompt_90k_b.txt (server assigns the idle
+#      slot; cache-idle-slots + cram24 keep slot 0's state warm).
+#   3. n=2 concurrent: fire BOTH prompts as fresh completions simultaneously
+#      (max_tokens 256-512 each). Record per-slot tg + combined (use
+#      server-side print_timing / spec stats — /metrics token counters are
+#      unreliable under draft-mtp per #746). Capture dmon during decode.
+#      PASS: combined >= ~15 tok/s (vs arm121/122/123's 1-4 at same combined
+#      depth) AND gate-5 PCIe telemetry clean AND no context-shift events.
+#   4. Report MTP acceptance rate + per-layer buffer lines + margins.
+#
+# Base: params/121-udq5-131072x2-nokvu-cram24-um-draftbf16.yml family, with:
+#   ctx 262144 -> 196608 (2 x 98304), draft bf16 -> q8_0/q4_1 (arm119/120
+#   values — lighter VRAM; 121/122/123 showed no clear acceptance gain from
+#   bf16), UM off, + override_tensors FFN offload (new).
+---
+name: 124-udq5-98304x2-nokvu-cram24-ffncpu8-noum
+description: "2x98304 slots (196608 cells, ~2x arm120's no-paging ceiling) with dense-FFN blocks 56-63 offloaded to CPU via override_tensors (~1.49 GiB freed on CUDA0), NO UM. Holds 157.5K combined filled tokens resident without paging; expected ~15-30 tok/s combined vs UM-family 1-4. Costs ~25-37 ms/step CPU decode tax and ~11-23 min one-time prefill."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors:
+  - 'blk\.5[6-9]\.ffn_(gate|up|down)\.weight=CPU'
+  - 'blk\.6[0-3]\.ffn_(gate|up|down)\.weight=CPU'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 196608
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q4_1
+prio_batch: 1
+context_shift: 'on'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
