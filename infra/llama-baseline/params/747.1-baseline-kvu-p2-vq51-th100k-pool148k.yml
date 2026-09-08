@@ -1,0 +1,89 @@
+# Arm 747.1 — feature test for hydra_vortex#747: dynamic parallel-slot
+# admission by combined-ctx threshold (--parallel-ctx-threshold).
+#
+# Base = 747.0-baseline-nokvu-p2-vq51-th100k.yml, with ONE change: restores
+# kv_unified: on (747.0 diverged to kv_unified=off + ctx=296000 = 2×148000
+# separate per-slot fences, the arm102 approach). This arm goes back to
+# 747.0's OWN header intent (line 4-6 of that file): "Base = arm090-
+# equivalent (... kv_unified=on, ctx=148000 ...) ... lets a single sequence
+# use the whole pool."
+#
+# WHY THIS MATTERS: with kv_unified=on, n_ctx_seq = n_ctx (the TOTAL is the
+# per-sequence ceiling — src/llama-cpp/src/llama-context.cpp:290-293), so
+# ctx: 148000 here means EITHER slot can use up to the full 148K, and the
+# two slots share ONE physical pool instead of two separate 148K fences
+# (296K total VRAM reservation in 747.0 vs 148K here — roughly half the KV
+# footprint). This is also the scenario 747.0's own "Budget logic" comment
+# describes ("threshold (100K) < pool (148K) guarantees the combined
+# resident ctx can never exceed the static kv_unified pool") — that
+# description was written for a shared 148K pool, not 747.0's actual
+# doubled-fence implementation. 747.1 tests the gate against the design it
+# was originally described against.
+#
+# CHANGES vs 747.0:
+#   kv_unified: off -> on
+#   ctx: 296000 -> 148000 (total = per-slot ceiling under kv_unified=on;
+#     this is NOT "148000 per slot with a 296000 total" — it's a single
+#     148000 shared pool, matching arm090 exactly)
+#   Everything else byte-identical: parallel 2, tensor_split 27,38, K q8_0/
+#   V q5_1 main+draft MTP, UM env, cache_ram 16384, threshold 100000.
+#
+# EXPECTED BEHAVIOR (same acceptance criteria as 747.0):
+#   1. Single request: arm090-parity tg (~37-40 tok/s).
+#   2. n=2 concurrent small (combined <<< 100K): genuine parallel decode.
+#   3. n=2 concurrent deep (combined >= 100K): 2nd request DEFERS at
+#      admission until the 1st releases (same gate log line as 747.0).
+#   4. 4-phase VRAM margins (boot/warm/fill/decode); expect meaningfully
+#      LOWER KV footprint than 747.0 (shared 148K pool vs doubled 296K) —
+#      record the free-VRAM delta vs 747.0's boot numbers explicitly, this
+#      is the primary new data point this arm adds.
+#   5. WATCH FOR: with kv_unified=on, a single slot pinned near 148K could
+#      leave near-zero room for the 2nd slot even under the 100K admission
+#      threshold (100K + 100K candidate could still admit two requests that
+#      together approach the 148K ceiling before either finishes prefill —
+#      the threshold gates ADMISSION on resident-sum, not final size). If
+#      this arm shows OOM or KV-shift thrashing that 747.0 didn't, that is
+#      itself the finding (shared-pool vs per-slot-fence tradeoff).
+---
+name: 747.1-baseline-kvu-p2-vq51-th100k-pool148k
+description: "hydra_vortex#747 arm 747.1: same as 747.0 (clean v0.4.0 5266f24da + admission gate port + UM prefetch net, parallel=2, V q5_1 main+draft, threshold 100000) but kv_unified ON with ctx=148000 as a single SHARED pool (matches arm090/747.0's own stated design intent) instead of 747.0's kv_unified OFF + 296000 total (=2x148000 separate per-slot fences)."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+env:
+  GGML_CUDA_ENABLE_UNIFIED_MEMORY: '1'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 148000
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'on'
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q5_1
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 16384
+prio_batch: 1
+context_shift: 'on'
+extra_server_args: '--parallel-ctx-threshold 100000'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
