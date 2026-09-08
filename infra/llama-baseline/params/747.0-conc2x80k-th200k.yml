@@ -1,0 +1,65 @@
+# Arm 747.0-conc2x80k-th200k — diagnostic threshold override of 747.0, NOT a
+# new design point. Byte-identical to 747.0 except one field:
+#   extra_server_args: --parallel-ctx-threshold 100000 -> 200000
+#
+# WHY: 747.0's only deep test so far combined 88805 + 68675 = 157480 tokens,
+# which is >= the 100K threshold — the gate correctly DEFERRED the 2nd
+# request, so that test measured SEQUENTIAL single-slot decode (task A
+# alone at 0.14 tok/s @ 88K ctx), not genuine 2-concurrent-deep decode.
+# Two ~80K requests would sum to ~160K, which ALSO exceeds 100000 and would
+# defer identically under 747.0's real threshold. To actually observe two
+# slots decoding SIMULTANEOUSLY at ~80K depth each, the threshold must sit
+# above the combined depth for this one diagnostic run — 200000 comfortably
+# clears 160K while each individual slot (80K) still fits well inside its
+# own 148000 per-slot fence (kv_unified off, unchanged from 747.0), so no
+# VRAM risk from raising the threshold alone.
+#
+# THIS IS NOT ARM 747.2 — it exists purely to get a concurrent-decode data
+# point at deep ctx; delete/ignore for lineage purposes once the numbers
+# are recorded in the report under 747.0's own section (not a new arm).
+#
+# Base: params/747.0-baseline-nokvu-p2-vq51-th100k.yml, with:
+#   extra_server_args threshold raised 100000 -> 200000, nothing else changed.
+---
+name: 747.0-conc2x80k-th200k
+description: "Diagnostic threshold override of 747.0 (NOT a new design point): --parallel-ctx-threshold raised 100000->200000 so two ~80K-token requests (160K combined) admit and decode CONCURRENTLY instead of deferring, to get a genuine 2-slot deep-decode throughput number that 747.0's original 88.8K+68.7K/157K-combined test could not produce (that combined depth exceeded even the real 100K threshold and deferred sequentially)."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+env:
+  GGML_CUDA_ENABLE_UNIFIED_MEMORY: '1'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 296000
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q5_1
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 16384
+prio_batch: 1
+context_shift: 'on'
+extra_server_args: '--parallel-ctx-threshold 200000'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
