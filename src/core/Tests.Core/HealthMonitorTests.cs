@@ -32,12 +32,19 @@ public sealed class HealthMonitorTests
 		public HttpClient CreateClient(string name) => new();
 	}
 
-	/// <summary>RPC double for the EngineInfo health poll: succeeds (with
-	/// preset aliases + capabilities) or throws ConnectionRefused.</summary>
+	/// <summary>RPC double for the EngineInfo health poll: succeeds (with or
+	/// without preset aliases + capabilities) or throws ConnectionRefused.
+	/// withCaps:false models a node redeployed with an engine build that no
+	/// longer advertises merged_decode — INFO succeeds, capability set empty.</summary>
 	private sealed class EngineInfoRpcStub : RpcClient
 	{
 		private readonly bool _succeed;
-		public EngineInfoRpcStub(bool succeed) : base("test", 0) => _succeed = succeed;
+		private readonly bool _withCaps;
+		public EngineInfoRpcStub(bool succeed, bool withCaps = true) : base("test", 0)
+		{
+			_succeed = succeed;
+			_withCaps = withCaps;
+		}
 
 		public override Task<RpcResponse> RequestAsync(
 			OpCode op, string key, ReadOnlyMemory<byte> payload,
@@ -47,8 +54,8 @@ public sealed class HealthMonitorTests
 				throw new SocketException((int)SocketError.ConnectionRefused);
 			var meta = JsonSerializer.Serialize(new
 			{
-				preset_aliases = new[] { "nano" },
-				capabilities = new[] { Protocol.CapMergedDecode },
+				preset_aliases = _withCaps ? new[] { "nano" } : Array.Empty<string>(),
+				capabilities = _withCaps ? new[] { Protocol.CapMergedDecode } : Array.Empty<string>(),
 			});
 			return Task.FromResult(new RpcResponse((byte)StatusCode.Ok, meta, []));
 		}
@@ -229,5 +236,80 @@ public sealed class HealthMonitorTests
 		// Subsequent failures while already unhealthy: no additional flip.
 		await health.PollForTestAsync(CancellationToken.None);
 		Assert.Equal(1, flips);
+	}
+
+	[Fact]
+	public async Task EngineInfoFailure_CarriesLastKnownCapabilities_Forward()
+	{
+		// #712: a single failed/empty 0x41 INFO poll must not silently drop the
+		// node's last-known engine capabilities. PollWorkerAsync builds a FRESH
+		// NodeInfo each cycle, so without carry-forward one bad poll (observed:
+		// RPC channel busy behind a multi-hundred-MB state transfer) flips the
+		// next decode off the merged-decode path with no log line at all — the
+		// A/B T4 turn then hit the HTTP fallback and a destructive T3 model
+		// rebuild attempt wiped the restored KV (144s TTFT vs ~27s expected).
+		var infoSucceeds = true;
+		var (health, _, _, server) = CreateMonitor(() => infoSucceeds);
+		await using var _ = server;
+
+		// Poll 1: INFO OK → capabilities + preset aliases learned.
+		await health.PollForTestAsync(CancellationToken.None);
+		var first = health.GetNodeInfo("rtx")!;
+		Assert.Contains(Protocol.CapMergedDecode, first.EngineCapabilities);
+		Assert.Contains("nano", first.PresetAliases);
+
+		// Poll 2: INFO fails (RPC busy). Node stays healthy (below threshold),
+		// but the fresh NodeInfo would blank the capabilities — carry-forward
+		// must preserve them so decode path selection stays stable.
+		infoSucceeds = false;
+		await health.PollForTestAsync(CancellationToken.None);
+		var second = health.GetNodeInfo("rtx")!;
+		Assert.True(second.Healthy, "one INFO failure is below the unhealthy threshold");
+		Assert.True(second.EngineCapabilities.Contains(Protocol.CapMergedDecode),
+			"last-known capabilities must survive a failed INFO poll");
+		Assert.True(second.PresetAliases.Contains("nano"),
+			"last-known preset aliases must survive a failed INFO poll");
+
+		// Poll 3: INFO recovers → the real advertisement wins again.
+		infoSucceeds = true;
+		await health.PollForTestAsync(CancellationToken.None);
+		Assert.Contains(Protocol.CapMergedDecode, health.GetNodeInfo("rtx")!.EngineCapabilities);
+	}
+
+	[Fact]
+	public async Task EngineInfoEmptyCaps_SingleEmptyRetains_SecondConsecutiveEmptyClears()
+	{
+		// #738 (supersedes the #712 finding-4 single-empty-clears test, which
+		// encoded the behavior that broke A/B v8 turn 3): one empty-cap INFO
+		// blip (observed on P100: a single empty /info wiped 11 cached caps for
+		// ~61s across 3 polls, sending the next decode down the non-merged
+		// fallback for a 76s full re-prefill) must RETAIN last-known caps; the
+		// 2nd consecutive empty poll is still authoritative — a node redeployed
+		// with a build that no longer advertises merged_decode must clear the
+		// stale capability (carrying it would route 0x43 into a gateRejected
+		// 503 with no fallback).
+		var (health, _, _, server) = CreateMonitor(() => true);
+		await using var _ = server;
+
+		// Poll 1: INFO OK with capabilities → learned.
+		await health.PollForTestAsync(CancellationToken.None);
+		Assert.Contains(Protocol.CapMergedDecode, health.GetNodeInfo("rtx")!.EngineCapabilities);
+
+		// Polls 2–3: INFO succeeds but advertises NOTHING.
+		health.EngineInfoRpcClientFactory = (_, _) => new EngineInfoRpcStub(succeed: true, withCaps: false);
+		await health.PollForTestAsync(CancellationToken.None);
+
+		// 1st consecutive empty-cap poll → debounced: caps RETAINED.
+		var second = health.GetNodeInfo("rtx")!;
+		Assert.True(second.EngineCapabilities.Contains(Protocol.CapMergedDecode),
+			"a single empty-cap INFO blip must retain last-known capabilities (debounce)");
+		Assert.Equal(1, second.ConsecutiveEmptyCapPolls);
+
+		// 2nd consecutive empty-cap poll → authoritative: caps CLEARED.
+		await health.PollForTestAsync(CancellationToken.None);
+		var third = health.GetNodeInfo("rtx")!;
+		Assert.True(third.EngineCapabilities.Count == 0,
+			"the 2nd consecutive empty-cap INFO must clear stale capabilities");
+		Assert.Equal(2, third.ConsecutiveEmptyCapPolls);
 	}
 }

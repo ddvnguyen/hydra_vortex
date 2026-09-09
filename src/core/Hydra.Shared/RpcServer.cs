@@ -33,6 +33,12 @@ public abstract class RpcServer : IAsyncDisposable
 		_listener.Start();
 		Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
 
+		// #712: the store RPC listener (Program.cs runs RunAsync fire-and-forget) had a
+		// ~17-min connection-refusal window once with NO log trace. Log the successful
+		// bind so the accept-ready moment is attributable; a bind fault is caught by
+		// the store_server_task_faulted observer in Program.cs.
+		_log.Information("rpc_listener_started Host={Host} Port={Port}", _host, Port);
+
 		using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _stopCts.Token);
 		var token = linkedCts.Token;
 

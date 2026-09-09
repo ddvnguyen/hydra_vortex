@@ -8,10 +8,33 @@ current here, promote what's durable there.
 
 ---
 
+## Current work: #712 prefix-KV reuse — DRAFT PR #732 open (2026-09-01)
+
+- **P0 #712 DONE, awaiting review + CI + owner merge decision.** Branch
+  `fix/712-prefix-reuse` (commit `f381f11`, base `epic/697-final-verify @ 56eb3f1`),
+  **DRAFT PR #732** opened (`Closes #712`), per-turn TTFT table in PR body.
+- Final A/B on test-a `:19000` → nodeA `:18086`: T1–T6 TTFT
+  34.3 / 26.8 / 26.7 / 28.4 / 28.1 / 31.8 s — **all ≤ 1.10× A/B#4 baseline**
+  (criterion ≤ 1.5× every turn; before: 34 / 99.5 / 100.1 / 136.6 / 197.8 / 234.5).
+  Engine N_COMMON traces confirm delta-only prefills (8321 / 14530 / 20289 / 26048 /
+  31357); 0 `applying hydra_config`, 0 `load_model`.
+- Hermetic: Tests.Core 722/722 (717 base + 5 new), Tests.Shared 70/70, warnings
+  unchanged (25 line-shifts only). Pre-existing flake noted in PR (MergedDecodeModelAliasTests,
+  static ModelConfigLoader race under xunit parallelism, 1/5 full runs, 0/5 isolated).
+- Evidence: `docs/hydra-test/evidence/712-prefix-reuse/` (README + 10 artifacts incl.
+  intermediate v2/v3/v5 runs that exposed the save/restore race, the T4 health-cap
+  anomaly, and the redundant evict save).
+- Deployed image on test-a: `localhost/hydra-core:712-w1` = `c7e9d8d9886d` (v6).
+  Container `hydra-infra_hydra-core-test-a_1`. test-b `:19001` untouched; prod `:9000` untouched.
+- **Next:** PR #732 CI green → lead zero-trust review → ready for owner merge decision
+  (epic→main close-out still gated on explicit owner confirm per AGENTS.md).
+
 ## Current branch(es) in flight
 
 | Branch | Status | Notes |
 |---|---|---|
+| `fix/712-prefix-reuse` → DRAFT PR #732 | **done, awaiting CI + review** | #712 solo/cold prefix-KV reuse; see block above. |
+
 | `epic/470-merged-decode` | deploy-hold, Phase 5 in progress | 37:1 fix:feat ratio. Contract frozen (see decision 001). |
 | PR #695 (`epic/591-rewrite-worker-scheduler`) | **RE-BASELINED + PUSHED `027e9de29`** (fast-forward from `0706feef3`), status:`review` (2026-08-26) | Owner ruling Option A (V2-combined intended): 3 goldens re-baselined to V2 traces (combined=Put 4096 no StateGet; chunked_save* content-addressed). W2 `c92bedb0` produced; lead zero-trust re-ran -> GoldenTraceTests 3× green, DifferentialGateTests 3× green (0 drift), full Tests.Core **652/652** green. Drift-inventory comment on PR; OWNER-RULING paragraph for combined (supersedes legacy #635 fix4 in COMBINED mode). **Awaits owner CONFIRM to merge to `main`** (decision 6 — absolute gate). |
 | `epic/610-server-hydra-extension` | superseded — old ref left alone, stale | Original branch (`14537a4`) predates the rebase; not force-pushed (user preferred a new branch over rewriting history on the existing ref). Left as-is for now; safe to delete once the new branch is confirmed working. |

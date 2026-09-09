@@ -21,6 +21,25 @@ public class RpcClient : IAsyncDisposable
 
     private static readonly int[] RetryDelays = [100, 500, 2000];
 
+    // #712 M2: holder tracing for _sync. The M2 stall was a threadless ghost —
+    // an async state machine suspended on an unbounded read holding the
+    // semaphore forever (dotnet-stack showed no thread; only a parked await).
+    // Recording who holds _sync and logging the holder when a waiter times out
+    // names any future ghost permanently in the logs.
+    private static readonly Serilog.ILogger _log = Serilog.Log.ForContext<RpcClient>();
+
+    private sealed record SyncHolder(OpCode Op, string Key, string TraceId, DateTime AcquiredUtc);
+    private volatile SyncHolder? _syncHolder;
+
+    /// <summary>#712 M2: clears the holder record and releases the turn. Every
+    /// request path's finally block must use this (never a bare _sync.Release)
+    /// so a holder can never outlive its request.</summary>
+    private void EndHold()
+    {
+        _syncHolder = null;
+        _sync.Release();
+    }
+
     /// <summary>Default per-request timeout. Bounds the whole request (semaphore wait,
     /// connect, send, receive) so a wedged peer cannot poison the shared connection
     /// forever — callers passing CancellationToken.None are still protected.</summary>
@@ -91,7 +110,7 @@ public class RpcClient : IAsyncDisposable
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(effectiveTimeout);
 
-        await WaitForTurnAsync(op, timeoutCts.Token, ct);
+        await WaitForTurnAsync(op, key, traceId, timeoutCts.Token, ct);
         try
         {
             return await SendAndReceiveAsync(op, key, payload, traceId,
@@ -126,7 +145,7 @@ public class RpcClient : IAsyncDisposable
         }
         finally
         {
-            _sync.Release();
+            EndHold();
         }
     }
 
@@ -137,7 +156,7 @@ public class RpcClient : IAsyncDisposable
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_requestTimeout);
 
-        await WaitForTurnAsync(op, timeoutCts.Token, ct);
+        await WaitForTurnAsync(op, key, traceId, timeoutCts.Token, ct);
         try
         {
             return await SendAndReceiveStreamBodyAsync(op, key, body, bodyLen, traceId, timeoutCts.Token);
@@ -163,12 +182,14 @@ public class RpcClient : IAsyncDisposable
         }
         finally
         {
-            _sync.Release();
+            EndHold();
         }
     }
 
-    private async Task WaitForTurnAsync(OpCode op, CancellationToken linkedToken, CancellationToken callerCt)
+    private async Task WaitForTurnAsync(OpCode op, string key, string traceId,
+        CancellationToken linkedToken, CancellationToken callerCt)
     {
+        var waitStart = DateTime.UtcNow;
         try
         {
             await _sync.WaitAsync(linkedToken);
@@ -183,9 +204,33 @@ public class RpcClient : IAsyncDisposable
             // releases _sync, and the next request reconnects fresh. Trade-off: a
             // legitimately long concurrent request (cold prefill >180s) may be
             // aborted once and retried by its caller — cheap vs a permanent wedge.
+            // #712 M2: name the holder — this line is the permanent record that
+            // identifies a ghost (its op + how long it has held _sync), so the
+            // next occurrence is diagnosable from logs alone.
+            var waited = (DateTime.UtcNow - waitStart).TotalSeconds;
+            var holder = _syncHolder;
+            if (holder is null)
+            {
+                _log.Error("rpc_sync_wait_timeout peer={Peer} op={Op} key={Key} waited={Waited:F1}s — holder=NULL (semaphore count corrupted?); dropping connection",
+                    $"{_host}:{_port}", op, key, waited);
+            }
+            else
+            {
+                _log.Error("rpc_sync_wait_timeout peer={Peer} op={Op} key={Key} waited={Waited:F1}s — holder: op={HolderOp} key={HolderKey} trace={HolderTrace} holding={Held:F1}s; dropping connection",
+                    $"{_host}:{_port}", op, key, waited, holder.Op, holder.Key, holder.TraceId,
+                    (DateTime.UtcNow - holder.AcquiredUtc).TotalSeconds);
+            }
             DropConnection();
             throw NewTimeout(op);
         }
+
+        // #712 M2: record the holder on acquire; log when the turn had to wait —
+        // sustained contention is the precursor to a ghost holder.
+        var waitedFor = (DateTime.UtcNow - waitStart).TotalSeconds;
+        if (waitedFor >= 1.0)
+            _log.Warning("rpc_sync_wait peer={Peer} op={Op} key={Key} waited={Waited:F1}s before acquiring _sync",
+                $"{_host}:{_port}", op, key, waitedFor);
+        _syncHolder = new SyncHolder(op, key, traceId, DateTime.UtcNow);
     }
 
     private TimeoutException NewTimeout(OpCode op, TimeSpan? effective = null)
@@ -202,7 +247,7 @@ public class RpcClient : IAsyncDisposable
         timeoutCts.CancelAfter(_requestTimeout);
         var token = timeoutCts.Token;
 
-        await WaitForTurnAsync(op, token, ct);
+        await WaitForTurnAsync(op, key, traceId, token, ct);
         var completed = false;
         try
         {
@@ -298,7 +343,7 @@ public class RpcClient : IAsyncDisposable
             // connection is desynced and must be dropped.
             if (!completed)
                 DropConnection();
-            _sync.Release();
+            EndHold();
 
             if (!completed && token.IsCancellationRequested && !ct.IsCancellationRequested)
                 throw NewTimeout(op);
@@ -310,28 +355,36 @@ public class RpcClient : IAsyncDisposable
         string traceId, CancellationTokenSource timeoutCts, TimeSpan effectiveTimeout,
         TimeSpan? payloadIdleBudget, CancellationToken ct)
     {
+        // #712 M2: ALL I/O runs on timeoutCts.Token, NOT the caller ct. The
+        // ceiling (effectiveTimeout, default 180s) is linked with the caller
+        // token, so a caller cancelling is still honored — but a caller passing
+        // CancellationToken.None (12 store/engine call sites in
+        // WorkerSchedulerService) is now actually bounded by the ceiling. Pre-fix
+        // the header/meta/payload reads ran on the caller token: a request
+        // parked on a non-responding peer held _sync forever (the M2 ghost),
+        // clogging the chunked-PREFILL store push and stalling the engine.
         var attempts = 0;
 
         while (true)
         {
             try
             {
-                await EnsureConnectedAsync(ct);
-                await SendRequestAsync(op, key, payload, traceId, ct);
+                await EnsureConnectedAsync(timeoutCts.Token);
+                await SendRequestAsync(op, key, payload, traceId, timeoutCts.Token);
 
                 var headerBuf = new byte[Protocol.RESPONSE_HEADER_SIZE];
-                await ReadExactAsync(_stream!, headerBuf, ct);
+                await ReadExactAsync(_stream!, headerBuf, timeoutCts.Token);
 
                 var header = Protocol.ReadResponse(headerBuf);
                 var meta = header.MetaLen > 0
-                    ? await ReadMetaAsync(_stream!, header.MetaLen, ct)
+                    ? await ReadMetaAsync(_stream!, header.MetaLen, timeoutCts.Token)
                     : null;
 
                 var payloadBytes = header.PayloadLen > 0
                     ? payloadIdleBudget.HasValue
                         ? await ReadPayloadIdleAsync(_stream!, (long)header.PayloadLen,
                             timeoutCts, payloadIdleBudget.Value, ct)
-                        : await ReadPayloadAsync(_stream!, (long)header.PayloadLen, ct)
+                        : await ReadPayloadAsync(_stream!, (long)header.PayloadLen, timeoutCts.Token)
                     : [];
 
                 return new RpcResponse(header.Status, meta, payloadBytes);
@@ -339,20 +392,20 @@ public class RpcClient : IAsyncDisposable
             catch (IOException) when (attempts < RetryDelays.Length)
             {
                 attempts++;
-                await Task.Delay(RetryDelays[attempts - 1], ct);
-                await ReconnectAsync(ct);
+                await Task.Delay(RetryDelays[attempts - 1], timeoutCts.Token);
+                await ReconnectAsync(timeoutCts.Token);
             }
             catch (EndOfStreamException) when (attempts < RetryDelays.Length)
             {
                 attempts++;
-                await Task.Delay(RetryDelays[attempts - 1], ct);
-                await ReconnectAsync(ct);
+                await Task.Delay(RetryDelays[attempts - 1], timeoutCts.Token);
+                await ReconnectAsync(timeoutCts.Token);
             }
             catch (SocketException) when (attempts < RetryDelays.Length)
             {
                 attempts++;
-                await Task.Delay(RetryDelays[attempts - 1], ct);
-                await ReconnectAsync(ct);
+                await Task.Delay(RetryDelays[attempts - 1], timeoutCts.Token);
+                await ReconnectAsync(timeoutCts.Token);
             }
         }
     }
@@ -829,7 +882,7 @@ public class RpcClient : IAsyncDisposable
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(effectiveTimeout);
 
-        await WaitForTurnAsync(op, timeoutCts.Token, ct);
+        await WaitForTurnAsync(op, key, traceId, timeoutCts.Token, ct);
         try
         {
             return await SendAndReceiveChunkedAsync(op, key, payload, traceId,
@@ -877,7 +930,7 @@ public class RpcClient : IAsyncDisposable
         }
         finally
         {
-            _sync.Release();
+            EndHold();
         }
     }
 
@@ -887,15 +940,20 @@ public class RpcClient : IAsyncDisposable
         TimeSpan? payloadIdleBudget, Action<string>? onMeta, Action<long> onPayloadLen,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onChunk, CancellationToken ct)
     {
-        await EnsureConnectedAsync(ct);
-        await SendRequestAsync(op, key, payload, traceId, ct);
+        // #712 M2: connect/send/header/meta I/O on timeoutCts.Token (see
+        // SendAndReceiveAsync) — the payload chunks already were (ReadPayload-
+        // ChunkedAsync). Pre-fix a wedge on the response HEADER (peer consumed
+        // the request but never replied) held _sync with no deadline at all for
+        // ct=None callers.
+        await EnsureConnectedAsync(timeoutCts.Token);
+        await SendRequestAsync(op, key, payload, traceId, timeoutCts.Token);
 
         var headerBuf = new byte[Protocol.RESPONSE_HEADER_SIZE];
-        await ReadExactAsync(_stream!, headerBuf, ct);
+        await ReadExactAsync(_stream!, headerBuf, timeoutCts.Token);
 
         var header = Protocol.ReadResponse(headerBuf);
         var meta = header.MetaLen > 0
-            ? await ReadMetaAsync(_stream!, header.MetaLen, ct)
+            ? await ReadMetaAsync(_stream!, header.MetaLen, timeoutCts.Token)
             : null;
 
         // The response meta (n_past, state_size, kv_hash_str, model identity)
@@ -970,7 +1028,7 @@ public class RpcClient : IAsyncDisposable
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_requestTimeout);
 
-        await WaitForTurnAsync(OpCode.EngineDecode, timeoutCts.Token, ct);
+        await WaitForTurnAsync(OpCode.EngineDecode, slotKey, traceId, timeoutCts.Token, ct);
         try
         {
             await EnsureConnectedAsync(timeoutCts.Token);
@@ -1129,7 +1187,7 @@ public class RpcClient : IAsyncDisposable
         }
         finally
         {
-            _sync.Release();
+            EndHold();
         }
     }
 
@@ -1158,7 +1216,7 @@ public class RpcClient : IAsyncDisposable
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_requestTimeout);
 
-        await WaitForTurnAsync(OpCode.EngineDecode, timeoutCts.Token, ct);
+        await WaitForTurnAsync(OpCode.EngineDecode, slotKey, traceId, timeoutCts.Token, ct);
         try
         {
             await EnsureConnectedAsync(timeoutCts.Token);
@@ -1303,7 +1361,7 @@ public class RpcClient : IAsyncDisposable
         }
         finally
         {
-            _sync.Release();
+            EndHold();
         }
     }
 
