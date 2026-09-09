@@ -1,0 +1,18 @@
+llama-server build stamp — hydra fork HEAD, sm_60 test-lane engine
+=================================================================
+captured: 2026-09-09 ~16:50Z on VM hydra-p100 (192.168.122.21, user vm1)
+stagedir: /home/vm1/hydra-fork-head-sm60 (LD_LIBRARY_PATH=.)
+
+$ LD_LIBRARY_PATH=. ./llama-server --version
+version: 9697 (45c1435da) [shared]
+built with GNU 14.3.0 for Linux x86_64
+
+binary md5: 726b21033adf3cdcfa989ba725136a43  (/home/vm1/hydra-fork-head-sm60/llama-server)
+
+source of record: /home/vm1/hydra-fork-head @ 45c1435daba24fd05d292b34b328524e099150e4
+  (github.com/ddvnguyen/llama.cpp — hydra fork; b431f220ec (fork PR #60, the #469 fix)
+   verified by lead as ancestor of 45c1435da)
+
+build host: /home/ddv/scratch/w1j-697/build-sm60 (cmake Release, GCC 14.3 host compiler,
+  CUDA 12.9 nvcc, CMAKE_CUDA_ARCHITECTURES=60 / sm_60 for Tesla P100, GGML_CUDA=ON,
+  GGML_RPC=ON [required: unified RPC server at 45c1435da links ggml rpc-backend symbols])
