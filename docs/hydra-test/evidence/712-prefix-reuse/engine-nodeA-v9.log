@@ -1,0 +1,421 @@
+0.00.003.892 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.003.898 I device_info:
+0.00.059.921 I   - CUDA0   : Tesla P100-PCIE-16GB (16269 MiB, 9589 MiB free)
+0.00.059.933 I   - CPU     : 12th Gen Intel(R) Core(TM) i7-12700K (11227 MiB, 11227 MiB free)
+0.00.060.007 I system_info: n_threads = 3 (n_threads_batch = 3) / 6 | CUDA : ARCHS = 600 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.060.014 I srv  llama_server: n_parallel is set to auto, using n_parallel = 4 and kv_unified = true
+0.00.060.043 I srv          init: running without SSL
+0.00.060.075 I srv          init: using 8 threads for HTTP server
+0.00.060.168 I srv         start: binding port with default address family
+0.00.061.361 I srv  llama_server: loading model
+0.00.061.373 I srv    load_model: loading model '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf'
+0.00.061.421 I common_init_result: fitting params to device memory ...
+0.00.061.423 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.42.860.913 W llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.43.068.113 W sched_reserve: layer 0 is assigned to device CPU but the fused Gated Delta Net tensor is assigned to device CUDA0 (usually due to missing support)
+0.43.068.121 W sched_reserve: fused Gated Delta Net (chunked) not supported, set to disabled
+0.43.096.429 I common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.43.444.966 I srv    load_model: initializing slots, n_slots = 4
+0.43.799.144 W common_speculative_init: no implementations specified for speculative decoding
+0.43.799.159 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 65536
+0.43.799.175 I slot   load_model: id  1 | task -1 | new slot, n_ctx = 65536
+0.43.799.175 I slot   load_model: id  2 | task -1 | new slot, n_ctx = 65536
+0.43.799.175 I slot   load_model: id  3 | task -1 | new slot, n_ctx = 65536
+0.43.799.562 I srv    load_model: prompt cache is enabled, size limit: 8192 MiB
+0.43.799.564 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.43.799.565 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.43.799.566 I srv    load_model: context checkpoints enabled, max = 32, min spacing = 256
+0.43.799.618 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+0.43.812.516 I init: chat template, example_format: '<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+<think>
+'
+0.43.821.817 I srv          init: init: chat template, thinking = 1
+0.43.821.875 I srv  llama_server: model loaded
+0.43.822.645 I hydra_rpc: unified server on 0.0.0.0:19513 (ggml-RPC + Hydra protocol)
+0.43.822.650 I srv  start_rpc_se: hydra rpc: unified server on 0.0.0.0:19513 (ggml-RPC + Hydra protocol)
+0.43.822.655 I hydra_rpc: accept loop started on 0.0.0.0:19513
+0.43.822.658 I srv  llama_server: server is listening on http://0.0.0.0:18086
+0.43.822.679 I srv  update_slots: all slots are idle
+0.46.259.523 I srv  update_slots: all slots are idle
+0.46.260.384 I srv  update_slots: all slots are idle
+1.06.261.843 I srv  update_slots: all slots are idle
+1.06.262.436 I srv  update_slots: all slots are idle
+1.26.263.198 I srv  update_slots: all slots are idle
+1.26.263.815 I srv  update_slots: all slots are idle
+1.46.266.888 I srv  update_slots: all slots are idle
+1.46.268.082 I srv  update_slots: all slots are idle
+2.06.269.624 I srv  update_slots: all slots are idle
+2.06.272.654 I srv  update_slots: all slots are idle
+2.26.274.846 I srv  update_slots: all slots are idle
+2.26.275.769 I srv  update_slots: all slots are idle
+2.46.277.338 I srv  update_slots: all slots are idle
+2.46.277.881 I srv  update_slots: all slots are idle
+3.06.279.737 I srv  update_slots: all slots are idle
+3.06.281.959 I srv  update_slots: all slots are idle
+3.26.283.753 I srv  update_slots: all slots are idle
+3.26.284.441 I srv  update_slots: all slots are idle
+3.46.284.661 I srv  update_slots: all slots are idle
+3.46.285.348 I srv  update_slots: all slots are idle
+4.06.287.032 I srv  update_slots: all slots are idle
+4.06.287.646 I srv  update_slots: all slots are idle
+4.26.289.481 I srv  update_slots: all slots are idle
+4.26.290.119 I srv  update_slots: all slots are idle
+4.46.291.990 I srv  update_slots: all slots are idle
+4.46.292.544 I srv  update_slots: all slots are idle
+5.06.292.822 I srv  update_slots: all slots are idle
+5.06.294.297 I srv  update_slots: all slots are idle
+5.26.295.449 I srv  update_slots: all slots are idle
+5.26.295.855 I srv  update_slots: all slots are idle
+5.46.297.326 I srv  update_slots: all slots are idle
+5.46.299.012 I srv  update_slots: all slots are idle
+6.06.300.328 I srv  update_slots: all slots are idle
+6.06.300.985 I srv  update_slots: all slots are idle
+6.26.302.775 I srv  update_slots: all slots are idle
+6.26.303.425 I srv  update_slots: all slots are idle
+6.46.305.104 I srv  update_slots: all slots are idle
+6.46.306.123 I srv  update_slots: all slots are idle
+6.56.408.384 I srv  update_slots: all slots are idle
+6.56.420.272 I srv  update_slots: all slots are idle
+7.16.426.555 I srv  update_slots: all slots are idle
+7.16.430.114 I srv  update_slots: all slots are idle
+7.36.432.983 I srv  update_slots: all slots are idle
+7.36.433.859 I srv  update_slots: all slots are idle
+7.56.436.641 I srv  update_slots: all slots are idle
+7.56.437.573 I srv  update_slots: all slots are idle
+8.16.438.283 I srv  update_slots: all slots are idle
+8.16.438.893 I srv  update_slots: all slots are idle
+8.36.440.125 I srv  update_slots: all slots are idle
+8.36.441.069 I srv  update_slots: all slots are idle
+8.56.445.383 I srv  update_slots: all slots are idle
+8.56.447.367 I srv  update_slots: all slots are idle
+9.16.449.025 I srv  update_slots: all slots are idle
+9.16.449.648 I srv  update_slots: all slots are idle
+9.36.450.655 I srv  update_slots: all slots are idle
+9.36.451.502 I srv  update_slots: all slots are idle
+9.56.452.844 I srv  update_slots: all slots are idle
+9.56.453.234 I srv  update_slots: all slots are idle
+10.16.453.891 I srv  update_slots: all slots are idle
+10.16.454.318 I srv  update_slots: all slots are idle
+10.36.458.061 I srv  update_slots: all slots are idle
+10.36.460.644 I srv  update_slots: all slots are idle
+10.56.462.898 I srv  update_slots: all slots are idle
+10.56.463.399 I srv  update_slots: all slots are idle
+11.16.463.671 I srv  update_slots: all slots are idle
+11.16.464.174 I srv  update_slots: all slots are idle
+11.36.465.232 I srv  update_slots: all slots are idle
+11.36.466.228 I srv  update_slots: all slots are idle
+11.56.467.014 I srv  update_slots: all slots are idle
+11.56.467.462 I srv  update_slots: all slots are idle
+12.16.468.630 I srv  update_slots: all slots are idle
+12.16.469.487 I srv  update_slots: all slots are idle
+12.36.470.734 I srv  update_slots: all slots are idle
+12.36.471.553 I srv  update_slots: all slots are idle
+12.56.473.523 I srv  update_slots: all slots are idle
+12.56.475.042 I srv  update_slots: all slots are idle
+13.16.477.220 I srv  update_slots: all slots are idle
+13.16.477.878 I srv  update_slots: all slots are idle
+13.36.481.522 I srv  update_slots: all slots are idle
+13.36.482.914 I srv  update_slots: all slots are idle
+13.56.483.875 I srv  update_slots: all slots are idle
+13.56.484.816 I srv  update_slots: all slots are idle
+14.16.486.603 I srv  update_slots: all slots are idle
+14.16.487.242 I srv  update_slots: all slots are idle
+14.36.489.128 I srv  update_slots: all slots are idle
+14.36.489.698 I srv  update_slots: all slots are idle
+14.47.980.722 I srv  process_sing: hydra: CONFIGURE tier=T1 applied=1 deferred=0 unrecognized=0 rejected=0 (slot 0)
+14.47.980.734 I srv  update_slots: all slots are idle
+14.47.984.689 W srv  process_sing: hydra: PREFILL model='qwen3.5-9b-test' unknown (preset has 0 alias(es)) — falling back to resident 'hydra-test-lane'
+14.48.003.949 I srv  process_sing: hydra: PREFILL slot=0 tokens=8323
+14.48.003.967 I slot prompt_clear: id  0 | task -1 | clearing prompt with 0 tokens
+15.18.434.904 I slot create_check: id  0 | task -1 | created context checkpoint 1 of 32 (pos_min = 8321, pos_max = 8322, n_tokens = 8323, size = 238.818 MiB)
+15.18.616.433 I srv  process_sing: hydra: PREFILL slot=0 done n_past=8323 kv=197745000 logits=993280B total=251463162
+15.20.263.160 I srv  hydra_handle: hydra rpc: PREFILL slot=0 M2 streamed 239.8 MiB directly
+15.20.265.218 I srv  update_slots: all slots are idle
+15.20.265.895 I srv  update_slots: all slots are idle
+15.20.494.440 I srv  update_slots: all slots are idle
+15.20.546.426 I srv  process_sing: hydra: CONFIGURE tier=T1 applied=1 deferred=0 unrecognized=0 rejected=0 (slot 0)
+15.20.546.435 I srv  update_slots: all slots are idle
+15.20.550.202 I srv  update_slots: all slots are idle
+15.20.555.553 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=93
+15.20.555.586 I srv  process_sing: hydra: DECODE slot=0 posted DECODE_APPLY (request_id=93)
+15.20.555.623 I srv  hydra_handle: hydra: DECODE slot=0 accepted, request_id=93, restore=0.0ms
+15.20.555.704 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+15.20.555.711 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=8323 model_load_ms=0.0
+15.20.572.620 I srv  params_from_: Chat format: peg-native
+15.20.572.879 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=95, request_id=93)
+15.20.573.124 I slot launch_slot_: id  0 | task 95 | processing task, is_child = 0
+15.20.573.147 I slot update_slots: id  0 | task 95 | #PD-TRACE N_COMMON 1-token re-decode n_common=8323 logits_reused=false
+15.20.573.162 I slot update_slots: id  0 | task 95 | Checking checkpoint with [8321, 8322] against 8321...
+15.20.611.706 W slot update_slots: id  0 | task 95 | restored context checkpoint (pos_min = 8321, pos_max = 8322, n_tokens = 8323, n_past = 8322, size = 238.818 MiB)
+15.27.341.043 I slot print_timing: id  0 | task 95 | prompt eval time =     142.58 ms /     1 tokens (  142.58 ms per token,     7.01 tokens per second)
+15.27.341.046 I slot print_timing: id  0 | task 95 |        eval time =    6625.28 ms /    64 tokens (  103.52 ms per token,     9.66 tokens per second)
+15.27.341.047 I slot print_timing: id  0 | task 95 |       total time =    6767.86 ms /    65 tokens
+15.27.341.053 I slot print_timing: id  0 | task 95 |    graphs reused =         65
+15.27.341.199 I slot      release: id  0 | task 95 | stop processing: n_tokens = 8386, truncated = 0
+15.27.341.210 I srv  update_slots: all slots are idle
+15.27.341.270 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=93, n_decoded=64)
+15.27.349.416 I srv  process_sing: hydra: STATE_GET slot=0 n_past=8386 state=189.6 MiB — async
+15.27.368.242 I srv  process_sing: hydra: STATE_GET streaming (fd=38 state=189.6 MiB)
+15.27.520.342 I srv  process_sing: hydra: STATE_GET done slot=0 rpc_status=0 path=M2-stream bytes=251568098
+15.27.520.386 I srv  hydra_handle: hydra rpc: STATE_GET slot=0 M2 streamed 239.9 MiB directly
+15.27.521.262 I srv  update_slots: all slots are idle
+15.29.634.238 I slot process_sing: id  0 | task -1 | erasing 1 existing checkpoints before STATE_PUT restore
+15.29.699.949 I slot process_sing: id  0 | task -1 | STATE_PUT registered native checkpoint (pos_min=8321 pos_max=8322 n_tokens=8323 tgt_sz=52691548 recr_only=1)
+15.29.699.955 I srv  process_sing: hydra: STATE_PUT slot=0 restored=198842964 B n_past=8386 n_prompt_tok=8386
+15.29.705.792 I srv  update_slots: all slots are idle
+15.29.742.430 I srv  process_sing: hydra: CONFIGURE tier=T1 applied=1 deferred=0 unrecognized=0 rejected=0 (slot 0)
+15.29.742.439 I srv  update_slots: all slots are idle
+15.29.743.394 I srv  update_slots: all slots are idle
+15.29.745.214 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=164
+15.29.745.224 I srv  process_sing: hydra: DECODE slot=0 posted DECODE_APPLY (request_id=164)
+15.29.745.250 I srv  hydra_handle: hydra: DECODE slot=0 accepted, request_id=164, restore=0.0ms
+15.29.745.419 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+15.29.745.432 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=8386 model_load_ms=0.0
+15.29.769.584 I srv  params_from_: Chat format: peg-native
+15.29.769.708 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=166, request_id=164)
+15.29.769.821 I slot launch_slot_: id  0 | task 166 | processing task, is_child = 0
+15.29.769.832 W slot update_slots: id  0 | task 166 | #PD-TRACE MISMATCH slot=0 n_past=8321 cached=8386 input_total=14532 stored_tok[8321]=248068 input_tok[8321]=3897
+15.29.769.835 W slot update_slots: id  0 | task 166 | #PD-TRACE MISMATCH_STORED slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=8386
+15.29.769.838 W slot update_slots: id  0 | task 166 | #PD-TRACE MISMATCH_INPUT slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=14532
+15.29.769.838 I slot update_slots: id  0 | task 166 | #PD-TRACE N_COMMON trim n_common=8321 < n_slot=8386, logits discarded
+15.29.769.841 I slot update_slots: id  0 | task 166 | Checking checkpoint with [8321, 8322] against 8320...
+15.29.769.841 W slot update_slots: id  0 | task 166 | STATE_PUT restored slot — using cached n_past=8321, skipping checkpoint check
+15.29.769.846 W slot update_slots: id  0 | task 166 | erased invalidated context checkpoint (pos_min = 8321, pos_max = 8322, n_tokens = 8323, n_swa = 0, pos_next = 8321, size = 50.251 MiB)
+15.37.134.411 I slot print_timing: id  0 | task 166 | prompt processing, n_tokens =   2048, progress = 0.71, t =   7.36 s / 278.09 tokens per second
+15.44.804.622 I slot print_timing: id  0 | task 166 | prompt processing, n_tokens =   4096, progress = 0.85, t =  15.03 s / 272.43 tokens per second
+15.51.844.284 I slot print_timing: id  0 | task 166 | prompt processing, n_tokens =   5695, progress = 0.96, t =  22.07 s / 257.99 tokens per second
+15.52.028.256 I slot create_check: id  0 | task 166 | created context checkpoint 1 of 32 (pos_min = 14015, pos_max = 14015, n_tokens = 14016, size = 333.456 MiB)
+15.53.755.494 I slot print_timing: id  0 | task 166 | prompt processing, n_tokens =   6207, progress = 1.00, t =  23.99 s / 258.78 tokens per second
+15.54.088.321 I slot create_check: id  0 | task 166 | created context checkpoint 2 of 32 (pos_min = 14527, pos_max = 14527, n_tokens = 14528, size = 341.966 MiB)
+16.02.213.676 I slot print_timing: id  0 | task 166 | prompt eval time =   24694.94 ms /  6211 tokens (    3.98 ms per token,   251.51 tokens per second)
+16.02.213.679 I slot print_timing: id  0 | task 166 |        eval time =    7748.88 ms /    64 tokens (  121.08 ms per token,     8.26 tokens per second)
+16.02.213.680 I slot print_timing: id  0 | task 166 |       total time =   32443.82 ms /  6275 tokens
+16.02.213.681 I slot print_timing: id  0 | task 166 |    graphs reused =        126
+16.02.213.883 I slot      release: id  0 | task 166 | stop processing: n_tokens = 14595, truncated = 0
+16.02.213.895 I srv  update_slots: all slots are idle
+16.02.213.922 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=164, n_decoded=64)
+16.02.215.015 I srv  process_sing: hydra: STATE_GET slot=0 n_past=14595 state=292.8 MiB — async
+16.02.245.418 I srv  process_sing: hydra: STATE_GET streaming (fd=38 state=292.8 MiB)
+16.02.466.680 I srv  process_sing: hydra: STATE_GET done slot=0 rpc_status=0 path=M2-stream bytes=359803386
+16.02.466.717 I srv  hydra_handle: hydra rpc: STATE_GET slot=0 M2 streamed 343.1 MiB directly
+16.02.467.623 I srv  update_slots: all slots are idle
+16.04.439.456 I slot process_sing: id  0 | task -1 | erasing 2 existing checkpoints before STATE_PUT restore
+16.04.527.672 I slot process_sing: id  0 | task -1 | STATE_PUT registered native checkpoint (pos_min=14527 pos_max=14527 n_tokens=14528 tgt_sz=52691548 recr_only=1)
+16.04.527.676 I srv  process_sing: hydra: STATE_PUT slot=0 restored=307053416 B n_past=14595 n_prompt_tok=14595
+16.04.535.368 I srv  update_slots: all slots are idle
+16.04.569.563 I srv  process_sing: hydra: CONFIGURE tier=T1 applied=1 deferred=0 unrecognized=0 rejected=0 (slot 0)
+16.04.569.571 I srv  update_slots: all slots are idle
+16.04.570.701 I srv  update_slots: all slots are idle
+16.04.572.074 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=241
+16.04.572.086 I srv  process_sing: hydra: DECODE slot=0 posted DECODE_APPLY (request_id=241)
+16.04.572.128 I srv  hydra_handle: hydra: DECODE slot=0 accepted, request_id=241, restore=0.0ms
+16.04.572.371 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+16.04.572.384 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=14595 model_load_ms=0.0
+16.04.602.445 I srv  params_from_: Chat format: peg-native
+16.04.602.561 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=243, request_id=241)
+16.04.602.657 I slot launch_slot_: id  0 | task 243 | processing task, is_child = 0
+16.04.602.669 W slot update_slots: id  0 | task 243 | #PD-TRACE MISMATCH slot=0 n_past=14530 cached=14595 input_total=20291 stored_tok[14530]=248068 input_tok[14530]=3897
+16.04.602.672 W slot update_slots: id  0 | task 243 | #PD-TRACE MISMATCH_STORED slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=14595
+16.04.602.674 W slot update_slots: id  0 | task 243 | #PD-TRACE MISMATCH_INPUT slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=20291
+16.04.602.675 I slot update_slots: id  0 | task 243 | #PD-TRACE N_COMMON trim n_common=14530 < n_slot=14595, logits discarded
+16.04.602.677 I slot update_slots: id  0 | task 243 | Checking checkpoint with [14527, 14527] against 14529...
+16.04.613.603 W slot update_slots: id  0 | task 243 | restored context checkpoint (pos_min = 14527, pos_max = 14527, n_tokens = 14528, n_past = 14528, size = 50.251 MiB)
+16.12.324.127 I slot print_timing: id  0 | task 243 | prompt processing, n_tokens =   2048, progress = 0.82, t =   7.72 s / 265.23 tokens per second
+16.20.381.170 I slot print_timing: id  0 | task 243 | prompt processing, n_tokens =   4096, progress = 0.92, t =  15.78 s / 259.59 tokens per second
+16.25.795.882 I slot print_timing: id  0 | task 243 | prompt processing, n_tokens =   5247, progress = 0.97, t =  21.19 s / 247.58 tokens per second
+16.26.032.872 I slot create_check: id  0 | task 243 | created context checkpoint 2 of 32 (pos_min = 19774, pos_max = 19774, n_tokens = 19775, size = 429.158 MiB)
+16.27.830.779 I slot print_timing: id  0 | task 243 | prompt processing, n_tokens =   5759, progress = 1.00, t =  23.23 s / 247.93 tokens per second
+16.28.188.159 I slot create_check: id  0 | task 243 | created context checkpoint 3 of 32 (pos_min = 20286, pos_max = 20286, n_tokens = 20287, size = 437.668 MiB)
+16.37.869.892 I slot print_timing: id  0 | task 243 | prompt eval time =   24045.35 ms /  5763 tokens (    4.17 ms per token,   239.67 tokens per second)
+16.37.869.895 I slot print_timing: id  0 | task 243 |        eval time =    9221.85 ms /    64 tokens (  144.09 ms per token,     6.94 tokens per second)
+16.37.869.896 I slot print_timing: id  0 | task 243 |       total time =   33267.20 ms /  5827 tokens
+16.37.869.897 I slot print_timing: id  0 | task 243 |    graphs reused =        188
+16.37.870.130 I slot      release: id  0 | task 243 | stop processing: n_tokens = 20354, truncated = 0
+16.37.870.142 I srv  update_slots: all slots are idle
+16.37.870.159 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=241, n_decoded=64)
+16.37.871.178 I srv  process_sing: hydra: STATE_GET slot=0 n_past=20354 state=388.5 MiB — async
+16.37.888.260 I srv  process_sing: hydra: STATE_GET streaming (fd=38 state=388.5 MiB)
+16.38.155.303 I srv  process_sing: hydra: STATE_GET done slot=0 rpc_status=0 path=M2-stream bytes=460176846
+16.38.155.342 I srv  hydra_handle: hydra rpc: STATE_GET slot=0 M2 streamed 438.9 MiB directly
+16.38.156.237 I srv  update_slots: all slots are idle
+16.40.646.481 I slot process_sing: id  0 | task -1 | erasing 3 existing checkpoints before STATE_PUT restore
+16.40.768.425 I slot process_sing: id  0 | task -1 | STATE_PUT registered native checkpoint (pos_min=20286 pos_max=20286 n_tokens=20287 tgt_sz=52691548 recr_only=1)
+16.40.768.439 I srv  process_sing: hydra: STATE_PUT slot=0 restored=407403840 B n_past=20354 n_prompt_tok=20354
+16.40.777.546 I srv  update_slots: all slots are idle
+16.40.810.345 I srv  process_sing: hydra: CONFIGURE tier=T1 applied=1 deferred=0 unrecognized=0 rejected=0 (slot 0)
+16.40.810.352 I srv  update_slots: all slots are idle
+16.40.811.217 I srv  update_slots: all slots are idle
+16.40.812.664 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=320
+16.40.812.676 I srv  process_sing: hydra: DECODE slot=0 posted DECODE_APPLY (request_id=320)
+16.40.812.733 I srv  hydra_handle: hydra: DECODE slot=0 accepted, request_id=320, restore=0.0ms
+16.40.813.069 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+16.40.813.079 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=20354 model_load_ms=0.0
+16.40.849.704 I srv  params_from_: Chat format: peg-native
+16.40.849.868 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=322, request_id=320)
+16.40.850.023 I slot launch_slot_: id  0 | task 322 | processing task, is_child = 0
+16.40.850.038 W slot update_slots: id  0 | task 322 | #PD-TRACE MISMATCH slot=0 n_past=20289 cached=20354 input_total=26050 stored_tok[20289]=248068 input_tok[20289]=3897
+16.40.850.042 W slot update_slots: id  0 | task 322 | #PD-TRACE MISMATCH_STORED slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=20354
+16.40.850.046 W slot update_slots: id  0 | task 322 | #PD-TRACE MISMATCH_INPUT slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=26050
+16.40.850.049 I slot update_slots: id  0 | task 322 | #PD-TRACE N_COMMON trim n_common=20289 < n_slot=20354, logits discarded
+16.40.850.053 I slot update_slots: id  0 | task 322 | Checking checkpoint with [20286, 20286] against 20288...
+16.40.862.025 W slot update_slots: id  0 | task 322 | restored context checkpoint (pos_min = 20286, pos_max = 20286, n_tokens = 20287, n_past = 20287, size = 50.251 MiB)
+16.48.912.222 I slot print_timing: id  0 | task 322 | prompt processing, n_tokens =   2048, progress = 0.86, t =   8.06 s / 254.03 tokens per second
+16.57.364.939 I slot print_timing: id  0 | task 322 | prompt processing, n_tokens =   4096, progress = 0.94, t =  16.51 s / 248.02 tokens per second
+17.03.024.106 I slot print_timing: id  0 | task 322 | prompt processing, n_tokens =   5247, progress = 0.98, t =  22.17 s / 236.63 tokens per second
+17.03.284.785 I slot create_check: id  0 | task 322 | created context checkpoint 2 of 32 (pos_min = 25533, pos_max = 25533, n_tokens = 25534, size = 524.859 MiB)
+17.05.152.010 I slot print_timing: id  0 | task 322 | prompt processing, n_tokens =   5759, progress = 1.00, t =  24.30 s / 236.98 tokens per second
+17.05.549.560 I slot create_check: id  0 | task 322 | created context checkpoint 3 of 32 (pos_min = 26045, pos_max = 26045, n_tokens = 26046, size = 533.369 MiB)
+17.16.349.626 I slot print_timing: id  0 | task 322 | prompt eval time =   25237.29 ms /  5763 tokens (    4.38 ms per token,   228.35 tokens per second)
+17.16.349.629 I slot print_timing: id  0 | task 322 |        eval time =   10262.27 ms /    64 tokens (  160.35 ms per token,     6.24 tokens per second)
+17.16.349.630 I slot print_timing: id  0 | task 322 |       total time =   35499.56 ms /  5827 tokens
+17.16.349.630 I slot print_timing: id  0 | task 322 |    graphs reused =        250
+17.16.349.946 I slot      release: id  0 | task 322 | stop processing: n_tokens = 26113, truncated = 0
+17.16.349.960 I srv  update_slots: all slots are idle
+17.16.349.979 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=320, n_decoded=64)
+17.16.351.255 I srv  process_sing: hydra: STATE_GET slot=0 n_past=26113 state=484.2 MiB — async
+17.16.368.576 I srv  process_sing: hydra: STATE_GET streaming (fd=38 state=484.2 MiB)
+17.16.722.360 I srv  process_sing: hydra: STATE_GET done slot=0 rpc_status=0 path=M2-stream bytes=560550306
+17.16.722.397 I srv  hydra_handle: hydra rpc: STATE_GET slot=0 M2 streamed 534.6 MiB directly
+17.16.723.455 I srv  update_slots: all slots are idle
+17.20.161.738 I slot process_sing: id  0 | task -1 | erasing 3 existing checkpoints before STATE_PUT restore
+17.20.386.644 I slot process_sing: id  0 | task -1 | STATE_PUT registered native checkpoint (pos_min=26045 pos_max=26045 n_tokens=26046 tgt_sz=52691548 recr_only=1)
+17.20.386.649 I srv  process_sing: hydra: STATE_PUT slot=0 restored=507754264 B n_past=26113 n_prompt_tok=26113
+17.20.398.943 I srv  update_slots: all slots are idle
+17.20.428.479 I srv  process_sing: hydra: CONFIGURE tier=T1 applied=1 deferred=0 unrecognized=0 rejected=0 (slot 0)
+17.20.428.487 I srv  update_slots: all slots are idle
+17.20.429.796 I srv  update_slots: all slots are idle
+17.20.447.918 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=397
+17.20.447.935 I srv  process_sing: hydra: DECODE slot=0 posted DECODE_APPLY (request_id=397)
+17.20.447.990 I srv  hydra_handle: hydra: DECODE slot=0 accepted, request_id=397, restore=0.0ms
+17.20.448.416 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+17.20.448.428 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=26113 model_load_ms=0.0
+17.20.492.511 I srv  params_from_: Chat format: peg-native
+17.20.492.635 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=399, request_id=397)
+17.20.492.772 I slot launch_slot_: id  0 | task 399 | processing task, is_child = 0
+17.20.492.787 W slot update_slots: id  0 | task 399 | #PD-TRACE MISMATCH slot=0 n_past=26048 cached=26113 input_total=31359 stored_tok[26048]=248068 input_tok[26048]=3897
+17.20.492.790 W slot update_slots: id  0 | task 399 | #PD-TRACE MISMATCH_STORED slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=26113
+17.20.492.792 W slot update_slots: id  0 | task 399 | #PD-TRACE MISMATCH_INPUT slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=31359
+17.20.492.792 I slot update_slots: id  0 | task 399 | #PD-TRACE N_COMMON trim n_common=26048 < n_slot=26113, logits discarded
+17.20.492.795 I slot update_slots: id  0 | task 399 | Checking checkpoint with [26045, 26045] against 26047...
+17.20.503.803 W slot update_slots: id  0 | task 399 | restored context checkpoint (pos_min = 26045, pos_max = 26045, n_tokens = 26046, n_past = 26046, size = 50.251 MiB)
+17.28.899.059 I slot print_timing: id  0 | task 399 | prompt processing, n_tokens =   2048, progress = 0.90, t =   8.41 s / 243.63 tokens per second
+17.37.674.812 I slot print_timing: id  0 | task 399 | prompt processing, n_tokens =   4096, progress = 0.96, t =  17.18 s / 238.39 tokens per second
+17.41.407.568 I slot print_timing: id  0 | task 399 | prompt processing, n_tokens =   4797, progress = 0.98, t =  20.91 s / 229.36 tokens per second
+17.41.724.400 I slot create_check: id  0 | task 399 | created context checkpoint 2 of 32 (pos_min = 30842, pos_max = 30842, n_tokens = 30843, size = 613.082 MiB)
+17.43.655.672 I slot print_timing: id  0 | task 399 | prompt processing, n_tokens =   5309, progress = 1.00, t =  23.16 s / 229.20 tokens per second
+17.44.079.835 I slot create_check: id  0 | task 399 | created context checkpoint 3 of 32 (pos_min = 31354, pos_max = 31354, n_tokens = 31355, size = 621.592 MiB)
+17.56.219.224 I slot print_timing: id  0 | task 399 | prompt eval time =   24188.88 ms /  5313 tokens (    4.55 ms per token,   219.65 tokens per second)
+17.56.219.229 I slot print_timing: id  0 | task 399 |        eval time =   11537.54 ms /    64 tokens (  180.27 ms per token,     5.55 tokens per second)
+17.56.219.229 I slot print_timing: id  0 | task 399 |       total time =   35726.42 ms /  5377 tokens
+17.56.219.230 I slot print_timing: id  0 | task 399 |    graphs reused =        312
+17.56.219.661 I slot      release: id  0 | task 399 | stop processing: n_tokens = 31422, truncated = 0
+17.56.219.676 I srv  update_slots: all slots are idle
+17.56.219.823 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=397, n_decoded=64)
+17.56.221.106 I srv  process_sing: hydra: STATE_GET slot=0 n_past=31422 state=572.5 MiB — async
+17.56.239.461 I srv  process_sing: hydra: STATE_GET streaming (fd=38 state=572.5 MiB)
+17.56.627.074 I srv  process_sing: hydra: STATE_GET done slot=0 rpc_status=0 path=M2-stream bytes=653079366
+17.56.627.110 I srv  hydra_handle: hydra rpc: STATE_GET slot=0 M2 streamed 622.8 MiB directly
+17.56.628.241 I srv  update_slots: all slots are idle
+18.00.006.136 I slot process_sing: id  0 | task -1 | erasing 3 existing checkpoints before STATE_PUT restore
+18.00.174.271 I slot process_sing: id  0 | task -1 | STATE_PUT registered native checkpoint (pos_min=31354 pos_max=31354 n_tokens=31355 tgt_sz=52691548 recr_only=1)
+18.00.174.278 I srv  process_sing: hydra: STATE_PUT slot=0 restored=600262088 B n_past=31422 n_prompt_tok=31422
+18.00.189.296 I srv  update_slots: all slots are idle
+18.00.217.610 I srv  process_sing: hydra: CONFIGURE tier=T1 applied=1 deferred=0 unrecognized=0 rejected=0 (slot 0)
+18.00.217.617 I srv  update_slots: all slots are idle
+18.00.219.421 I srv  update_slots: all slots are idle
+18.00.221.533 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=476
+18.00.221.548 I srv  process_sing: hydra: DECODE slot=0 posted DECODE_APPLY (request_id=476)
+18.00.221.629 I srv  hydra_handle: hydra: DECODE slot=0 accepted, request_id=476, restore=0.0ms
+18.00.222.045 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+18.00.222.056 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=31422 model_load_ms=0.0
+18.00.269.705 I srv  params_from_: Chat format: peg-native
+18.00.269.852 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=478, request_id=476)
+18.00.270.034 I slot launch_slot_: id  0 | task 478 | processing task, is_child = 0
+18.00.270.053 W slot update_slots: id  0 | task 478 | #PD-TRACE MISMATCH slot=0 n_past=31357 cached=31422 input_total=37118 stored_tok[31357]=248068 input_tok[31357]=3897
+18.00.270.056 W slot update_slots: id  0 | task 478 | #PD-TRACE MISMATCH_STORED slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=31422
+18.00.270.058 W slot update_slots: id  0 | task 478 | #PD-TRACE MISMATCH_INPUT slot=0 first16=[248045,8678,198,2523,513,264,10631,17313,13,7860,5437,537,89871,13,248046,198] total=37118
+18.00.270.059 I slot update_slots: id  0 | task 478 | #PD-TRACE N_COMMON trim n_common=31357 < n_slot=31422, logits discarded
+18.00.270.061 I slot update_slots: id  0 | task 478 | Checking checkpoint with [31354, 31354] against 31356...
+18.00.281.204 W slot update_slots: id  0 | task 478 | restored context checkpoint (pos_min = 31354, pos_max = 31354, n_tokens = 31355, n_past = 31355, size = 50.251 MiB)
+18.08.974.351 I slot print_timing: id  0 | task 478 | prompt processing, n_tokens =   2048, progress = 0.90, t =   8.70 s / 235.29 tokens per second
+18.18.070.138 I slot print_timing: id  0 | task 478 | prompt processing, n_tokens =   4096, progress = 0.96, t =  17.80 s / 230.11 tokens per second
+18.24.142.261 I slot print_timing: id  0 | task 478 | prompt processing, n_tokens =   5247, progress = 0.99, t =  23.87 s / 219.80 tokens per second
+18.24.489.795 I slot create_check: id  0 | task 478 | created context checkpoint 2 of 32 (pos_min = 36601, pos_max = 36601, n_tokens = 36602, size = 708.783 MiB)
+18.26.497.788 I slot print_timing: id  0 | task 478 | prompt processing, n_tokens =   5759, progress = 1.00, t =  26.23 s / 219.58 tokens per second
+18.26.956.137 I slot create_check: id  0 | task 478 | created context checkpoint 3 of 32 (pos_min = 37113, pos_max = 37113, n_tokens = 37114, size = 717.293 MiB)
+18.40.705.839 I slot print_timing: id  0 | task 478 | prompt eval time =   27374.10 ms /  5763 tokens (    4.75 ms per token,   210.53 tokens per second)
+18.40.705.843 I slot print_timing: id  0 | task 478 |        eval time =   13061.68 ms /    64 tokens (  204.09 ms per token,     4.90 tokens per second)
+18.40.705.866 I slot print_timing: id  0 | task 478 |       total time =   40435.77 ms /  5827 tokens
+18.40.705.867 I slot print_timing: id  0 | task 478 |    graphs reused =        373
+18.40.706.333 I slot      release: id  0 | task 478 | stop processing: n_tokens = 37181, truncated = 0
+18.40.706.349 I srv  update_slots: all slots are idle
+18.40.706.427 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=476, n_decoded=64)
+18.40.707.634 I srv  process_sing: hydra: STATE_GET slot=0 n_past=37181 state=668.2 MiB — async
+18.40.725.616 I srv  process_sing: hydra: STATE_GET streaming (fd=38 state=668.2 MiB)
+18.41.162.234 I srv  process_sing: hydra: STATE_GET done slot=0 rpc_status=0 path=M2-stream bytes=753452826
+18.41.162.282 I srv  hydra_handle: hydra rpc: STATE_GET slot=0 M2 streamed 718.5 MiB directly
+18.41.163.341 I srv  update_slots: all slots are idle
+18.43.072.787 I srv  update_slots: all slots are idle
+18.43.073.163 I srv  update_slots: all slots are idle
+19.03.075.549 I srv  update_slots: all slots are idle
+19.03.076.197 I srv  update_slots: all slots are idle
+19.23.076.935 I srv  update_slots: all slots are idle
+19.23.077.749 I srv  update_slots: all slots are idle
+19.43.078.507 I srv  update_slots: all slots are idle
+19.43.078.930 I srv  update_slots: all slots are idle
+20.03.079.974 I srv  update_slots: all slots are idle
+20.03.080.439 I srv  update_slots: all slots are idle
+20.23.082.030 I srv  update_slots: all slots are idle
+20.23.082.424 I srv  update_slots: all slots are idle
+20.32.818.799 W srv  hydra_recv_a: hydra rpc: recv failed on fd=37 (0/16 bytes): Connection timed out
+20.43.083.674 I srv  update_slots: all slots are idle
+20.43.084.574 I srv  update_slots: all slots are idle
+21.03.086.191 I srv  update_slots: all slots are idle
+21.03.086.759 I srv  update_slots: all slots are idle
+21.13.771.466 W srv  hydra_recv_a: hydra rpc: recv failed on fd=38 (0/16 bytes): Connection timed out
+21.23.088.413 I srv  update_slots: all slots are idle
+21.23.088.892 I srv  update_slots: all slots are idle
+21.43.089.253 I srv  update_slots: all slots are idle
+21.43.089.964 I srv  update_slots: all slots are idle
+22.03.090.763 I srv  update_slots: all slots are idle
+22.03.091.624 I srv  update_slots: all slots are idle
+22.23.092.597 I srv  update_slots: all slots are idle
+22.23.095.378 I srv  update_slots: all slots are idle
+22.43.096.637 I srv  update_slots: all slots are idle
+22.43.097.424 I srv  update_slots: all slots are idle
+23.03.099.193 I srv  update_slots: all slots are idle
+23.03.099.803 I srv  update_slots: all slots are idle
+23.23.100.396 I srv  update_slots: all slots are idle
+23.23.100.840 I srv  update_slots: all slots are idle
+23.43.101.008 I srv  update_slots: all slots are idle
+23.43.101.558 I srv  update_slots: all slots are idle
+24.03.103.270 I srv  update_slots: all slots are idle
+24.03.104.225 I srv  update_slots: all slots are idle
+24.23.105.907 I srv  update_slots: all slots are idle
+24.23.106.510 I srv  update_slots: all slots are idle
+24.43.107.719 I srv  update_slots: all slots are idle
+24.43.108.304 I srv  update_slots: all slots are idle
+25.03.110.707 I srv  update_slots: all slots are idle
+25.03.113.102 I srv  update_slots: all slots are idle
+25.23.113.526 I srv  update_slots: all slots are idle
+25.23.113.969 I srv  update_slots: all slots are idle
+25.43.114.933 I srv  update_slots: all slots are idle
+25.43.120.204 I srv  update_slots: all slots are idle
+26.03.121.503 I srv  update_slots: all slots are idle
+26.03.127.316 I srv  update_slots: all slots are idle
+26.23.128.258 I srv  update_slots: all slots are idle
+26.23.128.736 I srv  update_slots: all slots are idle
+26.43.129.689 I srv  update_slots: all slots are idle
+26.43.130.532 I srv  update_slots: all slots are idle
+27.03.132.414 I srv  update_slots: all slots are idle
+27.03.135.804 I srv  update_slots: all slots are idle
+27.23.136.604 I srv  update_slots: all slots are idle
+27.23.137.900 I srv  update_slots: all slots are idle

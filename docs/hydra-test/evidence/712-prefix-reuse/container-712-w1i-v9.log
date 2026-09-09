@@ -1,0 +1,1546 @@
+[12:26:57 INF] hydra_test_instance Active InstanceId=A
+[12:26:57 INF] Starting Hydra.Store at 09/09/2026 12:26:57
+[12:26:57 INF] PostgreSQL schema bootstrapped
+[12:26:57 INF] rpc_listener_started Host=0.0.0.0 Port=19500
+warn: Microsoft.AspNetCore.Hosting.Diagnostics[15]
+      Overriding HTTP_PORTS '8080' and HTTPS_PORTS ''. Binding to values defined by URLS instead 'http://0.0.0.0:19501'.
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://0.0.0.0:19501
+info: Microsoft.Hosting.Lifetime[0]
+      Application started. Press Ctrl+C to shut down.
+info: Microsoft.Hosting.Lifetime[0]
+      Hosting environment: Test
+info: Microsoft.Hosting.Lifetime[0]
+      Content root path: /app
+[12:26:57 INF] model_config_loaded From=/etc/hydra/config/models-test.json Aliases=qwen3.5-9b-test
+[12:26:57 INF] coordinator_init Workers=1 Mix=False
+[12:26:57 INF] Write-behind service started, interval=10s, backup=/mnt/SSD/hydra-backup-test-a
+[12:26:57 INF] Scheduler init: workers=test-a prefiller=1 decoders=1 mix=False evaluator=unified
+warn: Microsoft.AspNetCore.Hosting.Diagnostics[15]
+      Overriding HTTP_PORTS '8080' and HTTPS_PORTS ''. Binding to values defined by URLS instead 'http://0.0.0.0:19000'.
+[12:26:57 INF] health_monitor_start Workers=1
+[12:26:57 WRN] Overriding HTTP_PORTS '8080' and HTTPS_PORTS ''. Binding to values defined by URLS instead 'http://0.0.0.0:19000'.
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:26:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:26:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 4.4851ms - 200
+[12:26:57 INF] Received HTTP response headers after 4.4851ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 11.9108ms - 200
+[12:26:57 INF] End processing HTTP request after 11.9108ms - 200
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://0.0.0.0:19000
+[12:26:57 INF] Now listening on: http://0.0.0.0:19000
+info: Microsoft.Hosting.Lifetime[0]
+      Application started. Press Ctrl+C to shut down.
+[12:26:57 INF] Application started. Press Ctrl+C to shut down.
+info: Microsoft.Hosting.Lifetime[0]
+      Hosting environment: Test
+[12:26:57 INF] Hosting environment: Test
+info: Microsoft.Hosting.Lifetime[0]
+      Content root path: /app
+[12:26:57 INF] Content root path: /app
+[12:26:57 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:26:57 INF] health_monitor_first_poll_done
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:27:17 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:27:17 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:27:17 INF] Received HTTP response headers after 1.299ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.299ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 2.1595ms - 200
+[12:27:17 INF] End processing HTTP request after 2.1595ms - 200
+[12:27:17 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:27:37 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:27:37 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7911ms - 200
+[12:27:37 INF] Received HTTP response headers after 0.7911ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.0188ms - 200
+[12:27:37 INF] End processing HTTP request after 1.0188ms - 200
+[12:27:37 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:27:42 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:27:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:27:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 2.7485ms - 200
+[12:27:57 INF] Received HTTP response headers after 2.7485ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 2.9917ms - 200
+[12:27:57 INF] End processing HTTP request after 2.9917ms - 200
+[12:27:57 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:28:17 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:28:17 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.6675ms - 200
+[12:28:17 INF] Received HTTP response headers after 0.6675ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.0799ms - 200
+[12:28:17 INF] End processing HTTP request after 1.0799ms - 200
+[12:28:17 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:28:27 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:28:37 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:28:37 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:28:37 INF] Received HTTP response headers after 1.1418ms - 200
+[12:28:37 INF] End processing HTTP request after 1.3405ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.1418ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.3405ms - 200
+[12:28:37 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:28:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:28:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:28:57 INF] Received HTTP response headers after 3.9133ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 3.9133ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 4.1063ms - 200
+[12:28:57 INF] End processing HTTP request after 4.1063ms - 200
+[12:28:57 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:29:12 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:29:17 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:29:17 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.5925ms - 200
+[12:29:17 INF] Received HTTP response headers after 0.5925ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.7552ms - 200
+[12:29:17 INF] End processing HTTP request after 0.7552ms - 200
+[12:29:17 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:29:37 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:29:37 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:29:37 INF] Received HTTP response headers after 0.9121ms - 200
+[12:29:37 INF] End processing HTTP request after 1.1265ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.9121ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.1265ms - 200
+[12:29:37 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:29:57 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:29:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:29:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7978ms - 200
+[12:29:57 INF] Received HTTP response headers after 0.7978ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.0257ms - 200
+[12:29:57 INF] End processing HTTP request after 1.0257ms - 200
+[12:29:57 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:30:17 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:30:17 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.5091ms - 200
+[12:30:17 INF] Received HTTP response headers after 0.5091ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.7062ms - 200
+[12:30:17 INF] End processing HTTP request after 0.7062ms - 200
+[12:30:17 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:30:37 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:30:37 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:30:37 INF] Received HTTP response headers after 3.6089ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 3.6089ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 3.7536ms - 200
+[12:30:37 INF] End processing HTTP request after 3.7536ms - 200
+[12:30:37 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:30:42 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:30:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:30:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:30:57 INF] Received HTTP response headers after 0.8945ms - 200
+[12:30:57 INF] End processing HTTP request after 1.0775ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.8945ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.0775ms - 200
+[12:30:57 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:31:17 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:31:17 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:31:17 INF] Received HTTP response headers after 0.7491ms - 200
+[12:31:17 INF] End processing HTTP request after 0.9004ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7491ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.9004ms - 200
+[12:31:17 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:31:27 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:31:37 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:31:37 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.0191ms - 200
+[12:31:37 INF] Received HTTP response headers after 1.0191ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.1783ms - 200
+[12:31:37 INF] End processing HTTP request after 1.1783ms - 200
+[12:31:37 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:31:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:31:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7337ms - 200
+[12:31:57 INF] Received HTTP response headers after 0.7337ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.8552ms - 200
+[12:31:57 INF] End processing HTTP request after 0.8552ms - 200
+[12:31:57 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:32:12 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:32:17 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:32:17 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.8024ms - 200
+[12:32:17 INF] Received HTTP response headers after 0.8024ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.3504ms - 200
+[12:32:17 INF] End processing HTTP request after 1.3504ms - 200
+[12:32:17 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:32:37 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:32:37 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.0084ms - 200
+[12:32:37 INF] Received HTTP response headers after 1.0084ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.1394ms - 200
+[12:32:37 INF] End processing HTTP request after 1.1394ms - 200
+[12:32:37 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:32:57 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:32:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:32:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.804ms - 200
+[12:32:57 INF] Received HTTP response headers after 0.804ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.8883ms - 200
+[12:32:57 INF] End processing HTTP request after 0.8883ms - 200
+[12:32:57 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:33:17 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:33:17 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.8077ms - 200
+[12:33:17 INF] Received HTTP response headers after 1.8077ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.9002ms - 200
+[12:33:17 INF] End processing HTTP request after 1.9002ms - 200
+[12:33:17 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:33:37 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:33:37 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:33:37 INF] Received HTTP response headers after 3.2049ms - 200
+[12:33:37 INF] End processing HTTP request after 3.3768ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 3.2049ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 3.3768ms - 200
+[12:33:37 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:33:42 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:33:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:33:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:33:57 INF] Received HTTP response headers after 0.7357ms - 200
+[12:33:57 INF] End processing HTTP request after 0.828ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7357ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.828ms - 200
+[12:33:57 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:34:17 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:34:17 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:34:17 INF] Received HTTP response headers after 0.7318ms - 200
+[12:34:17 INF] End processing HTTP request after 0.8174ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7318ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.8174ms - 200
+[12:34:17 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:34:27 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:34:37 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:34:37 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:34:37 INF] Received HTTP response headers after 1.5228ms - 200
+[12:34:37 INF] End processing HTTP request after 1.6193ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.5228ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.6193ms - 200
+[12:34:37 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 36576
+[12:34:49 INF] Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 36576
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:34:49 INF] Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[102]
+      Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:34:49 INF] Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:34:49 INF] event=chat_completions_body_read trace_id=83d58037c4014db9 elapsed_ms=1 body_bytes=36576
+[12:34:49 INF] event=chat_completions_body_parsed trace_id=83d58037c4014db9 elapsed_ms=2
+[12:34:49 INF] event=chat_completions_messages_deserialized trace_id=83d58037c4014db9 elapsed_ms=2 message_count=2 tools_present=False
+[12:34:49 INF] event=chat_completions_summarized trace_id=83d58037c4014db9 elapsed_ms=120 estimated_tokens=7017 system_prompt_tokens=11 session_id=abtest6-session
+[12:34:49 INF] event=chat_completions_submit_start trace_id=83d58037c4014db9 elapsed_ms=121
+[12:34:49 INF] force_mode_applied Mode=solo
+[12:34:49 INF] request_overrides_applied Sid=abtest6-session Temp=null TopP=null TopK=null NPredict=64 Seed=null
+[12:34:49 INF] model_routing_check Sid=abtest6-session ModelStr=qwen3.5-9b-test
+[12:34:49 INF] model_routing_decision Sid=abtest6-session IsAuto=False IsRegistered=True Count=1
+[12:34:49 INF] autoroute_resolved Sid=abtest6-session Model=qwen3.5-9b-test Head=test-a Peer=none Decode=none Mode=solo
+[12:34:49 INF] request_received Sid=abtest6-session Stream=True
+[12:34:49 INF] evaluator_dispatch Sid=abtest6-session Type=Atomic Priority=30
+[12:34:49 INF] cold_route Est=7017 Atomic=False Route=cold_concurrency PrefillWorker=test-a PrefillFree=True PrefillHealthy=True
+[12:34:49 INF] state_transition Sid=abtest6-session RouteDecision->PrefixRestore ms=13
+[12:34:49 INF] prefix_not_found Sid=abtest6-session Hash=8f8bfc0b55e31b27
+[12:34:49 INF] state_transition Sid=abtest6-session PrefixRestore->Prefill ms=20
+[12:34:57 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:34:57 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:35:12 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 23775.3203ms - 200
+[12:35:21 INF] Received HTTP response headers after 23775.3203ms - 200
+[12:35:21 INF] End processing HTTP request after 23775.415ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 23775.415ms - 200
+[12:35:21 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:35:21 INF] prefill_streamed_to_store Sid=abtest6-session Node=test-a Slot=0 Bytes=251463162 Chunks=30 KvHash=-
+[12:35:21 INF] prefill_done Sid=abtest6-session Node=test-a Slot=0 NPastFromEngine=8323 EstTokens=7017 Model=hydra-test-lane Fallback=True PrefillMs=30632 ModelLoadMs=0 TokPerSec=0
+[12:35:21 INF] state_transition Sid=abtest6-session Prefill->SaveKv ms=32535
+[12:35:21 INF] save_kv_start Sid=abtest6-session Slot=0 NPast=8323 Node=test-a
+[12:35:21 INF] save_kv_gpu_released Sid=abtest6-session Node=test-a Slot=0 — GPU free, Store writes next
+[12:35:21 INF] state_saved Sid=abtest6-session SizeMB=239
+[12:35:21 INF] prefix_save_skipped_streamed Sid=abtest6-session Hash=8f8bfc0b55e31b27 — KvStreamedToStore, no in-memory payload; absent key restores as clean miss
+[12:35:21 INF] state_transition Sid=abtest6-session SaveKv->SaveDone ms=32537
+[12:35:21 INF] state_transition Sid=abtest6-session SaveDone->PickDecode ms=32537
+[12:35:21 INF] evaluator_dispatch Sid=abtest6-session Type=Decode Priority=0
+[12:35:21 WRN] decode_fallback_no_pd_worker_free Sid=abtest6-session PrefillNode=test-a — no P/D-capable decode worker available, decoding on prefill node
+[12:35:21 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:35:21 INF] Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:35:21 INF] Received HTTP response headers after 0.8317ms - 200
+[12:35:21 INF] End processing HTTP request after 0.9142ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.8317ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.9142ms - 200
+[12:35:21 INF] same_node_skip Sid=abtest6-session Node=test-a Slot=0 — KV already resident (identity match)
+[12:35:21 INF] state_transition Sid=abtest6-session PickDecode->Decode ms=32543
+[12:35:21 INF] decode_start Sid=abtest6-session Node=test-a Msgs=2 LastMsg=word0 some filler text about systems and kernels. word1 some filler text about s Streaming=True NPast=8323 MaxTokens=64 Slot=0
+[12:35:21 INF] event=request_timeline timestamp_ms=1788957321905 trace_id=83d58037c4014db9 session_id=abtest6-session queue_wait_ms=6 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=32529 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=0 tokens_in=0 tokens_out=0 kv_bytes=251463162 prefix_hit=false status=decoding
+[12:35:21 INF] request_overrides_applied Sid=abtest6-session Head=test-a Tier=T1 Applied=n_predict
+[12:35:21 INF] decode_path Sid=abtest6-session Node=test-a MergedCapable=True Relay=False KvChunks=False RestoreHit=False
+[12:35:21 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:35:21 INF] Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:35:21 INF] Received HTTP response headers after 0.6638ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.6638ms - 200
+[12:35:21 INF] End processing HTTP request after 0.7396ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.7396ms - 200
+[12:35:21 INF] merged_decode_initiated Sid=abtest6-session DecodeId=93 Valid=True NPast=0 RestoreMs=0 InitMs=0 Match=Tok=TrueName=TrueCap=FalseQuant=TrueAlias=True
+[12:35:21 INF] event=chat_completions_submit_returned trace_id=83d58037c4014db9 elapsed_ms=32727 is_stream=True
+[12:35:28 INF] hydra_metrics_extracted Sid=abtest6-session DecodeId=93 Slot=0 NPast=8386 KvBytes=251463162 DecodeMs=6625 PromptMs=142
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 67618
+[12:35:28 INF] Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 67618
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:35:28 INF] Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[102]
+      Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:35:28 INF] Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:35:28 INF] event=chat_completions_body_read trace_id=260e4f023fa64ab1 elapsed_ms=0 body_bytes=67618
+[12:35:28 INF] event=chat_completions_body_parsed trace_id=260e4f023fa64ab1 elapsed_ms=0
+[12:35:28 INF] event=chat_completions_messages_deserialized trace_id=260e4f023fa64ab1 elapsed_ms=0 message_count=4 tools_present=False
+[12:35:28 INF] event=request_timeline timestamp_ms=1788957328749 trace_id=83d58037c4014db9 session_id=abtest6-session queue_wait_ms=6 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=142 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=6843 total_ms=39394 tokens_in=8323 tokens_out=64 kv_bytes=251463162 prefix_hit=false status=done
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[105]
+      Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 39523.7008ms
+[12:35:28 INF] Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 39523.7008ms
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[1]
+      Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:35:28 INF] Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 - text/event-stream 39549.5148ms
+[12:35:28 INF] Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 null text/event-stream 39549.5148ms
+[12:35:28 INF] event=chat_completions_summarized trace_id=260e4f023fa64ab1 elapsed_ms=8 estimated_tokens=12425 system_prompt_tokens=11 session_id=abtest6-session
+[12:35:28 INF] event=chat_completions_submit_start trace_id=260e4f023fa64ab1 elapsed_ms=8
+[12:35:28 INF] force_mode_applied Mode=solo
+[12:35:28 INF] request_overrides_applied Sid=abtest6-session Temp=null TopP=null TopK=null NPredict=64 Seed=null
+[12:35:28 INF] model_routing_check Sid=abtest6-session ModelStr=qwen3.5-9b-test
+[12:35:28 INF] model_routing_decision Sid=abtest6-session IsAuto=False IsRegistered=True Count=1
+[12:35:28 INF] autoroute_resolved Sid=abtest6-session Model=qwen3.5-9b-test Head=test-a Peer=none Decode=none Mode=solo
+[12:35:28 INF] request_received Sid=abtest6-session Stream=True
+[12:35:28 INF] evaluator_dispatch Sid=abtest6-session Type=Atomic Priority=30
+[12:35:28 INF] stream_done_lease_handed_off Sid=abtest6-session — warm lease consumed by next-turn evict (expected back-to-back)
+[12:35:30 INF] bg_saved Sid=abtest6-session bytes=251568098 rpc_ms=171 store_ms=1332 total_ms=1503
+[12:35:30 INF] event=request_timeline timestamp_ms=1788957330254 trace_id=83d58037c4014db9 session_id=abtest6-session queue_wait_ms=6 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=142 model_load_ms=0 save_kv_ms=1503 save_kv_rpc_ms=171 save_kv_store_ms=1332 restore_kv_ms=0 decode_ms=6843 total_ms=39394 tokens_in=8323 tokens_out=64 kv_bytes=251463162 prefix_hit=false status=bg_saved
+[12:35:30 INF] evict_save_skipped Sid=abtest6-session Slot=0 NPast=8386 — store state fresh from bg save, warm slot idle since
+[12:35:30 INF] cold_route Est=12425 Atomic=False Route=cold_concurrency PrefillWorker=test-a PrefillFree=True PrefillHealthy=True
+[12:35:30 INF] state_transition Sid=abtest6-session RouteDecision->PrefixRestore ms=1498
+[12:35:31 INF] solo_prefix_skip_prefill Sid=abtest6-session Slot=0 NPast=8386 Route=cold_concurrency — decode pinned to restored slot, delta prefill via n_common
+[12:35:31 INF] solo_kv_restored Sid=abtest6-session Key=abtest6-session.kv NPast=8386 SkipPrefill=True
+[12:35:31 INF] state_transition Sid=abtest6-session PrefixRestore->PickDecode ms=2344
+[12:35:31 INF] solo_prefix_decode_pinned Sid=abtest6-session Node=test-a Slot=0 Lease=long_fresh — PREFILL skipped, delta prefill via n_common
+[12:35:31 INF] state_transition Sid=abtest6-session PickDecode->Decode ms=2344
+[12:35:31 INF] hydra_config_model_path_stripped Sid=abtest6-session — restore hit, model resident
+[12:35:31 INF] decode_start Sid=abtest6-session Node=test-a Msgs=4 LastMsg=alpha0 notes on memory bandwidth and compute throughput tradeoffs. alpha1 notes  Streaming=True NPast=8386 MaxTokens=64 Slot=0
+[12:35:31 INF] event=request_timeline timestamp_ms=1788957331102 trace_id=260e4f023fa64ab1 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=0 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=0 tokens_in=0 tokens_out=0 kv_bytes=0 prefix_hit=true status=decoding
+[12:35:31 INF] request_overrides_applied Sid=abtest6-session Head=test-a Tier=T1 Applied=n_predict
+[12:35:31 INF] decode_path Sid=abtest6-session Node=test-a MergedCapable=True Relay=False KvChunks=False RestoreHit=True
+[12:35:31 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:35:31 INF] Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.9256ms - 200
+[12:35:31 INF] Received HTTP response headers after 0.9256ms - 200
+[12:35:31 INF] End processing HTTP request after 1.0105ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.0105ms - 200
+[12:35:31 INF] merged_decode_initiated Sid=abtest6-session DecodeId=164 Valid=True NPast=0 RestoreMs=0 InitMs=0 Match=Tok=TrueName=TrueCap=FalseQuant=TrueAlias=True
+[12:35:31 INF] event=chat_completions_submit_returned trace_id=260e4f023fa64ab1 elapsed_ms=2397 is_stream=True
+[12:35:38 INF] Write-behind: copied 23 chunks (183.91 MB) in 134ms
+[12:35:38 INF] chunk_store_evicted_from_ram hash=30da455a73658da41253c6c234e1d8b995c3ac1a0bf000880ca713d88237ce90
+[12:35:38 INF] chunk_store_evicted_from_ram hash=da857a9c1cd6281ebc4de10573ccacf63d6c991747f47819e592e2c917adbed5
+[12:35:38 INF] chunk_store_evicted_from_ram hash=11c485062fa513b0e2ad781edbc3a395993d2db649b5577ebd186ff2b531a0d6
+[12:35:38 INF] chunk_store_evicted_from_ram hash=75e633280a90dac923a0ee6966fc00632ae928ffe97372352a643b45b4306ad3
+[12:35:38 INF] chunk_store_evicted_from_ram hash=1a984fbb8c912813fa8b8a0b37612809927746d4a373d18f2a4791e182fca001
+[12:35:38 INF] chunk_store_evicted_from_ram hash=d34738d4f6beff9f28395e9322a0fe0d2fe19bfa23a638684b17603d0e686660
+[12:35:38 INF] chunk_store_evicted_from_ram hash=0f8b5ea75f853f823f5b4d7ff6fa202111f1362fdacbaa3d455aef23f92bc238
+[12:35:38 INF] chunk_store_evicted_from_ram hash=7485134d5506edbafe82df878d44636f7df8cb8c8132e0026df8175971b9b284
+[12:35:38 INF] chunk_store_evicted_from_ram hash=d662ec93a62a14c5aed876e16e8b21db254c963298f559f76ce93dca38be0642
+[12:35:38 INF] chunk_store_evicted_from_ram hash=d42c993bdf9ac7efdd56aec42439330eeb3419e6baab2853ffb24c90e1bb6f17
+[12:35:38 INF] chunk_store_evicted_from_ram hash=53425568167bbdd81daa3f20fdf66ec7ea95442f10f20a3a47db7bf54d99cc47
+[12:35:38 INF] chunk_store_evicted_from_ram hash=20763f19dd08042fd633b26ba32dbe5bb0bef1b0d94353628011934b6a89cfb5
+[12:35:38 INF] chunk_store_evicted_from_ram hash=8c6ad68b2c26e0ef08259383de6e29a57871e91c7bb973ca91b58534003ce80c
+[12:35:38 INF] chunk_store_evicted_from_ram hash=6c64179803cf31d4ec1a8ce6c6f7aa584628ff481ed7fa979a24c1213b606547
+[12:35:38 INF] chunk_store_evicted_from_ram hash=83be4d08406149cc7b30df93d225c32870082d63a54f3c168270c270bedd59b7
+[12:35:38 INF] chunk_store_evicted_from_ram hash=8937db509f556bb6a855ce7a4cd88d1f288277de29fa1395a19191db54ddc4b1
+[12:35:38 INF] chunk_store_evicted_from_ram hash=a984d767150969de22a14df98f79f52af224c765d5457b29c4732696a39abf70
+[12:35:38 INF] chunk_store_evicted_from_ram hash=df65b01472ad641f1bd79d0762d72872389032732048830b7e4e85cac8d67662
+[12:35:38 INF] chunk_store_evicted_from_ram hash=9d4fb34c1e2a3c323060aa2cd04fe2b2b8f48c520074af9ef11747f2c1960ea0
+[12:35:38 INF] chunk_store_evicted_from_ram hash=b06e6eba61eb2c7b07722351fbf00d722d522a6049214f57c37ee645df8c2303
+[12:35:38 INF] chunk_store_evicted_from_ram hash=f36fccf4998261d97de40e975e5ab4698fc6dfcd519fdc94299f37221e980c60
+[12:35:38 INF] chunk_store_evicted_from_ram hash=0aa7b9b5228207bd0613f8c1a2b244039cf225b4c4253ac21610fde08f85686f
+[12:35:38 INF] chunk_store_evicted_from_ram hash=a4a23fdb63baa13b0e7371ae4261ffb3af560d2d79a2f440e50966f4941b5ff7
+[12:35:38 INF] chunk_store_evicted_from_ram hash=4aeb6aedae769cb100dd8c6d30a9cdb6cbee66c6c4f3ef23618cf4d366cfeae6
+[12:35:38 INF] chunk_store_evicted_from_ram hash=4c00277daa69a24a25ef6d0cf2094e014139cb558ded699cc52a959d0a8a561f
+[12:35:38 INF] chunk_store_evicted_from_ram hash=14cf19dcb0fa10f08968618854cbbda80290f55a3e74a27f1356e130e8b71c78
+[12:35:38 INF] chunk_store_evicted_from_ram hash=81ffb3b9ad977acdc3145154b1961429164a27fef23be438c18146b47e4704c2
+[12:35:38 INF] chunk_store_evicted_from_ram hash=cad0a43896c9087c062864cf1db4890ec108e9417682857f033cb2f45dbb8640
+[12:35:38 INF] chunk_store_evicted_from_ram hash=3c6448e7c97b632549321407661f9ed07e99d8b00c3c38aea3aea179f6563433
+[12:35:38 INF] chunk_store_evicted_from_ram hash=3c027d6e44269f800d162feb1d04afe1b0cb25f9d4235bee995afbab0342a24f
+[12:35:38 INF] Write-behind: free-after-backup evicted 30 backed-up files from RAM (keep_recent_hours=1)
+[12:35:41 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:35:41 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 4538.6774ms - 200
+[12:35:46 INF] Received HTTP response headers after 4538.6774ms - 200
+[12:35:46 INF] End processing HTTP request after 4538.8236ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 4538.8236ms - 200
+[12:35:51 WRN] health_caps_empty_debounced Node=test-a CapsRetained=11 — 1st consecutive empty-cap INFO, keeps last-known (clears on 2nd)
+[12:35:51 INF] health_poll_ok Node=test-a Slots=4 Idle=3 Stuck=0 Presets=0 Caps=11
+[12:35:57 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:36:03 INF] hydra_metrics_extracted Sid=abtest6-session DecodeId=164 Slot=0 NPast=8385 KvBytes=0 DecodeMs=7748 PromptMs=24694
+[12:36:03 INF] event=request_timeline timestamp_ms=1788957363615 trace_id=260e4f023fa64ab1 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=24694 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=32513 total_ms=34858 tokens_in=14532 tokens_out=64 kv_bytes=0 prefix_hit=true status=done
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[105]
+      Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 34867.1125ms
+[12:36:03 INF] Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 34867.1125ms
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[1]
+      Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:36:03 INF] Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 - text/event-stream 34868.4725ms
+[12:36:03 INF] Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 null text/event-stream 34868.4725ms
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 97310
+[12:36:03 INF] Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 97310
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:36:03 INF] Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[102]
+      Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:36:03 INF] Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:36:03 INF] event=chat_completions_body_read trace_id=7caa82654af04889 elapsed_ms=0 body_bytes=97310
+[12:36:03 INF] event=chat_completions_body_parsed trace_id=7caa82654af04889 elapsed_ms=0
+[12:36:03 INF] event=chat_completions_messages_deserialized trace_id=7caa82654af04889 elapsed_ms=0 message_count=6 tools_present=False
+[12:36:03 INF] event=chat_completions_summarized trace_id=7caa82654af04889 elapsed_ms=8 estimated_tokens=16933 system_prompt_tokens=11 session_id=abtest6-session
+[12:36:03 INF] event=chat_completions_submit_start trace_id=7caa82654af04889 elapsed_ms=8
+[12:36:03 INF] force_mode_applied Mode=solo
+[12:36:03 INF] request_overrides_applied Sid=abtest6-session Temp=null TopP=null TopK=null NPredict=64 Seed=null
+[12:36:03 INF] model_routing_check Sid=abtest6-session ModelStr=qwen3.5-9b-test
+[12:36:03 INF] model_routing_decision Sid=abtest6-session IsAuto=False IsRegistered=True Count=1
+[12:36:03 INF] autoroute_resolved Sid=abtest6-session Model=qwen3.5-9b-test Head=test-a Peer=none Decode=none Mode=solo
+[12:36:03 INF] request_received Sid=abtest6-session Stream=True
+[12:36:03 INF] evaluator_dispatch Sid=abtest6-session Type=Atomic Priority=30
+[12:36:03 INF] stream_done_lease_handed_off Sid=abtest6-session — warm lease consumed by next-turn evict (expected back-to-back)
+[12:36:05 INF] bg_saved Sid=abtest6-session bytes=359803386 rpc_ms=251 store_ms=1581 total_ms=1832
+[12:36:05 INF] event=request_timeline timestamp_ms=1788957365448 trace_id=260e4f023fa64ab1 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=24694 model_load_ms=0 save_kv_ms=1832 save_kv_rpc_ms=251 save_kv_store_ms=1581 restore_kv_ms=0 decode_ms=32513 total_ms=34858 tokens_in=14532 tokens_out=64 kv_bytes=0 prefix_hit=true status=bg_saved
+[12:36:05 INF] evict_save_skipped Sid=abtest6-session Slot=0 NPast=8385 — store state fresh from bg save, warm slot idle since
+[12:36:05 INF] cold_route Est=16933 Atomic=False Route=cold_concurrency PrefillWorker=test-a PrefillFree=True PrefillHealthy=True
+[12:36:05 INF] state_transition Sid=abtest6-session RouteDecision->PrefixRestore ms=1823
+[12:36:05 INF] solo_prefix_skip_prefill Sid=abtest6-session Slot=0 NPast=8385 Route=cold_concurrency — decode pinned to restored slot, delta prefill via n_common
+[12:36:05 INF] solo_kv_restored Sid=abtest6-session Key=abtest6-session.kv NPast=8385 SkipPrefill=True
+[12:36:05 INF] state_transition Sid=abtest6-session PrefixRestore->PickDecode ms=2303
+[12:36:05 INF] solo_prefix_decode_pinned Sid=abtest6-session Node=test-a Slot=0 Lease=long_fresh — PREFILL skipped, delta prefill via n_common
+[12:36:05 INF] state_transition Sid=abtest6-session PickDecode->Decode ms=2303
+[12:36:05 INF] hydra_config_model_path_stripped Sid=abtest6-session — restore hit, model resident
+[12:36:05 INF] decode_start Sid=abtest6-session Node=test-a Msgs=6 LastMsg=beta0 observations on scheduler behavior under mixed workloads. beta1 observatio Streaming=True NPast=8385 MaxTokens=64 Slot=0
+[12:36:05 INF] event=request_timeline timestamp_ms=1788957365929 trace_id=7caa82654af04889 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=0 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=0 tokens_in=0 tokens_out=0 kv_bytes=0 prefix_hit=true status=decoding
+[12:36:05 INF] request_overrides_applied Sid=abtest6-session Head=test-a Tier=T1 Applied=n_predict
+[12:36:05 INF] decode_path Sid=abtest6-session Node=test-a MergedCapable=True Relay=False KvChunks=False RestoreHit=True
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:36:05 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:36:05 INF] Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.8514ms - 200
+[12:36:05 INF] Received HTTP response headers after 0.8514ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.9324ms - 200
+[12:36:05 INF] End processing HTTP request after 0.9324ms - 200
+[12:36:05 INF] merged_decode_initiated Sid=abtest6-session DecodeId=241 Valid=True NPast=0 RestoreMs=0 InitMs=0 Match=Tok=TrueName=TrueCap=FalseQuant=TrueAlias=True
+[12:36:05 INF] event=chat_completions_submit_returned trace_id=7caa82654af04889 elapsed_ms=2355 is_stream=True
+[12:36:08 INF] chunk_store_evicted_from_ram hash=0486c2b9c3f96eea93a2661af6434fac912e86faba4095ee28977010d7bb7b34
+[12:36:08 INF] chunk_store_evicted_from_ram hash=a4c1b366a839b6ce9313e7a1071962568a37e0d47dbad8880e63f94e2198ad9e
+[12:36:08 INF] chunk_store_evicted_from_ram hash=608e1c67a722cda993e047e7d7d2535f228977fc38faa789391f265aa8186752
+[12:36:08 INF] chunk_store_evicted_from_ram hash=eab42b16b966fb5320946244a1541f81a6ee21c80eff69cdedf3e5ad2bf6ab20
+[12:36:08 INF] chunk_store_evicted_from_ram hash=3bbfdf6001ebd652094b3968335564e95035bc73c7be9f25500b85796da874b0
+[12:36:08 INF] chunk_store_evicted_from_ram hash=5624c324b082f5f7d7751e3b3b559fd6589b7982ffacee69c4e3244f794cea57
+[12:36:08 INF] chunk_store_evicted_from_ram hash=7b8291033e51d1d6859293474ad289fe9ef9130a0c93579a578a499348dc3217
+[12:36:08 INF] chunk_store_evicted_from_ram hash=691122ff68f43e6d61e48a004c40e8d12a1ec235cd6a7128f42905957233d30c
+[12:36:08 INF] chunk_store_evicted_from_ram hash=f1965a07af0b27d625702d68a5e859a7050438f6b5de9d03f9888146d91157bf
+[12:36:08 INF] chunk_store_evicted_from_ram hash=c6a82653d5c4bc3ef41fa91672a6fd5a87503d9c170f5aabbc8f007419d90e3f
+[12:36:08 INF] chunk_store_evicted_from_ram hash=072bcd6ee408c09ab03d3df1d45ca2ffbf5f0231345f5057077e2df9662d3b93
+[12:36:08 INF] chunk_store_evicted_from_ram hash=70072621b2928f856b1bc3e1d79d43788b644f27565c43c39f7e99debf0fc8a5
+[12:36:08 INF] chunk_store_evicted_from_ram hash=027505007187debad61ca6fad9a07295a30878e58dede08e53add85a332a1565
+[12:36:08 INF] chunk_store_evicted_from_ram hash=1d6e5145df8e1bc95e7839e738f012bbc6f295eaabf9f022d595c102daf61610
+[12:36:08 INF] chunk_store_evicted_from_ram hash=650e6b6d984d5e1d4d34f5bdfceb00dc55502dc246856015a0a835de549905f6
+[12:36:08 INF] chunk_store_evicted_from_ram hash=d2baa0c3acd18b6e39608bb747492f8f8f44c671111f243c6e725bdaf24e9cb3
+[12:36:08 INF] chunk_store_evicted_from_ram hash=80ce50489de20bccfecbdc174006d52503a1209465098b4130456299f1c48ee4
+[12:36:08 INF] chunk_store_evicted_from_ram hash=5a87eba5eb8f51d148fafd77fc9151848d49bc4c02e2a9628f509921f29d0e5a
+[12:36:08 INF] chunk_store_evicted_from_ram hash=1a342080255749866e005a60aa672968f5389f4427eb467c81ab4fdfe0111449
+[12:36:08 INF] chunk_store_evicted_from_ram hash=ea6530ae9be9871dce17227c7f5118e4446c403006f218152eff946ff75f08ae
+[12:36:08 INF] chunk_store_evicted_from_ram hash=4c0646bd3b409c6d5e56c7ca9ef10c280055a158cf652072de771feb70b8c732
+[12:36:08 INF] chunk_store_evicted_from_ram hash=1561184c50e6f8adb0f29e433617eca8b5c211cd6471b4190d46588e72d5ed47
+[12:36:08 INF] chunk_store_evicted_from_ram hash=0b35d88f5ec54fafb10ce65fb0cdfc8221498065c9b9b0a4cbe13d94aa027ebc
+[12:36:08 INF] chunk_store_evicted_from_ram hash=e0b75b1a0c1200f2b88d65a78acda4988844fba5af01524322a0488562a55743
+[12:36:08 INF] chunk_store_evicted_from_ram hash=03d42c1d890d56c97b628a3ecf1861f3ca2e7c7399ff9b5af461478470630503
+[12:36:08 INF] chunk_store_evicted_from_ram hash=2255b2026ee6f42e20274f464486348b98de141a2ebfdce3ae21ef0ca840779d
+[12:36:08 INF] chunk_store_evicted_from_ram hash=28285e212d99691b65faa241febba51532f54e2ec8bc19a75006b1c6c619d8e9
+[12:36:08 INF] chunk_store_evicted_from_ram hash=052eab3808fdb010ad9b4ee8042b474c73fa69aa7cc11209d1a51ccd3c085dbe
+[12:36:08 INF] chunk_store_evicted_from_ram hash=aff918a28b3993e30832fd0b132b78ca1c79c91ee9fbce7c990ee574b0101f47
+[12:36:08 INF] chunk_store_evicted_from_ram hash=0217c5e05185c318bfc2a6762078832359f626465473785ce2f1bc8b67c06e37
+[12:36:08 INF] Write-behind: free-after-backup evicted 30 backed-up files from RAM (keep_recent_hours=1)
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:36:11 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:36:11 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:36:13 INF] Received HTTP response headers after 2517.2233ms - 200
+[12:36:13 INF] End processing HTTP request after 2517.4767ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 2517.2233ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 2517.4767ms - 200
+[12:36:18 WRN] health_caps_cleared Node=test-a EmptyRuns=2 (was 11) — 2nd consecutive empty-cap INFO, authoritative clear
+[12:36:18 INF] health_poll_ok Node=test-a Slots=4 Idle=3 Stuck=0 Presets=0 Caps=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:36:38 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:36:38 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 98.4133ms - 200
+[12:36:38 INF] Received HTTP response headers after 98.4133ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 98.6164ms - 200
+[12:36:38 INF] End processing HTTP request after 98.6164ms - 200
+[12:36:38 INF] health_caps_restored Node=test-a Caps=11 — capability set re-advertised after 2 empty poll(s)
+[12:36:38 INF] health_poll_ok Node=test-a Slots=4 Idle=3 Stuck=0 Presets=0 Caps=11
+[12:36:39 INF] hydra_metrics_extracted Sid=abtest6-session DecodeId=241 Slot=0 NPast=14592 KvBytes=0 DecodeMs=9221 PromptMs=24045
+[12:36:39 INF] event=request_timeline timestamp_ms=1788957399271 trace_id=7caa82654af04889 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=24045 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=33342 total_ms=35645 tokens_in=20291 tokens_out=64 kv_bytes=0 prefix_hit=true status=done
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[105]
+      Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 35654.5331ms
+[12:36:39 INF] Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 35654.5331ms
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[1]
+      Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:36:39 INF] Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 - text/event-stream 35655.3511ms
+[12:36:39 INF] Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 null text/event-stream 35655.3511ms
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 124752
+[12:36:39 INF] Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 124752
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:36:39 INF] Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[102]
+      Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:36:39 INF] Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:36:39 INF] event=chat_completions_body_read trace_id=67d8c89c1de84759 elapsed_ms=0 body_bytes=124752
+[12:36:39 INF] event=chat_completions_body_parsed trace_id=67d8c89c1de84759 elapsed_ms=0
+[12:36:39 INF] event=chat_completions_messages_deserialized trace_id=67d8c89c1de84759 elapsed_ms=0 message_count=8 tools_present=False
+[12:36:39 INF] event=chat_completions_summarized trace_id=67d8c89c1de84759 elapsed_ms=2 estimated_tokens=21891 system_prompt_tokens=11 session_id=abtest6-session
+[12:36:39 INF] event=chat_completions_submit_start trace_id=67d8c89c1de84759 elapsed_ms=2
+[12:36:39 INF] force_mode_applied Mode=solo
+[12:36:39 INF] request_overrides_applied Sid=abtest6-session Temp=null TopP=null TopK=null NPredict=64 Seed=null
+[12:36:39 INF] model_routing_check Sid=abtest6-session ModelStr=qwen3.5-9b-test
+[12:36:39 INF] model_routing_decision Sid=abtest6-session IsAuto=False IsRegistered=True Count=1
+[12:36:39 INF] autoroute_resolved Sid=abtest6-session Model=qwen3.5-9b-test Head=test-a Peer=none Decode=none Mode=solo
+[12:36:39 INF] request_received Sid=abtest6-session Stream=True
+[12:36:39 INF] evaluator_dispatch Sid=abtest6-session Type=Atomic Priority=30
+[12:36:39 INF] stream_done_lease_handed_off Sid=abtest6-session — warm lease consumed by next-turn evict (expected back-to-back)
+[12:36:41 INF] bg_saved Sid=abtest6-session bytes=460176846 rpc_ms=284 store_ms=2020 total_ms=2304
+[12:36:41 INF] event=request_timeline timestamp_ms=1788957401575 trace_id=7caa82654af04889 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=24045 model_load_ms=0 save_kv_ms=2304 save_kv_rpc_ms=284 save_kv_store_ms=2020 restore_kv_ms=0 decode_ms=33342 total_ms=35645 tokens_in=20291 tokens_out=64 kv_bytes=0 prefix_hit=true status=bg_saved
+[12:36:41 INF] evict_save_skipped Sid=abtest6-session Slot=0 NPast=14592 — store state fresh from bg save, warm slot idle since
+[12:36:41 INF] cold_route Est=21891 Atomic=False Route=cold_concurrency PrefillWorker=test-a PrefillFree=True PrefillHealthy=True
+[12:36:41 INF] state_transition Sid=abtest6-session RouteDecision->PrefixRestore ms=2301
+[12:36:42 INF] solo_prefix_skip_prefill Sid=abtest6-session Slot=0 NPast=14592 Route=cold_concurrency — decode pinned to restored slot, delta prefill via n_common
+[12:36:42 INF] solo_kv_restored Sid=abtest6-session Key=abtest6-session.kv NPast=14592 SkipPrefill=True
+[12:36:42 INF] state_transition Sid=abtest6-session PrefixRestore->PickDecode ms=2895
+[12:36:42 INF] solo_prefix_decode_pinned Sid=abtest6-session Node=test-a Slot=0 Lease=long_fresh — PREFILL skipped, delta prefill via n_common
+[12:36:42 INF] state_transition Sid=abtest6-session PickDecode->Decode ms=2895
+[12:36:42 INF] hydra_config_model_path_stripped Sid=abtest6-session — restore hit, model resident
+[12:36:42 INF] decode_start Sid=abtest6-session Node=test-a Msgs=8 LastMsg=gamma0 measurements of latency tails and queueing effects. gamma1 measurements o Streaming=True NPast=14592 MaxTokens=64 Slot=0
+[12:36:42 INF] event=request_timeline timestamp_ms=1788957402170 trace_id=67d8c89c1de84759 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=0 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=0 tokens_in=0 tokens_out=0 kv_bytes=0 prefix_hit=true status=decoding
+[12:36:42 INF] request_overrides_applied Sid=abtest6-session Head=test-a Tier=T1 Applied=n_predict
+[12:36:42 INF] decode_path Sid=abtest6-session Node=test-a MergedCapable=True Relay=False KvChunks=False RestoreHit=True
+[12:36:42 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:36:42 INF] Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:36:42 INF] Received HTTP response headers after 0.7268ms - 200
+[12:36:42 INF] End processing HTTP request after 0.7784ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7268ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.7784ms - 200
+[12:36:42 INF] merged_decode_initiated Sid=abtest6-session DecodeId=320 Valid=True NPast=0 RestoreMs=0 InitMs=0 Match=Tok=TrueName=TrueCap=FalseQuant=TrueAlias=True
+[12:36:42 INF] event=chat_completions_submit_returned trace_id=67d8c89c1de84759 elapsed_ms=2941 is_stream=True
+[12:36:42 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:36:48 INF] Write-behind: copied 23 chunks (182.86 MB) in 511ms
+[12:36:48 INF] chunk_store_evicted_from_ram hash=7711bcd40b368ecdb278efb4415975c3db54ce3a70e1e0083b21a8eeff53f09e
+[12:36:48 INF] chunk_store_evicted_from_ram hash=722b3ece80d8b384a3bedf8464230bd79cc5b4bbe5115c0acd9dd997d31d6e88
+[12:36:48 INF] chunk_store_evicted_from_ram hash=ee1f9a1e74659cfe637618a50b820ae5d646943f7ce1d3a6b14291f7d92e9aff
+[12:36:48 INF] chunk_store_evicted_from_ram hash=dbdc400242a572872998ae5193fe24371f29ade117c7364bf13f8f341c27de19
+[12:36:48 INF] chunk_store_evicted_from_ram hash=6ece4717ec9a653ef9eec761a9b04dfab6045b7a3c555b6591369763e57452e7
+[12:36:48 INF] chunk_store_evicted_from_ram hash=b5a08e268f71b44672021171f67378720b47b52ee38a2ce61b0c176a3a6953ec
+[12:36:48 INF] chunk_store_evicted_from_ram hash=fb6e235b2ffca1f6a5059a4f751f1b28b935578d4c1ae4c136c755062aea9e60
+[12:36:48 INF] chunk_store_evicted_from_ram hash=12dea23ab48a1fc3f5beac94058b831da966dbebc7da007574fd0029a6e25abb
+[12:36:48 INF] chunk_store_evicted_from_ram hash=2eba5af15758a8ba00744e603b6907f20c0e4429ee24a469a4bc9238fe1ea31e
+[12:36:48 INF] chunk_store_evicted_from_ram hash=95bbfa8af29d24eb2d1f86d8f4169b0ba99bd4bf19f9ac90036b6b940172a5db
+[12:36:48 INF] chunk_store_evicted_from_ram hash=888b590e02245312e262126c929a8dadf2f1d9919e8fd0f7774e5f3cfbb2d48e
+[12:36:48 INF] chunk_store_evicted_from_ram hash=f8249e95adf1fe124e408a865548a6fb4a79f74e71ea17a85dc847fe920bdced
+[12:36:48 INF] chunk_store_evicted_from_ram hash=0749b49c83dcd2d963da035fcb1333e8732ad5fb00010a4edde3e4f38937d9ca
+[12:36:48 INF] chunk_store_evicted_from_ram hash=bca9a4e174144fc875eb42d55f82776d8024c773d8e4b375871456250ae712a8
+[12:36:48 INF] chunk_store_evicted_from_ram hash=847ee99f1b7bbaaf048b000c28df532d4630d3daeed93bc65b79cf1cb3db842c
+[12:36:48 INF] chunk_store_evicted_from_ram hash=01a187dd2053ff817604a412f444a3057e3975266dadb99c0663ea381b26b4f7
+[12:36:48 INF] chunk_store_evicted_from_ram hash=5f7046ee38006c09d9a9ca574e7eb595b92011eb40fb1c595f89f41b8a879c28
+[12:36:48 INF] chunk_store_evicted_from_ram hash=db5693a8e5d96c3bb75a8d3bfb7bc5771b886a797b013caaa266a98e29c695d0
+[12:36:48 INF] chunk_store_evicted_from_ram hash=88a20030de545184370aaf59fe05da9f98404a7d3f2a3a5882717f9a35c0d40a
+[12:36:48 INF] chunk_store_evicted_from_ram hash=8878ecb80b189b343fc6aad3b81460b2c5c1b51c91f556bec2e43343de9c8f05
+[12:36:48 INF] chunk_store_evicted_from_ram hash=e96ef65818117caa6b9d74ef94cf6ea72a1b1a68513fc158888393fa9dcdd939
+[12:36:48 INF] chunk_store_evicted_from_ram hash=cb3f2caa94df6e3f78cbc0d017cb5fa907bef2cb9b7150febd6f469434aba386
+[12:36:48 INF] chunk_store_evicted_from_ram hash=17b8a7fad6662c24527a0305e38494a91b0114ce8acada00ec7776fff8f7830b
+[12:36:48 INF] chunk_store_evicted_from_ram hash=02a111d86e75d30237958477741a14c7ebf823528b9b784187c22bf6498e8c1e
+[12:36:48 INF] chunk_store_evicted_from_ram hash=60867a2e72a8577267374711b56a570c9421a1bac5cd07c36570d14fd5f06e5c
+[12:36:48 INF] chunk_store_evicted_from_ram hash=26437387d9fd3a1d55454ff99521f133459a496d2b2f4ec93cf182d345d7e907
+[12:36:48 INF] chunk_store_evicted_from_ram hash=723ab72fec2ef172cffa76a063323525c85ae13172cb68b016f838ad80b8fe5f
+[12:36:48 INF] chunk_store_evicted_from_ram hash=82a187932073f34a477d3cef2f271ba0804c55b56eba27cad971e4981fa33f07
+[12:36:48 INF] chunk_store_evicted_from_ram hash=7513b20b41644527ffbfddc12e4e1a1da3595e4d9b267d411713e7ee43bd6ba5
+[12:36:48 INF] chunk_store_evicted_from_ram hash=79606da12c429a1b6e86d49676228ac70a67132b4e3e9722087958a0a0dc1da9
+[12:36:48 INF] chunk_store_evicted_from_ram hash=996a48c922d0f942b96cd8ea6edd1b189bfb017dd4b3320e5f430e108ef88fbf
+[12:36:48 INF] chunk_store_evicted_from_ram hash=36136411183e5393c7cc0be1b5d6b3a96a3f1b60df0d010193b1224a46d5ae76
+[12:36:48 INF] chunk_store_evicted_from_ram hash=e05bc93d58a6db33ddf2d50e84df5557220352a44140a82cdcde82edd83ebba0
+[12:36:48 INF] chunk_store_evicted_from_ram hash=56272a020d01f9183cae2e421e30d9792bf135d6b4974997266228b6349de1e3
+[12:36:48 INF] chunk_store_evicted_from_ram hash=a17507c07deaf518f9f2d238f12df90d483f8599c171d007c9793a625cbff0f4
+[12:36:48 INF] chunk_store_evicted_from_ram hash=52db2d81d5825c9699777ed0d0cb29863389f36305d2703623e8cf5c894d0f86
+[12:36:48 INF] chunk_store_evicted_from_ram hash=89ffad1a90b9e826288198af83adb1ece8199152961129fe9997d5f0a19f102b
+[12:36:48 INF] chunk_store_evicted_from_ram hash=def4c3267503a5325cfc1d3cf5af0f749c771106fa1badcaea8c914e1ac3f558
+[12:36:48 INF] chunk_store_evicted_from_ram hash=dcdea9566343ba3b00c3fbc3a8398922dee016f8da0568a227bc292098d2c2fa
+[12:36:48 INF] chunk_store_evicted_from_ram hash=a47eba3acbc4af4957692f89fd95f0e32c8936d6b2c1a1c386c5142a21915153
+[12:36:48 INF] chunk_store_evicted_from_ram hash=623c4aeac85f8791cf9b6010755d9bc99133d35956e83b18def3799ca98c29d1
+[12:36:48 INF] chunk_store_evicted_from_ram hash=fe12a577088ab3151744fc3d7fe07ff45c3cc789f0681b086d317a0c168cf0d7
+[12:36:48 INF] chunk_store_evicted_from_ram hash=068d19fb41098f65ddafc220499fe3103537aa8ca0e79f101b2c39db4997ed8b
+[12:36:48 INF] Write-behind: free-after-backup evicted 43 backed-up files from RAM (keep_recent_hours=1)
+[12:36:58 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:36:58 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:37:04 INF] Received HTTP response headers after 5449.3047ms - 200
+[12:37:04 INF] End processing HTTP request after 5449.3993ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 5449.3047ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 5449.3993ms - 200
+[12:37:06 INF] health_poll_ok Node=test-a Slots=4 Idle=3 Stuck=0 Presets=0 Caps=11
+[12:37:17 INF] hydra_metrics_extracted Sid=abtest6-session DecodeId=320 Slot=0 NPast=20351 KvBytes=0 DecodeMs=10262 PromptMs=25237
+[12:37:17 INF] event=request_timeline timestamp_ms=1788957437751 trace_id=67d8c89c1de84759 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=25237 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=35581 total_ms=38476 tokens_in=26050 tokens_out=64 kv_bytes=0 prefix_hit=true status=done
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[105]
+      Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 38479.0246ms
+[12:37:17 INF] Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 38479.0246ms
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[1]
+      Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:37:17 INF] Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 - text/event-stream 38479.3875ms
+[12:37:17 INF] Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 null text/event-stream 38479.3875ms
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 151294
+[12:37:17 INF] Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 151294
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:37:17 INF] Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[102]
+      Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:37:17 INF] Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:37:17 INF] event=chat_completions_body_read trace_id=294f8463ea034988 elapsed_ms=0 body_bytes=151294
+[12:37:17 INF] event=chat_completions_body_parsed trace_id=294f8463ea034988 elapsed_ms=0
+[12:37:17 INF] event=chat_completions_messages_deserialized trace_id=294f8463ea034988 elapsed_ms=0 message_count=10 tools_present=False
+[12:37:17 INF] event=chat_completions_summarized trace_id=294f8463ea034988 elapsed_ms=2 estimated_tokens=26399 system_prompt_tokens=11 session_id=abtest6-session
+[12:37:17 INF] event=chat_completions_submit_start trace_id=294f8463ea034988 elapsed_ms=2
+[12:37:17 INF] force_mode_applied Mode=solo
+[12:37:17 INF] request_overrides_applied Sid=abtest6-session Temp=null TopP=null TopK=null NPredict=64 Seed=null
+[12:37:17 INF] model_routing_check Sid=abtest6-session ModelStr=qwen3.5-9b-test
+[12:37:17 INF] model_routing_decision Sid=abtest6-session IsAuto=False IsRegistered=True Count=1
+[12:37:17 INF] autoroute_resolved Sid=abtest6-session Model=qwen3.5-9b-test Head=test-a Peer=none Decode=none Mode=solo
+[12:37:17 INF] request_received Sid=abtest6-session Stream=True
+[12:37:17 INF] evaluator_dispatch Sid=abtest6-session Type=Atomic Priority=30
+[12:37:18 INF] stream_done_lease_handed_off Sid=abtest6-session — warm lease consumed by next-turn evict (expected back-to-back)
+[12:37:18 INF] Write-behind: copied 1 chunks (8.00 MB) in 138ms
+[12:37:18 INF] chunk_store_evicted_from_ram hash=13f2960a0df5a4b64d4a9488cbd076ff7f1de2f2d97890296380beec55b691b8
+[12:37:18 INF] chunk_store_evicted_from_ram hash=d47de98c83f4b374b438e52a081ba21e782e257fca1f81c24d8c22d2fe8617a8
+[12:37:18 INF] chunk_store_evicted_from_ram hash=e858ca4e70f0c5aa2ff1057cdcbef753b64bdb7a1ec21a9acfd4ca382236bb53
+[12:37:18 INF] chunk_store_evicted_from_ram hash=80d6dedd6e299ef4066821bb71d7308814157437aade602458b2850a7c15b0ae
+[12:37:18 INF] chunk_store_evicted_from_ram hash=c9173e31ce5eb2354c501650c3a9bb8db321dbb68ea6b2b3fe146a6b4c1f92d8
+[12:37:18 INF] chunk_store_evicted_from_ram hash=7e7e2681bdd31d2002ca495f3f534c63379b114b02b624608c6c4dd35a2749f1
+[12:37:18 INF] chunk_store_evicted_from_ram hash=1f076de4fa9b85aea1a3c32427628059d440221442fdbab9a1b131b72e5f3f07
+[12:37:18 INF] chunk_store_evicted_from_ram hash=2502070edcc58a3e9aacbba1d38101a4bcb021c51d49ceda41c40734c8fbef8e
+[12:37:18 INF] Write-behind: free-after-backup evicted 8 backed-up files from RAM (keep_recent_hours=1)
+[12:37:21 INF] bg_saved Sid=abtest6-session bytes=560550306 rpc_ms=371 store_ms=2884 total_ms=3255
+[12:37:21 INF] event=request_timeline timestamp_ms=1788957441006 trace_id=67d8c89c1de84759 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=25237 model_load_ms=0 save_kv_ms=3255 save_kv_rpc_ms=371 save_kv_store_ms=2884 restore_kv_ms=0 decode_ms=35581 total_ms=38476 tokens_in=26050 tokens_out=64 kv_bytes=0 prefix_hit=true status=bg_saved
+[12:37:21 INF] evict_save_skipped Sid=abtest6-session Slot=0 NPast=20351 — store state fresh from bg save, warm slot idle since
+[12:37:21 INF] cold_route Est=26399 Atomic=False Route=cold_concurrency PrefillWorker=test-a PrefillFree=True PrefillHealthy=True
+[12:37:21 INF] state_transition Sid=abtest6-session RouteDecision->PrefixRestore ms=3252
+[12:37:21 INF] solo_prefix_skip_prefill Sid=abtest6-session Slot=0 NPast=20351 Route=cold_concurrency — decode pinned to restored slot, delta prefill via n_common
+[12:37:21 INF] solo_kv_restored Sid=abtest6-session Key=abtest6-session.kv NPast=20351 SkipPrefill=True
+[12:37:21 INF] state_transition Sid=abtest6-session PrefixRestore->PickDecode ms=4032
+[12:37:21 INF] solo_prefix_decode_pinned Sid=abtest6-session Node=test-a Slot=0 Lease=long_fresh — PREFILL skipped, delta prefill via n_common
+[12:37:21 INF] state_transition Sid=abtest6-session PickDecode->Decode ms=4032
+[12:37:21 INF] hydra_config_model_path_stripped Sid=abtest6-session — restore hit, model resident
+[12:37:21 INF] decode_start Sid=abtest6-session Node=test-a Msgs=10 LastMsg=delta0 analysis of cache locality and eviction patterns. delta1 analysis of cach Streaming=True NPast=20351 MaxTokens=64 Slot=0
+[12:37:21 INF] event=request_timeline timestamp_ms=1788957441788 trace_id=294f8463ea034988 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=0 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=0 tokens_in=0 tokens_out=0 kv_bytes=0 prefix_hit=true status=decoding
+[12:37:21 INF] request_overrides_applied Sid=abtest6-session Head=test-a Tier=T1 Applied=n_predict
+[12:37:21 INF] decode_path Sid=abtest6-session Node=test-a MergedCapable=True Relay=False KvChunks=False RestoreHit=True
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:37:21 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:37:21 INF] Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[101]
+      Received HTTP response headers after 17.1599ms - 200
+[12:37:21 INF] Received HTTP response headers after 17.1599ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[101]
+      End processing HTTP request after 17.2175ms - 200
+[12:37:21 INF] End processing HTTP request after 17.2175ms - 200
+[12:37:21 INF] merged_decode_initiated Sid=abtest6-session DecodeId=397 Valid=True NPast=0 RestoreMs=0 InitMs=0 Match=Tok=TrueName=TrueCap=FalseQuant=TrueAlias=True
+[12:37:21 INF] event=chat_completions_submit_returned trace_id=294f8463ea034988 elapsed_ms=4096 is_stream=True
+[12:37:26 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:37:26 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:37:27 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:37:29 INF] Write-behind: copied 22 chunks (174.58 MB) in 218ms
+[12:37:29 INF] chunk_store_evicted_from_ram hash=bee8bbb62ad51a30adb5006b9341c955289f1bca961b3fb8862ae2ee6d59c158
+[12:37:29 INF] chunk_store_evicted_from_ram hash=17f4cb39979d13795fa44e736d4bc8cd0b97aa95c054d4628a2f934b68ce4ed9
+[12:37:29 INF] chunk_store_evicted_from_ram hash=30e694fe6df496a809b685de44863777c4cfe35dc446bc03b8cb664a927c2f14
+[12:37:29 INF] chunk_store_evicted_from_ram hash=e774236c8fae719b46a7a0cda0ddceddb49c91947c3fc1fd60b5e5ca48ae5e60
+[12:37:29 INF] chunk_store_evicted_from_ram hash=737407c888fc34917bec2e9bafe93bbb39ec2ad75443badaca3672014f9faef6
+[12:37:29 INF] chunk_store_evicted_from_ram hash=71f8d03295fa641fa8fa8c4834c25d91f55b697a2ab3205419be2619014d1aea
+[12:37:29 INF] chunk_store_evicted_from_ram hash=bc2afabbe1e570f4db615226925ddd999596b8bbbd683568e73cd956696b162d
+[12:37:29 INF] chunk_store_evicted_from_ram hash=aa152e8ccb316752968c1ce181148cd4c00efb9653d4877a7b5b0ac718562c3d
+[12:37:29 INF] chunk_store_evicted_from_ram hash=261f234ed5e7cab310eb2f0eed2ded2466108fee1bf47e523a0bb6e06c76d6c5
+[12:37:29 INF] chunk_store_evicted_from_ram hash=b5b851ab3421715de780ea2895a3994b2cf6cf31eb0913e8c7d1a1012a6a5345
+[12:37:29 INF] chunk_store_evicted_from_ram hash=55adfe39f7bd9ce7be4f92bf40561b4288af041702be63ae82954cc61c8bc97b
+[12:37:29 INF] chunk_store_evicted_from_ram hash=ae778744c0e0be6c313943499c0d70c905843560cc505e966aabd2b307c05ff5
+[12:37:29 INF] chunk_store_evicted_from_ram hash=f9dcddf7d1c9e89c362770d3985d67a6a28d5bfd4b89787cf5a4a2bebde97b88
+[12:37:29 INF] chunk_store_evicted_from_ram hash=8fa1fe99d12d204700f6b3aee3275414cd94042f4a4d884ab83667618a3beaae
+[12:37:29 INF] chunk_store_evicted_from_ram hash=8eb5dbf45da0a5f464038a1982c2593e0d614c9915d3e3ff5bfd9e4a7ec2e580
+[12:37:29 INF] chunk_store_evicted_from_ram hash=4036533a597843ead82ad1d70eb66f5fce227a889e9891265b27668fda3d219e
+[12:37:29 INF] chunk_store_evicted_from_ram hash=3724fcd6acb1140e919cf86ccf26ca7b928a23e0eccaae8ca2c128622bba29a6
+[12:37:29 INF] chunk_store_evicted_from_ram hash=869fafffefaa0362263a8403d9094170c1c9e8f5179acea78dd9fd52f5f56be3
+[12:37:29 INF] chunk_store_evicted_from_ram hash=963b32ae4dbc22ade734dc729ad06b0167f8f0aa32b2828b265a66429ccb139c
+[12:37:29 INF] chunk_store_evicted_from_ram hash=7fff48e69b020924e57a4269907f2294c99c84d86c469173b1725b2c2a3116ab
+[12:37:29 INF] chunk_store_evicted_from_ram hash=aed991e5796ac1522967260e457def00945d79d9da80667d21fd1d01ccadf192
+[12:37:29 INF] chunk_store_evicted_from_ram hash=4d96fabe80c974ea15210cd7edb8e7fe17f376068ba3eafdddb89174b9fb3a89
+[12:37:29 INF] chunk_store_evicted_from_ram hash=835746ddb2ca1f91fd592c9fea0771bc2b8276cca5aad09f4960ed5b27b99942
+[12:37:29 INF] chunk_store_evicted_from_ram hash=1226b984662bf487c014968368bf653de56fcd03ac051a79623d97bf4b4e1914
+[12:37:29 INF] chunk_store_evicted_from_ram hash=b66f22ee7c2255e7899fcfd8ab72d2263180e50a82d9bd8e1ceb418e4753436a
+[12:37:29 INF] chunk_store_evicted_from_ram hash=916b8007bf0a32b4ec9ac087f97e2b714505c0b91b48df302717cdc5b124a22e
+[12:37:29 INF] chunk_store_evicted_from_ram hash=d0ddce605e87283133966854ed7c451d84fb11d737e93d4f3120af0a2743ec79
+[12:37:29 INF] chunk_store_evicted_from_ram hash=e623f5730f4f7412a7b97dcf4c5408f05f5bcd28536dd2ee6b248b3afc1090cc
+[12:37:29 INF] chunk_store_evicted_from_ram hash=8e7598c8646ea7e9d93ffce41d6b9f7dc274c7bb9ecdf86bf7332b68e9a22e4a
+[12:37:29 INF] chunk_store_evicted_from_ram hash=971f67f8f5922a217c4a0d48b5e510e6052db15cb154dfb747a70274b7f42287
+[12:37:29 INF] chunk_store_evicted_from_ram hash=8dad156d8af596de1dbc9ae0690b3773f08edf3671fc234488d005390aacc935
+[12:37:29 INF] chunk_store_evicted_from_ram hash=a96ad3274df0d6a7249307d4726bbdc4da3738a032b28b0667ebe9ead588c916
+[12:37:29 INF] chunk_store_evicted_from_ram hash=b68ff36c8552b7c52201767c21b91984f7ea04e6e7db085be7fc309a1e6ed45f
+[12:37:29 INF] chunk_store_evicted_from_ram hash=56546a6b2c9f2418565620a8e1c0921771b1ba16b187368ab74f03ca71bd8d60
+[12:37:29 INF] chunk_store_evicted_from_ram hash=3cb34661d4e6b747c54d5e8112b6fe558738ae8abc46ee17b9d505bd26763ac1
+[12:37:29 INF] chunk_store_evicted_from_ram hash=291c4ce2040f3de7c6491457ef3afd09ea46dabc2c0da9a86f2c342cd04f363f
+[12:37:29 INF] chunk_store_evicted_from_ram hash=6a9fe4aba2f9bdc33ac1b83238d1b1576861c15540e3c87b1fdd331c293ca419
+[12:37:29 INF] chunk_store_evicted_from_ram hash=f608acc075a664386854ec6719b0672c6e75855438a4bebcea664a37023fa249
+[12:37:29 INF] chunk_store_evicted_from_ram hash=3d98c40f5f763a7ab489fce6e70b23e61eacf9ba112cda29e0d888f49973534f
+[12:37:29 INF] chunk_store_evicted_from_ram hash=3ef684843131d7589e95d1e67c5203583f32aca08a1baef108bdc59ad8626d5d
+[12:37:29 INF] chunk_store_evicted_from_ram hash=b57c6199120cf12e65e43778375cb1385534ffe0ff12c2332bf1a521b804e26d
+[12:37:29 INF] chunk_store_evicted_from_ram hash=db853db91d3f91f34f83de1c1e13fd86e27bd3c37dbd2c72b60f352cc7af6e1f
+[12:37:29 INF] chunk_store_evicted_from_ram hash=112684eb8bb4fd46df1bf542c9409950294dc95e0351826c09cdaea8d8ebbfa1
+[12:37:29 INF] chunk_store_evicted_from_ram hash=a9a18f61b9c868675523d1219c072570aa9d9aeffb48ecc5636fc5d135fe9b3c
+[12:37:29 INF] chunk_store_evicted_from_ram hash=3d7afa65d067ae13adeddc55609f1d8c032b8f3cd26929c57862f01513d1b591
+[12:37:29 INF] chunk_store_evicted_from_ram hash=08afe9140cbd8c093ba137088cf87a419023ca6fc1b4876fb81ddbde1452082e
+[12:37:29 INF] chunk_store_evicted_from_ram hash=30b13291c61ce1cbd9401a3aa8eafddd8acb7f1f3aeef89716829d189c1c7e9a
+[12:37:29 INF] chunk_store_evicted_from_ram hash=9a646c8ae8d16c28dde834dd0febd17f7fc45a92543b908fa9f361f806037080
+[12:37:29 INF] chunk_store_evicted_from_ram hash=20bcc3acf75990774c62d8a4f487992c42f631a60ca7c47ca56a693d3dc14636
+[12:37:29 INF] chunk_store_evicted_from_ram hash=d5754cb46d6a653577898fdb52c3865f3fd1594f14de4a23369244871f7a00d8
+[12:37:29 INF] chunk_store_evicted_from_ram hash=5af8b3426d0e52eedb254dc78684e45eba7a4746b1047920f8a678ecf19dcaa6
+[12:37:29 INF] chunk_store_evicted_from_ram hash=547686a0584af26cbb2fe5152c27d26235707616e649fbd95147ed74869e620c
+[12:37:29 INF] chunk_store_evicted_from_ram hash=ab76bb7afda38b2321c64119964e6da2b61c79906e3a1b12eef4a683586d9f7e
+[12:37:29 INF] chunk_store_evicted_from_ram hash=457c160ab071ed499925395edee4dc41a06e64c0c38218ffbbc4420d9e41188f
+[12:37:29 INF] chunk_store_evicted_from_ram hash=e6af82d610d7a02053727d321d067cfeae570c03dc65a8259d8df2882d90a746
+[12:37:29 INF] Write-behind: free-after-backup evicted 55 backed-up files from RAM (keep_recent_hours=1)
+[12:37:30 INF] Received HTTP response headers after 3745.9588ms - 200
+[12:37:30 INF] End processing HTTP request after 3746.0755ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 3745.9588ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 3746.0755ms - 200
+[12:37:35 WRN] health_caps_empty_debounced Node=test-a CapsRetained=11 — 1st consecutive empty-cap INFO, keeps last-known (clears on 2nd)
+[12:37:35 INF] health_poll_ok Node=test-a Slots=4 Idle=3 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:37:55 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:37:55 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 106.0043ms - 200
+[12:37:55 INF] Received HTTP response headers after 106.0043ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 106.2037ms - 200
+[12:37:55 INF] End processing HTTP request after 106.2037ms - 200
+[12:37:55 INF] health_caps_restored Node=test-a Caps=11 — capability set re-advertised after 1 empty poll(s)
+[12:37:55 INF] health_poll_ok Node=test-a Slots=4 Idle=3 Stuck=0 Presets=0 Caps=11
+[12:37:57 INF] hydra_metrics_extracted Sid=abtest6-session DecodeId=397 Slot=0 NPast=26110 KvBytes=0 DecodeMs=11537 PromptMs=24188
+[12:37:57 INF] event=request_timeline timestamp_ms=1788957477620 trace_id=294f8463ea034988 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=24188 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=35832 total_ms=39865 tokens_in=31359 tokens_out=64 kv_bytes=0 prefix_hit=true status=done
+[12:37:57 INF] Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 39868.3628ms
+[12:37:57 INF] Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[105]
+      Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 39868.3628ms
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[1]
+      Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 - text/event-stream 39868.5836ms
+[12:37:57 INF] Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 null text/event-stream 39868.5836ms
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 181886
+[12:37:57 INF] Request starting HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - application/json 181886
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:37:57 INF] Executing endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[102]
+      Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:37:57 INF] Route matched with {action = "ChatCompletions", controller = "Completions"}. Executing controller action with signature System.Threading.Tasks.Task`1[Microsoft.AspNetCore.Mvc.IActionResult] ChatCompletions(System.Threading.CancellationToken) on controller Hydra.Core.Controllers.CompletionsController (Hydra.Core).
+[12:37:57 INF] event=chat_completions_body_read trace_id=4d8999e108c8485d elapsed_ms=0 body_bytes=181886
+[12:37:57 INF] event=chat_completions_body_parsed trace_id=4d8999e108c8485d elapsed_ms=0
+[12:37:57 INF] event=chat_completions_messages_deserialized trace_id=4d8999e108c8485d elapsed_ms=0 message_count=12 tools_present=False
+[12:37:57 INF] event=chat_completions_summarized trace_id=4d8999e108c8485d elapsed_ms=3 estimated_tokens=31357 system_prompt_tokens=11 session_id=abtest6-session
+[12:37:57 INF] event=chat_completions_submit_start trace_id=4d8999e108c8485d elapsed_ms=3
+[12:37:57 INF] force_mode_applied Mode=solo
+[12:37:57 INF] request_overrides_applied Sid=abtest6-session Temp=null TopP=null TopK=null NPredict=64 Seed=null
+[12:37:57 INF] model_routing_check Sid=abtest6-session ModelStr=qwen3.5-9b-test
+[12:37:57 INF] model_routing_decision Sid=abtest6-session IsAuto=False IsRegistered=True Count=1
+[12:37:57 INF] autoroute_resolved Sid=abtest6-session Model=qwen3.5-9b-test Head=test-a Peer=none Decode=none Mode=solo
+[12:37:57 INF] request_received Sid=abtest6-session Stream=True
+[12:37:57 INF] evaluator_dispatch Sid=abtest6-session Type=Atomic Priority=30
+[12:37:58 INF] stream_done_lease_handed_off Sid=abtest6-session — warm lease consumed by next-turn evict (expected back-to-back)
+[12:37:59 INF] Write-behind: copied 6 chunks (48.00 MB) in 90ms
+[12:37:59 INF] chunk_store_evicted_from_ram hash=d69e3072603b296a97ac99cba0920227d4c223490271b2b54f85da1f79165126
+[12:37:59 INF] chunk_store_evicted_from_ram hash=a1a00cedea770f710d02bd2461cf016cdc0ebf20dae5c7c87dd997d5ee46828e
+[12:37:59 INF] chunk_store_evicted_from_ram hash=dfe9067829d25803db61f8af61b05474ea26f7081b3d77fe5ee5b8090fe6160d
+[12:37:59 INF] chunk_store_evicted_from_ram hash=f2d816821ce1b889d9da955a86b93cdc6fa138ea0fb65e4acee3b8b1210a00a9
+[12:37:59 INF] chunk_store_evicted_from_ram hash=f3001653deb51d59626b4cd2cabe777c7e30a48ab9ea263d0e456ca2635037bd
+[12:37:59 INF] chunk_store_evicted_from_ram hash=450e2d8ff10e021bc0308ee141818b8bf767621b703680be1e220a81fb220648
+[12:37:59 INF] chunk_store_evicted_from_ram hash=ff7d2137f504fab1598efdb59cff8d335a406c2fbec53413d7385074753db9fc
+[12:37:59 INF] chunk_store_evicted_from_ram hash=ba5a9264e376f82b7133cbb13defa92770f660088d7d3e46d077c7d193074f02
+[12:37:59 INF] chunk_store_evicted_from_ram hash=6bb366d65973c7ecbd0ef61973859579ff002db95fa6a5bf4e53cbd56d085880
+[12:37:59 INF] chunk_store_evicted_from_ram hash=f24af238eff1ebce44e81cdcca804d382d2dbe8a5292ede23e445ab7c185186c
+[12:37:59 INF] chunk_store_evicted_from_ram hash=dca729d106e0dd340e05007d095b0d252e982cc441a349b4e61abe31a26cb600
+[12:37:59 INF] chunk_store_evicted_from_ram hash=8a0919b90cb9a083666404324424fccc98c83310d78115862470ae18e0df36bd
+[12:37:59 INF] chunk_store_evicted_from_ram hash=29bd60c1d2677231f0fb7f9f595ba6da0a56cc2512365192db06d4146a39f6be
+[12:37:59 INF] chunk_store_evicted_from_ram hash=6f34b6c1a6c032735572ada8bc4fc083bcf4e49a0cdbf2042a152026ff31d086
+[12:37:59 INF] chunk_store_evicted_from_ram hash=b9c19af6d78ac97e0bfe944de6156c60446718514f44f47bd79794356c4be9d2
+[12:37:59 INF] chunk_store_evicted_from_ram hash=452354db6981fc093f9cb335d316615711db8d7229e522dfe979458d14e0cc9c
+[12:37:59 INF] chunk_store_evicted_from_ram hash=ed8ff91c5129ede08b3ce6f652c00f7e13caea2d3b1a36d0a45c5db035365e6c
+[12:37:59 INF] chunk_store_evicted_from_ram hash=536944f165ecda76df549ec00e48cdc457f1ca1e39fbf44e33fe115dfcfb29db
+[12:37:59 INF] chunk_store_evicted_from_ram hash=ff8f2bb4af6c7a68a9333e09f669f0c546b6a3f9b5361e6f094f79b02980d18d
+[12:37:59 INF] chunk_store_evicted_from_ram hash=0ee6481fa09d8cfee905149e9c6221eea97cef8b828a653419e1ae6a6b5a784b
+[12:37:59 INF] chunk_store_evicted_from_ram hash=2999637a2fa7d014cc03e373029f9d474cb0ce7707479c697e3a53979d3f78b9
+[12:37:59 INF] chunk_store_evicted_from_ram hash=025b381ee6e65d10bcba6a33da5aa9ccb9f065d74ff5e12feef48a5847dabf75
+[12:37:59 INF] chunk_store_evicted_from_ram hash=c54d4ed28c4bc92edd7746bbbd66aad03a4266eecfbb2512988c752e3d746e97
+[12:37:59 INF] chunk_store_evicted_from_ram hash=76e32414b66752c5b72c8fdff3a783b563f2e22b7ac047d9e19d79b9c733e46a
+[12:37:59 INF] chunk_store_evicted_from_ram hash=392a46b38acc8b7ce59a24ffeb6d761685b842de54cf2261fc4dfb1c4d7d14d3
+[12:37:59 INF] chunk_store_evicted_from_ram hash=3ac463a961d09218846d6427ddcfbda71f2d7f4deb7e3b097d949264e0e229d2
+[12:37:59 INF] chunk_store_evicted_from_ram hash=a54a39a3f7f363f4a12b9a798367015861f6f63f705a19626ca764a36ce954ca
+[12:37:59 INF] chunk_store_evicted_from_ram hash=f5d138d0c657764610c9ed13ade8fe40fef51cd7ee8114d020ae90e7d782365b
+[12:37:59 INF] Write-behind: free-after-backup evicted 28 backed-up files from RAM (keep_recent_hours=1)
+[12:38:00 INF] bg_saved Sid=abtest6-session bytes=653079366 rpc_ms=406 store_ms=2646 total_ms=3052
+[12:38:00 INF] event=request_timeline timestamp_ms=1788957480673 trace_id=294f8463ea034988 session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=24188 model_load_ms=0 save_kv_ms=3052 save_kv_rpc_ms=406 save_kv_store_ms=2646 restore_kv_ms=0 decode_ms=35832 total_ms=39865 tokens_in=31359 tokens_out=64 kv_bytes=0 prefix_hit=true status=bg_saved
+[12:38:00 INF] evict_save_skipped Sid=abtest6-session Slot=0 NPast=26110 — store state fresh from bg save, warm slot idle since
+[12:38:00 INF] cold_route Est=31357 Atomic=False Route=cold_concurrency PrefillWorker=test-a PrefillFree=True PrefillHealthy=True
+[12:38:00 INF] state_transition Sid=abtest6-session RouteDecision->PrefixRestore ms=3046
+[12:38:01 INF] solo_prefix_skip_prefill Sid=abtest6-session Slot=0 NPast=26110 Route=cold_concurrency — decode pinned to restored slot, delta prefill via n_common
+[12:38:01 INF] solo_kv_restored Sid=abtest6-session Key=abtest6-session.kv NPast=26110 SkipPrefill=True
+[12:38:01 INF] state_transition Sid=abtest6-session PrefixRestore->PickDecode ms=3948
+[12:38:01 INF] solo_prefix_decode_pinned Sid=abtest6-session Node=test-a Slot=0 Lease=long_fresh — PREFILL skipped, delta prefill via n_common
+[12:38:01 INF] state_transition Sid=abtest6-session PickDecode->Decode ms=3948
+[12:38:01 INF] hydra_config_model_path_stripped Sid=abtest6-session — restore hit, model resident
+[12:38:01 INF] decode_start Sid=abtest6-session Node=test-a Msgs=12 LastMsg=epsilon0 summary of profiling data across several benchmark runs. epsilon1 summa Streaming=True NPast=26110 MaxTokens=64 Slot=0
+[12:38:01 INF] event=request_timeline timestamp_ms=1788957481576 trace_id=4d8999e108c8485d session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=0 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=0 tokens_in=0 tokens_out=0 kv_bytes=0 prefix_hit=true status=decoding
+[12:38:01 INF] request_overrides_applied Sid=abtest6-session Head=test-a Tier=T1 Applied=n_predict
+[12:38:01 INF] decode_path Sid=abtest6-session Node=test-a MergedCapable=True Relay=False KvChunks=False RestoreHit=True
+[12:38:01 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:38:01 INF] Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots/0/state/meta
+[12:38:01 INF] Received HTTP response headers after 1.3805ms - 200
+[12:38:01 INF] End processing HTTP request after 1.4914ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.3805ms - 200
+info: System.Net.Http.HttpClient.llama-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.4914ms - 200
+[12:38:01 INF] merged_decode_initiated Sid=abtest6-session DecodeId=476 Valid=True NPast=0 RestoreMs=0 InitMs=0 Match=Tok=TrueName=TrueCap=FalseQuant=TrueAlias=True
+[12:38:01 INF] event=chat_completions_submit_returned trace_id=4d8999e108c8485d elapsed_ms=3999 is_stream=True
+[12:38:09 INF] Write-behind: copied 17 chunks (134.83 MB) in 161ms
+[12:38:09 INF] chunk_store_evicted_from_ram hash=8a42752872a076ff46db54aa1038c121b45db4a724af19beae72dee079273dbb
+[12:38:09 INF] chunk_store_evicted_from_ram hash=3587bc66da67d9292822ea14a735c2b9790b5a18c8c4e129fae5a4a872d0e479
+[12:38:09 INF] chunk_store_evicted_from_ram hash=ca7312ca0bf928a333166a057f1334686043a5ce51fb216854fe916b08ac9942
+[12:38:09 INF] chunk_store_evicted_from_ram hash=62cf479aae7228d85686e7c121b801ea3f64e75c43ae1428ef654a049d0fb1a5
+[12:38:09 INF] chunk_store_evicted_from_ram hash=0667824b63a44fd3da77a5eb40f11782d20205abebc9af8048f3b87587df3910
+[12:38:09 INF] chunk_store_evicted_from_ram hash=c03738c4c655c93c9b69e0effc4b1e655245ffe003275e64bead7f1192a18609
+[12:38:09 INF] chunk_store_evicted_from_ram hash=c8d00862d93506c38a22c065bdaa3205df92459e09e9fe158f87e03b5f39b339
+[12:38:09 INF] chunk_store_evicted_from_ram hash=b7c712e91c8470825553ab5357dddeb88af256b6b87a463a656dee7e5463bfd7
+[12:38:09 INF] chunk_store_evicted_from_ram hash=8e057a7f6edb3ab0c00b0b7240bba3649b0347a21b7590173f8061e7c240fe30
+[12:38:09 INF] chunk_store_evicted_from_ram hash=c65e4a38a05ebbb2a9b22dd83ffd5bb9d1a1f4a687e8ef12a757aa29a1bae37f
+[12:38:09 INF] chunk_store_evicted_from_ram hash=b36753b4db014febefce4e3e8502f7392d869916effaa681543ea3456260765b
+[12:38:09 INF] chunk_store_evicted_from_ram hash=c982c04702928210f96d2916488313668821cc1b902e210be7e41bb1b40e3444
+[12:38:09 INF] chunk_store_evicted_from_ram hash=108d7f38a7e5348a064d7b8e55aa99e29e3f194fd5a93c4dbfac0257a0aea0a0
+[12:38:09 INF] chunk_store_evicted_from_ram hash=7451c3e96cc851e7ae9662b3f14337e14123327d99452bb3895b22909ead14c1
+[12:38:09 INF] chunk_store_evicted_from_ram hash=42569cf5087f2ac483fe65a9be80891f28f39c8d7117851bcc18f4923173d05d
+[12:38:09 INF] chunk_store_evicted_from_ram hash=465e3b4c7534f8a1458bd0744fbdb3bf9f8d45dc7be9c6b02674e7de0b557328
+[12:38:09 INF] chunk_store_evicted_from_ram hash=43e5ee0ad5b528af93bc320bd809453d1ac5e18c546ba2fc9f79439bfabc5d69
+[12:38:09 INF] chunk_store_evicted_from_ram hash=ca7ff1d01bf579dee5fecdaec138f10ed05619f1ec01bedc7be5690109ea04ed
+[12:38:09 INF] chunk_store_evicted_from_ram hash=975ee4da7a2780f94fc88725cfa9f6b420087fe7d20ece39f7d600aae9cc1a94
+[12:38:09 INF] chunk_store_evicted_from_ram hash=236fddf27f8b7ee99ec5759e9ea190980d1edaa424fac9b4182f956e6b08abd7
+[12:38:09 INF] chunk_store_evicted_from_ram hash=ceb31e39aebfaa7601a4adb81789ca2be3da40d7869b24813042a711d37eb34f
+[12:38:09 INF] chunk_store_evicted_from_ram hash=49644f1a18a82f310750fcd9fdac9aeb6af37b44e170a6c468e4f881f3740fa3
+[12:38:09 INF] chunk_store_evicted_from_ram hash=3d5520d3ecab112dff4f77e96cc5a496dd0a67eac9a5211e69aac9223e488cee
+[12:38:09 INF] chunk_store_evicted_from_ram hash=97c7a4665f3914851569333f41625740d8541c099af7c6b986bdbf017646bf03
+[12:38:09 INF] chunk_store_evicted_from_ram hash=411fde25f4de60576fecba6d3d529588f3912f6ad7c01c424929282dca34a968
+[12:38:09 INF] chunk_store_evicted_from_ram hash=9d39ea3051a5912d7149bf2e339768cfc1ebe35676c7d567dd3df425a3f8dad3
+[12:38:09 INF] chunk_store_evicted_from_ram hash=6c56c38f841bff015c8c8cef5ca9b4824b717c15da8aeadd9f680bf9f5b1257a
+[12:38:09 INF] chunk_store_evicted_from_ram hash=009aadc4e0fe3d06437d299caaae1e9135a5c5500cc81945541b1470c8f28acc
+[12:38:09 INF] chunk_store_evicted_from_ram hash=9f29dc0fc4e04f2f31b53065e31c5d6e418f552fa2f3f78cbe86701bc291767d
+[12:38:09 INF] chunk_store_evicted_from_ram hash=d0226ff66bb523b3f0b2fbc2d566dbb91d457e18bc32b70f90175a272fd89041
+[12:38:09 INF] chunk_store_evicted_from_ram hash=c8f5a9511b4762fe113771c0a6affbfc474387d16a30929b049e0e86c6cc21f0
+[12:38:09 INF] chunk_store_evicted_from_ram hash=1fbf680f0f433c34535b494915824553dc30ede75a3f95511a90a0551d32ad75
+[12:38:09 INF] chunk_store_evicted_from_ram hash=84813fb3cb51b4b5af398d16f23cec98b8dc433aff23d4705285bfe603171266
+[12:38:09 INF] chunk_store_evicted_from_ram hash=7d9777f284a1880cd6c153a592d8548aa96dccaa82394c691d1ff965c7be3cb5
+[12:38:09 INF] chunk_store_evicted_from_ram hash=6dc5ce1ae5f0a15c7f20dd7f827c46e2373a84ea8d6aa12e0b56c95d98219b20
+[12:38:09 INF] chunk_store_evicted_from_ram hash=c7d05d48e3467d7a107a02c5a58f3c2cc9c56d89a1e35d95129cb69389d27248
+[12:38:09 INF] chunk_store_evicted_from_ram hash=49702f86cc2036825a87be03d48e901cb6faa8ea986fa8916fa44500a13fc1ec
+[12:38:09 INF] chunk_store_evicted_from_ram hash=f7ddbb47814ce77a0f4f7e0ab1b8a1cbb624629a53028483aae65ff94dcfbf1e
+[12:38:09 INF] chunk_store_evicted_from_ram hash=c2c2ed68fedfe970a76c529cc00b139d3c30eda478567d95fa9a7ce2b0a1acf4
+[12:38:09 INF] chunk_store_evicted_from_ram hash=305c099f4a6dbe540337a326f4cad8e9355231534db1f43ce91225349ffc21e1
+[12:38:09 INF] chunk_store_evicted_from_ram hash=7769e9327c0fb8a0b2cc06252d413d8b44808c3f30645088a9d85dffa4994b55
+[12:38:09 INF] chunk_store_evicted_from_ram hash=916a804c2d69789ac52704040bb71a952123705e0d654a90b57e0ca4f85ada68
+[12:38:09 INF] chunk_store_evicted_from_ram hash=9d78eaa6798b2c1062e77ec3e711870957b6e9e4d2b4ca1a7c5e724da52288fb
+[12:38:09 INF] chunk_store_evicted_from_ram hash=7e11cdfa8c7d1ad30cef529ab3698efb925377e8c4ceb487e598682948cfd6be
+[12:38:09 INF] chunk_store_evicted_from_ram hash=b6257fec0731c924a720a1d9aca64f47dfde282a89e5549560c1338e39dcde04
+[12:38:09 INF] chunk_store_evicted_from_ram hash=d43c0e01615a9c93894da25054135849fa4a6998a10a4fa20d95f3e9a90f450c
+[12:38:09 INF] chunk_store_evicted_from_ram hash=6c041218c5e5bbb3912a160a7eb2951f69d719c263aa405ef6c2c0dc9691b78b
+[12:38:09 INF] chunk_store_evicted_from_ram hash=ec61e5ffafc558ff02e36eb32af93014ef70241ea80f74c9ac7d15c7b78e3d1e
+[12:38:09 INF] chunk_store_evicted_from_ram hash=bfcbc28f5edfbc4814b70daf69fb983eeb4b005873149c4e58ba999136f4369b
+[12:38:09 INF] chunk_store_evicted_from_ram hash=7eb94d81ac5fc97ff381eb624e30bbb3d1db8707dd7fe1e30182904dfb8bda5a
+[12:38:09 INF] chunk_store_evicted_from_ram hash=3b31b2908fff30871899e4cb23935b58f5219b27d85735f5a9f131252625f9c7
+[12:38:09 INF] chunk_store_evicted_from_ram hash=4defecde8b743df40d80ec1a413719ef4d0d4468997df59ca3beecd84abbe4be
+[12:38:09 INF] chunk_store_evicted_from_ram hash=311eaa6a3177a49e97e5d76f060f4594ce203508fa2684e590bc848bc71f4467
+[12:38:09 INF] chunk_store_evicted_from_ram hash=ebfcf5eab456ba1822e19aea0ea1ad36ecadadae4cf5b264173c37e149e1c584
+[12:38:09 INF] chunk_store_evicted_from_ram hash=b5660aba2fea530dccc6fcce1be59ead405a6d5604319fc47c3868c84b66c870
+[12:38:09 INF] chunk_store_evicted_from_ram hash=e2731f189e398d5868de143a0cf2dfeaa6c59a8106f2cd01b252eb3fc0ae7881
+[12:38:09 INF] chunk_store_evicted_from_ram hash=32e8404741c51da56081540ca13a8be1c79a01c8342d39397d988e01991c142b
+[12:38:09 INF] chunk_store_evicted_from_ram hash=e86f599025500b7047db7647f08e8e80230e5c31dee4f3de492fbef38b70ce7d
+[12:38:09 INF] chunk_store_evicted_from_ram hash=95da1f31515dd08d14cfe8f49fbe325ad47c4f3a94ceffac102ac910df442d9b
+[12:38:09 INF] Write-behind: free-after-backup evicted 59 backed-up files from RAM (keep_recent_hours=1)
+[12:38:12 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:38:15 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:38:15 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 3879.8912ms - 200
+[12:38:19 INF] Received HTTP response headers after 3879.8912ms - 200
+[12:38:19 INF] End processing HTTP request after 3880.0018ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 3880.0018ms - 200
+[12:38:24 WRN] health_caps_empty_debounced Node=test-a CapsRetained=11 — 1st consecutive empty-cap INFO, keeps last-known (clears on 2nd)
+[12:38:24 INF] health_poll_ok Node=test-a Slots=4 Idle=3 Stuck=0 Presets=0 Caps=11
+[12:38:42 INF] hydra_metrics_extracted Sid=abtest6-session DecodeId=476 Slot=0 NPast=31419 KvBytes=0 DecodeMs=13061 PromptMs=27374
+[12:38:42 INF] event=request_timeline timestamp_ms=1788957522107 trace_id=4d8999e108c8485d session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=27374 model_load_ms=0 save_kv_ms=0 save_kv_rpc_ms=0 save_kv_store_ms=0 restore_kv_ms=0 decode_ms=40530 total_ms=44480 tokens_in=37118 tokens_out=64 kv_bytes=0 prefix_hit=true status=done
+[12:38:42 INF] Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 44484.8391ms
+[12:38:42 INF] Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+info: Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker[105]
+      Executed action Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core) in 44484.8391ms
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[1]
+      Executed endpoint 'Hydra.Core.Controllers.CompletionsController.ChatCompletions (Hydra.Core)'
+[12:38:42 INF] Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 null text/event-stream 44485.1514ms
+info: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      Request finished HTTP/1.1 POST http://192.168.122.1:19000/v1/chat/completions - 200 - text/event-stream 44485.1514ms
+[12:38:42 INF] stream_done_release Sid=abtest6-session Worker=test-a Slot=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:38:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:38:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7695ms - 200
+[12:38:44 INF] Received HTTP response headers after 0.7695ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.8465ms - 200
+[12:38:44 INF] End processing HTTP request after 0.8465ms - 200
+[12:38:44 INF] health_caps_restored Node=test-a Caps=11 — capability set re-advertised after 1 empty poll(s)
+[12:38:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:38:45 INF] bg_saved Sid=abtest6-session bytes=753452826 rpc_ms=454 store_ms=3256 total_ms=3710
+[12:38:45 INF] event=request_timeline timestamp_ms=1788957525818 trace_id=4d8999e108c8485d session_id=abtest6-session queue_wait_ms=0 node=test-a route_type=cold_concurrency prefill_node="Test A (P100 single-GPU shared-VRAM engine-A)" decode_node="Test A (P100 single-GPU shared-VRAM engine-A)" prefill_model=hydra-test-lane decode_model=hydra-test-lane request_model=qwen3.5-9b-test prefill_ms=27374 model_load_ms=0 save_kv_ms=3710 save_kv_rpc_ms=454 save_kv_store_ms=3256 restore_kv_ms=0 decode_ms=40530 total_ms=44480 tokens_in=37118 tokens_out=64 kv_bytes=0 prefix_hit=true status=bg_saved
+[12:38:49 INF] Write-behind: copied 23 chunks (182.55 MB) in 270ms
+[12:38:49 INF] chunk_store_evicted_from_ram hash=caac0c6243a2983713c5f5e7ce8f1e8a5ccca6f9b403096032f1b038c7542796
+[12:38:49 INF] chunk_store_evicted_from_ram hash=1538854f787cca8ed235c90e29f3d788892aadf6ffea8854a02f417e5fce1896
+[12:38:49 INF] chunk_store_evicted_from_ram hash=0de89389e729a7c8c7dafdc3b26c55fbe99bc3538f92b2f0d0dea018cad9f918
+[12:38:49 INF] chunk_store_evicted_from_ram hash=8eeff8d99f742430dc053dbea731090a57e3353631528c21a5f2dd17d7c2bb3a
+[12:38:49 INF] chunk_store_evicted_from_ram hash=f114c99811ccd84521d0ade3f0b8b92bd25ec846ea544e6991f50a665adb2c2f
+[12:38:49 INF] chunk_store_evicted_from_ram hash=7aaafae1b80d4227eef6b66f14a34cebc0a8b5e746f8e887aa970bfffceb139a
+[12:38:49 INF] chunk_store_evicted_from_ram hash=b2827daa3923ccef8fc6c84efdcffe48c8d8e6ee0abd175808cd5c0fc860d99e
+[12:38:49 INF] chunk_store_evicted_from_ram hash=211d655f91fd122eb1020c286d6d01cfd7349e2cca65589cfc3405050b5d9932
+[12:38:49 INF] chunk_store_evicted_from_ram hash=2ce86bfcd0cd2b09160350b016dd20d01acc05009dc482b765ae2cbb7e27e391
+[12:38:49 INF] chunk_store_evicted_from_ram hash=2b96aa0327f65fe92790e01c5b450f389c9811a8100a7d455751d33c650f9145
+[12:38:49 INF] chunk_store_evicted_from_ram hash=323145050267befd7fcbf99e3b23267bda8331f1b52e6785bde01a739cb8710b
+[12:38:49 INF] chunk_store_evicted_from_ram hash=61358e18ada763879a4f5cb857fb8e7dcfd84456e28f54b213dcdb4605d7c94f
+[12:38:49 INF] chunk_store_evicted_from_ram hash=427eb3d8d75706f2fcffeb672201915d1985125007681728d3601ffeabc6c193
+[12:38:49 INF] chunk_store_evicted_from_ram hash=fb0f33a50df0ba925bc88e4abb8a7b657a1eebf7bd2342aba052bca55a0c94b9
+[12:38:49 INF] chunk_store_evicted_from_ram hash=ed8f4a384245777c2fc84bf3aad81ea4cd68f75320b7b6bb2cba433ce8992aac
+[12:38:49 INF] chunk_store_evicted_from_ram hash=d3fa737af60af0c630758589ce1382f1879d762857cd074a581251134ce0c19c
+[12:38:49 INF] chunk_store_evicted_from_ram hash=40069b11cb59f28b8b99b65e9af3de48a8727ab9ab3f91a8d7bd5992e49ca9c9
+[12:38:49 INF] chunk_store_evicted_from_ram hash=76b1eb5b2c3b68b07c30de853934a9cd4179d8b655cdd5b8bc40a576660ba42e
+[12:38:49 INF] chunk_store_evicted_from_ram hash=2630cd74d7b322a30c9c1dcd9fa4ff31c2a4e7a8119ee8c8d31ddc08f2ddd3cf
+[12:38:49 INF] chunk_store_evicted_from_ram hash=7eea22c056cf962606df601dfb56b88cf16e197de5cef66b318dd206d00736fb
+[12:38:49 INF] chunk_store_evicted_from_ram hash=ecabec3960cf8f1f3b729d47a702bc17d79243bb3978c01c9cb2d3addb78948c
+[12:38:49 INF] chunk_store_evicted_from_ram hash=44760c0785018d4928ccd1092b83242b768d0f5813e46b194af936a7644e31ec
+[12:38:49 INF] chunk_store_evicted_from_ram hash=50e6f6f7696cc1812b9973eb29005c7cca7665b1925eaa656acaff0f98b8a083
+[12:38:49 INF] chunk_store_evicted_from_ram hash=fa87e5f3bc280869f48b295738b244e07c003e3ced2afeaae80089f5ce977f91
+[12:38:49 INF] chunk_store_evicted_from_ram hash=0f26187039e8198a44a349819ae98f13a2b32ed70d242ce31a2d316a9c4fd5c1
+[12:38:49 INF] chunk_store_evicted_from_ram hash=9cd600ddf670a405cda222cbb8f885ff2733e970a45565324fa7f181e6a8dfe8
+[12:38:49 INF] chunk_store_evicted_from_ram hash=77a170830fc4a5dcb5c0d1061c78519d2457af891f529d1383fa0bb1477a6cdd
+[12:38:49 INF] chunk_store_evicted_from_ram hash=a3e0c8a317f8237dab3cd0e7188337abf4eef7abfe2262e08f6ac9f858ba015a
+[12:38:49 INF] chunk_store_evicted_from_ram hash=661b74c57b76246d59495892f58f8ca20ffcb3d940e74d8cf33401f29536eaf2
+[12:38:49 INF] chunk_store_evicted_from_ram hash=4e603fc20fb4611891036eb67df461f57b92e877c1163dbecd687d5d0a15b886
+[12:38:49 INF] chunk_store_evicted_from_ram hash=462d6b1e4d340cf2097771807566785c02d11637d5f49a32b39f5d5a92328683
+[12:38:49 INF] chunk_store_evicted_from_ram hash=6e14ff3453750cc5b1f7f675e42ac3d1e91f5f0ade6f1a57bf9c7e6639993adb
+[12:38:49 INF] chunk_store_evicted_from_ram hash=1a08c7424b8554f3ad6117789ac852fceb6a47175b544974dca5ed65dfb38130
+[12:38:49 INF] chunk_store_evicted_from_ram hash=104497a738d695e89d581d78964d0d1153089724b8e74aaf16c64798b1274680
+[12:38:49 INF] chunk_store_evicted_from_ram hash=e5c3bd7d3b188b8326f8a062a45a0c0872b210c4d5cc5bddc4b2d13a35985021
+[12:38:49 INF] chunk_store_evicted_from_ram hash=5beb166735e2291c8120a087a23ba1cc1f9576759e96c3b98eda389e01bcc549
+[12:38:49 INF] chunk_store_evicted_from_ram hash=fcb08b5b44a58f417d3b5d91063c611e84b74b394c7e6756ac0b0ad9eee9c70b
+[12:38:49 INF] chunk_store_evicted_from_ram hash=29c625af270188714f4d36df6a91d2a92d60436e6d7c1f955896d7d9f08ee755
+[12:38:49 INF] chunk_store_evicted_from_ram hash=7aa37156993c65f07f1a78edaaeca430156b02a2917cdc7af04739af89ba154c
+[12:38:49 INF] chunk_store_evicted_from_ram hash=aef96b60aea6c28c985bbdbe442836a1ee9a6668f14d1f15201bbaef14c6ccae
+[12:38:49 INF] chunk_store_evicted_from_ram hash=d821412c93488701b685fb723c752692f6f0e18441e99ee7386b79770687f6a3
+[12:38:49 INF] chunk_store_evicted_from_ram hash=a9ded5c01e31b91f20142c618d352077c693f1538b3d84173743746557ae6b3a
+[12:38:49 INF] chunk_store_evicted_from_ram hash=4ce5bdf9c5f3146141795863235b8ec5a8cf7513f35b09f6c30c5025254925f4
+[12:38:49 INF] chunk_store_evicted_from_ram hash=5b666f48a05204327655584901c8055876dcb26371565add1ab86f593239d01c
+[12:38:49 INF] chunk_store_evicted_from_ram hash=f3b7baf58d7550609b1ab80e9a54106d310b8e3ff243332f567396bb2fa2b55d
+[12:38:49 INF] chunk_store_evicted_from_ram hash=97151835a42bcf2f9a0758b9bbe63618f4b4852d73723c5e7a907e9d571a7759
+[12:38:49 INF] chunk_store_evicted_from_ram hash=d737cf95a5860a96deaa8d0c9edb87342597e614f2d8e1e7e9068db602693c56
+[12:38:49 INF] chunk_store_evicted_from_ram hash=aa86ece2e92eed3e6594ab2f83acbdcc9dda0ed48b5aed4d7d3a4589e12e9e8e
+[12:38:49 INF] chunk_store_evicted_from_ram hash=9875e9c1b4cae608a18009330c724f1dae93ed1dd5fafc4e12029623fa0b4f0a
+[12:38:49 INF] chunk_store_evicted_from_ram hash=71bc0db69b389fa65f72c27567b8809aebc32329dfec129dc3a90d61d5657d7b
+[12:38:49 INF] Write-behind: free-after-backup evicted 50 backed-up files from RAM (keep_recent_hours=1)
+[12:38:57 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:39:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:39:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:39:04 INF] Received HTTP response headers after 0.8754ms - 200
+[12:39:04 INF] End processing HTTP request after 0.973ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.8754ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.973ms - 200
+[12:39:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:39:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:39:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:39:24 INF] Received HTTP response headers after 0.889ms - 200
+[12:39:24 INF] End processing HTTP request after 0.9803ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.889ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.9803ms - 200
+[12:39:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:39:42 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:39:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:39:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.5776ms - 200
+[12:39:44 INF] Received HTTP response headers after 0.5776ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.875ms - 200
+[12:39:44 INF] End processing HTTP request after 0.875ms - 200
+[12:39:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:40:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:40:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7959ms - 200
+[12:40:04 INF] Received HTTP response headers after 0.7959ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.8683ms - 200
+[12:40:04 INF] End processing HTTP request after 0.8683ms - 200
+[12:40:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:40:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:40:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:40:24 INF] Received HTTP response headers after 0.7969ms - 200
+[12:40:24 INF] End processing HTTP request after 1.0925ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7969ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.0925ms - 200
+[12:40:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:40:27 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:40:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:40:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:40:44 INF] Received HTTP response headers after 1.1049ms - 200
+[12:40:44 INF] End processing HTTP request after 1.1961ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.1049ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.1961ms - 200
+[12:40:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:41:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:41:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:41:04 INF] Received HTTP response headers after 1.0099ms - 200
+[12:41:04 INF] End processing HTTP request after 1.0866ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.0099ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.0866ms - 200
+[12:41:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:41:12 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:41:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:41:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.708ms - 200
+[12:41:24 INF] Received HTTP response headers after 0.708ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.9858ms - 200
+[12:41:24 INF] End processing HTTP request after 0.9858ms - 200
+[12:41:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:41:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:41:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:41:44 INF] Received HTTP response headers after 0.6982ms - 200
+[12:41:44 INF] End processing HTTP request after 0.7841ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.6982ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.7841ms - 200
+[12:41:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:41:57 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:42:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:42:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:42:04 INF] Received HTTP response headers after 0.9043ms - 200
+[12:42:04 INF] End processing HTTP request after 0.9954ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.9043ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.9954ms - 200
+[12:42:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:42:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:42:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.1033ms - 200
+[12:42:24 INF] Received HTTP response headers after 1.1033ms - 200
+[12:42:24 INF] End processing HTTP request after 1.1951ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.1951ms - 200
+[12:42:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:42:42 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:42:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:42:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:42:44 INF] Received HTTP response headers after 0.7468ms - 200
+[12:42:44 INF] End processing HTTP request after 0.8278ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7468ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.8278ms - 200
+[12:42:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:43:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:43:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.939ms - 200
+[12:43:04 INF] Received HTTP response headers after 0.939ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.0228ms - 200
+[12:43:04 INF] End processing HTTP request after 1.0228ms - 200
+[12:43:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:43:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:43:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.6499ms - 200
+[12:43:24 INF] Received HTTP response headers after 0.6499ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.7456ms - 200
+[12:43:24 INF] End processing HTTP request after 0.7456ms - 200
+[12:43:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:43:27 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:43:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:43:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.6697ms - 200
+[12:43:44 INF] Received HTTP response headers after 0.6697ms - 200
+[12:43:44 INF] End processing HTTP request after 0.7537ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.7537ms - 200
+[12:43:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:44:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:44:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.8721ms - 200
+[12:44:04 INF] Received HTTP response headers after 1.8721ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.9865ms - 200
+[12:44:04 INF] End processing HTTP request after 1.9865ms - 200
+[12:44:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:44:12 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:44:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:44:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.0407ms - 200
+[12:44:24 INF] Received HTTP response headers after 1.0407ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.1303ms - 200
+[12:44:24 INF] End processing HTTP request after 1.1303ms - 200
+[12:44:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:44:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:44:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.7347ms - 200
+[12:44:44 INF] Received HTTP response headers after 0.7347ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.8333ms - 200
+[12:44:44 INF] End processing HTTP request after 0.8333ms - 200
+[12:44:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:44:57 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:45:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:45:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.438ms - 200
+[12:45:04 INF] Received HTTP response headers after 1.438ms - 200
+[12:45:04 INF] End processing HTTP request after 1.5289ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.5289ms - 200
+[12:45:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:45:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:45:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.8405ms - 200
+[12:45:24 INF] Received HTTP response headers after 0.8405ms - 200
+[12:45:24 INF] End processing HTTP request after 0.9754ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.9754ms - 200
+[12:45:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:45:42 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:45:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:45:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:45:44 INF] Received HTTP response headers after 0.6591ms - 200
+[12:45:44 INF] End processing HTTP request after 0.7462ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.6591ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.7462ms - 200
+[12:45:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:46:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:46:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 3.2789ms - 200
+[12:46:04 INF] Received HTTP response headers after 3.2789ms - 200
+[12:46:04 INF] End processing HTTP request after 3.3439ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 3.3439ms - 200
+[12:46:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:46:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:46:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.8335ms - 200
+[12:46:24 INF] Received HTTP response headers after 0.8335ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.896ms - 200
+[12:46:24 INF] End processing HTTP request after 0.896ms - 200
+[12:46:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:46:27 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:46:44 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:46:44 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 0.8862ms - 200
+[12:46:44 INF] Received HTTP response headers after 0.8862ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 0.9796ms - 200
+[12:46:44 INF] End processing HTTP request after 0.9796ms - 200
+[12:46:44 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:47:04 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:47:04 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.3502ms - 200
+[12:47:04 INF] Received HTTP response headers after 1.3502ms - 200
+[12:47:04 INF] End processing HTTP request after 1.4308ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.4308ms - 200
+[12:47:04 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11
+[12:47:12 INF] chunk_cache_lru_sweep evicted=0 bytes=0
+[12:47:24 INF] Start processing HTTP request GET http://192.168.122.21:18086/slots
+[12:47:24 INF] Sending HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[100]
+      Start processing HTTP request GET http://192.168.122.21:18086/slots
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[100]
+      Sending HTTP request GET http://192.168.122.21:18086/slots
+[12:47:24 INF] Received HTTP response headers after 1.0182ms - 200
+[12:47:24 INF] End processing HTTP request after 1.1072ms - 200
+info: System.Net.Http.HttpClient.health-test-a.ClientHandler[101]
+      Received HTTP response headers after 1.0182ms - 200
+info: System.Net.Http.HttpClient.health-test-a.LogicalHandler[101]
+      End processing HTTP request after 1.1072ms - 200
+[12:47:24 INF] health_poll_ok Node=test-a Slots=4 Idle=4 Stuck=0 Presets=0 Caps=11

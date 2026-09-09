@@ -111,6 +111,7 @@ prefills only the delta. **No full-context PREFILL after T1.** PASS.
 | v5 `481df4f` r1 | 47.5 | 32.4 | 26.7 | 28.4 | 28.0 | 32.4 | T4 fixed (carry-forward + strip); T1 cold-engine artifact |
 | v5 r2 | 34.1 | **43.3** | 26.6 | 28.5 | 28.0 | 31.6 | redundant evict save serialized with the bg save on the engine RPC channel (+16 s on T2) |
 | v6 `c7e9d8d` | 34.3 | 26.8 | 26.7 | 28.4 | 28.1 | 31.8 | evict-save skip; flat; **final** |
+| v9 run-2 `d14dbef` (2026-09-09) | 33.0 | 27.2 | 26.6 | 28.4 | 28.5 | 31.6 | P100 lane rebuilt post-VM-reboot (W1i); image 712-w1g = Fix A `84261d4` + Fix B `b2c8be5`; **all 4 gates pass** (G1 TTFT ≤1.5×, G2 5× N_COMMON trim exact, G3 lease_handed_off=5/no_lease=0, G4 MergedCapable 6/6) — **canonical raw evidence** (v8 coordinator raw log lost with its deleted container; v9 run-1 with the 2-worker config failed turn 1, 503, root-caused in `gate-numbers-v9.md`) |
 
 `ab-after-v5-run1.txt` / `ab-after-v5-run2.txt` / `coord-v5-run2-evict-race.log` hold the
 intermediate evidence (T4 anomaly timeline, evict-save race).
@@ -125,3 +126,8 @@ intermediate evidence (T4 anomaly timeline, evict-save race).
 - `coord-final-v6.log` — coordinator log, final run (podman logs)
 - `coord-v5-run2-evict-race.log` — coordinator log showing the 18 s evict-save stall
 - `engine-nodeA-final-v6.log` — nodeA engine log segment, final run (N_COMMON traces)
+- `container-712-w1i-v9.log` — coordinator raw log (podman logs), v9 run-2, 142 KB (lease/evict/gate events)
+- `engine-nodeA-v9.log` — nodeA engine log, v9 run-2 (`#PD-TRACE N_COMMON trim` x5)
+- `engine-nodeB-v9.log` — nodeB engine log, v9 run-2 (idle; not used by v8-faithful config)
+- `ab716-123449-v9.log` — v9 run-2 6-turn A/B results
+- `gate-numbers-v9.md` — per-turn gate numbers, verdicts, and run-1 (503) root-cause note
