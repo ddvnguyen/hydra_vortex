@@ -14,8 +14,10 @@ to be chosen before M2 (chunked dedup) shipped, because every routing mode
 - **Store lives on host tmpfs** (`/mnt/llm-ram/store/`), owned by Hydra.Core.
   GETs use `Socket.SendFileAsync` — zero-copy from the page cache.
 - **Content-addressed chunking at the Store level** (M2): KV state is split
-  into 1 MB chunks, SHA-256 hashed, stored by hash. Repeated saves write
-  only the delta; a restore whose chunks are all known is a no-op.
+  into 8 MiB chunks (`HYDRA_STORE_CHUNK_SIZE` is in KB, default 8192 →
+  8192 × 1024 = 8 MiB; see `Hydra.Core/Program.cs`), SHA-256 hashed, stored
+  by hash. Repeated saves write only the delta; a restore whose chunks are
+  all known is a no-op.
 - **Full KV state only** — no speculative/partial KV formats.
 - **No shared filesystem between nodes.** Cross-node transfer is always an
   explicit StateGet/StatePut over the hydra RPC wire. The two nodes that
