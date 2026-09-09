@@ -108,10 +108,40 @@ Results from `run-with-params.sh` harness. All arms: Qwen3.8-27B-MTP-Q5_K_M, 98K
 4. **056 (26,39) OOM confirmed**: native 26,39 split puts too much model weight on 3060 (12GB). Ceiling ~44K ctx only.
 5. **DSpark-on-native: candidate** — 058 beats 057, proving MTP works on native. Queue DSpark-on-native as next arm to test external draft model on native 39,26.
 
+## Test Suite
+
+`test-suite.sh` is the **main gate** for whatever arm/param file is currently
+deployed. Run it against a live `llama-server`:
+
+```bash
+bash infra/llama-baseline/test-suite.sh <port> [n_turns=12]
+```
+
+Three checks, all must pass:
+
+1. **health** — `/health` + `/props` reachable, model loaded
+2. **single** — 1 session, N turns, verifies context depth grows correctly
+   and every turn completes (`multiturn-growth-test.sh <port> 1 <n_turns>`)
+3. **concurrency-2** — 2 sessions, N turns, verifies depth AND genuine
+   concurrent decode overlap (`multiturn-growth-test.sh <port> 2 <n_turns>`)
+
+Everything else in this directory is a **sub-test**, used to investigate one
+specific regression or characterize one arm rather than gate a build:
+`concurrent-decode-test.sh` (single-shot ~1K-deep concurrency probe),
+`bench-baseline.sh` (TTFT/TPOT/prefill metrics), `128k-diagnostic-arm.sh`,
+and the `spike-*` / `747-*` / `12x-*` exploratory param files under `params/`.
+Run those directly when diagnosing something specific, not as part of the
+gate.
+
 ## Files
 
 * `Dockerfile.baseline` — CUDA 13.2 runtime, copies host-built `llama-server`
 * `docker-compose.baseline.yml` — 96K pooled, layer split
 * `docker-compose.baseline-64k.yml` — fallback
+* `run-with-params.sh` — boots server from a `params/*.yml` arm config
+* `test-suite.sh` — main pass/fail gate (health + single + concurrency-2 depth)
+* `multiturn-growth-test.sh` — multi-session, multi-turn depth/growth engine used by `test-suite.sh`
+* `concurrent-decode-test.sh` — sub-test: single-shot concurrency probe
 * `bench-baseline.sh` — harness wrapper
+* `128k-diagnostic-arm.sh` — sub-test: 128K ctx diagnostic boot
 * `BASELINE_SHA` — pinned upstream SHA for reproducibility
