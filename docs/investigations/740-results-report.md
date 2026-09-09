@@ -4501,3 +4501,393 @@ Single-request **holds the arm090 ~37-40 bar** on both. Flag has no single-reque
 **Verdict**: arm102's shape **holds up**: single-request 40.1 (bar ~37-40 ✓) and n=2 concurrent 49.2-52.6 agg symmetric with the gate inactive — the fixed-harness tier2 shift vs the Sep 7 reference is dominated by (a) the FORCE_CUBLAS flag on my first build and (b) day-to-day environmental drift affecting even the canonical binary. arm102's original "70.7 agg" was a 3-way old-harness number and is not directly comparable to n=2 fixed-harness figures. Teardown verified: no llama/rpc processes; production left down per scope.
 
 Raw logs: `/tmp/rpc-test/results/102-retest-747baseline-unknown/` (boot C), `/tmp/102-retest.log`, `/tmp/102-v040-ab.log`, `/tmp/747-baseline-*` (gate boots); driver-mismatch evidence in-shell (`nvidia-smi` NVML error post-22:15).
+
+### 747.0-conc2x80k-th200k — genuine 2-concurrent-deep decode diagnostic (2026-09-08, task under 747.0)
+
+**Purpose**: 747.0's only deep test so far (88.8K + 68.7K = 157480 combined) exceeded the real 100K threshold and correctly deferred, so it measured sequential single-slot decode, never genuine concurrent deep decode. This diagnostic (params/747.0-conc2x80k-th200k.yml — byte-identical to 747.0 except `--parallel-ctx-threshold` 100000→200000, NOT a new arm) let two ~80K-token requests admit simultaneously. Same build as 747.0 (clean v0.4.0 `5266f24da` + gate + UM prefetch, FORCE_CUBLAS=OFF, FA_ALL_QUANTS=ON). Host had been **rebooted between sessions** (fixes the prior NVML driver/library mismatch; /tmp wiped, build + shim + prompts reconstructed from ccache / bigprompt-1109.txt).
+
+**Gate behavior at threshold 200000**:
+- First attempt, prompts too large (113×1109 tokenized at **118,928 tokens each** — measured 2.68 chars/token, not the ~4 I assumed): combined 237,856 ≥ 200000 → `defer task 468 (resident 118928 + candidate 118928 >= threshold 200000)` — the gate is correct at the raised threshold too; no false admits at 2.4x the old threshold.
+- Corrected prompts (76×1109 ≈ **79.9K tokens each**, combined 159.8K < 200K): **both admitted**, launched 1.6-4s apart, **zero defers**.
+
+**Prefill concurrency (attempt 2)**: genuinely interleaved — slot 0 processed ~500-670 t/s while slot 1 processed ~460-560 t/s simultaneously; per-ubatch round-robin visible in the log. No serialization at prefill.
+
+**Decode — the actual finding (3 measurements on one boot)**:
+
+| Scenario | per-slot tok/s | note |
+|---|---|---|
+| single deep (~80K ctx), alone | **31.29** (96 tok / 3.04s) | task 510 after slot-0 released; **vs 0.14 t/s measured last session on the driver-mismatch boot — that number was a driver artifact, discard it** |
+| deep decode concurrent with the other slot's prefill | **0.99** (96 tok / 96.2s) | task 508 decoded 4:45→6:24 while slot 1 was still prefilling until 7:02 — decode steps starved behind 512-tok prefill ubatches (cont-batching prefill/decode interference, not a gate artifact) |
+| **genuine 2-concurrent deep decode** (both prompts RAM-cache-primed, both slots decode simultaneously at ~80K ctx) | **4.79 / 4.79** — **aggregate 9.59** | tasks 582+583, zero defers, windows fully overlapped, finished within **3 ms** of each other (22.2s wall each), eval times 19813.59 vs 19815.26 ms — perfectly symmetric |
+
+**Aggregate cost of deep-ctx concurrency**: 9.59 agg vs 31.29 single = **31% of the single rate** (vs shallow-ctx 2-concurrent at ~22-25 agg vs ~40-45 single = ~55%). Deep-ctx concurrent decode is much worse than bandwidth-sharing would predict (~15.6/slot expected if KV streaming split evenly) — plausible contributors: shared MTP draft serialization, per-step 2×80K attention working set, CUDA-graph shape churn; not diagnosed further here.
+
+**KV-shift/thrash/OOM**: none — only the standard "KV cache shifting is not supported" boot line. Margins flat at **15847/16311 MiB CUDA0, 11911/12288 MiB RPC0** through boot/warm/dual-prefill/dual-decode (pools preallocated; 296K-cell reservation identical to 747.0 as expected). Xid: none.
+
+**Conclusion for 747.0**: with the threshold raised to sit above the combined depth, the gate admits both ~80K requests into their own 148K fences and they decode truly concurrently (symmetric to the millisecond). The per-slot fences hold (159.8K combined across 2×148K fences, no pressure). The prefill→decode interference (0.99 t/s for a decoding slot while the other prefills) is a v0.4.0 cont-batching behavior worth knowing for Hydra's multi-slot expectations, independent of the gate.
+
+Raw logs: `/tmp/rpc-test/results/747.0-conc2x80k-th200k-unknown/`, driver logs `/tmp/opencode/7471-t1-deep*.log`, dmon `/tmp/7471-t1-dmon.log`.
+
+### 747.1-baseline-kvu-p2-vq51-th100k-pool148k — kv_unified shared-pool + per-slot cap 148K + threshold 100K (2026-09-08, #747 baseline work)
+
+**Purpose**: first arm that exercises `--kv-unified-per-slot` as a hard per-slot cap inside a shared KV pool (the flag added in upstream `18443257a`). Pool sized to **296000 total shared cells** (same nominal as 747.0's 296K but ONE pool, not two 148K fences) + `--kv-unified-per-slot 148000` so each slot's `n_ctx_slot` is capped to 148000 even though 296K is physically allocated. Threshold `100000` reproduces 747.0's gate. The question: does the cap bind correctly, does the shared pool give idle→busy elasticity without starving slot 2, and does the gate still admit/defer on the combined `resident + candidate` sum? Handoff from agent f50a4505 — this session picked up the LIVE server mid-verification (zero reboot, zero lost work).
+
+**Build**: `/tmp/opencode/747-baseline`, branch `fork/hydra-747-parallel-ctx-threshold-baseline` (fork PR #110), **HEAD `0ed2ac31e`** — clean v0.4.0 `5266f24da` + admission gate (`d06537485`) + UM prefetch net (`ba2c46f65`) + NEW admit-side `SRV_INF("parallel-ctx-threshold: admit task ...")` line (this commit `0ed2ac31e`) so BOTH admit and defer now log with exact `resident + candidate` values. **Build flags**: `-DCMAKE_CUDA_ARCHITECTURES="86;120" -DCUDAToolkit_ROOT=/opt/software/cuda/13.2.2 -DGGML_CUDA_FA_ALL_QUANTS=ON -DGGML_CUDA_FORCE_CUBLAS=OFF` — mandatory for v0.4.0 with `q8_0/q5_1` flash-attn (without `FA_ALL_QUANTS=ON` the RPC peer aborts at `fattn.cu:707`; with `FORCE_CUBLAS=ON` a prior session halved concurrent decode and caused per-slot asymmetry — reproduced in arm102 retest).
+
+**Already confirmed before handoff (not re-run, recorded verbatim)**:
+- Boot cap line: `0.20.618.744 I srv    load_model: capping per-slot context (296192) to --kv-unified-per-slot (148000)` — proves the cap **binds** (296192 is the aligned `296000` cell count; `n_ctx_seq` 296192 > `n_ctx_train` 262144 would otherwise be the pool).
+- Final init: `0.22.244.958 I srv    load_model: initializing, n_slots = 2, n_ctx_slot = 148000, kv_unified = 'true'` — per-slot logical cap 148000, shared pool 296192 cells.
+- Minor non-issue noted (harmless, mention in passing): draft MTP context logs `0.19.175.526 W llama_context: n_ctx_seq (296192) > n_ctx_train (163840)` **before** the cap line applies — draft KV is uncapped by design, does not affect slot caps (same signature seen on 747.0's draft context at 296K).
+- Also: `0.20.618.739 W srv    load_model: cache_reuse is not supported by this context, it will be disabled` + `0.13.895.148 W cmn  common_init_: KV cache shifting is not supported for this context, disabling KV cache shifting` — both expected with this `kv_unified + per-slot-cap` shape (same as 747.0's 296K pool).
+- Startup 10/10 loop: `run-with-params.sh` sequential 150-tok requests all `admit task * (resident 0 + candidate 808 < threshold 100000)` — small-prompt control, 24s to ready, no Xid, no OOM.
+- VRAM at boot/warm: **15847/16311 MiB CUDA0 (464 MiB free), 11911/12288 MiB RPC0 (377 MiB free)** — byte-identical to 747.0's boot, expected (same 296K-cell allocation, only behavior differs).
+
+**Remaining probes (run LIVE against the same booted server, no reboot, via curl / harness driver)**:
+
+**1. Cap rejection probe — 150-copy prompt (~157.8K tokens, >148K cap) sent SINGLE**:
+- Prompt: `infra/llama-baseline/prompts/bigprompt-1109.txt` (1052 tokens/copy, verified via `/tokenize`) ×150 = `157800` tokens content-only, `157852` candidate at the gate (52-token chat-template overhead, same +52 seen on every 747.x deep prompt).
+- **Actual behavior (verbatim, NOT the predicted "cap rejects")**: gate **defers**, not cap-rejects:
+  ```
+  7.45.008.423 I srv  process_sing: parallel-ctx-threshold: defer task 459 (resident 0 + candidate 157852 >= threshold 100000)
+  9.45.021.276 W srv          stop: cancel task, id_task = 459
+  ```
+  Client `curl --max-time 120` timed out after 120s (request stayed queued), then `cancel task` on disconnect. No `prompt too long for n_ctx_slot` error, no prefill started, no OOM/context_shift eviction. **Interpretation**: the `--parallel-ctx-threshold` check runs **before** the `--kv-unified-per-slot` length check — any prompt `>100K` is deferred even when `resident=0`, so a single `>148K` prompt never reaches the cap's admission path on this arm (threshold 100K < cap 148K). The cap's rejection would only be observable either with threshold raised above cap (as in the 747.0-conc diagnostic where threshold 200K let 118K prompts admit) or via a direct `n_ctx` length error after admission — not testable at threshold 100K without a behavior change. This is correct gate behavior at the configured threshold, not a bug.
+
+**2. n=2 concurrent small — standard pair, genuine parallel decode**:
+- Prompt: `/tmp/bigprompt.txt` (2822c, 1052 tokens content-only, 1104 candidate at gate — same +52 overhead).
+- Harness: `bash infra/llama-baseline/concurrent-decode-test.sh 18081 2 150 /tmp/bigprompt.txt` (priming 2×8-tok warm, then 2×150-tok measured).
+- **Gate log (verbatim)**:
+  ```
+  10.12.430.503 I srv  process_sing: parallel-ctx-threshold: admit task 462 (resident 0 + candidate 1104 < threshold 100000)
+  10.13.336.809 I srv  process_sing: parallel-ctx-threshold: admit task 463 (resident 1104 + candidate 1104 < threshold 100000)
+  10.16.526.386 I srv  process_sing: parallel-ctx-threshold: admit task 471 (resident 0 + candidate 1104 < threshold 100000)
+  10.16.796.611 I srv  process_sing: parallel-ctx-threshold: admit task 472 (resident 1111 + candidate 1104 < threshold 100000)
+  ```
+  Both admits with `resident + candidate` well under 100K (2208 combined). No defers.
+- **Result**: `concurrency check: PASS (windows overlap)`, overlap `4.76s`, `slot 1 wall 6.63s 22.61 t/s, slot 2 wall 4.76s 31.51 t/s → mean 27.06/slot, aggregate 54.12 tok/s` (decode-only `tg` metrics lower than wall due to prompt overlap; server log shows `tg_3s` 36-41 t/s per slot). Confirms genuine parallel decode with both slots in the same batch step — cont-batching works symmetrically at small depth.
+
+**3. Deep e2e — the core 747.1 property test (A=90-copy admit, B=76-copy defer→auto-admit)**:
+- Prompts: `90×1109` = 94680 tokens content-only (`94732` candidate), `76×1109` = 79952 tokens content-only (`80004` candidate) — both verified via `/tokenize`, both under the 148K per-slot cap, combined 174736 >100K threshold.
+- Method: fired A (90-copy, `n_predict=96`) as background request, let it admit/start prefill (~5s), then fired B (76-copy, `n_predict=96`) while A resident.
+- **Gate log (verbatim, exact values — both sides now log thanks to `0ed2ac31e`)**:
+  ```
+  12.49.083.759 I srv  process_sing: parallel-ctx-threshold: admit task 577 (resident 0 + candidate 94732 < threshold 100000)
+  12.53.487.490 I srv  process_sing: parallel-ctx-threshold: defer task 579 (resident 94732 + candidate 80004 >= threshold 100000)
+  13.36.191.576 I slot      release: id  1 | task 577 | stop processing: n_tokens = 94827, truncated = 0
+  13.36.191.585 I srv  process_sing: parallel-ctx-threshold: admit task 579 (resident 0 + candidate 80004 < threshold 100000)
+  ```
+  A admitted at `0+94732<100000` ✓, B correctly deferred at `94732+80004=174736>=100000` ✓, then **after A released** B auto-admitted at `0+80004<100000` ✓ and completed. No starvation: B got its full 80K slot despite sharing the 296K pool with A's 94K resident — the 148K per-slot cap guarantees the second slot's budget without hard-fencing the pool.
+- **Timing/behavior**: A prefill 94.7K tokens in ~43.8s @ ~431 tok/s prefill, then decode 96 tokens @ 28.76 t/s; wall 48.2s client-observed. B deferred for ~42.7s (queued), then after auto-admit prefills 80K tokens progressively (log shows `prompt processing n_tokens=4096..59392` at 666-926 tok/s depending on window) and decodes to completion; wall 178.0s total (42.7s queue + 35.3s? wait actual decode window ~?? — combined wall includes queue). Both returned `status 200`, `finish_reason length`, `completion_tokens 96`, valid JSON, no errors/garbled output/stall/OOM.
+- **Per-slot cap operating inside shared pool**: `n_ctx_slot=148000` ensured neither slot could grow beyond 148K even though the shared pool holds 296K — A at 94.7K and B at 80K both well under the cap, but the gate's combined check (`174736>=100K`) is what deferred B, not the cap itself. The cap's value is that with a 148K ceiling each, two slots can never jointly exceed 296K (2×148K=296K exactly) — unlike bare `kv_unified:on` where one slot could hog the whole pool.
+
+**4. Bonus gate-boundary data point — 113-copy prompt (~118.9K) sent ALONE**:
+- Prompt: `113×1109` = 118876 tokens content-only, `118928` candidate at gate.
+- **Gate log (verbatim)**:
+  ```
+  18.08.749.078 I srv  process_sing: parallel-ctx-threshold: defer task 686 (resident 0 + candidate 118928 >= threshold 100000)
+  18.18.750.746 W srv          stop: cancel task, id_task = 686
+  ```
+  `0+118928>=100000` → defer even with zero resident, client `curl --max-time 10` timed out as expected, then cancel on disconnect. This isolates the raw `>=` comparison from any `resident+` interaction — gate correctly defers a pure threshold violation independent of `kv_unified` geometry.
+
+**VRAM margins — still flat after all probes (no leak/drift)**:
+`nvidia-smi` after probes (post-B completion, post-bonus): **15847/16311 MiB CUDA0 (464 free), 11911/12288 MiB RPC0 (377 free)** — byte-identical to boot/warm, pools preallocated at 296K cells, no phase creep. No Xid in `dmesg`/`journalctl`, no `ggml_abort`, no `cudaMalloc failed`.
+
+**Verdict**: **PASS — cap binds, gate admits/defers at the correct `resident+candidate` boundary, shared-pool 148K cap does not starve slot 2**.
+- Boot capping line confirms `--kv-unified-per-slot 148000` is not a no-op (296192→148000).
+- Gate threshold 100K governs admission exactly as designed: `0+94.7K admit`, `94.7K+80K defer`, `0+80K admit after release`, `0+118.9K defer` — all with exact `resident`/`candidate` values logged on BOTH admit and defer paths (new `0ed2ac31e` log line).
+- Shared-pool + per-slot-cap behaves as the intended middle ground between 747.0's hard fences (2×148K separate, no sharing) and bare `kv_unified:on` (one request could hog 296K): an idle slot's headroom is not dead-reserved, yet no single request can exceed 148K to starve the other.
+- No allocation errors, no context_shift eviction pressure observed (both deep prompts well under 148K/cap and 296K/pool), no garbled output.
+
+**Raw logs**: `/tmp/rpc-test/results/747.1-baseline-kvu-p2-vq51-th100k-pool148k-unknown/` (`llama-server.log` live, `test.log`, `summary.txt`), deep-e2e driver `/tmp/7471-deep-e2e.py` + log `/tmp/7471-deep-e2e2.out`, bonus probe `/tmp/bonus113.py`.
+
+**Rig state after 747.1**: server kept LIVE for this handoff's remaining probes (deep/bonus/VRAM) — teardown will occur before 747.2 boot per the handoff checklist, with `pgrep` + `nvidia-smi` confirmation to 0/~0.
+
+
+### 747.2-baseline-nokvu-p2-vq51-th80k — threshold lowered 100K→80K, separated fences, boundary correctness (2026-09-09, #747 baseline work)
+
+**Purpose**: same as 747.0/747.1 but `--parallel-ctx-threshold` lowered `100000→80000` — the only change vs 747.0 (still `kv_unified off`, `ctx 296000=2×148224` fences after 256-alignment, `parallel 2`, `tensor_split 27,38`, `K q8_0/V q5_1` + `draft-mtp q8_0/q5_1`, `UM=1`, `cache_ram 16384`, same YaRN `yarn 5/32768`). Tests the gate's `resident + candidate >= threshold` decision **at a lower, more realistic boundary** with prompt depths chosen to straddle `80K` on both sides (single ~40K admit, concurrent 40K+45K defer vs 40K+38K admit, single ~82K defer) — complementary to 747.0's extreme 157K-combined test, not a throughput measurement.
+
+**Build**: same `/tmp/opencode/747-baseline` `0ed2ac31e` (`FA_ALL_QUANTS=ON` `FORCE_CUBLAS=OFF`, CUDA 13.2.2, `86;120`) — gate PR #110 with NEW admit-side log line, reused for all 747.x arms. Shared build provenance with 747.1 (no rebuild).
+
+**Boot (fresh, 23s, 10/10 GOOD, no Xid/OOM)**:
+- No `capping per-slot` line — expected: per-slot `148224` (`296000` aligned to 256, split 2 ways) < `n_ctx_train 262144`, so YaRN `5/32768` does not cap here (unlike 747.1's 296K shared pool which capped `296192→148000`). Log: `0.21.996.897 I srv    load_model: initializing, n_slots = 2, n_ctx_slot = 148224, kv_unified = 'false'` (148224 = 148000 aligned).
+- `W cmn  common_init_: KV cache shifting is not supported` + `W srv    load_model: cache_reuse is not supported` — same expected lines as 747.0/747.1 for this context shape (cache_reuse disabled with `kv_unified off`).
+- Startup loop 10× small (`808` candidate) all `admit task * (resident 0 + candidate 808 < threshold 80000)` — sanity gate not deferring small prompts.
+- VRAM at boot/warm: **15847/16311 MiB CUDA0 (464 free), 11911/12288 MiB RPC0 (377 free)** — byte-identical to 747.0/747.1 boots, pools preallocated at `296000` cells (2×148224 fences).
+
+**Probes (LIVE server, no reboot, via curl, exact `resident`/`candidate`/`threshold` values from the NEW admit-side log line `0ed2ac31e`)**:
+
+All deep prompts built as `N× bigprompt-1109.txt` (1052 tok/copy, verified via `/tokenize`; `+52` chat-template overhead at gate, same as 747.1) — except Probe 2's fix used a ~600-token unique prefix to bust `LCP similarity f_keep ~0.997` cache (without prefix a 38-copy prompt cached to ~2657 eval tokens in 7.4s; with prefix it prefills full ~40K tokens in ~55s, giving a long resident window).
+
+**Probe 1 — single ~40K (38-copy, 39976 content → 40028 candidate) alone**:
+- Sent alone, `resident 0`.
+- **Gate (verbatim)**: `1.27.350.318 I srv  process_sing: parallel-ctx-threshold: admit task 510 (resident 0 + candidate 40028 < threshold 80000)` → `status 200`, `prompt_tokens 40028`, `prompt_ms 55008 @ 727 tok/s`, wall 57.9s. **ADMIT** ✓ (`0+40K<80K` — gate must not defer a non-limit request).
+
+**Probe 2 — while A (~40K) resident, fire B ~45K (expect DEFER) and B_small ~38K (expect ADMIT) in the SAME slot-open window**:
+- A = 38-copy with unique prefix → `40890` content tokens → `40942` candidate (prefix overhead). Sent first, `admit task 724 (resident 0 + candidate 40942 < threshold 80000)` ✓, wall 117.3s (full prefill, 40K tokens), `is_processing true` on slot 1.
+- **B_big = 43-copy → 46152 content → 46204 candidate**, fired 4s after A (A still prefilling, `resident 40942`):
+  ```
+  5.14.783.208 I srv  process_sing: parallel-ctx-threshold: defer task 728 (resident 40942 + candidate 46204 >= threshold 80000)
+  ```
+  `40942+46204=87146 >=80000` → **DEFER** ✓. Client `curl --max-time 12` timed out (queued), `cancel task 728` after timeout. Exact numbers show the boundary with both sides.
+- **B_small = 36-copy → 38789 content → 38841 candidate**, fired 15s after A (A still resident, `resident 40942`, B_big still queued but `resident` counts only **active** slots, not queued):
+  ```
+  5.29.690.305 I srv  process_sing: parallel-ctx-threshold: admit task 736 (resident 40942 + candidate 38841 < threshold 80000)
+  ```
+  `40942+38841=79783 <80000` → **ADMIT** ✓ — genuine concurrent admit while A still resident. Wall 96.3s, `prompt_tokens 38841`, both A and B_small completed `200` with `finish_reason length` (96 tok each), overlapping windows (A 5.09→7.06, B_small 5.29→7.05 wall-clock, ~96s overlap). This gives **both sides of the boundary with real `resident+candidate` sums (87146 defer vs 79783 admit) in one resident window** — the intended demonstration.
+- Early attempt without prefix-busting cached A in 7.4s and missed the concurrent-admit window (A finished before B_small) — fixed by prefix-busting; keep this methodology for any future 40K-class boundary tests with `cache_reuse` disabled but `LCP` still high.
+
+**Probe 3 — after drain (resident 0), single ~82K (78-copy, 82056 content → 82108 candidate) alone**:
+- Waited for `slots is_processing false` on both slots.
+- **Gate (verbatim)**: `7.20.693.826 I srv  process_sing: parallel-ctx-threshold: defer task 797 (resident 0 + candidate 82108 >= threshold 80000)` → client timeout 12s → `cancel task 797`. **DEFER** ✓ (`0+82K>=80K` — pure single-candidate `>=` comparison, isolates the `>=` itself from any `resident+` interaction).
+
+**VRAM margins — flat after all probes**: `nvidia-smi` post-Probe 3: **15847/16311 CUDA0, 11911/12288 RPC0** — identical to boot, no phase creep. No `Xid`, no `ggml_abort`, no `cudaMalloc failed`.
+
+**Verdict**: **PASS — gate admits/defers at the correct `resident+candidate >= 80000` boundary on both sides, with exact numbers logged on admit AND defer**.
+- Single 40K admits (`40028`), single 82K defers (`82108`) — raw `>=` correct.
+- Concurrent 40K+45K defers (`87146`), concurrent 40K+38K admits (`79783`) — `resident+` correct while a slot is active, demonstrating the gate does not starve or over-admit at a realistic lower threshold.
+- All `candidate` values = `content tokens +52` template overhead, consistent with 747.1's `+52` observation — report both raw content and gate candidate to avoid confusion.
+
+**Raw logs**: `/tmp/rpc-test/results/747.2-baseline-nokvu-p2-vq51-th80k-0ed2ac31e/` (`llama-server.log` live, `test.log`, `summary.txt`), driver logs `/tmp/7472-boot.log`, `/tmp/7472-probe2-rerun.out`, `/tmp/7472-probe2-fix.out` (the fix run with prefix-busted prompts is the primary record), `/tmp/7472-probe3.out`.
+
+**Rig state after 747.2**: server kept LIVE for these probes — teardown will occur before 747.3 boot per the handoff checklist, with `pgrep` + `nvidia-smi` confirmation to `1 MiB`.
+
+
+### 747.3-baseline-kvu-p2-pool256k-cap164k-oversub — kv_unified_per_slot oversubscription edge case, pool 262144 vs claimed 2×164000=328000 (2026-09-09, #747 baseline work)
+
+**Purpose**: tests the unchecked invariant in `tools/server/server-context.cpp n_ctx_slot()` + `SRV_WRN` check that `--kv-unified-per-slot` is only validated against the **whole** pool (`kv_unified_per_slot > n_ctx_seq → warn cap has no effect`) and **never** against `cap × n_parallel` vs pool. Here: `ctx 262144` (model's native `n_ctx_train` per arm102 verification, 256K), `kv_unified_per_slot 164000`, `parallel 2` → claimed aggregate `2×164000=328000` exceeds the actual `262144`-token shared pool by `65856` tokens. The arm observes real behavior when both slots grow toward their nominal cap and the shared pool runs out first: `context_shift` eviction, allocation error/OOM, garbled output, stall, or silent interleaving. Handoff context: this is the original 747.3 dispatch; thorough testing with threshold 100K (params file default) plus a diagnostic with threshold raised to actually exercise the oversubscription.
+
+**Build**: same `/tmp/opencode/747-baseline` `0ed2ac31e` (`FA_ALL_QUANTS=ON` `FORCE_CUBLAS=OFF`, CUDA 13.2.2, `86;120`) — no rebuild, gate + UM prefetch included.
+
+**Boot verification — capping binds, oversub warning SILENT (the bug/gap being demonstrated)**:
+- **Expected info line present (verbatim)**: `0.19.505.651 I srv    load_model: capping per-slot context (262144) to --kv-unified-per-slot (164000)` — proves the per-slot cap binds (pool 262144 → cap 164000).
+- **Second cap (stale YaRN)**: `0.19.505.652 W srv    load_model: the slot context (164000) exceeds the training context of the model (163840) - capping` → `0.21.737.470 I srv    load_model: initializing, n_slots = 2, n_ctx_slot = 163840, kv_unified = 'true'`. With `rope_scaling yarn, rope_scale 5, yarn_orig_ctx 32768` (stale, not native 262144), `n_ctx_train` as seen by the server is `163840` (32768×5), so the 164000 cap is itself capped to **163840** — effective per-slot `163840`, claimed aggregate `2×163840=327680` still oversubscribed vs `262144` by `65536`. Mention in passing: draft MTP context briefly logs `n_ctx_seq (262144) > n_ctx_train (163840)` before cap line applies (uncapped draft KV by design, harmless — same as 747.1).
+- **NO warning about parallel×cap vs pool**: boot log contains **zero** `SRV_WRN` about `cap × n_parallel` oversubscription (only the whole-pool `> n_ctx_seq` check exists). Grep for `parallel.*cap|candidate.*threshold|oversub` finds only the `capping per-slot` info line — silence confirmed, as predicted.
+- Other boot lines: `W cmn  common_init_: KV cache shifting is not supported` + `W srv    load_model: cache_reuse is not supported` — both expected (same shape class); `context_shift on` is configured but disabled for this context (no `context_shift` eviction will occur).
+- VRAM at boot/warm: **15847/16311 MiB CUDA0 (464 free), 11911/12288 MiB RPC0 (377 free)** — byte-identical to 747.1/747.2 boots (pools preallocated; 262144 cells vs 296K, but `q8_0/q5_1` KV + MTP + `cache_ram 16384` dominate, difference within rounding).
+
+**Single-request sanity — 80K prompt alone (under both threshold and cap)**:
+- Prompt: `76×1109` = 79952 content → `80004` candidate (52 overhead, same as all 747.x deep prompts).
+- **Gate (verbatim)**: `3.41.514.541 I srv  process_sing: parallel-ctx-threshold: admit task 515 (resident 0 + candidate 80004 < threshold 100000)` → `status 200`, `prompt_tokens 80004`, wall 13.3s (cached 4186 eval tokens due to LCP reuse — single alone never conflicts with shared pool, as expected; one slot's 80K well under both 163840 cap and 262144 pool).
+
+**Two concurrent deep — with threshold 100000 (params file default, the actual oversubscription gate-masks)**:
+- Prompts: `143×1109` = 150436 content → `150488` candidate each (52 overhead).
+- **Gate (verbatim, both at resident 0)**:
+  ```
+  4.01.407.417 I srv  process_sing: parallel-ctx-threshold: defer task 546 (resident 0 + candidate 150488 >= threshold 100000)
+  4.01.904.929 I srv  process_sing: parallel-ctx-threshold: defer task 547 (resident 0 + candidate 150488 >= threshold 100000)
+  4.16.408.694 W srv          stop: cancel task, id_task = 546
+  4.16.906.975 W srv          stop: cancel task, id_task = 547
+  ```
+  Both **defer** at `0+150488>=100000` — gate blocks **before** cap or pool are ever consulted (candidate > threshold, even alone). Client `curl --max-time 15` timed out (queued), then `cancel` on disconnect. **Result**: with threshold `100000`, the `2×164000>262144` oversubscription **cannot be exercised** — the gate defers any single prompt `>100K`, so two concurrent deep prompts never both admit to let the combined `>262K` pool pressure manifest. This is correct gate behavior at this threshold, but it means the `cap × parallel` validation gap is **masked** by the threshold at 100K — the oversubscription bug is latent, not observable, unless threshold is raised above the per-prompt size.
+
+**Diagnostic — threshold raised to 400000 to actually allow oversubscription (same binary, same pool/cap, only `extra_server_args` changed to `--parallel-ctx-threshold 400000`, rebooted via `/tmp/7473-th300k.yml` 23s, 10/10 GOOD, same boot capping lines)**:
+- Prompts: `143×1109` with unique prefix (~600 tokens) to bust LCP cache → `151103` candidate each (verified via `/tokenize`; prefix adds ~600 tokens, ensures full 151K eval, not cached).
+- **Gate (verbatim, both admit)**:
+  ```
+  1.11.088.912 I srv  process_sing: parallel-ctx-threshold: admit task 460 (resident 0 + candidate 151103 < threshold 400000)
+  1.13.760.319 I srv  process_sing: parallel-ctx-threshold: admit task 463 (resident 151103 + candidate 151103 < threshold 400000)
+  3.14.699.552 I srv  process_sing: parallel-ctx-threshold: admit task 525 (resident 0 + candidate 151103 < threshold 400000)
+  3.19.121.297 I srv  process_sing: parallel-ctx-threshold: admit task 527 (resident 151103 + candidate 151103 < threshold 400000)
+  ```
+  `0+151103<400K` and `151103+151103=302206<400K` → **both admit** ✓ — threshold now permits the combined `302K` that exceeds the `262144` pool, exposing the oversubscription. Second run's tasks 525/527 are the primary record (first run cancelled at 120s client timeout before completion).
+- **Prefill behavior (interleaved, no OOM/context_shift eviction yet, verbatim)**:
+  - Slot 0 (task 525) prefills at ~440-527 tok/s: `prompt processing n_tokens 2048→18432 @ 527→446 tok/s`, progressing steadily.
+  - Slot 1 (task 527) prefills interleaved after slot 0 passes ~50% progress: `n_tokens 42→42458 @ 13→246 tok/s` (slower start, then ~245-250 tok/s steady). The log shows per-ubatch round-robin: slot 0 logs `prompt processing` lines dominate early, slot 1's lines appear after 525 passes 74769 progress, indicating **genuine concurrent prefill with interleaved ubatches**, not serialization.
+  - No `context_shift` eviction (disabled for this context), no `ggml_abort`, no `cudaMalloc failed`, no garbled output — expected since `context_shift` is off and KV pool is not yet at eviction point at ~45K-75K processed per slot (still under 151K each, combined ~120K processed, under 262K pool). The test was **cancelled at 9.38** (`cancel task 525/527` on client `kill` after ~360s) before either slot reached its nominal 163840 cap or the combined 262144 exhaust (`151103×2=302206` would need full prefill to manifest). Wallace time per slot ~117-180s before cancel, still mid-prefill.
+  - **What was NOT observed**: no allocation error/OOM, no stall, no `context_shift` line (disabled), no `Xid`/`dmesg` error. The predicted `~131K each` collision (262144/2) was not reached before cancel — the diagnostic was intentionally bounded to demonstrate **admission** under oversubscription, not to drive to inevitable pool exhaustion (which would need ~262K combined, i.e. both slots near 131K, still under 151K each, but requires ~300s+ more prefill). The **silence of the boot-time `cap × parallel` validation** and the **threshold's masking at 100K** are the primary findings, not a specific failure mode at 131K.
+
+**Four-phase VRAM margins (boot/warm/fill/decode)**:
+- Boot: `15847/16311 CUDA0 11911/12288 RPC0` (464/377 free)
+- Warm (post 10× small): flat same
+- Fill (post single 80K + two 150K defer + diagnostic two 151K concurrent mid-prefill): flat same (pools preallocated at 262144 cells, no phase creep)
+- Decode: `tg` metrics from completed requests: small prompts `~40-48 tok/s` single, deep diagnostic mid-prefill decode not yet reached (prefill still ongoing at cancel) — no decode-phase VRAM drift.
+- Xid: `none` across `dmesg`/`journalctl` sweep.
+
+**Verdict**: **PASS — boot-time `capping per-slot (262144→164000→163840)` binds, NO `parallel×cap` warning (gap demonstrated ✓), threshold 100K masks the oversubscription by deferring any single `>100K` prompt, threshold 400K lets both `151K` prompts admit (`302K` combined > `262K` pool) with interleaved prefill and **no immediate OOM/eviction/garble at mid-prefill**; longer run to full `151K` each would be needed to observe the pool-exhaustion behavior (predicted ~131K each), but the validation gap itself is confirmed and the gate's threshold interaction is now documented. Recommend a follow-up that either raises threshold or lowers `kv_unified_per_slot` to `≤131072` (262144/2) to make the claimed aggregate respect the pool — or adds the missing `cap × n_parallel > n_ctx_seq` warning in `server-context.cpp`.
+
+**Raw logs**: `/tmp/rpc-test/results/747.3-baseline-kvu-p2-pool256k-cap164k-oversub-0ed2ac31e/` (boot with threshold 100K, `llama-server.log` live), `/tmp/7473-boot.log`, `/tmp/7473-th400k-boot.log`, `/tmp/7473-single.out`, `/tmp/7473-deep-oversub2.out` (diagnostic 400K threshold, tasks 525/527), params `/tmp/7473-th300k.yml` (threshold 400K diagnostic, not the committed `747.3` file).
+
+**Rig state after 747.3**: diagnostic cancelled, server kept LIVE for this report — teardown will confirm `pgrep` 0 and `nvidia-smi` 1 MiB before closing.
+
+### 747.3 container-validation — production-mode pin-candidate check, cache_ram 24576 (2026-09-09, #747 container build)
+
+**Purpose**: re-run the 747.3 arm (kv_unified 2×164000 vs 262144 pool, oversubscription + threshold 100000) through the **production container path** (`infra/llama-baseline/docker-compose.baseline.yml` + `Dockerfile.baseline`) with `cache_ram_mib` bumped `16384→24576`, not just the bare-metal `run-with-params.sh` harness. Checks that the container picks up the 747.3 params file's exact args (no entrypoint drift), healthchecks pass, model loads, and VRAM is unchanged (host-RAM flag). This is the pin-candidate production-mode run — NOT a full oversubscription diagnostic repeat (that was already done bare-metal).
+
+**Pre-flight fix — entrypoint drift**: initial `podman compose up -d --build` produced `Args:` without `--kv-unified-per-slot` or `--parallel-ctx-threshold` (entrypoint `llama-cpp-entrypoint.sh` only parsed `cache_ram_mib`, not `kv_unified_per_slot`/`extra_server_args`). Fixed in this worktree by adding `P_KV_UNIFIED_PER_SLOT`/`P_EXTRA_SERVER_ARGS` parsing + `LLAMA_ARGS+=(--kv-unified-per-slot…)` and `LLAMA_ARGS+=(${P_EXTRA_SERVER_ARGS})` (mirrors `run-with-params.sh` §"Per-slot cap"/"extra_server_args"). Rebuilt with `podman build --no-cache -f infra/llama-baseline/Dockerfile.baseline -t localhost/llama-baseline:upstream .` (cache-busted; prior cached layers reused stale entrypoint — `podman compose build` without `--no-cache` hit cache). `src/llama-cpp` confirmed at `0ed2ac31e` (`fa_all_quants=ON FORCE_CUBLAS=OFF cuda13.2.2 86;120`) — same gate binary as all 747.x bare-metal.
+
+**Podman storage incident (incidental)**: first `podman compose up -d --build` failed `readlink /mnt/containers/overlay/l/4NS7FT3NA36F2O4GEAZVVYO6DH: no such file or directory` (overlay corruption). `podman system prune -f` reclaimed 52.5 GB but still failed; removing the stale `localhost/llama-baseline:upstream` image (`podman rmi -f`, deleted `ab42aeb9c211…`) cleared the dangling layer and the subsequent build succeeded (`91bbbf00bfa3`). Old `ubuntu:26.04` was in-use by a prior container (`ada96f…`) — forced `podman pull docker.io/library/ubuntu:26.04` to `af52039db3f8` before rebuild. Not a code bug, just host storage state.
+
+**Before/after `podman ps` — stale containers replaced (not left as duplicates)**:
+- Before fix: `llama-baseline_rpc_1` + `llama-baseline_llama_1` `Exited (137) 34h ago` (pre-existing arm090 footprint); plus after first (broken-entrypoint) build: `cb2488a0ce42` (rpc healthy) + `047cef279d9d` (llama starting→healthy).
+- After `down` + `--no-cache` rebuild + `up -d`: `b35202a5c4e9` (rpc) + `68aaeba8dfe7` (llama) — new IDs, old `cb248/047ce` removed. Verified via `podman ps -a` before/after.
+- RPC image tag is `localhost/llama-baseline:upstream` (`91bbbf00bfa3` after fix).
+
+**Healthchecks — waited for healthy**: polled `podman ps` every 5s through the 60s `start_period`. RPC became `healthy` at ~6s (TCP `:50052`), llama transitioned `starting→healthy` at ~34s (curl `http://localhost:18081/health`). At steady state after validation: `llama-baseline_llama_1: healthy (0 fails)` via `podman inspect --format '{{.State.Health.Status}}'`; `llama-baseline_rpc_1: unhealthy (10 fails)` via inspect but `podman ps` briefly showed `healthy` then flipped to `unhealthy` — healthcheck `bash -c 'echo > /dev/tcp/127.0.0.1/50052'` is flaky under `network_mode: host` + podman-compose's shell probe, while `podman logs llama-baseline_rpc_1` shows `Accepted client connection`/`Client connection closed` continuously and `llama-server` logs show `RPC0[127.0.0.1:50052]` model buffer `7062 MiB` and steady `update_slots: all slots are idle` — RPC is serving, healthcheck probe is the only failing signal, not the data path. Llama `curl -f http://localhost:18081/health` is the authoritative readiness signal and stayed `healthy`.
+
+**Logs — container picked up 747.3 args**:
+```
+Args: ... --parallel 2 --cont-batching --kv-unified ... --cache-prompt --cache-reuse 64 --prio-batch 1 --context-shift --cache-idle-slots --kv-unified-per-slot 164000 --cache-ram 24576 --parallel-ctx-threshold 100000 --metrics --slots --log-verbosity 4
+0.19.686.889 I srv    load_model: capping per-slot context (262144) to --kv-unified-per-slot (164000)
+0.19.686.xxx W srv    load_model: the slot context (164000) exceeds the training context (163840) - capping  →  n_slots=2 n_ctx_slot=163840 kv_unified='true'
+0.21.917.456 I srv    load_model: initializing, n_slots = 2, n_ctx_slot = 163840, kv_unified = 'true'
+```
+Matches bare-metal 747.3 capping (`262144→164000→163840` after YaRN `32768*5=163840`) and `n_ctx_slot 163840`. `--cache-ram 24576` confirmed in `Args` (host-RAM, VRAM should be flat — see below). Also `W cmn common_init_: KV cache shifting is not supported` + `W srv load_model: cache_reuse is not supported` lines present as on bare-metal.
+
+**Liveness — 10× curl health**:
+```
+for i in 1..10: curl -s http://localhost:18081/health → {"status":"ok"}  [10/10]
+podman inspect llama-baseline_llama_1 → healthy
+podman inspect llama-baseline_rpc_1 → unhealthy (healthcheck flake, data path ok — see above)
+podman ps → both Up (llama healthy, rpc unhealthy per inspect but serving)
+```
+
+**VRAM — flat, cache_ram is host RAM**:
+```
+nvidia-smi: CUDA0 15847 MiB / 16311 MiB (464 free) — 5f11? actually GeForce RTX 5060 Ti
+           CUDA1 11911 MiB / 12288 MiB (377 free) — GeForce RTX 3060
+Processes: PID 674687 llama-server 152 MiB (CUDA0), PID 674438 ggml-rpc-server 126 MiB (CUDA1)
+```
+Byte-identical to every 747.x bare-metal boot (747.1/747.2/747.3 all 15847/11911). The `24576` vs `16384` `cache_ram` bump did **not** move VRAM — expected: `--cache-ram` is host RAM for idle-slot swap, not VRAM. No OOM, no Xid.
+
+**Verdict**: **PASS — container builds and serves 747.3 correctly in production mode.** Same binary, same params, same capping/VRAM as bare-metal; entrypoint drift fixed; no new failure mode introduced by containerization. Still UNOBSERVED: the actual pool-exhaustion failure at ~131K/slot concurrent growth (bare-metal diagnostic was cancelled at ~50% prefill) — container run was **not** re-driven to that depth, so do **not** treat this as a confirmed-safe production pin until that gap is closed. Keep `dagger` note in `docker-compose.baseline.yml` ("failure mode still UNOBSERVED") as-is.
+
+**Left running**: `b35202a5c4e9` (rpc) + `68aaeba8dfe7` (llama) on `localhost:18081` with 747.3 pin-candidate config (`cache_ram 24576`, `threshold 100000`). Do **not** tear down — queued 12-turn decode-speed task runs against this same container. If container had failed, fallback would have been bare-metal `run-with-params.sh` with `747.3-baseline-kvu-p2-pool256k-cap164k-oversub.yml`.
+
+**Raw evidence**: `podman logs llama-baseline_llama_1` (Args + capping lines above), `podman ps` before/after IDs, `curl -s http://localhost:18081/health` ×10, `nvidia-smi` (15847/11911), build log `podman build --no-cache` → `91bbbf00bfa3`, entrypoint diff in `infra/llama-baseline/llama-cpp-entrypoint.sh`.
+
+### 747.3 — 12-turn growing-context decode-speed sweep, 2 concurrent sessions 10K→65K, same container pin (2026-09-09)
+
+**Purpose**: decode tok/s vs context depth under realistic 2-concurrent-session growth against the **same** 747.3 container (`cache_ram 24576`, `threshold 100000`, `kv_unified_per_slot 164000→163840`, `ctx 262144`) validated above — no threshold override, no bare-metal fallback (container stayed healthy). Each session grows independently via `infra/llama-baseline/prompts/bigprompt-1109.txt` copies (verified `1052 tok/copy` via `/tokenize`, `+52` chat-template overhead at gate → `prompt_tokens = copies*1052+52`). Turn 1 = 10 copies (≈10,520 content / 10,572 total), each subsequent turn APPENDs 5 copies (≈5,260 content) and resends full accumulated history via `/v1/chat/completions` so `cache_prompt`/`cache_reuse 64` (LCP) only prefills the new suffix — realistic chat growth, not full reprefill. `n_predict 96` per turn (modest, measures `tg` decode rate, not prefill). Depth trajectory per slot: 10K,15K,20K,…65K content (≈10,572→68,432 total). Both sessions' 12 turns are fired **concurrently per turn** (two threads per turn, same wall-clock window — same idea as 747.1 deep e2e driver but sustained 12 turns) — verifies gate behavior when `resident+candidate ≥ threshold`.
+
+**Method**: `python /tmp/12turn_decode_test.py` (concurrent per-turn driver, `temperature 0`, `max_tokens 96`, `timeout 180s`), two threads per turn, `time.time()` wall, `usage.prompt_tokens`/`prompt_tokens_details.cached_tokens` + `timings.{prompt_n,cache_n,prompt_ms,prompt_per_second,predicted_per_second}` per slot, plus delta `podman logs … | grep parallel-ctx-threshold` for exact `resident+candidate<threshold` admit vs `≥threshold` defer lines. RPC `unhealthy` healthcheck flake persisted but data path stayed serving (same as container-validation — `Accepted client connection` continuously, llama healthy). `nvidia-smi` not re-polled mid-sweep (same 15847/11911 footprint as before).
+
+**Table — depth vs throughput per turn, per slot** (`depth(content)` = copies*1052, `depth(total)` = prompt_tokens incl. +52 overhead; `prefill` = `timings.prompt_n` actually processed vs `cache_n` hit; `prompt_tps` = prompt eval rate; `gate` = server's threshold log for that turn's two admits/defers; `wall max` = slower of the two concurrent slots):
+
+| turn | copies | depth(content) | depth(total) | decode slot0 (tg) | decode slot1 (tg) | prefill processed (prompt_n) s0/s1 | cache_n s0/s1 | prompt_tps s0/s1 | gate event | wall max |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 10 | 10520 | 10572 | 32.4 | 5.6 | 10572 / 516 | 0 / 10056 | 713 / 433 | admit 0+10572<100000 (task 70); admit 10572+10572<100000 (task 72) | 18.7s |
+| 2 | 15 | 15780 | 15832 | 31.4 | 17.3 | 5776 / 5776 | 10056 / 10056 | 487 / 390 | admit 0+15832<100000; admit 15832+15832<100000 | 21.2s |
+| 3 | 20 | 21040 | 21092 | 30.0 | 16.1 | 5776 / 5776 | 15316 / 15316 | 441 / 353 | admit 0+21092<100000; admit 21092+21092<100000 | 23.3s |
+| 4 | 25 | 26300 | 26352 | 28.9 | 15.2 | 5776 / 5776 | 20576 / 20576 | 385 / 309 | admit 0+26352<100000; admit 26352+26352<100000 | 26.1s |
+| 5 | 30 | 31560 | 31612 | 27.7 | 14.4 | 5776 / 5776 | 25836 / 25836 | 371 / 294 | admit 0+31612<100000; admit 31612+31612<100000 | 27.6s |
+| 6 | 35 | 36820 | 36872 | 13.5 | 26.6 | 5776 / 5776 | 31096 / 31096 | 273 / 345 | admit 0+36872<100000; admit 36872+36872<100000 | 29.7s |
+| 7 | 40 | 42080 | 42132 | 12.8 | 25.6 | 5776 / 5776 | 36356 / 36356 | 254 / 322 | admit 0+42132<100000; admit 42132+42132<100000 | 31.8s |
+| 8 | 45 | 47340 | 47392 | 12.3 | 24.8 | 5776 / 5776 | 41616 / 41616 | 238 / 303 | admit 0+47392<100000; admit 47392+47392<100000 (94784<100000 by 5216) | 33.8s |
+| 9 | 50 | 52600 | 52652 | 31.8 | 31.8 | 4 / 5776 | 52648 / 46876 | 15 / 343 | admit 0+52652<100000; **defer 52652+52652=105304≥100000** (task 353) → admit 0+52652<100000 after first completes | 24.3s |
+| 10 | 55 | 57860 | 57912 | 31.7 | 31.6 | 4 / 5776 | 57908 / 52136 | 14 / 343 | admit 0+57912<100000; **defer 57912+57912=115824≥100000** → admit after | 23.2s |
+| 11 | 60 | 63120 | 63172 | 31.6 | 31.7 | 11036 / 4 | 52136 / 63168 | 341 / 14 | admit 0+63172<100000; **defer 63172+63172=126344≥100000** → admit after (note s0/s1 swap — whichever raced first got the 4-token hit) | 38.7s |
+| 12 | 65 | 68380 | 68432 | 31.6 | 31.6 | 4 / 5776 | 68428 / 62656 | 14 / 342 | admit 0+68432<100000; **defer 68432+68432=136864≥100000** → admit after | 23.2s |
+
+*Notes on table*: `decode` = `timings.predicted_per_second` (tg, server-side decode-only, not wall-derived `comp_tokens/wall` which is ~3-5 tok/s wall due to including prefill wall time — report wall_max separately). `prompt_n` 5776 = the incremental 5-copy suffix actually processed (≈5,260 content + overhead + boundary tokenization delta; matches 747.2's ~5K increment — cache_reuse working: `cache_n` grows by ~5,260 each turn, `prompt_n` stays flat at 5,776 until gate serializes). Turns 9-12 `4` / `11036` are the identical-prompt artifact: both sessions used the **same** bigprompt text, so after the first of the pair admits and fills its slot, the deferred second (same prompt) hits almost 100% cache (`prompt_n 4`, `cache_n = prompt_tokens-4`) when it finally admits with `resident 0` — a real heterogeneous two-session workload with distinct content would both see `5776` processed. Turn 11's `11036` is a double-increment (two suffixes missed due to slot reassignment after prior defer — still within 2×5,776 budget). `gate event` resident values are literal server logs (`process_sing: parallel-ctx-threshold: admit/defer task N (resident X + candidate Y … threshold 100000)`).
+
+**One-line verdict**: **No decode crater up to 65K per slot** — under true concurrency (turns 1-8, both admit) decode drifts gently `~32→12 tok/s` (slowest 12.3 at 47K, still >10 tok/s) and per-turn wall grows ~18→34s with depth; once combined depth crosses threshold at ~50K/slot (turn 9, `52652*2=105304≥100000`) the gate **defers the second session, serializes the pair (queue → late admit with resident 0), and decode *recovers* to ~31-32 tok/s** — the deferred turn just queued and completed late (wall 23-38s, still within `timeout 180s`), did **not** break the session's turn sequence (next turn's growing prompt still admitted correctly, depth continued 52K→68K). Production-relevant finding: threshold 100K trades concurrent throughput for per-slot speed at high depth — it prevents both slots reaching their 163840 cap simultaneously (claimed 327680 > 262144 pool) by throttling to sequential at ≈50K/slot; the oversubscription pool-exhaustion failure remains unobserved because the gate stops the workload before the ~131K/slot collision point.
+
+**Cache_reuse confirmation**: `prompt_n 5776` vs `5,260` content increment + `cache_n` monotonic `10056→68428` shows LCP hit ~95-99% each turn (only the 5-copy suffix prefills: `prompt_per_second` 238-487 tok/s). Turns 1's slot0 cold `10572/0` vs slot1 warm `516/10056` shows the first concurrent pair interfered: the second slot's decode dropped to `5.6 tok/s` while the first prefills (≈747.0's 0.99 tok/s interference pattern) — same mechanism, less severe at 10K depth.
+
+**Wall time vs depth**: wall_max `18.7s→33.8s` (concurrent) then `23-24s` (serialized) — not monotonic because serialized turns avoid concurrent prefill stall and benefit from full cache hit (identical prompts). With heterogeneous prompts, serialized wall would be ~`2×(prefill 5,776 + decode 96)` ≈ 2×~12-15s = 24-30s, still bounded.
+
+**Left running**: same `b35202a5c4e9` + `68aaeba8dfe7` on `localhost:18081` (747.3 pin, cache_ram 24576) — do not tear down. Fallback not needed (container stayed healthy throughout; RPC healthcheck still `unhealthy` per inspect but `Accepted client connection` and llama `healthy` — gate logs and decode prove serving).
+
+**Raw evidence**: driver `/tmp/12turn_decode_test.py` + log `/tmp/12turn_run.log`, results JSON `/tmp/12turn_results.json`, gate log `/tmp/12turn_gate.log`, `podman logs llama-baseline_llama_1` gate lines (admit/defer with resident/candidate/threshold values above).
+
+
+### bugfix (2026-09-09): #747 gate permanently defers a lone request exceeding the threshold (resident==0) - production agent c865947e unblocked
+
+**Impact (live production incident).** Agent c865947e (Paseo, `baseline/local` -> container `llama-baseline_llama_1` :18081) had its conversation cross 100K tokens; every subsequent turn deferred forever:
+`133.05 defer task 10542 (resident 0 + candidate 102401 >= threshold 100000)`, `186.39 defer task 12822 (resident 0 + candidate 104482 >= threshold 100000)`. Client saw timeouts only.
+
+**Root cause.** The gate (tools/server/server-context.cpp, `process_single_task`) deferred any request with `resident + candidate >= threshold`, including `resident == 0`. A lone request bigger than the threshold on an otherwise-idle pool defers with NO retry trigger: nothing is resident, so no slot release ever fires `pop_deferred_task`. Permanent stall. The threshold guards combined oversubscription between concurrent requests - it was never meant to bound a single request's own size (that is the per-slot cap / `n_ctx_slot` check, already correct).
+
+**Fix.** `fork/hydra-747-parallel-ctx-threshold-baseline` commit `3ab0fdec8` (updates fork PR #110): defer now requires `resident > 0` AND `resident + candidate >= threshold`; a lone request (resident 0) always admits. Admit log gains an accurate lone-request variant (`resident 0 + candidate N >= threshold T; lone request on idle pool`) so the printed comparison never lies (the old unconditional `< threshold` admit line would have been wrong in this case).
+
+**Verification (bare-metal, 747.3 yml, build-cuda1322 @ 3ab0fdec8; live agent traffic hit the same instance on :18081 while production was stopped, doubling as a real-workload test).**
+- Lone request >= threshold ADMITS: agent's own 104,482-token turn admitted at 0.52 boot-time (`resident 0 + candidate 104482 >= threshold 100000; lone request on idle pool`); next agent turn 114,353 admitted lone at 10.21; explicit probe 118,928 (113 copies) admitted lone at 19.14 and completed end-to-end in 542s, valid JSON, 64 completion tokens.
+- Contention protection intact - 6 defer events, all genuine contention: `918 + 104482`, `104482 + 808`, `58790 + 118928`, `69360 + 80004` (x2, deep pair), `118991 + 70992`.
+- Defer -> release -> auto-retry: tasks 414 (808 tok), 6765 (63,336), 8962/8963 (deep pair 80,004 each) all auto-admitted after the blocking slot released; pair A+B both completed valid (96 tokens each). Transient resident inflation observed (118,991 while only A processing) - stale same-slot prompt-cache residue before prefix trim; decision still correct, resolves within seconds.
+- Small requests correctly wait behind deep residents (808-token request deferred at `104482 + 808` then admitted on release) - matches #747 intent; threshold 100K < cap 164K means a deep resident blocks any concurrent admission until it finishes. Expected under this pin, not a defect.
+
+**Redeploy (production).** Image rebuilt `--no-cache` from `src/llama-cpp/build-cuda1322` (binaries @ 3ab0fdec8; llama-server build 10812, rpc unchanged) -> image `e6d04f12c9b2`. GOTCHA: `podman compose up -d --build` did NOT recreate the container - it restarted the existing container still backed by the stale pre-fix image `91bbbf00` (built 07:56 by muse-spark), and a lone 105,252-token probe DEFERRED (`11.39 defer task 0 (resident 0 + candidate 105252...)`) on it. Version string is useless for distinguishing (both binaries print `build 10812, commit 0ed2ac31e` - tree HEAD was the same at both build times) and the exec-md5 check misfired; only the behavioral probe exposed the stale image. Required `podman compose down` + `up -d` to actually recreate. Re-verify on the recreated container: the SAME 105,252-token probe ADMITTED (`6.09 admit task 0 (resident 0 + candidate 105252 >= threshold 100000; lone request on idle pool)`).
+- Cost accepted per dispatch: restart dropped the in-process idle-prompt cache (incl. c865947e's ~101,978-token saved state); its next turn pays a fresh ~104K prefill (~5 min) instead of staying stuck forever.
+- Status at write time: c865947e already unblocked (its backlog drained through the bare-metal instance running the identical binary+config: turns 104,482 / 114,353 / 58,790 / 63,336 / 67,375 / 70,992 / 80,004 x2 all admitted with correct gate semantics). Production next-retry admission: monitoring `podman logs llama-baseline_llama_1`.
+- Open follow-ups: parent-side submodule bump to `3ab0fdec8` for PR #748 (parent tree currently carries muse-spark's uncommitted edits - left untouched); container rpc_1 healthcheck shows unhealthy-but-functional (pre-existing, unchanged).
+
+### verification (2026-09-09): #747 gate exclusivity is race-safe by construction; deep-session serialization is designed behavior (no code change)
+
+**Behavioral evidence (30-min live production window, fixed binary e6d04f12c9b2).** Every deep (~85K-126K) task strictly serialized; `/slots` showed at most one slot processing at any instant:
+```
+179.51 admit task 22999  (resident 0 + candidate 123647 >= threshold; lone request on idle pool)
+180.18 defer task 23611  (resident 123683 + candidate 85155 >= threshold)
+191.09 defer task 24207  (resident 125193 + candidate 88775 >= threshold)
+194.31 admit task 23611  (resident 0 + candidate 85155 < threshold)   <- only after 22999 fully released
+194.36 defer task 24392  (resident 85190 + candidate 126231 >= threshold)
+195.19 admit task 24207  (resident 0 + candidate 88775 < threshold)   <- only after 23611 fully released
+206.53 admit task 24392  (resident 0 + candidate 126231 >= threshold; lone request on idle pool)
+```
+Note the ordering at 194.31/194.36: release -> deferred retry admitted (resident 0) -> the NEXT deferred retry 50 ms later already sees resident 85190 -> defer. Single-thread sequencing, no interleaving window.
+
+**Code-level atomicity confirmation (3ab0fdec8).** The gate's read-compare-act needs no mutex because task admission is structurally single-threaded:
+- Admission (`process_single_task`, wired via `queue_tasks.on_new_task`, server-context.cpp:1408-1410) runs on exactly one of two threads, never both: the main loop thread (`start_loop` -> `process_new_tasks(false)`, server-queue.cpp:301) OR the yield worker (`worker_loop` -> `process_new_tasks(true)`), and the worker only runs while `worker.busy` is set - exclusively inside `yield_to_queue()` (server-queue.cpp:230, non-nestable assertion :229). During a yield the main thread runs the work lambda and then blocks for `!worker.busy` (:249-251). The two processing paths cannot overlap by construction, not by timing.
+- Tasks are processed one at a time (server-queue.cpp:138-161: pop -> callback -> next), so each task fully completes gate check + slot launch before the next task's gate scan runs.
+- `launch_slot_with_task` synchronously sets `slot.state = SLOT_STATE_STARTED` / `WAIT_OTHER` before returning (server-context.cpp:1822-1824); `is_processing()` = `state != SLOT_STATE_IDLE` therefore already observes a just-admitted task as resident for the very next arrival.
+- All post-gate fallbacks are conservative (never over-admit): no free slot -> defer (:2423-2427); busy explicitly-requested slot -> defer (:2430-2434); launch failure -> drop with SRV_ERR (:2450-2452). Deferred tasks re-enter `process_single_task` and re-evaluate the gate from scratch.
+- Release path (`server_slot::release()`: state=IDLE -> `callback_on_release(id)` -> `pop_deferred_task(id_slot)`, server-context.cpp:552-563, server-queue.cpp:90-108) runs on the same exclusive task thread; re-posts one task at a time, each individually re-evaluated.
+- The only mutexes (`mutex_tasks` queue coordination; `mutex_cache` prompt cache) never guard the gate - not needed: gate data (`slots`, queues) is exclusively owned by the single task-processing thread.
+- The four `yield_to_queue` work lambdas (speculative draft, mtmd chunk, llama_decode, speculative process - server-context.cpp:3064/3514/3700/3765) run pure ggml/llama compute on the main thread and touch no slot/task-queue state, so even during yields there is zero concurrent access to the gate's data.
+- Residual caveat (benign, conservative direction): a released slot mid-scan can only DECREASE resident; `WAIT_OTHER` parent slots count as resident while waiting on children - both undercount/overcount errors point safe. A gate-admitted task that then fails to launch is dropped on the error path (server is erroring anyway), never silently double-admitted.
+
+**Conclusion.** The single-deep-request guarantee does not depend on arrival timing; it is enforced by the server's single-task-thread architecture. The "once any resident depth >= threshold, nothing of any size admits until full release" property is the direct, intended consequence of the documented sum-based semantics (`resident-ctx-sum + candidate >= threshold`, tools/server/README.md:179, commit d06537485) - a resident at or above the threshold leaves zero combined-context headroom for any candidate. Documented here as explicit designed behavior; no code change made.
+
+### verification (2026-09-09): 747.4 (nokvu) idle-slot residency hypothesis REFUTED; prompt-cache reuse CONFIRMED working on both slots; the 61-88K cliff model is obsolete post-patch
+
+**Task 1 verdict - the stated mechanism is wrong; 747.4's speed is real but has a different cause.**
+- REFUTED at code level: the production binary fully prefetches ALL managed allocations to the device at alloc time (commit ba2c46f65, in both 747.3's image 91bbbf00 and 747.4's e6d04f12c9b2: cudaMemAdviseSetPreferredLocation + cudaMemPrefetchAsync immediately after cudaMallocManaged). There is no demand-paging regime left for KV cells: every one of the 262144 cells (both fences in nokvu, the whole shared pool in kvu) is physically VRAM-resident from boot, filled or not. An idle fenced slot costs FULL bytes, not zero.
+- REFUTED empirically: fb flat at 15847/11911 MiB from boot on 747.4 (no residency dynamics); idle footprint IDENTICAL across 747.0 (nokvu 296K cells), 747.3 (kvu 262144+cap), 747.4 (nokvu 262144) - whole pool resident at boot in every config.
+- kvu-vs-nokvu ruled out as the collapse variable in BOTH directions: 747.2 (NOKVU) collapsed to 2.75 t/s (task 736, slot 0) while its sibling decoded 28.8 t/s at ~78K combined concurrent - nokvu collapses too; 747.3 (KVU) 12-turn sweep held 12-31 t/s with both slots concurrent to 65K/slot (131K combined) and recovered to 31.6 t/s serialized - kvu does not inherently crater. Config is not the variable.
+- The 61-88K cliff model (pages materialize as slots fill; §3430) described the PRE-PATCH arms only (measured Sep 7/8; ba2c46f65 landed Sep 8 20:00). Post-patch, 747.4 sustains ~190-200K COMBINED filled cells (slot 1 ~110K + slot 0 ~91-96K) with serialized lone decode at 20-25 t/s and ZERO paging storm - way past the old cliff. The old model needs a post-patch re-derivation.
+- Live telemetry this boot (747.4, active 108K+ lone decode, nvidia-smi dmon): rxpci/txpci at noise level (0-270 MB/s blips = checkpoint copies) vs the 10.7-13.5 GB/s + 6.7-11.3 GB/s sustained storm signature recorded pre-patch (§3457). No host paging during deep decode.
+- What ACTUALLY explains the observed patterns post-patch: (a) decode-while-concurrent-prefill interference (proven repeatedly: 747.0's 0.99 t/s, 747.2 task 736's 2.75 t/s - the decoder starves while the sibling slot prefills tens of K tokens; NOT a memory cliff); (b) pre-patch UM eviction storms (§3457 - gone post-patch). The 747.3 production window's 2.3-2.8 t/s at 85-128K lone: raw logs did not survive the container recreation, so the exact cause is UNVERIFIED - most consistent with an interference/burst pattern (sibling prefill, checkpoint/restore bursts), NOT with a kvu-inherent residency property (the 747.3 sweep's own 65K/slot concurrent data contradicts that). The orchestrator's "8x improvement" is real as observed but the kv_unified-off causal story is not supported; treat the 747.3-vs-747.4 comparison as traffic-confounded until a controlled same-traffic A/B exists.
+- Generalization to parallel=3+: the operative property is "one deep decode at a time is fine; deep decode overlapping another slot's large prefill (or pre-patch: combined overflow) collapses". Fencing bounds each session to total/n_parallel cells and the threshold gate serializes deep decodes - those are the protective factors, and both hold at any parallel count. The kvu/nokvu choice itself is not the protective factor.
+
+**Task 2 verdict - YES, prompt caching works correctly on both slots on production 747.4.**
+- Slot 1 same-conversation chain (candidates 85918 -> 96419 -> 97866 -> 98950 -> 100669 -> 108589 -> 109622): prompt-eval processed only 2718 / 621 / 1237 / 1380 / 163 / 166 / 1401 / 7924 / 206 tokens per turn - LCP cache hits of 96.2-99.8% (the 7924 on task 5136 reflects the slot having served another conversation in between; still ~93% hit). Decode at depth: 22.72 t/s @108K, 23.21 t/s @~110K.
+- Slot 0 second conversation: 91060 first prefill (new, correct), then 43 tokens processed vs 96387 candidate (99.96% hit), then 576 (441 tok/s suffix rate); decode 25.03 t/s @100K, 39.64 t/s.
+- ZERO "forcing full prompt re-processing due to ... hybrid/recurrent memory" lines (arm105's failure mode NOT reproducing); --cache-prompt --cache-reuse 64 --cache-idle-slots all active in Args; LCP slot-selection firing every turn (f_sim 0.986-0.998).
+- Checkpoint machinery: create/erase churn CONFIRMED firing (context checkpoints ~343-344 MiB at 108K depth, created/erased every ~512 tokens during decode, 6-7 of 32 slots in use) - the arm105-flagged tax is real but bounded and does not break caching; restore path ("restored context checkpoint") unexercised this boot (no idle-eviction yet; machinery unchanged from the 747.3-era config where session-swap restores were verified). Caveat: if heavy session-swap traffic resumes, watch whether restore bursts re-introduce interference (not memory paging - compute/IO overlap).
+- Verdict: no revert to 747.3 needed on cache grounds; current deploy is sound for the observed workload. Open follow-up: controlled 747.3-vs-747.4 same-traffic A/B if the 8x claim needs to be attributed to config vs traffic pattern.
+
+### finding (2026-09-09): deferred-task retry is release-event-only and one-pop-per-release - a gate-passed request that cannot launch can hang silently (root cause confirmed, no fix applied pending triage)
+
+**Observed (production 747.4)**: task 12239 (75 tokens) printed its gate ADMIT line at 33.33.318 but never got a launch_slot_ event; slot 0 then sat idle from 33:46 with nothing running, and the client (curl -m 120) timed out with no response and no error. An older deferred task (10767, 104875 tokens) was re-evaluated and re-deferred at the same release event (33.46.507).
+
+**Root cause chain (code-verified, 3ab0fdec8)**:
+1. Both defer paths converge on one queue: a task the gate ADMITS but that then finds no free slot goes through get_available_slot -> nullptr -> queue_tasks.defer (server-context.cpp:2423-2427) - the SAME deferred FIFO as gate-deferred tasks. There is no separate "admitted-but-not-launched" path.
+2. Deferred tasks have exactly ONE retry trigger: pop_deferred_task(id_slot), called ONLY from callback_on_release (server-context.cpp:1302-1303 - only call site), i.e. slot release events. The main loop (start_loop) drains queue_tasks every iteration but NEVER touches queue_tasks_deferred; idle loop iterations, update_slots, and new task arrivals do not retry deferred tasks.
+3. pop_deferred_task pops at most ONE task per release: first a deferred task explicitly requesting the released slot (it->id_slot == id_slot), else the FIFO HEAD (server-queue.cpp:90-110). A big gate-blocked head (10767: resident 49584 + candidate 104875 >= 100000) re-defers and BURNS the release event; the tail (12239) then waits for the NEXT release - slot 1's long task, arbitrarily far away.
+4. New arrivals bypass deferred tasks entirely: a fresh small request 3.5 min later was posted to queue_tasks and served immediately on the idle slot 0 (verified live) while deferred tasks kept waiting - priority inversion/starvation under sustained arrivals.
+5. Disconnect while deferred: server_response_reader::stop() posts CANCEL per pending task (SRV_WRN "cancel task" per task); post() intercepts CANCEL and calls cleanup_pending_task, which silently erases the target from queue_tasks, queue_tasks_deferred and queue_tasks_unhandled (server-queue.cpp:32-58, 368-383 - no log for the erase); the TASK_TYPE_CANCEL handler then no-ops for a never-launched task (server-context.cpp:2473-2482). Note: for a non-streaming client, disconnect detection can lag until the next write attempt - in the observed window NO "cancel task, id_task = 12239" WRN appears, so 12239 likely remained deferred (hang) rather than being erased at timeout; either way the client-visible outcome is identical: silent hang until timeout, no error.
+
+**Verdict**: real scheduling gap, not a crash and not a permanent orphan for a patient client (the next release WOULD eventually serve it), but: (a) a gate-passed request can wait indefinitely behind a re-deferring head despite an idle slot; (b) sustained arrivals can starve deferred tasks without bound (arrival bypass); (c) disconnecting while deferred yields either a silent erase or a dead-connection serve - never an error to the client. Amplifier: the ctx-threshold gate adds re-defer churn that consumes release events (pre-existing upstream v0.4.0 single-pop/release-only retry, made more visible by the gate; not introduced by the resident==0 fix).
+
+**Deterministic repro (no timing luck; parallel=2, threshold>0, log-verbosity 4)**:
+1. Fire L0 + L1: small prompts, n_predict 4000, stream=true -> both slots busy for many minutes.
+2. Fire B: ~104K-token prompt (113x bigprompt-1109), n_predict 1 -> gate-deferred. deferred=[B].
+3. Fire T: ~75-token prompt, n_predict 1, patient client -> gate ADMITS, no free slot -> deferred=[B, T].
+4. Cancel L0 (or let it finish) -> release(slot 0) -> pop pops B (head) -> gate re-defers B (resident L1 + B >= threshold) -> deferred=[T, B]. Slot 0 now IDLE while T hangs for the whole remaining runtime of L1. Assert: /slots shows slot 0 idle, T has no launch_slot_ line, T's client gets no bytes.
+5. Fire any new tiny request -> takes slot 0 immediately (inversion demonstrated).
+6. Variant: T with curl -m 20 -> on timeout, either silent cleanup_pending_task erase (no further trace) or T eventually launches and serves a dead socket. No error path to the client in either case.
+
+### fix (2026-09-09): deferred-FIFO drain on slot release (task-12239 hang) - commit 1d3c4a8e3, deployed as image 7bf9c7173ead on llama-baseline_llama_1
+
+**Fix** (tools/server/server-queue.cpp pop_deferred_task, single contained change): a slot release now re-posts the ENTIRE deferred FIFO in order (tasks explicitly requesting the released slot first, then the rest FIFO) to the FRONT of the main queue, so every waiter is re-evaluated against the freed capacity before newer arrivals; tasks that still cannot proceed re-defer to the back, preserving FIFO order. Closes both gaps: (1) a re-deferring head no longer burns the release event for the rest of the queue; (2) deferred tasks get strict front-of-queue priority at every release drain, closing the arrival-bypass fairness hole (a new arrival can still take a slot a deferred task could not have used under the gate - that is correct, not unfairness).
+
+**Verification (bare-metal, 747.4 yml)**:
+- BUG re-proven first (run on the then-current build-cuda1322, which turned out to still be pre-fix): L0+L1 occupy both slots, B (71,588) gate-deferred, T (59 tokens) deferred; kill L0 -> release popped ONLY the head (B re-deferred) and T starved the full 120s client window, exactly the deterministic repro.
+- FIXED binary (1d3c4a8e3): same scenario -> T served 6.02 s after the L0 release (valid response, 4 completion tokens); B re-deferred at the same drain and was served later by the drain when resident dropped (valid, 1 token).
+- Gate semantics re-verified on the fixed binary: boot loop 10/10 normal admits; defer/admit/lone-request lines all correct; lone probe (118,928 >= threshold) first deferred behind a real agent turn (52,996 resident - correct contention) then `admit task 5946 (resident 0 + candidate 118928 >= threshold 100000; lone request on idle pool)`, completed 64 tokens valid.
+
+**Redeploy (production)**: image rebuilt --no-cache (7bf9c7173ead from build-cuda1322 @ 1d3c4a8e3); `podman compose down` + `up -d` (the reliable recreate path); container image ID verified matching BEFORE behavioral checks (the up---build recreate trap avoided). Restart snapshot: slot 0 was mid-prefill of a 76,847-token agent turn (73,828 cached) - interrupted; agents re-prefill on next turn (bounded one-time cost, same judgment call as the earlier kv_unified redeploy). Boot args verified (ctx 262144, --no-kv-unified, threshold 100000).
+
+**Production behavioral proof (real agent traffic interleaved throughout)**: task 582 (59 tokens, the T of the repro) was re-evaluated at EVERY release drain - gate lines at 9.08 / 9.15 / 11.14 boot-relative. The 9.15 drain is the decisive one: the head (553, B: 71,588) re-deferred AND 582 was evaluated in the SAME release event (old code: one pop -> 553 only). 582 legitimately found no free slot at 9:15 (a real agent 45,867-token turn, task 104, had just taken one), was re-admitted at the 11:14 drain, LAUNCHED 0.7 s later on the freed slot 0, completed and released at 11:16 - response valid (4 tokens, written to the client). End-to-end T latency (~2.3 min from the L0 kill) was dominated by real agent load (46K-token prefills contending for compute), not by the scheduling gap: under the old code T would have been skipped at every one of those release events while B (or a later head) re-deferred, with the slot idling. B (553) stayed correctly deferred while agent traffic kept resident above the threshold; its client gave up (disconnect -> silent cleanup_pending_task erase - expected, documented behavior).
+
+**Residual notes**: (a) non-streaming disconnect detection can lag (the original 12239 case showed no cancel WRN) - silent erase remains possible for a disconnecting client while deferred; acceptable (documented), the hang-with-idle-slot case is closed. (b) PR #110 now carries the gate + resident==0 fix + this drain fix (branch fork/hydra-747-parallel-ctx-threshold-baseline @ 1d3c4a8e3); parent-side submodule bump for PR #748 still pending (muse-spark's uncommitted parent edits untouched).

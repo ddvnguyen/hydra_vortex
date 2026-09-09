@@ -1,0 +1,80 @@
+# Arm 747.4 — re-verify the kv_unified on/off axis (arm122 vs arm123) against
+# the CURRENT 747.3 production shape, at the user's request, after observing
+# live prod decode collapse to ~2.3-2.8 tok/s at 85-125K single-slot depth.
+#
+# WHY: docs/investigations/740-results-report.md already ran this exact A/B
+# (arm121/122 kv_unified=off vs arm123 kv_unified=on, both 2x131072=262144
+# total cells, UM on) and found NO measurable difference — both collapsed to
+# 0.9-2.7 tok/s at 88.8K/68.7K depth (§3542-3563, "kv_unified ruled out as a
+# factor"). This arm re-confirms that finding on the exact 747.3 production
+# binary/deploy/config family rather than relying on the earlier arm121-123
+# result alone, per explicit instruction to try it anyway.
+#
+# CHANGES vs 747.3-baseline-kvu-p2-pool256k-cap164k-oversub.yml:
+#   kv_unified: on -> off
+#   kv_unified_per_slot: REMOVED (inapplicable once kv_unified is off — with
+#     --no-kv-unified, llama.cpp fences ctx/parallel = 262144/2 = 131072
+#     tokens per slot instead of a shared pool with a logical cap; matches
+#     747.0's precedent of omitting this field when kv_unified is off)
+#   ctx: UNCHANGED at 262144 (per instruction: "ctx keep as now") — with
+#     kv_unified off + parallel 2, this yields 2x131072 hard-fenced slots
+#     (same total cell count as arm121/122's shape).
+#   Everything else byte-identical to 747.3: tensor_split 27,38, K q8_0/
+#   V q5_1 MTP, UM env (still required to boot this oversized-for-VRAM
+#   shape at all), cache_ram 24576, threshold 100000, cache_idle_slots on,
+#   context_shift on.
+#
+# EXPECTED (per arm121/122 precedent): same VRAM-overcommit / UM paging
+# collapse at depth (~61-88K no-paging ceiling for this 27,38/q8_0/q5_1
+# shape, per §3430) — kv_unified was already shown not to be the causal
+# variable. Also expect a SIDE EFFECT: with kv_unified off, cache_reuse is
+# known to be disabled and hybrid/recurrent memory invalidates checkpoints
+# more aggressively (§3485-3489, arm105's finding) — likely MORE full
+# re-prefills than 747.3, not fewer.
+#
+# If this arm reproduces the collapse (expected), the validated fixes remain
+# arm124 (CPU-FFN-offload, 8-20x improvement, no UM/paging at all) or arm120
+# (right-size ctx to fit VRAM) or reverting to the arm090 production pin.
+---
+name: 747.4-baseline-nokvu-p2-pool262k-cap164k-ctxsame
+description: "hydra_vortex#747 arm 747.4: re-verify kv_unified on/off axis against current 747.3 prod shape — kv_unified off (was on), kv_unified_per_slot field removed (inapplicable, 262144/2=131072 hard-fenced per slot instead), ctx unchanged at 262144 per instruction. Prior controlled A/B (arm121/122 vs arm123, docs/investigations/740-results-report.md §3542-3563) already found kv_unified on/off makes no measurable difference to the UM VRAM-overcommit paging collapse at depth; this re-confirms that on the live 747.3 production config family."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+env:
+  GGML_CUDA_ENABLE_UNIFIED_MEMORY: '1'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 262144
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q5_1
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+prio_batch: 1
+context_shift: 'on'
+extra_server_args: '--parallel-ctx-threshold 100000'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown

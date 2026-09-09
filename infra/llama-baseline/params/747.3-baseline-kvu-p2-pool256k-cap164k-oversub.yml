@@ -68,7 +68,7 @@ spec_draft_type_v: q5_1
 cache_reuse: 64
 cache_prompt: 'on'
 cache_idle_slots: 'on'
-cache_ram_mib: 16384
+cache_ram_mib: 24576
 prio_batch: 1
 context_shift: 'on'
 extra_server_args: '--parallel-ctx-threshold 100000'

@@ -150,11 +150,24 @@ services:
       - NVIDIA_VISIBLE_DEVICES=0
       - CUDA_VISIBLE_DEVICES=0
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib
-      # DEFAULT PIN = 090. FALLBACKS = 088 > 083 > 079 (edit this line for rollback).
-      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/111-udq5-102shape-v-q5_1.yml
-      # arm111 requires UM (KV cache doesn't fit in physical VRAM otherwise —
-      # see params/111-*.yml line 23). Compose has no per-arm env mechanism,
-      # so this is set manually for this round; unset/remove when reverting
+      # PIN CANDIDATE UNDER EVALUATION (2026-09-09): 747.4, re-verifying the
+      # kv_unified on/off axis against the live 747.3 shape after observing
+      # prod decode collapse to ~2.3-2.8 tok/s at 85-128K single-slot depth.
+      # kv_unified: on -> off, ctx UNCHANGED at 262144 (=2x131072 hard-fenced
+      # slots instead of a shared pool), everything else identical to 747.3.
+      # Prior controlled A/B (arm121/122 vs 123, 740-results-report.md
+      # §3542-3563) already found kv_unified on/off makes no measurable
+      # difference to the UM VRAM-overcommit paging collapse — this re-runs
+      # that finding on the current prod config per explicit instruction.
+      # Expect: same collapse at depth (root cause is shape-vs-physical-VRAM
+      # fit, not kv_unified) + a side effect (cache_reuse disabled with
+      # kv_unified off -> more full re-prefills). Validated fixes remain
+      # arm124 (CPU-FFN-offload) / arm120 (right-size ctx) / revert to 090.
+      # PRIOR PIN = 747.3. FALLBACKS = 090 > 088 > 083 > 079 (edit this line to revert).
+      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/747.4-baseline-nokvu-p2-pool262k-cap164k-ctxsame.yml
+      # 747.3 needs UM (kv_unified shared pool, same reasoning as arm111 —
+      # see params/747.3-*.yml). Compose has no per-arm env mechanism, so
+      # this is set manually for this round; unset/remove when reverting
       # to an arm that doesn't need it (090/119 don't).
       - GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
     entrypoint: ["/usr/local/bin/llama-cpp-entrypoint.sh"]

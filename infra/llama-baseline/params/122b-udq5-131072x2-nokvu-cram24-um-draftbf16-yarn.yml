@@ -34,7 +34,7 @@
 # allocation happens in the separate rpc-server process, not llama-server
 # itself.
 ---
-name: 122-udq5-131072x2-nokvu-cram24-um-draftbf16-yarn
+name: 122b-udq5-131072x2-nokvu-cram24-um-draftbf16-yarn
 description: "arm121 (2x131072, draft bf16, UM-backed) + explicit YaRN RoPE scaling (yarn/scale=5/orig_ctx=32768), which arm121 and the whole UM-family never set. Isolates whether missing YaRN was degrading long-context coherence/acceptance independent of the paging-speed collapse."
 
 model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf

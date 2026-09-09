@@ -73,6 +73,8 @@ vars_ = {
     "P_CONTEXT_SHIFT":      b(p, "context_shift"),
     "P_CACHE_IDLE_SLOTS":   b(p, "cache_idle_slots"),
     "P_CACHE_RAM_MIB":      v(p, "cache_ram_mib"),
+    "P_KV_UNIFIED_PER_SLOT":v(p, "kv_unified_per_slot"),
+    "P_EXTRA_SERVER_ARGS":  v(p, "extra_server_args"),
 }
 # override_tensors is a YAML list (e.g. ["token_embd.weight=CPU"]) or [] —
 # str() of a list produces Python repr ("[]", "['a', 'b']"), which llama-server
@@ -218,9 +220,20 @@ elif [[ "$P_CACHE_IDLE_SLOTS" == "off" ]]; then
   LLAMA_ARGS+=(--no-cache-idle-slots)
 fi
 
+# KV unified per-slot cap (oversubscription arm 747.3)
+if [[ -n "$P_KV_UNIFIED_PER_SLOT" ]]; then
+  LLAMA_ARGS+=(--kv-unified-per-slot "$P_KV_UNIFIED_PER_SLOT")
+fi
+
 # Cache RAM limit (MiB) — host-RAM prompt cache for idle-slot swap
 if [[ -n "$P_CACHE_RAM_MIB" ]]; then
   LLAMA_ARGS+=(--cache-ram "$P_CACHE_RAM_MIB")
+fi
+
+# Free-form extra args (e.g. --parallel-ctx-threshold)
+if [[ -n "$P_EXTRA_SERVER_ARGS" ]]; then
+  # shellcheck disable=SC2206
+  LLAMA_ARGS+=(${P_EXTRA_SERVER_ARGS})
 fi
 
 # Production observability flags
