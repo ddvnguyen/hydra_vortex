@@ -167,8 +167,12 @@ for turn in range(1, n_turns + 1):
     messages = build_messages(conv_path, content)
     total_msgs = len(messages)
 
+    turn_t0 = time.time()
     try:
         data, wall = send_request(port, messages, n_predict)
+        turn_t1 = time.time()
+        with open(f"{results_dir}/session_{sid}_turns.jsonl", "a") as f:
+            f.write(json.dumps({"turn": turn, "t0": turn_t0, "t1": turn_t1}) + "\n")
         usage = data.get("usage", {})
         prompt_tok = usage.get("prompt_tokens", 0)
         comp_tok = usage.get("completion_tokens", 0)
@@ -250,43 +254,75 @@ for sid in $(seq 1 "$N_SESSIONS"); do
 done
 
 # Overlap verification
-echo "=== overlap check ==="
+#
+# NOTE: this checks overlap at the individual-request (per-turn) level, not
+# whole-session start/end. A whole-session-bounds check passes trivially any
+# time two multi-minute sessions are launched close together, even if the
+# server fully serializes every request between them with zero actual
+# concurrent decode — that false-positive was found and confirmed via
+# server-log cross-check (zero simultaneous decode windows) on 2026-09-11,
+# despite the old whole-session check reporting PASS on every run. Per-turn
+# overlap is a real (if still coarse — includes prefill, not decode-only)
+# signal that requests from different sessions were in flight on the server
+# at the same time.
+echo "=== overlap check (per-turn, request-level) ==="
 python3 - "$RESULTS_DIR" "$N_SESSIONS" <<'PYEOF'
-import sys
+import sys, json
 
 results_dir = sys.argv[1]
 n_sessions = int(sys.argv[2])
 
-windows = []
+# turn-level windows: list of (t0, t1, sid, turn)
+turn_windows = []
 for sid in range(1, n_sessions + 1):
     try:
-        with open(f"{results_dir}/session_{sid}_start") as f:
-            parts = f.read().split()
-            start = float(parts[1])
-        with open(f"{results_dir}/session_{sid}_end") as f:
-            parts = f.read().split()
-            end = float(parts[1])
-        windows.append((start, end, sid))
+        with open(f"{results_dir}/session_{sid}_turns.jsonl") as f:
+            for line in f:
+                rec = json.loads(line)
+                turn_windows.append((rec["t0"], rec["t1"], sid, rec["turn"]))
     except Exception:
         pass
 
-if len(windows) >= 2:
-    # Check pairwise overlap
-    any_overlap = False
-    for i in range(len(windows)):
-        for j in range(i + 1, len(windows)):
-            s1, e1, _ = windows[i]
-            s2, e2, _ = windows[j]
-            overlap_start = max(s1, s2)
-            overlap_end = min(e1, e2)
-            if overlap_end > overlap_start:
-                any_overlap = True
-                print(f"  sessions {windows[i][2]} & {windows[j][2]}: "
-                      f"overlap {overlap_end - overlap_start:.1f}s")
-    if any_overlap:
-        print(f"\nconcurrency check: PASS (sessions overlap)")
-    else:
-        print(f"\nconcurrency check: FAIL (sessions sequential)")
-else:
+if n_sessions < 2:
     print("concurrency check: N/A (single session)")
+elif not turn_windows:
+    print("concurrency check: FAIL (no per-turn timing data recorded)")
+else:
+    overlap_events = []
+    total_overlap_s = 0.0
+    for i in range(len(turn_windows)):
+        for j in range(i + 1, len(turn_windows)):
+            s1, e1, sid1, t1 = turn_windows[i]
+            s2, e2, sid2, t2 = turn_windows[j]
+            if sid1 == sid2:
+                continue
+            ov_start = max(s1, s2)
+            ov_end = min(e1, e2)
+            if ov_end > ov_start:
+                overlap_events.append((sid1, t1, sid2, t2, ov_end - ov_start))
+                total_overlap_s += (ov_end - ov_start)
+
+    # Whole-session bound, kept for reference only — NOT the pass/fail signal.
+    starts = {}
+    ends = {}
+    for s1, e1, sid, t in turn_windows:
+        starts[sid] = min(s1, starts.get(sid, s1))
+        ends[sid] = max(e1, ends.get(sid, e1))
+    if starts:
+        session_span = max(ends.values()) - min(starts.values())
+    else:
+        session_span = 0.0
+
+    if overlap_events:
+        print(f"  {len(overlap_events)} overlapping turn-pairs, "
+              f"{total_overlap_s:.1f}s total overlap "
+              f"({100*total_overlap_s/session_span:.1f}% of run span)" if session_span > 0 else "")
+        for sid1, t1, sid2, t2, dur in overlap_events[:10]:
+            print(f"    session {sid1} turn {t1} <-> session {sid2} turn {t2}: {dur:.1f}s")
+        if len(overlap_events) > 10:
+            print(f"    ... and {len(overlap_events) - 10} more")
+        print(f"\nconcurrency check: PASS (requests genuinely overlapped in flight)")
+    else:
+        print(f"\nconcurrency check: FAIL (sessions ran, but no individual turn ever overlapped "
+              f"another session's turn — server serialized every request)")
 PYEOF
