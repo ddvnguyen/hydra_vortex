@@ -267,6 +267,61 @@ The fork lives in `src/llama-cpp` (submodule, default branch `hydra-fork` of
 > unavailable, or for the tight edit/build/test loop while actively
 > patching the fork (see "Fast local iteration" below).
 
+#### Local builds via `scripts/llama-build.sh` (agent-facing)
+
+When you *do* build locally (tight loop, or CI unavailable), use the helper —
+it makes fork builds cheap and worktree-proof:
+
+```bash
+bash scripts/llama-build.sh dev                   # L1 stable, iteration build (no IPO)
+bash scripts/llama-build.sh dev-nofaq             # L1, FASTEST iteration (drops FA_ALL_QUANTS)
+bash scripts/llama-build.sh deploy-sm86-sm120     # L1 stable, deploy-flags build (IPO on)
+bash scripts/llama-build.sh test dev -- -DGGML_CUDA_FA_ALL_QUANTS=OFF   # L2 experiment
+bash scripts/llama-build.sh list                  # cache state
+bash scripts/llama-build.sh prune                 # evict L2 + drop old L2 build dirs
+bash scripts/llama-build.sh --clear-l2            # nuke the L2 tier
+```
+
+- **`dev-nofaq`** drops `GGML_CUDA_FA_ALL_QUANTS` (the biggest compile-time
+  multiplier) for the fastest edit→build loop. The default FA kernel set still
+  covers symmetric `q8_0` KV — which is what Hydra runs today — so `dev-nofaq` is
+  fine for most fork iteration. Reach for `dev` (FA_ALL_QUANTS on) when testing
+  non-default KV cache types (e.g. `q5_1`/`q4_1` experiments).
+- **Build parallelism** defaults to `nproc - 8` (12 jobs on the 20-thread
+  i7-12700K), leaving ~8 threads free for concurrent work (live engine, MoE CPU
+  offload, other agents). Override with `--jobs N` or the `LLAMA_BUILD_JOBS` env
+  var, e.g. `--jobs 16` for a faster build when the box is otherwise idle.
+
+What it does:
+
+- **One shared ccache store** (`/mnt/WorkDisk/cache/hydra-ccache`, 15G budget) —
+  the same store CI builds into, so a fresh worktree inherits CI-warmed objects.
+  Stable builds use ccache namespace `l1`, test builds `l2`.
+- **Offline submodule init**: a fresh worktree's `src/llama-cpp` is initialized
+  by reusing the shared module repo (`git submodule update --reference -N`),
+  ~3s instead of a slow full clone of the fork. Falls back to a network clone
+  only when the module has never been initialized on this host.
+- **Persistent build dirs outside the worktree**
+  (`/mnt/WorkDisk/cache/llama-build/{stable,test}/…`). The in-tree
+  `build-hydra-dev` / `build_sm86_sm120` / `build_sm60_v2` paths are symlinks to
+  the active dir, so plain `cmake --build build-hydra-dev` still works and the
+  fork's `.gitignore` (`/*build*/`) keeps them untracked.
+- **Configure-on-change**: identical flags + same submodule SHA reuse the dir
+  (ninja only recompiles rules whose command or inputs changed); a flag or CUDA
+  change reconfigures automatically. Changing `GGML_CUDA_FA_ALL_QUANTS`, for
+  example, recompiles only the `ggml-cuda` target, not the whole tree.
+- **Shared 15G budget, L2 evicted first**: when the store is full the `l2`
+  namespace is cleared first; only if still over budget are least-used entries
+  (last access, not creation time) evicted store-wide. `prune` also drops L2
+  build dirs that are not the current active target.
+
+Experiments live in L2 (`test <profile> [--variant NAME] [--cuda VER] [-- -D…]`)
+and never affect L1/CI. The deployed artifact always comes from CI
+(`hydra-build.yml`); local builds are verification only.
+
+> **Design:** the full decision record (cache model, eviction policy, rejected
+> alternatives) is in `docs/decisions/0002-llama-build-cache.md`.
+
 #### CI/CD build (recommended)
 
 `hydra-build.yml` lives in `ddvnguyen/llama.cpp` on the `hydra-fork` branch.
@@ -324,33 +379,45 @@ cd $WORK
 
 #### Fast local iteration (edit → build → verify a fork change)
 
-Use this for the edit/build/test loop while developing a fork change — **not** for
-producing the binary that gets deployed. It uses the `hydra-dev` CMake preset
-(`CMakePresets.json`), which keeps the same `86;120` fat-arch pair and correctness
-flags as the deploy build below (both the 5060 Ti and 3060 stay testable, e.g. for
-COMBINED mode), but skips `CMAKE_INTERPROCEDURAL_OPTIMIZATION` (LTO) — which forces a
-slow whole-program relink on every rebuild regardless of which file changed — and
-wires in `ccache` (`conda install -c conda-forge ccache` if not already installed;
-no sudo needed). Together these cut a single-file rebuild from the usual 120-180s
-down to a few seconds once the object/link cache is warm.
+The `dev` profile of `scripts/llama-build.sh` is the iteration build: the same
+`86;120` fat-arch pair and correctness flags as the deploy build (including
+`GGML_CUDA_FA_ALL_QUANTS`), but without `CMAKE_INTERPROCEDURAL_OPTIMIZATION`
+(LTO) — LTO forces a slow whole-program relink on every rebuild regardless of
+which file changed. ccache is wired in for all compilers. After each edit just
+re-run it; a single-file change rebuilds in seconds once the cache is warm:
 
 ```bash
-cmake --preset hydra-dev -DCUDAToolkit_ROOT=/opt/software/cuda/13.2 \
-  -DCMAKE_CUDA_COMPILER=/opt/software/cuda/13.2/bin/nvcc
-cmake --build build-hydra-dev --target llama-engine -j$(nproc)
+bash scripts/llama-build.sh dev --target llama-engine
 
-# after any subsequent edit, just re-run the build command above
+# or plain cmake against the symlinked dir (same cache, same build dir):
+cmake --build build-hydra-dev --target llama-engine -j$(nproc)
 ```
 
-Check ccache is actually being hit: `ccache -s` shows cache hits incrementing across
-rebuilds. Once your change is verified, do a real deploy build (below) before pushing
-— the deploy build keeps LTO on since it affects steady-state decode perf.
+Check ccache is actually being hit: `ccache -s` shows cache hits incrementing
+across rebuilds. Once your change is verified, do a real deploy build
+(`bash scripts/llama-build.sh deploy-sm86-sm120`) before pushing — the deploy
+build keeps LTO on since it affects steady-state decode perf.
 
 #### Manual build (fallback — when CI/CD is unavailable)
 
 The blocks below are the same flags `hydra-build.yml` / `build-combo.sh` use
 under the hood; they exist here for direct debugging on the box or when the
 self-hosted runner is down. Prefer the CI/CD build above otherwise.
+
+> **ccache:** every manual block sets the `CMAKE_{C,CXX,CUDA}_COMPILER_LAUNCHER`
+> so hand-rolled cmake benefits from the same shared store. Prefer
+> `bash scripts/llama-build.sh <profile>` which does this plus a persistent
+> build dir automatically.
+>
+> **`GGML_CUDA_FORCE_CUBLAS` is OFF for the RTX builds** (approved): with Q4/Q5
+> model quants the custom int8-tensor-core MMQ kernels (default on sm_86/sm_120)
+> are used instead of FP16 cuBLAS. Keep `ON` for the sm_60 (P100) build — Pascal
+> has no int8 tensor cores, so cuBLAS is the effective path there.
+> **CI mismatch:** `build-combo.sh` on `ddvnguyen/llama.cpp` still sets
+> `GGML_CUDA_FORCE_CUBLAS=ON`; flip it to `OFF` in a fork PR so the deployed
+> artifact matches the local deploy build. Run an A/B (L2:
+> `bash scripts/llama-build.sh test deploy-sm86-sm120 --variant cublas-on -- -DGGML_CUDA_FORCE_CUBLAS=ON`)
+> before that if you want numbers.
 
 ##### RTX 5060 Ti + RTX 3060 (fat sm_86+sm_120, CUDA 13.2)
 
@@ -368,9 +435,12 @@ per-arch build dance. The CI/CD path above packages this same build as
 CUDA_PATH=/opt/software/cuda/13.2
 cmake -B build_sm86_sm120 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES="86;120" \
+  -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
   -DCPACK_PACKAGE_NAME="ik-llama-sm86-sm120-cuda13.2" \
   -DGGML_CUDA=ON \
-  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_CUDA_FORCE_CUBLAS=OFF \
   -DGGML_CUDA_FA=ON \
   -DGGML_CUDA_FA_ALL_QUANTS=ON \
   -DGGML_CUDA_GRAPHS=ON \
@@ -416,7 +486,7 @@ cmake -B build_sm120_v3 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES="120" \
   -DCPACK_PACKAGE_NAME="ik-llama-sm120-cuda13.2" \
   -DGGML_CUDA=ON \
-  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_CUDA_FORCE_CUBLAS=OFF \
   -DGGML_CUDA_FA=ON \
   -DGGML_CUDA_FA_ALL_QUANTS=ON \
   -DGGML_RPC=ON \
@@ -462,7 +532,7 @@ cmake -B build_sm86 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES="86" \
   -DCPACK_PACKAGE_NAME="ik-llama-sm86-cuda13.2" \
   -DGGML_CUDA=ON \
-  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_CUDA_FORCE_CUBLAS=OFF \
   -DGGML_CUDA_FA=ON \
   -DGGML_CUDA_FA_ALL_QUANTS=ON \
   -DGGML_RPC=ON \
@@ -488,6 +558,9 @@ CUDA_PATH=/opt/software/cuda/12.9
 cmake -B build_sm60_v2 -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES="60" \
   -DCMAKE_CUDA_HOST_COMPILER="/usr/bin/g++-14" \
+  -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
   -DGGML_RPC=ON \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FORCE_CUBLAS=ON \

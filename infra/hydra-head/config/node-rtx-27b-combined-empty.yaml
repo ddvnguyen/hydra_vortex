@@ -28,7 +28,7 @@ llama:
   rpc_port: 9503
   params:
     parallel: 1
-    ubatch-size: 512
+    ubatch-size: 1024
     fit: off
     cache-type-k: q8_0
     cache-type-v: q8_0

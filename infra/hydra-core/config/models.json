@@ -12,7 +12,7 @@
     "jinja": true,
     "context_shift": true,
     "chat_template_kwargs": "{\"preserve_thinking\": true}",
-    "ubatch_size": 512,
+    "ubatch_size": 1024,
     "fit": false
   },
   "auto_routing": {

@@ -97,6 +97,32 @@ parent-side watchers can see the link without opening the fork:
 gh issue comment 291 --body "Fork-side tracker: ddvnguyen/llama.cpp#M"
 ```
 
+### Verify a fork change builds (cheap, worktree-proof)
+
+You may be working in a fresh task worktree with no local build artifacts. The
+fork builds are cached so this is fast:
+
+```bash
+# iteration build (no LTO, ccache wired in, shared with CI):
+bash scripts/llama-build.sh dev --target llama-engine
+
+# deploy-flags build (LTO on) when you need a representative binary:
+bash scripts/llama-build.sh deploy-sm86-sm120
+
+# P100 build:
+bash scripts/llama-build.sh sm60
+```
+
+- One shared ccache store (`/mnt/WorkDisk/cache/hydra-ccache`, 15G) is used by
+  CI and local builds; stable builds use namespace `l1`, experiments `l2`.
+- Build dirs live outside the worktree and are reused when flags + submodule
+  SHA are unchanged; flipping a flag reconfigures and ninja only recompiles the
+  affected rules.
+- Experiments: `bash scripts/llama-build.sh test dev --variant myexp -- -D…`.
+  Full reference: DevelopmentRunBook.md → "llama-engine / llama-server — build &
+  package". Design rationale: `docs/decisions/0002-llama-build-cache.md`.
+  The deployed artifact always comes from `hydra-build.yml` (step 5).
+
 ### Implement and open the fork PR
 
 ```bash
