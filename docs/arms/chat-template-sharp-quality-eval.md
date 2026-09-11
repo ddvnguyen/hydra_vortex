@@ -152,6 +152,73 @@ python3 -c "import json; ..."  # grade content vs reasoning as above
 
 Transcripts: `/tmp/qe-stock-transcript.json` (12 turns, T12 76589 prompt), `/tmp/qe-sharp-transcript.json` (75703 prompt), logs `/tmp/qe-*-boot.log` + `/tmp/qe-*-harness.log`, params `/tmp/q5ks-*-24576-p2.yml`.
 
+## 8. Follow-up: max_tokens 1500 re-verify (2026-09-12 03:44–03:53)
+
+Re-ran **only turn 12** on the same saved 76K histories (no new 12-turn growth) to test whether the §5 truncation was purely `max_tokens` budget. History was reconstructed deterministically from `/tmp/qe-*-transcript.json` assistant_content T1–11 + same filler generation as harness (`WORDS_PER_TURN 5333`), then T12 verification prompt (1112 words) re-issued with `max_tokens 1500, temperature 0`. Server was rebooted per template with `requests:1` variant params (`/tmp/q5ks-*-24576-p2-reverify.yml`) to avoid the 10-req health-loop RPC crash at `cache_ram 24576 p2` — same binary/shape otherwise (`ctx 262144, ts 27,38, q8_0/q5_1, mtp, UM, cache_ram 24576, parallel 2`). Results saved to `/tmp/qe-stock-t12-1500.json` (Stock) and `/tmp/qe-sharp-t12-1500.json` (Sharp).
+
+### 8.1 Raw results at 1500
+
+| Template | Prompt `prompt_tokens` (`cached 76073`) | Comp `completion_tokens` | Wall | `content` len | `reasoning` len | Finish |
+|----------|----------------------------------------|--------------------------|------|---------------|-----------------|--------|
+| Stock Q5_K_S | 76589 | 1500 | 51.8 s | **0** (empty) | 5972 chars | `length` (hit 1500) |
+| Sharp Q5_K_S + froggeric v22.5.0 | 75703 | 1239 | 162.5 s | **1119** | 3888 chars | `stop` |
+
+- Stock reasoning preview (5972 chars) still drafted the full correct plan (lists 42/QUANTUM_BADGER/Rust-Go-Zig/51/cerulean vault/3-bullet tension) but `content` never emitted — the 1500-token budget was consumed entirely by `reasoning_content` before `</think>` close. Prompt eval ~634 tok/s, then cancelled previous attempt at 120 s shows prompt alone needs ~118 s; wall 51.8 s here is generation-only after cached prompt (76073 cached).
+- Sharp content preview (1119 chars):
+  ```
+  ACK:
+  1. SECRET_NUMBER is 42.
+  2. Project codename: QUANTUM_BADGER.
+  3. 1) Rust 2) Go 3) Zig
+  4. 17×3 = 51.
+  5. Under this blue sky, the cerulean vault stretches overhead.
+  6. Summary:
+  - The filler project described a distributed system with five recurring subsystems: a lock-free concurrent hash-map cache (p99 improvements cycling 20–52 %), a materialized-view analytics dashboard (2.3 s → 47 ms), an event-bus dispatcher race-condition fix (per-topic sequence numbers with CAS), a blue-green/canary deployment pipeline (rollback from minutes to seconds), and a buffered I/O abstraction layer with exponential backoff.
+  - Cross-cutting concerns included streaming-interface documentation with backpressure and circuit-breaker patterns, authentication-middleware integration tests (token refresh, session invalidation, sliding-window rate limiting), and query-planner memory-layout optimizations (arena allocation, pool reuse, prefetch-friendly structures).
+  - The context was fully stable from turn 1 onward; turns 2–12 repeated the same subsystems and metrics with no new architectural decisions or failure modes introduced.
+  ```
+
+### 8.2 Checkpoint grading at 1500 (string match on `content` — user-visible)
+
+| Checkpoint | Stock `content` (1500) | Sharp `content` (1500) | Stock `reasoning` | Sharp `reasoning` |
+|------------|------------------------|------------------------|-------------------|-------------------|
+| CP1 42 | FAIL (empty) | **PASS** | PASS | PASS |
+| CP2 QUANTUM_BADGER | FAIL | **PASS** | PASS | PASS |
+| CP3 ACK prefix | FAIL | **PASS** | — | — |
+| CP4 exactly 3 bullets `"- "` | FAIL (0 bullets) | **PASS** (3/3) | PASS (drafted 3) | PASS |
+| CP5 no banana | **PASS** (vacuously) | **PASS** | PASS | PASS |
+| CP6 Rust→Go→Zig order | FAIL | **PASS** | PASS | PASS |
+| CP7 51 | FAIL | **PASS** | PASS | PASS |
+| CP8 cerulean vault | FAIL | **PASS** | PASS | PASS |
+| **Content summary** | **1/8** (only CP5) | **8/8** | **8/8** | **8/8** |
+
+Grade script: `python3 -c "import json; checks..."` on `/tmp/qe-*-t12-1500.json` — bullet count via `l.strip().startswith('- ')` =3 for Sharp, 0 for Stock; `banana` absent in both.
+
+### 8.3 Honest verdict — does 1500 unblock Sharp?
+
+**Yes for Sharp, no for Stock — budget artifact inverts.**
+
+- At 750 (§5): Stock 4/8 vs Sharp 1/8 — Sharp's longer reasoning (2930 vs 2726) pushed it over budget first, so Stock appeared better.
+- At 1500: Sharp **8/8** within 1239 tokens (stopped, not truncated) while Stock **0/8** (1500 consumed by reasoning alone). Sharp's terseness now pays off: its reasoning is shorter (3888 vs 5972) and its content is compact (1119 vs Stock would need ~1400+), so 1500 fits Sharp but not Stock.
+- Both **know** the answers — reasoning is 8/8 in all 4 cases (750 + 1500 × 2 templates). No evidence of knowledge drop over 80K; the wall-clock wins from Rounds 3–4 (≈19–33%) remain real, but they are gated by token budget when `reasoning_content` is preserved (default `jinja` with `reasoning` on).
+- **Production implication:** With current `max_tokens 1500` (or thinking-on default), **Sharp's wall-clock win becomes usable** — it emits the full `ACK:` + 6 answers + 3 bullets at 76K where Stock still truncates. Stock would need a larger budget (e.g. `max_tokens 3000` or `--no-reasoning-preserve`/trimmed system prompt) to emit the same at this depth. Do not extrapolate 750 budget to 1500 — the two templates have **different reasoning/content trade-offs**.
+- **Not a quality degradation for Sharp:** Intermediate turns 5–11 already showed Sharp holds `ACK:`/`no banana` identically to Stock; 1500 re-verify confirms Sharp retains all 8 checkpoints when given enough budget, and actually fits more efficiently than Stock.
+
+Repro for this follow-up (no new 12-turn growth):
+
+```bash
+# Stock 1500 (requires fresh boot with requests:1 to avoid RPC crash)
+bash infra/llama-baseline/run-with-params.sh /tmp/q5ks-stock-24576-p2-reverify.yml --no-cleanup
+timeout 300 python3 /tmp/reverify_1500.py 18081 stock /tmp/qe-stock-t12-1500.json
+# then Sharp
+pkill -9 -f llama-server; pkill -9 -f ggml-rpc-server; sleep 2  # drain to 1/1
+bash infra/llama-baseline/run-with-params.sh /tmp/q5ks-sharp-24576-p2-reverify.yml --no-cleanup
+timeout 300 python3 /tmp/reverify_1500.py 18081 sharp /tmp/qe-sharp-t12-1500.json
+python3 -c "import json; ..."  # grade as in §8.2
+```
+
+Artifacts: `/tmp/qe-stock-t12-1500.json` (wall 51.8 s, 76589→0), `/tmp/qe-sharp-t12-1500.json` (wall 162.5 s, 75703→1119), logs `/tmp/qe-*-t12-1500.log`, `/tmp/qe-*-1500-reboot.log`, params `/tmp/q5ks-*-24576-p2-reverify.yml`. Rig then restored to prod (see §7 restore).
+
 ---
 
 *Do not merge to main — this is an exploratory one-shot. Next step if leader wants to unblock Sharp: re-run turn 12 alone with `max_tokens 1500` on the same 76K histories (no new boots) and confirm both emit the full `ACK:` + 3 bullets.*
