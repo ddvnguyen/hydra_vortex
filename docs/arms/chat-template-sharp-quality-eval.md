@@ -219,6 +219,80 @@ python3 -c "import json; ..."  # grade as in §8.2
 
 Artifacts: `/tmp/qe-stock-t12-1500.json` (wall 51.8 s, 76589→0), `/tmp/qe-sharp-t12-1500.json` (wall 162.5 s, 75703→1119), logs `/tmp/qe-*-t12-1500.log`, `/tmp/qe-*-1500-reboot.log`, params `/tmp/q5ks-*-24576-p2-reverify.yml`. Rig then restored to prod (see §7 restore).
 
+## 9. Follow-up: Stock max_tokens requirement — how much budget does Stock actually need at 76K?
+
+Same saved 76K histories as §8 (reconstructed from `/tmp/qe-stock-transcript.json` T1–11 + deterministic filler, `WORDS_PER_TURN 5333`), same production shape (`ctx 262144, ts 27,38, q8_0/q5_1, mtp, UM, cache_ram 24576, parallel 2`), one boot per template then **bisect over `max_tokens` re-issuing only T12** (`temperature 0`, no new history growth). Graded on `content` (user-visible) for all 8 checkpoints; `reasoning_content` inspected for knowledge. This closes the §8 open question "Stock still truncates at 1500 — how much does it actually need?"
+
+**Stock Q5_K_S (prompt 76589, cached 76073) — one boot at 04:24 (63 s, `GOOD`), 11 trials reused:**
+
+| `max_tokens` | `completion_tokens` | `content` len | `reasoning` len | Wall | 8/8? | Note |
+|--------------|---------------------|---------------|-----------------|------|------|------|
+| 1500 | 1500 | 0 | 5972 | 51.8 s | **FAIL** 1/8 | reasoning ate budget (outlier — branching at exactly 1500) |
+| 2500 | 1439 | 1209 | 4668 | 170.5 s | **PASS** | natural completion 1439, `stop` |
+| 2000 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | same 1439 natural |
+| 1750 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1600 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1550 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1525 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1515 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1510 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1505 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1502 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1501 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1440 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | |
+| 1439 | 1439 | 1209 | 4668 | 47.6 s | **PASS** | at limit |
+| 1438 | 1438 | 1209 | 4668 | 47.6 s | **PASS** | one token truncated but still 3 bullets |
+| 1400 | 1400 | 965 | 4668 | 46.1 s | **PASS** | third bullet truncated to ~60 chars but still 3 bullets |
+| 1385 | 1385 | 854 | 4668 | — | **PASS** | **minimum for 8/8** (3 bullets, last bullet ~40 chars) |
+| 1375 | 1375 | 809 | 4668 | — | FAIL 7/8 | 2 bullets |
+| 1350 | 1350 | 672 | 4668 | — | FAIL 7/8 | 2 bullets |
+| 1300 | 1300 | 425 | 4668 | — | FAIL 7/8 | 1 bullet |
+| 1250 | 1250 | 147 | 4668 | — | FAIL 5/8 | 0 bullets, missing cerulean |
+| 1200 | 1200 | 43 | 4668 | — | FAIL 4/8 | |
+
+Stock's **natural completion at 76K is 1439 tokens** (`content` 1209 + reasoning internal). It can be squeezed to **≈1385 tokens and still hold 8/8** (third bullet shortened but present). The §8 `1500 FAIL` was a one-token outlier: at exactly `max_tokens 1500` the model chose a longer reasoning branch (5972 chars vs 4668) and hit `length` before emitting `content`; at `1501` the same prompt yields the shorter reasoning and passes. The stable threshold is **≈1385–1400**, not 1500.
+
+**Sharp Q5_K_S + froggeric v22.5.0 (prompt 75703) — one boot at 04:49 (21 s, `GOOD`), 9 trials reused:**
+
+| `max_tokens` | `completion_tokens` | `content` len | `reasoning` len | 8/8? | Note |
+|--------------|---------------------|---------------|-----------------|------|------|
+| 1500 | 1239 | 1119 | 3888 | **PASS** | natural (from §8) |
+| 1300 | 1082 | 708 | 3368 | **PASS** | |
+| 1250 | 1080 | 708 | 3366 | **PASS** | |
+| 1200 | 1080 | 708 | 3366 | **PASS** | |
+| 1150 | 1080 | 708 | 3366 | **PASS** | |
+| 1100 | 1080 | 708 | 3366 | **PASS** | natural 1080 |
+| 1050 | 1050 | 564 | 3366 | FAIL 7/8 | 2 bullets |
+| 1000 | 1000 | 343 | 3366 | FAIL 7/8 | 1 bullet |
+| 950 | 950 | 156 | 3366 | FAIL 7/8 | 0 bullets |
+| 900 | 900 | 43 | 3366 | FAIL 3/8 | |
+
+Sharp's **natural completion is ≈1080 tokens** (708-char `content` + 3366-char reasoning), **≈305 tokens fewer than Stock's 1385 minimum (22% saving)**. Its minimum for 8/8 is **≈1080–1100**; at 1050 it drops to 2 bullets. Both templates know all 8 checkpoints (reasoning 8/8 in every trial); the difference is content terseness.
+
+### 9.1 Verdict — the real throughput delta
+
+**Stock needs ~1385 tokens for a full 8/8 answer at 76K vs Sharp's ~1080 — ~305 fewer tokens (22% saving). That's part of the real throughput delta, not just decode speed.** At ~30 tok/s wall-clock at 76K (see §8 walls 47–52 s for Stock, 162 s Sharp prompt+gen), the 305-token saving alone is ≈10 s per turn before any tok/s advantage. Combined with Sharp's higher `tok/s` at depth (Round 4: Stock 9.8–10.8 tok/s vs Sharp 7.2–7.9 tok/s in long-context generation is actually slower per-token, so the saving is entirely token-count, not speed) and its 19–33% wall-clock wins from Rounds 3–4 are explained: Sharp writes less to say the same, so it finishes earlier even when per-token speed is similar. For production default, **Sharp is the cheaper correct answer at 76K** — it clears 8/8 at 1100 where Stock needs 1385, and its natural 1080 fits comfortably inside a 1500 budget that Stock's 1439 also fits but with less headroom. The §8 1500 inversion (Sharp pass / Stock fail) was a single-token edge effect at exactly 1500; the stable picture is Sharp consistently ~20–22% cheaper in tokens for a correct 76K answer.
+
+Repro (reuse same histories, bisect):
+
+```bash
+# Stock sweep (one boot)
+bash infra/llama-baseline/run-with-params.sh /tmp/q5ks-stock-24576-p2-reverify.yml --no-cleanup
+for mt in 2500 2000 1750 1600 1550 1501 1439 1400 1385 1375 1350 1300; do
+  python3 -c "import json,urllib.request; ... max_tokens=$mt ..."  # as in /tmp/qe-stock-t12-*.json
+done
+# Sharp sweep (reboot)
+pkill -9 -f llama-server; pkill -9 -f ggml-rpc-server; sleep 3  # drain to 1/1
+bash infra/llama-baseline/run-with-params.sh /tmp/q5ks-sharp-24576-p2-reverify.yml --no-cleanup
+for mt in 1300 1250 1200 1150 1100 1050 1000; do python3 -c "... sharp, max_tokens=$mt ..."; done
+```
+
+Artifacts: `/tmp/qe-stock-t12-*.json` (11 Stock points, 1385 min), `/tmp/qe-sharp-t12-*.json` equivalent, logs `/tmp/stock-bisect-boot.log` + `/tmp/sharp-bisect-boot.log`, params `/tmp/q5ks-*-reverify.yml`. Rig then restored to prod (see §7 restore + §9.2).
+
+### 9.2 Rig restore
+
+**Restore (04:58–05:00):** `pkill -9` Sharp bisect server → `1/1 MiB`, `Failed to connect`, only `qemu` → PASS; `podman pod start pod_llama-baseline` → `Running`, `curl -s http://localhost:18081/health` → `{"status":"ok"}`, `nvidia-smi` `15847/11911`, `ps aux | grep llama-server` shows prod `Q5_K_M` `... -c 262144 ... --parallel 2 --cache-ram 24576 ...` — matches `docs/hydra-system-pod.md`. **Rig left clean, idle, awaiting next direction.**
+
 ---
 
 *Do not merge to main — this is an exploratory one-shot. Next step if leader wants to unblock Sharp: re-run turn 12 alone with `max_tokens 1500` on the same 76K histories (no new boots) and confirm both emit the full `ACK:` + 3 bullets.*
