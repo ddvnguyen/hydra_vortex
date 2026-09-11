@@ -1,0 +1,68 @@
+# Arm — Sharp chat template (opt-in, UNCONFIRMED)
+#
+# Community Jinja-only chat template ("Qwen-Sharp-Chat-Templates",
+# qwen3.8-froggeric-v22.5.0) claiming terser-but-equally-correct output via
+# a terse-routing system prompt + reasoning-effort/tool-XML logic. No
+# weights or executable code — plain Jinja, verified by hand (30.4 KB,
+# `--chat-template-file`).
+#
+# STATUS: single 4-turn probe only (2026-09-11, dispatched to agent
+# e8954f11). Result showed a higher harness-mean tok/s (28.43 vs stock
+# 23.82) but that metric (completion_tokens / wall_seconds) is exactly the
+# one this session already proved unreliable for early-EOS/short-completion
+# cases (see the "last-turn tail" false-positive finding in
+# multiturn-growth-test.sh's history). Wall-clock-per-turn, the more honest
+# comparison, did NOT show a clean win (sharp was slower on 2 of 4 turns:
+# 23.85s/30.90s vs stock's 19.74s/22.40s on turns 3-4). Correctness
+# spot-checked fine on both. This is NOT a confirmed improvement — do not
+# treat these numbers as a decision basis. Kept here as an opt-in config so
+# a proper multi-turn, multi-session repeat (arm102-style methodology) can
+# be run without re-deriving the launch shape.
+#
+# Same production launch shape as the live pod (see
+# `ps aux | grep llama-server` on the rig, 2026-09-11), only addition is
+# chat_template_file. Base binary: whatever pod_llama-baseline is currently
+# running — no rebuild needed (config-only change).
+
+name: arm-chat-template-sharp-opt-in
+description: "Production shape + Sharp community chat template (opt-in, single-probe result only, unconfirmed win — see caveats above). Not a production default change."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_M.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+tensor_split: 27,38
+n_gpu_layers: 99
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+ctx: 262144
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+chat_template_file: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/majestic-toad/infra/llama-baseline/templates/qwen3.8-sharp.jinja
+parallel: 1
+cont_batching: 'on'
+kv_unified: 'off'
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 1024
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q5_1
+prio_batch: 1
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
+
+env:
+  GGML_CUDA_ENABLE_UNIFIED_MEMORY: '1'
