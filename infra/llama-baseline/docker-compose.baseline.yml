@@ -145,25 +145,29 @@ services:
       # to point at 088-*.yml (same family, safer margin), 083-*.yml (prior
       # stable pin, no concurrency), or 079-*.yml (deepest rollback).
       - ./infra/llama-baseline/params:/etc/llama-baseline:ro
+      # Chat templates for the pin below (Sharp, qwen3.8-sharp.jinja). Mounted
+      # separately because the container entrypoint has no `chat_template_file`
+      # params key (only run-with-params.sh does); pin 130 passes
+      # `--chat-template-file /etc/llama-baseline/templates/qwen3.8-sharp.jinja`
+      # through extra_server_args. Inert for pins that don't reference it.
+      - ./infra/llama-baseline/templates:/etc/llama-baseline/templates:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
       - CUDA_VISIBLE_DEVICES=0
       - LD_LIBRARY_PATH=/usr/local/cuda-13.2/targets/x86_64-linux/lib:/usr/local/lib
-      # PIN CANDIDATE UNDER EVALUATION (2026-09-09): 747.4, re-verifying the
-      # kv_unified on/off axis against the live 747.3 shape after observing
-      # prod decode collapse to ~2.3-2.8 tok/s at 85-128K single-slot depth.
-      # kv_unified: on -> off, ctx UNCHANGED at 262144 (=2x131072 hard-fenced
-      # slots instead of a shared pool), everything else identical to 747.3.
-      # Prior controlled A/B (arm121/122 vs 123, 740-results-report.md
-      # §3542-3563) already found kv_unified on/off makes no measurable
-      # difference to the UM VRAM-overcommit paging collapse — this re-runs
-      # that finding on the current prod config per explicit instruction.
-      # Expect: same collapse at depth (root cause is shape-vs-physical-VRAM
-      # fit, not kv_unified) + a side effect (cache_reuse disabled with
-      # kv_unified off -> more full re-prefills). Validated fixes remain
-      # arm124 (CPU-FFN-offload) / arm120 (right-size ctx) / revert to 090.
-      # PRIOR PIN = 747.3. FALLBACKS = 090 > 088 > 083 > 079 (edit this line to revert).
-      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/747.4-baseline-nokvu-p2-pool262k-cap164k-ctxsame.yml
+      # PIN 130 (2026-09-12, pending explicit merge approval): UD-Q5_K_S +
+      # Sharp chat template. Same shape as 747.4 except model_path (Q5_K_M ->
+      # Q5_K_S) and the Sharp template (wired via extra_server_args — the
+      # entrypoint has no chat_template_file key, see the templates mount
+      # above). Evidence: docs/arms/arm-ud-q5ks-vs-q5km.md (+3.4% short-prompt
+      # decode, deep concurrency PASS) and
+      # docs/arms/chat-template-sharp-{q5ks-abtest,deep-abtest,quality-eval}.md
+      # (-19-33% wall-clock at production depth/budget, 8/8 checkpoints at
+      # max_tokens 1500). PRIOR PIN = 747.4. FALLBACKS = 747.4 > 090 > 088 >
+      # 083 > 079 (edit this line to revert). Rollback is config-only: point
+      # this back at
+      # 747.4-baseline-nokvu-p2-pool262k-cap164k-ctxsame.yml and restart.
+      - LLAMACPP_PARAMS_FILE=/etc/llama-baseline/130-baseline-q5ks-sharp-template.yml
       # 747.3 needs UM (kv_unified shared pool, same reasoning as arm111 —
       # see params/747.3-*.yml). Compose has no per-arm env mechanism, so
       # this is set manually for this round; unset/remove when reverting

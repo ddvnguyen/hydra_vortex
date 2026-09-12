@@ -1,0 +1,80 @@
+# Baseline pin 130 — UD-Q5_K_S + Sharp chat template (evidence-backed, pending
+# explicit merge approval — do NOT treat as approved until the PR is merged).
+#
+# WHAT: moves the production baseline pin off 747.4 (Q5_K_M + stock Jinja) to
+# the UD-Q5_K_S model plus the community Sharp chat template
+# (infra/llama-baseline/templates/qwen3.8-sharp.jinja,
+# qwen3.8-froggeric-v22.5.0). Every other launch flag is byte-identical to
+# 747.4: 262144/2 hard-fenced pool, kv_unified off, tensor_split 27,38,
+# q8_0/q5_1 KV, draft-mtp, UM on, cache_ram 24576, parallel-ctx-threshold
+# 100000, parallel 2.
+#
+# WHY (evidence, committed on feat/703-baseline-consolidated):
+#   - docs/arms/arm-ud-q5ks-vs-q5km.md — Q5_K_S vs Q5_K_M at identical shape:
+#     same production VRAM ceiling (15847/11911 MiB), +3.4% short-prompt
+#     decode (52.43 vs 50.69 tok/s, tight spread), 12-turn deep concurrency
+#     PASS. Quant quality delta was NOT measured beyond a spot-check.
+#   - docs/arms/chat-template-sharp-q5ks-abtest.md (R3): replicated wall-clock
+#     win for Sharp at shallow depth.
+#   - docs/arms/chat-template-sharp-deep-abtest.md (R4): -19.4% deep 2x12 at
+#     cache_ram 24576, -33.3% shallow at 24576 — production shape.
+#   - docs/arms/chat-template-sharp-quality-eval.md (R5): at production
+#     max_tokens 1500, Sharp clears 8/8 checkpoints at ~1080 natural tokens
+#     vs Stock's ~1385 minimum (~20-22% fewer tokens for an equally correct
+#     answer), which is the mechanism behind the wall-clock win.
+#
+# CONTAINER WIRING (verified, deliberately NOT the `chat_template_file` key):
+#   llama-cpp-entrypoint.sh does NOT parse `chat_template_file` — only the
+#   host harness run-with-params.sh does. The container therefore wires Sharp
+#   via `extra_server_args` (the same free-form passthrough added in
+#   58537dd70 for --parallel-ctx-threshold) and a read-only templates mount
+#   added in docker-compose.baseline.yml. Both paths hand the binary the
+#   identical `--chat-template-file <path>` flag.
+#
+# ROLLBACK: point LLAMACPP_PARAMS_FILE in docker-compose.baseline.yml back at
+#   747.4-baseline-nokvu-p2-pool262k-cap164k-ctxsame.yml and restart.
+#   Config-only, no code, fully reversible (the templates mount is inert once
+#   no pin references it).
+---
+name: 130-baseline-q5ks-sharp-template
+description: "hydra_vortex baseline pin 130: UD-Q5_K_S + Sharp chat template (qwen3.8-froggeric-v22.5.0) at the 747.4 shape (262144/2 no-kv-unified, ts 27,38, q8_0/q5_1 MTP, UM on, cache_ram 24576, parallel 2). Evidence: docs/arms/arm-ud-q5ks-vs-q5km.md + docs/arms/chat-template-sharp-{q5ks-abtest,deep-abtest,quality-eval}.md. Sharp is wired via extra_server_args + the /etc/llama-baseline/templates mount because the container entrypoint has no chat_template_file key."
+
+model_path: /mnt/SSD/Qwen3.8-27B-UD-Q5_K_S.gguf
+cuda_home: /opt/software/cuda/13.2.2
+rpc_port: 50052
+rpc_cuda_device: '1'
+rpc_endpoint: 127.0.0.1
+server_port: 18081
+server_cuda_device: '0'
+override_tensors: []
+env:
+  GGML_CUDA_ENABLE_UNIFIED_MEMORY: '1'
+tensor_split: 27,38
+n_gpu_layers: 99
+ctx: 262144
+rope_scaling: yarn
+rope_scale: 5
+yarn_orig_ctx: 32768
+flash_attn: 'on'
+cache_type_k: q8_0
+cache_type_v: q5_1
+ubatch: 512
+jinja: 'on'
+parallel: 2
+cont_batching: 'on'
+kv_unified: 'off'
+spec_type: draft-mtp
+spec_draft_type_k: q8_0
+spec_draft_type_v: q5_1
+cache_reuse: 64
+cache_prompt: 'on'
+cache_idle_slots: 'on'
+cache_ram_mib: 24576
+prio_batch: 1
+context_shift: 'on'
+extra_server_args: '--parallel-ctx-threshold 100000 --chat-template-file /etc/llama-baseline/templates/qwen3.8-sharp.jinja'
+n_predict: 150
+requests: 10
+prompt_path: /tmp/bigprompt.txt
+timeout: 300
+expect: unknown
