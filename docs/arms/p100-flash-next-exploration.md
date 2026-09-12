@@ -199,13 +199,11 @@ executed, OBSERVED only (no production interruption):
    (`rpc-port 9502`); a separate `ik-llama-minicpm.service` runs an upstream
    `llama-server` on `:8090`. `:8086/health` = `ok`, `/slots` idle
    (`is_processing:false, n_past:0`), ctx 128000.
-2. **NVML driver/library mismatch on the VM** — `nvidia-smi` fails with
-   `Failed to initialize NVML: Driver/library version mismatch; NVML library
-   version: 580.178`. This is a *userland* mismatch only: a **new CUDA
-   process still initializes fine**
-   (`llama-engine --list-devices` -> `CUDA0: Tesla P100-PCIE-16GB`,
-   `10127 MiB free`). So it does not block this arm, but VM monitoring/`nvidia-smi`
-   is unreliable until reboot. Flag for the P100 node owner.
+2. **NVML driver/library mismatch on the VM — `nvidia-smi` failed with
+   `Failed to initialize NVML: Driver/library version mismatch` (running kernel
+   module `580.173.02` vs installed/userland `580.178.04`). It was a *userland*
+   mismatch only — a new CUDA process still initialized fine — so it did not
+   block this arm. **RESOLVED 2026-09-12 by a clean VM reboot** (see §8).
 3. **Our current-fork sm_60 binary runs on the P100.** Staged
    `build_sm60-min/bin` (`ggml-rpc-server` + `libggml*.so.0.23.0`) to
    `~/p100-rpc-sm60` on the VM and ran with the VM CUDA 12.9 runtime
@@ -251,3 +249,30 @@ overlap) because the model is a single 74 GB file.
 compile blocker, P100 CUDA bring-up verified; the performance/end-to-end run is
 **gated on host-GPU availability (#761) and P100 sizing**, not on any sm_60
 defect.
+
+## 8. P100 VM reboot (NVML fix) — 2026-09-12 10:22 +07
+
+Rebooted to clear the driver/library skew. Controlled from the **host** via
+libvirt (`virsh reboot ubuntu26_server`, `qemu:///system`), because the VM has
+no passwordless sudo; a soft ACPI reboot is sufficient. Pre-flight checks that
+made this safe:
+
+- No Secure Boot (`EFI variables are not supported`) → the unsigned DKMS module
+  cannot be blocked.
+- Both installed kernels (`7.0.0-30`, `7.0.0-31`) already carry the `580.178.04`
+  DKMS module at `/lib/modules/<kver>/updates/dkms/nvidia.ko.zst`.
+- `hydra-head.service` + `ik-llama-minicpm.service` are **enabled** and
+  `Linger=yes` → production auto-restores with no login.
+- Guest idle: `:8086/slots` showed `is_processing:false, n_past:0`.
+- NIC is DHCP by MAC `52:54:00:d0:46:b3` on libvirt `default` → deterministic
+  return to `192.168.122.21`.
+
+Observed result:
+
+- SSH back in **~25 s**; `uptime` 0 min.
+- `/proc/driver/nvidia/version` -> `580.178.04` (matches userland).
+- `nvidia-smi` now works: `Tesla P100-PCIE-16GB, 580.178.04, 5887 MiB used,
+  10384 MiB free`.
+- `hydra-head.service` + `ik-llama-minicpm.service` both `active`; `:8086/health`
+  = `ok` within ~5 s; `:8086/slots` idle; `:9502` listening.
+- Production never required manual intervention.
