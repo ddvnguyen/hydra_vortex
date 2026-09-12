@@ -102,8 +102,8 @@ services:
     devices:
       - nvidia.com/gpu=all
     volumes:
-      - /mnt/SSD:/models:ro
-      - /mnt/WorkDisk/LLM-Models:/models2:ro
+      - /mnt/SSD:/mnt/SSD:ro
+      - /mnt/WorkDisk/LLM-Models:/mnt/WorkDisk/LLM-Models:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=1
       - CUDA_VISIBLE_DEVICES=1
@@ -138,19 +138,19 @@ services:
     devices:
       - nvidia.com/gpu=all
     volumes:
-      - /mnt/SSD:/models:ro
-      - /mnt/WorkDisk/LLM-Models:/models2:ro
+      - /mnt/SSD:/mnt/SSD:ro
+      - /mnt/WorkDisk/LLM-Models:/mnt/WorkDisk/LLM-Models:ro
       # Parametrized pin: the entrypoint reads this YAML and constructs
       # llama-server args. To fall back, change LLAMACPP_PARAMS_FILE (below)
       # to point at 088-*.yml (same family, safer margin), 083-*.yml (prior
       # stable pin, no concurrency), or 079-*.yml (deepest rollback).
-      - ./infra/llama-baseline/params:/etc/llama-baseline:ro
+      - ./params:/etc/llama-baseline:ro
       # Chat templates for the pin below (Sharp, qwen3.8-sharp.jinja). Mounted
       # separately because the container entrypoint has no `chat_template_file`
       # params key (only run-with-params.sh does); pin 130 passes
       # `--chat-template-file /etc/llama-baseline/templates/qwen3.8-sharp.jinja`
       # through extra_server_args. Inert for pins that don't reference it.
-      - ./infra/llama-baseline/templates:/etc/llama-baseline/templates:ro
+      - ./templates:/etc/llama-baseline/templates:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
       - CUDA_VISIBLE_DEVICES=0
