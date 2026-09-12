@@ -427,3 +427,14 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 - **Merge result:** `b6b34cc0f` (parents `efd26f235` + `cdd11021b`); tree **byte-identical** to `efd26f235` (`df72c2736`) → no unique cdd code lost, no cdd divergence retained.
 - **PR:** **ddvnguyen/llama.cpp#120** (`base=baseline-flash-next`, `head=feat/763-reconcile-qwen4exp-mtp`), state OPEN/MERGEABLE, 486 commits / 406 files as a base adoption. Full rationale + uncertainties in the PR body. Not merged (human review).
 - **Caveats for the reviewer (also in PR):** no end-to-end run (rig occupied); gs's load-time borrow path untested against Hydra GGUFs; a draft-only GGUF without `nextn_shared_target_tensors` is now refused at load rather than auto-borrowed (Hydra's current `Qwen3.8-27B-*-MTP.gguf` are self-contained, so unaffected).
+
+### #763 E2E results — resolved tree (`efd26f235`) on the live rig (2026-09-12)
+
+Production stopped by the human for the test window; both GPUs drained to 1 MiB; stack shut down clean afterwards (GPUs back to 1 MiB).
+
+- **Production-shaped self-contained model — PASS.** `Qwen3.8-27B-UD-Q5_K_S.gguf` + `--spec-type draft-mtp`, dual-GPU RPC (`-dev RPC0,CUDA0 -ts 27,38`), UM on. Loaded clean. 400-token gen: prefill 134.7 tok/s, decode **32.57 tok/s**, **draft_n=533 / accepted=221 → 41.5%** acceptance, 178 verify steps; coherent output. **Finding:** this model is `general.architecture=qwen35`, not `qwen4exp` — production pin 130 uses the generic **same-file** MTP head, so it does **not** exercise the qwen4exp draft head or the borrow path.
+- **qwen4exp shared-draft borrow + MTP — PASS (validates both flagged risks).** Real pairing: target `qwen3.8-flash-next-apex-mini` (qwen4exp, 48 blocks, n_embd 2560, no nextn tensors) + sidecar `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf` (qwen4exp, 49 blocks, `nextn_shared_target_tensors=True`, ships no `token_embd`/`output`/`output_norm`).
+  - **(a) load-time borrow: CONFIRMED.** Sidecar hard-refused standalone (`borrow_shared_tensor: … draft head without its own 'token_embd.weight'`), loads cleanly as `--spec-draft-model` against the target → `borrow_shared_tensor` resolved from `model_shared`. (INFO `"taken from the target model"` line not captured at verbosity 3; contrast is unambiguous.)
+  - **(b) `is_mem_shared` false for qwen4exp / no double-borrow corruption: CONFIRMED.** **draft_n=97 / accepted=62 → 63.9%** acceptance, 33 verify steps (per-position 29+19+14=62), coherent correct output. Decode 5.72 tok/s (74 GB target on UM/28 GB VRAM — memory-bound, not a correctness signal). Load ~3m50s.
+- **Correction:** initial reading of `common/speculative.cpp:3002` suggested `-md` loads the target path; a non-existent-`-md` probe proved the loader honors the draft path (resolves `mparams.path`). Not a bug.
+- **Verdict: no PR-blocking finding.** Full detail: PR #120 comment (`#issuecomment-5646887049`). Production was restarted by the human on pin 130 after this.
