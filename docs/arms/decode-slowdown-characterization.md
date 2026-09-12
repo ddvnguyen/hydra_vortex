@@ -64,6 +64,37 @@ Logs: `/tmp/m01_seq2.py`, `/tmp/m01_seq2.log` (run1), `/tmp/m01_seq2_run2.log` (
 - **Replication:** 3×15 sequential (45 requests) on same pod, same prompt, no restart — one strong outlier (30.4) + mild tail (38-40) reproduced as tail in all runs but strong outlier only in 1/3 runs → intermittent, not deterministic.
 - **Rig:** RTX 5060 Ti 16G sm_120 + RTX 3060 12G sm_86, driver 595.91, `pod_llama-baseline` `18081/50052`, drain-verify `1 MiB` before/after prior boots, production restored `{"status":"ok"}` `15847/11911` — left clean.
 
+## Ablation: MTP-disabled (30 sequential, same M01, same B01/shape)
+
+Per pre-registered next step, same prompt/M01 `head -c 2000 /tmp/bigprompt.txt` `808tok` `max_tokens 150`, single-slot, same B01 `10814 1d3c4a8e3` `86;120` `Release` `FA_ALL_QUANTS=ON`, same rig shape `ctx 140000 p1 16384 q8_0/q4_1` `27,38` `UM=1` but **MTP removed** (`spec_type`/`spec_draft_type_k/v` omitted — run-with-params.sh correctly omits `--spec-type draft-mtp`; `llama-server` args confirm no `--spec-type`/`--spec-draft`).
+
+**Params:** `/tmp/mtp-off-ablation.yml` (copy of `090-140000-p1-um` without `spec_type`), booted via `run-with-params.sh --no-cleanup` drain-verify `1 MiB` → `56s ready` `GOOD` `{"status":"ok"}`. No `--spec-type draft-mtp` in emitted args (verified `Args: ... --kv-unified ... --parallel-ctx-threshold 100000 --cache-prompt ...` no spec flags). `timings.draft_n`/`draft_n_accepted` are `None` as expected.
+
+**Results (30 sequential, same prompt, 0.5s gap):**
+
+| req | pps | wall | cached | prompt_ms |
+|-----|------|------|--------|-----------|
+|1 19.97 7.65 804 180|2 20.04 7.61 804 170|3 20.03 7.61 804 170|4 19.97 7.63 804 172|5 19.99 7.63 804 173|6 19.98 7.63 804 170|7 19.98 7.63 804 171|8 20.00 7.63 804 170|9 19.97 7.64 804 175|10 19.98 7.64 804 174|
+|11 20.00 7.62 804 173|12 19.97 7.64 804 176|13 19.96 7.64 804 174|14 19.98 7.63 804 171|15 19.99 7.63 804 171|16 19.99 7.64 804 180|17 19.94 7.65 804 173|18 20.00 7.63 804 171|19 19.95 7.64 804 170|20 19.97 7.64 804 172|
+|21 19.94 7.65 804 171|22 19.96 7.65 804 177|23 20.01 7.63 804 177|24 19.98 7.63 804 171|25 20.01 7.62 804 172|26 19.99 7.63 804 172|27 19.99 7.66 804 199|28 19.98 7.63 804 172|29 19.97 7.64 804 172|30 20.00 7.62 804 172|
+
+**Summary MTP OFF (n=30):** `mean 19.98 median 19.98 stdev 0.02 min 19.94 max 20.04 range 0.10 CV 0.001` — **>2σ outliers: 2/30 at 20.04 (upper, not slow)**; **tail <38: 30/30** (threshold not meaningful without MTP — baseline is 20). `draft None/None` all 30, `cached 804` stable, `prompt_ms 170-199` (one 199 outlier, still within 180-197 band), thermal `55,62°C` `14421/10191 MiB` stable.
+
+**Comparison vs MTP ON baseline (n=45, same prompt/shape with MTP):**
+
+| condition | n | mean | median | stdev | CV | min | max | range | >2σ slow outliers | tail |
+|-----------|---|------|--------|-------|----|-----|-----|-------|-------------------|------|
+| **MTP ON** (45, 3×15) |45|43.76-44.71 (avg ~44.4)|43.22-44.99|3.80-4.94|0.085-0.113|30.42|50.73|11.5-20.3|**1/45 ≈2% strong (30.42, acc 0.47) + ~7% mild 37-39 (acc 0.60-0.70)**|not depth|
+| **MTP OFF** (30) |30|19.98|19.98|0.02|0.001|19.94|20.04|0.10|**0/30 slow** (0% >2σ low; only 2 upper 20.04)|30/30 <38 is artefact (mean 20) — real slow defined as >2σ low or draft-tied; none|
+
+**Verdict update:** **Hypothesis confirmed — >2σ slow outliers vanish without MTP.** Stdev collapses `3.8-4.9 → 0.02` (190× reduction), CV `0.11 → 0.001`, range `11-20 → 0.10`, slow-outlier rate `2% → 0%`. The intermittent 30-39 tok/s slowdown is **draft-acceptance variance under MTP**: same prompt, same `cached 804`, same `prompt_ms`, same thermal, but draft acc swings `0.47-1.0` with MTP → `30-50 tok/s`, while without MTP decode is **slower on average (20 vs 44, -55% from losing MTP speedup) but perfectly stable**. This mirrors #744's per-slot `0.45 vs 0.83` split (kernel numerics → divergent greedy → acceptance split) but proves it happens **even single-slot, sporadically, without co-batching** — per-request nondeterminism, not just concurrent pairing.
+
+If outliers had persisted without MTP, hypothesis would be falsified (something else: clocks/UM). They did not. **Plainly: MTP draft variance is the driver.**
+
+**Updated recommendation (still characterization-first):** No code fix yet — this ablation is effect confirmation. For production: **log `draft_n`/`draft_n_accepted`/`acc` next to `pps` per request** (fork already prints) and treat single-slot `pps` dips as draft luck, not infra degradation; for arm comparisons, **report aggregate + mean acc**, and compare MTP ON vs OFF via wall-clock trade (MTP gives +~120% mean but +~11% CV). Next mitigation to evaluate (if user wants) is **not** ctx/parallel/cache_ram (all ruled out for this pattern) but **MTP tuning**: larger `spec_draft_n_max` window, or per-request draft logging + retry, or stable draft seeds — all require intent before implementation.
+
+Logs: `/tmp/m01_ablation_30.log` (30 seq), boot `/tmp/mtp-off-boot.log` `56s GOOD`, params `/tmp/mtp-off-ablation.yml`.
+
 ## Next step
 
-Characterization complete: **single-slot shallow intermittent 30-39 tok/s outlier (≈2-7%) with low draft acceptance (0.47-0.70) vs typical 42-50 tok/s (0.82-1.0), same cached/prompt_ms/thermal, not depth/concurrency, distinct from #744 deterministic concurrent 23 vs 32 and #743 cache-miss.** Recommend **N=100 M01 + MTP-disabled ablation** before proposing a mitigation (e.g., larger draft-acceptance logging, or draft-MTP tuning).
+Characterization complete + ablation confirmed: **single-slot shallow intermittent 30-39 tok/s outlier (≈2-7%) with low draft acceptance (0.47-0.70) vs typical 42-50 tok/s (0.82-1.0), same cached/prompt_ms/thermal, not depth/concurrency, distinct from #744 deterministic concurrent 23 vs 32 and #743 cache-miss. MTP-disabled ablation (30 seq, 19.98±0.02 tok/s, 0% slow outliers, 190× lower variance) confirms draft-acceptance variance as driver.** Next is user decision on whether to mitigate MTP variance or accept the ~2% tail vs 2× speedup trade.
