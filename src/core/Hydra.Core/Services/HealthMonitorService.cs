@@ -282,6 +282,39 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
                 info.ModelName = prev.ModelName;
                 info.ModelQuant = prev.ModelQuant;
                 info.ModelCapabilities = prev.ModelCapabilities;
+
+                // #712 (review finding 4): carry the last-known engine
+                // capabilities / preset aliases ONLY when the 0x41 INFO query
+                // actually FAILED (e.g. the RPC channel was busy behind a
+                // multi-hundred-MB state transfer). A fresh NodeInfo per poll
+                // otherwise silently drops merged_decode capability and the
+                // NEXT decode skips the 0x43 merged path and falls back to the
+                // HTTP proxy — one observed A/B turn (T4) did exactly this and
+                // paid a full-context prefill for it. The engine's capability
+                // list is static for the process lifetime, so last-known is
+                // valid until the engine re-advertises — which only happens on a
+                // SUCCESSFUL INFO, so a successful empty set (node redeployed
+                // with a build that no longer advertises merged_decode) must
+                // CLEAR the stale capability, not carry it: a stale cap set
+                // routes 0x43 into a gateRejected 503 with no fallback.
+                if (engineInfoFailed)
+                {
+                    if (info.EngineCapabilities.Count == 0 && prev.EngineCapabilities.Count > 0)
+                    {
+                        info.EngineCapabilities = new HashSet<string>(prev.EngineCapabilities, StringComparer.OrdinalIgnoreCase);
+                        _log.Warning("health_caps_carried Node={N} Caps={C} — INFO failed, using last-known capabilities",
+                            w.Name, info.EngineCapabilities.Count);
+                    }
+                    if (info.PresetAliases.Count == 0 && prev.PresetAliases.Count > 0)
+                        info.PresetAliases = new HashSet<string>(prev.PresetAliases, StringComparer.OrdinalIgnoreCase);
+                }
+                else if (info.EngineCapabilities.Count == 0 && prev.EngineCapabilities.Count > 0)
+                {
+                    // INFO succeeded but advertised nothing — authoritative.
+                    // Log the transition so a silent capability loss is visible.
+                    _log.Warning("health_caps_cleared Node={N} — INFO succeeded with an empty capability set (was {C})",
+                        w.Name, prev.EngineCapabilities.Count);
+                }
             }
 
             // #635: the EngineInfo RPC failing while /slots succeeds means the
@@ -309,9 +342,9 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
                         w.Name, slot.Id, slot.StuckPollCount, slot.NPast);
         }
         SetNodeInfo(w.Name, info);
-        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I} Stuck={K} Presets={P}",
+        _log.Information("health_poll_ok Node={N} Slots={S} Idle={I} Stuck={K} Presets={P} Caps={C}",
             w.Name, slots.Count, info.SlotsIdle, info.StuckSlots,
-            info.PresetAliases.Count);
+            info.PresetAliases.Count, info.EngineCapabilities.Count);
     }
 
     private void OnFail(string name)

@@ -1,0 +1,6 @@
+BASELINE turn1: ttft=1.71s decode=7.34s total=9.05s prompt=8323 out=64 (8.7 tok/s decode)
+BASELINE turn2: ttft=54.88s decode=8.68s total=63.55s prompt=14532 out=64 (7.4 tok/s decode)
+BASELINE turn3: ttft=24.92s decode=10.08s total=35.00s prompt=20291 out=64 (6.4 tok/s decode)
+BASELINE turn4: ttft=27.07s decode=11.76s total=38.84s prompt=26050 out=64 (5.4 tok/s decode)
+BASELINE turn5: ttft=26.98s decode=13.06s total=40.04s prompt=31359 out=64 (4.9 tok/s decode)
+BASELINE turn6: ttft=30.81s decode=14.71s total=45.52s prompt=37118 out=64 (4.4 tok/s decode)

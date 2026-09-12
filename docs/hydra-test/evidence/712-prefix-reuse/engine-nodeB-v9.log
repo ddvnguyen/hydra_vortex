@@ -1,0 +1,46 @@
+0.00.003.943 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.003.947 I device_info:
+0.00.059.325 I   - CUDA0   : Tesla P100-PCIE-16GB (16269 MiB, 9589 MiB free)
+0.00.059.337 I   - CPU     : 12th Gen Intel(R) Core(TM) i7-12700K (11227 MiB, 11227 MiB free)
+0.00.059.419 I system_info: n_threads = 3 (n_threads_batch = 3) / 6 | CUDA : ARCHS = 600 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.059.427 I srv  llama_server: n_parallel is set to auto, using n_parallel = 4 and kv_unified = true
+0.00.059.460 I srv          init: running without SSL
+0.00.059.490 I srv          init: using 8 threads for HTTP server
+0.00.059.575 I srv         start: binding port with default address family
+0.00.060.773 I srv  llama_server: loading model
+0.00.060.785 I srv    load_model: loading model '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf'
+0.00.060.832 I common_init_result: fitting params to device memory ...
+0.00.060.834 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.42.860.912 W llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.43.175.334 W sched_reserve: layer 0 is assigned to device CPU but the fused Gated Delta Net tensor is assigned to device CUDA0 (usually due to missing support)
+0.43.175.346 W sched_reserve: fused Gated Delta Net (chunked) not supported, set to disabled
+0.43.215.640 I common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.43.729.003 I srv    load_model: initializing slots, n_slots = 4
+0.44.048.429 W common_speculative_init: no implementations specified for speculative decoding
+0.44.048.436 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 65536
+0.44.048.440 I slot   load_model: id  1 | task -1 | new slot, n_ctx = 65536
+0.44.048.440 I slot   load_model: id  2 | task -1 | new slot, n_ctx = 65536
+0.44.048.440 I slot   load_model: id  3 | task -1 | new slot, n_ctx = 65536
+0.44.048.627 I srv    load_model: prompt cache is enabled, size limit: 8192 MiB
+0.44.048.629 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.44.048.630 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.44.048.630 I srv    load_model: context checkpoints enabled, max = 32, min spacing = 256
+0.44.048.656 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+0.44.060.640 I init: chat template, example_format: '<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+<think>
+'
+0.44.069.878 I srv          init: init: chat template, thinking = 1
+0.44.069.912 I srv  llama_server: model loaded
+0.44.070.528 I hydra_rpc: unified server on 0.0.0.0:19514 (ggml-RPC + Hydra protocol)
+0.44.070.532 I srv  start_rpc_se: hydra rpc: unified server on 0.0.0.0:19514 (ggml-RPC + Hydra protocol)
+0.44.070.535 I hydra_rpc: accept loop started on 0.0.0.0:19514
+0.44.070.548 I srv  llama_server: server is listening on http://0.0.0.0:18087
+0.44.070.557 I srv  update_slots: all slots are idle

@@ -34,7 +34,10 @@ public sealed class SessionLedger : ISessionLedger
     { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.SlotFreed = true; e.HasStoreState = true; } }
 
     public void MarkStoreState(string sid)
-    { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.HasStoreState = true; } }
+    { MarkStoreState(sid, 0); }
+
+    public void MarkStoreState(string sid, int storeNPast)
+    { if (_sessions.TryGetValue(sid, out var e)) lock (e) { e.HasStoreState = true; if (storeNPast > 0) e.StoreNPast = storeNPast; } }
 
     public List<SessionEntry> GetSessionsOnNode(string node)
         => _sessions.Values.Where(s => { lock (s) return s.NodeName == node; }).ToList();

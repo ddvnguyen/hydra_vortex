@@ -260,6 +260,12 @@ internal static class CoordinatorMetrics
     public static readonly Counter SoloKvRestoreMisses = Metrics.CreateCounter(
         "hydra_solo_kv_restore_misses_total",
         "Solo prefix reuse: no Store KV checkpoint found (full re-prefill)");
+    public static readonly Counter SoloPrefixDecodeSkips = Metrics.CreateCounter(
+        "hydra_solo_prefix_decode_skips_total",
+        "#712: solo session-KV restore hit — full PREFILL skipped, decode pinned to the restored slot (delta prefill via engine n_common)");
+    public static readonly Counter SoloRestoreSaveWaits = Metrics.CreateCounter(
+        "hydra_solo_restore_save_waits_total",
+        "#712: restore waited for the previous turn's in-flight BgSave to commit before reading the store");
 
     // ── Issue #435: n_past guard observability ──
     // Fires in RouteAsync when the warm-slot n_past guard's predicate evaluates

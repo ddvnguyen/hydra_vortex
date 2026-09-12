@@ -71,6 +71,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	internal Func<int, bool, TimeSpan>? RetryBackoffOverride { get; set; }
 	private readonly ConcurrentDictionary<string, SlotLease> _warmLeases = new();
+	/// <summary>
+	/// #712 handoff marker: set when <see cref="EvictWarmAndColdRouteAsync"/>
+	/// actually consumed (TryRemove'd) the session's warm lease — i.e. the NEXT
+	/// turn's evict won the race against the PREVIOUS turn's
+	/// <see cref="NotifyStreamComplete"/> (NSC). In back-to-back turns the evict
+	/// fires ~20ms after stream end while NSC is still in its StateGet RPC, so
+	/// NSC's own warm-lease release then finds an empty dict and would log a
+	/// spurious <c>stream_done_no_lease</c>. NSC consumes this marker on miss
+	/// and downgrades to an Information log. The marker is set only when the
+	/// lease was actually removed, so at most one path disposes the lease; a
+	/// stale marker (NSC never ran, e.g. disconnect) is harmless and is
+	/// overwritten by the next evict.
+	/// </summary>
+	private readonly ConcurrentDictionary<string, byte> _warmLeaseHandoff = new();
 	private readonly ConcurrentDictionary<string, IPeerReservation> _peerLeases = new();
 	private readonly ConcurrentDictionary<string, string> _activeMultiSessions = new();
 	private readonly ConcurrentDictionary<string, byte> _streamCompleted = new();
@@ -94,6 +108,47 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	/// </summary>
 	private static readonly TimeSpan DecodeMetaQueryTimeout = TimeSpan.FromSeconds(15);
 	internal readonly ConcurrentDictionary<string, (string WorkerName, int SlotId, string TraceId)> _pendingBgSaves = new();
+	// #712: in-flight per-session KV saves (BgSaveAsync). The next turn's restore
+	// (TryRestoreSessionKvAsync) awaits the current TCS before reading the store —
+	// otherwise it can restore the PREVIOUS turn's blob (the save commits after
+	// the client stream ends, and the client fires the next turn immediately),
+	// which makes n_common stop one turn early and the delta prefill cover two
+	// turns of history. Last writer wins; a waiter on a superseded TCS still
+	// resolves when that save completes.
+	internal readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _sessionSaveInFlight = new();
+
+	/// <summary>#712: register this session's save as in-flight (last writer wins).
+	/// Called when a decode stream announces its deferred save (_pendingBgSaves)
+	/// and when the pipeline BgSave state starts. A TCS superseded by a newer
+	/// registration is completed immediately so a waiter parked on it does not
+	/// block the full bounded wait (review #732 finding 3) — the newer save
+	/// commits the same-or-newer state, which is all the waiter needs. Returns
+	/// the new TCS (internal for hermetic tests).</summary>
+	internal TaskCompletionSource<bool> RegisterSessionSave(string sessionId)
+	{
+		var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		_sessionSaveInFlight.AddOrUpdate(sessionId, tcs, (_, existing) =>
+		{
+			existing.TrySetResult(true); // superseded — resolve its waiters now
+			return tcs;
+		});
+		return tcs;
+	}
+
+	/// <summary>#712: mark the session's in-flight save as finished. Completes the
+	/// current TCS (waiters resolve) and removes it unless a newer save already
+	/// superseded it — a superseded save's completion must never clear the newer
+	/// entry, and a waiter on a superseded TCS still resolves because this method
+	/// always TrySetResult on the TCS it finds. internal for hermetic tests.</summary>
+	internal void CompleteSessionSave(string sessionId)
+	{
+		if (!_sessionSaveInFlight.TryGetValue(sessionId, out var tcs))
+			return;
+		tcs.TrySetResult(true);
+		if (_sessionSaveInFlight.TryGetValue(sessionId, out var cur) && ReferenceEquals(cur, tcs))
+			_sessionSaveInFlight.TryRemove(sessionId, out _);
+	}
+
 	// #613: keyed by TraceId (per-request), NOT SessionId — with concurrent
 	// requests on one session, a session key lets one request's completion
 	// dispose the pipeline cts of another, killing its disconnect-abort path.
@@ -1192,11 +1247,50 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return true;
 	}
 
+	/// <summary>Test seam: seed a warm lease (mirrors the stream-end lease
+	/// handoff) so <c>EvictWarmAndColdRouteAsync</c>'s redundant-save skip can
+	/// be exercised hermetically.</summary>
+	internal void SeedWarmLeaseForTest(string sessionId, SlotLease lease) => _warmLeases[sessionId] = lease;
+
 	private async Task<WorkItemState> EvictWarmAndColdRouteAsync(WorkItem item)
 	{
 		if (_warmLeases.TryRemove(item.SessionId, out var warmLease))
 		{
-			await SaveSlotStateBeforeEvictAsync(item.SessionId, warmLease.WorkerName, warmLease.SlotId, item.TraceId, default);
+			_warmLeaseHandoff[item.SessionId] = 1; // #712: tell the prior turn's NSC this lease is ours now
+			// #712: the stream-end bg save already persisted this exact slot
+			// state — the warm lease kept the slot idle since, so nothing new
+			// can be in it. Re-saving here costs a second 250MB+ STATE_GET+PUT
+			// that serializes with the previous turn's save on the engine RPC
+			// channel (observed on P100: +16s on the next turn's TTFT when the
+			// two saves raced). Skip when the store provably holds the current
+			// state; a failed/stale bg save (StoreNPast mismatch) still saves.
+			//
+			// The next request arrives at stream end, i.e. usually BEFORE the
+			// bg save's store Put completes (~2s later) — so first await the
+			// in-flight save (same TCS the PrefixRestore save-wait uses) and
+			// then judge freshness on the final ledger state.
+			if (_sessionSaveInFlight.TryGetValue(item.SessionId, out var evictInFlightSave))
+			{
+				using var evictWaitCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_cfg.SoloSaveWaitMs));
+				try
+				{
+					await evictInFlightSave.Task.WaitAsync(evictWaitCts.Token);
+				}
+				catch (OperationCanceledException)
+				{
+					// Save still not done — fall through to the save (safe side).
+				}
+			}
+			var evictEntry = _ledger.Lookup(item.SessionId);
+			if (evictEntry is { HasStoreState: true, StoreNPast: > 0 } && evictEntry.StoreNPast == evictEntry.NPast)
+			{
+				_log.Information("evict_save_skipped Sid={Sid} Slot={Slot} NPast={N} — store state fresh from bg save, warm slot idle since",
+					item.SessionId, warmLease.SlotId, evictEntry.NPast);
+			}
+			else
+			{
+				await SaveSlotStateBeforeEvictAsync(item.SessionId, warmLease.WorkerName, warmLease.SlotId, item.TraceId, default);
+			}
 			await warmLease.DisposeAsync();
 			SignalEvaluator();
 		}
@@ -1992,7 +2086,17 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			if (entry is { HasStoreState: true })
 			{
 				var restored = await TryRestoreSessionKvAsync(item, ct);
-				if (restored) return WorkItemState.Prefill;
+				if (restored)
+				{
+					// #712: session KV resident on item.PrefillSlot → skip the full
+					// PREFILL + SaveKv stages and pin the DECODE to the restored
+					// slot (delta prefill via the engine's n_common detection).
+					// Restore-miss cases (non-solo routes, model mismatch, engines
+					// without STATE_PUT meta) keep the full PREFILL path.
+					return item.SoloKvRestoreHit
+					? WorkItemState.PickDecode
+					: WorkItemState.Prefill;
+				}
 			}
 			// Fallback: no session KV in Store — try prefix-checkpoint path below.
 		}
@@ -2142,6 +2246,28 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			return false;
 		}
 
+		// #712: wait for the previous turn's in-flight BgSave to commit before
+		// reading the store. The save runs after the client stream ends, so the
+		// next turn's restore can easily land mid-save and read the old blob —
+		// the engine then trims n_common at the stale prefix and the delta
+		// prefill recomputes two turns of history (~1.9x baseline TTFT in the
+		// #712 A/B). Bounded wait: on timeout we proceed anyway; a stale read
+		// degrades gracefully (larger delta, correct output).
+		if (_sessionSaveInFlight.TryGetValue(item.SessionId, out var inFlightSave))
+		{
+			CoordinatorMetrics.SoloRestoreSaveWaits.Inc();
+			using var saveWaitCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_cfg.SoloSaveWaitMs));
+			try
+			{
+				await inFlightSave.Task.WaitAsync(saveWaitCts.Token);
+			}
+			catch (OperationCanceledException)
+			{
+				_log.Warning("solo_restore_save_wait_timeout Sid={Sid} — proceeding with possibly-stale KV (larger delta prefill)",
+					item.SessionId);
+			}
+		}
+
 		var storeKey = $"{item.SessionId}.kv";
 		try
 		{
@@ -2174,9 +2300,10 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 			item.PrefixCacheHit = true;
 
+			Dictionary<string, JsonElement>? meta = null;
 			if (putResp.Meta != null)
 			{
-				var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
+				meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(putResp.Meta);
 				var nPast = meta?.TryGetValue("n_past", out var n) == true
 					? n.GetInt32() : 0;
 				if (nPast > 0)
@@ -2194,8 +2321,50 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				item.PrefixNPast = entry.NPast;
 			}
 
-			_log.Information("solo_kv_restored Sid={Sid} Key={Key} NPast={NP}",
-				item.SessionId, storeKey, item.PrefixNPast);
+			// #712: skip-PREFILL solo decode. The session KV is now resident on
+			// item.PrefillSlot; a full PREFILL (0x42) would recompute the entire
+			// prompt from position 0 (prompt_clear + decode-from-0) and discard
+			// the restored state — the pre-fix behaviour that made TTFT grow
+			// linearly with session length. Instead PrefixRestoreAsync routes
+			// straight to PickDecode, which pins the decode to this slot, and the
+			// engine's completion path (update_slots → get_common_prefix)
+			// prefills only the delta tokens.
+			//
+			// Requirements (any miss → fall back to the full PREFILL path):
+			//  - meta present: the merged DECODE frame needs kv_metadata to pass
+			//    Gate A (empty identity is rejected); older engines omit meta;
+			//  - model_match != false: the KV was built by the resident model.
+			//    A mismatch means the engine swapped models — the PREFILL path
+			//    performs the inline swap and must run in full;
+			//  - single-engine cold route: P/D split (cold_pd/cold_combined) and
+			//    migration transfer the KV to a DIFFERENT slot/node via the
+			//    PREFILL M2 stream/relay, so they still need the PREFILL stage.
+			var modelMatch = meta != null
+				&& !(meta.TryGetValue("model_match", out var mm) && mm.GetBoolean() == false);
+			var kvIdentity = new ModelIdentity
+			{
+				Tokenizer = MetaString(meta, "tokenizer"),
+				ModelName = MetaString(meta, "model_name"),
+				ModelQuant = MetaString(meta, "model_quant"),
+				ModelCapabilities = meta != null
+					&& meta.TryGetValue("model_capabilities", out var mc)
+					&& mc.ValueKind == JsonValueKind.Number
+					? mc.GetUInt32() : 0,
+			};
+			if (modelMatch && !kvIdentity.IsEmpty && IsSoloSkipPrefillRoute(item.RouteType))
+			{
+				item.SoloKvRestoreHit = true;
+				item.SetKvModelIdentity(kvIdentity);
+				var metaAlias = MetaString(meta, "model_alias");
+				if (!string.IsNullOrEmpty(metaAlias)) item.KvModelAlias = metaAlias;
+				item.NPastAfter = item.PrefixNPast;
+				CoordinatorMetrics.SoloPrefixDecodeSkips.Inc();
+				_log.Information("solo_prefix_skip_prefill Sid={Sid} Slot={S} NPast={NP} Route={R} — decode pinned to restored slot, delta prefill via n_common",
+					item.SessionId, item.PrefillSlot, item.PrefixNPast, item.RouteType);
+			}
+
+			_log.Information("solo_kv_restored Sid={Sid} Key={Key} NPast={NP} SkipPrefill={Skip}",
+				item.SessionId, storeKey, item.PrefixNPast, item.SoloKvRestoreHit);
 			CoordinatorMetrics.SoloKvRestores.Inc();
 			return true;
 		}
@@ -2209,6 +2378,25 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	}
 
 	// ── Gap 4: n_past tracking in prefill ──
+
+	/// <summary>Read an optional string field from a JSON meta dictionary (empty string when absent).</summary>
+	private static string MetaString(Dictionary<string, JsonElement>? meta, string key)
+		=> meta != null
+			&& meta.TryGetValue(key, out var v)
+			&& v.ValueKind == JsonValueKind.String
+			? v.GetString() ?? ""
+			: "";
+
+	/// <summary>
+	/// #712: routes where the solo skip-PREFILL flow applies — single-engine
+	/// cold routes whose decode can run on the restored slot. Excluded:
+	/// <c>cold_pd</c>/<c>cold_combined</c> (P/D split — the KV must stream to a
+	/// decode node via the PREFILL M2 relay), <c>migration</c> (KV moves nodes),
+	/// <c>affinity</c>/<c>warm</c> (KV resident, no restore ran), and null
+	/// (manually staged items in unit tests).
+	/// </summary>
+	private static bool IsSoloSkipPrefillRoute(string? routeType)
+		=> routeType is "cold_concurrency" or "solo_prefix_restore";
 
 	// ── #592: worker-health recovery on positive liveness evidence ─────────
 	//
@@ -3032,6 +3220,12 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 						catch (Exception ex)
 						{
 							pushError = ex;
+							// #712 M2: pushTask faults were previously unobserved — a dead
+							// store push silently clogged the chunk pipe and parked the
+							// engine PREFILL read loop (the M2 stall). Log at the fault
+							// site so the death is never silent again.
+							_log.Error(ex, "prefill_store_push_fault Sid={Sid} Node={Node} Slot={Slot} Key={Key} — store PUT_CHUNKED push failed; the prefill turn will error instead of stalling",
+								item.SessionId, w.Name, slotId, storeKey);
 							throw;
 						}
 					});
@@ -3616,6 +3810,72 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			return WorkItemState.Decode;
 		}
 
+		// #712: solo prefix-reuse decode pin — TryRestoreSessionKvAsync STATE_PUT'd
+		// the session KV onto item.PrefillSlot and the full PREFILL was skipped.
+		// The decode MUST run on that exact slot: any other slot has no restored
+		// prefix, the engine's n_common detection would see a cold slot and
+		// re-prefill the entire prompt (the pre-fix behaviour). Reuse the lease
+		// that already owns the slot — a fresh TryAcquireSlot could rent a
+		// different slot on a multi-slot worker. Returning Decode directly also
+		// skips RestoreKvAsync (a second store→slot transfer of the same bytes).
+		if (item.SoloKvRestoreHit && item.PrefillWorker != null && item.PrefillSlot is int pinSlot)
+		{
+			var pw = item.PrefillWorker;
+			if (item.DecodeLease != null && item.DecodeLease.WorkerName == pw.Name
+				&& item.DecodeLease.SlotId == pinSlot)
+			{
+				// cold_atomic / solo_prefix_restore: the Long decode lease already owns it
+				item.DecodeWorker = pw;
+				item.DecodeSlot = pinSlot;
+				_log.Information("solo_prefix_decode_pinned Sid={Sid} Node={N} Slot={S} Lease=decode_reuse — PREFILL skipped, delta prefill via n_common",
+					item.SessionId, pw.Name, pinSlot);
+				return WorkItemState.Decode;
+			}
+			if (item.PrefillLease != null && item.PrefillLease.WorkerName == pw.Name
+				&& item.PrefillLease.SlotId == pinSlot)
+			{
+				// cold_concurrency: the prefill lease is Short-lived, but
+				// FinalizeAsync only stashes Long decode leases as warm —
+				// transferring the same object would release the slot while the
+				// SSE stream is still draining (review #732 finding 1). Build a
+				// fresh Long lease over the same slot and drop the prefill
+				// reference WITHOUT disposing: the tracker claim is made once
+				// (ColdRouteAsync) and released once (the Long lease at stream
+				// end) — disposing both would double-release. No release +
+				// re-acquire, so no window for another item to rent the slot.
+				item.DecodeWorker = pw;
+				item.DecodeSlot = pinSlot;
+				item.DecodeLease = new SlotLease(pw.Name, pinSlot, item.SessionId, LeaseLifetime.Long, _tracker);
+				item.PrefillLease = null; // dropped, not released — do NOT DisposeAsync
+				_log.Information("solo_prefix_decode_pinned Sid={Sid} Node={N} Slot={S} Lease=long_fresh — PREFILL skipped, delta prefill via n_common",
+					item.SessionId, pw.Name, pinSlot);
+				return WorkItemState.Decode;
+			}
+			// Defensive: no lease owns the restored slot. Re-acquire it pinned;
+			// on failure clear the hit and fall through to the normal pick — the
+			// decode path then rebuilds KV from scratch (n_common=0 → full prompt
+			// processing), a safe (slower) degradation.
+			if (item.PrefillLease != null)
+			{
+				await item.PrefillLease.DisposeAsync();
+				item.PrefillLease = null;
+			}
+			if (_tracker.TryAcquireSlot(pw.Name, out var pinnedSlot, "decode", pinnedSlot: pinSlot))
+			{
+				item.DecodeWorker = pw;
+				item.DecodeSlot = pinnedSlot;
+				item.DecodeLease = new SlotLease(pw.Name, pinnedSlot, item.SessionId,
+					LeaseLifetime.Long, _tracker);
+				_log.Information("solo_prefix_decode_pinned Sid={Sid} Node={N} Slot={S} Lease=fresh_pinned — PREFILL skipped, delta prefill via n_common",
+					item.SessionId, pw.Name, pinnedSlot);
+				return WorkItemState.Decode;
+			}
+			_log.Warning("solo_prefix_decode_pin_failed Sid={Sid} Node={N} Slot={S} — restored slot not acquirable, falling back to full-prefill decode path",
+				item.SessionId, pw.Name, pinSlot);
+			item.SoloKvRestoreHit = false;
+			item.PrefixCacheHit = false;
+		}
+
 		// COMBINED mode: decode must stay on the head — the peer (rtx3060) is
 		// exclusively reserved and the expert-mode split is wired to this head.
 		// PickBestDecodeWorker would wander to P100 and break the dual-GPU binding.
@@ -3864,6 +4124,18 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			item.DecodeSlot ?? item.PrefillSlot ?? entry?.SlotId ?? 0,
 			w.Slots - 1);
 		item.DecodeSlot = slotId; // Sync clamped slot so DecodeAsync pins the same one
+
+		// #712: the session KV is already resident on this slot (STATE_PUT in
+		// PrefixRestoreAsync, PREFILL skipped, decode pinned by PickDecodeAsync).
+		// A second restore from the Store manifest would re-transfer the same
+		// bytes and prompt_clear the slot — go straight to decode; the engine's
+		// n_common detection handles the delta.
+		if (item.SoloKvRestoreHit)
+		{
+			_log.Information("restore_kv_skipped_solo_hit Sid={Sid} Node={Node} Slot={Slot} — KV resident via STATE_PUT (PREFILL skipped)",
+				item.SessionId, w.Name, slotId);
+			return WorkItemState.Decode;
+		}
 
 		// #470 Increment 2 (relay): the KV is streaming live from the PREFILL
 		// RPC (bounded channel) — no Store manifest / GET_CHUNKED on this path.
@@ -4497,6 +4769,26 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		}
 	}
 
+	/// <summary>
+	/// #712: on a session-KV restore hit the model is GUARANTEED resident — the
+	/// restored KV was built with it and the decode is pinned to that slot. The
+	/// alias EngineConfig may still carry a model_path that differs from the
+	/// engine's loaded path (test rigs load from /mnt/kv_slots/... while the
+	/// models file aliases to /models/...). If a decode falls back to the HTTP
+	/// proxy, applying that model_path makes the engine attempt a T3 model
+	/// rebuild — which fails (path absent), rolls back, and WIPES every slot
+	/// including the freshly restored KV, forcing a full-context prefill
+	/// (observed on the #712 P100 A/B, turn T4: 144s TTFT instead of ~27s).
+	/// Stripping model_path leaves the T1 slot keys (cache types, ubatch, ...)
+	/// — what the fallback actually needs — intact.
+	/// </summary>
+	internal static void StripReloadTriggerForRestoreHit(
+		Dictionary<string, object> hydraConfig, Serilog.ILogger log, string sessionId)
+	{
+		if (hydraConfig.Remove("model_path"))
+			log.Information("hydra_config_model_path_stripped Sid={Sid} — restore hit, model resident", sessionId);
+	}
+
 	// ── Gap 4: n_past tracking from decode ──
 	private async Task<WorkItemState> DecodeAsync(WorkItem item, CancellationToken ct)
 	{
@@ -4559,7 +4851,24 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 				{
 					var hydraConfig = engineConfig.ToHydraConfigDict();
 					if (hydraConfig.Count > 0)
+					{
+						// #712: on a session-KV restore hit the model is GUARANTEED
+						// resident — the restored KV was built with it and the decode
+						// is pinned to that slot. The alias EngineConfig may still
+						// carry a model_path that differs from the engine's loaded
+						// path (test rigs load from /mnt/kv_slots/... while
+						// models-test.json aliases to /models/...). If a decode
+						// falls back to the HTTP proxy, applying that model_path
+						// makes the engine attempt a T3 model rebuild — which fails
+						// (path absent), rolls back, and WIPES every slot including
+						// the freshly restored KV, forcing a full-context prefill
+						// (observed on A/B turn T4: 144s instead of ~27s). Strip the
+						// T3 reload trigger; the T1 slot keys (cache types, ubatch,
+						// ...) are what the fallback actually needs and still apply.
+						if (item.SoloKvRestoreHit)
+							StripReloadTriggerForRestoreHit(hydraConfig, _log, item.SessionId);
 						item.Request["hydra_config"] = hydraConfig;
+					}
 				}
 			}
 			catch (Exception ex)
@@ -4607,6 +4916,13 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// send the framed DECODE 0x43 with kv_metadata + model_metadata + prompt
 			// to get the decode_request_id and model identity match. On success,
 			// poll GET /v1/decode/{id} for the streaming result (skips HTTP proxy).
+			// #712: one diagnostic line per decode — a silent capability drop
+			// (health poll INFO gap) used to make this branch unreachable with no
+			// log at all, which is how a full-context prefill hid behind an
+			// "HTTP fallback" for one A/B turn.
+			_log.Information("decode_path Sid={Sid} Node={Node} MergedCapable={C} Relay={R} KvChunks={K} RestoreHit={H}",
+				item.SessionId, w.Name, decodeNodeMergedCapable, item.RelayChannel != null,
+				item.KvChunks is { Count: > 0 }, item.SoloKvRestoreHit);
 			bool mergedDecodeOk = false;
 			if (decodeNodeMergedCapable)
 			{
@@ -4804,6 +5120,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 							mergedPath: true, fallbackRequestBody: cleanRequestBody!,
 							fallbackNodeUrl: w.LlamaUrl, fallbackCt: cts.Token);
 						_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
+						RegisterSessionSave(item.SessionId); // #712: save promised — next restore waits for the commit
 						item.StreamCompletion.TrySetResult(item.DecodeChunks);
 						item.Response = new { streamed = true };
 						if (_ledger.Lookup(item.SessionId) == null)
@@ -4842,6 +5159,16 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Ask llama-server to emit a final usage chunk so token counts are
 			// available on streamed requests (OpenAI omits usage from streams by default).
 			item.Request["stream_options"] = new Dictionary<string, object> { ["include_usage"] = true };
+			// #712: on a session-KV restore hit the model is GUARANTEED resident —
+			// the restored KV was built with it and the decode is pinned to that
+			// slot. The injected hydra_config (alias EngineConfig) may still carry
+			// a model_path that differs from the engine's loaded path (test rigs
+			// load from /mnt/kv_slots/... while models-test.json aliases to
+			// /models/...). Applying it makes the engine attempt a T3 model
+			// rebuild, which fails (path absent), rolls back, and WIPES every
+			// slot — including the freshly restored KV — forcing a full-context
+			// prefill. Strip the T3 reload trigger; T1 slot keys (cache types,
+			// ubatch, ...) still apply and are what the fallback actually needs.
 			IAsyncEnumerable<byte[]> streamTask = _proxy.ProxyCompletionStreamAsync(
 				w.LlamaUrl, item.Request, item.TraceId, cts.Token);
 
@@ -4850,6 +5177,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Set before StreamCompletion to avoid race: a fast stream could finish
 			// and call NotifyStreamComplete before this line runs, orphaning the save.
 			_pendingBgSaves[item.SessionId] = (w.Name, item.DecodeSlot ?? 0, item.TraceId);
+			RegisterSessionSave(item.SessionId); // #712: save promised — next restore waits for the commit
 			item.StreamCompletion.TrySetResult(item.DecodeChunks);
 			item.Response = new { streamed = true };
 			// Register session in ledger so /status can find it (cold_atomic streaming
@@ -5232,7 +5560,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		return WorkItemState.BgSave;
 	}
 
-	private async Task<WorkItemState> BgSaveAsync(WorkItem item)
+	internal async Task<WorkItemState> BgSaveAsync(WorkItem item)
 	{
 		// Issue #277: BgSave was previously fire-and-forget (`_ = Task.Run(...)`).
 		// The race: a new decode can TryAcquireSlot the same slot and start its chat
@@ -5244,33 +5572,43 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 		// the user sees no extra latency. Only the next queued item is delayed.
 		var w = item.DecodeWorker!;
 
+		// #712: advertise this save as in-flight (pipeline path) — a concurrent
+		// same-session restore waits for the store commit (see _sessionSaveInFlight).
+		RegisterSessionSave(item.SessionId);
 		try
 		{
-			// #635 fix 4: ALWAYS pull the current slot state via StateGet. The
-			// old engine-mode shortcut wrote item.KvBlob, which on merged-decode
-			// routes is the PRE-decode restore blob (RestoreKvAsync sets it) —
-			// persisting that regressed the stored KV to the pre-decode state.
-			// StateGet returns the true post-decode state, and PersistKvToStoreAsync
-			// keeps the chunk manifest in sync with it.
-			var slotId = item.LastIdSlot ?? item.DecodeSlot ?? 0;
-			var llamaRpc = GetStateRpcClient(w);
-			var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
-				slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
+			try
+			{
+				// #635 fix 4: ALWAYS pull the current slot state via StateGet. The
+				// old engine-mode shortcut wrote item.KvBlob, which on merged-decode
+				// routes is the PRE-decode restore blob (RestoreKvAsync sets it) —
+				// persisting that regressed the stored KV to the pre-decode state.
+				// StateGet returns the true post-decode state, and PersistKvToStoreAsync
+				// keeps the chunk manifest in sync with it.
+				var slotId = item.LastIdSlot ?? item.DecodeSlot ?? 0;
+				var llamaRpc = GetStateRpcClient(w);
+				var stateResp = await llamaRpc.RequestAsync(Hydra.Shared.OpCode.StateGet,
+					slotId.ToString(), ReadOnlyMemory<byte>.Empty, item.TraceId, CancellationToken.None);
 
-			if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
-			{
-				await PersistKvToStoreAsync(item.SessionId, stateResp.Payload, item, item.TraceId, CancellationToken.None);
-				_ledger.MarkStoreState(item.SessionId);
-				_log.Information("bg_saved Sid={Sid} Slot={Slot} bytes={Bytes} (engine state, post-decode)",
-					item.SessionId, slotId, stateResp.Payload.Length);
+				if (stateResp.Status == (byte)Hydra.Shared.StatusCode.Ok)
+				{
+					await PersistKvToStoreAsync(item.SessionId, stateResp.Payload, item, item.TraceId, CancellationToken.None);
+					_ledger.MarkStoreState(item.SessionId, _ledger.Lookup(item.SessionId)?.NPast ?? 0);
+					_log.Information("bg_saved Sid={Sid} Slot={Slot} bytes={Bytes} (engine state, post-decode)",
+						item.SessionId, slotId, stateResp.Payload.Length);
+				}
+				else
+				{
+					_log.Warning("bg_save_busy Sid={Sid} Slot={Slot} Status={Status}",
+						item.SessionId, slotId, stateResp.Status);
+				}
 			}
-			else
-			{
-				_log.Warning("bg_save_busy Sid={Sid} Slot={Slot} Status={Status}",
-					item.SessionId, slotId, stateResp.Status);
-			}
+			catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
 		}
-		catch (Exception ex) { _log.Error(ex, "bg_save_failed"); }
+		finally
+		{
+			CompleteSessionSave(item.SessionId);
+		}
 
 		return WorkItemState.Done;
 	}
@@ -5442,6 +5780,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 					if (wSkip != null) releaseNode = wSkip.Name;
 					bgTraceId = bgInfoSkip.TraceId;
 				}
+				CompleteSessionSave(sessionId); // #712: no save will happen — unblock any waiting restore
 			}
 			else if (_pendingBgSaves.TryRemove(sessionId, out var bgInfo2))
 			{
@@ -5475,27 +5814,40 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			}
 			else
 			{
-				_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
-					sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
-				// #470 Fix 3: the lease must not be lost. When the warm-lease
-				// stash is empty for this session, the item's own DecodeLease
-				// may still be held (e.g. the pipeline finalized outside the
-				// warm-lease stash path after a merged_decode_transport_fault).
-				// Release it here so the slot returns to the pool instead of
-				// being stranded — a stranded slot 503/empties the NEXT turn
-				// of the same session. The streamed reply is unaffected: it is
-				// assembled from DecodeChunks and does not depend on the lease.
-				foreach (var kv in _pendingTimelines)
+				if (_warmLeaseHandoff.TryRemove(sessionId, out _))
 				{
-					if (kv.Value.SessionId != sessionId || kv.Value.DecodeLease == null)
-						continue;
-					var orphanedLease = kv.Value.DecodeLease;
-					kv.Value.DecodeLease = null;
-					if (releaseNode is null) releaseNode = orphanedLease.WorkerName;
-					try { await orphanedLease.DisposeAsync(); }
-					catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
-					SignalEvaluator();
-					break;
+					// #712: the warm lease was already consumed by this session's
+					// NEXT-turn evict (back-to-back turn race). Not a leak — the
+					// lease was disposed exactly once, by the evict. Information,
+					// and skip the orphan-lease scan: there is no lease left to
+					// orphan.
+					_log.Information("stream_done_lease_handed_off Sid={Sid} — warm lease consumed by next-turn evict (expected back-to-back)",
+						sessionId);
+				}
+				else
+				{
+					_log.Warning("stream_done_no_lease Sid={Sid} WarmKeys={Keys}",
+						sessionId, string.Join(",", _warmLeases.Keys.Take(5)));
+					// #470 Fix 3: the lease must not be lost. When the warm-lease
+					// stash is empty for this session, the item's own DecodeLease
+					// may still be held (e.g. the pipeline finalized outside the
+					// warm-lease stash path after a merged_decode_transport_fault).
+					// Release it here so the slot returns to the pool instead of
+					// being stranded — a stranded slot 503/empties the NEXT turn
+					// of the same session. The streamed reply is unaffected: it is
+					// assembled from DecodeChunks and does not depend on the lease.
+					foreach (var kv in _pendingTimelines)
+					{
+						if (kv.Value.SessionId != sessionId || kv.Value.DecodeLease == null)
+							continue;
+						var orphanedLease = kv.Value.DecodeLease;
+						kv.Value.DecodeLease = null;
+						if (releaseNode is null) releaseNode = orphanedLease.WorkerName;
+						try { await orphanedLease.DisposeAsync(); }
+						catch (Exception ex) { _log.Error(ex, "lease_dispose_failed Sid={Sid}", sessionId); }
+						SignalEvaluator();
+						break;
+					}
 				}
 			}
 
@@ -5519,10 +5871,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			{
 				_ = WriteStateToStoreAsync(stateResp.Payload, sessionId, bgTraceId ?? "",
 					timelineItem, bgRpcSw.ElapsedMilliseconds);
+				// #712: the in-flight TCS is completed by WriteStateToStoreAsync's
+				// own finally — AFTER the store Put lands, so a waiting restore
+				// reads the fresh blob, not the previous turn's.
 			}
-			else if (stateResp is { Status: not (byte)Hydra.Shared.StatusCode.Ok })
+			else
 			{
-				_log.Warning("bg_save_busy Sid={Sid} Status={Status}", sessionId, stateResp.Status);
+				// #712 review finding 2: stateResp==null (StateGet threw, or the
+				// worker lookup failed) used to fall through BOTH branches and
+				// leave the in-flight TCS uncompleted — the next turn then paid
+				// the full bounded save-wait twice (evict + restore). Every exit
+				// from the bg-save block without a store handoff must complete it.
+				_log.Warning("bg_save_skipped Sid={Sid} Status={Status} — no store Put, in-flight save TCS completed",
+					sessionId, stateResp?.Status.ToString("X2") ?? "null");
+				CompleteSessionSave(sessionId);
 			}
 		}
 		catch (Exception ex)
@@ -5531,6 +5893,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Log + count, then fall through to lease release in finally.
 			_log.Error(ex, "stream_complete_early_error Sid={Sid}", sessionId);
 			CoordinatorMetrics.SlotReleaseErrors.Inc();
+			CompleteSessionSave(sessionId); // #712: save died early — unblock any waiting restore
 		}
 		finally
 		{
@@ -5557,17 +5920,20 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	// Fire-and-forget disk write. Runs in a separate task so NotifyStreamComplete
 	// can return as soon as the slot is released. Failures are logged.
-	private async Task WriteStateToStoreAsync(byte[] stateBlob, string sessionId, string traceId,
+	internal async Task WriteStateToStoreAsync(byte[] stateBlob, string sessionId, string traceId,
 		WorkItem? timelineItem, long bgRpcMs)
 	{
 		var saveStart = System.Diagnostics.Stopwatch.StartNew();
+		// #712: the in-flight registration happens where the save is ANNOUNCED
+		// (decode dispatch, _pendingBgSaves) — this tail only completes it, so a
+		// restore arriving between stream end and the store Put still waits.
 		try
 		{
 			// #635 fix 4: persist the post-decode state AND (in chunk mode) keep
 			// the chunk manifest in sync so a migration continuation's restore
 			// reads the latest blob instead of the stale pre-decode manifest.
 			await PersistKvToStoreAsync(sessionId, stateBlob, timelineItem, traceId, CancellationToken.None);
-			_ledger.MarkStoreState(sessionId);
+			_ledger.MarkStoreState(sessionId, _ledger.Lookup(sessionId)?.NPast ?? 0);
 			var storeMs = saveStart.ElapsedMilliseconds;
 			_log.Information("bg_saved Sid={Sid} bytes={Bytes} rpc_ms={RpcMs} store_ms={StoreMs} total_ms={Total}",
 				sessionId, stateBlob.Length, bgRpcMs, storeMs, bgRpcMs + storeMs);
@@ -5592,6 +5958,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			CoordinatorMetrics.SaveKvAsyncDuration
 				.WithLabels("ok") // could be enriched with success/failure label
 				.Observe(saveStart.Elapsed.TotalSeconds);
+			CompleteSessionSave(sessionId); // #712: store committed (or failed) — unblock restores
 		}
 	}
 
@@ -5599,6 +5966,11 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 
 	public Dictionary<string, SlotLease> GetWarmLeasesSnapshot()
 		=> new(_warmLeases);
+
+	/// <summary>Test seam: true when the prior turn's NSC is still owed the #712
+	/// handoff marker for this session (set by the evict, consumed by NSC).</summary>
+	internal bool WarmLeaseHandoffPendingForTest(string sessionId)
+		=> _warmLeaseHandoff.ContainsKey(sessionId);
 
 	private Hydra.Shared.RpcClient? GetAgentByName(string name)
 	{
@@ -6088,7 +6460,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			var payload = await SaveKvStateCoreAsync(w, slotId, sessionId, nPast, traceId, ct);
 			if (payload != null)
 			{
-				_ledger.MarkStoreState(sessionId);
+				_ledger.MarkStoreState(sessionId, nPast);
 				_log.Information("evict_saved Sid={Sid} Slot={Slot} SizeMB={Size}",
 					sessionId, slotId, payload.Length / 1024 / 1024);
 			}

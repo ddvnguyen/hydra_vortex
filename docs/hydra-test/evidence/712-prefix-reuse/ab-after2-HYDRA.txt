@@ -1,0 +1,6 @@
+HYDRA turn1: ttft=34.33s decode=7.28s total=41.61s prompt=8323 out=64 (8.8 tok/s decode)
+HYDRA turn2: ttft=29.88s decode=8.48s total=38.36s prompt=14532 out=64 (7.5 tok/s decode)
+HYDRA turn3: ttft=47.95s decode=9.96s total=57.91s prompt=20291 out=64 (6.4 tok/s decode)
+HYDRA turn4: ttft=48.61s decode=11.43s total=60.04s prompt=26050 out=64 (5.6 tok/s decode)
+HYDRA turn5: ttft=48.80s decode=12.61s total=61.41s prompt=31359 out=64 (5.1 tok/s decode)
+HYDRA turn6: ttft=52.02s decode=14.50s total=66.52s prompt=37118 out=64 (4.4 tok/s decode)
