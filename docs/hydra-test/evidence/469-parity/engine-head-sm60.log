@@ -1,0 +1,65 @@
+# trimmed from /home/vm1/hydra-test-lane/nodeA-469-rerun3.log (engine pid 23436, build 9697 (45c1435da))
+# PASS run window: engine-time 8.06-8.12 = wall 16:49:34-16:49:40Z; earlier blocks 4.5x-5.0x = isolation run 16:46:34Z
+0.36.861.552 I srv          init: init: chat template, thinking = 1
+0.36.861.598 I srv  llama_server: model loaded
+0.36.862.168 I hydra_rpc: unified server on 0.0.0.0:19513 (ggml-RPC + Hydra protocol)
+0.36.862.175 I hydra_rpc: accept loop started on 0.0.0.0:19513
+0.36.862.181 I srv  start_rpc_se: hydra rpc: unified server on 0.0.0.0:19513 (ggml-RPC + Hydra protocol)
+0.36.862.186 I srv  llama_server: server is listening on http://127.0.0.1:18086
+0.36.862.200 I srv  update_slots: all slots are idle
+4.52.675.775 I srv  update_slots: all slots are idle
+4.52.686.324 I srv  process_sing: hydra: PREFILL slot=0 tokens=18
+4.52.970.561 I slot create_check: id  0 | task -1 | created context checkpoint 1 of 32 (pos_min = 16, pos_max = 17, n_tokens = 18, size = 100.784 MiB)
+4.53.008.998 I srv  process_sing: hydra: PREFILL slot=0 done n_past=18 kv=53005460 logits=993280B total=106690402
+5.00.817.056 I srv  update_slots: all slots are idle
+5.01.244.110 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=19
+5.01.244.154 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+5.01.244.166 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=18 model_load_ms=0.0
+5.01.254.087 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=21, request_id=19)
+5.01.317.657 I slot update_slots: id  0 | task 21 | #PD-TRACE N_COMMON 1-token re-decode n_common=18 logits_reused=false
+5.01.336.312 W slot update_slots: id  0 | task 21 | restored context checkpoint (pos_min = 16, pos_max = 17, n_tokens = 18, n_past = 17, size = 100.784 MiB)
+5.01.841.805 I srv  update_slots: all slots are idle
+5.01.841.889 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=19, n_decoded=16)
+5.03.217.344 I srv  update_slots: all slots are idle
+5.03.228.364 I srv  process_sing: hydra: PREFILL slot=0 tokens=171
+5.03.676.058 I slot create_check: id  0 | task -1 | created context checkpoint 2 of 32 (pos_min = 169, pos_max = 170, n_tokens = 171, size = 103.327 MiB)
+5.03.714.710 I srv  process_sing: hydra: PREFILL slot=0 done n_past=171 kv=55671944 logits=993280B total=109357498
+5.05.343.291 I srv  update_slots: all slots are idle
+5.05.486.962 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=57
+5.05.487.009 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+5.05.487.022 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=171 model_load_ms=0.0
+5.05.497.532 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=59, request_id=57)
+5.05.563.729 I slot update_slots: id  0 | task 59 | #PD-TRACE N_COMMON 1-token re-decode n_common=171 logits_reused=false
+5.05.583.230 W slot update_slots: id  0 | task 59 | restored context checkpoint (pos_min = 169, pos_max = 170, n_tokens = 171, n_past = 170, size = 103.327 MiB)
+5.06.072.123 I srv  update_slots: all slots are idle
+5.06.072.215 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=57, n_decoded=16)
+8.06.138.836 I slot update_slots: id  0 | task 76 | #PD-TRACE N_COMMON 1-token re-decode n_common=18 logits_reused=false
+8.06.157.434 W slot update_slots: id  0 | task 76 | restored context checkpoint (pos_min = 13, pos_max = 13, n_tokens = 14, n_past = 14, size = 100.734 MiB)
+8.06.684.180 I srv  update_slots: all slots are idle
+8.06.694.549 I srv  process_sing: hydra: PREFILL slot=0 tokens=18
+8.06.977.622 I slot create_check: id  0 | task -1 | created context checkpoint 2 of 32 (pos_min = 16, pos_max = 17, n_tokens = 18, size = 100.784 MiB)
+8.07.013.762 I srv  process_sing: hydra: PREFILL slot=0 done n_past=18 kv=53005460 logits=993280B total=106690402
+8.08.380.071 I srv  update_slots: all slots are idle
+8.08.477.740 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=94
+8.08.477.779 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+8.08.477.793 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=18 model_load_ms=0.0
+8.08.487.735 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=96, request_id=94)
+8.08.487.834 I slot update_slots: id  0 | task 96 | #PD-TRACE N_COMMON 1-token re-decode n_common=18 logits_reused=false
+8.08.506.394 W slot update_slots: id  0 | task 96 | restored context checkpoint (pos_min = 16, pos_max = 17, n_tokens = 18, n_past = 17, size = 100.784 MiB)
+8.08.995.286 I srv  update_slots: all slots are idle
+8.08.995.366 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=94, n_decoded=16)
+8.09.608.567 I slot update_slots: id  1 | task 113 | #PD-TRACE N_COMMON 1-token re-decode n_common=171 logits_reused=false
+8.09.628.314 W slot update_slots: id  1 | task 113 | restored context checkpoint (pos_min = 166, pos_max = 166, n_tokens = 167, n_past = 167, size = 103.277 MiB)
+8.10.141.817 I srv  update_slots: all slots are idle
+8.10.152.697 I srv  process_sing: hydra: PREFILL slot=0 tokens=171
+8.10.600.390 I slot create_check: id  0 | task -1 | created context checkpoint 3 of 32 (pos_min = 169, pos_max = 170, n_tokens = 171, size = 103.327 MiB)
+8.10.636.388 I srv  process_sing: hydra: PREFILL slot=0 done n_past=171 kv=55671944 logits=993280B total=109357498
+8.11.597.197 I srv  update_slots: all slots are idle
+8.11.697.098 I srv  process_sing: hydra: DECODE slot=0 Gate A pass, reserved for request_id=131
+8.11.697.144 I srv  process_sing: hydra: DECODE_APPLY slot=0 model='hydra-test-lane' matches T3-current resident '/mnt/kv_slots/Qwen3.5-9B-Q4_K_M.gguf' — no swap
+8.11.697.159 I srv  process_sing: hydra: DECODE_APPLY slot=0 restore=0.0ms n_past=171 model_load_ms=0.0
+8.11.707.603 I srv  process_sing: hydra: DECODE_APPLY slot=0 posted COMPLETION (completion_id=133, request_id=131)
+8.11.774.100 I slot update_slots: id  0 | task 133 | #PD-TRACE N_COMMON 1-token re-decode n_common=171 logits_reused=false
+8.11.793.678 W slot update_slots: id  0 | task 133 | restored context checkpoint (pos_min = 169, pos_max = 170, n_tokens = 171, n_past = 170, size = 103.327 MiB)
+8.12.282.748 I srv  update_slots: all slots are idle
+8.12.282.892 I srv    operator(): hydra: DECODE_APPLY slot=0 generation complete (request_id=131, n_decoded=16)

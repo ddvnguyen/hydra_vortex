@@ -19,6 +19,19 @@ does not duplicate it. Each recipe should link back to its governing workflow do
 
 ## Written recipes
 
+**Operational (hardware/deploy):**
+
+- `build.md` — build Hydra.Core (C#), Hydra Head (Go), and llama-engine (C++) for each
+  GPU arch, with the environment quirks and gotchas
+- `deploy.md` — deploy the hydra-system pod + P100 head: token env, deploy scripts, pod
+  lifecycle, stale-image and port-collision traps
+- `test-lane.md` — the isolated 2-core hydra-test rig: compose bring-up, bare P100
+  engines, VM hygiene contract
+- `monitoring.md` — start Grafana/Prometheus/Loki/OTel, metrics endpoints, dashboards,
+  log pipeline prerequisites
+
+**Process:**
+
 - `reconcile-epic-branch.md` — reconcile a diverged local checkout, or rebase a branch
   onto a moved-forward base, in a disposable worktree
 - `paseo-delegate-and-verify.md` — spin up a Paseo delegate, catch a degenerate loop,
@@ -30,4 +43,3 @@ These are scaffolding only; content to be written when the task is next performe
 
 - `bump-fork-submodule.md` — how to update the `src/llama-cpp` fork submodule
 - `run-live-rig-tests.md` — how to run the live-GPU test tiers against real hardware
-- `deploy-engine-build.md` — how to build and deploy llama-engine for a specific GPU arch

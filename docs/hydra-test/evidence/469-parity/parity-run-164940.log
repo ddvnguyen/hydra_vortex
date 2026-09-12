@@ -1,0 +1,87 @@
+16:49:34 parity-driver start host=127.0.0.1 http=18086 rpc=19513 slot=0 seed=42 temp=0.0 max_tokens=16
+16:49:34 health: 200 {"status":"ok"}
+16:49:34 ============================================================================
+16:49:34 [short-~10tok] prompt (24 chars): The capital of France is
+16:49:34 [short-~10tok] HTTP  raw content='' reasoning_content='Thinking Process:\n\n1.  **Analyze the Request:**\n    *'
+16:49:34 [short-~10tok] HTTP  prompt_tokens=18 completion_tokens=16
+16:49:34 [short-~10tok] HTTP  text='Thinking Process:\n\n1.  **Analyze the Request:**\n    *'
+16:49:36 [short-~10tok] RPC 0x42 PREFILL status=0x00 n_past=18 state_size=53005460 logits_size=993280 payload=106690402B
+16:49:36 [short-~10tok] ASSERT n_past(18) == usage.prompt_tokens(18) -> PASS
+16:49:36 [short-~10tok] RPC 0x43 DECODE status=0x00 valid=True request_id=94 n_past_after_restore=0 match={"capabilities_diff_bits": [], "capabilities_xor": 0, "model_alias_match": true, "model_name_match": true, "model_quant_match": true, "tokenizer_match": true}
+16:49:37 [short-~10tok] RPC   raw content='Thinking Process:\n\n1.  **Analyze the Request:**\n    *' reasoning_content='Thinking Process:\n\n1.  **Analyze the Request:**\n    *'
+16:49:37 [short-~10tok] RPC decode result http_status=200 completion_tokens=16
+16:49:37 [short-~10tok] RPC  text='Thinking Process:\n\n1.  **Analyze the Request:**\n    *'
+16:49:37 [short-~10tok] ASSERT completion_tokens(16) == HTTP(16) -> PASS
+16:49:37 [short-~10tok] ASSERT decoded text == HTTP text -> PASS
+16:49:37 ============================================================================
+16:49:37 [long-~200tok] prompt (873 chars): Explain in clear, concrete terms how a modern relational dat...
+16:49:38 [long-~200tok] HTTP  raw content='' reasoning_content='Thinking Process:\n\n1.  **Analyze the Request:**\n    *'
+16:49:38 [long-~200tok] HTTP  prompt_tokens=171 completion_tokens=16
+16:49:38 [long-~200tok] HTTP  text='Thinking Process:\n\n1.  **Analyze the Request:**\n    *'
+16:49:39 [long-~200tok] RPC 0x42 PREFILL status=0x00 n_past=171 state_size=55671944 logits_size=993280 payload=109357498B
+16:49:39 [long-~200tok] ASSERT n_past(171) == usage.prompt_tokens(171) -> PASS
+16:49:39 [long-~200tok] RPC 0x43 DECODE status=0x00 valid=True request_id=131 n_past_after_restore=0 match={"capabilities_diff_bits": [], "capabilities_xor": 0, "model_alias_match": true, "model_name_match": true, "model_quant_match": true, "tokenizer_match": true}
+16:49:40 [long-~200tok] RPC   raw content='Thinking Process:\n\n1.  **Analyze the Request:**\n    *' reasoning_content='Thinking Process:\n\n1.  **Analyze the Request:**\n    *'
+16:49:40 [long-~200tok] RPC decode result http_status=200 completion_tokens=16
+16:49:40 [long-~200tok] RPC  text='Thinking Process:\n\n1.  **Analyze the Request:**\n    *'
+16:49:40 [long-~200tok] ASSERT completion_tokens(16) == HTTP(16) -> PASS
+16:49:40 [long-~200tok] ASSERT decoded text == HTTP text -> PASS
+16:49:40 ============================================================================
+16:49:40 SUMMARY
+16:49:40   short-~10tok                 B_prefill_status_ok                  PASS
+16:49:40   short-~10tok                 B_n_past_eq_http_prompt_tokens       PASS
+16:49:40   short-~10tok                 C_decode_status_ok                   PASS
+16:49:40   short-~10tok                 C_completion_tokens_eq_http          PASS
+16:49:40   short-~10tok                 C_text_eq_http                       PASS
+16:49:40   long-~200tok                 B_prefill_status_ok                  PASS
+16:49:40   long-~200tok                 B_n_past_eq_http_prompt_tokens       PASS
+16:49:40   long-~200tok                 C_decode_status_ok                   PASS
+16:49:40   long-~200tok                 C_completion_tokens_eq_http          PASS
+16:49:40   long-~200tok                 C_text_eq_http                       PASS
+16:49:40 OVERALL: PASS
+16:49:40 elapsed 6.6s
+
+SUMMARY_JSON:
+{
+  "host": "127.0.0.1",
+  "http_port": 18086,
+  "rpc_port": 19513,
+  "seed": 42,
+  "temperature": 0.0,
+  "max_tokens": 16,
+  "overall": true,
+  "results": {
+    "short-~10tok": {
+      "B_prefill_status_ok": true,
+      "B_n_past_eq_http_prompt_tokens": true,
+      "C_decode_status_ok": true,
+      "C_completion_tokens_eq_http": true,
+      "C_text_eq_http": true
+    },
+    "long-~200tok": {
+      "B_prefill_status_ok": true,
+      "B_n_past_eq_http_prompt_tokens": true,
+      "C_decode_status_ok": true,
+      "C_completion_tokens_eq_http": true,
+      "C_text_eq_http": true
+    }
+  },
+  "details": {
+    "short-~10tok": {
+      "http_prompt_tokens": 18,
+      "http_completion_tokens": 16,
+      "http_text": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *",
+      "rpc_n_past": 18,
+      "rpc_completion_tokens": 16,
+      "rpc_text": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *"
+    },
+    "long-~200tok": {
+      "http_prompt_tokens": 171,
+      "http_completion_tokens": 16,
+      "http_text": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *",
+      "rpc_n_past": 171,
+      "rpc_completion_tokens": 16,
+      "rpc_text": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *"
+    }
+  }
+}
