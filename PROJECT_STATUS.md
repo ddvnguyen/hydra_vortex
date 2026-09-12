@@ -402,6 +402,13 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 - **Verdict: choose by workload pattern, not a single winner.** Concurrent-growth workloads (2-3 simultaneous sessions actively growing past 30K context) → use the 102/111 shape. Rotational turn-taking (one session live, others idle, fast-return on resume) → **arm090 stays the pin** — its 18×-faster-idle-return design (validated 2026-08-29, 3-agent/6-turn production test, 0 evictions) is a different mechanism than 111's shape and is not invalidated by this test. `docker-compose.baseline.yml` DEFAULT PIN is unchanged (still arm090); no production cutover made — this is a documented option for a different use case, pending a decision on whether to add the 102/111 shape as a selectable second profile.
 - Detail: `docs/investigations/740-results-report.md` (arms 106-114 + "Arm 111 vs 090" head-to-head section).
 
+## Arm-test tooling — smoke gate + checkpoint-seeded replay (addendum 2026-09-12)
+
+- `infra/llama-baseline/test-suite.sh --smoke` fast-fails a broken boot in seconds (`/health`+`/props` + minimal 2-turn × 512-tok probe) before committing to a full ~700-810 s deep run — catches OOM, skipped model load, wrong path, template failure.
+- `multiturn-growth-test.sh --checkpoint-dir` saves a reproducible deep transcript; `checkpoint-replay.sh` loads it and re-issues/sweeps a deep turn without regrowing. Shared logic in `lib/multiturn_common.py`; hermetic mock-server tests in `tests/test_harness_tools.py` (no GPU, ~1.5 s).
+- **Measured** (2B CPU stand-in, depth 6, 8 `max_tokens` values): naive 8 regrowths 453.6 s vs checkpoint same-boot 81.4 s (**5.58×**, 82% less) / rebooted 129.0 s (3.52×, 72% less); recurring sweep-only cost 7.2–29× cheaper. Seeded replay reproduced the growth run's turn-6 `reasoning_content` byte-identically at `temperature 0`. Detail: `docs/arm-testing-fast-iteration.md`.
+- Detail: `docs/arm-testing-fast-iteration.md`.
+
 ## #703 bimodal boot-mode variance — still unresolved, PCIe telemetry inconclusive (addendum 2026-09-06)
 
 - Some boots of arm102's shape (and its 093-family predecessors) land in a persistent ~2× slower decode regime that onsets mid-session after first concurrent load and never recovers within that boot — observed in ~25% of boots (2/8 in the original sample). GPU clock/power/thermal causes are **ruled out** (a dedicated live capture showed the slow mode runs at full, unthrottled clocks and *higher* power draw, not lower). Leading hypothesis was CUDA Unified Memory page-migration storms over PCIe.
