@@ -11,14 +11,25 @@
 # Sessions run as true concurrent background jobs; the script verifies
 # wall-clock overlap (same approach as concurrent-decode-test.sh).
 #
+# Checkpoint-seed (see checkpoint-replay.sh and
+# docs/arm-testing-fast-iteration.md): pass --checkpoint-dir to persist each
+# session's full transcript (system prompt, per-turn user/assistant content,
+# usage, timing) to a stable path that survives the run. A later arm test can
+# load that transcript and re-issue a deep turn / sweep max_tokens against the
+# frozen prefix instead of regrowing the whole conversation.
+#
 # Prerequisites: an already-running llama-server (e.g. via run-with-params.sh).
 #
 # Usage:
 #   bash multiturn-growth-test.sh <server_port> <n_sessions> <n_turns> \
-#                                  <new_tokens_per_turn> <output_tokens_per_turn>
+#                                  <new_tokens_per_turn> <output_tokens_per_turn> \
+#                                  [--checkpoint-dir DIR] [--temperature T]
 #
 # Example (2 concurrent sessions, 10 turns, ~8K new tokens/turn, 750 output):
 #   bash multiturn-growth-test.sh 18081 2 10 8000 750
+#
+# Example (save a reusable deep-context checkpoint):
+#   bash multiturn-growth-test.sh 18081 1 12 8000 750 --checkpoint-dir /tmp/ckpt
 #
 # The script uses the /v1/chat/completions endpoint with growing message
 # history to leverage prefix caching (--cache-prompt --cache-reuse 64).
@@ -30,11 +41,25 @@
 # aggregate stats, and overlap verification.
 set -uo pipefail
 
-PORT="${1:?usage: $0 <server_port> <n_sessions> <n_turns> <new_tokens_per_turn> <output_tokens_per_turn>}"
+PORT="${1:?usage: $0 <server_port> <n_sessions> <n_turns> <new_tokens_per_turn> <output_tokens_per_turn> [--checkpoint-dir DIR] [--temperature T]}"
 N_SESSIONS="${2:?usage: $0 ...}"
 N_TURNS="${3:?usage: $0 ...}"
 NEW_TOKENS="${4:?usage: $0 ...}"
 N_PREDICT="${5:?usage: $0 ...}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/lib"
+CHECKPOINT_DIR=""
+TEMPERATURE="0"
+
+shift 5
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --checkpoint-dir) CHECKPOINT_DIR="${2:?--checkpoint-dir needs a dir}"; shift 2 ;;
+    --temperature)    TEMPERATURE="${2:?--temperature needs a value}"; shift 2 ;;
+    *) echo "Unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
 
 # Each word ~1.3 tokens; target ~NEW_TOKENS tokens of synthetic content per turn.
 # ~1.5 tokens per word for English prose; pad generously to hit target.
@@ -48,110 +73,58 @@ echo "  turns:        $N_TURNS"
 echo "  new tok/turn: ~$NEW_TOKENS (~$WORDS_PER_TURN words)"
 echo "  output/turn:  $N_PREDICT tokens"
 echo "  target depth: turn $N_TURNS ≈ $(( 7000 + (N_TURNS - 1) * (NEW_TOKENS + N_PREDICT) )) resident tokens"
+[[ -n "$CHECKPOINT_DIR" ]] && echo "  checkpoint:   $CHECKPOINT_DIR (transcript saved per session)"
 echo ""
 
 # Session runner: each session is a background subshell.
 # The subshell writes per-turn results to $RESULTS_DIR/session_<N>.txt
 # and the growing conversation to $RESULTS_DIR/session_<N>_conv.json.
 # A Python helper handles JSON construction and API calls (clean escaping).
+# Shared primitives live in lib/multiturn_common.py so checkpoint-replay.sh
+# reproduces this exact filler generation and message shape.
 RESULTS_DIR=$(mktemp -d)
 trap 'rm -rf "$RESULTS_DIR"' EXIT
 
 PIDS=()
 for sid in $(seq 1 "$N_SESSIONS"); do
   (
-    python3 - "$PORT" "$sid" "$N_TURNS" "$WORDS_PER_TURN" "$N_PREDICT" "$RESULTS_DIR" <<'PYEOF'
-import sys, json, time, urllib.request
+    python3 - "$PORT" "$sid" "$N_TURNS" "$WORDS_PER_TURN" "$N_PREDICT" "$RESULTS_DIR" \
+             "$LIB_DIR" "$CHECKPOINT_DIR" "$TEMPERATURE" "$NEW_TOKENS" <<'PYEOF'
+import os, sys, json, time
 
-port, sid, n_turns, words_per_turn, n_predict, results_dir = (
+(port, sid, n_turns, words_per_turn, n_predict, results_dir,
+ lib_dir, checkpoint_dir, temperature, new_tokens_per_turn) = (
     sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
-    int(sys.argv[4]), int(sys.argv[5]), sys.argv[6]
+    int(sys.argv[4]), int(sys.argv[5]), sys.argv[6],
+    sys.argv[7], sys.argv[8], float(sys.argv[9]), int(sys.argv[10])
 )
 
-def gen_content(turn, words):
-    """Generate ~words tokens of synthetic content for a turn.
-    Varies content by turn number to avoid highly-repetitive text that
-    inflates MTP acceptance artificially (per arm098 caveat)."""
-    # Mix several paragraph templates with numeric variation
-    templates = [
-        "The implementation refactored the core module for turn {t} \
-processing, introducing a new abstraction layer that handles buffered \
-I/O operations with configurable retry semantics and exponential \
-backoff strategies for transient network failures.",
-        "Performance analysis of the distributed cache revealed that \
-turn {t} latency improved by approximately {pct} percent after \
-switching to a lock-free concurrent hash map with epoch-based \
-reclamation for the hot path, reducing tail latency at p99.",
-        "The code review for turn {t} identified several areas where \
-memory allocation patterns could be optimized: arena-based allocation \
-for short-lived objects, pool reuse for connection handlers, and \
-prefetch-friendly layout for the main data structures in the query \
-planner's critical section.",
-        "Documentation update for turn {t} covers the new streaming \
-interface, including backpressure handling, graceful degradation \
-under load, and the circuit-breaker pattern applied to upstream \
-service calls with configurable timeout and retry budgets.",
-        "Test coverage expansion for turn {t} added integration tests \
-for the authentication middleware, including token refresh flows, \
-session invalidation across distributed nodes, and rate limiting \
-with sliding window counters backed by the replicated store.",
-        "Infrastructure changes for turn {t} migrated the deployment \
-pipeline to a blue-green strategy with canary analysis, reducing \
-rollback time from minutes to seconds while maintaining zero-downtime \
-guarantees for the primary API endpoints under production traffic.",
-        "The debugging session for turn {t} traced a race condition in \
-the event bus dispatcher where concurrent publish operations could \
-lose messages under high throughput, fixed by introducing a per-topic \
-sequence number with compare-and-swap validation on the commit path.",
-        "Database schema evolution for turn {t} added a materialized \
-view for the analytics dashboard, pre-aggregating hourly metrics \
-with incremental refresh, reducing query latency from 2.3 seconds to \
-47 milliseconds for the most common dashboard access patterns.",
-    ]
-    paragraphs = []
-    for i in range(words // 30 + 2):
-        t = templates[(turn * 3 + i) % len(templates)]
-        pct = 15 + (turn * 7 + i * 13) % 40
-        paragraphs.append(t.format(t=turn, pct=pct))
-    text = " ".join(paragraphs)
-    # Trim to approximate word count
-    word_list = text.split()
-    return " ".join(word_list[:words])
+sys.path.insert(0, lib_dir)
+from multiturn_common import (
+    gen_content, build_messages as _build_messages, send_request,
+    usage_fields, assistant_fields, new_transcript, save_transcript,
+)
 
 def build_messages(conv_path, new_user_content):
     """Build messages array: load existing conversation, append new user msg."""
-    messages = [{"role": "system", "content":
-        "You are a helpful coding assistant. Respond concisely with technical "
-        "details. Generate realistic code snippets and explanations."}]
     try:
         with open(conv_path) as f:
-            messages.extend(json.load(f))
+            history = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    messages.append({"role": "user", "content": new_user_content})
-    return messages
-
-def send_request(port, messages, n_predict):
-    """Send chat completion request, return (response_dict, wall_seconds)."""
-    payload = json.dumps({
-        "messages": messages,
-        "max_tokens": n_predict,
-        "temperature": 0
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json"}
-    )
-    t0 = time.time()
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        data = json.loads(resp.read().decode())
-    wall = time.time() - t0
-    return data, wall
+        history = []
+    return _build_messages(history, new_user_content)
 
 conv_path = f"{results_dir}/session_{sid}_conv.json"
 results_path = f"{results_dir}/session_{sid}.txt"
 all_turns = []
+
+transcript = None
+transcript_path = ""
+if checkpoint_dir:
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    transcript_path = os.path.join(checkpoint_dir, f"session{sid}.transcript.json")
+    transcript = new_transcript(port, sid, n_turns, new_tokens_per_turn,
+                                words_per_turn, n_predict, temperature)
 
 # Record session start timestamp for overlap verification
 with open(f"{results_dir}/session_{sid}_start", "w") as f:
@@ -169,17 +142,19 @@ for turn in range(1, n_turns + 1):
 
     turn_t0 = time.time()
     try:
-        data, wall = send_request(port, messages, n_predict)
+        data, wall = send_request(port, messages, n_predict, temperature)
         turn_t1 = time.time()
         with open(f"{results_dir}/session_{sid}_turns.jsonl", "a") as f:
             f.write(json.dumps({"turn": turn, "t0": turn_t0, "t1": turn_t1}) + "\n")
-        usage = data.get("usage", {})
-        prompt_tok = usage.get("prompt_tokens", 0)
-        comp_tok = usage.get("completion_tokens", 0)
+        usage = usage_fields(data)
+        prompt_tok = usage["prompt_tokens"]
+        comp_tok = usage["completion_tokens"]
         tok_s = comp_tok / wall if wall > 0 else 0.0
 
-        # Extract assistant response and append to conversation history
-        assistant_msg = data["choices"][0]["message"]["content"]
+        assistant = assistant_fields(data)
+        assistant_msg = assistant["assistant_content"]
+
+        # Append assistant response and the user turn to conversation history
         try:
             with open(conv_path) as f:
                 conv = json.load(f)
@@ -196,6 +171,14 @@ for turn in range(1, n_turns + 1):
                 f"msgs={total_msgs}")
         all_turns.append({"turn": turn, "wall": wall, "prompt_tok": prompt_tok,
                           "comp_tok": comp_tok, "tok_s": tok_s})
+
+        if transcript is not None:
+            rec = {"turn": turn, "user_content": content,
+                   "prompt_tokens": prompt_tok, "completion_tokens": comp_tok,
+                   "wall_s": wall}
+            rec.update(assistant)
+            transcript["turns"].append(rec)
+            save_transcript(transcript_path, transcript)
     except Exception as e:
         line = f"  turn {turn:2d}/{n_turns}  FAILED: {e}"
         all_turns.append({"turn": turn, "wall": 0, "prompt_tok": 0,
@@ -226,6 +209,10 @@ if all_turns:
     print(summary, flush=True)
 else:
     print("  no turns completed", flush=True)
+
+if transcript is not None:
+    print(f"  checkpoint: {transcript_path} "
+          f"({len(transcript['turns'])} turns saved)", flush=True)
 
 # Record session end timestamp for overlap verification
 with open(f"{results_dir}/session_{sid}_end", "w") as f:
