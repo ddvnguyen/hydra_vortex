@@ -114,16 +114,49 @@ Results from `run-with-params.sh` harness. All arms: Qwen3.8-27B-MTP-Q5_K_M, 98K
 deployed. Run it against a live `llama-server`:
 
 ```bash
-bash infra/llama-baseline/test-suite.sh <port> [n_turns=12]
+bash infra/llama-baseline/test-suite.sh [--smoke] <port> [n_turns=12]
 ```
 
-Three checks, all must pass:
+**Smoke-gate first (cheap, seconds):**
+
+```bash
+bash infra/llama-baseline/test-suite.sh --smoke 18081
+```
+
+`--smoke` runs the health/props check + a minimal 2-turn × 512-token shallow
+probe (16-token output) instead of the full depth test, so a broken boot (OOM,
+skipped model load, wrong path, template failure) fails in seconds rather than
+after ~700 s of growth. Exits non-zero with a clear `SMOKE GATE FAILED` banner;
+chain it with `&&`.
+
+**Full gate (three checks, all must pass):**
 
 1. **health** — `/health` + `/props` reachable, model loaded
 2. **single** — 1 session, N turns, verifies context depth grows correctly
    and every turn completes (`multiturn-growth-test.sh <port> 1 <n_turns>`)
 3. **concurrency-2** — 2 sessions, N turns, verifies depth AND genuine
    concurrent decode overlap (`multiturn-growth-test.sh <port> 2 <n_turns>`)
+
+### Checkpoint-seeded replay (skip repeated deep regrowth)
+
+When sweeping a decode-time variable (`max_tokens`, template, threads) against
+an existing deep context, grow once and save a transcript, then replay only the
+deep turn against the frozen prefix. See `docs/arm-testing-fast-iteration.md`
+and §8-9 of `docs/arms/chat-template-sharp-quality-eval.md`.
+
+```bash
+# grow once, keep the transcript
+bash infra/llama-baseline/multiturn-growth-test.sh 18081 1 12 8000 750 \
+     --checkpoint-dir /tmp/hs-ckpt
+
+# sweep max_tokens on the saved 76K prefix (one prefill, N cheap calls)
+bash infra/llama-baseline/checkpoint-replay.sh 18081 \
+     /tmp/hs-ckpt/session1.transcript.json --sweep-max-tokens 1100,1300,1500
+```
+
+Recurring marginal cost of a seeded sweep was measured at ~7–29× cheaper than
+an equivalent number of full regrowths (details in
+`docs/arm-testing-fast-iteration.md`).
 
 Everything else in this directory is a **sub-test**, used to investigate one
 specific regression or characterize one arm rather than gate a build:
@@ -139,8 +172,11 @@ gate.
 * `docker-compose.baseline.yml` — 96K pooled, layer split
 * `docker-compose.baseline-64k.yml` — fallback
 * `run-with-params.sh` — boots server from a `params/*.yml` arm config
-* `test-suite.sh` — main pass/fail gate (health + single + concurrency-2 depth)
-* `multiturn-growth-test.sh` — multi-session, multi-turn depth/growth engine used by `test-suite.sh`
+* `test-suite.sh` — main pass/fail gate (health + single + concurrency-2 depth), `--smoke` fast-fail mode
+* `multiturn-growth-test.sh` — multi-session, multi-turn depth/growth engine used by `test-suite.sh`; `--checkpoint-dir` saves a reusable deep transcript
+* `checkpoint-replay.sh` — load a saved transcript and re-issue/sweep a deep turn without regrowing (`lib/replay_transcript.py`)
+* `lib/multiturn_common.py` — shared filler generation, message shape, request + transcript format (keeps grow/replay reproducible)
+* `tests/test_harness_tools.py` — hermetic mock-server tests for checkpoint-seed + smoke gate (no GPU)
 * `concurrent-decode-test.sh` — sub-test: single-shot concurrency probe
 * `bench-baseline.sh` — harness wrapper
 * `128k-diagnostic-arm.sh` — sub-test: 128K ctx diagnostic boot
