@@ -18,9 +18,12 @@ verdict, not a performance result.
 **Verdict (updated):** **No hard software blocker.** All three flagged hazards
 have arch-generic fallbacks, and a fresh `sm_60` build of the *current* fork
 (`1d3c4a8e3`, ggml 0.23.0, which includes `qwen4exp`) compiles cleanly —
-finding #1 below is now **verified by compilation**, not just analysis. A real
-P100 *run* is still pending explicit sign-off/production drain (P100 serves the
-production 35B-A3B SOLO profile).
+finding #1 below is now **verified by compilation**, not just analysis. Beyond
+the build, §7 records a **live bring-up on the actual P100**: our sm_60
+`ggml-rpc-server` initializes `Tesla P100-PCIE-16GB, compute capability 6.0`,
+and the host enumerates it as `RPC0`. The end-to-end token smoke was **held** to
+avoid interfering with the concurrently-running sibling task #761 (MTP) on the
+host GPUs; that is a scheduling gate, not a P100 defect.
 
 ---
 
@@ -185,3 +188,66 @@ Minimal multi-node layer-split smoke, **small ctx (2048-4096), single slot**:
 
 **Go/No-Go:** **GO for build + a bounded smoke**; hardware run requires the P100
 production drain and host-GPU occupancy check first.
+
+## 7. Live bring-up evidence (2026-09-12)
+
+Static + compile analysis is now backed by a real P100 bring-up. Steps actually
+executed, OBSERVED only (no production interruption):
+
+1. **P100 platform state.** Production on the VM is a hydra-head-managed
+   `llama-engine` (`hydra-head.service`, MainPID 1590) bound to `:8086`
+   (`rpc-port 9502`); a separate `ik-llama-minicpm.service` runs an upstream
+   `llama-server` on `:8090`. `:8086/health` = `ok`, `/slots` idle
+   (`is_processing:false, n_past:0`), ctx 128000.
+2. **NVML driver/library mismatch on the VM** — `nvidia-smi` fails with
+   `Failed to initialize NVML: Driver/library version mismatch; NVML library
+   version: 580.178`. This is a *userland* mismatch only: a **new CUDA
+   process still initializes fine**
+   (`llama-engine --list-devices` -> `CUDA0: Tesla P100-PCIE-16GB`,
+   `10127 MiB free`). So it does not block this arm, but VM monitoring/`nvidia-smi`
+   is unreliable until reboot. Flag for the P100 node owner.
+3. **Our current-fork sm_60 binary runs on the P100.** Staged
+   `build_sm60-min/bin` (`ggml-rpc-server` + `libggml*.so.0.23.0`) to
+   `~/p100-rpc-sm60` on the VM and ran with the VM CUDA 12.9 runtime
+   (`LD_LIBRARY_PATH=~/p100-rpc-sm60:/home/vm1/hydra-min-test/lib`). Log:
+   `ggml_cuda_init: found 1 CUDA devices ... Tesla P100-PCIE-16GB, compute
+   capability 6.0`. Bound `0.0.0.0:9504`, accepted connections, then was
+   cleanly stopped. **P100 production was never stopped or degraded.**
+4. **Host↔P100 RPC plumbing enumerates.** Fresh host build
+   `build-cuda1322/bin/llama-server` (fork `1d3c4a8e3`, RPC on) run with
+   `--rpc 192.168.122.21:9504 --list-devices` reports:
+   `RPC0: 192.168.122.21:9504 (16269 MiB, 10127 MiB free)` alongside CUDA0/1.
+   `--device`/`-dev` is supported (`common/arg.cpp:2775`), so host RTX devices
+   can be excluded and the layer-split driven through `RPC0` only.
+5. **Host layer-split smoke was HELD, not run.** The Qwen3.8 27B sibling task
+   **#761 (MTP)** was observed actively running on the host GPUs during this
+   arm (`llama-server ... -ts 13,36 --spec-type draft-mtp`, task-completing at
+   `tg 2.60 t/s`, then relaunching the MTP-off variant on `:18082`). Host GPUs
+   were fully occupied (1725 / 1 MiB free), and the only `qwen4exp` model is the
+   74 GB `apex-mini` shard set vs **10.1 GB free P100 VRAM** — so a host-side
+   load competes with #761 for the same model file (disk) and host RAM
+   (123 GB total). Per the arm's own rule ("hold if the host GPUs are
+   occupied"), the host half was aborted and the transient host
+   `llama-server` (port 18099) killed. No sibling run was harmed.
+
+**What is now proven:** the current fork builds for sm_60; our binary brings up
+CUDA 6.0 on the P100; the host enumerates the P100 as an RPC device; the
+RPC/`--device` CLI surface needed for layer-split works.
+
+**What is still unproven:** an actual end-to-end `qwen4exp` token produced with
+layers resident on the P100 (the `top-k`/non-FA decode path on Pascal), and any
+performance number. That needs a window where #761 is idle (or an approved
+overlap) because the model is a single 74 GB file.
+
+### Recommended next step (needs a scheduling decision, not code)
+
+- Wait for a #761-idle window (or explicit approval to overlap), then run the
+  bounded smoke: host `llama-server --device RPC0 -ngl <fit> -c 2048 --parallel 1
+  -fa off`, one short completion, capture tok/s and per-layer device assignment.
+- Alternatively build a `60;86;120` fatbin if the goal shifts to *one* binary
+  for both nodes.
+
+**Go/No-Go (final for this arm): GO on feasibility** — no architectural or
+compile blocker, P100 CUDA bring-up verified; the performance/end-to-end run is
+**gated on host-GPU availability (#761) and P100 sizing**, not on any sm_60
+defect.
