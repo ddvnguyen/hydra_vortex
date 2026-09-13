@@ -439,3 +439,32 @@ Production stopped by the human for the test window; both GPUs drained to 1 MiB;
   - **(b) `is_mem_shared` false for qwen4exp / no double-borrow corruption: CONFIRMED.** **draft_n=97 / accepted=62 → 63.9%** acceptance, 33 verify steps (per-position 29+19+14=62), coherent correct output. Decode 5.72 tok/s (74 GB target on UM/28 GB VRAM — memory-bound, not a correctness signal). Load ~3m50s.
 - **Correction:** initial reading of `common/speculative.cpp:3002` suggested `-md` loads the target path; a non-existent-`-md` probe proved the loader honors the draft path (resolves `mparams.path`). Not a bug.
 - **Verdict: no PR-blocking finding.** Full detail: PR #120 comment (`#issuecomment-5646887049`). Production was restarted by the human on pin 130 after this.
+
+## MoE look-ahead PR-A (consumer) — branch landed (addendum 2026-09-14)
+
+- **Branch:** `feat/moe-lookahead-pra` pushed to `ddvnguyen/llama.cpp` (remote `hydra-fork`), tip **`cbb19d802`** on top of `137fa17bb` (which carries spec `docs/moe-lookahead-design.md`). Diff: 13 files, +583/-7. **PR not opened** - owner approval required per fork `AGENTS.md`, and the review base is `baseline-flash-next` per this file's fork-PR-target rule (not `master`/`hydra-fork` as a base).
+- **Scope:** consumer half only - `ggml_backend_cuda_moe_prefetch_experts()` (+ `_tensor` variant) and the `--moe-lookahead N` gate. The producer (`GGML_OP_MOE_PREFETCH`, `llama-graph.cpp`) is PR-P1, out of scope.
+- **Verified on this rig (RTX 5060 Ti `CUDA0` + RTX 3060 `CUDA1`):**
+  - Full `tests/test-moe-cache` on CUDA1: 18/18 cases, `test-moe-cache: OK`, exit 0, 13 s.
+  - `test-moe-cache --lookahead-prefetch-only` on CUDA0: `lookahead prefetch legacy layer OK`, exit 0.
+  - CLI: `--help` lists `--moe-lookahead N` (env `LLAMA_ARG_MOE_LOOKAHEAD`); no-flag and `--moe-lookahead 0` load stock; `--moe-lookahead 8 --moe-expert-cache-size 84` loads (`model loaded` / `listening`); `--moe-lookahead 8` with cache-size 0 fails loud: `--moe-lookahead requires --moe-expert-cache-size > 0`.
+  - Invariants by inspection: no `cudaStreamSynchronize` and no compute-stream wait on the prefetch path; pinned slots skipped; eids outside `[0, n_experts)` ignored; H2D batched via `cudaMemcpyBatchAsync` (`cudaMemcpySrcAccessOrderAny`, CUDART >= 12080); non-MoE-cached targets skipped with a one-shot warn; exported `ggml_backend_cuda_moe_prefetch_experts` signature unchanged; width 0 = zero extra work per decode step.
+- **Build defect found (real, blocks fork links):** `/opt/software/cuda/13.2` - referenced by `docs/build-environment.md`, `docs/cuda-modules.md`, `docs/llama-bench-guide.md`, hydra `CLAUDE.md`, and `/etc/ld.so.conf.d/cuda-13-2.conf` - **does not exist**. Installed toolkits are `{12.9, 13.2.1, 13.2.2, 13.3.1}`. Linking against it fails with `undefined reference to <cuda*>@libcudart.so.13`. Use `-DCUDAToolkit_ROOT=/opt/software/cuda/13.2.1` and, on this box, `-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,/opt/software/cuda/13.2.1/lib64`. Note the `hydra-dev` ccache/LTO-off preset lives on the `hydra-fork` branch only; a plain `feat/*` clone still has upstream presets.
+- **Open for PR-P1 (producer):** (1) `prefetch_legacy_layer` calls `acquire_legacy_cache(experts)` with `compute_stream=nullptr`, so if L+1's pool/device resource is not already installed the lease is empty and prefetch silently no-ops - the producer must install the target layer's pool before prefetching (spec Q1); (2) prefetch LRU eviction does not apply the "protect a genuinely warm resident" hysteresis; (3) on a failed `cudaMemcpyBatchAsync` the rollback clears the new booking but does not restore the displaced resident (the miss falls to the demand path); (4) `ggml_cuda_moe_cache_prefetch_locked` duplicates the acquire/LRU logic in order to batch the copies, so future `acquire` changes must be mirrored there.
+
+## Single-GPU 5060 Ti expert-cache sweep (addendum 2026-09-14)
+
+Method: byte-for-byte replication of the 3060 run (`single3060-warm.sh`), changing only `CUDA_VISIBLE_DEVICES=0` and the port; binary `build-gs-cuda1322/bin/llama-server`, model `qwen3.8-flash-next-apex-mini` (78 GB, 6 shards), `-c 8192`, 2 x 256-token generations, warm = 2nd request. Artifacts: `/tmp/opencode/early-router-5060ti/`.
+
+| N (`--moe-expert-cache-size`) | cold t/s | warm t/s | h2d_bytes (GB) | status |
+|---|---|---|---|---|
+| 84  | 45.79 | 46.71 | 31.73 | OK |
+| 112 | 48.24 | 49.18 | 25.00 | OK |
+| 126 | 48.89 | 50.13 | 22.67 | OK |
+| 133 | - | - | - | OOM at load (`cudaMalloc(69798400)` failed) |
+| 140 | - | - | - | OOM at load (`cudaMalloc(66304000)` failed) |
+
+- **5060 Ti headroom ceiling is between N=126 and N=132**; the 3060 caps at N=84 (N=88 OOM). Both are VRAM-bound, not a code limit.
+- **Throughput saturates:** 84 -> 112 is +5.3%, 112 -> 126 is +1.9%, so the plateau is ~50.5 t/s and N=126 already delivers ~99% of it. Larger N mostly buys H2D traffic reduction (31.7 -> 22.7 GB per 256-token warm run, i.e. fewer cache misses).
+- **5060 Ti vs 3060 at the 3060's N=84:** 46.71 vs 20.83 warm t/s = **2.24x**. Grouped decode is fully exercised on both (`covered=48`, `plan_compiles=2`, `calls=12240`, `fallback=0`, `prepare_error=0`).
+- **Reporting trap:** the `moe-grouped-decode:` line appears 3x per run - the last one is an all-zeros **teardown** summary printed after `kill -TERM`. Use the first/second (real cumulative) line; `tail -1` yields zeros.
