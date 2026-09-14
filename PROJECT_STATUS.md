@@ -622,7 +622,8 @@ Both instruments were implemented on `feat/moe-lookahead-p1`, measured on the RT
 (ctx 81920, cache 42, one 13,946-token prompt, 256 decode tokens, no look-ahead), and the
 owner has asked that they stay in the tree rather than be reverted. Commits: `9d24345de`
 (probes) and `570370183` (results section in `docs/moe-lookahead-design.md`), both on
-`feat/moe-lookahead-p1`, local only — not pushed.
+`feat/moe-lookahead-p1`, pushed to `hydra-fork` and recorded on PR #127 (which is titled
+NOT LANDABLE for the producer, not for these diagnostics).
 
 Gates: `GGML_CUDA_MOE_PHASE_PROBE=1` (attribution) and `GGML_CUDA_MOE_LOOKAHEAD_DEBUG=1`
 (recall off the lease). Both are inert with the env vars unset, and both turn themselves
@@ -660,6 +661,13 @@ The other two populations are structural zeros here (install refusals 0, prefetc
 evicted unused 0) because nothing is offered to the installer: the decode phase line reads
 `ops=0` with `legacy cache authority`. Drop rates are now printed on the `moe-cache-phase`
 line as `prefetch_dropped` and `evicted_prefetched_unused`.
+
+Prefill is where the cache machinery actually runs, and the telemetry says it is mostly
+wasted: 122,327 speculative installs, 4,720 ever used (3.9%), 114,496 evicted unused,
+73.4 GiB of prefetch H2D and 3.8 GiB of ids D2H per request, against a 49.84% L1 hit rate
+and no queue wait at all (copy_wait 0.29 ms over 423 events). Decode runs outside that
+path (ops=9, the blk.47 lease) and on the grouped path instead. Those wasted installs were
+invisible until `prefetch_dropped` and `evicted_prefetched_unused` were printed.
 
 Independent finding: the rig's `-ot per_layer_token_embd=CPU` is redundant and inert —
 layer-input tensors already land in the CPU buflist and the lazy path returns before user
