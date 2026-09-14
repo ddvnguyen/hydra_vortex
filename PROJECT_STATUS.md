@@ -677,3 +677,47 @@ Known-bad, not caused by this work: `test-moe-cache` fails one assertion
 (`tests/test-moe-cache.cpp:8348`, grouped-dispatch numerical equality, exit 1). It reproduces
 identically and deterministically at the pre-instrumentation commit `d6f995a74`, so the
 instrumentation adds no new failures; the suite was not green on this rig before it.
+
+## MoE decode plan: issue #129, review verdicts, and the pin-share arm (2026-09-14)
+
+Issue https://github.com/ddvnguyen/llama.cpp/issues/129 now carries the measured attribution,
+the byte accounting and the tiered plan. A reviewer was asked to attack four claims; its
+verdicts changed two numbers and the ordering.
+
+Review verdicts, with what they mean for the plan:
+
+- **MoE-bound: agree, with a caveat.** The 67.18 ms MoE bucket is not kernel-pure: the phase
+  instrument opens events per run of same-(phase,layer) nodes, so host gaps land inside it.
+  The legacy dispatch ops in decode contribute `op_cpu_ms=16.761` over 9 ops (1.86 ms/op) and
+  `ids_d2h_ms=10.920` over 2 syncs, i.e. roughly 5-9 ms/step of the bucket. The conclusion
+  survives because the 45 direct-dispatch layers (no id readback, no lease acquire) show
+  ~1.2-1.4 ms per ~21.5 MiB on their own, the same 15-18 GB/s as the aggregate. A kernel-only
+  number does not exist yet and is being produced with the repository's op-level perf harness.
+- **Tier 0 already resident: agree.** Pin share is therefore Tier-1 scaffolding, not a Tier-0
+  win: in decode the L1 slot pool only serves the 3 legacy ops/step (the 45 direct layers use
+  staged banks), so there is nothing to protect until speculation shares the pool.
+- **Preload L+1 already shipped: agree**, with a sharper reading of the cost. Under direct
+  authority the producer installs 0 of 144 pools ("look-ahead could not install 144 of 144 MoE
+  expert cache pools ... prefetch is inert"), so the measured -8..-13% of `--moe-lookahead` is
+  the price of forcing `use_cuda_graph=false` plus the ids readback sync, not prefetch
+  overhead. Fixing the transport removes the entire penalty; it does not by itself add
+  throughput on this rig.
+- **Ordering: disagreed.** The reviewer ranks raised M via the existing MTP/draft path ahead
+  of split-K: the same work at M=512 costs 8.9 ms/token-equivalent against 96.9 ms at M=1, and
+  that machinery is already present and certified in this fork, whereas split-K targets an
+  efficiency ceiling not yet separated from booking overhead.
+- **Falsified in my own issue text:** `--moe-expert-cache-prefetch`'s MMQ-at-M=1 suspicion (M=1
+  already takes MMVQ: `ggml_cuda_moe_use_mmq` requires `n_tokens > 1`), and the acceptance
+  table. The corrected link budget is `miss_fraction * 1.0817e9 B * tps <= 7.88e9`: 33% miss
+  binds at ~22 t/s, so 30 t/s needs <=24% and 48 t/s needs <=15% (the earlier 74%/46% was
+  wrong by ~3x). Both corrections are now in the issue.
+
+Pin share ("Tier 0 pinning" implemented as reserved L1 slots), env-gated
+`GGML_CUDA_MOE_CACHE_RESERVED`, default 0 = byte-identical behaviour: a slot joins the
+reserve once the demand path has reused its expert twice, speculative installs then take only
+unreserved slots and are counted in `prefetch_reserve_refused` when none remain. First arm at
+RESERVED=24 measured `l1_reserved=0 prefetch_reserve_refused=0` in both phases while decode
+showed `l1_hits=183 l1_misses=87 l1_evictions=0`, i.e. the reserve never engaged even though
+promotion must have fired - the budget resolves to 0 at cache creation. Fix in flight; the
+decode verdict (expected neutral: 0 evictions today) and the prefill verdict (expected
+negative: 235 unique experts per ubatch against 42 slots) both depend on the corrected arm.
