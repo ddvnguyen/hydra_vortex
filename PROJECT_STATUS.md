@@ -539,3 +539,37 @@ Method: byte-for-byte replication of the 3060 run (`single3060-warm.sh`), changi
 | 47,516 tok | 9.78 t/s | 9.21 t/s | **-5.8%** | 94.6 / 94.7 t/s |
 
   Same sign and same class as the ctx-8192 measurements (5060 Ti 43.23 -> 37.71, 3060 20.88 -> 18.05 t/s). Prefill is untouched (look-ahead is decode-only), and the log again shows the inert consumer (`legacy cache authority`): every prediction is dropped, so this is pure cost with no benefit. The cost is structural - the per-layer ids readback forfeits CUDA graphs (`use_cuda_graph = false`); a deeper context does not change that, it only shrinks the graph's relative share. Caveat: the producer perturbs output (measurable blocker 1), so these runs compare throughput, not outputs.
+
+## Look-ahead implementation vs colibri and FreeToken (2026-09-14)
+
+Verdict: the **prediction** and the **paging** in `feat/moe-lookahead-p1` match the reference architecture. The **ids transport** is the defect - a synchronous device-to-host readback inside the decode step, which neither reference does, and which both costs throughput and forbids CUDA graph capture.
+
+### Where the defect is, exactly (in-tree)
+
+- `ggml/src/ggml-cuda/ggml-cuda.cu:3903-3908` (`ggml_cuda_moe_prefetch`): `cudaMemcpyAsync(..., cudaMemcpyDeviceToHost, ctx.stream())` into a pageable `std::vector`, then `cudaStreamSynchronize(ctx.stream())`. That is a full pipeline flush, 47 times per decode step.
+- `ggml-cuda.cu:4561`: because of that sync, `ggml_cuda_graph_check_compability` sets `use_cuda_graph = false` for **any** graph containing `GGML_OP_MOE_PREFETCH` (precedent: `ggml_cuda_mul_mat_id_needs_sync` at the same decision point). Without the exclusion the run dies with `operation not permitted when stream is capturing`.
+- The paging half is already correct and efficient: `moe-cache.cu:13420+` `ggml_cuda_moe_cache_prefetch_locked` enqueues every H2D on the cache's own `copy_stream` via `cudaMemcpyBatchAsync`, with `wait_for_compute=false`, no sync, slot reservation held under `cache->mu`, an LFRU eviction guard credited to colibri's `PILOT_EVICT_GUARD`, and rollback that leaves a failed miss to the demand path.
+
+### Cost decomposition (3060, `-c 81920 -N 42`, identical requests, one load per arm)
+
+| depth | look-ahead 0 | 0 + `GGML_CUDA_DISABLE_GRAPHS=1` | look-ahead 8 | capture loss | residual (readback + sync) |
+| --- | --- | --- | --- | --- | --- |
+| 13,953 tok | 11.42 t/s | 10.98 t/s | 10.51 t/s | -3.9% | **-4.3%** |
+| 47,516 tok | 9.78 t/s | 9.47 t/s | 9.21 t/s | -3.2% | **-2.7%** |
+
+So roughly half the penalty is lost graph capture and half is the in-step readback itself. Single sample per arm (separate loads); the direction is consistent at both depths. Note the recorded statement "disabling CUDA graphs on the baseline reproduces the baseline exactly" is a **numerics** result (blocker 1 isolation matrix, byte-identical logits), not a throughput result - it does not contradict this table.
+
+### Reference comparison
+
+| | routing signal | ids transport | movement primitive | CUDA graphs |
+| --- | --- | --- | --- | --- |
+| our P1 | re-run L+1's router on L's post-attention state, top-k width 8; 86.21% recall @ width 8 | **D2H memcpy + `cudaStreamSynchronize` in-step** | `cudaMemcpyBatchAsync` on the cache copy stream, LFRU guard, rollback to demand | **forced off** for every graph containing the op |
+| colibri PILOT (GLM engine, `c/colibri.c:6418-6843`) | re-run the next layer's router on a stale hidden state; 71.6% top-8 one-layer-ahead recall, narrower K under real loads, eviction guard | prediction runs host-side (CPU engine); the pilot never crosses the device boundary | `posix_fadvise(WILLNEED)` by default, real `pread`/io_uring with `PILOT_REAL=1`, all on a dedicated pilot thread | GLM engine has no CUDA graphs at all; the DeepSeek-V4 sibling backend prefetches into a double-buffered VRAM bank on an aux stream (`dsv4_cuda_graph_begin/end`) |
+| FreeToken (FlashML-org/FreeToken, arXiv:2608.16157) | **no predictor at all** (paper 6) | decode: none - router ids stay device-side and rewrite LRU indices in place; the only readback knob, `moe_prefill_hit_d2d`, is **off by default** | decode: zero-copy kernel gathers misses from pinned host banks; prefill: whole-layer double buffer on a dedicated `prefill_copy_stream` with events | decode path is captured in the CUDA graph |
+
+### Conclusions
+
+1. **The idea is not what is wrong.** colibri predicts one layer ahead the same way, and our recall (86.21% @ width 8) is higher than its 71.6%; its own docs record look-ahead losing on some hosts (`docs/tuning.md:193-194`) and an eviction guard that once dropped ~100% of speculations (`CHANGELOG.md:497`).
+2. **The transport is wrong.** No reference synchronizes the compute stream for a prefetch decision: FreeToken's decode path never reads ids back to the host, and colibri's pilot never touches the device. Our per-layer flush is the anti-pattern both designs exist to avoid - and the fork already ships the correct primitive: `early_workspace` (`moe-cache.cu:4913-5140`) publishes predicted ids into a `cudaHostAllocMapped` mailbox from a device kernel (`moe_early_router_publish_copy`), has the copy worker poll it with `cuda::atomic_ref<..., thread_scope_system>`, and signals completion on the copy stream with `cuStreamWriteValue32` so the main stream waits with a capturable `cuStreamWaitValue32`.
+3. **The regime is questionable.** FreeToken does no decode look-ahead at all; it looks ahead in **prefill**, where the transfer is routing-independent (whole layer, no signal) and no graph is at risk. That does not transfer to this rig: one expert slab is ~1.75 MiB (marginal VRAM ~84 MiB per +1 slot across 48 layers), so a full per-layer expert bank is ~0.9 GiB and FreeToken's 2xE staging requirement is ~1.8 GiB - against a ~3.5 GiB 3060 cache budget at N=42.
+4. **Fix, if the track reopens:** move the ids to the mailbox and let the copy worker consume them; delete the `use_cuda_graph=false` rule; keep the paging as-is. That removes both the sync and the capture ban, because the paging is already async and advisory. It does **not** by itself make the feature win: blocker 2 (the consumer refuses all 144 pools under the authority invariant) and blocker 1 (the router-census perturbation changes logits) still stand, so this is a prerequisite, not a fix.
