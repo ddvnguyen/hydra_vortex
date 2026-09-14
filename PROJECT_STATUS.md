@@ -493,3 +493,23 @@ Method: byte-for-byte replication of the 3060 run (`single3060-warm.sh`), changi
 - **Also on that build:** `test-moe-cache` **OK** (exit 0) and `test-moe-cache --lookahead-prefetch-only` passes (`lookahead prefetch eviction guard OK`).
 - **Owner decision (2026-09-14): HOLD the #126 merge until #120 merges**, then merge into `baseline-flash-next` after the automatic retarget. Rationale: merging now would land three look-ahead commits on `feat/763-reconcile-qwen4exp-mtp`, which is PR #120's own head branch, contaminating #120's diff with non-reconciliation commits. Standing merge pre-authorization is conditional on #120 landing. Watched by heartbeat `3efdd17a` (`watch-pr120-for-126`, agent target, 8-hour cadence, 30-day expiry): on #120 merge it confirms the retarget, checks that the failing set is still the pre-existing five, merges with `--merge` (the branch carries 3 separable commits), records the result and deletes itself. It carries a dedupe guard: if #126 is already MERGED it skips the merge and only deletes itself. Note for future verification: heartbeats are **not** enumerated by `list_schedules`/`inspect_schedule` (those cover new-agent schedules); a heartbeat id's existence is only checkable by the `create_heartbeat`/`delete_heartbeat` round trip. An earlier id (`0cd815f5`) was created, confirmed real by a successful `delete_heartbeat`, then deleted during that existence test.
 - **Fork-level finding filed as its own issue:** **ddvnguyen/llama.cpp#128** - an extra `MUL_MAT` reading a router weight (`ffn_gate_inp`) changes model output while a neutral node is byte-identical, with the 7-row isolation matrix, the `use_counts`/`moe_candidate_discover_route` hypothesis and the `graph=unproven(14)` link. Independent of look-ahead.
+
+## MoE look-ahead - prediction accuracy and per-GPU cost (addendum 2026-09-14)
+
+- **Horizon: one MoE layer, never a token.** Layer L's post-attention state predicts layer L+1's selection for the same token, at each of the 47 layer transitions of this 48-layer model, so one prediction per layer per step. `--moe-lookahead N` is the number of experts predicted **per layer**, not a token count. There is no multi-token look-ahead anywhere in the producer.
+- **Measured recall** (2 x 256-token decode, decode rows only, ground truth = each layer's own router selection from its real FFN input, 23,936 scored (step, layer) pairs). The model routes to **10** experts per layer per token:
+
+| predicted width | recall (of predicted) | coverage (of the 10 used) |
+| --- | --- | --- |
+| 2 | 97.37% | 19.47% |
+| 4 | 95.13% | 38.05% |
+| 6 | 91.50% | 54.90% |
+| 8 | 86.21% | 68.97% |
+| 10 | 79.26% | 79.26% |
+
+  Random overlap for 10 of 256 experts is 3.9% of the predicted width, so width 8 is about **22x chance**: the prediction is genuinely informative. RTX **3060** at width 8: **85.85% / 68.68%** - the same within numerical noise, so accuracy is device-independent.
+- **Two measurement traps that had kept this unmeasured:** the committed debug instrument logs via `GGML_LOG_INFO`, which never reaches the server log at default verbosity (only `fprintf(stderr, ...)` did - the env gate was fine); and scoring inside `ggml_cuda_mul_mat_id_cached` only ever sees **`blk.47`**, because with `--moe-expert-cache-size 84` exactly one layer holds a legacy lease during decode and every other layer takes the `cache == nullptr` early return. Recall had to be scored in-graph instead.
+- **Implication for the knob:** `--moe-lookahead 8` predicts fewer experts than the model uses (10), so it covers 69% of the actual selection; width 10 covers 79%. The prediction quality is not the weak part of the design - the blockers (inert consumer, CUDA-graph capture loss, output perturbation) are.
+- **Cost per GPU, clean builds, look-ahead 8 vs 0 (2 x 256-token decode):** RTX 5060 Ti **43.23 -> 37.71 t/s (-12.8%)**; RTX 3060 **20.88 -> 18.05 t/s (-13.6%)**. The regression is the same on both devices and comes from the per-layer ids readback forcing CUDA graphs off, not from prediction compute (the sweep shows 35.97 t/s at width 10 with measurement nodes present, so width barely moves it).
+- **Recorded in the design doc:** `docs/moe-lookahead-design.md` "Prediction accuracy (measured 2026-09-14)", commit **`c8caa07b6`** on `feat/moe-lookahead-p1`.
+- **Caveat:** the accuracy runs add graph nodes to build the ground truth, so they are valid for recall only - not as output-equivalence runs (see blocker 1).
