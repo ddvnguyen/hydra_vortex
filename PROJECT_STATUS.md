@@ -531,3 +531,11 @@ Method: byte-for-byte replication of the 3060 run (`single3060-warm.sh`), changi
 - **Decode depth tax on the 5060 Ti** (separate `max_tokens=64` probes at ctx 81920, empty-to-deep): 35.65 t/s at 1.7K prompt, 33.53 at 6.5K, 32.14 at 9.2K, 29.34 at 17.9K, 26.34 at 21.0K tokens; the session curve above extends the same trend to 53K.
 - **Harnesses used:** `/mnt/WorkDisk/harness/multiturn-ctx/{mt.sh,depth.sh}` (durable, outside the repos) drive the client `infra/llama-baseline/multiturn-growth-test.sh <port> <sessions> <turns> <new_tok_per_turn> <out_tok_per_turn>` and a decode-vs-depth probe; the fork's own multi-turn options are `tests/bench/chat_multi_turn.py --deterministic --n-turns 10 --first-turn-tokens 5000 --growth-tokens 2000 --base-url ...` (10 turns, ~23K depth).
 - **Caveat:** the token budget is nominal - the harness's synthetic filler tokenizes at ~1.7 tokens/word against its 1.3 assumption, so its "8000 tokens/turn" delivers ~6,625; a run squarely inside the 64K-80K band needs 10-11 turns at this turn size (measured prompt_tok at turn 8 = 53,044 of the 81,920 window).
+- **Does look-ahead help on the 3060 at 80K? No.** A/B on the producer branch (`feat/moe-lookahead-p1` @ `29eb92ec4`, `impl-pra/build`), 3060, `-c 81920 -N 42`, identical requests per arm, separate server load per arm:
+
+| depth | `--moe-lookahead 0` decode | `--moe-lookahead 8` decode | delta | prefill (both) |
+| --- | --- | --- | --- | --- |
+| 13,953 tok | 11.42 t/s | 10.51 t/s | **-8.0%** | 107.0 / 107.0 t/s |
+| 47,516 tok | 9.78 t/s | 9.21 t/s | **-5.8%** | 94.6 / 94.7 t/s |
+
+  Same sign and same class as the ctx-8192 measurements (5060 Ti 43.23 -> 37.71, 3060 20.88 -> 18.05 t/s). Prefill is untouched (look-ahead is decode-only), and the log again shows the inert consumer (`legacy cache authority`): every prediction is dropped, so this is pure cost with no benefit. The cost is structural - the per-layer ids readback forfeits CUDA graphs (`use_cuda_graph = false`); a deeper context does not change that, it only shrinks the graph's relative share. Caveat: the producer perturbs output (measurable blocker 1), so these runs compare throughput, not outputs.
