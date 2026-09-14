@@ -615,3 +615,57 @@ Gaps:
 ### Status
 
 Both instruments and the pin/offload policy are **specified, not implemented**. Fork code changes need explicit owner approval and the look-ahead track stays parked; the reopening ruling is recorded on the producer branch as `d6f995a74`.
+
+## Instruments A and B — measured, and kept in the tree (addendum 2026-09-14)
+
+Both instruments were implemented on `feat/moe-lookahead-p1`, measured on the RTX 3060
+(ctx 81920, cache 42, one 13,946-token prompt, 256 decode tokens, no look-ahead), and the
+owner has asked that they stay in the tree rather than be reverted. Commits: `9d24345de`
+(probes) and `570370183` (results section in `docs/moe-lookahead-design.md`), both on
+`feat/moe-lookahead-p1`, local only — not pushed.
+
+Gates: `GGML_CUDA_MOE_PHASE_PROBE=1` (attribution) and `GGML_CUDA_MOE_LOOKAHEAD_DEBUG=1`
+(recall off the lease). Both are inert with the env vars unset, and both turn themselves
+off with a single stderr note if an event or a memcpy cannot be issued, which is what
+happens under CUDA graph capture. An attribution needs `GGML_CUDA_DISABLE_GRAPHS=1`,
+because replay steps never visit the host dispatch loop where the events are recorded.
+
+Decode attribution (256 steps, 96.90 ms/step, 10.43 t/s; rows sum to 95.7 ms):
+
+| bucket | ops | ms/step | share |
+| --- | --- | --- | --- |
+| ATTN | flash-attn, indexer, SSM/GDN, rope, softmax | 1.41 | 1.5% |
+| MOE | `MUL_MAT_ID`, `MOE_PREFETCH`, `ARGSORT`, `TOP_K` | 67.18 | 69.3% |
+| DENSE | every other matmul and elementwise op | 23.80 | 24.6% |
+| OTHER | copy/cont/reshape/view/permute/transpose | 3.30 | 3.4% |
+| PLE | `GET_ROWS` on `per_layer_token_embd` | 0.00 | 0.0% |
+
+Dispatch state: `mode_legacy=3 mode_direct=253`. Prefill (28 ubatches, 4555 ms/ubatch):
+ATTN 42.07, MOE 4005.38 (87.9%), DENSE 367.91, OTHER 11.49, PLE 0.00. Per-layer decode MoE
+spreads over all layers (blk.00 2.91 ms, blk.24 1.12, blk.47 1.55). Device state in the same
+window: SM 95-99%, DRAM controller 19-26%, 90-94 W, 55-56 C, 10,851 MiB resident.
+
+- The expert H2D traffic is 337.6 MiB/token (90.62 GB in 256 tokens) = 3.71 GB/s. The link is
+  **gen4 x4** (card is x16-capable, slot is wired x4), about 7.9 GB/s, so the traffic runs at
+  ~47% of the ceiling — and the grouped telemetry reports `calls=ready=12240`,
+  `ready_min=255`, i.e. every staged copy is complete before the op needs it.
+- Conclusion: decode is MoE **execution**-bound on a saturated SM, not copy-bound. Prediction
+  width, pinning or a device-side transport cannot move that, which closes the park.
+
+Recall, scored off the legacy lease (instrument B), last 32 decode steps: 141 node
+predictions, 1,410 used expert ids, 909 used-and-predicted, 501 used-not-predicted →
+64.5% of the used experts were predicted, 80.6% of the predictions were used. Same order as
+the in-graph measurement (86.2% of predicted / 69.0% coverage averaged over all layers).
+The other two populations are structural zeros here (install refusals 0, prefetched slabs
+evicted unused 0) because nothing is offered to the installer: the decode phase line reads
+`ops=0` with `legacy cache authority`. Drop rates are now printed on the `moe-cache-phase`
+line as `prefetch_dropped` and `evicted_prefetched_unused`.
+
+Independent finding: the rig's `-ot per_layer_token_embd=CPU` is redundant and inert —
+layer-input tensors already land in the CPU buflist and the lazy path returns before user
+override matching runs. PLE shows 0.00 ms/step above.
+
+Known-bad, not caused by this work: `test-moe-cache` fails one assertion
+(`tests/test-moe-cache.cpp:8348`, grouped-dispatch numerical equality, exit 1). It reproduces
+identically and deterministically at the pre-instrumentation commit `d6f995a74`, so the
+instrumentation adds no new failures; the suite was not green on this rig before it.
