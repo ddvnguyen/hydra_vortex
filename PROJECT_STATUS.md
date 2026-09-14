@@ -573,3 +573,45 @@ So roughly half the penalty is lost graph capture and half is the in-step readba
 2. **The transport is wrong.** No reference synchronizes the compute stream for a prefetch decision: FreeToken's decode path never reads ids back to the host, and colibri's pilot never touches the device. Our per-layer flush is the anti-pattern both designs exist to avoid - and the fork already ships the correct primitive: `early_workspace` (`moe-cache.cu:4913-5140`) publishes predicted ids into a `cudaHostAllocMapped` mailbox from a device kernel (`moe_early_router_publish_copy`), has the copy worker poll it with `cuda::atomic_ref<..., thread_scope_system>`, and signals completion on the copy stream with `cuStreamWriteValue32` so the main stream waits with a capturable `cuStreamWaitValue32`.
 3. **The regime is questionable.** FreeToken does no decode look-ahead at all; it looks ahead in **prefill**, where the transfer is routing-independent (whole layer, no signal) and no graph is at risk. That does not transfer to this rig: one expert slab is ~1.75 MiB (marginal VRAM ~84 MiB per +1 slot across 48 layers), so a full per-layer expert bank is ~0.9 GiB and FreeToken's 2xE staging requirement is ~1.8 GiB - against a ~3.5 GiB 3060 cache budget at N=42.
 4. **Fix, if the track reopens:** move the ids to the mailbox and let the copy worker consume them; delete the `use_cuda_graph=false` rule; keep the paging as-is. That removes both the sync and the capture ban, because the paging is already async and advisory. It does **not** by itself make the feature win: blocker 2 (the consumer refuses all 144 pools under the authority invariant) and blocker 1 (the router-census perturbation changes logits) still stand, so this is a prerequisite, not a fix.
+
+## Rig limits, placement inventory and instrument design (2026-09-14)
+
+### Placement / pinning inventory (impl-pra @ `d6f995a74`)
+
+- **Only-FFN placement already exists.** `--moe-expert-cache-size > 0` injects a `CUDA_MoE_Cached` buffer-type override ahead of user overrides (`src/llama.cpp:318-366`, `MOE_EXPS_PATTERN` at :350-352) and only `ffn_{up,down,gate,gate_up}_{,c}exps` match (`common/common.h:1157-1178`). It wins over `--cpu-moe` / `--n-cpu-moe`, which the server log itself warns is subsumed.
+- **There is no pin/reserve concept for the always-needed part.** No per-tensor non-evictable flag and no VRAM reservation API. The only pin-like state is `slot_pin_count` inside the expert cache, transient for the GEMM lifetime (`moe-cache.cu:13204-13216`, `13403-13405`).
+- **The largest always-needed tensor is not resident at all.** `per_layer_token_embd` (PLE) is created `TENSOR_READ_LAZY` (`src/models/qwen4exp.cpp:195-197`), 27,465 MiB, mmap'd and read row-by-row on every token (`src/llama-staged-input.cpp:39-133`); `--ple-prefetch` is the per-token prefetch hook.
+- **The rig's `-ot per_layer_token_embd=CPU` is redundant and inert**: redundant because a `LAYER_INPUT` tensor already receives the CPU buft list (`src/llama-model.cpp:1508-1510`), inert because the lazy path returns before override matching (`llama-model-loader.cpp:1073-1104`).
+- Consequence: "pin what is always needed, offload only FFN" needs a **new** reserve/pin mechanism at load time plus a policy that keeps those tensors out of every lazy/offload path. It is not a flag that exists today.
+
+### Measured limit, 3060, `-c 81920 -N 42`, steady decode (256 tokens at 11.65 t/s = 85.85 ms/token)
+
+- `nvidia-smi dmon` during decode: SM busy **88-100%**, DRAM util **54-55%**, power 87-102 W of ~170 W, pclk 2137 MHz (max), mclk 8301 MHz, gtemp 54-57 C. No dispatch gaps, no clock throttling.
+- H2D volume for that request: `moe-grouped-decode ... h2d_banks=144573 h2d_bytes=91032985600` = 91.03 GB over 256 tokens = **355 MiB/token, about 4.1 GB/s** - far below a Gen4 x16 link's practical ceiling.
+- The only wait metric the fork exposes (legacy cache path) is ~0.006 ms for the whole request.
+- Therefore on this config the decode critical path is **GPU execution, not expert movement** - the offload machinery is not what limits the 3060. Consistent with the 5060 Ti being ~2.7x faster at the same config, which tracks its compute/memory ratio to the 3060.
+- **What we cannot answer yet:** the 85.85 ms/token is not attributed. Every timing in the fork is host wall-clock `ggml_time_us()`; there is no `cudaEventElapsedTime`, no device-side clock, no attention/dense-vs-MoE split, no copy completion timestamp (enqueue only), no per-step graph-capture state, no PCIe utilisation.
+
+### Instrument A - what limits our speed
+
+Required, in order of value:
+
+1. Per-layer phase timing on the device (or CUDA events around attention, MoE gather+GEMM, and the cache copy-wait) so each decode step reports its own breakdown. Nothing of the sort exists.
+2. H2D **completion** timestamp against the time the slab is needed, so "did the copy finish before the demand path needed it" becomes answerable rather than inferred (today only `h2d_enqueue_ms` exists).
+3. Per-step capture-state counter (captured replay vs re-dispatch) plus the `graph_update_required` rate; both are invisible beyond a global profile print.
+4. PCIe utilisation sample, so "transfer-bound or not" does not require an external `dmon`.
+
+### Instrument B - does the layer predict and load correctly
+
+Already present: recall scoring (`ggml-cuda.cu:3289-3323`, gate `GGML_CUDA_MOE_LOOKAHEAD_DEBUG`), prefetch consumed vs evicted (`phase_prefetch_hits/misses/used`), `phase_prefetch_dropped`, prefetch H2D counts/bytes, per-request flush in `print_timings` (`tools/server/server-context.cpp:769-806`).
+
+Gaps:
+
+1. Recall is scorable only through the legacy cached MMID path, which on this rig is one layer per step (`blk.47`); every other layer runs certified-grouped and never surfaces ids to the host. Scoring must move outside that path.
+2. `prefetch_dropped` is counted but never printed, and the install/drop warnings are `warn_once`, so drop rates are invisible under steady-state load.
+3. Overlap correctness has no timestamp (instrument A item 2).
+4. No counter separates "predicted but not yet copied", "copied but never used" and "used but not predicted" as three distinct populations; that separation is what turns an aggregate hit rate into a load-correctness verdict.
+
+### Status
+
+Both instruments and the pin/offload policy are **specified, not implemented**. Fork code changes need explicit owner approval and the look-ahead track stays parked; the reopening ruling is recorded on the producer branch as `d6f995a74`.
