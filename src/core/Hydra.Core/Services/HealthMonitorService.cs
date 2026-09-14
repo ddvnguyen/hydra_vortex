@@ -307,13 +307,41 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
                     }
                     if (info.PresetAliases.Count == 0 && prev.PresetAliases.Count > 0)
                         info.PresetAliases = new HashSet<string>(prev.PresetAliases, StringComparer.OrdinalIgnoreCase);
+                    // #738: a FAILED INFO is not an empty-cap advertisement —
+                    // carry the debounce counter unchanged (neither increments
+                    // nor resets).
+                    info.ConsecutiveEmptyCapPolls = prev.ConsecutiveEmptyCapPolls;
                 }
-                else if (info.EngineCapabilities.Count == 0 && prev.EngineCapabilities.Count > 0)
+                else if (info.EngineCapabilities.Count > 0)
                 {
-                    // INFO succeeded but advertised nothing — authoritative.
-                    // Log the transition so a silent capability loss is visible.
-                    _log.Warning("health_caps_cleared Node={N} — INFO succeeded with an empty capability set (was {C})",
-                        w.Name, prev.EngineCapabilities.Count);
+                    // #738: a successful INFO with caps resets the debounce.
+                    if (prev.ConsecutiveEmptyCapPolls > 0)
+                        _log.Information("health_caps_restored Node={N} Caps={C} — capability set re-advertised after {R} empty poll(s)",
+                            w.Name, info.EngineCapabilities.Count, prev.ConsecutiveEmptyCapPolls);
+                    info.ConsecutiveEmptyCapPolls = 0;
+                }
+                else if (prev.EngineCapabilities.Count > 0)
+                {
+                    // INFO succeeded but advertised nothing. #738: debounce the
+                    // clear — one empty-cap blip keeps the last-known caps
+                    // (a single blip previously held Caps=0 across ~2 polls and
+                    // sent the next decode down the non-merged fallback for a
+                    // full-context re-prefill); the 2nd consecutive empty poll
+                    // is authoritative (node redeployed without the capability)
+                    // and clears, so a silent capability loss stays visible.
+                    var runs = prev.ConsecutiveEmptyCapPolls + 1;
+                    info.ConsecutiveEmptyCapPolls = runs;
+                    if (runs < 2)
+                    {
+                        info.EngineCapabilities = new HashSet<string>(prev.EngineCapabilities, StringComparer.OrdinalIgnoreCase);
+                        _log.Warning("health_caps_empty_debounced Node={N} CapsRetained={C} — 1st consecutive empty-cap INFO, keeps last-known (clears on 2nd)",
+                            w.Name, info.EngineCapabilities.Count);
+                    }
+                    else
+                    {
+                        _log.Warning("health_caps_cleared Node={N} EmptyRuns={R} (was {C}) — 2nd consecutive empty-cap INFO, authoritative clear",
+                            w.Name, runs, prev.EngineCapabilities.Count);
+                    }
                 }
             }
 
@@ -374,6 +402,7 @@ public sealed class HealthMonitorService : BackgroundService, IHealthMonitorServ
         StuckSlots = src.StuckSlots,
         ConsecutiveFailures = src.ConsecutiveFailures,
         RpcConsecutiveFailures = src.RpcConsecutiveFailures,
+        ConsecutiveEmptyCapPolls = src.ConsecutiveEmptyCapPolls, // #738 debounce counter
         PresetAliases = new HashSet<string>(src.PresetAliases, StringComparer.OrdinalIgnoreCase),
         EngineCapabilities = new HashSet<string>(src.EngineCapabilities, StringComparer.OrdinalIgnoreCase),
         CurrentModel = src.CurrentModel,
