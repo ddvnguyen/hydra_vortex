@@ -83,7 +83,7 @@ public sealed class TwoStageQueueDrainTests
             {
                 new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
             };
-            return Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens, maxTokens, null, _runCts.Token);
+            return CompletionResults.UnwrapAsync(Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens, maxTokens, null, _runCts.Token));
         }
 
         public async ValueTask DisposeAsync()

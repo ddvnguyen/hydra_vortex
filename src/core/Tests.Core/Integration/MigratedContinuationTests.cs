@@ -466,6 +466,9 @@ public sealed class MigratedContinuationTests
         public Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
             => Task.CompletedTask;
 
+        public Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct)
+            => Task.CompletedTask;
+
         private static Dictionary<string, object> Result()
         {
             using var doc = JsonDocument.Parse(JsonSerializer.Serialize(new
@@ -584,8 +587,9 @@ public sealed class MigratedContinuationTests
                 ["model"] = "nano",
                 ["messages"] = msgs
             };
-            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+            var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
                 maxTokens, null, _runCts.Token);
+            return CompletionResults.Unwrap(result);
         }
 
         /// <summary>#470 canonical identity: submit with the `model` field as a
@@ -606,8 +610,9 @@ public sealed class MigratedContinuationTests
                 ["model"] = doc.RootElement.Clone(),
                 ["messages"] = msgs
             };
-            return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+            var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
                 maxTokens, null, _runCts.Token);
+            return CompletionResults.Unwrap(result);
         }
     }
 }

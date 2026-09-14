@@ -1,0 +1,16 @@
+{
+  "Scenario": "cancel_mid_flight",
+  "Description": "Client cancels between dispatch phases: the pipeline finalizes as Cancelled and every held lease is released (WorkerTracker busy-seconds back to 0).",
+  "Version": 1,
+  "Trace": {
+    "Rpc": [],
+    "MergedDecode": [],
+    "Proxy": [],
+    "FinalState": "Cancelled",
+    "Ledger": null,
+    "BusySeconds": {
+      "rtx": 0,
+      "p100": 0
+    }
+  }
+}

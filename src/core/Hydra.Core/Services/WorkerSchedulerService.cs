@@ -187,7 +187,7 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 	public string? LastDispatchedModelQuant { get; private set; }
 	public uint LastDispatchedModelCapabilities { get; private set; }
 
-	public async Task<object> SubmitAsync(
+	public async Task<ICompletionResult> SubmitAsync(
 		Dictionary<string, object> request,
 		List<Dictionary<string, object>> messages,
 		string sessionId, int estimatedTokens, int maxTokens, string? prefixHash, CancellationToken ct, int systemPromptTokens = 0)
@@ -371,12 +371,14 @@ public sealed class WorkerSchedulerService : IWorkerScheduler
 			// Streaming: return the chunk enumerable as soon as decode phase produces it
 			if (item.IsStreaming)
 			{
-				return await item.StreamCompletion.Task.WaitAsync(TimeSpan.FromSeconds(600), linked.Token);
+				return new StreamCompletionResult(
+					await item.StreamCompletion.Task.WaitAsync(TimeSpan.FromSeconds(600), linked.Token));
 			}
 			else
 			{
 				// Non-streaming: wait for full response
-				return (await item.Completion.Task.WaitAsync(TimeSpan.FromSeconds(1800), linked.Token))!;
+				return new FinalCompletionResult(
+					(await item.Completion.Task.WaitAsync(TimeSpan.FromSeconds(1800), linked.Token))!);
 			}
 		}
 		catch (OperationCanceledException)

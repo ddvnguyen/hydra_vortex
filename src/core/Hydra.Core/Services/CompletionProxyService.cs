@@ -256,4 +256,19 @@ public sealed class CompletionProxyService : ICompletionProxyService
 			// Best-effort cancellation — ignore errors
 		}
 	}
+
+	// #470: erase a slot's KV state (same endpoint as LlamaClient.EraseSlotAsync).
+	// 404/501 = the engine doesn't support slot erase (no --slot-save-path) —
+	// treat as success so the cross-model abort path never fails on the erase.
+	public async Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct)
+	{
+		var url = $"{nodeUrl}/slots/{slotId}?action=erase";
+		using var resp = await _http.PostAsync(url, null, ct);
+		if (resp.StatusCode == System.Net.HttpStatusCode.NotFound
+			|| resp.StatusCode == System.Net.HttpStatusCode.NotImplemented)
+		{
+			return;
+		}
+		resp.EnsureSuccessStatusCode();
+	}
 }

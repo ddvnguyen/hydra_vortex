@@ -2,8 +2,9 @@ using Hydra.Core.Controllers;
 using Hydra.Core.Caching;
 using Hydra.Core.Models;
 using Hydra.Core.Repositories;
-using Hydra.Shared;
 using Hydra.Core.Services;
+using Hydra.Core.Services.SchedulerV2;
+using Hydra.Shared;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -61,7 +62,11 @@ public static class CoordinatorServiceExtensions
 
         // Services
         services.AddSingleton<ICompletionProxyService>(sp => new CompletionProxyService(config.LlamaRequestTimeoutS));
-        services.AddSingleton<IWorkerScheduler, WorkerSchedulerService>(sp =>
+
+        // ── Scheduler A/B (epic #591) ──
+        // Both implementations are registered concretely; IWorkerScheduler resolves
+        // whichever HYDRA_SCHEDULER_IMPL selects. The legacy scheduler is untouched.
+        services.AddSingleton<WorkerSchedulerService>(sp =>
         {
             var cfg = sp.GetRequiredService<CoordinatorConfig>();
             var ledger = sp.GetRequiredService<ISessionLedger>();
@@ -74,6 +79,53 @@ public static class CoordinatorServiceExtensions
                 ? sp.GetRequiredService<LocalChunkCache>()
                 : null;
             return new WorkerSchedulerService(cfg, ledger, tracker, proxy, health, storeClient, sp, log, chunkCache);
+        });
+
+        services.AddSingleton<WorkerSchedulerV2>(sp =>
+        {
+            var cfg = sp.GetRequiredService<CoordinatorConfig>();
+            var ledger = sp.GetRequiredService<ISessionLedger>();
+            var tracker = sp.GetRequiredService<IWorkerTracker>();
+            var proxy = sp.GetRequiredService<ICompletionProxyService>();
+            var health = sp.GetRequiredService<IHealthMonitorService>();
+
+            // One engine RPC channel per worker (WP3 swaps these for RpcConnectionPool).
+            var channels = cfg.Workers.ToDictionary(
+                w => w.Name,
+                w => (IEngineRpcClient)new EngineRpcClientAdapter(new Hydra.Shared.RpcClient(w.LlamaRpcHost, w.LlamaRpcPort)));
+
+            var store = new StoreGateway(new Hydra.Shared.RpcClient(cfg.StoreHost, cfg.StorePort));
+            var engine = new EngineRpcGateway(channels);
+            var classifier = new RequestClassifier();
+            var planner = new RoutePlanner();
+            var leases = new LeaseManager(tracker);
+            var warmVerifier = new HttpWarmSlotVerifier();
+            var timeline = new TimelineEmitter();
+
+            var runners = new WorkerStateRunner[]
+            {
+                new PlanRunner(planner, leases, ledger, cfg.Workers, tracker, health, cfg, warmVerifier),
+                new PrefillRunner(engine, proxy, cfg.Workers),
+            new PrefixRestoreRunner(cfg, store, engine, ledger),
+                new SaveKvRunner(store, ledger, engine, cfg),
+                new RestoreRunner(store, engine, ledger, leases, proxy, cfg),
+                new DecodeRunner(proxy, engine, ledger, cfg, health),
+                new BgSaveRunner(engine, store, ledger),
+            };
+
+            return new WorkerSchedulerV2(
+                cfg, ledger, tracker, health,
+                classifier, planner, leases, runners, timeline,
+                engine, store, proxy,
+                Serilog.Log.ForContext("component", "coordinator-v2"));
+        });
+
+        services.AddSingleton<IWorkerScheduler>(sp =>
+        {
+            var cfg = sp.GetRequiredService<CoordinatorConfig>();
+            return string.Equals(cfg.SchedulerImplementation, "v2", StringComparison.OrdinalIgnoreCase)
+                ? sp.GetRequiredService<WorkerSchedulerV2>()
+                : sp.GetRequiredService<WorkerSchedulerService>();
         });
 
 		services.AddSingleton<IHealthMonitorService, HealthMonitorService>(sp =>

@@ -1,0 +1,55 @@
+{
+  "Scenario": "cold_atomic_http",
+  "Description": "Cold atomic request in legacy mode (UseLlamaEngine=false): ModelLoadDecode path, HTTP proxy owns prefill-style completion, no engine RPC at all.",
+  "Version": 1,
+  "Trace": {
+    "Rpc": [
+      {
+        "Op": "Get",
+        "Key": "sess_h.kv",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StatePut",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "StateGet",
+        "Key": "0",
+        "Len": 0,
+        "Status": "Ok"
+      },
+      {
+        "Op": "Put",
+        "Key": "sess_h.kv",
+        "Len": 2048,
+        "Status": "Ok"
+      }
+    ],
+    "MergedDecode": [],
+    "Proxy": [
+      {
+        "Url": "http://localhost:8080",
+        "Stream": false,
+        "Model": "nano",
+        "MaxTokens": 100,
+        "NPredict": null
+      }
+    ],
+    "FinalState": "Done",
+    "Ledger": {
+      "NodeName": "rtx",
+      "SlotId": 0,
+      "NPast": 150,
+      "HasStoreState": true,
+      "SlotFreed": false
+    },
+    "BusySeconds": {
+      "rtx": 1,
+      "p100": 0
+    }
+  }
+}

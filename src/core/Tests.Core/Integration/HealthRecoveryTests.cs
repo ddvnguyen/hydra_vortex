@@ -134,6 +134,9 @@ public sealed class HealthRecoveryTests
 
 		public Task CancelDecodeAsync(string nodeUrl, int decodeRequestId, string traceId, CancellationToken ct)
 			=> Task.CompletedTask;
+
+		public Task EraseSlotAsync(string nodeUrl, int slotId, CancellationToken ct)
+			=> Task.CompletedTask;
 	}
 
 	private sealed class Fixture : IAsyncDisposable
@@ -214,8 +217,9 @@ public sealed class HealthRecoveryTests
 			{
 				new() { ["role"] = "user", ["content"] = new string('x', estimatedTokens) }
 			};
-			return await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
+			var result = await Scheduler.SubmitAsync(req, msgs, sessionId, estimatedTokens,
 				maxTokens, null, _runCts.Token);
+			return CompletionResults.Unwrap(result);
 		}
 	}
 
