@@ -721,3 +721,46 @@ showed `l1_hits=183 l1_misses=87 l1_evictions=0`, i.e. the reserve never engaged
 promotion must have fired - the budget resolves to 0 at cache creation. Fix in flight; the
 decode verdict (expected neutral: 0 evictions today) and the prefill verdict (expected
 negative: 235 unique experts per ubatch against 42 slots) both depend on the corrected arm.
+
+## Phase 2 hybrid split: CLOSED (2026-09-16)
+
+Worktree `1q3ry0vb/baseline-flash-next`, branch `t-d1cf43b723`, build-only
+`src/llama-cpp/build-hybrid-t2`, rig serial discipline, IDLE on exit.
+Committed in submodule as `0fc51e039` (4 files: `common/arg.cpp`,
+`src/llama.cpp`, `ggml/src/ggml-cuda/moe-cache.cu`, `.cuh`). NOT pushed.
+Other worker's dirt (`CMakeLists.txt`, `src/CMakeLists.txt`,
+`src/llama-context.cpp`) left untouched.
+
+- **Phase C close-out.** Record-only hook (`GGML_CUDA_MOE_DEVICE_SPLIT=shadow`) dumped
+  live x + plan ids + miss slices (`/tmp/shadow-rec/rec-*.bin`); x-liveness proven
+  byte-identical across runs; standalone validator (`shadow-validate`, CPU vs plain-CUDA
+  backends) FAILed with bounded deltas (`maxd_out` 0.039-0.095, `mean_out` 0.012-0.020 vs
+  `maxout` 3.8-6.4) — mechanism: CUDA `__hmul2` fp16 scale products vs CPU fp32
+  (`vecdotq.cuh:158,229,272`), amplified by x-outliers ~433. Accepted as bounded
+  equivalence (CPU is the accurate side).
+- **Phase D move (Approach A).** `GGML_CUDA_MOE_DEVICE_SPLIT=cpu` recomputes cache-miss
+  expert rows on a persistent CPU backend (mutex-guarded, same graph as the validator)
+  and overwrites the DOWN output rows in `finish_graph_group` after the
+  `defer_completion` early return (capture-safe: never runs during capture, replay never
+  reaches per-node finish) and before `finish_decode`, so the MIX consumer sees replaced
+  rows via stream order. Staging stays on: any validation/compute failure skips the
+  overwrite and GPU values stand (`cpu_replace_skip`). DIRECT/eager only — requires
+  `GGML_CUDA_DISABLE_GRAPHS=1`; env off is a single bool (zero behavior change).
+- **Gates, all PASS (cache 53, ctx 81920, no-graph, greedy-200 + PPL-15):**
+  no-graph P0 baseline SERVER `decode_tps=11.05` / greedy `6ceeb608` / PPL `15.7524`;
+  OFFCHECK (new binary, env off) byte-identical `6ceeb608` + PPL `15.7524` exact;
+  CPUREPLACE (cpu on) greedy `6ceeb608` BYTE-IDENTICAL over 200 tokens through
+  `cpu_replace_dispatches=9093 cpu_replace_rows=40142 cpu_replace_skip=0`, PPL `15.7524`
+  exact, output coherent (no row-0 garbage). Graphs on/off do not change greedy output.
+- **t/s report:** hybrid-cpu `5.89` vs no-graph P0 `11.05` vs 21.36 MTP ref vs 11.60
+  with-graphs P0. The ~47% regression is expected and honest: CPU recompute sits on the
+  critical path while staging still burns the full GPU GEMM (no savings yet). Phase E
+  (skip staging for CPU-owned misses) is where the win comes from; Phase D de-risked it
+  by proving the CPU path end-to-end correct.
+- **Phase E: NO-GO (design-first, no implementation).** The demand "fill" is not an H2D
+  memcpy but a zero-copy device gather kernel over PCIe (`moe_grouped_gather_decode`,
+  ~0.55-0.66 ms/dispatch for ~9.9 MB at 4.41 misses/dispatch); skipping it keeps the
+  1.74 ms/dispatch CPU recompute, nets ~7.0-7.6 t/s vs 11.05 P0, and converts the
+  best-effort GPU fallback into silent corruption (no resupply path exists). The only
+  hybrid that beats P0 skips GPU GEMM rows entirely (compaction + MIX renormalization)
+  — scoped as a separate future epic, not this track. Track CLOSED.
