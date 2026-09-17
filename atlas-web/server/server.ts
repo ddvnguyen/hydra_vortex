@@ -46,13 +46,15 @@ function parseEngines(): EngineCfg[] {
   if (raw) {
     // "id=name=url[@atlas.json],id=name=url[@atlas.json]" — url "-"/"mock:" = mock
     return raw.split(",").filter(Boolean).map((spec) => {
-      const [id, rest] = spec.split("=", 2)
+      const parts = spec.split("=") // id=name=url[@atlas.json]
+      const id = parts[0]
+      const name = parts[1] ?? id
+      const rest = parts.slice(2).join("=")
       const at = rest.lastIndexOf("@")
       const target = at === -1 ? rest : rest.slice(0, at)
       const atlas = at === -1 ? "" : rest.slice(at + 1)
       const mock = target === "-" || target.startsWith("mock:")
       const url = mock ? "" : target.replace(/\/+$/, "")
-      const name = mock ? `Mock ${id}` : id
       return { id, name, mode: mock ? "mock" : "engine", url, atlas } as EngineCfg
     })
   }
@@ -173,7 +175,8 @@ for (const cfg of engines) {
     const ranksPath = process.env.ATLAS_RANKS_JSON ?? DEFAULT_RANKS
     mocks.set(cfg.id, new MockEngine(cfg, ranksPath))
   }
-  if (!cfg.atlas) cfg.atlas = DEFAULT_ATLAS
+  if (cfg.mode === "engine" && !cfg.atlas) cfg.atlas = ""; // engine-hosted artifact: proxy {url}/experts.json (engine-id refusal discipline — never serve another model's atlas)
+  else if (!cfg.atlas) cfg.atlas = DEFAULT_ATLAS
 }
 
 function cors(): Record<string, string> {
@@ -208,7 +211,9 @@ async function route(req: Request): Promise<Response> {
     if (cfg.mode === "engine" && !cfg.atlas) {
       // engine-hosted artifact (fork ships the two atlas files, design §C/D)
       const res = await fetch(`${cfg.url}/experts.json`, { signal: AbortSignal.timeout(2000) })
-      return new Response(res.body, { headers: { ...cors(), "Content-Type": "application/json" } })
+      // propagate upstream status — an engine without its atlas artifact must
+      // surface as 404, never as a misleading 200 (engine-id refusal discipline)
+      return new Response(res.body, { status: res.status, headers: { ...cors(), "Content-Type": "application/json" } })
     }
     const f = Bun.file(cfg.atlas)
     if (!await f.exists()) return new Response("atlas artifact missing", { status: 404, headers: cors() })
