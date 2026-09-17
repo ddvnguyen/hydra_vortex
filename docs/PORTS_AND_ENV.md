@@ -84,6 +84,7 @@ Core's `workers.json` reflects this.
 | Paseo daemon | `6767` | MCP server |
 | opencode | `4096` | coding-agent runtime |
 | coder (ide) | `2112`, `2113` | |
+| atlas-web (Colibri Brain, #771) | `8619` | bun; separated UI service polling engine Stage B `/experts`; `ATLAS_WEB_PORT`/`ATLAS_ENGINES` override — see `atlas-web/README.md` |
 
 ---
 

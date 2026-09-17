@@ -102,6 +102,14 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
   injected into the PREFILL request body (`WorkerSchedulerService.cs:1209`, #481 Phase 2b)
 - **`HydraEngineClient.SetEngineConfigAsync`** — replaced by `EngineConfigureAsync`
 
+### Colibri Expert Atlas (#771, branch `771-colibri-expert-atlas`)
+| Item | Status | Notes |
+|------|--------|-------|
+| Offline atlas pipeline (`tools/atlas/`) | ✅ Landed | cherry-pick `fa2a4cd67` — trace_io/analyze/emit/validate/export_pinfile/reproduce; draft `experts.json` (2431 experts) + `expert-ranks.json` (48 layers, dual-score heat + `reap_saliency` reserved) + `experts.pin` top-53/layer; `reproduce.py` vs phase0_rank.json PASSES bit-exact (d-bb2f0d3b29) |
+| Fork design doc | ✅ Landed | cherry-pick `038f57e73` → `docs/design-colibri-expert-atlas.md` (stages A–E, REAP §9, never-remove tier-to-RAM) |
+| `atlas-web/` Brain service (Stage D) | ✅ Scaffold | bun 1.4.2; Colibri @`a8f2ca62` web vendored verbatim except tagged `hydra:` diffs (geometry-driven layer mapping, `?engine=` selection, #175 `weak` spec<0.7 qualifier); mock adapter implements Stage B contract shape from draft artifacts; Playwright visual verification PASS (`:8619`, port in `docs/PORTS_AND_ENV.md`) |
+| Engine telemetry (Stage A) / RPC 0x33 + `/experts` (Stage B) / probe harness (Stage C) | ⏳ Blocked on Gate 0 | fork-side, waits for Stage-1 dual-op store to land on `baseline-qwen4exp-mtp` (in flight, other worktree) |
+
 ### Merged-decode epic fixes (`epic/470-merged-decode`)
 | Item | Status | Notes |
 |------|--------|-------|
@@ -257,6 +265,8 @@ All source code lives under `src/`.
 │   ├── quadlets/                  systemd quadlet units (infra-host pod, services)
 │   ├── prometheus/                scrape configs + alerts
 │   └── promtail/                  log pipeline configs
+├── tools/atlas/                   #771 offline Colibri expert-atlas pipeline (trace_io/analyze/emit/validate/export_pinfile/reproduce + out/ artifacts)
+├── atlas-web/                     #771 separated Brain service (Colibri port, bun 1.4.2): polls engine Stage B /experts, serves Brain UI; mock adapter until Stage B lands
 ├── specs/                       protocol & service specs
 └── docs/                        milestone docs + architecture + diagrams
 ```

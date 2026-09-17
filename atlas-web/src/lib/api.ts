@@ -1,0 +1,236 @@
+export type ChatRole = "system" | "user" | "assistant"
+
+export interface ChatMessage {
+  id: string
+  role: ChatRole
+  content: string
+  /* Immagini allegate al turno, come data: URI. Restano sul messaggio e non
+     dentro `content` perche' la cronologia le deve poter rimandare al server
+     insieme al testo: un secondo turno che parla della foto senza la foto
+     riceverebbe una risposta su niente. */
+  images?: string[]
+  /* Reasoning models stream their thinking on a separate delta field before
+     the answer. Kept apart from `content` so it can be rendered as its own
+     block and excluded from what is sent back as conversation history. */
+  reasoning?: string
+}
+
+interface OpenAIError {
+  error?: { message?: string }
+}
+
+export interface SchedulerHealth {
+  active: boolean | number
+  capacity?: number
+  queued: number
+  max_queue: number
+  queue_timeout_seconds: number
+  admitted: number
+  completed: number
+  rejected: number
+  timed_out: number
+  cancelled: number
+}
+
+export interface TiersHealth {
+  vram: number
+  ram: number
+  disk: number
+  vram_gb: number
+  ram_gb: number
+}
+
+export interface HwinfoHealth {
+  cores: number
+  ram_total_gb: number
+  ram_avail_gb: number
+  gpus: number
+  vram_total_gb: number
+  cpu: string
+  gpu: string
+}
+
+export interface HealthResponse {
+  status: string
+  scheduler?: SchedulerHealth
+  kv_slots?: number
+  tiers?: TiersHealth
+  hwinfo?: HwinfoHealth
+}
+
+export interface ProfileTurn {
+  wall_s: number
+  prompt_tokens: number
+  completion_tokens: number
+  expert_disk_s: number
+  expert_wait_s: number
+  expert_matmul_s: number
+  attention_s: number
+  lm_head_s: number
+  forwards: number
+}
+
+export interface ProfileResponse {
+  seq: number
+  turns: ProfileTurn[]
+}
+
+export interface TokenUsage {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
+
+export interface StreamChatResult {
+  finishReason: string | null
+  usage: TokenUsage | null
+  requestId: string | null
+  queueWaitMs: number | null
+}
+
+export function endpoint(baseUrl: string, path: string) {
+  return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`
+}
+
+export function serverEndpoint(baseUrl: string, path: string) {
+  return endpoint(baseUrl.replace(/\/v1\/?$/, ""), path)
+}
+
+function headers(apiKey: string) {
+  return {
+    "Content-Type": "application/json",
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  }
+}
+
+async function responseError(response: Response) {
+  const fallback = `${response.status} ${response.statusText}`
+  try {
+    const body = (await response.json()) as OpenAIError
+    return body.error?.message || fallback
+  } catch {
+    return fallback
+  }
+}
+
+export async function listModels(baseUrl: string, apiKey: string, signal?: AbortSignal) {
+  const response = await fetch(endpoint(baseUrl, "models"), { headers: headers(apiKey), signal })
+  if (!response.ok) throw new Error(await responseError(response))
+  const body = (await response.json()) as { data?: Array<{ id: string }> }
+  return (body.data || []).map((model) => model.id)
+}
+
+export async function getHealth(baseUrl: string, apiKey = "", signal?: AbortSignal): Promise<HealthResponse> {
+  const response = await fetch(serverEndpoint(baseUrl, "health"), { headers: headers(apiKey), signal })
+  if (!response.ok) throw new Error(await responseError(response))
+  return (await response.json()) as HealthResponse
+}
+
+export async function getProfile(baseUrl: string, apiKey = "", signal?: AbortSignal): Promise<ProfileResponse> {
+  const response = await fetch(serverEndpoint(baseUrl, "profile"), { headers: headers(apiKey), signal })
+  if (!response.ok) throw new Error(await responseError(response))
+  return (await response.json()) as ProfileResponse
+}
+
+export function extractSSE(buffer: string) {
+  const frames = buffer.split(/\r?\n\r?\n/)
+  const rest = frames.pop() || ""
+  const data = frames.flatMap((frame) =>
+    frame
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart()),
+  )
+  return { data, rest }
+}
+
+export interface StreamChatOptions {
+  baseUrl: string
+  apiKey: string
+  model: string
+  messages: ChatMessage[]
+  temperature: number
+  maxTokens: number
+  enableThinking: boolean
+  /* GLM reasoning depth when enableThinking is on: low | medium | high | xhigh.
+     The server maps it onto the model's own words (Low/Medium/High/Max); when
+     absent it keeps the server default, so a plain on/off client still works. */
+  reasoningEffort?: string
+  cacheSlot?: number
+  signal: AbortSignal
+  onDelta: (text: string) => void
+  onReasoning?: (text: string) => void
+}
+
+export async function streamChat(options: StreamChatOptions): Promise<StreamChatResult> {
+  const response = await fetch(endpoint(options.baseUrl, "chat/completions"), {
+    method: "POST",
+    headers: headers(options.apiKey),
+    signal: options.signal,
+    body: JSON.stringify({
+      model: options.model,
+      /* Un turno con immagini viaggia nella forma a parti dell'API OpenAI;
+         senza, resta la stringa di sempre e nessun server vede una differenza. */
+      messages: options.messages.map(({ role, content, images }) =>
+        images && images.length
+          ? {
+              role,
+              content: [
+                ...(content ? [{ type: "text", text: content }] : []),
+                ...images.map((url) => ({ type: "image_url", image_url: { url } })),
+              ],
+            }
+          : { role, content },
+      ),
+      temperature: options.temperature,
+      max_completion_tokens: options.maxTokens,
+      enable_thinking: options.enableThinking,
+      ...(options.enableThinking && options.reasoningEffort
+        ? { reasoning_effort: options.reasoningEffort } : {}),
+      ...(options.cacheSlot === undefined ? {} : { cache_slot: options.cacheSlot }),
+      stream: true,
+      stream_options: { include_usage: true },
+    }),
+  })
+  if (!response.ok) throw new Error(await responseError(response))
+  if (!response.body) throw new Error("The server returned an empty stream.")
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let finishReason: string | null = null
+  let usage: TokenUsage | null = null
+
+  const consume = (data: string) => {
+    if (data === "[DONE]") return
+    const event = JSON.parse(data) as {
+      choices?: Array<{ delta?: { content?: string; reasoning_content?: string }; finish_reason?: string | null }>
+      usage?: TokenUsage | null
+    }
+    const choice = event.choices?.[0]
+    const text = choice?.delta?.content
+    if (text) options.onDelta(text)
+    const reasoning = choice?.delta?.reasoning_content
+    if (reasoning) options.onReasoning?.(reasoning)
+    if (choice?.finish_reason) finishReason = choice.finish_reason
+    if (event.usage) usage = event.usage
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const parsed = extractSSE(buffer)
+    buffer = parsed.rest
+    parsed.data.forEach(consume)
+    if (done) break
+  }
+
+  const queueWaitHeader = response.headers.get("x-colibri-queue-wait-ms")
+  const parsedQueueWait = queueWaitHeader === null ? null : Number(queueWaitHeader)
+  return {
+    finishReason,
+    usage,
+    requestId: response.headers.get("x-request-id"),
+    queueWaitMs: parsedQueueWait !== null && Number.isFinite(parsedQueueWait) ? parsedQueueWait : null,
+  }
+}
