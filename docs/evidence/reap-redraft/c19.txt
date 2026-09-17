@@ -1,0 +1,219 @@
+You will fix a tile-render farm that collapses the tab under load. First analyze
+the maximum input constraints (up to 600 tiles, crash past ~180 workers) and
+identify the optimal pool sizing and backpressure strategy that fits inside the
+browser's worker and memory limits, then reason step by step about the design,
+and finally provide the complete implementation in TypeScript. Bounds first,
+code second: pool width from `navigator.hardwareConcurrency`, queue depth from
+the frame budget, transferables for zero-copy tile data.
+
+Requirements: fixed worker pool (no per-tile spawn), task queue with
+transferables, backpressure at `highWaterMark=64` with drop-oldest + counter,
+and a stress test asserting max live workers <= pool size and zero dropped
+frames under 120 tiles. Show the sizing math (tiles vs pool vs queue vs frame
+budget), then give the pool class, the backpressure path, and the stress test
+that fails on the old code. State the one assumption that breaks your sizing.
+
+Full context pasted below — use it, do not ask for it again:
+`cat render/farm.ts` (current, abridged):
+```ts
+// render/farm.ts — one Worker per tile (abridged)
+export class Farm {
+  private workers: Worker[] = [];
+  async render(tiles: Tile[]): Promise<Frame[]> {
+    // BUG: spawns one Worker per tile; tab crashes past ~180-200 workers
+    const ps = tiles.map((t) => this.renderOne(t));
+    return Promise.all(ps);
+  }
+  private renderOne(t: Tile): Promise<Frame> {
+    return new Promise((res, rej) => {
+      const w = new Worker(new URL('./tile.js', import.meta.url));
+      this.workers.push(w); // never removed -> leak on top of the storm
+      w.onmessage = (e) => res(e.data);
+      w.onerror = rej;
+      w.postMessage(t); // structured clone of the full tile, every tile
+    });
+  }
+}
+```
+`chrome://tracing` summary (120-tile load, crash run):
+```
+thread-spawn storm: 120 Worker threads in 340 ms, renderer OOM at tile 187
+console: "Failed to construct 'Worker': script unreachable" past 180
+console: "Aw, Snap! (STATUS_BREAKPOINT)" at 600-tile attempt, tile 203
+frame budget: 16.6 ms/frame; p99 tile render 11 ms on pool prototype (4 workers)
+transferable test: ArrayBuffer transfer cuts per-tile postMessage from 3.1 ms to 0.2 ms
+```
+`console errors` (field report, abridged):
+```
+Failed to construct 'Worker': script unreachable (tile 181)
+Failed to construct 'Worker': script unreachable (tile 182)
+[.. 21 identical lines ..]
+Uncaught (in promise) DataCloneError: Tile could not be cloned (tile 204, SharedArrayBuffer)
+```
+`perf/prototype-pool.txt` (4-worker prototype numbers to beat):
+```
+pool=4 queue=unbounded tiles=120 wall=9.8s max_live_workers=4 dropped_frames=3
+pool=4 queue=64-drop-oldest tiles=120 wall=9.1s max_live_workers=4 dropped_frames=0
+pool=8 queue=64-drop-oldest tiles=120 wall=8.9s max_live_workers=8 dropped_frames=0
+main-thread jank: unbounded queue -> 41 long tasks (>50 ms); bounded -> 2
+```
+`review/notes-089.md` (staff review of the first fix attempt):
+```
+- attempt 1 used a fixed pool of 32: still heavy on 4-core laptops, and 32
+  workers x tile buffers blew the ArrayBuffer budget. REQUIRE: pool width from
+  navigator.hardwareConcurrency, never a constant.
+- attempt 1 kept structured-clone posts: 3.1 ms x 600 tiles = 1.9 s of pure
+  clone overhead. REQUIRE: transferables for tile pixel buffers.
+- attempt 1 dropped NEWEST on backpressure: the visible viewport tiles starved
+  while offscreen tiles rendered. REQUIRE: drop-oldest + counter, newest wins.
+- highWaterMark=64 is a requirement, not a suggestion: assert it in the stress
+  test (queue depth observable via pool.stats()).
+- the stress test must fail on the OLD code: assert max live workers <= pool
+  size (old code hits 120) AND zero dropped frames under 120 tiles.
+```
+Sizing worksheet (fill before coding):
+```
+tiles = 120 (stress) .. 600 (worst case); pool = hardwareConcurrency (4..16)
+queue cap 64 -> worst-case queued bytes = 64 x tile_bytes (tile = 256x256 RGBA = 256 KB) = 16 MB
+in-flight = pool x 256 KB <= 4 MB; clone overhead -> ~0 with transferables
+frame math: 120 tiles / 4 workers x 11 ms p99 ~= 330 ms total, main thread free
+```
+Test inventory (must keep passing):
+```
+TestRenderSmall (4 tiles, exact pixels vs fixture) — ok
+TestPoolSize (assert max live workers <= pool size on 120 tiles) — NEW, fails now (120 > 4)
+TestBackpressure (assert queue never exceeds 64, drop-oldest counter exact) — NEW, fails now
+TestZeroDroppedFrames (120 tiles, assert dropped_frames == 0) — NEW, fails now (3 on prototype)
+TestTransferable (assert no structured clone of pixel buffers, spy on postMessage) — NEW, fails now
+```
+Second paste — tile-size table, browser compat, viewport trace:
+`tiles/sizes.csv` (production tile mix, for the queue-byte math):
+```
+size_px,bytes,count_per_120,note
+256x256 RGBA,262144,96,standard map tile
+512x512 RGBA,1048576,18,retina overlay
+128x128 mask,16384,6,collision mask (never dropped: correctness)
+queue worst case: 64 x 512x512 = 64 MB (masks exempt from drop-oldest: pin them)
+stats() must expose: depth, dropped_oldest count, pinned count, max_live_workers
+```
+`compat/workers-matrix.txt` (pool width inputs per device class):
+```
+hardwareConcurrency=4 (target laptop): pool 4, queue 64, wall ~9.1 s / 120 tiles
+hardwareConcurrency=8 (dev desktop): pool 8, queue 64, wall ~8.9 s / 120 tiles
+hardwareConcurrency=2 (old tablet): pool 2, queue 64, wall ~17 s; jank watch
+hardwareConcurrency>=16 (workstation): pool clamp 12 (worker spawn cost dominates past 12)
+rule: pool = clamp(hardwareConcurrency, 2, 12); queue stays 64 everywhere.
+```
+`trace/viewport-120.txt` (why drop-oldest, abridged frame log):
+```
+frame 881: viewport tiles [44..51] queued BEHIND offscreen [12..43] (unbounded)
+frame 882: viewport still waiting; 41 long tasks so far; user sees blank map
+frame 883: drop-oldest build: offscreen [12..30] dropped (counter 19), viewport renders
+frame 884: viewport complete in 22 ms; offscreen re-queued on next pan
+verdict line: newest-wins keeps the visible map alive; drop-newest starves it.
+```
+`review/notes-089b.md` (second review round, stats API):
+```
+- stats() must be SYNC and cheap (called per frame for the HUD): precompute
+  counters on enqueue/dequeue, never walk the queue.
+- pinned masks: Farm.render signature gains no new param; masks are flagged
+  inside Tile ({pin: true}); the queue checks the flag. assert in test.
+- DataCloneError on SharedArrayBuffer tiles (tile 204): transfer list must
+  EXCLUDE shared buffers (transferring a SAB throws); copy those, transfer rest.
+```
+Third paste — pipeline doc, worker lifecycle, HUD spec:
+`docs/tile-pipeline.md` (where the pool sits):
+```
+upload -> decode (main) -> tile queue (64) -> pool (N) -> composite (main) -> paint
+the pool owns: spawn-once workers, queue, drop-oldest counter, stats().
+the pool does NOT own: tile decoding (main thread), compositing (main thread).
+backpressure signal: queue depth observable per frame; HUD polls stats().
+a tile takes exactly one queue slot from enqueue to worker-pickup; masks take
+a slot too (pinned, never dropped) so depth math stays exact.
+```
+`worker/lifecycle.txt` (spawn-once discipline, assert in test):
+```
+boot: N workers spawned at Farm construction (N = pool width formula)
+warm: each worker imports tile.js once (~40 ms, off critical path)
+work loop: worker pulls next task ONLY on 'ready' message (no push scheduling)
+death: worker.onerror -> task re-queued once -> worker respawned (counter respawns)
+shutdown: Farm.dispose() terminates all; leaked workers after dispose = test fail
+old code violated ALL FIVE: spawn-per-tile, no warm, push, no respawn, no dispose.
+```
+`hud/spec.txt` (stats() consumer, per-frame budget):
+```
+stats() returns {depth, droppedOldest, pinned, maxLiveWorkers, respawns}
+call cost: <= 0.01 ms (precomputed counters; the test asserts this with a loop)
+HUD shows: depth bar (64 max), dropped counter (session total), pool width
+alert: depth >= 64 for 30 consecutive frames -> "sustained backpressure" banner
+alert: respawns > 0 in a session -> "worker crash" banner + log line
+```
+Fourth paste — worker contract, composite protocol, jank budget:
+`tile/worker-contract.md` (tile.js obligations, both sides):
+```
+in: {pixels: ArrayBuffer (transferred), w, h, ops:[...], pin: bool}
+out: {pixels: ArrayBuffer (transferred back), stats: {ms}}
+worker NEVER retains pixels after post-back (transfer neuters the sender side).
+worker signals 'ready' EXACTLY once per task completion (pull scheduling).
+SharedArrayBuffer inputs: NOT transferred (throws DataCloneError); copied once
+  (the tile-204 case). the pool detects SAB via ArrayBuffer.isView + shared flag.
+warm: importScripts done once at spawn; per-task setup must be < 0.1 ms.
+```
+`composite/protocol.txt` (main-thread side, ordering guarantees):
+```
+composite consumes frames in TILE ORDER, not completion order (reorder buffer).
+a dropped-oldest tile leaves a HOLE: composite paints stale tile + sets stale flag.
+stale flags feed the dropped_frames counter (the stress-test assertion source).
+masks (pin: true) NEVER hole: queue exempts them; if a mask would drop, the
+  pool BLOCKS instead (bounded wait 100 ms, then page-level error, never silent).
+```
+`perf/jank-budget.txt` (main-thread numbers the fix must hold):
+```
+budget per frame: 16.6 ms; composite takes 2-4 ms; queue+stats < 0.1 ms.
+old code: 41 long tasks (>50 ms) per 120 tiles (spawn + clone on main thread).
+prototype pool: 2 long tasks (worker boot only, off critical path).
+post-fix gate: <= 3 long tasks per 120-tile run (assert in stress test).
+clone accounting: 3.1 ms x 120 = 372 ms eliminated by transferables (tile 204
+  SAB case excepted: 1 copy, documented, measured 0.4 ms).
+```
+Fifth paste — reorder buffer, stale-flag wiring, dispose test:
+`composite/reorder.txt` (ordering math the pool relies on):
+```
+completion order != tile order (workers finish out of order by design).
+reorder buffer holds EARLY completions until predecessors arrive; cap = pool
+  width (a worker's output waits at most N-1 predecessors; bound the memory).
+a dropped-oldest tile NEVER completes -> its slot waits until the 세대... until
+  the generation counter advances (next pan invalidates the hole explicitly).
+stale flag per tile: set on drop, cleared on re-queue; composite paints the
+  previous frame's tile UNDER the stale flag (no blank flashes, ever).
+```
+`stats/wiring.txt` (counter exactness the test asserts):
+```
+droppedOldest: incremented EXACTLY once per dropped tile, at drop time
+  (not at composite time; the test drives 200 tiles through a 64-queue and
+  asserts counter == 200 - 64 - pinned, exactly, three runs in a row).
+maxLiveWorkers: high-water mark sampled on every spawn AND every task start
+  (spawn and start differ: workers spawn once, start per task).
+respawns: worker.onerror path only; the test kills one worker mid-run
+  (SIGKILL the thread via debug hook) and asserts task re-queued + counter 1.
+dispose: Farm.dispose() then assert 0 live workers (leak = fail). old code has
+  no dispose at all -> this test does not compile against old code (counts as fail).
+```
+Sixth paste — HUD alert copy + dispose sequence (exact strings the test matches):
+`hud/alerts.txt`:
+```
+sustained backpressure: "BACKPRESSURE: depth 64 for 30 frames (dropped N oldest)"
+worker crash: "WORKER CRASH: task re-queued, respawns=N"
+leak on dispose: "LEAK: N workers alive after dispose" (test fails on this line)
+```
+`dispose/sequence.txt`: stop accepting -> drain queue (BLOCK, no drop: masks may
+be in flight) -> terminate workers -> assert 0 alive -> close. order is load-
+bearing: terminating before drain orphans in-flight tiles (old code did exactly
+this on tab close; the dispose test reproduces it with 120 tiles).
+Decisions to record in your answer (all four):
+```
+1. pool width formula (hardwareConcurrency mapping, min/max clamp) with the math
+2. why drop-oldest (not newest, not block) with the viewport argument
+3. where the highWaterMark=64 check lives (enqueue path) and how stats() exposes it
+4. the stress-test assertions that fail on the old code, with the old-code numbers
+```

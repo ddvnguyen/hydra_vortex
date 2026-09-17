@@ -1,0 +1,236 @@
+Agent turn: `go test -race ./cmd/serve/` flags `WARNING: DATA RACE` on the SIGHUP
+reload path — `cfg.Timeout` read by 40 handlers while the reload goroutine
+writes the global struct in place. Reconstruct the deadlock-free fix: explain
+the read/write cycle, give the 3 commands that confirm the race is gone
+(`go test -race`, `go vet`, and the reload-hammer run), then write the
+`atomic.Pointer[Config]` (or `sync.RWMutex`) patch with before/after global
+declarations, add double-checked validation (reject bad config, keep old, log
+diff), and write the test that hammers reads during 50 reloads under `-race`.
+State which CI line would prove the fix on the next nightly.
+
+Full context pasted below — use it, do not ask for it again:
+`cat serve/reload.go` (current, abridged):
+```go
+// reload.go — package serve (abridged)
+package serve
+
+import ("context"; "sync"; "time")
+
+var cfg Config // global, read by handlers, written in place by reload
+var mu sync.Mutex
+
+type Config struct {
+    Timeout time.Duration
+    Retries int
+    PoolSize int
+}
+
+func onSighup(raw []byte) error {
+    mu.Lock()
+    defer mu.Unlock()
+    var next Config
+    if err := parse(raw, &next); err != nil {
+        return err // BUG 1: caller logs and KEEPS the half-parsed next on retry
+    }
+    cfg = next // BUG 2: in-place write while 40 handlers read cfg.Timeout
+    return nil
+}
+```
+`-race` report (abridged, 40 handlers, same shape):
+```
+WARNING: DATA RACE at cmd/serve/main.go:44 (cfg.Timeout read by handler-24, write by sighup-reload goroutine 188)
+WARNING: DATA RACE at cmd/serve/main.go:99 (cfg.Retries read by handler-25, write by sighup-reload goroutine 393)
+WARNING: DATA RACE at cmd/serve/main.go:67 (cfg.Retries read by handler-26, write by sighup-reload goroutine 956)
+WARNING: DATA RACE at cmd/serve/main.go:83 (cfg.PoolSize read by handler-23, write by sighup-reload goroutine 649)
+```
+`handler read sites` (grep, abridged):
+```
+cmd/serve/main.go:44:  deadline := time.Now().Add(cfg.Timeout)      // per-request
+cmd/serve/main.go:67:  for i := 0; i < cfg.Retries; i++             // per-request
+cmd/serve/main.go:83:  sem := make(chan struct{}, cfg.PoolSize)     // per-request
+cmd/serve/main.go:99:  backoff := cfg.Retries * base                // per-request
+serving p99: 12 ms; a RWMutex read-lock costs ~25 ns — invisible; an atomic
+pointer load costs ~1 ns. EITHER is fine on the hot path; pick one and justify.
+```
+`bad-config incident` (last month, the reason validation matters):
+```
+operator pushed {timeout: -5s, retries: 999999}; reload ACCEPTED it; handlers
+spun 999999 retries x 40 handlers; p99 went to 41 s; rollback took 22 min.
+new rule: validate BEFORE swap (timeout > 0, 0 <= retries <= 9, pool 1..64);
+on invalid: reject, keep old, log the diff (old vs rejected). test must cover it.
+```
+`review/notes-102.md` (staff review of the first fix attempt):
+```
+- attempt 1 wrapped every cfg read in mu.Lock: correct but serializes 40
+  handlers on one mutex; p99 +3 ms. REJECT: use atomic.Pointer or RWMutex.
+- attempt 1 validated AFTER swap: a bad config was live for 400 ms. REJECT:
+  double-checked validation (parse -> validate -> swap; re-validate under lock).
+- attempt 1 had no hammer test: the race only reproduces under load. REQUIRE:
+  test with 40 readers x 50 reloads under -race, must fail on the old code.
+- the global declaration before/after MUST appear in the answer (reviewers diff
+  declarations, not behavior prose).
+```
+`flaky-seed log` (unrelated, do not chase):
+```
+77aa01 fix flaky seed — test_rand_order fails 1/50 on the big node only.
+c02f9d collected-trace probe (ignore)
+[e2e-postgres shard pg13 run 989] tests/test_sync.py::test_replay: got 200 rows (expected 200) in 9.7s
+```
+Test inventory (must keep passing):
+```
+TestServeSmall (one handler, one request, exact response) — ok
+TestReloadHammer (40 readers x 50 reloads under -race, zero warnings) — NEW, fails now
+TestReloadRejectsBad (push {timeout:-5s}, assert old kept + diff logged) — NEW, fails now
+TestReloadKeepsServing (reload mid-request, assert in-flight uses old OR new, never torn) — NEW, fails now
+bench ServeHot (p99 gate <= 15 ms after fix) — must stay green
+```
+Second paste — handler inventory, config schema, rollback runbook:
+`handlers/inventory.txt` (all 40 read sites, abridged to the shape):
+```
+main.go:44   cfg.Timeout   per-request deadline
+main.go:67   cfg.Retries   per-request loop bound
+main.go:83   cfg.PoolSize  per-request semaphore width
+main.go:99   cfg.Retries   per-request backoff factor
+[... 36 more sites, all per-request reads, zero writes outside reload ...]
+rule: EVERY read goes through the same accessor (cfg.Load() or RLock helper).
+  a single direct `cfg.` read left anywhere re-opens the race; grep must show
+  zero bare reads after the patch (CI check: `grep -rn '[^.]cfg\.' --include=*.go`).
+```
+`config/schema.txt` (validation bounds, the double-check list):
+```
+Timeout: > 0, <= 300s
+Retries: 0..9 inclusive
+PoolSize: 1..64 inclusive
+unknown keys: reject (typo guard; last incident was `timeotu: 5s` silently ignored)
+validation runs TWICE: once after parse (fast fail), once under the swap lock
+  (no TOCTOU between check and swap). log diff format: "reload: Timeout 5s->10s,
+  Retries 3->3, PoolSize 8->8 (rejected: none)" or "(rejected: <reason>)".
+```
+`runbook/rollback-092.txt` (last rollback, 22 min — the drill to beat):
+```
+02:41 bad config live (retries 999999 accepted, no validation)
+02:44 p99 41 s, pager fires
+02:47 operator finds flags file, hand-edits, SIGHUP
+02:52 reload accepted but handlers still spinning old retries (in-place struct)
+03:03 full restart, cold caches, p99 recovers
+target with fix: reject at 02:41 (+0 s bad-config lifetime), no restart ever.
+```
+`ci/nightly-race.log` (what green looks like after the fix):
+```
+job: nightly-race (cmd/serve, -race, 40 readers x 50 reloads)
+TestReloadHammer: 0 warnings in 18.2 s -> PASS
+TestReloadRejectsBad: old kept, diff logged -> PASS
+grep-bare-reads: 0 matches -> PASS
+bench ServeHot: p99 12.4 ms <= 15 ms gate -> PASS
+```
+Third paste — full handler table, SIGHUP delivery log, accessor rule:
+`handlers/full-table.txt` (all 40 read sites; the fix must cover every one):
+```
+main.go:44 Timeout | main.go:67 Retries | main.go:83 PoolSize | main.go:99 Retries
+main.go:112 Timeout | main.go:118 PoolSize | main.go:121 Retries | main.go:130 Timeout
+proxy.go:31 Timeout | proxy.go:44 Retries | proxy.go:52 PoolSize
+proxy.go:61 Timeout | proxy.go:77 Retries | proxy.go:88 PoolSize
+limiter.go:12 PoolSize | limiter.go:19 Retries | limiter.go:27 Timeout
+limiter.go:33 PoolSize | limiter.go:41 Timeout
+health.go:22 Timeout | health.go:29 Retries
+metrics.go:15 PoolSize | metrics.go:21 Timeout | metrics.go:28 Retries
+tracer.go:9 Timeout | tracer.go:14 PoolSize
+queue.go:33 PoolSize | queue.go:40 Retries | queue.go:47 Timeout | queue.go:55 PoolSize
+queue.go:61 Retries | queue.go:70 Timeout
+drain.go:18 Timeout | drain.go:24 PoolSize | drain.go:31 Retries
+drain.go:38 Timeout | drain.go:44 PoolSize
+auth.go:27 Timeout | auth.go:35 Retries
+cache.go:41 PoolSize | cache.go:52 Timeout
+writes outside reload: NONE (grep `cfg\s*=` : 1 hit, the swap line only)
+```
+`sighup/delivery.txt` (signal path the test must exercise):
+```
+kill -HUP <pid> -> handler -> read flags file -> parse -> validate x2 -> swap
+delivery latency p99: 40 ms (file read + parse); swap itself < 1 us
+coalescing: 3 HUPs within 100 ms = 1 reload (debounce; test asserts counter == 1)
+mid-request: in-flight request keeps the OLD pointer (no torn reads, ever)
+SIGHUP during a previous reload: serialized on the swap lock, second wins
+```
+`accessor/rule.txt` (the shape reviewers expect):
+```
+func C() *Config { return cfgPtr.Load() }   // atomic.Pointer path, ~1 ns
+// or
+func C() Config { mu.RLock(); defer mu.RUnlock(); return cfg } // RWMutex, ~25 ns
+every handler calls C(), never cfg directly. the patch converts all 40 sites;
+the CI grep for bare reads is part of the merge gate, not advisory.
+```
+Fourth paste — parse/validate function, debounce design, pager history:
+`parse/validate.go` (the double-check, target shape):
+```go
+// parse: bytes -> Config (syntax only, no judgment)
+func parse(raw []byte) (Config, error) { /* yaml unmarshal, unknown keys rejected */ }
+
+// validate: Config -> error (bounds only, no I/O)
+func validate(c Config) error {
+    if c.Timeout <= 0 || c.Timeout > 300*time.Second { return fmt.Errorf(...) }
+    if c.Retries < 0 || c.Retries > 9 { return fmt.Errorf(...) }
+    if c.PoolSize < 1 || c.PoolSize > 64 { return fmt.Errorf(...) }
+    return nil
+}
+// swap path: parse -> validate -> lock -> validate AGAIN -> swap -> log diff.
+// the second validation is the TOCTOU guard: flags file could change between
+// check and swap (operator + automation racing). test covers it by swapping
+// the file mid-reload and asserting exactly one of the two configs wins whole.
+```
+`debounce/design.txt` (HUP coalescing, exact semantics):
+```
+window: 100 ms trailing-edge. HUP 1 starts the timer; HUPs 2..N inside the
+  window reset nothing and count nothing; at window end ONE reload runs.
+counter metric: sighup_coalesced_total (test asserts == 2 for a 3-HUP burst).
+debounce lives OUTSIDE the swap lock (lock held only for parse-validate-swap).
+slow reader guard: a handler stuck > 5 s does NOT block reload (pointer swap
+  is wait-free on the read path by construction with atomic.Pointer).
+```
+`pager/history-09.txt` (why the hammer test exists):
+```
+09-02 02:44 p99 41 s (bad config, no validation) — 22 min to recover
+09-09 14:11 flapping reload (automation + operator racing, no debounce) — 6 reloads/s
+09-14 03:33 torn read (half-swapped struct, pre-mutex era) — 500s for 90 s
+all three classes die with this patch: validation (class 1), debounce (class 2),
+  atomic swap (class 3). the hammer test covers class 3; the reject test class 1;
+  the coalesce assertion covers class 2. name all three in the answer.
+```
+Fifth paste — lock ordering, metric names, the torn-read postmortem:
+`lock/ordering.txt` (deadlock audit for the swap lock):
+```
+lock order (global): flags-file mutex -> swap lock -> (no third lock).
+  handlers take NO locks on the atomic path (lock-free reads by construction).
+  on the RWMutex path: RLock only, never upgrade (upgrade = deadlock; lint it).
+swap lock held for: parse (file already read OUTSIDE the lock) + validate x2 +
+  pointer store + diff log line. measured hold time: 8 us p99 (no I/O inside).
+linter rule (CI): `go vet -vettool` custom check forbids cfg reads outside C()
+  AND forbids Lock() inside request handlers (both are merge gates).
+```
+`metrics/names.txt` (exact metric names the test asserts):
+```
+sighup_total (counter: HUPs received, pre-debounce)
+sighup_coalesced_total (counter: HUPs folded, 3-burst -> 2)
+reload_ok_total{reason="sighup|api"} / reload_rejected_total{reason}
+config_current{timeout_s,retries,poolsize} (gauge trio, scraped by the dashboard)
+```
+`postmortem/torn-0914.txt` (the class-3 incident, pre-mutex era):
+```
+03:33 half-swapped struct served: Timeout new (30 s) + Retries old (999999).
+  mixed-generation config: neither the old file nor the new one. 500s for 90 s.
+root cause: field-by-field copy without any lock (3-line function, no review).
+fix class: atomic swap makes torn reads STRUCTURALLY impossible (whole-pointer
+  publish), not merely unlikely. say this sentence in the answer (reviewers
+  look for "structurally impossible" vs "unlikely" — the distinction is the point).
+```
+Sixth paste — dashboard panel (the operator's proof the fix holds):
+`dashboard/panel.txt`: graph config_current{timeout_s,retries,poolsize} as 3
+lines + reload_ok_total rate + a BIG RED annotation if reload_rejected_total
+ever increments (bad config pushed). the panel is the reason the metric names
+are exact: rename a metric and the dashboard goes dark silently.
+Decisions to record in your answer (all four):
+```
+1. atomic.Pointer vs RWMutex (pick one) with the per-request cost math
+2. the before/after global declarations, verbatim
+3. the validation order (parse -> validate -> swap) with the bad-config test
+4. the CI log line that proves the fix (hammer test name + -race clean line)
+```

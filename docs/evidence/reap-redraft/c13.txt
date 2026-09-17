@@ -1,0 +1,223 @@
+You will rework a single-node S3 uploader under hard throughput and memory limits.
+First analyze the maximum input sizes and the tightest resource constraint, identify the optimal concurrency and part-size strategy that fits inside it, then reason step by step about the implementation, and finally provide the complete implementation in Go that is correct under restart and network faults. Do not skip the analysis: bounds first, code second.
+
+Constraints: 5 GB files, small node with 1.2 GB usable RAM (the current code OOMs at 1.2 GB RSS via `os.ReadFile`), part size 64 MB, upload concurrency 4, progress callback logging every 256 MB, resume-on-restart via a local `.partmap` JSON, and the `EntityTooSmall` edge case on the final part. Show the throughput math (parts in flight x part size vs the RAM cap), then give the uploader struct, the retry wrapper around `UploadWithContext`, the resume path, and the regression test that fails on the old code. State the one assumption that breaks your sizing.
+
+Full context pasted below — use it, do not ask for it again:
+`cat uploader/upload.go` (current, abridged):
+```go
+// upload.go — package uploader (abridged)
+package uploader
+
+import (
+    "context"
+    "os"
+
+    "github.com/aws/aws-sdk-go/aws"
+    "github.com/aws/aws-sdk-go/service/s3/s3manager"
+)
+
+type Uploader struct {
+    Up  *s3manager.Uploader
+    Log func(msg string, args ...any)
+}
+
+// Upload reads the whole file into RAM, then uploads. OOM-killed at 1.2 GB RSS.
+func (u *Uploader) Upload(ctx context.Context, bucket, key, path string) error {
+    body, err := os.ReadFile(path) // 5 GB file -> OOM on the small node
+    if err != nil {
+        return err
+    }
+    _, err = u.Up.UploadWithContext(ctx, &s3manager.UploadInput{
+        Bucket: aws.String(bucket),
+        Key:    aws.String(key),
+        Body:   bytes.NewReader(body),
+    })
+    return err
+}
+```
+`bench/upload_bench.txt` (nightly, small node, 5 GB fixture):
+```
+run=0312 size=5368709120 rss_peak_mb=5120 wall=11m04s result=OOM-KILLED signal=9
+run=0313 size=5368709120 rss_peak_mb=5111 wall=10m58s result=OOM-KILLED signal=9
+run=0314 size=1073741824 rss_peak_mb=1092 wall=02m41s result=ok throughput=6.6MB/s
+run=0315 size=2147483648 rss_peak_mb=2180 wall=OOM-KILLED signal=9
+node memtotal=2048MB usable~1200MB (sidecars hold ~800MB)
+target: 5 GB in <12 min at <900 MB RSS (4 x 64 MB in flight + 256 MB headroom)
+```
+`incidents/INC-2214.txt` (OOM during customer migration):
+```
+02:11:04 uploader: starting s3://cust-14/snap-2026-08-30.raw (5368709120 B)
+02:11:40 uploader: RSS 1188 MB, still reading input (ReadFile, 22% of file)
+02:13:57 kernel: Out of memory: Killed process 88312 (llama-uploader) score 912
+02:13:57 kernel: oom-kill:constraint=CONSTRAINT_NONE, nodemask=(null)
+02:14:02 uploader-supervisor: restart 1/5, resume requested, no .partmap found
+02:14:02 uploader-supervisor: full re-upload scheduled (another 11 min, same OOM ahead)
+operator note: third OOM this week on the small node; big node unaffected (16 GB)
+operator note: customer asked why resume did not resume — answer: no partmap written
+```
+`s3manager` notes (vendored README excerpt):
+```
+UploadInput.Body may be an io.Reader; the manager buffers PART SIZE per concurrent
+part when the body is not an io.ReadSeeker with a known size. Use an *os.File (it
+is a ReadSeeker) so parts stream from disk. Concurrency N with part size S holds
+~N*S in flight plus SDK overhead (~8 MB per part). Min part size 5 MB (S3 API
+floor); all parts except the last must be >= 5 MB or S3 returns EntityTooSmall.
+A completed multipart upload needs CompleteMultipartUpload; an aborted run leaves
+parts billable until AbortMultipartUpload or the bucket lifecycle rule fires.
+```
+`review/notes-041.md` (staff review of the first fix attempt):
+```
+- attempt 1 set part size 8 MB / concurrency 16: 128 MB in flight, fine on RAM,
+  but 640 parts -> per-part latency dominates, wall 21 min. REJECT: too slow.
+- attempt 1 had no resume: supervisor restart re-uploaded from zero. REJECT.
+- attempt 1 logged per part: 640 log lines per file, log volume 40x. REQUIRE:
+  progress callback every 256 MB exactly (20 lines per 5 GB file).
+- the final part WILL be < 5 MB when size % 64 MB != 0: handle EntityTooSmall by
+  merging the tail into the previous part, never by shrinking all parts.
+- .partmap schema: {upload_id, key, parts_done: {part_no: etag}, updated_at}.
+  fsync the file after every completed part; load on start; verify etags.
+```
+`.partmap` example (from the big-node run that worked):
+```json
+{"upload_id": "vxZPQj-20260830-021104", "key": "snap-2026-08-30.raw",
+ "parts_done": {"1": "a3f9c1", "2": "77bd20", "3": "c418e0", "4": "9d02aa"},
+ "updated_at": "2026-08-30T02:12:44Z"}
+```
+`net flakes` (last 30 days, small node -> s3 endpoint):
+```
+mid-upload RST: 11 events, all recovered by SDK retry except 2 (context canceled)
+throttle 503 SlowDown: 4 events during 02:00-03:00 window, backoff required
+DNS blip 2026-08-29: 1 event, 47 s, supervisor restarted the whole upload
+p99 part PUT latency: 2.1 s (64 MB parts); p99.9: 9.4 s
+```
+Prior-art diff (attempt 2, reverted — leaked upload_id on retry):
+```diff
+-       upID, err := createMultipart(ctx, bucket, key)
+-       if err != nil { return err }
++       upID := resumeOrCreate(ctx, bucket, key, partmap) // BUG: on retry the
++       // old upload_id is reused after AbortMultipartUpload fired -> 404 NoSuchUpload
+```
+Second paste — deploy flags, part-size experiment, supervisor config (same runbook):
+`deploy/flags` history (the Other Half of the c14 pattern — what changed around the bug):
+```
+2026-08-28  flags: uploader=readfile,v1  workers=1  resume=off
+2026-08-29  flags: uploader=readfile,v1  workers=1  resume=off  (INC-2214 day)
+2026-08-30  flags: uploader=multipart,v2 workers=4  resume=on   (attempt-2, reverted)
+2026-08-31  flags: uploader=readfile,v1  workers=1  resume=off  (rollback, current)
+policy: flags flip only with the matching code rev; the v2 flag MUST NOT be
+  re-enabled until the resume path and the retry wrapper land together.
+```
+`experiments/partsize-0829.csv` (big node, 5 GB fixture, concurrency 4):
+```
+part_mb,parts,rss_mb,wall_min,notes
+8,640,180,21.3,latency-dominated; 640 log lines (rejected volume)
+16,320,210,14.1,still slow; 320 log lines
+32,160,260,9.4,acceptable wall but 160 completion calls
+64,80,330,6.2,SELECTED: 80 parts, 20 progress lines, 330 MB in flight
+128,40,590,5.8,faster but 590 MB in flight + SDK overhead -> 700 MB, too close to cap
+256,20,1140,5.5,EXCEEDS small-node budget outright
+verdict row: 64 MB is the largest part size that keeps in-flight under 350 MB.
+```
+`supervisor/supervise.conf` (restart policy the resume path must satisfy):
+```
+restart_max=5 backoff=10s,30s,90s,300s,900s
+on_boot: if .partmap exists and upload_id live -> resume; else start new
+healthcheck: progress callback lines every <= 90 s or supervisor kills + restarts
+log_line: "resume from part N/80 (upload_id ...)" required on every resume start
+kill -9 drill: monthly; last drill 08-15 FAILED (no partmap -> full re-upload)
+```
+`gateway/deploy-0830.log` (attempt-2 rollout trace, abridged):
+```
+02:00:11 deploy: flags -> multipart,v2 on small node (canary 1/6 nodes)
+02:04:33 uploader: resume from part 0/80 (upload_id vxZPQj-0830, fresh, no partmap)
+02:09:41 uploader: part 41/80 done, RSS 341 MB, 11 progress lines so far
+02:11:02 uploader: RST mid-part 44, retry 1 -> 404 NoSuchUpload (upload_id leak)
+02:11:02 uploader: retry wrapper created a SECOND upload_id, parts 1..43 orphaned
+02:11:03 supervisor: restart 1/5
+02:11:40 uploader: resume from part 0/80 (new upload_id, orphans billable)
+02:14:55 deploy: canary FAILED, flags rolled back to readfile,v1
+billing: 43 orphaned parts x 64 MB retained 7 days until lifecycle abort fired
+lesson (operator): retry must reuse the SAME upload_id; abort-then-recreate is
+  only for unrecoverable part corruption, never for a retriable RST.
+```
+Third paste — canary dashboard, billing ledger, flag policy:
+`canary/dashboard-0830.txt` (the 6-node canary that caught attempt-2):
+```
+node,flags,rss_mb,wall_min,progress_lines,result
+small-1,multipart,v2,341,6.4,11,FAIL-404 (upload_id leak, see gateway log)
+small-2,readfile,v1,1092,OOM@2.7,0,OOM-KILLED (control, expected)
+big-1,multipart,v2,402,5.9,20,OK (big node, no memory pressure)
+big-2,readfile,v1,5111,OOM@11.0,0,OOM-KILLED (control, expected)
+small-3,readfile,v1,1088,OOM@2.6,0,OOM-KILLED (control, expected)
+small-4,readfile,v1,1095,OOM@2.8,0,OOM-KILLED (control, expected)
+read: multipart works where RAM allows; the leak is logic, not sizing.
+```
+`billing/orphans-0830.csv` (why the leak matters in dollars):
+```
+upload_id,parts_orphaned,bytes_retained,retention_days,cost_usd
+vxZPQj-0830,43,2758912 KB,7,0.41
+vxZPQj-0830b,80,5242880 KB,7,0.79
+total incident waste: $1.20 + 1 failed migration window (customer impact)
+lifecycle rule (added 08-31): abort incomplete uploads after 24 h (was 7 days)
+```
+`flags/policy.md` (the rule your patch must satisfy):
+```
+- code rev and flags flip TOGETHER (same deploy). v2 flag without the resume
+  path + retry wrapper = incident. the policy is enforced in CI: deploy job
+  greps the rev for "partmap" and "UploadWithContext" before allowing flags=v2.
+- canary order: big node first (sizing proof), small node second (memory proof),
+  full fleet only after 3 consecutive green canaries.
+- rollback is one flags flip (no code revert): readfile,v1 must REMAIN working
+  after your patch lands (keep the old path behind the flag, delete it in v3).
+Fourth paste — SDK retry semantics, wall-clock budget, operator playbook:
+`sdk/retry-semantics.md` (what UploadWithContext retries FOR you vs what YOU own):
+```
+SDK owns: per-part PUT retry (exponential backoff, 5 tries default), checksum
+  retry on BadDigest, connection reuse across parts in one uploader.
+YOU own: upload_id lifecycle (create once, reuse on retry, abort on give-up),
+  part-number sequencing (1..80 contiguous, no gaps on resume), etag ledger
+  (the .partmap), and the final CompleteMultipartUpload call.
+attempt-2 violated the first ownership line: the retry wrapper called
+  createMultipart again instead of reusing the stored upload_id. the wrapper
+  must take upload_id as a parameter, never create one.
+timeout budget per part: 3 tries x p99.9 9.4 s ~= 30 s worst case; 80 parts
+  sequential-worst = 40 min (never hit: concurrency 4). set context timeout
+  per part (60 s), NOT per upload (a per-upload timeout kills legit slow runs).
+```
+`budget/wall-clock.txt` (where the <12 min target goes):
+```
+part PUT p50 1.4 s, p99 2.1 s, p99.9 9.4 s (64 MB parts, small node -> endpoint)
+ideal: 80 parts / 4-wide x 1.4 s = 28 s transfer + ~40 s SDK framing = ~70 s
+realistic with 11 RSTs/30d (~1 per 3 uploads): +1-2 retried parts ~= +15 s
+throttle window 02:00-03:00 (503 SlowDown x4): +backoff ~60 s if unlucky
+total realistic: 2-4 min. target <12 min has 3x headroom. attempted-1 (8 MB
+  parts, 640 parts, 16-wide): 21 min measured — latency-dominated, rejected.
+the SIZING answer must show: 64 MB x 4 = 256 MB in flight + 32 MB overhead =
+  288 MB < 900 MB budget, AND wall 2-4 min < 12 min target, AND 20 log lines.
+```
+`operator/playbook-2215.md` (what the on-call does with your patch):
+```
+1. deploy rev + flags TOGETHER (policy.md). verify flags show multipart,v2.
+2. watch for "resume from part N/80" on supervisor restart (kill -9 drill monthly).
+3. progress lines every 256 MB: 20 per file. gap > 90 s -> supervisor restarts.
+4. on 404 NoSuchUpload: page immediately (upload_id leak recurrence) — do NOT
+   let it retry into a second upload_id (that was the attempt-2 failure mode).
+5. .partmap fsync failures (disk full): treat as fatal, page, do not proceed
+   without the ledger (blind resume re-uploads and double-bills).
+6. EntityTooSmall ever appearing in logs = tail-merge bug recurrence. page.
+```
+Test inventory (must keep passing):
+```
+TestUploadSmall (12 MB, single part path) — ok
+TestProgressCallbackQuarters (asserts exactly 20 callbacks on 5 GB fixture) — NEW, fails now
+TestResumeAfterKill (kill -9 at part 30/80, restart, assert no re-upload of parts 1..30) — NEW, fails now
+TestFinalPartSmall (fixture size 5 GB + 3 MB, assert no EntityTooSmall) — NEW, fails now
+```
+Sizing worksheet (fill before coding):
+```
+parts = ceil(5368709120 / 67108864) = 80
+in-flight bytes = 4 * 67108864 = 256 MB; + SDK overhead 4 x 8 MB = 288 MB total
+RSS budget 900 MB -> headroom ~600 MB for sidecars spikes; OK
+wall estimate: 80 parts / 4-wide x p50 1.4 s ~= 28 s ideal, ~4-6 min with retries
+```

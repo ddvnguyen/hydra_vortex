@@ -1,0 +1,35 @@
+Compare a heat-pump install ($18,500, $2,000 rebate, COP 3.2, backup strips below -10C) vs keeping my gas furnace ($85/mo gas, 12 yrs old, one $600 repair last winter) over 10 years for a 1,800 sq ft house in a climate with 4,800 heating-degree days. Show the arithmetic table (year / heat-pump cumulative cost / furnace cumulative cost), name the breakeven year, and state the two assumptions that flip the answer. End with a 3-question gut-check, no sales-boilerplate beyond one line.
+
+Full context pasted below — use it, do not ask for it again:
+Rate sheet (utility, winter 2026-27):
+electricity $0.21/kWh (tier 1 to 900 kWh, $0.28 above); gas $1.15/therm + $14/mo meter fee
+heat load: 52 MMBtu/yr (from last 3 winters' bills, normalized to 4,800 HDD)
+heat pump: 52 MMBtu / 3.2 COP = 4,758 kWh/yr -> ~$999/yr at tier-1 rates
+furnace 82% AFUE: 52 / 0.82 = 63.4 MMBtu in = 634 therms -> $729 gas + $168 meter = ~$897/yr
+backup strips: ~180 kWh/yr below -10C (+$38/yr, included in pump column)
+Install worksheet (heat-pump scenario, net $16,500 after rebate):
+year | pump_cum_$ | furnace_cum_$
+0 | 16500 | 0
+1 | 17537 | 897
+2 | 18574 | 1794
+3 | 19611 | 2691
+year 4: pump 20648, furnace 3588 + $600 repair reserve -> 4188.
+comp: neighbor install $17,900 (same tonnage, 2025).
+year 6: pump 22722, furnace 5982.
+comp: neighbor install $19,200 (cold-climate model, 2024).
+year 8: pump 24796, furnace 7776.
+year 10: pump 26870, furnace 9570 + second repair reserve $600 -> 10170.
+Furnace-death curve (tech survey, 12-yr-old 80% unit):
+p(dead by yr 3) = 0.22; p(dead by yr 5) = 0.41; p(dead by yr 7) = 0.63.
+replacement then = $4,800 (model + install, today's quote, +3%/yr inflation).
+Rebate notes (one line each):
+$2,000 state rebate confirmed in writing, paid 6-8 weeks post-install.
+30% federal credit EXPIRED for this install class — do not count it.
+Two assumptions under test: gas escalation 4%/yr vs flat; COP 3.2 vs 2.6 in deep cold.
+Sensitivity rows (both must appear in your table as footnotes, not prose):
+gas +4%/yr: furnace year-10 cum rises to ~$11,900; breakeven moves 2 years earlier.
+COP 2.6 (deep-cold penalty): pump +$310/yr; breakeven moves 3 years later.
+Furnace-death kicker: if the furnace dies in year 5 ($4,800 x 1.03^5 = $5,565),
+add that row to the furnace column from year 5 on — state whether it flips your
+recommendation before or after the breakeven year.
+~400 words, no brand names, arithmetic must reconcile across the table.
