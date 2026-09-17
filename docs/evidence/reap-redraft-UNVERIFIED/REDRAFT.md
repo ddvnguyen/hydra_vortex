@@ -58,3 +58,14 @@ New L drafts sit at ~3.0–3.1k tok vs mates at ~2.5k tok → pair-length parity
 (a) accept asymmetry (L-tier moved to the -c 8192 regime; length-confound
 control now lives in analysis, not pairing); (b) stretch the 7 mates to match.
 Brief's 3–6k band was followed; flagging, not deciding.
+
+## Approval pins (leader, 2026-09-18)
+Directory renamed `reap-redraft-UNVERIFIED/` per architect hygiene ruling: the 8 .txt files carry NO in-content marker (contents are consumed verbatim as prompts; a header would corrupt them), so the path itself is the warning. These MUST NOT enter any collection until owner signs. Approved bytes pinned below; recompute after any trim/edit:
+  c13 0b9b519909c62b7f02dd20fd0e5361c2bc7dc75e25988858f569d20166699c1b
+  c16 8529ea86e9cba05bcbcadda863b346524a37224aceabcb59d1f33a56426159da
+  c17 efb4209fa25c52d1041aa3cca956d8ac17ff0ef389228f97b006a9eeb7093b7d
+  c19 75a5902282efe280d88fd511098b850ddba29f9c82b9e1957e74617cc5edd8b0
+  c20 f03f829e86a1820f018fd26312bff76067ed8500e52a24cedea16ac205c1d507
+  c21 406945a302cd831f4030b4ec6602121062ba2248a0c589aa825d4959d49b7658
+  g10 01807497bfb92f9cac285d0c931064a0ae4ff687f520c7cdd1645c6b23754d70
+  g15 98e1b4815bdf5b6def916fe4dfbfef9b842cadbbd6783b42821ac72e378e1174
