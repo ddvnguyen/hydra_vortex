@@ -1,0 +1,38 @@
+{
+ "mode": "hold-nothing (degenerate; pipeline check only)",
+ "K": 200,
+ "categories": [
+  "coding",
+  "general"
+ ],
+ "chance_pct": 50.0,
+ "trials": [
+  {
+   "category": "coding",
+   "held": 0,
+   "mode": "hold-nothing (degenerate; pipeline check only)",
+   "own_pct": 2.0206705729166665,
+   "best_other_pct": 0.0,
+   "win": "coding",
+   "hit": true,
+   "margins": {
+    "coding": 2.02,
+    "general": 0.0
+   }
+  },
+  {
+   "category": "general",
+   "held": 0,
+   "mode": "hold-nothing (degenerate; pipeline check only)",
+   "own_pct": 1.5616861979166667,
+   "best_other_pct": 0.0,
+   "win": "general",
+   "hit": true,
+   "margins": {
+    "coding": 0.0,
+    "general": 1.56
+   }
+  }
+ ],
+ "accuracy_pct": 100.0
+}
