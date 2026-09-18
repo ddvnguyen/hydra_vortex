@@ -469,3 +469,35 @@ QUEUE: 1) thread sweep t48+t40; 2) file D1-D4 (D1 first); 3) ARM 005 blocked pen
 design; 4) PR #134 review — note the hook is on the wrong dispatch branch (MMVQ vs MMQ) as headline finding.
 
 === END SECTION 19 ===
+
+=== SECTION 19 AMENDMENT: gh REMOTE TRAP (safety) + Gate A/B rule (architect verification pass, 2026-09-19 ~01:30 ICT) ===
+
+VERIFIED CLEAN: section 19 (c5e078d97) + all four defect issues confirmed on ddvnguyen/llama.cpp.
+Issue-number map: #135=D1 (gate cannot fail), #138=D2 (counter leak), #136=D3 (unlogged load failure),
+#137=D4 (26-min hang).
+
+THE TRAP (SAFETY, not convenience): in src/llama-cpp the git remotes are
+    origin     https://github.com/ggml-org/llama.cpp        <-- UPSTREAM, PUBLIC, NOT OURS (gh's default)
+    hydra-fork https://github.com/ddvnguyen/llama.cpp       <-- OURS
+    gs         https://github.com/GenerelSchwerz/llama.cpp  <-- third party
+gh DEFAULTS TO origin: any bare gh issue/pr command run inside the submodule silently resolves against
+PUBLIC UPSTREAM ggml-org/llama.cpp. The architect's verification queries hit ancient unrelated upstream
+issues three times before catching it. READS are merely wrong; a bare `gh issue create` or `gh pr comment`
+from that directory posts OUR internal defects, perf numbers, and fork internals to the PUBLIC tracker
+under the owner's account — irreversible, no confirmation step.
+
+STANDING RULE (enforce on EVERY worker, all gh verbs — create/comment/view/list — because the habit
+protects the writes): every gh invocation touching src/llama-cpp MUST pass --repo ddvnguyen/llama.cpp
+explicitly. Never rely on the default remote.
+AUDIT RESULT (lead, 2026-09-19): zero ddvnguyen artifacts found on ggml-org/llama.cpp (issues, PRs, and
+comment search all empty); every gh call issued by the leader this session carried explicit --repo.
+
+GATE A/B RULE (architect adoption + generalisation of the leader's engagement-counter rule):
+  A mechanism arm has TWO gates, and the engagement gate comes FIRST:
+    Gate A (engagement): did the mechanism actually execute? (mmid counters, fire counters, hit/miss non-zero)
+    Gate B (effect):     did it change the thing we care about?
+  A Gate-B number collected while Gate A is zero is not evidence in EITHER direction.
+  This single rule would have saved ARM 006, the fire=[0,1,1,1] episode, and the Stage-1 prefill campaign —
+  three separate cycles. It sits beside the gates-must-fail rule.
+
+=== END SECTION 19 AMENDMENT ===
