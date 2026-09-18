@@ -195,3 +195,91 @@ in hand from the sweep: 3.4GB as whole layers = 3.6 layers = +1.06 tok/s, vs ran
 same 3.4GB = +5.94 projected — 5.6x better VRAM efficiency, the phase's reason to exist.
 
 === END SECTION 16 ===
+
+=== SECTION 17: gather-MMVQ review + owner test set + new gates + PR (2026-09-18) ===
+
+STATE DIVERGENCE (architect re-read the tree; leader verified: `grep -c hydra
+llama-graph.cpp`=0, dual symbols gone from llama-context.cpp, `hydra_gather_mmvq` at
+ggml-cuda.cu:2046 hooked at :2220, diff vs 86af0c9af +535/-4 with +347 in ggml-cuda.cu).
+Builder did NOT implement the §16 miss-side remap; they deleted the dual path and built gather
+in MMVQ. Not reversed — MMVQ is the architecturally right place. Consequences:
+ (a) THE THREE §16 GATES ARE VOID — defined against code that no longer exists. Nothing is
+     currently pre-registered. New gates in §17c.
+ (b) The cheap premise test was SKIPPED — never confirmed that avoiding pinned fetches reduces
+     PCIe traffic. Comes back as ARM 006.
+
+--- §17a: CODE REVIEW OF hydra_gather_mmvq — 5 findings, each with a fix ---
+(Caveat: builder mid-edit; review structure, not polish.)
+
+FINDING 1 — CRITICAL, ARCHITECTURAL. Host readback + stream sync in the decode hot path.
+ggml-cuda.cu:2068-2070:
+    cudaMemcpyAsync(ids_host.data(), ids->data, ..., cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+Per site, per layer, per token: 3 sites x 48 layers = ~144 device->host round trips AND 144 full
+stream stalls per generated token. A stream sync CANNOT be captured in a CUDA graph — graphs
+measured at +9.6% / 1.259 tok/s, so with this structure the forfeit is GUARANTEED by construction,
+not likely. Also serializes every layer against the host, killing inter-layer overlap.
+FIX: never read ids to host. Upload `slot_of` (n_expert int32/layer/site, a few KB) to device ONCE
+at init, select the row address inside the kernel:
+    slot = slot_of_dev[expert_id];
+    row  = (slot >= 0) ? store_base + slot*row_bytes : host_base + expert_id*row_bytes;
+Per-row address selection, nothing more. No readback, no sync, no allocation, fully
+graph-capturable. This is the "per-expert pointer swap" — needs no gather/compaction at all.
+
+FINDING 2 — HOT-PATH MUTEX + MAP LOOKUP. ggml-cuda.cu:2002-2005, `hydra_store_for` takes
+`std::lock_guard<std::mutex>` + `std::map::find` on a composed int64 key, called from the gather
+path => ~144 mutex acquisitions + 144 RB-tree lookups per token.
+FIX: resolve every store ONCE at init into flat `store[il][site]`; hot path becomes an array index.
+The mutex guards lazy creation only — remove the laziness and the mutex goes with it.
+
+FINDING 3 — HEAP ALLOCATION PER CALL. `ids_host`, `compact_of(ne02,-1)`, `used` are per-call
+std::vectors => ~430 mallocs per token in the hot path. FIX: preallocated per-device scratch,
+sized once. Disappear entirely if Finding 1's fix lands.
+
+FINDING 4 — O(n_expert) WORK FOR k=10. `compact_of(ne02,-1)` builds/clears a 512-entry table per
+call to service 10 used experts. FIX: iterate the 10 used ids directly. Moot if Fix 1 lands.
+
+FINDING 5 — LATENT, CARRY FORWARD. The deleted graph path never applied the per-expert scale
+(`w_s`) the normal path applies. Our GGUF has no `ffn_*_exps.scale` so it never fired, but any
+model with them would be silently wrong with no error. The new path must apply `w_s` when present
+or assert loudly that it is absent.
+
+RANKING: Finding 1 is not a perf nit — it decides whether the phase can work at all. If the
+readback stays, expect AT or BELOW the 0.82x it replaces, uninterpretable. Fix 1 before measuring.
+
+--- §17b: NEW TEST SET (owner-handed) ---
+(Owner's original arm 002, `-ot` ranked experts, NOT CONSTRUCTIBLE — see §16.)
+ ARM 000  OFF, single-GPU            = 18.19 tok/s   HAVE
+ ARM 001  OFF, default split         = 14.39 tok/s   HAVE (topology finding, +26%)
+ ARM 002  OFF, single-GPU, graphs disabled = 13.13   HAVE — the DENOMINATOR for any implementation
+          that forfeits graph capture. Never compare a syncing build to 18.19.
+ ARM 003  NAIVE whole-layer residency sweep, 0/4/8 resident = 18.19/19.23/20.55, slope +0.295/layer.
+          HAVE.
+ ARM 004  VRAM-MATCHED NAIVE CONTROL — the real control arm. ~3.4GB (~3.6 layers), expect ~+1.06
+          tok/s. STOCK llama.cpp, no code. RUN THIS — the honest baseline ranked pinning must beat.
+ ARM 005  RANKED PINS at the same ~3.4GB, N=38. THE MISSING ARM. Projected +5.94 tok/s (5.6x VRAM
+          efficiency vs ARM 004). Requires a working mechanism.
+ ARM 006  TRAFFIC PREMISE, mechanism-independent. Instrument actual PCIe bytes/token (DCGM or
+          nvidia-smi dmon PCIe counters) at N=0 vs N=38 on whatever implementation is current. The
+          phase premise has NEVER been directly measured — only inferred from tok/s. Run even if 005
+          is blocked.
+ARM 004 and ARM 006 need no working mechanism and no approval. Run now; they make 005 interpretable.
+
+--- §17c: NEW GATES (replacing void §16 gates) ---
+ G1 GRAPH CAPTURE SURVIVES. Must not regress toward 13.13 (graphs-disabled). A per-layer sync fails
+    this by construction — check FIRST, cheapest.
+ G2 DISCRIMINATOR (unchanged in spirit): ARMED N=0 vs ARMED N=38 must DIVERGE, N=38 faster. Today
+    11.83 / 11.75 — indistinguishable, the old-defect fingerprint. Still identical => mechanism still
+    not reducing traffic; nothing else counts.
+ G3 CORRECTNESS. Pointer swap reads the SAME BYTES from a different address => KLD vs OFF ~zero,
+    PPL delta ~zero — unlike the dual's +1.37%. A dual-like PPL cost means the implementation does
+    more than swap addresses. Free correctness check; pre-registered.
+ G4 THROUGHPUT. Must beat ARM 000 = 18.19 (single-GPU OFF), not 14.39. And must beat ARM 004 —
+    beating OFF while losing to naive residency means the ranking added nothing.
+
+--- §17d: PR REQUEST (owner directive) ---
+Builder opens a PR for the current compact-gather work AS IT STANDS. Not gated — the PR is the review
+surface, not a completion claim. Draft/WIP title, `Closes` nothing, ARM 000-003 numbers in the body as
+measurement context (004 pending). Architect reviews on the PR with the five findings anchored to lines.
+
+=== END SECTION 17 ===
