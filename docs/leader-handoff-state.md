@@ -651,3 +651,75 @@ Uncomfortable note for the bank: a scheduler placing threads on E-cores was cost
 anything the MoE mechanism has yet delivered — found by sweeping a flag.
 
 === END SECTION 20b ===
+
+=== SECTION 20c: affinity-discriminator ruling — §20b root cause RETRACTED, bandwidth wall CONFIRMED, track scoring rule, D1 integrity gate + audit, reference-is-a-configuration, PRE-REGISTERED D/E/F (architect, 2026-09-19 ~02:50 ICT) ===
+
+SCORECARD: "A > C" FAILED (A 20.97 < C 23.94, unpinned +14.2% faster). "B ~= A at roughly half CPU%"
+MATCHED exactly (21.00 vs 20.97 = +0.14%; CPU 58.5%) — the branch the architect registered as costly
+paid off.
+
+§20b ROOT CAUSE RETRACTED BY ITS AUTHOR: the E-core barrier-drag mechanism is REFUTED — leg C is
+unpinned (HAS E-core participation) and is the FASTEST leg. The t16 = P-core-logical-count match was a
+NUMERICAL COINCIDENCE; a mechanism was built on it and banked as root cause after a single lscpu.
+Third instance of the same error shape (zero-width band; t48-sensitivity; now E-core drag): A COINCIDENCE
+THAT FITS IS A HYPOTHESIS, NOT A FINDING — it needed the test before the bank. REPLACEMENT: plain
+oversubscription (20 logical CPUs; t24/t32 exceed). CONSEQUENCE: t16-t24 never measured — the true peak
+may sit near t20 and §20b's "plateau" may be a sampling artifact.
+
+§20.2 BANDWIDTH REFINEMENT CONFIRMED on direct evidence, three signatures from clean legs:
+1. SMT buys nothing: 8->16 threads on the SAME 8 physical cores = +0.14% throughput for +71% CPU.
+2. Threads stall on memory: leg B = 8 threads on 8 EXCLUSIVE physical cores at 382% CPU = 47.7%
+   utilisation — threads idle 52% while holding dedicated cores: memory-starved, not compute-starved.
+3. Throughput tracks DISTINCT PHYSICAL CORES, not thread count/clock: B (8 phys) 21.00 vs C (up to 12
+   phys incl. 3.9 GHz E-cores) 23.94. More cores = more outstanding memory requests = more aggregate
+   bandwidth. Pinning to 8 P-cores CAPPED memory-level parallelism — why A lost to C.
+WALL ON THIS RIG = RAM BANDWIDTH. Both halves banked: the §20b MECHANISM was wrong AND the §20.2 CLAIM
+was right — the confirmation does not launder the retraction.
+
+CONTROLLING FACT + TRACK SCORING RULE (banked): at the best config the machine is idle on BOTH sides
+(GPU ~65-70% idle, sm 30-36 everywhere; CPU threads stalled ~52%). Neither processor is the constraint;
+BYTES PER TOKEN OFF SYSTEM RAM is the constraint. Every future proposal is scored FIRST by: does it
+reduce bytes read from system RAM per token? Expert residency does (measures positive); thread tuning
+does not (saturates).
+
+DATA QUALITY:
+D1 GATE (mandatory): the 41.81 leg with EMPTY sampler files is INVALID BY CONSTRUCTION, not a flake —
+the harness emitted a plausible tok/s for a run that generated nothing. GATE: every leg must assert
+non-empty sampler output AND token count matching the requested decode length; a leg failing the
+assertion is VOID MECHANICALLY, never by someone noticing it looked odd.
+D1 AUDIT RESULT (lead, 2026-09-19): ALL banked decode-throughput numbers on this track (ARM 003/004
+era, both thread sweeps, the discriminator's trusted legs) were taken WITHOUT the mechanical assertion.
+Mitigating corroboration, post-hoc only: builder-reported sample counts n>0 on all trusted legs,
+replicate agreement (17.97/18.13 discriminator vs sweep), three-way residency agreement (0.289/0.295/
+0.278), prefill consistency. The 41.81 leg PROVES the hole is live — caught by replication, not by a
+gate. The baseline N=36/42 empty-output (sha256("")) was the same class, caught post-hoc.
+D2 GUARD: unique port per leg + assert the serving PID is the one this leg started, before measurement.
+D3: prefill identical 38.6-38.7s across clean legs = genuine comparability check; keep reporting it.
+
+C DRIFT RULING: 23.94 vs 23.00 = +4.1% against the ~2.4% same-binary variance rule -> C did NOT
+reproduce 23.00; the rule is NOT softened ("that is how rules die"). GENERALISATION: THE REFERENCE IS A
+CONFIGURATION, NEVER A STORED SCALAR — the ARM 005 reference is "t40, unpinned, -t 16", NOT 23.00 and
+NOT 23.94; every arm measures its own same-session control in that configuration and is judged against
+THAT. Re-anchor answer: the reference does NOT move to 23.94; it stops being a number at all.
+
+ARM 005: direction validated (bandwidth wall confirmed -> expert residency relieves the binding
+constraint), number NOT revised upward — the architect declines to cash their own §20b conditional
+(cashing it would be the §20.4 flattery): the 0.1975 tok/s/layer empirical figure already CONTAINS
+whatever bandwidth relief VRAM residency provides. Ceiling vs an unpinned-t16 same-session control:
+40 x 0.1975 x 0.4207 = +3.32 -> ~1.14x, unchanged. Demonstrated mechanism overhead 0.82x.
+ARM 005 stays BLOCKED, not killed; 1.14x does not buy a build slot.
+
+PRE-REGISTERED D/E/F (banked BEFORE dispatch):
+  D) taskset -c 0,2,4,6,8,10,12,14,16,17,18,19 + -t 12   (all 12 PHYSICAL cores, one thread each)
+  E) unpinned -t 20
+  F) unpinned -t 18
+  All t40, fresh server per leg, UNIQUE PORT, D1 sampler-assertion ON, report tok/s + CPU% + GPU sm%
+  + prefill. PREDICTIONS (held to them):
+   - E or F beats C — true peak expected in the 18-20 range, not 16.
+   - D lands within ~3% of C at MUCH lower CPU% (~600% vs 784%): same 12 physical cores, no SMT
+     redundancy. If D matches C, D is the SHIP config (same throughput, far lower CPU, headroom for
+     coordinator + Store).
+   - If D is materially BELOW C, SMT contributes after all and signature (1) is weaker than claimed —
+     the reachable failure mode for this ruling's central claim.
+
+=== END SECTION 20c ===
