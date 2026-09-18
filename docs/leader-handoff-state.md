@@ -283,3 +283,29 @@ surface, not a completion claim. Draft/WIP title, `Closes` nothing, ARM 000-003 
 measurement context (004 pending). Architect reviews on the PR with the five findings anchored to lines.
 
 === END SECTION 17 ===
+
+=== SECTION 17e AMENDMENT: ARM 006 replaced by 006' (architect refinement, 2026-09-18) ===
+
+PROBLEM: ARM 006 as written (PCIe bytes/token N=0 vs N=38 on the current gather code) measures a
+mechanism about to be deleted by Finding 1's fix. A null would be ambiguous between "premise false"
+and "this implementation broken" — the confound that already cost two cycles.
+
+ARM 006' — PREMISE TEST WITH ZERO CUSTOM CODE. PCIe bytes/token across the EXISTING residency
+sweep: 0, 4, 8 resident layers (ARM 003 config, already run, already validated, stock llama.cpp).
+No hydra code in the loop. Making a layer resident provably removes its fetches, so a null result
+can ONLY mean the premise is false — no confound. Uses a trusted arm with a known tok/s curve
+(18.19/19.23/20.55) to correlate against.
+DELIVERABLE: the constant BYTES PER EXPERT-FETCH. With it, h converts directly into predicted bytes
+saved — prices any future mechanism on paper BEFORE building. Would have rejected the dual on paper.
+READ: bytes/token falls ~linearly (~1/48 expert traffic per layer) => premise CONFIRMED, ARM 005
+becomes predictable. Bytes/token does NOT fall => premise false, PCIe is not where time goes, phase
+dies on evidence for one instrumented sweep + zero code. Worth having either way.
+TOOLING: DCGM `dcgmi dmon -e 1009,1010` or `nvidia-smi dmon -s t`, whichever installed — install nothing.
+Sample over fixed token count, normalize.
+
+ARM 006 (N=0 vs N=38 on the real mechanism) RE-QUEUED to AFTER Finding 1's fix lands — there it
+becomes the direct confirmation the new implementation reduces traffic (what G2 really asks).
+
+REVISED ORDER: PR, then ARM 004 + ARM 006' (both stock, both unblocked, neither gated by PR or Fix 1).
+
+=== END SECTION 17e ===
