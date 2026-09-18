@@ -1,11 +1,11 @@
 Leader: 623a1037 (contract 2.2.0, turn 763). Track t-d1cf43b723. Heartbeats 1c341235 / da515775 / bddc897a. Daemons 53.
 
-1. KLD GATE (d-1190aaa96d): band BLOCKED until null_2 lands. null_1 = A vs A' same-binary (mean 1e-6 / 99th 4.3e-5 / median 0) = SANITY REFERENCE ONLY. null_2 = A vs A_armed_N0 (apparatus armed, admits nothing) = BAND-SETTING null. Candidate = A vs A_armed_N38, scored vs null_2. Binding = median + 99th-pct KLD. PASS = candidate ladder within null_2 ladder, Same-top-p at null level.
+1. KLD GATE (d-1190aaa96d, CORRECTED d-28dbb797c2): band BLOCKED until null_2 lands. null_1 = A vs A' same-binary (mean 1e-6 / 99th 4.3e-5 / median 0) = SANITY REFERENCE ONLY. null_2 = A_armed_N0 vs A_armed_N0' (ARMED cross-session, min 3 pairs / 6 runs) = BAND-SETTING null. A vs A_armed_N0 = null_3 DIAGNOSTIC (arming cost), NOT band-setting. Candidate = A_armed_N38 vs A_armed_N0, scored vs null_2. Binding = KLD-within-null (median + 99th-pct); empirical bar + VOID guard per d-28dbb797c2. Token-sig/PPL = screens only (match informative, mismatch uninformative cross-session).
 2. ROUND 1 (d-26bf3151fd): subject-pooled pins + SESSION-WARM runtime refresh. Per-layer N = free rider (+0.004), NOT a round.
 3. STOP RULE: round-1 measured h < 0.24 -> KILL.
 4. ITEM-2 CLOSED (d-13f73643e3): pin set bad, instrument sound (79σ: 0.1408 vs 0.074 chance), no escalation. SUPERSEDED CLAIM — "all admission sites LIVE" STRUCK by site-0 discriminator (see 12a): site 1/4 is STRUCTURALLY DARK (expected-dark, GGUF has separate gate/up tensors so `if (gate_up_exps)` block is skipped). ITERATE pricing stands on measured h (S(0.40)=1.097).
 5. PREFILL RANKING DEAD (measured, 13/57 positive, median = breakeven). Never re-open on Phase-1b length curve.
-6. STATIC CEILING: S 1.085 (subject-pooled + per-layer N) vs SHIP 1.10. Nothing static ships (need h >= 0.405 > static self-heldout 0.3869).
+6. STATIC CEILING: S 1.085 (subject-pooled + per-layer N) vs SHIP 1.10. Nothing static ships (need h >= 0.405 > static self-heldout 0.3869). CONFIRMED ON CLEAN DATA d-28dbb797c2: templated-only ceiling S 1.090 vs SHIP 1.10 — still no-ship, now on trustworthy cohort. CAVEAT: h@42 ~0.41 reference built on 3 BARE-TEXT v1 traces — soft in the inflating direction (+0.009 matched / +0.038 within-cohort); reinforces, does not change, the conclusion. M-tier bare-text tails carry the same bounded caveat; never pool cohorts silently — cohort is a reported dimension.
 7. IN-FLIGHT: KL base save chunks-10 + null x3 (job f05da0172f0e, serial rig); exact-trace closeout (one GPU capture leg) queued behind KL series; L-tier route-trace at -c 8192 (d-799f313d83), serial with KL work. Next: spread + pre-registered band on KLD-SERIES-DONE (only after null_2).
 8. REFS: hydra_vortex#772; /tmp/opencode/{perlayer_n,prefill_score,prefill_rank_poc}.py; DESIGN.md closure row (builder); tasks cf7962562f 75% / 4e0493edd2 50%.
 
@@ -49,3 +49,149 @@ Gated: T-3/T-4/T-5/T-6, S132-2, Phase-1 20f123462f. Blocked: bd5b174a4d (owner p
    13e. ACCEPTANCE: OFF byte-identical; ON identical by construction; expect 51%->FP floor. FAILURE PRE-REGISTERED: >10% under forced sequence = genuinely nondeterministic routing, ESCALATE, undermines all h. Force-file sha256 in sidecar (9f/11c).
    13f. WORKFLOW: 3060 free-run with LLAMA_ROUTE_TOKENS emits reference continuation; replay exact file on both GPUs with LLAMA_ROUTE_FORCE. Builder implements after step 2.
 14. DRAFT HYGIENE (architect ruling, 2026-09-18): 8 v2 re-author prompts in docs/evidence/reap-redraft-UNVERIFIED/ are UNVERIFIED (owner review + pair-parity pending) — path name is the warning since .txt contents are consumed verbatim and carry no marker. MUST NOT enter any collection until signed. Approval bytes sha256-pinned in REDRAFT.md "Approval pins". Standing generalisation: a receipt is not durability, and a path is not provenance — committed, marked, read back.
+
+=== SECTION 15: cross-session bar + bare-text blast radius (HISTORICAL — Stage-1 closed NO-SHIP; see §16) ===
+
+ITEM 1 — CROSS-SESSION BAR, pre-registration authorized, with a correction to the architect's own null_2.
+
+The architect's original null_2 (A vs A_armed_N0) was the WRONG COMPARISON for band-setting: it
+measures the COST OF ARMING, while the candidate comparison is armed-vs-armed-with-different-N.
+Scoring the candidate against an OFF-vs-ARMED band conflates arming cost with session noise.
+Builder's armed-vs-armed proposal is correct and better. Corrected ladder:
+
+  null_1 = A vs A'                       OFF, cross-session     -> sanity reference only
+  null_2 = A_armed_N0 vs A_armed_N0'     ARMED, cross-session   -> BAND-SETTING
+  null_3 = A vs A_armed_N0               OFF vs ARMED-inert     -> DIAGNOSTIC (arming cost), NOT band-setting
+  cand   = A_armed_N38 vs A_armed_N0     scored against null_2
+
+Minimum 3 control PAIRS for null_2 (6 runs). A floor from one pair is not a floor.
+
+KLD is the binding cross-session comparison; token-sig/PPL are downgraded to screens.
+
+TOLERANCE deliberately NOT stated as a number — the bar is EMPIRICAL, derived from null_2's measured
+ladder. Inventing a threshold ahead of the controls is the error this track has been avoiding.
+Pre-registered DECISION RULE instead:
+  PASS = candidate median KLD <= max(control medians) AND candidate 99th <= max(control 99ths)
+         AND Same-top-p >= min(control Same-top-p)
+  FAIL = exceeds at either percentile -> ESCALATE, never average
+  VOID = controls disagree wildly among themselves (e.g. control 99ths spanning >10x) -> instrument
+         too noisy to adjudicate; fix the rig, do not run the candidate.
+
+SCREENS ARE ASYMMETRIC:
+  token-sig/PPL MATCH cross-session -> strongly informative POSITIVE
+  token-sig/PPL MISMATCH            -> UNINFORMATIVE, expected; the void sha-gate already proved
+                                       cross-session trajectories diverge. NOT a defect, do not escalate.
+
+TILE MATH: banked QK8_1=32, QK8_1_MMQ=128, but edge chosen at 64. Either justify 64 from the kernel
+(e.g. 128-wide tile split across two 64-wide warp halves — plausible, but state it) or also test
+{127,128,129}. Rows {630,640,650} inherit the same question. N-dim excluded per owner park: CONFIRMED,
+state explicitly rather than skipping silently.
+
+[OUTCOME: builder could not justify 64 from the kernel; added {127,128,129} + parity straddle {13,51,64}.
+Campaign ran. Control band came back ZERO-WIDTH (6/6 legs bit-identical), which DEGENERATES this decision
+rule — "any nonzero delta fails" would KILL on +0.000269. The architect's VOID guard covered controls that
+were too WIDE and never anticipated the degenerate-tight case. Band declared VOID; candidate adjudicated
+on external references instead. This is a standing lesson: pre-registered band rules need a floor-degeneracy
+clause, not only a noise-ceiling clause.]
+
+ITEM 2 — BARE-TEXT / EOS BLAST RADIUS.
+
+Diagnosis CONFIRMED from source: route-trace.cpp:125 calls common_tokenize(ctx, params.prompt, true, true)
+and never applies the GGUF chat template. Bare text into a chat-templated instruct model — framing error
+by absence.
+
+THE COLLECTOR UNDER-SCOPED IT. The 8 SHORTs are the visible symptom, not the population. All 24 v2 traces
+AND the 3 v1 traces got bare-text prefill — identical framing error. The 8 are merely where it manifested
+as immediate EOS; the other 16 generated something, but from out-of-distribution input.
+
+MEASURED, because the architect's own numbers were exposed (N sweep, prefill POC, per-layer-N and the
+static-ceiling ruling all used 57 traces = 27 bare-text + 30 templated). Recomputed v4-only (30 templated):
+  h_global   0.3363 -> 0.3251   S 1.057 -> 1.050
+  h_subject  0.3787 -> 0.3891   S 1.083 -> 1.090
+  h_oracle   0.4984 -> 0.4880   S 1.165 -> 1.158
+Cohort differential on same pooled pin set: v2 0.3424 vs v4 0.3336 = +0.009. Within-cohort LOSO:
+v2 0.3631 vs v4 0.3251 = +0.038. Direction is INFLATION (degenerate tails concentrate routing).
+
+CONCLUSIONS ALL SURVIVE. Static ceiling on templated-only data = S 1.090 vs SHIP 1.10 — still does not
+ship, now established on the trustworthy cohort. h_subject IMPROVED on clean data (v4 is session-structured
+with real subjects; bare-text v2 diluted the subject signal).
+
+ANSWERS: (a) M-tier tails DO carry an EOS caveat into every h built on them, now BOUNDED at +0.009 matched
+/ +0.038 within-cohort, always inflating. (b) Banked S-spike numbers (replayed v4 traces) CONFIRMED
+UNAFFECTED. Also: phase0-rank and hprefill were built on the 3 v1 traces, which are ALSO bare-text; their
+h@42 ~0.41 reference (handoff §6) is soft in the same inflating direction — reinforces §6, does not change it.
+
+RECOMMENDATION TO OWNER: (a) EXTENDED. Collect the 8 v4-style as a separate arm, AND relabel the entire
+v2+v1 cohort as BARE-TEXT with cohort as a REPORTED DIMENSION on every future h number. The defect is not
+the 8 prompts, it is that two incompatible framings were pooled invisibly. REJECT (b) prefill-only banking
+— doubly compromised (bare-text AND prefill-only) and prefill ranking is already dead at 13/57. (c) holding
+at 36/44 is INSUFFICIENT ALONE — does nothing about the 16 non-SHORT bare-text traces already in the corpus.
+
+DEGENERACY SCORING NOT AVAILABLE: v2 .log files contain only the routing-rows summary line, no decoded text.
+Post-hoc n-gram-diversity truncation of garbage tails is impossible from existing artifacts. Future
+collection MUST persist decoded text — add to collector spec.
+
+[STATUS: owner ruling on (a)/(b)/(c) still PENDING as of §16. NO-SHIP took the corpus off the critical path —
+nothing downstream consumes traces until the miss-side remap / pointer-swap mechanism works.]
+
+=== END SECTION 15 ===
+
+=== SECTION 16: miss-side remap resequence (supersedes compact-gather ordering) ===
+
+DEFECT, located. src/llama-cpp/src/llama-graph.cpp:1601-1626, build_hydra_mm_id:
+  ids_hit = ggml_get_rows(ctx0, dt.slot_of, ids);        // hit side HAS a remap
+  o_hit   = ggml_mul_mat_id(ctx0, dt.store, cur, ids_hit);
+  o_miss  = ggml_mul_mat_id(ctx0, w, cur, ids);          // RAW ids — NO REMAP
+  return ggml_add(ggml_mul(o_hit,m_hit), ggml_mul(o_miss,m_miss));
+o_miss runs the unmodified full id set, so it fetches all 10 selected experts from the
+CUDA_Host tensor INCLUDING every pinned one; the mask discards them only after they have
+crossed PCIe. Pinning adds a VRAM matmul and removes ZERO host traffic. h is real but
+counts which path's answer was kept, not which fetch was avoided. Complete explanation of
+0.82x and of N=0 (11.83) ≈ N=38 (11.75).
+
+FIX. Mirror the remap onto the miss side. In hydra_dual_init (llama-context.cpp, the loop
+that already fills slot_of/p_hit/p_miss, ~line 2588):
+  miss_of[e] = (slot_of[e] >= 0) ? 0 : e     // pinned -> shared sentinel row; unpinned -> itself
+Add miss_of to struct hydra_dual_tensors (llama-graph.h:38) and hydra_dual_layer
+(llama-context.cpp:2442); allocate in the same CPU buffer as slot_of; populate same pass.
+Then in build_hydra_mm_id:
+  ids_miss = ggml_reshape_2d(ctx0, ggml_get_rows(ctx0, dt.miss_of, ids), ids->ne[0], ids->ne[1]);
+  o_miss   = ggml_mul_mat_id(ctx0, w, cur, ids_miss);
+Output unchanged — m_miss already zeroes every pinned lane. The h·k pinned lanes now read
+ONE identical host address, collapsing in L2 after the first fetch. Host traffic drops ~h.
+
+WHY BEFORE COMPACT-GATHER. No kernel work, no .cu touch, no MMVQ/MMQ plumbing, no CUDA-graph
+loss (measured +9.6% / 1.259 tok/s, which compact-gather likely forfeits). Does NOT remove the
+doubled compute (o_hit still runs) so expect ~1.1-1.2x, not the 1.33x ceiling — that is the
+point: it buys a MEASUREMENT of whether traffic falls with h for an afternoon instead of 200
+lines, and de-risks the pilot. If traffic does not drop ~42%, the premise is wrong deeper and
+compact-gather would have built on a false floor.
+
+GATES (pre-registered):
+ 1. KLD vs OFF no worse than current armed-N38 leg (mean 0.089763). Identity-preserving change;
+    a regression means the remap is wrong.
+ 2. Decode tok/s above the 0.82x floor. Target band 1.05-1.25x on the single-GPU 18.19 baseline.
+ 3. DISCRIMINATOR: re-run ARMED N=0 vs N=38. Today identical (11.83 / 11.75). After the fix they
+    MUST diverge with N=38 faster. Still identical => remap did not take effect and nothing else
+    in the result is trustworthy.
+
+ARCHITECT'S STATED ASSUMPTION: the trick rests on repeated reads of one host address collapsing
+to a single PCIe transfer via L2. Expected behavior, NOT verified. Gate 3 tests it directly; if
+N=0 and N=38 stay identical that assumption is where it failed — itself worth knowing before
+compact-gather.
+
+SEQUENCE: (1) miss-side remap + 3 gates. (2) Land topology finding — single-GPU 18.19 vs split
+14.39 = +26% for a config change, zero code, larger than Phase B's net; every Phase-B number must
+be measured against the fast baseline or it is flattered by 26%. (3) Re-decide compact-gather
+against a measured number, not the architect's extrapolation.
+
+-ot CANNOT EXPRESS EXPERT-LEVEL RANKING (bank this, it is load-bearing). Expert weights are ONE
+3D tensor per layer per site, {n_embd, n_ff, n_expert} (llama-model.cpp:3246-3247), so -ot name
+matching can only move whole layers. Across layers fetch volume is flat (same top-k every layer)
+=> ranking layers buys nothing. The skew that makes ranking valuable — 7.4% of experts absorbing
+42% of fetches — lives strictly INSIDE a layer. That asymmetry is the entire justification for
+custom code and is why a stock-`-ot` arm is not constructible. The naive control arm is already
+in hand from the sweep: 3.4GB as whole layers = 3.6 layers = +1.06 tok/s, vs ranked pins at the
+same 3.4GB = +5.94 projected — 5.6x better VRAM efficiency, the phase's reason to exist.
+
+=== END SECTION 16 ===
