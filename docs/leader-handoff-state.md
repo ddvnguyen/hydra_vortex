@@ -368,7 +368,7 @@ STANDING RULES ADOPTED (architect, banked as rules not caveats):
 
 === END SECTION 18 ===
 
-=== SECTION 18 AMENDMENT: RULING — CPU-BOUND CONFIRMED; thesis corrected; ARM 006 reversed to RUN (architect, 2026-09-19 ~00:20 ICT) ===
+=== SECTION 18 AMENDMENT: RULING — CPU-BOUND CONFIRMED; thesis corrected; ARM 006 reversed to RUN [VOIDED in §19] (architect, 2026-09-19 ~00:20 ICT) ===
 
 DISCRIMINATOR VERDICT (builder raw: t48 CPU 439/449 GPU 26.6% 17.97 t/s; t40 CPU 404/430 GPU 34.8% 20.19 t/s):
 Decisive numbers are the UTILIZATION LEVELS, not the delta:
@@ -502,7 +502,7 @@ GATE A/B RULE (architect adoption + generalisation of the leader's engagement-co
 
 === END SECTION 19 AMENDMENT ===
 
-=== SECTION 20: thread sweep ruling — CPU-bound confirmed, bandwidth refinement, UNTUNED BASELINE finding (architect, 2026-09-19 ~01:45 ICT) ===
+=== SECTION 20: thread sweep ruling — CPU-bound confirmed, bandwidth refinement [RETRACTED in §20d — status UNPROVEN], UNTUNED BASELINE finding (architect, 2026-09-19 ~01:45 ICT) ===
 
 1. PRE-REGISTERED CALL: CPU-BOUND CONFIRMED. "NOT CPU-bound => flat" branch dead: t2->t12 t48 +75%, t40 +74%.
    §18 holds; ARM 005 rationale survives.
@@ -586,7 +586,7 @@ reference underneath the measurement. One rig run, then land both together and r
 
 === END SECTION 20a ===
 
-=== SECTION 20b: extended-sweep ruling + ROOT CAUSE (hybrid P/E scheduler) + ARM 005 re-price + PRE-REGISTERED affinity discriminator (architect, 2026-09-19 ~02:10 ICT) ===
+=== SECTION 20b: extended-sweep ruling + ROOT CAUSE (hybrid P/E scheduler) [RETRACTED in §20c] + ARM 005 re-price + PRE-REGISTERED affinity discriminator (architect, 2026-09-19 ~02:10 ICT) ===
 
 P3 GPU SM%: PROCEED branch. 33.1 (t48/t16) / 35.3 (t40/t16) at peak — GPU ~65% idle at best stock config;
 structural, not a threading artifact. Modestly above the registered "~30" — noted, not material.
@@ -652,7 +652,7 @@ anything the MoE mechanism has yet delivered — found by sweeping a flag.
 
 === END SECTION 20b ===
 
-=== SECTION 20c: affinity-discriminator ruling — §20b root cause RETRACTED, bandwidth wall CONFIRMED, track scoring rule, D1 integrity gate + audit, reference-is-a-configuration, PRE-REGISTERED D/E/F (architect, 2026-09-19 ~02:50 ICT) ===
+=== SECTION 20c: affinity-discriminator ruling — §20b root cause RETRACTED, bandwidth wall CONFIRMED [RETRACTED in §20d — status UNPROVEN], track scoring rule [STRUCK in §20d], D1 integrity gate + audit, reference-is-a-configuration, PRE-REGISTERED D/E/F (architect, 2026-09-19 ~02:50 ICT) ===
 
 SCORECARD: "A > C" FAILED (A 20.97 < C 23.94, unpinned +14.2% faster). "B ~= A at roughly half CPU%"
 MATCHED exactly (21.00 vs 20.97 = +0.14%; CPU 58.5%) — the branch the architect registered as costly
@@ -802,3 +802,21 @@ FOR THE OWNER: best stock ~23.99 vs default split 14.39 = 1.67x — unchanged in
 located. Zero code, unclaimed, owner's call.
 
 === END SECTION 20d ===
+
+=== STANDING RULE: header retraction stamps (architect directive, 2026-09-19 ~03:45 ICT) ===
+When a section retracts, voids, or strikes an EARLIER section's conclusion, the retracting commit MUST
+also stamp the retracted section's HEADER in place with "[RETRACTED in §NN]" / "[VOIDED in §NN]" /
+"[STRUCK in §NN]". Bodies are NEVER rewritten — the original reasoning stays exactly as banked, errors
+included; only headers carry the marker. A retraction that lives only in the newer section is not a
+retraction; it is a contradiction the reader has to discover. Rationale: this file is the handoff
+artifact someone will GREP, not read — a header advertising a dead conclusion as CONFIRMED is the most
+expensive kind of stale state.
+Retroactive audit result (same commit): stamped §18 AMENDMENT (ARM 006 -> [VOIDED in §19]), §20
+(bandwidth refinement -> [RETRACTED in §20d — status UNPROVEN]), §20b (P/E root cause -> [RETRACTED in
+§20c]), §20c (bandwidth wall -> [RETRACTED in §20d — status UNPROVEN]; scoring rule -> [STRUCK in §20d]).
+NOT stamped, with reasons: §18 "REFUTES the weight-streaming premise" (never explicitly retracted by a
+later section — the thesis correction amended the mechanism account, not the refutation); the struck
+baseline data (§19) and the zero-width control band (§20a rationale) never lived in section headers —
+they are body-level corrections already carried by their superseding sections; §16 and §15 already carry
+their own supersession markers.
+=== END STANDING RULE ===
