@@ -309,3 +309,14 @@ becomes the direct confirmation the new implementation reduces traffic (what G2 
 REVISED ORDER: PR, then ARM 004 + ARM 006' (both stock, both unblocked, neither gated by PR or Fix 1).
 
 === END SECTION 17e ===
+
+=== SECTION 17f: corrected read-disagreement rule (architect correction, 2026-09-18) ===
+
+Supersedes the §17-era "quote the sha" shorthand. The 17e false-miss was a TIMING RACE, not a stale
+checkout: da2789a5f stamped 2026-09-18T22:44:57, architect's grep ran seconds before. Same worktree,
+same branch — absence at T is not absence at T+30s.
+RULE: when two sides' reads disagree, quote the sha AND the commit timestamp. The timestamp is what
+distinguishes "never written" from "written after you looked." Do not downgrade to a sync problem, and
+do not discount file verifications on a false miss — they caught the real lost banks (§12, §15).
+
+=== END SECTION 17f ===
