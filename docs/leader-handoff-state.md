@@ -820,3 +820,68 @@ baseline data (§19) and the zero-width control band (§20a rationale) never liv
 they are body-level corrections already carried by their superseding sections; §16 and §15 already carry
 their own supersession markers.
 === END STANDING RULE ===
+
+=== SECTION 20e: H/I/J ruling — SPARE-CAPACITY EFFECT graduates to banked finding, MECHANISM stays hypothesis; effect/mechanism standing rule; J recorded not chased; O1/O2; n-cpu-moe sweep PROPOSED-NOT-SCHEDULED (architect, 2026-09-19 ~04:20 ICT) ===
+
+SCORECARD: 1 hit / 1 miss / 1 near. H ~= 24 MATCHED (23.89 — pinning innocent). I 22-23 MISSED (23.82,
+above band — failed in the direction that helps the architect, recorded as a miss not a win: their model
+said physical core count would contribute; it contributes essentially nothing). J ~= 23.5 NEAR (22.91,
+-4.2% under the 2+-spare mean, outside the 2.4% variance rule).
+
+WHAT GRADUATES — THE EFFECT, as a banked finding:
+  On this rig, decode throughput drops ~15% when the compute thread count consumes every logical CPU
+  available to the process; leaving >=2 logical CPUs unoccupied by compute threads recovers it; beyond
+  2 spare there is no further gain.
+  Evidence order: (1) CONTROLLED SINGLE-VARIABLE PAIR — A vs I share the SAME mask (taskset 0-15),
+  same hardware/flags; only 16 vs 14 threads: 20.97 -> 23.82, +13.6%. Cleanest evidence in the dataset;
+  it did not exist before the hypothesis was tested. (2) PRE-REGISTERED DECISIVE CONTROL that could have
+  killed it — H (pinned AND spare) came back 23.89 against a written kill condition. (3) CONFOUND-
+  BREAKING BY DESIGN — I breaks core count: 8 P-cores with 2 spare = 23.82 vs full machine 23.94 (0.5%);
+  pinning, SMT, physical core count all excluded. (4) NINE LEGS MONOTONE IN SPARE: 0 -> mean 20.76;
+  1 -> 22.91; 2+ -> mean 23.91; ratio 1.152, no overlap. Graduates prospectively, not post hoc — the
+  standard set after the two retractions, and the reason it graduates where the E-core story did not.
+
+WHAT DOES NOT GRADUATE — THE MECHANISM, stays a HYPOTHESIS, status OPEN:
+  "CUDA submission thread / server / sampler need CPU" is an INFERENCE; nothing in the nine legs measured
+  which threads want the CPU or why. Plausible, predicts nothing tested, barred from load-bearing use.
+  STANDING RULE (the correction for both retractions — the effect survived twice while the mechanism
+  died twice): EFFECT AND MECHANISM GRADUATE SEPARATELY, AND THE EFFECT NEVER CARRIES THE MECHANISM IN
+  WITH IT.
+
+J / GRADED CLIFF — recorded, NOT chased: 22.91 at 1 spare is genuinely intermediate (+9.1% over best
+0-spare, -4.2% under 2+ mean, both outside variance) — transition is GRADED, not a step at 2. The
+architect DECLINES another 1-spare leg: no decision hangs on it (curve saturates at 2 spare: 2 -> 23.99,
+4 -> 23.94, tied); rig time is the owner's. J marked as a SINGLE UNREPLICATED OBSERVATION. Note for
+later: if mechanism work ever resumes, stepped-vs-graded discriminates "exactly N helper threads" from
+"proportional contention" — that is the reason someone might want the replicate.
+
+OPERATIONAL — unchanged, better supported: SHIP -t 16 UNPINNED (4 spare). t18 ties (23.99) but sits one
+step from the cliff; t16 keeps margin. Do NOT pin — pinning buys nothing (H) and adds a way to get it
+wrong. Reference stays a CONFIGURATION per §20c.
+
+OBSERVATIONS ON RECORD (both from raw data, neither a finding):
+O1. Prefill = 39s on ALL NINE legs — 8 to 20 threads, pinned and unpinned, invariant. In a t40 config,
+    40 layers of expert FFN run on the CPU during prefill too, so a CPU-sensitive prefill should have
+    moved. It did not move at all: either prefill is dominated by something non-CPU, or "prefill"
+    includes a large fixed cost (model load/warmup) that swamps it. INSTRUMENT QUESTION — before anyone
+    optimises prefill, confirm what the 39s actually measures.
+O2. GPU sm% 35-37 across all nine legs regardless of configuration — structural idle is completely
+    insensitive to everything tuned. That is the ARM 005 premise, intact, and now the ONLY thing the
+    arm rests on (the bandwidth argument is retracted).
+
+NEXT — PROPOSED-NOT-SCHEDULED (owner's call on rig time; the architect is NOT scheduling it):
+  n-cpu-moe RESIDENCY SWEEP at the best thread config: --n-cpu-moe 48 / 44 / 40 / 36 / 32 / lowest that
+  fits VRAM, all at -t 16 unpinned, fresh server, unique port, D1+D2 gates on; report tok/s + CPU% +
+  GPU sm% + VRAM headroom + prefill. Pays twice: (a) possible free throughput (if per-layer holds ~0.2
+  and 16 resident fits: another ~+1.6 for a flag); (b) DIRECT measurement of the residency curve that
+  ARM 005's price (0.1975/layer, 40-layer linear extrapolation, 1.14x) is extrapolated from — currently
+  a TWO-POINT line (t48/t40), an extrapolation the architect flagged as dubious when first drawn.
+  PRE-REGISTRATION DRAFT (NOT ACTIVE — re-stamp at dispatch time if the owner approves):
+   - Predicts per-layer gain stays roughly constant (0.15-0.25 tok/s/layer) until VRAM binds.
+   - SUBLINEAR (flattening as more layers land on GPU) => ARM 005's 1.14x is an OVERESTIMATE => arm
+     KILLED, not merely blocked.
+   - SUPERLINEAR => arm worth more than 1.14x; architect will say so.
+   - Either way: cheapest possible test of a number quoted for four rounds.
+  AWAITING OWNER: rig-time approval for this sweep.
+
+=== END SECTION 20e ===
