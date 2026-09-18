@@ -723,3 +723,82 @@ PRE-REGISTERED D/E/F (banked BEFORE dispatch):
      the reachable failure mode for this ruling's central claim.
 
 === END SECTION 20c ===
+
+=== SECTION 20d: D/E/F ruling — bandwidth conclusion RETRACTED (status UNPROVEN), scoring rule STRUCK, spare-capacity HYPOTHESIS with pre-registered H/I/J control (architect, 2026-09-19 ~03:30 ICT) ===
+
+IN PLAIN WORDS AT THE TOP, per the architect: two conclusions banked, two retracted, both because a
+mechanism was banked before its test. §20b's E-core drag; §20c's RAM-bandwidth wall. What survives is
+a six-leg dataset that separates perfectly on a variable none of us was controlling.
+(The one thing that worked exactly as designed: the D1/D2 mechanical gates held on their first full
+outing. The architect directs the leader to tell the builder — done same turn.)
+
+SCORECARD: 0 for 2. "E or F beats C, peak 18-20" FAILED (F 23.99 vs C 23.94 = tie +0.21%; E 20.32 =
+-15.2%). "D within ~3% of C" FAILED on throughput (D -13.3%; CPU% landed where predicted, worth nothing
+alone).
+
+ADJUDICATING THE REGISTERED FAILURE MODE — worse than "weaker":
+- Signature (1) "SMT buys nothing" is VOID AS EVIDENCE, not merely weaker: A and B were BOTH sitting at
+  the same artificial ceiling (0 spare), so the A-vs-B comparison could not have detected SMT no matter
+  what SMT does. A signature drawn from two legs sharing an uncontrolled confound is not weakened when
+  the confound is found — it is void.
+- Signature (3) "throughput tracks distinct physical cores" is REFUTED outright: D (12 physical, 1
+  thread each) 20.76 vs B (8 physical) 21.00 — more cores, slightly LESS throughput.
+- Signature (2) "leg B threads idle 52% => memory-starved" has a simpler competing account the
+  architect failed to consider: in a t40 config CPU expert-FFN work and GPU work ALTERNATE per layer —
+  CPU threads idle while the GPU runs and vice versa. That one account explains BOTH the ~52% CPU stall
+  AND the ~65% GPU idle previously treated as two facts pointing at a shared bandwidth wall.
+- CONSEQUENCE: §20c's "the wall on this rig is RAM bandwidth" is RETRACTED — STATUS UNPROVEN. §20.2's
+  refinement (which §20c had promoted to confirmed) is retracted with it. The §20c TRACK SCORING RULE
+  ("score every proposal by whether it reduces RAM bytes per token") is STRUCK — it may well be right
+  but currently rests on nothing, and a scoring rule resting on nothing steers years of work. The
+  alternating CPU/GPU-phase account is a HYPOTHESIS, not a replacement finding, and is not banked as one.
+
+WHAT THE SIX LEGS ACTUALLY SHOW — PERFECT SEPARATION ON SPARE CPU CAPACITY
+(available logical CPUs to the process minus compute threads):
+  A mask 0-15 t16  20.97  CPU 653  avail 16  thr 16  SPARE 0
+  B mask 8P   t8   21.00  CPU 382  avail 8   thr 8   SPARE 0
+  D mask 12ph t12  20.76  CPU 507  avail 12  thr 12  SPARE 0
+  E unpinned  t20  20.32  CPU 712  avail 20  thr 20  SPARE 0
+  C unpinned  t16  23.94  CPU 784  avail 20  thr 16  SPARE 4
+  F unpinned  t18  23.99  CPU 856  avail 20  thr 18  SPARE 2
+Zero spare: 20.32-21.00, mean 20.76. Two+ spare: 23.94-23.99, mean 23.96. Ratio 1.154. Six legs, two
+clusters, ZERO overlap — and the split is not core count, not thread count, not SMT, not pinning (E is
+unpinned and lands slow; B/A/D have 8/8/12 cores and land within 0.24 tok/s of each other).
+PROPOSED MECHANISM (HYPOTHESIS ONLY, NOT A FINDING): the process needs spare logical CPU for its
+NON-compute threads (CUDA submission, server, sampler); when the compute pool consumes every allowed
+CPU, those threads contend and the pipeline drops ~15%. Retro-explains the original sweep: t12 (8
+spare) 22.27 < t16 (4 spare) 23.00 < t18 (2 spare) 23.99, cliff at t20 (0 spare), regressions t24/t32
+(oversubscribed). Peak = logical minus ~2. The architect does NOT bank this — it explains 6/6 legs post
+hoc, exactly the situation where they have been wrong twice (the E-core story also explained everything
+until tested). It enters the bank as a HYPOTHESIS with its decisive control pre-registered below;
+NOTHING downstream may cite it until the control returns.
+
+PRE-REGISTERED CONTROL (banked BEFORE dispatch, same commit as the ruling):
+  H) taskset -c 0-19 (ALL 20 logical — pinned but mask = whole machine) + -t 18. t40. THE DECISIVE LEG:
+     separates "taskset per se hurts" from "zero spare hurts" — H is pinned AND has 2 spare.
+       H ~= 24 => pinning innocent, SPARE CAPACITY is the variable; hypothesis survives.
+       H ~= 21 => taskset itself is the culprit; spare-capacity account WRONG (pinning, not spare, put
+                  A/B/D in the slow cluster); E unexplained; architect would have nothing.
+     PREDICTION: H ~= 24. Held to it.
+  I) taskset -c 0-15 (8 P-cores, 16 logical) + -t 14. t40. Two spare INSIDE a small mask.
+       I ~= 24 => spare capacity nearly everything, physical core count barely matters (strong).
+       I ~= 21 => spare necessary but not sufficient; core count matters too.
+     PREDICTION: I lands between, 22-23. Stated so it can be wrong.
+  J) unpinned -t 19 (1 spare). Locates the cliff edge: is 1 spare enough, or is 2 the minimum?
+     PREDICTION: J ~= 23.5 (1 spare nearly enough).
+  All t40, fresh server, unique port, D1 + D2 gates ON; report tok/s + CPU% + GPU sm% + prefill.
+
+OPERATIONAL (ship guidance): best stock is t16 or t18 unpinned, tied ~23.9-24.0. SHIP -t 16 UNPINNED,
+not t18 — t18 buys nothing measurable and sits one step from the 15% cliff at t20; t16 keeps 4 CPUs of
+margin. Robustness decides between tied configs. §20c reference ruling stands: reference is the
+CONFIGURATION "t40, unpinned, -t 16", never a scalar; every arm measures its own same-session control.
+
+ARM 005 — UNCHANGED, STILL BLOCKED: per-layer residency (0.1975) was measured at t16 unpinned = inside
+the good cluster, NOT contaminated. Ceiling ~1.14x vs demonstrated 0.82x overhead. Note against the
+architect: the bandwidth argument can no longer support the arm (retracted); the arm now rests only on
+the measured per-layer number and the structural GPU idle.
+
+FOR THE OWNER: best stock ~23.99 vs default split 14.39 = 1.67x — unchanged in substance, better
+located. Zero code, unclaimed, owner's call.
+
+=== END SECTION 20d ===
