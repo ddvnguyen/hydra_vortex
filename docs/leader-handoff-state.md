@@ -367,3 +367,47 @@ STANDING RULES ADOPTED (architect, banked as rules not caveats):
      went unmeasured until late; this one died on a hard physical bound.
 
 === END SECTION 18 ===
+
+=== SECTION 18 AMENDMENT: RULING — CPU-BOUND CONFIRMED; thesis corrected; ARM 006 reversed to RUN (architect, 2026-09-19 ~00:20 ICT) ===
+
+DISCRIMINATOR VERDICT (builder raw: t48 CPU 439/449 GPU 26.6% 17.97 t/s; t40 CPU 404/430 GPU 34.8% 20.19 t/s):
+Decisive numbers are the UTILIZATION LEVELS, not the delta:
+  t48: CPU 97.8% of observed-max = SATURATED | GPU sm 26.6% (idle 65-73% of the time in both configs)
+  t40: CPU 94.0% saturated
+The system is CPU-BOUND. Not PCIe-bound (113 MB/s), not GPU-bound (never >35% sm).
+The -8% CPU delta reconciles exactly: moving 8/48 layers cuts CPU expert work 16.7%; observed total -8%
+iff expert FFN is ~half of CPU time and the rest is fixed overhead (sampling/tokenize/copies/orchestration).
+Direction + magnitude + GPU's +31% counter-move all fit. HYPOTHESIS CONFIRMED: --n-cpu-moe runs expert FFN
+ON THE CPU. Residency gain = COMPUTE MIGRATION to an idle GPU, never transfer elimination.
+
+0.82x FULLY EXPLAINED (supersedes "doubled compute"): both the old dual construction AND gather-MMVQ compute
+ALL experts on the GPU. Arming dragged every expert (hot + cold) onto the GPU, forcing cold expert weights
+across PCIe: 48 x 10 x 1.875 MB = 0.88 GB/token = 16 GB/s demanded. The mechanism SATURATED PCIe and lost to
+the CPU doing the job cheaply. The PCIe traffic the phase set out to eliminate DID NOT EXIST in the baseline —
+THE MECHANISM CREATED IT. That is why armed N=0 == armed N=38 (11.83/11.75): both all-GPU, both PCIe-bound.
+
+CORRECTED THESIS (phase ALIVE):
+  OLD (dead): pin hot experts in VRAM to avoid fetching them over PCIe.
+  NEW: the CPU is saturated while the GPU idles at 27-35%. Move expert COMPUTE to the GPU at fine
+  granularity, bounded by VRAM.
+  Prize (unchanged, now for the right reason): full migration = 48 x 0.278 = +13.3 tok/s over the 17.97
+  anchor => ~31.3 tok/s (+74%). Ranked pinning at h=0.4207 on 3.4 GB migrates ~42% => +5.6 tok/s => ~1.31x.
+  The 1.33x projection SURVIVES.
+  MECHANISM REQUIREMENT: SPLIT COMPUTE per expert — pinned experts computed on GPU from VRAM, unpinned
+  experts computed on CPU as today. Neither existing design does this; both compute everything on GPU.
+  The needed operation is selecting a BACKEND, not selecting a weight address.
+
+ACTIONS:
+  - FIX 1: HOLD PERMANENTLY in current form — it optimizes address selection inside a GPU-only path; the
+    GPU-only path IS the defect.
+  - ARM 006: RUN NOW (deferral reversed — no longer "measuring broken code"; it tests a sharp falsifiable
+    prediction). PREDICTION: armed-mode PCIe bytes/token ~100x stock (near link saturation) vs 6.2 MB/tok
+    stock. If armed traffic comes back near stock, the whole account is wrong and the architect re-derives.
+    This is the confirmation gate for everything above.
+  - ARM 005: blocked; design brief changed to CPU/GPU compute split per expert.
+  - CPU decomposition (expert-FFN fraction): only if profileable without code changes; else skip.
+  - Baseline hang retry (10-min timeout + telemetry): APPROVED, one attempt, second hang => issue + stop.
+  - STANDING RULE (upgraded): measure that the cost exists — AND measure the utilization of EVERY unit
+    involved, not just the suspect. CPU 97% + GPU 27% were available from pidstat + nvidia-smi all along.
+
+=== END SECTION 18 AMENDMENT ===
