@@ -320,3 +320,50 @@ distinguishes "never written" from "written after you looked." Do not downgrade 
 do not discount file verifications on a false miss — they caught the real lost banks (§12, §15).
 
 === END SECTION 17f ===
+
+=== SECTION 18: ARM 006-prime REFUTES the weight-streaming premise (architect ruling, 2026-09-18 ~23:00 ICT) ===
+
+RESULT (builder 2ac20e22, turn 1091): PCIe bytes/token across the stock residency sweep =
+6.216 / 6.089 / 5.718 MB/tok at 0/4/8 resident layers. Monotonic fall, slope 62.2 KB/layer/tok.
+
+THE REFUTATION (hard physical bound, not an estimate):
+  ARM 003 VRAM cost: 8 resident layers = 7.5 GB => 0.9375 GB/layer => 1.875 MB per expert per layer
+  Weight-streaming model: k=10 x 48 layers x 1.875 MB = 0.88 GB/token => at 18.19 tok/s = 16.0 GB/s demanded
+  PCIe x4 ceiling: ~7.9 GB/s (Gen4) / ~3.9 GB/s (Gen3) — the model demands >2x the physical link. IMPOSSIBLE.
+  Measured actual: 6.216 MB/tok x 18.19 tok/s = 113 MB/s — link at ~1-3% of capacity. Gap: 309x.
+
+CONCLUSION: expert weights do NOT stream across PCIe per token. The 62.2 KB/layer/token that falls
+with residency is activation-sized (CPU<->GPU round trip per offloaded layer), not weight traffic.
+
+LEADING HYPOTHESIS (architect): --n-cpu-moe runs those layers' expert FFN ON THE CPU BACKEND. The
+residency gain (+0.295 tok/s per layer) moves COMPUTE from CPU to GPU, not transfers. Re-explains the
+0.82x NO-SHIP: arming forced expert matmul onto the GPU against host-resident weights (cheap CPU
+compute traded for PCIe-bound GPU compute) — hence N=0 == N=38. Architect's earlier "doubled lookup"
+account is superseded pending the discriminator.
+
+CONSEQUENCES:
+  - FIX 1 IS ON HOLD (do NOT build): removing a host readback to pick a weight address buys zero if
+    weights are not the constraint. PR #134 review still happens (architect posts on #134); NO code
+    changes until the discriminator lands.
+  - ARM 005 stays blocked and may be MOOT — the mechanism must be redesigned around compute placement,
+    not weight placement, if the hypothesis holds.
+  - task-9be0a9a07c (MoE-cache baseline bg legs) runs to completion — measurement-only.
+  - Corpus (task-4e0493edd2): architect CONCURS with (b)/(c) rec — off critical path, owner's call.
+
+DISCRIMINATOR (queued immediately behind 9be0a9a07c, ~2 min, no code):
+  CPU utilization during decode at t48 (0 resident) vs t40 (8 resident), SAME session, fixed token
+  count + nvidia-smi GPU util in the same window.
+    CPU pegged at t48 and materially lower at t40 with GPU util rising => CPU-compute CONFIRMED;
+      phase premise wrong as written; mechanism redesigns around compute placement.
+    CPU flat and low in both => weights move some other way; architect re-derives.
+  Optional second confirmation: ggml_backend_buffer_name + which backend executes the MoE node for an
+  offloaded layer (scheduler node->backend assignment).
+
+STANDING RULES ADOPTED (architect, banked as rules not caveats):
+  1. SAME-SESSION ANCHOR: cross-build A/B carries ~2.4% variance on this rig — every delta is judged
+     against a same-session anchor, never a number from another build.
+  2. MEASURE-COST-FIRST: before building a mechanism that removes a cost, MEASURE THAT THE COST EXISTS.
+     ARM 006' should have been arm 001 of this phase, not the seventh. Third premise on this track that
+     went unmeasured until late; this one died on a hard physical bound.
+
+=== END SECTION 18 ===
