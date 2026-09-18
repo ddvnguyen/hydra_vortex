@@ -501,3 +501,50 @@ GATE A/B RULE (architect adoption + generalisation of the leader's engagement-co
   three separate cycles. It sits beside the gates-must-fail rule.
 
 === END SECTION 19 AMENDMENT ===
+
+=== SECTION 20: thread sweep ruling — CPU-bound confirmed, bandwidth refinement, UNTUNED BASELINE finding (architect, 2026-09-19 ~01:45 ICT) ===
+
+1. PRE-REGISTERED CALL: CPU-BOUND CONFIRMED. "NOT CPU-bound => flat" branch dead: t2->t12 t48 +75%, t40 +74%.
+   §18 holds; ARM 005 rationale survives.
+
+2. SUB-PREDICTION FAILED (architect owns it): t48 NOT more thread-sensitive (+75% vs +74%, identical).
+   REFINEMENT from the failure — efficiency tok/s-per-CPU% at t48: 0.0645/0.0585/0.0491/0.0414/0.0316 =
+   51% COLLAPSE t2->t12. Pure core-scaling holds efficiency ~constant; this decline is contention on a
+   SHARED resource: the CPU side is MEMORY-BANDWIDTH-BOUND, not core-count-bound. Both configs hit the
+   same ceiling -> identical relative curves; the shape is the bandwidth wall, not expert-work distribution.
+   LESSON: "CPU-bound" is not one hypothesis — the thread curve discriminates core-bound from
+   bandwidth-bound. Pre-registrations must distinguish them.
+   Minor (directional, not banked as quantity): bandwidth-limited expert-weight reads from system RAM mean
+   moving experts to VRAM relieves BOTH GPU-idle and RAM-bandwidth pressure — helps ARM 005 directionally.
+
+3. RESIDENCY GAIN ROBUST: t40 > t48 at EVERY thread count: +1.41/+2.23/+2.05/+2.15/+2.31 — ~constant
+   +2.1-2.3 regardless of threads. At t12: 0.289 tok/s per resident layer, in line with ARM 003 (0.295)
+   and discriminator (0.278) — THREE independent measurements agree. Re-priced at t12: full residency
+   +13.9 tok/s; ranked pinning at h=0.4207 = +5.83 on a 19.96 base = 1.292x. The 1.31x projection
+   survives a third re-derivation on a better baseline.
+
+4. THE FINDING THAT MATTERS MOST — UNTUNED BASELINE: tok/s still RISING at t12, no plateau. Best observed
+   22.27 (t40/t12) vs the 18.19 "baseline" = +22% (+25% vs 17.7476 anchor) from a THREAD FLAG. Stacked on
+   topology (single-GPU 18.19 vs split 14.39, +26%, also config-only): this track spent months optimising
+   a mechanism while the stock configuration was never tuned. Two flags appear worth more than everything
+   the mechanism has delivered — and they are free.
+   GATE FOR ARM 005 (explicit, not a suggestion): ARM 005 must be measured against the BEST stock
+   configuration, not 18.19. Judging a mechanism against an untuned baseline flatters it 20-25% — same
+   error class as comparing a syncing implementation to the graphs-enabled number (§17c/G4).
+
+5. QUEUE:
+   a) EXTEND THE SWEEP NOW (zero code, approved): t16/t24/t32 at BOTH t48+t40 + CPU% + GPU sm%. Find the
+      plateau -> (i) true best-config baseline ARM 005 must beat; (ii) possibly free throughput for the
+      owner today. Note: 6.3 cores of useful work from 12 threads (52% per-thread efficiency, down from
+      88% at t2) — contention heavy, plateau may be near; "may be" is why we measure.
+   b) RE-ANCHOR everything once the plateau is known (ARM 003/004 residency numbers were taken at t8 or
+      below — restate at the best thread setting).
+   c) ARM 005 blocked on a compute-split design; brief carries the best-config gate.
+   d) Sweep report includes GPU sm% — if GPU utilisation is still ~30% at the plateau, that number IS the
+      headroom ARM 005 is aiming at.
+
+6. FOR THE OWNER (standing item, not buried in arm reports): two zero-code configuration wins measured and
+   unclaimed — THREADS (+22%, not yet exhausted) and TOPOLOGY (+26%). Worth more than the mechanism.
+   Landing them is the owner's call.
+
+=== END SECTION 20 ===
