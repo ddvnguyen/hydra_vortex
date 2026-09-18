@@ -411,3 +411,61 @@ ACTIONS:
     involved, not just the suspect. CPU 97% + GPU 27% were available from pidstat + nvidia-smi all along.
 
 === END SECTION 18 AMENDMENT ===
+
+=== SECTION 19: ARM 006 ruled VOID; thread sweep is the live gate; baseline data struck; D1-D4 (architect, 2026-09-19 ~01:00 ICT) ===
+
+ITEM 1 — ARM 006: VOID, NOT REFUTED (lead reading upheld; builder's "REFUTED as measured" wrong).
+The gather hook was installed in the MMVQ branch; decode dispatches to MMQ (mmvq=0, mmq=2192) — zero
+engagements BY CONSTRUCTION. Armed path was a total no-op; near-stock traffic (0.957x/0.947x) is the
+no-op signature; tok/s 17.80/17.85 vs 17.7476 anchor = stock within the 2.4% band. You cannot refute a
+prediction about a working mechanism with a measurement of a mechanism that never ran.
+STATE-BANK FAILURE NOTED: "mmvq=0 / MMQ-dispatch" was ALREADY KNOWN on this track and lost across the
+leadership handoff. ACTION: known dispatch facts now live in this bank (see below) so the next hook is
+not hung on the wrong branch.
+ARCHITECT WITHDRAWS the 100x-traffic prediction test: the ~100x claim explains why the OLD (deleted)
+mechanism failed — proving why a dead thing died is archaeology, and the only test path touches the
+frozen surface (Fix-1-adjacent hook work). Account held as "best explanation, untested."
+
+KNOWN DISPATCH FACTS (new standing bank section, per architect):
+  - Decode dispatches to MMQ; the gather hook lives in the MMVQ branch -> any decode-time gather
+    instrumentation or hook MUST target the MMQ path or it measures nothing.
+  - Pre-PR finding (builder): fused path bypasses the thunk hook entirely.
+  - [HYDRA mmid] counters (mmvq=/mmq=/hit=/miss=) are the engagement tell — check non-zero BEFORE
+    reading any mechanism measurement.
+
+ITEM 2 — BASELINE legs (task-9be0a9a07c): DATA STRUCK, measurement NOT re-run.
+sha256("") = e3b0c44298fc1c14... — confirmed: outputs were EMPTY, "PARITY_OK la0==la0b" was two empty
+files agreeing (vacuous). 187x-under-reference decode, 61h+29m uptime on a fresh process, unlogged PPL
+load failure, and the 26-min load hang are most likely ONE broken model load presenting five ways.
+None of the numbers may anchor anything. The baseline served the MoE-expert-cache thesis — NO-SHIP
+closed it and §18 repointed the phase; re-running buys data for a question we no longer ask.
+
+HARNESS DEFECTS -> ISSUES (D1 first, it is the dangerous one):
+  D1 (SEVERE) A gate that cannot fail: parity check reports PARITY_OK hashing EMPTY output — PASS on
+     no data. Same class as the zero-width control band (§15/§17) and the vacuous SWA checkpoint gate.
+     FIX: every hash-based gate must assert non-empty, non-trivial input before comparing; FAIL CLOSED
+     on an empty artifact.
+  D2 Uptime/hot-snapshot counter carries across runs (61h+29m on a fresh process) — cross-invocation
+     state leak; will silently contaminate future arms that read it.
+  D3 llama-perplexity model-load failure with cause unlogged.
+  D4 Model load hangs ~26 min vs 67s norm, twice — reproducible defect, not transient.
+  Forensics: skip PPL retry. ONE cheap D4 diagnostic ONLY if the thread sweep shares the model-load
+  path (a 26-min hang would block live work); else file and move on.
+
+NEW LIVE GATE — THREAD SWEEP (zero code, stock binaries):
+  Same session, fixed token count, at t48 (0 resident) AND t40 (8 resident); -t 2/4/6/8/12 (or to
+  physical cores). Record tok/s + CPU% per point.
+  PRE-REGISTERED PREDICTIONS:
+    CPU-BOUND (architect account): tok/s rises materially, near-linearly with threads, plateauing at
+    core count; t48 MORE thread-sensitive than t40 (more expert work on CPU).
+    NOT CPU-BOUND: tok/s roughly flat across threads -> CPU-bound thesis dead, compute-migration
+    explanation dies with it, architect re-derives from scratch.
+
+STANDING RULE (banked alongside §18's): A GATE MUST BE ABLE TO FAIL. Before trusting any PASS, confirm
+the gate has a reachable failure mode on the actual artifact — empty input, zero-width band, and vacuous
+preconditions have produced false PASSes three times on this track.
+
+QUEUE: 1) thread sweep t48+t40; 2) file D1-D4 (D1 first); 3) ARM 005 blocked pending sweep + compute-split
+design; 4) PR #134 review — note the hook is on the wrong dispatch branch (MMVQ vs MMQ) as headline finding.
+
+=== END SECTION 19 ===
