@@ -548,3 +548,40 @@ GATE A/B RULE (architect adoption + generalisation of the leader's engagement-co
    Landing them is the owner's call.
 
 === END SECTION 20 ===
+
+=== SECTION 20a: PRE-REGISTRATION, extended sweep (t16/t24/t32 x t48+t40) — banked BEFORE the builder's yield (architect, 2026-09-19) ===
+
+Rationale: the architect adjudicated post-hoc twice this track and erred both times (the zero-width
+control band; the t48-sensitivity call). Pre-registration is the fix. BANKED BEFORE DATA: verified at
+bank time that the builder's sweep yield had NOT arrived (uc 2108, bg legs mid-run, no summary lines).
+
+P1. PLATEAU. Definition: first thread count whose tok/s gain over the previous point is <2%.
+    - Knee at or below t16: t12 was already near-best; the untuned-baseline finding settles at ~+22%.
+      Still real, still worth landing.
+    - Still climbing >5% per step at t32: the box has far more headroom than assumed, the "baseline"
+      used all track is badly wrong, and EVERY mechanism number in the bank is mis-scaled.
+      High-consequence branch — do not soften it if it lands.
+    - PREDICTION: knee at t16-t24, gains decaying but nonzero at t32. Held to it.
+
+P2. EFFICIENCY (tok/s per CPU%). Should keep falling monotonically. If it FLATTENS while tok/s still
+    rises, the bandwidth-bound refinement in §20.2 is WRONG and the constraint is core-count after all.
+    A reachable failure mode for the architect's own refinement — meant to be falsifiable.
+
+P3. GPU sm% — the ARM 005 prize stated as a number.
+    - ~30% at the plateau: GPU idle is structural, compute-split has real headroom, ARM 005 proceeds.
+    - past ~60% at the plateau: threads were starving the GPU, not the mechanism's absence. ARM 005's
+      headroom is then MUCH smaller than 1.29x and the arm gets RE-PRICED BEFORE any build work.
+      The architect will not defend 1.29x through this branch.
+
+P4. RESIDENCY DELTA (t40 minus t48). Should hold ~+2.1-2.3 at the new thread counts. If it COLLAPSES
+    toward zero at high thread counts, residency was buying CPU relief that threads now buy more
+    cheaply, and ARM 005's rationale weakens materially. Also reachable, also intended.
+
+ADJUDICATION ORDER when the yield lands: P3 first (it can re-price the arm), then P1, then P2, then P4.
+Report all four raw, no interpretation.
+
+OWNER-DECISION NOTE (architect recommendation, decision is the owner's, nothing blocked): land the two
+config wins (threads + topology) AFTER the plateau is known, not now — landing mid-sweep moves the
+reference underneath the measurement. One rig run, then land both together and re-anchor.
+
+=== END SECTION 20a ===
