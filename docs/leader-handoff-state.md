@@ -585,3 +585,69 @@ config wins (threads + topology) AFTER the plateau is known, not now — landing
 reference underneath the measurement. One rig run, then land both together and re-anchor.
 
 === END SECTION 20a ===
+
+=== SECTION 20b: extended-sweep ruling + ROOT CAUSE (hybrid P/E scheduler) + ARM 005 re-price + PRE-REGISTERED affinity discriminator (architect, 2026-09-19 ~02:10 ICT) ===
+
+P3 GPU SM%: PROCEED branch. 33.1 (t48/t16) / 35.3 (t40/t16) at peak — GPU ~65% idle at best stock config;
+structural, not a threading artifact. Modestly above the registered "~30" — noted, not material.
+
+P1 PLATEAU: knee LOCATION right (t16, both configs), SHAPE wrong — architect predicted saturation,
+box gives REGRESSION (t24/t32 negative). The <2% single-step plateau definition is DEFECTIVE (fired at
+t8 on a curve that re-accelerated). CORRECT DEFINITION (method lesson, use from here): plateau = argmax
+over the swept range, confirmed by two consecutive non-improving steps. High-consequence branch (>5%/step
+at t32) did NOT land — baseline error is BOUNDED at +26.4%.
+
+P2 EFFICIENCY: registered falsifier ("flattens while tok/s rises") did not fire — but the architect
+declines the win: the test could not discriminate what it asked (see root cause). §20.2 bandwidth-bound
+refinement is UNFALSIFIED BUT UNDER SERIOUS DOUBT.
+
+ROOT CAUSE — SWEEP RAN ON A HYBRID P/E CPU WITH NO AFFINITY (architect checked host directly):
+  CPUs 0-15  = 8 P-cores x SMT, max 5100 MHz
+  CPUs 16-19 = 4 E-cores,       max 3900 MHz   (i7-12700K, 12c/20t)
+Peak at t16 = exactly the P-core logical thread count. Past t16 the pool spills onto E-cores; graph
+compute is barrier-synchronised per node so the SLOWEST thread gates every barrier — E-cores drag the
+whole graph, which is why tok/s AND CPU% fall together (820->729->707). CONSEQUENCE: every sweep point
+(t2-t12 included) ran with OS-chosen placement across heterogeneous cores, unrecorded. tok/s numbers
+remain valid as "what the stock config delivers"; the MECHANISTIC reading (core-bound vs bandwidth-bound)
+is NOT extractable from them — the efficiency decline is equally consistent with SMT sibling sharing,
+silent E-core placement, or memory bandwidth. This confound voids the P2 pass as evidence.
+
+PRE-REGISTERED AFFINITY DISCRIMINATOR (zero code, one rig run; banked BEFORE data):
+  A) t40, taskset -c 0-15 + -t 16      (P-cores only, SMT on)
+  B) t40, taskset -c 0,2,4,6,8,10,12,14 + -t 8   (P-cores only, one thread per physical core, no SMT)
+  C) t40, -t 16 unpinned               (control, reproduce 23.00)
+  Fork native affinity available if preferred: common/arg.cpp:1534 `-C, --cpu-mask M`, :1554
+  `--cpu-strict <0|1>`, :1571 `--poll`. Either fine; report which was used.
+  PREDICTIONS (held to them): A > C (pinning removes E-core barrier drag). If B ~= A at roughly HALF the
+  CPU% -> memory-bandwidth-bound, §20.2 refinement CONFIRMED on a test that can see it. If A >> B ->
+  execution/core-bound, refinement WRONG and retracted. Architect predicts B ~= A — the branch that
+  costs them if wrong.
+
+P4 RESIDENCY DELTA: landed BETWEEN the two registered branches (+1.58 at peak; +2.01/+2.19 at t24/t32) —
+same defect class as P1's definition (pre-registration offered two outcomes, data landed in the gap;
+architect owns it). NOT a collapse; P4 does not kill the arm. But at the peak: 1.58/8 = 0.1975 tok/s per
+resident layer, down 32% from 0.289 at t12 — threads bought part of what residency was buying.
+
+ARM 005 RE-PRICED AT THE PEAK (not t12):
+  40 remaining CPU layers x 0.1975 = +7.90 fully resident; ranked pinning h=0.4207 = +3.32;
+  23.00 + 3.32 = 26.32 vs best stock 23.00 = 1.145x.
+  CEILING FALLS 1.292x -> ~1.15x — first downward move in four derivations. The §20.4 gate
+  (judge against best stock config) caught the architect's own number.
+  RECOMMENDATION: DO NOT BUILD YET. Measured mechanism overhead when last armed: 0.82x; the
+  ceiling-to-execution gap is the whole risk and it just shrank by more than half its margin.
+  NOT killed — P3 says GPU idle is real and structural. One rig run (affinity discriminator)
+  decides whether ARM 005 is worth building at all: B~=A (bandwidth) -> arm worth MORE than 1.15x
+  (VRAM residency relieves the binding constraint); A>>B (core) -> worth less. ARM 005 stays
+  blocked; compute-split brief stands.
+
+RE-ANCHOR (item b): adopt t40/-t 16 @ 23.00 tok/s as the ARM 005 reference NOW. Caveat: if the affinity
+run beats it, the reference moves again (§20.4 gate = best stock config, not first-measured). Restate
+ARM 003/004 residency numbers at t16 — they were taken at t8 or below, wrong operating point.
+
+FOR THE OWNER: best stock config 23.00 vs default split topology 14.39 = 1.60x — a 60% throughput gain
+from two configuration flags, no code (threads +26.4% of it). Measured, repeatable, unclaimed.
+Recommendation: land threads + topology together now that the plateau is known, then re-anchor.
+Uncomfortable note for the bank: a scheduler placing threads on E-cores was costing this rig more than
+anything the MoE mechanism has yet delivered — found by sweeping a flag.
+
+=== END SECTION 20b ===
