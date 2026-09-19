@@ -1599,3 +1599,64 @@ UNRUN: D8a/D4a/D4b/D14/D22. Worker stop-rule executed correctly (no improvisatio
 rig free). Log: /tmp/opencode/armB2p-D0.server.log:2992. Same neighbourhood as #139/#149 — filing
 withheld pending architect ruling.
 === END §26a ===
+
+=== SECTION 27: B2'/D0 RULING + LINEAGE DEFECT (architect; commit timestamp is the single clock) ===
+
+1. D0 STRUCK from B2', not replaced. Run D4a/D8a/D4b/D14/D22 unchanged. P-a carried by D4a/D4b pair (no
+   zero point needed); P-b carried by interior points 4/8/14/22. Substituting C/L1 as low anchor is
+   CROSS-IDIOM (ncm moves 288 tensors, pure -ot moves 144) and would reproduce the B2-VOID defect —
+   FORBIDDEN. Re-idioming D0 costs rig time + crash risk to measure a config we are moving away from.
+   PRE-REGISTERED CONSEQUENCE (accepted explicitly, cannot drift): B2' has NO measured zero anchor — no
+   leg may be reported as absolute speedup over all-host; curvature + device pair are the ONLY claims.
+   P-a/P-b/P-c stand; P-b prediction SUPERLINEAR 1.2-1.5.
+
+2. D0 CRASH = REAL DEFECT, root cause located (measurement lineage source): llama_context::resolve_fused_ops
+   (src/llama-context.cpp:505) probes each fused op by full graph_reserve, compares the fused node's
+   SCHEDULED backend vs model.dev_layer(node.il), disables op on mismatch. D0 entered the HC probe chain
+   once, emitted ZERO enabled lines -> died inside FIRST probe (dsv4_hc_pre) at ggml.c:6214 assert via
+   build_delta_net_fused. Every booting leg emits the line TWICE (pre/comb/post enabled). Source comment
+   at the device compare already concedes the check "is still wrong for cases like --no-kv-offload" —
+   all-host experts is the same class. FILE (do not debug on critical path). THREE BRANCHES (three-branch
+   rule): (a) 0-resident is a hard config limit; (b) fit-check artifact that would not fire at serve time;
+   (c) the assert fires for ANY config where the HC-pre probe node lands off dev_layer, 0-resident merely
+   the cheapest trigger. ARCHITECT PREDICTION: (c).
+
+3. NEW STANDING GATE: FUSED-OP FINGERPRINT pre-timing. Fused-op enablement = scheduler backend assignment
+   vs dev_layer — which -ot placement can change; two legs of one sweep can silently run DIFFERENT
+   KERNELS. Every leg captures `grep resolve_fused_ops` from the UNFILTERED log; fingerprint mismatch =>
+   VOID, never average. Joins override-verify as non-optional. RETROACTIVE AUDIT (architect, self-run):
+   B1/B3/B2-4/B2-8/B2-14/B2-22 all carry IDENTICAL fingerprint (HC pre/comb/post enabled, resolution run
+   twice) — confound did NOT fire in the B series; a measured control; §26 device-penalty reading
+   survives. BUT a7-C/a7-S1 logs are GREP-FILTERED CAPTURES (fused lines discarded at capture time,
+   unrecoverable) -> §26's penalty rests on a control whose fingerprint cannot be verified. STATED
+   LIMITATION, not a retraction: B3's +0.35% replicate on a FULL log bounds any fused-config difference
+   at <=0.35%, far inside ±2.4%. NEW RULE: keep raw server logs UNFILTERED; filter at read time, never
+   at capture time.
+
+4. LINEAGE DEFECT — OUTRANKS B2'. HOLD E0 WHERE IT IS.
+   - Measurement binary src/llama-cpp/build-merge-full/ (from D0 stack trace), built 2026-09-17 00:18,
+     CONTAINS upstream 90e0f5cfc "llama: refactor fused ops (#24646)" (tag b9924) — origin of
+     resolve_fused_ops.
+   - Epic tip 6f75b8fce does NOT contain 90e0f5cfc (verified both directions); a744d8019 and 86af0c9af
+     (baseline-qwen4exp-mtp line) DO.
+   - E0/E1 are being built on a lineage LACKING the fused-op refactor while EVERY campaign number (27.28
+     anchor, 34.5 us budget, coverage constant) was measured on a lineage that HAS it. E1 GO/NO-GO vs
+     34.5 us would be a CROSS-LINEAGE COMPARISON.
+   - Checkout is ALSO DIRTY: ggml-cuda.cu modified, hydra-pins.h untracked — gather-MMVQ WIP sitting
+     uncommitted on the epic branch.
+   - CALL: rebase epic/148-per-expert-backend-selection onto the baseline-qwen4exp-mtp tip (epic carries
+     little code; anchors cost weeks of rig time). If rebase not clean, the only alternative is
+     re-anchoring on the epic lineage (re-run S1/C/B3, re-derive budget) — NOT recommended. NO E1 NUMBER
+     ADMISSIBLE until this is closed. Rebase outcome reported to architect BEFORE E0 continues.
+   - BUILD PROVENANCE RULE (same failure mode as the deploy-chain problem — binary mtime predates reflog
+     rebase-finish; cannot pin the built commit): require git rev-parse HEAD + dirty flag written at
+     build time and logged by EVERY leg.
+
+5. FREE INSTRUMENT, TAKE NOW: "graphs reused" per request (a7-C logs it) = direct CUDA-graph capture
+   counter — the instrument for the E1 launch-overhead risk. Add to the standing per-leg capture set
+   IMMEDIATELY so we hold it on the stock baseline before the mechanism lands.
+
+EXECUTION ORDER: (4) lineage check -> (1) five B2' legs -> (2)/(3) filings. E1 timing design review still
+stands, now blocked behind the lineage answer.
+
+=== END SECTION 27 ===
