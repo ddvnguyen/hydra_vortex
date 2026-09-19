@@ -3499,3 +3499,37 @@ S-a/S-b/S-c resolution: S-b as re-registered (informative-strong: fast state off
 probe unnecessary (S-b expected). The probe's ubatch trace: 0 lines total (consistent: legacy path,
 no draft steps in probe).
 === END §75-result ===
+
+=== §76: ARCHITECT — ARCHAEOLOGY CLOSED, CERTIFICATE MECHANISM REFUTED, RETURN TO OWNER'S THESIS ===
+(a)/(b) IMPOSSIBLE: the 07:55 llama-context.cpp.o DOES NOT EXIST — it is the 09:34:29 381424b version
+(one of the 43 macro-OFF recompile set: llama.dir core incl. context/model/graph/batch/kv-cache/
+memory + unity_0..9_cxx); the recompile overwrote the 07:55 object IN PLACE. The 308 surviving 07:55
+objects are ggml/CUDA/common/server TUs, NOT llama core. The fast binary itself gone: every shipped
+artifact is the 12:44 relink (libllama.so.0.4.0, libllama-common.so.0.4.0, libllama-server-impl.so,
+llama-server all 12:44:06-11). Source + object + linked binary = three independent copies of the lost
+state, all destroyed. NOT RECOVERABLE — stop spending.
+MECHANISM REFUTED (do NOT forward-implement): ggml-backend.cpp:2177-2178 —
+ggml_backend_sched_graph_compute_async(sched,graph) IS LITERALLY ..._ext(sched,graph,nullptr): same
+function. Legacy vs verification-intent differs ONLY by certificate pointer; the certificate's only
+behavioral bit is REQUIRED_GROUPED, flags=NONE at cache_slots==0 (our config); ggml-cuda.cu:6772-6785
+gates every CUDA-side consequence on REQUIRED_GROUPED != 0 = FALSE at slots=0. A flags=NONE
+certificate is behaviourally equivalent to nullptr through the CUDA backend. Routing prefill through
+the verification-intent branch CANNOT produce 13x. The decode:3378 lines are a MARKER that the 09:25
+source differed, not the mechanism. The real speed delta lives elsewhere in the lost delta,
+unidentified, unrecoverable.
+CLOSEOUT BANKED: (1) 09:25 fast binary = never-committed working tree, all copies gone — its 60 tok/s
+prefill is UNREPRODUCIBLE, not a target we are failing to hit; (2) every committed state on
+0fc51e039..12f294335 prefills 4.59-4.70, uniform; (3) certificate/verification-intent route inert at
+--moe-expert-cache-size 0, not a perf lever in our config; (4) no env confound (telemetry retro-grep
+absent everywhere); (5) NEW PROCESS RULE MINTED: a measurement binary must be built from a COMMITTED
+tree and its artifacts ARCHIVED before the next reconfigure — we lost a 13x result to an in-place
+recompile; any future headline binary gets its libs copied to WorkDisk immediately.
+NEW ORDERS: §69 five-point placement curve on build-g3 (86af0c9af). Verify provenance + contamination
++ fused fingerprint before leg 1. ARCHIVE BINARY+LIBS TO WorkDisk BEFORE LEG 1 (rule 5). Cheapest legs
+first: P0 and P22 bracket the curve; if they do not separate beyond run-to-run spread, STOP AND REPORT
+— that is a real answer to the owner's question. METRIC = DECODE tok/s (owner's metric; prefill =
+covariate not headline). Reference band: proven 19.85-22.30 tok/s (VOID-labeled for cross-binary
+context), acceptance ~0.869. Gates: quiescence load<=4, per-leg load/RAM/swap/tmpfs covariates,
+override-verify counts, unfiltered logs, exact allocation lines, content_len + decode-CPU%.
+Option (c) stray-source hunt: read-only, opportunistic in gaps, gates NOTHING, no rig time.
+=== END §76 ===
