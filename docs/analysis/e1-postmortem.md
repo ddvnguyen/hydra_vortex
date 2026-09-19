@@ -126,7 +126,7 @@ intercept that (b) deletes). Corroboration that (b) is aimed correctly: #132
 has no syncs and no intercept ⇒ capture native — both terminal defects vanish
 in the same redesign (§37).
 
-## 5. Unexplained measurement anomaly (open)
+## 5. Unexplained measurement anomaly (open) [SUPERSEDED in §51 — see §5 rewrite below]
 
 A single matched armed-vs-disarmed KL pair read 0.032906 mean (92× the measured floor median, 23× at the chunk median) with zero engagement. Both registered mechanisms — weight modification via `attach_device`, and allocation/scheduler perturbation — are eliminated by source facts (§46); a third, thread-timing-dependent reduction order, is eliminated by ggml's CPU chunking being disjoint-output. No known mechanism remains. n=1; replication ordered. Leading candidate is that the result is not systemic. Not established as a defect in E1 code.
 
@@ -143,6 +143,10 @@ IN FLIGHT: two replicate legs on the rig per §43 protocol (a) armed-vs-armed
 pair + (b) second armed-vs-disarmed pair; `ARM_KLREPL_DONE` pending. Run as
 cheap curiosity-closing, not critical path — #132 is immunized by the three-way
 decomposition (instrumentation constant on both sides of each comparison).
+
+## 5 (operative, §51). Confirmed defect: instrument state alters computation (mechanism open)
+
+"§5 — Confirmed defect: instrument state alters computation (mechanism open). Two builds of commit `4c2b9cb67`, differing only in env state, compute measurably different logits: armed-vs-disarmed KLD 0.032902 / 0.032906 (reproducible to 5 s.f.), against within-family floors of 4e-4 (disarmed) and 1.3e-4 (armed), with a PPL shift of 0.0134 = 10× the disarmed family's own spread. Both registered mechanisms are eliminated by source facts (§46), as is thread-timing reduction order. The live candidate is kernel-dispatch or backend-assignment divergence between the families; discriminator ordered. **Which family deviates from pristine is not yet established.**"
 
 ## 6. Why review missed them — the protocol was reviewed, the premise never checked
 
@@ -184,8 +188,10 @@ would have been saved by Gate A; E1 would have been saved by reachability).
   per-invocation timing on the engaged path (M1/#143), split counters (M2/#144).
 - Calibrated KL instrument: floor ~4e-4 (median 0.000358, §40), gate 0.01
   validated (10.6x above max floor, 7.2x below armed signal, §41), dump-PPL
-  spread 0.031% + wall-time spread 4.7% as independent run-to-run variance
-  corroboration of the ±2.4% replication band (§41).
+   spread 0.031% + wall-time spread 4.7% as independent run-to-run variance
+   corroboration of the ±2.4% replication band (§41). The KL instrument caught
+   a real defect that no other gate in this campaign would have seen — the
+   strongest single argument for the instrument's retention (§51).
 - Proven value of the instrument: the §44 three-way #132 gate decomposition
   (1) stock vs split-both-on-CPU = split/combine numeric cost alone = THE
   GATE; (2) split-both-on-CPU vs split-hot-on-GPU = backend-assignment effect;
