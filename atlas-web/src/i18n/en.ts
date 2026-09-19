@@ -114,6 +114,7 @@ const en: Record<string, string> = {
   "brain.metrics.wired": "{{n}} experts measured",
   "brain.metrics.notWired": "observer not wired yet",
   "brain.connectHint": "Connect to the engine to see the cortex.",
+  "brain.noTelemetry": "Engine telemetry is off (Stage A not landed in this build) — all experts read cold until the fork reports heat.",
   "brain.neverRouted": "never routed",
   "brain.selections": "~2^{{heat}} selections",
   "brain.specialist": "⭐ Specialist: {{top}}",

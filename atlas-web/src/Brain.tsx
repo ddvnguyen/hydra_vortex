@@ -16,7 +16,7 @@ interface AtlasGeometry {
   nextn_rows: number[]
   n_expert_used: number
 }
-interface ExpertMap { rows: number; cols: number; map: string; hits: string; seq: number; geometry?: AtlasGeometry }
+interface ExpertMap { rows: number; cols: number; map: string; hits: string; seq: number; telemetry_enabled?: boolean; geometry?: AtlasGeometry }
 // hydra: spec/reliability from our experts.json (observability tier, #175);
 // schema v2 adds the expert-metrics families (ddvnguyen/expert-metrics):
 // reap (Cerebras gate×activation saliency) and edge0 (prerouter predictability)
@@ -205,6 +205,9 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
       <div className="brain-canvas-wrap" ref={wrapRef}>
         <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={() => setTip(null)} />
         {!connected && <p className="runtime-unavailable">{t("brain.connectHint")}</p>}
+        {connected && data && (data.telemetry_enabled === false || totals[0] === data.rows * data.cols) && (
+          <p className="runtime-unavailable">{t("brain.noTelemetry")}</p>
+        )}
       </div>
       {/* hydra: Metrics panel — what expert-metrics (ddvnguyen/expert-metrics)
           has recorded for this model. Colibri numbers come from measured

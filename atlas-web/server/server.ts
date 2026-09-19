@@ -153,7 +153,9 @@ const cache = new Map<string, Cached>()
 
 async function pollEngine(cfg: EngineCfg, mock?: MockEngine): Promise<Cached> {
   if (cfg.mode === "mock") {
-    return { payload: mock!.expertMeta(), ok: true, ts: Date.now() }
+    const fresh = { payload: mock!.expertMeta(), ok: true, ts: Date.now() }
+    cache.set(cfg.id, fresh)
+    return fresh
   }
   try {
     const res = await fetch(`${cfg.url}/experts`, { signal: AbortSignal.timeout(2000) })
@@ -162,7 +164,12 @@ async function pollEngine(cfg: EngineCfg, mock?: MockEngine): Promise<Cached> {
     if (typeof body.rows !== "number" || typeof body.cols !== "number" || typeof body.map !== "string") {
       throw new Error("engine payload is not Stage B shape")
     }
-    return { payload: body, ok: true, ts: Date.now() }
+    // hydra: cache the success so a later engine outage keeps serving the
+    // last frame with ok:false instead of a bare 502 (was: cache.get with
+    // no matching cache.set — the fallback path was dead code).
+    const fresh = { payload: body, ok: true, ts: Date.now() }
+    cache.set(cfg.id, fresh)
+    return fresh
   } catch (err) {
     const last = cache.get(cfg.id)
     if (last?.payload) return { ...last, ok: false, ts: Date.now() }
