@@ -1677,3 +1677,60 @@ FORWARDED QUESTIONS: (1) D4a as #151-branch-(c) evidence vs era-mix confound; (2
 boot boundary survive a suspect binary; (3) B2' path — hold until fresh build-e0 then re-run five legs
 on the new base (also makes the curve E1-comparable), or rebuild merge-full-equivalent first.
 === END §27a ===
+
+=== SECTION 28: CONTAMINATION LEDGER (mtimes read off disk) + B3 BRIDGE CONTROL PRE-REGISTERED + §27 AMENDMENTS (architect; commit timestamp is the single clock) ===
+
+CONTAMINATION ONSET: 2026-09-19 09:22:43 — mtime of build-merge-full/bin/libggml-base.so.0.13.1 +
+libggml-cuda.so.0.13.1 (so/.so.0 repointed). Pilot ggml in same dir is libggml-base.so.0.23.0 @ Sept-17
+(DIFFERENT SONAME); libllama.so.0.4.0 stayed Sept-17 pilot => D0/D4a binary was pilot libllama calling
+EPIC ggml across an ABI boundary; ggml.c:6214 lives in the swapped library.
+LEDGER: a7-C/S1/S1b (08:54:27/08:55:55/08:57:23) CLEAN; armB-B3 (09:18:21) CLEAN; armB-B1 (09:19:50)
+CLEAN; armB-B2-4/8/14/22 (09:20:04-09:20:38) CLEAN (VOID for ncm, unrelated); armB2p-D0 (09:29:32) VOID
+CONTAMINATED; armB2p2-D4a (09:42) VOID CONTAMINATED. CAMPAIGN NUMBERS SAFE — provably, not by assertion.
+Caveat: rests on mtimes (mtime-preserving copy could defeat it) — exactly the hole the stamp closes.
+
+(1) D4a is NOT branch-(c) evidence — fully confounded. BUT it kills branch (a) independently: 12 CUDA0
+expert overrides = GPU-resident experts, crashed identically; the all-host story is dead either way.
+#151 AS FILED STATES AN UNSUPPORTED ROOT CAUSE — ARCHITECT'S OWN ERROR, named as such (ruled a root cause
+from a stack trace against source verified and a binary not verified, same turn the fingerprint gate was
+minted). CORRECT #151: retitle to the signature (ggml.c:6214 GGML_ASSERT(state->ne[0]==S_v*S_v*H) in
+fit-check graph_reserve), cause UNATTRIBUTED pending clean-base repro, record D4a counter-evidence +
+contamination ledger.
+(2) BOOT BOUNDARY STRUCK: perfectly confounded — every booting leg (26/40 host) before 09:22:43, every
+aborting leg (44/48 host) after; zero legs cross the design; host-count and binary era collinear at 100%.
+Ordering artifact, not a finding. Worker's forensic instinct commended; the inference was unavailable
+without the mtimes.
+(3) B2' HELD ENTIRELY. ONE BUILD, NOT TWO: rebased epic/148 @ 86af0c9af = campaign lineage, so a fresh
+stamped build from it IS the merge-full-equivalent — the new measurement base for BOTH B2' and E1 (curve
+directly E1-comparable). DO NOT ASSUME IT REPRODUCES: BRIDGE CONTROL B3 on the new base BEFORE any B2'
+leg (B3 chosen: only leg with a clean cross-session replicate, 27.2832 -> 27.3789 +0.35%).
+BRIDGE PRE-REGISTRATION — four branches, conservative default:
+  (a) within ±2.4% of 27.3789 -> base CERTIFIED, campaign numbers carry forward, B2' proceeds.
+  (b) outside the band -> base differs materially; HALT, re-derive anchors before E1.
+  (c) does not boot -> assert is NOT era-mix but LINEAGE-INTRINSIC; #151 reopens with a real cause; B2'
+      stays blocked.
+  ANY OTHER OUTCOME (boots but fingerprint / graphs-reused / VRAM footprint differs) resolves to (b),
+  NOT (a) — the out-of-frame hole is closed by construction (unregistered case lands conservative).
+  ARCHITECT PREDICTION: (a) — "my last three predictions were wrong, so the pre-registration is doing the
+  work here, not the guess."
+
+AMENDMENTS:
+  1. D0 RESTORED — the strike rested on a false premise. B2' is six legs again (D0/D4a/D8a/D4b/D14/D22);
+     the §27 "no measured zero anchor" consequence WITHDRAWN.
+  2. NEW GATE — BINARY IDENTITY PER LEG AT LAUNCH: leg script cats the PROVENANCE stamp; aborts if
+     missing or CONTAMINATED; aborts if ANY object in the build dir is NEWER THAN THE STAMP. Stamp must
+     record the NEWEST OBJECT MTIME, not the stamp-writing time (current stamp's date is AFTER the
+     09:22:43 relink, so it cannot bound the contamination window). One-command version of the forensics
+     just done by hand.
+  3. MEASUREMENT BUILD DIRS ARE IMMUTABLE AFTER STAMPING. Never relink objects into one. Fresh dir per
+     base, always.
+  4. LLAMA_BUILD_UI=OFF approved (mirror merge-full).
+
+ACK: builder continuation APPROVED as planned with amendments 2-4 folded in — replay WIP commit, wipe +
+fresh-configure, STAMP, then BRIDGE CONTROL B3 BEFORE E0 VERIFY LEGS (the bridge certifies the base for
+E0 and B2' simultaneously — not extra rig time). Worker commended (two clean first-leg stops + the
+boundary observation that exposed the collinearity).
+E1 TIMING DESIGN REVIEW: unblocked by the rebase, RE-BLOCKED behind the bridge control — route to the
+architect when B3 clears.
+
+=== END SECTION 28 ===
