@@ -3065,3 +3065,34 @@ write-up. HOLD: whether 3060 is the right head home = OWNER DECISION (banked VRA
 taking it to owner). Proceed CUDA1 as specified; amendment may arrive before legs run. Ladder/placement
 UNAFFECTED (-devd changes device LIST, not expert placement). All §68c else stands.
 === END §68d ===
+
+=== §68e: ARCHITECT — OWNER-CHALLENGED; ARM RESTRUCTURED; LADDER DEAD; PRIOR-PERF ANCHOR WAS A COMMENT ===
+Owner: "we used able test MTP on 3060 with 17-24 tok/s why now we can not". Architect went to artifacts;
+owner RIGHT. LEADER'S ANCHOR WAS WRONG: "0.68 acceptance, 5.89 t/s N=28" was a COMMENT HEADER in
+run-mtp-q4-debug-off.sh quoting EARLIER sub-phase phase-mtp2q4 — not a measurement. ACTUAL eval decode
+rates (same dir): mtp-q4-cacheon-n32 19.85, mtp-q4-cacheoff-n36 20.95, mtp-q4-debug-off 21.34,
+n3rerun 22.30 tok/s; acceptance 0.86897 (126/145, mean 2.73). RULE (repeat of §56): A NUMBER FROM A
+COMMENT IS NOT A MEASUREMENT — cite the log line or do not cite.
+PROVEN CONFIG (21.34 tok/s): CUDA_VISIBLE_DEVICES=1 (3060 ALONE), --cpu-moe (ALL experts CPU),
+--override-tensor per_layer_token_embd=CPU, --split-mode layer -fit off -ngl 99 -c 81920 --parallel 1
+--flash-attn on --jinja -t 6 --experimental-logs --load-mode none --decode-overlap --ple-prefetch
+--moe-expert-cache-size 0 --spec-draft-moe-expert-cache-size 0 --spec-type draft-mtp --spec-draft-model
+Q4_K_M --spec-draft-n-max 2 --spec-draft-ngl 99. Log proves overlap: "decode overlap: MTP draft enabled
+after target acceptance". Single device => n_devices==1 => overlap TRUE (§68d confirmed other direction)
++ borrowed target tensors same device => nothing crosses x4 bus. §65a placement would have: disabled
+overlap + straddled bus + fought head for VRAM. THE VRAM LADDER EXISTED ONLY BECAUSE OF THAT PLACEMENT.
+LADDER DEAD. ACTUAL GAP: MTP-OFF half NEVER ran — /tmp/opencode/controls C1/C2 (--cpu-moe
+--decode-overlap, no MTP) BOTH CRASH: "backend sampling enabled, device input checked after prefill" =>
+post_decode() failed: failed to queue decode overlap batch. --decode-overlap WITHOUT draft = broken.
+Owner's question (with vs without MTP at proven config) NEVER ANSWERED. THAT is the job.
+ARM 1 (PRIMARY): single device, proven config, NO ladder/placement/VRAM arithmetic. L1 MTP OFF x2 =
+proven MINUS all --spec* MINUS --decode-overlap (REQUIRED — C1/C2 crash; state config difference openly:
+"MTP+overlap vs neither"). L2 MTP ON Q4 x3 = proven VERBATIM (reproduction check, expect ~21). L3 MTP ON
+Q8 x3 = head swapped; no expert competition at DEV=1 so should fit; if not, report and drop L3
+(secondary). Replicates 2/3/3. ctx 81920 (§67 n_ctx 8192 ruling WITHDRAWN for this arm). NO -devd
+(single device). Capture per leg: acceptance, "decode overlap:" line, eval tok/s, gates, unfiltered logs.
+ARM 2 (SECONDARY, DEFERRED until owner has Arm 1 answer): both-GPU placement + MTP combo — where §68d
+-devd + borrowed-tensor bus problem live. CONTEXT (not a controlled comparison, do not editorialize):
+21.34 = one 3060, all experts CPU, MTP; 27.73 = D22 both GPUs 22 expert layers, MTP off — MTP alone
+within ~23% of the whole placement campaign's buy.
+=== END §68e ===
