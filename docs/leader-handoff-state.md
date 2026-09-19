@@ -3681,3 +3681,24 @@ direction, supports mechanism). CPU% series in load-*.tsv.
 NEXT (pre-authorized by §80 on separation): P_mid = ncmoe 44 (4 layers, closest to 0-7 midpoint),
 n=3 interleaved among themselves, linearity test vs linear prediction 13.989 (4/7 of the effect).
 === END §80-exec ===
+
+=== §81 EXEC COMPLETE: CURVE IS LINEAR — PLACEMENT IS A FIRST-CLASS LEVER; PCIe gen1 BENIGN ===
+DESIGN: interleaved [P0, Pmid] x3 (fresh P0 replicates per cycle), ctx 16384, MTP-off, fingerprint
+verified per leg, all gates green. P0 now n=6 across ~65 min: 13.1761/12.8547/13.2371/13.1083/
+13.2649/13.1311 => median 13.1536, minmax 12.8547-13.2649 — STABLE, no time drift across session.
+P_mid = ncmoe 44 (4 layers, blk.44-47 CUDA0, 12 tensors): 14.0290 / 14.1292 / 13.7644 => median
+14.0290, minmax 13.7644-14.1292 (±1.3%). Buffer 7,175.54 = 3,425.54 + 4x937.5 EXACT.
+LINEARITY VERDICT (pre-registered bins §81): linear prediction 13.9893 (P0-n3 basis) / 13.9795
+(P0-n6 basis); P_mid 14.0290 = +0.29-0.35% off the line => LINEAR BIN. Not >14.3 (concave), not
+<13.6 (convex). Full curve 0L 13.15-13.18 -> 4L 14.03 -> 7L 14.60; per-layer slope 0.203-0.213
+tok/s consistent at midpoint. => PLACEMENT IS A FIRST-CLASS LEVER; full placement projects +70-75%;
+next arm is HEADROOM (KV quantisation, bigger card), not placement tuning.
+PCIe dmon (§81 free measurement): PARSE ERROR FIRST PASS ($7/$8 vs actual "Idx rxpci txpci" = $2/$3
+— first parse falsely all-zero; caught, fixed, re-parsed; instrument lesson noted). CORRECT: peak_rx
+450-521 MB/s TRANSIENT bursts (45-52% of gen1-x4 ~1 GB/s ceiling, non-sustained), sustained mean_rx
+2.13-2.21 / mean_tx 1.25-1.34 MB/s = 0.2% of ceiling. VERDICT (b) BENIGN: gen1 is a CONSEQUENCE (no
+sustained traffic to uptrain), not a cause. FAIL disjunct RETIRED; PCIe arm NOT opened. Prefill
+collapse stays unexplained-but-benign (clocks/power PASS + link benign). Pmid prefill 5.02-5.03 —
+tracks the same direction (P0 4.70 -> Pmax 5.41).
+RAW: place-ladder/{resp,srv,dmon,gen}-PL-*; dmon n=880/leg x6.
+=== END §81-exec ===
