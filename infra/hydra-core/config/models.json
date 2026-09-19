@@ -37,15 +37,15 @@
       "routing": { "auto_eligible": true, "min_prompt_tokens": 0, "max_prompt_tokens": 2048, "max_context_tokens": 128000, "requires_workers": [] },
       "engine_config": { "n_gpu_layers": 99, "n_cpu_moe": 8, "n_ctx": 128000, "override_tensors": ["blk.*.ffn_*_exps.weight=CPU"], "spec_type": "draft-mtp", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75, "spec_draft_ngl": 0 }
     },
-    "moe-flashnext-solo": {
-      "description": "Qwen 3.8 Flash Next APEX-I Mini MoE, COMBINED-OT expert placement (D22: expert layers 0-9 CUDA0, 10-21 CUDA1, 22-47 CPU; all non-expert on CUDA0). Provenance: sweep D0->D22 (bank #31a), 27.7349 tok/s = 1.90x vs default split, replicated 4x (27.2832/27.3789/27.4374/27.7349). override_tensors is ONE comma-packed entry = the engine wire shape (llama-hydra override_tensor parses comma-separated pattern=buft pairs; multi-entry newline-join would silently drop patterns - dead-regex hazard, bank #24). Measured WITHOUT MTP; spec interplay untested. VERIFY AT BOOT: verbose log must show 48 ffn_*_exps placement lines (10 CUDA0 / 12 CUDA1 / 26 CPU) - count them, never trust a silent regex.",
+    "moe-flashnext-combined": {
+      "description": "Qwen 3.8 Flash Next APEX-I Mini MoE, COMBINED-OT expert placement (D22: expert layers 0-9 CUDA0, 10-21 CUDA1, 22-47 CPU; all non-expert on CUDA0). Provenance: sweep D0->D22 (bank #31a), 27.7349 tok/s = 1.90x vs default split, replicated 4x (27.2832/27.3789/27.4374/27.7349). override_tensors is ONE comma-packed entry = the engine wire shape (llama-hydra override_tensor parses comma-separated pattern=buft pairs; multi-entry newline-join would silently drop patterns - dead-regex hazard, bank #24). Measured WITHOUT MTP; spec interplay untested. n_ctx 8192 = the measured value; 32768 deployer-tunable UNTESTED (KV-sizing follow-up). VERIFY AT BOOT: verbose log must show 48 ffn_*_exps placement lines (10 CUDA0 / 12 CUDA1 / 26 CPU) - count them, never trust a silent regex.",
       "prefill_alias": "qwen3.8-flashnext-mini",
       "decode_alias": "qwen3.8-flashnext-mini",
       "load_time_s": 150,
       "quality_tier": 1,
       "requirements": { "min_vram_mb": 12000, "required_capabilities": 7, "peer_requirements": { "min_vram_mb": 12000, "required_capabilities": 7 } },
-      "routing": { "auto_eligible": true, "default_eligible": false, "min_prompt_tokens": 0, "max_prompt_tokens": 999999, "max_context_tokens": 32768, "requires_workers": ["rtx3060"] },
-      "engine_config": { "n_gpu_layers": 99, "n_ctx": 32768, "override_tensors": ["blk\\.[0-9]\\.ffn_.*_exps=CUDA0,blk\\.(1[0-9]|2[0-1])\\.ffn_.*_exps=CUDA1,blk\\.(2[2-9]|3[0-9]|4[0-7])\\.ffn_.*_exps=CPU"] }
+      "routing": { "auto_eligible": true, "default_eligible": false, "min_prompt_tokens": 0, "max_prompt_tokens": 999999, "max_context_tokens": 8192, "requires_workers": ["rtx3060"] },
+      "engine_config": { "n_gpu_layers": 99, "n_ctx": 8192, "override_tensors": ["blk\\.[0-9]\\.ffn_.*_exps=CUDA0,blk\\.(1[0-9]|2[0-1])\\.ffn_.*_exps=CUDA1,blk\\.(2[2-9]|3[0-9]|4[0-7])\\.ffn_.*_exps=CPU"] }
     },
     "moe-35b-pd": {
       "description": "Qwen 3.6 35B-A3B MoE, P/D split (RTX prefill Q3_K-mini + P100 decode Q5_K-balanced)",
