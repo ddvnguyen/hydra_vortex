@@ -3044,3 +3044,24 @@ banner says unlikely: 10,923-10,644 leaves ~279 for compute; if present, pin + r
 the campaign placement model). Gate fixes accepted+banked. Probe alloc measurement 2,647.04 MiB
 exactly = head weights at model load.
 === END §68c ===
+
+=== §68d: ARCHITECT — TWO DEFECTS IN §65a COMPOSITION (OWNER-TRIGGERED), BLOCKING UNTIL PATCHED ===
+OWNER asked why this arm runs multi-device when prior MTP runs were DEV=1. Architect read source:
+FINDING 1 (silent overlap kill): draft_overlap_supported() speculative.cpp:1555-1562 returns FALSE if
+llama_model_n_devices(draft model) != 1 — and it counts the CONFIGURED DEVICE LIST (llama-model.cpp:3279
+model->devices.size()), NOT where tensors landed. CVD unpinned => draft devices.size()==2 => MTP
+decode-overlap OFF, silently, no warning. -otd does NOT fix (buft overrides move tensors, don't shrink
+device list). FIX: `-devd CUDA1` (verified common/arg.cpp:4358 --spec-draft-device) on EVERY MTP-ON leg;
+KEEP -otd (different jobs). VERIFY: devices=[...] SPC_TRC at speculative.cpp:220/:1417 must read single
+device, else leg VOID. Capture overlap engagement: n_overlap_discarded counter + "MTP decode overlap"
+SPC_DBG (experimental-logs already on). NO LEG COUNTS UNLESS LOG PROVES OVERLAP STATE ONE WAY OR OTHER.
+FINDING 2 (borrowed-tensor PCIe confound): shared head BORROWS target's token_embd/output/output_norm
+pointers (llama-model-loader.cpp borrow_shared_tensor; throws without target). Our -ot only overrides
+ffn_.*_exps => output/output_norm follow -ngl 99 => CUDA0 (5060 Ti). Head on CUDA1 => every draft step's
+vocab-sized output projection straddles the bus; 3060 = PCIe x4, 5060 Ti = x8 (measured). C3-class:
+acceptance looks healthy while throughput conversion dies on the bus — §67 acceptance guard does NOT
+catch this. Capture PCIe traffic if possible (nvidia-smi dmon rx/tx); otherwise named confound in
+write-up. HOLD: whether 3060 is the right head home = OWNER DECISION (banked VRAM reservation; architect
+taking it to owner). Proceed CUDA1 as specified; amendment may arrive before legs run. Ladder/placement
+UNAFFECTED (-devd changes device LIST, not expert placement). All §68c else stands.
+=== END §68d ===
