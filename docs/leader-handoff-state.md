@@ -2888,3 +2888,39 @@ follow-up which deserves 'solo'). STANDING RULE (generalized): a config PR must 
 form that was measured, OR carry a boot-verification leg proving the shipped form produces the
 measured placement.
 === END §62 ===
+=== §65: OWNER-DIRECTED MTP A/B ARM — D22 RULED OUT; STEP 0 LOCATE ARTIFACT (ADDENDUM INCLUDED) ===
+OWNER (verbatim): "D22 is wrong config to try. ensure handoff to leader to test MTP now. I want to know
+how good our implement with and without MTP." D22 RULED OUT for any purpose incl. reference legs — its
+12 CUDA1 layers consume 10,644 of 12,288 MiB on the 3060 (blk.10-21 @887/layer), no room for the MTP
+head. Standing constraint: N parked 38-42 = owner decision (MTP head + context VRAM). MTP-capable
+artifact for this model WAS TESTED BEFORE (owner) — not new conversion work.
+STEP 0 (BLOCKING, NO RIG TIME): locate the MTP GGUF. Search /mnt/WorkDisk/LLM-Models, /mnt/SSD,
+conversion logs, baseline-qwen4exp-mtp lineage tooling (#28243 shared MTP modules + gguf-py). Confirm
+by nextn TENSOR NAMES, never filename; current 6-shard has ZERO nextn = negative control. FOUND -> step
+1; NOT FOUND -> STOP AND REPORT (re-conversion separately scoped, no improvising).
+STEP 1: head byte cost off load banner; max_cuda1_layers = floor((12288 - head_MiB - 144 - 512)/887);
+CUDA0 keeps blk.0-9 (9,756 MiB measured) + non-expert. REPORT DERIVATION BEFORE ANY LEG.
+STEP 2 A/B: placement CONSTANT, MTP the only variable; same MTP GGUF both legs, flag-only toggle.
+TRAPS: (1) never MTP-on@new vs MTP-off@D22; (2) MTP-off leg = MTP-capable artifact with MTP disabled,
+NEVER the non-MTP GGUF. REPLICATES: >=3 MTP-on, 2 MTP-off; +/-2.4% band DOES NOT APPLY to MTP-on —
+establish its own band; draft acceptance rate = first-class covariate + content_len + decode-CPU%.
+GATES ALL STANDING: provenance, quiescence load<=4 HARD FAIL, override-verify exact counts,
+fingerprint, graphs-reused, unfiltered logs, exact allocation lines. NO BUILDS during rig — absolute.
+PRE-REGISTERED: A) >=+30% tg healthy (27B +53% ref); B) +5..+30% underperforming, check acceptance
+first; C) <+5% or negative = implementation/acceptance problem; D) boot fail or ZERO draft activity =
+VOID NOT A RESULT. Architect predicts band A, 0-for-6 this session — record, do not weight. Draft
+activity log-check REQUIRED before any MTP attribution enters the bank. REPORT RAW FIRST.
+PR #780 PARALLEL: D4 (n_ctx 8192, commit 93746a72a pushed) + D7 (renamed moe-flashnext-combined)
+DONE; D6 boot-verify SUPERSEDED/BLOCKED by this ruling (its leg was a D22 boot); add MTP-ABSENT
+BASELINE label NOT HONOURING THE 3060 MTP RESERVATION; merge owner-gated. Issues #781 (newline-join
+bug) + #782 (D10a solo follow-up) filed.
+SCOPE DECOUPLING: six-thinking-hats skill authorized for fork-decisions when architect unavailable;
+run, bank synthesis, proceed, flag for review; does not override gates.
+ADDENDUM CARRIES FORWARD FROM THE STOPPED D22 PROBE (method facts, bank): (1) llama-server =
+build-merge-full/bin/llama-server = the EXACT sweep harness; the override pattern resolves 3 expert
+tensors per layer (30 CUDA0 + 36 CUDA1 lines = 10:12 layers = D22 mapping CONFIRMED on the deployment
+surface — the comma-packed form maps correctly; only its ALLOCATION at perplexity-shaped probes
+failed, which is a probe-design artifact: perplexity allocates a logits buffer the bench/server legs
+never had). (2) Wait-for-listening-line fix KEPT for every MTP leg; a load timeout is NOT band D —
+band D = genuine boot failure or zero draft activity only.
+=== END §65 ===
