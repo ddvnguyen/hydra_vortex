@@ -3468,3 +3468,34 @@ NEXT-LEVEL OPTION (architect ruling needed): relink experiment — swap the 07:5
 recovery build tree (or rebuild ONLY moe-cache.cu from 24cfdb962 source into the 0fc51e039 build) to
 isolate (b) directly without touching anything else.
 === END §75c-hunt ===
+
+=== §75 RESULT: S-b CONFIRMED (4.70) + THE PREDICTION FALSIFIES THE UNIVERSAL READING + MECHANISM SHARPENS ===
+PROBE (build-recover-24cfdb962, macro ON, 767-token/max_tokens=1, DEV=1): "prompt eval time =
+163349.67 ms / 767 tokens (212.97 ms per token, 4.70 tokens per second)" = S-b. Whole chain
+0fc51e039..12f294335 uniformly slow => per §75c the fast 09:25 state is OFF-CHAIN (uncommitted
+worktree content, "backup:" commits captured it only partially/later).
+PREDICTION CHECK (§75b asked to be told if wrong): decode:3378 ABSENT in new prefill (0 lines) —
+prediction CONFIRMED for the reconstruction. BUT THE OLD LOG'S 223 ubatch lines COME FROM
+site=decode:3378 DURING PREFILL (the n=2->42->209->512->4 sequence IS the prefill batch trace) with
+slots=0 EXPLICIT. Per the :3406 formula (use_verification_intent = has_execution_intent && (domain !=
+MAIN || moe_verification_grouped)), decode:3378 during prefill with slots=0 requires domain != MAIN
+or a DIFFERENT FORMULA in the 09:25 source. The architect's rule: "if decode:3378 shows up in
+prefill, my reading is wrong — tell me immediately." IT SHOWS UP — IN THE 09:25 BINARY. The §75b
+"route inert in prefill" is TRUE for every COMMITTED state and FALSE for the 09:25 binary. => The
+intermediate (07:55) llama-context.cpp differed from 24cfdb962's committed version in the INTENT
+FORMULA/DOMAIN LOGIC: the 09:25 binary took the VERIFICATION-INTENT DISPATCH (execution_intent ->
+process_ubatch :3530) during prefill; every committed state takes the LEGACY path (nullptr intent).
+MECHANISM CANDIDATE SHARPENED: LEGACY prefill dispatch (all committed states, slots=0) = SLOW;
+verification-intent dispatch (09:25 intermediate only) = FAST. The uncommitted llama-context.cpp
+delta between the 09:25 tree and 24cfdb962 is the cause candidate — never committed, but THE 07:55
+llama-context.cpp.o SURVIVES in build-gs-cuda1322 (one of the 308 cluster) holding the compiled
+fast-path logic, and its .d file names the source path.
+RECOVERABILITY OPTIONS (architect ruling): (a) disassemble/diff the 07:55 llama-context.cpp.o against
+a 24cfdb962-compiled one to extract the formula difference; (b) rebuild with the 07:55 .o swapped in
+for llama-context.cpp.o only (object-level transplant) = a 09:25-equivalent binary without the source;
+(c) check editor/swap/backup files for the lost llama-context.cpp intermediate. (b) is the most
+direct: object-level restoration of the lost source state.
+S-a/S-b/S-c resolution: S-b as re-registered (informative-strong: fast state off-chain). Repeat of the
+probe unnecessary (S-b expected). The probe's ubatch trace: 0 lines total (consistent: legacy path,
+no draft steps in probe).
+=== END §75-result ===
