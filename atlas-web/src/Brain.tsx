@@ -17,8 +17,22 @@ interface AtlasGeometry {
   n_expert_used: number
 }
 interface ExpertMap { rows: number; cols: number; map: string; hits: string; seq: number; geometry?: AtlasGeometry }
-// hydra: spec/reliability from our experts.json (observability tier, #175)
-interface AtlasEntry { affinity: Record<string, number>; entropy: number; top: string; label: string; spec?: number; reliability?: string }
+// hydra: spec/reliability from our experts.json (observability tier, #175);
+// schema v2 adds the expert-metrics families (ddvnguyen/expert-metrics):
+// reap (Cerebras gate×activation saliency) and edge0 (prerouter predictability)
+// — null until those observers are wired; the UI shows honest not-wired badges.
+interface AtlasEntry {
+  affinity: Record<string, number>; entropy: number; top: string; label: string
+  spec?: number; reliability?: string; weak?: boolean
+  reap?: { saliency?: number; layer_utilization?: number; routing_collapse_rank?: number } | null
+  edge0?: { predictability?: number; prefetch_gain?: number } | null
+}
+// hydra: expert-metrics provenance block (schema v2) rendered in the Metrics panel
+interface AtlasProvenance {
+  engine_id?: string; model_hash?: string; telemetry_present?: boolean
+  gates?: { replication?: boolean; category_floor?: boolean; lop_validated?: boolean; null_tested?: boolean }
+  categories_missing?: string[]
+}
 
 const TIER_KEYS = ["tier.disk", "tier.ram", "tier.vram"] as const
 const TIER_RGB: [number, number, number][] = [[58, 71, 80], [90, 155, 216], [78, 214, 165]]
@@ -43,6 +57,8 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
   const [data, setData] = useState<ExpertMap | null>(null)
   const [probeErr, setProbeErr] = useState(false)   // (#U3) surface /experts failures instead of an endless spinner
   const [atlas, setAtlas] = useState<Record<string, AtlasEntry> | null>(null)
+  // hydra: Metrics panel state (expert-metrics schema v2 provenance + summary)
+  const [metrics, setMetrics] = useState<{ prov: AtlasProvenance; fams: { specialists: number; generalists: number; weak: number; meanSpec: number; reap: number; edge0: number } } | null>(null)
   const [tip, setTip] = useState<{ x: number; y: number; row: number; col: number; tier: number; heat: number } | null>(null)
   const pulseRef = useRef<Float32Array | null>(null)   // per-expert pulse intensity 0..1
   const lastSeq = useRef(0)
@@ -58,6 +74,18 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
     fetch(endpoint(base, "/experts.json" + engQ), { headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} })
       .then(r => r.ok ? r.json() : null).then(d => {
         if (d?.experts) setAtlas(d.experts)
+        // hydra: schema v2 — derive the Metrics-panel family summary. Families
+        // whose observers are not wired stay null in the artifact; count them
+        // and show an honest not-wired badge rather than a zero.
+        if (d?.experts && d?.provenance) {
+          const es = Object.values(d.experts) as AtlasEntry[]
+          const specs = es.filter(e => e.label.startsWith("specialist"))
+          const weak = es.filter(e => e.weak)
+          const meanSpec = es.reduce((a, e) => a + (e.spec ?? 0), 0) / Math.max(es.length, 1)
+          const reap = es.filter(e => e.reap).length
+          const edge0 = es.filter(e => e.edge0).length
+          setMetrics({ prov: d.provenance, fams: { specialists: specs.length, generalists: es.length - specs.length, weak: weak.length, meanSpec, reap, edge0 } })
+        } else setMetrics(null)
       }).catch(() => {})
   }, [baseUrl, apiKey, engQ])
 
@@ -178,6 +206,53 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
         <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={() => setTip(null)} />
         {!connected && <p className="runtime-unavailable">{t("brain.connectHint")}</p>}
       </div>
+      {/* hydra: Metrics panel — what expert-metrics (ddvnguyen/expert-metrics)
+          has recorded for this model. Colibri numbers come from measured
+          spectra; REAP/Edge0 show honest not-wired badges until their
+          observers land (never fabricated zeros). */}
+      {metrics && (
+        <div className="brain-metrics">
+          <div className="brain-metrics-prov">
+            <span className="brain-metrics-title">{t("brain.metrics.title")}</span>
+            <span>{metrics.prov.model_hash}</span>
+            <span>engine {metrics.prov.engine_id}</span>
+            <span className={metrics.prov.telemetry_present ? "brain-metrics-ok" : "brain-metrics-off"}>
+              {metrics.prov.telemetry_present ? t("brain.metrics.telemetryOn") : t("brain.metrics.telemetryOff")}
+            </span>
+            {metrics.prov.gates && (
+              <span>
+                {(["replication", "category_floor", "lop_validated", "null_tested"] as const)
+                  .map(g => <em key={g} className={metrics.prov.gates?.[g] ? "brain-metrics-ok" : "brain-metrics-off"}>{t(`brain.metrics.gate.${g}`)}</em>)}
+              </span>
+            )}
+            {metrics.prov.categories_missing?.length ? (
+              <span className="brain-metrics-off">{t("brain.metrics.missing", { cats: metrics.prov.categories_missing.join(", ") })}</span>
+            ) : null}
+          </div>
+          <div className="brain-metrics-cards">
+            <div className="brain-metrics-card">
+              <div className="brain-metrics-card-title">{t("brain.metrics.colibri")}</div>
+              <div>{t("brain.metrics.specialists", { n: metrics.fams.specialists })} · {t("brain.metrics.generalists", { n: metrics.fams.generalists })}</div>
+              <div>{t("brain.metrics.weak", { n: metrics.fams.weak })}</div>
+              <div>{t("brain.metrics.meanSpec", { v: metrics.fams.meanSpec.toFixed(2) })}</div>
+            </div>
+            <div className="brain-metrics-card">
+              <div className="brain-metrics-card-title">{t("brain.metrics.reap")}</div>
+              {metrics.fams.reap > 0
+                ? <div>{t("brain.metrics.wired", { n: metrics.fams.reap })}</div>
+                : <div className="brain-metrics-off">{t("brain.metrics.notWired")}</div>}
+              <div className="brain-metrics-src">{t("brain.metrics.reapSrc")}</div>
+            </div>
+            <div className="brain-metrics-card">
+              <div className="brain-metrics-card-title">{t("brain.metrics.edge0")}</div>
+              {metrics.fams.edge0 > 0
+                ? <div>{t("brain.metrics.wired", { n: metrics.fams.edge0 })}</div>
+                : <div className="brain-metrics-off">{t("brain.metrics.notWired")}</div>}
+              <div className="brain-metrics-src">{t("brain.metrics.edge0Src")}</div>
+            </div>
+          </div>
+        </div>
+      )}
       {tip && data && (() => {
         // hydra: per-model layer mapping from the Stage B geometry payload
         // (design §D) — replaces Colibri's hardcoded GLM `row+3` / MTP-row 78
@@ -208,6 +283,13 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
             )}
             <div className="brain-tip-aff">{Object.entries(entry.affinity).sort((a, b) => b[1] - a[1]).slice(0, 3)
               .map(([c, p]) => `${c} ${Math.round(p * 100)}%`).join(" · ")}</div>
+            {/* hydra: expert-metrics families in the tooltip when recorded */}
+            {entry.reap && typeof entry.reap.saliency === "number" && (
+              <div>REAP saliency <strong>{entry.reap.saliency.toExponential(2)}</strong></div>
+            )}
+            {entry.edge0 && typeof entry.edge0.predictability === "number" && (
+              <div>Edge0 predict <strong>{Math.round(entry.edge0.predictability * 100)}%</strong></div>
+            )}
           </> : <div className="brain-tip-role">{t(depthRoleKey(tip.row, data.rows, isMtp))}</div>}
         </div>
         )

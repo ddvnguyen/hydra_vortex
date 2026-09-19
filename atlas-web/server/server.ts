@@ -210,7 +210,14 @@ async function route(req: Request): Promise<Response> {
     if (!cfg) return new Response(`unknown engine ${id}`, { status: 404, headers: cors() })
     if (cfg.mode === "engine" && !cfg.atlas) {
       // engine-hosted artifact (fork ships the two atlas files, design §C/D)
-      const res = await fetch(`${cfg.url}/experts.json`, { signal: AbortSignal.timeout(2000) })
+      let res: Response
+      try {
+        res = await fetch(`${cfg.url}/experts.json`, { signal: AbortSignal.timeout(2000) })
+      } catch {
+        // engine unreachable/timed out — surface 504, never an unhandled 500
+        return new Response(JSON.stringify({ error: `engine ${cfg.id} unreachable for experts.json` }),
+          { status: 504, headers: { ...cors(), "Content-Type": "application/json" } })
+      }
       // propagate upstream status — an engine without its atlas artifact must
       // surface as 404, never as a misleading 200 (engine-id refusal discipline)
       return new Response(res.body, { status: res.status, headers: { ...cors(), "Content-Type": "application/json" } })

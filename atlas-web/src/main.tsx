@@ -11,6 +11,9 @@ import { getHealth } from "./lib/api"
 
 function Root() {
   const [connected, setConnected] = useState(false)
+  // hydra: ?engine=<id> selects one engine when the atlas service aggregates
+  // many (server-side selection exists; the UI must pass it through too).
+  const [engineId] = useState(() => new URLSearchParams(window.location.search).get("engine") ?? undefined)
 
   useEffect(() => {
     let alive = true
@@ -27,7 +30,7 @@ function Root() {
   return (
     <LocaleProvider>
       <ErrorBoundary>
-        <Brain baseUrl="" apiKey="" connected={connected} />
+        <Brain baseUrl="" apiKey="" connected={connected} engineId={engineId} />
       </ErrorBoundary>
     </LocaleProvider>
   )
