@@ -189,6 +189,40 @@ async function route(req: Request): Promise<Response> {
   const url = new URL(req.url)
   const path = url.pathname
 
+  // hydra: engine proxy (#776) — forwards <method> /engine-proxy/<id>/<path...>
+  // to the configured engine's <url>/<path...>, streaming the body through
+  // untouched (SSE included). Engines are server-configured and resolved by
+  // id only — never an open proxy. Mock engines have no HTTP surface: 404.
+  if (path === "/engine-proxy" || path.startsWith("/engine-proxy/")) {
+    const segs = path.split("/").filter(Boolean)
+    const cfg = engines.find(e => e.id === decodeURIComponent(segs[1] ?? ""))
+    if (!cfg) return new Response(`unknown engine ${segs[1] ?? ""}`, { status: 404, headers: cors() })
+    if (cfg.mode !== "engine" || !cfg.url) {
+      return new Response(`engine ${cfg.id} has no HTTP surface (mock)`, { status: 404, headers: cors() })
+    }
+    const target = `${cfg.url}/${segs.slice(2).join("/")}${url.search}`
+    const fwdHeaders = new Headers(req.headers)
+    fwdHeaders.delete("host")
+    fwdHeaders.delete("content-length")
+    try {
+      const upstream = await fetch(target, {
+        method: req.method,
+        headers: fwdHeaders,
+        body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
+        // @ts-expect-error Bun supports duplex streaming on RequestInit
+        duplex: req.method === "GET" || req.method === "HEAD" ? undefined : "half",
+        signal: AbortSignal.timeout(1000 * 60 * 10),
+      })
+      const outHeaders = new Headers(upstream.headers)
+      outHeaders.set("Access-Control-Allow-Origin", "*")
+      outHeaders.set("Cache-Control", "no-store")
+      return new Response(upstream.body, { status: upstream.status, headers: outHeaders })
+    } catch (err) {
+      return new Response(JSON.stringify({ error: `engine ${cfg.id} unreachable for ${segs.slice(2).join("/")}` }),
+        { status: 504, headers: { ...cors(), "Content-Type": "application/json" } })
+    }
+  }
+
   if (path === "/api/engines") {
     return Response.json({ engines: engines.map(({ id, name, mode }) => ({ id, name, mode })) }, { headers: cors() })
   }

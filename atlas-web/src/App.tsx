@@ -1,14 +1,15 @@
 // hydra: atlas shell — Colibri App.tsx visual shell ported verbatim-in-structure
-// (JustVugg/colibri @ a8f2ca62), with the chat/profiling tabs scoped OUT per the
-// separated-service design (docs/design-colibri-expert-atlas.md §D: "Brain +
-// health poll, chats/profiling out"). The Connection section becomes an engine
-// selector over the atlas service's aggregated engines; everything the Brain
-// page needs is served by atlas-web, so no /v1 endpoint or API key exists here.
+// (JustVugg/colibri @ a8f2ca62). Chat (#776) and Profiling (#777) tabs are now
+// live: Chat talks to the selected engine through the server-side
+// /engine-proxy/<id>/v1 route; Profiling polls the same proxy base and shows
+// the honest empty state when the engine has no /profile endpoint.
 import { useCallback, useEffect, useState } from "react"
 import { Activity, BrainCircuit, Feather, Gauge, Link2, MessageSquareText, MonitorDot, RefreshCw } from "lucide-react"
 
 import { useLocale } from "./i18n"
 import { Brain } from "./Brain"
+import { Chat } from "./Chat"
+import { Profiling } from "./Profiling"
 
 // atlas service /health shape (server/server.ts) — deliberately not the
 // Colibri HealthResponse: the atlas aggregates engines instead of exposing one.
@@ -18,6 +19,7 @@ interface AtlasHealth { status: string; engines: AtlasEngine[] }
 export default function App() {
   const { t, locale, setLocale, locales } = useLocale()
 
+  const [view, setView] = useState<"chat" | "brain" | "profiling">("brain")
   const [health, setHealth] = useState<AtlasHealth | null>(null)
   const [healthError, setHealthError] = useState("")
   // ?engine=<id> is the initial selection; the sidebar selector overrides it.
@@ -42,6 +44,11 @@ export default function App() {
   // When the URL didn't pin an engine, follow the first healthy one but keep
   // the selection stable across health refreshes once the user picked one.
   const activeId = engineId ?? selected?.id
+  const active = engines.find(e => e.id === activeId)
+  // hydra: chat/profiling speak to the engine through the server-side proxy
+  // (browser cannot reach the localhost-only engine). Mock engines have no
+  // HTTP surface — Chat shows the honest not-connected state for those.
+  const proxyBase = active && active.mode === "engine" ? `/engine-proxy/${active.id}/v1` : ""
 
   return (
     <div className="app-shell">
@@ -100,19 +107,20 @@ export default function App() {
             <strong>{activeId ?? "—"}</strong>
           </div>
           <div className="view-tabs">
-            {/* chat/profiling stay visible-but-disabled: this separated service
-                serves the Brain atlas only (design §D) — honest chrome, no fake
-                features. */}
-            <button disabled title={t("nav.outOfScope")}><MessageSquareText className="size-3.5" /> {t("nav.chat")}</button>
-            <button className="active"><BrainCircuit className="size-3.5" /> {t("nav.brain")}</button>
-            <button disabled title={t("nav.outOfScope")}><Gauge className="size-3.5" /> {t("nav.profiling")}</button>
+            <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}><MessageSquareText className="size-3.5" /> {t("nav.chat")}</button>
+            <button className={view === "brain" ? "active" : ""} onClick={() => setView("brain")}><BrainCircuit className="size-3.5" /> {t("nav.brain")}</button>
+            <button className={view === "profiling" ? "active" : ""} onClick={() => setView("profiling")}><Gauge className="size-3.5" /> {t("nav.profiling")}</button>
           </div>
           <div className="top-actions">
             <button className="atlas-refresh" onClick={refreshHealth} title={t("sidebar.atlasRefresh")}><RefreshCw className="size-3.5" /></button>
           </div>
         </header>
 
-        <Brain baseUrl="" apiKey="" connected={!!health?.status} engineId={activeId} />
+        {view === "chat"
+          ? <Chat baseUrl={proxyBase} apiKey="" connected={!!health?.status && !!proxyBase} />
+          : view === "profiling"
+            ? <Profiling baseUrl={proxyBase} apiKey="" connected={!!health?.status && !!proxyBase} />
+            : <Brain baseUrl="" apiKey="" connected={!!health?.status} engineId={activeId} />}
       </main>
     </div>
   )
