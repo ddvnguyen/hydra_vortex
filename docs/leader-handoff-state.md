@@ -2999,3 +2999,16 @@ REFUTED. STANDING RULE: EAGER BINARY BARRED from quality-gated measurement (no K
 comparison, no correctness claims) until the 24% PPL shift is attributed; throughput-only work may
 continue. Does not block MTP arm. Bank = §67.
 === END §67 ===
+
+=== §68: MTP WINDOW LAUNCH ATTEMPT — TRIGGER SHELL BUG FOUND+FIXED; CI LOAD FLICKERS BLOCK SUSTAINED WINDOW ===
+Auto-trigger ef8817a3aa0c NEVER COULD FIRE: `GPU=$(nvidia-smi ... | grep -c '[0-9]' || echo 1)` —
+grep -c PRINTS "0" and EXITS NONZERO on empty input, so GPU captured "0\n1" and never equaled "0".
+Structural bug, 55 min of waiting wasted. FIXED pattern for future arming: GPU=$(nvidia-smi
+--query-compute-apps=pid --format=csv,noheader 2>/dev/null); [ -z "$GPU" ] as the idle test.
+Manual launch attempt 21:51: gate correctly closed at load1=13.27 (CI load flickers 1.14<->13.27 in
+~2-min waves — shorter than a single ~2-min model load). Sustained quiet needed: either CI finishes/
+pauses, or owner pauses the runner for ~1h (their runner, their call — gate relaxation is owner/
+architect territory per §59). Leg set fully pre-staged in armMTPab.sh; launch = one command when the
+window is real. LESSON CANDIDATE: a trigger's own condition needs the same test discipline as the
+legs it gates — the grep-exit-code idiom broke the condition silently (tests passed, fires never).
+=== END §68 ===
