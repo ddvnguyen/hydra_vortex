@@ -2505,3 +2505,30 @@ empty pin file retained. Rig FREE. NEXT (leader): dispatch read-only SOURCE-FACT
 in dryrun+pins arm mode, what executes (attach_device? D2D copies? weight backup? allocations?)
 — so architect can redesign the discriminator from code facts, not conjecture. Bank = §45.
 === END §45 ===
+
+=== §46: ARM-PATH SOURCE FACTS (ARM_ARMPATH_FACTS_DONE) — BOTH §44 CANDIDATES CONTRADICTED ===
+Rig worker read-only pass (ggml-cuda.cu E0 block :1940-2090 + hook :2093-2130, hydra-e1.h 714 lines,
+hydra-pins.h 139 lines; worktree M dirtiness flagged, nothing written). FACTS:
+ARM IS LAZY — first mul_mat_id via call_once (cu:2031-33); nothing at process start/model load.
+ARM-TIME WORK (hydra_e0_init cu:2002-2029): getenv + host file parse into std::vector + set flags
+(:2010-11) + one fprintf + atexit(hydra_e0_dump). ZERO device calls.
+attach_device NEVER runs at arm time (sole caller e1.h:541 = full-engage path; dryrun early-return
+:519-524 precedes). No weight backups (all copies live inside attach_device :288-330). No device
+allocations (all cudaMalloc/Event inside attach_device :261-334 + disarmed-only stock events :436-37;
+E0 block has zero malloc/Memcpy/Event — grep-verified). attach_host = site-match only (NEVER fired in
+KL legs — layer-31 host-resident, corroborated by logs: lookups=0), host-only, no CUDA.
+PER-INVOCATION armed+no-match: call_once flag check + stock_begin immediate return (e1.h:401-03) +
+wanted() cached bools + dim reads + match() strstr on node names (:485-97). ZERO data-pointer derefs,
+zero counter writes.
+Q4 SCHEDULER/ALLOCATOR: arm path issues ZERO CUDA/ggml/scheduler/allocator calls — no
+malloc/free/Event/Memcpy/stream/MemGetInfo (fit_check sole-caller = attach_device e1.h:245), no pool
+reservation, no backend assignment, no graph interaction. Persistent state = heap vectors + 3 statics
++ 1 atexit. Disarmed-only lazy event pool returns BEFORE it when armed (stock_begin :401-03).
+CONSEQUENCE (facts-level): §44 candidate (i) WEIGHT MODIFICATION contradicted — attach_device never
+executes in dryrun; §44 candidate (ii) ALLOCATION/SCHEDULING-ORDER contradicted — zero allocations or
+scheduler calls at arm. The 0.0329 armed-vs-floor perturbation (§43) has NO remaining code-path
+mechanism among the two registered candidates. Architect must rule: reopen mechanism ledger (third
+candidate, e.g. host-timing-amplified GPU nondeterminism — note §40 P4 100%-load-lowest-KLD weakly
+argues against) / require armed-pair REPLICATE (§43 was single-pair by design; its median 23x floor
+argues systemic not tail) / or other. No interpretation banked. Bank = §46.
+=== END §46 ===
