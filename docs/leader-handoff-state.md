@@ -2226,3 +2226,29 @@ SEQUENCE: paper re-derivation first (zero rig) + KL isolation in parallel (rig f
 legs. E1 harness (pools, ring channels, counters, gates) REUSABLE, not sunk. ARM 008 STOP untriggered.
 Re-derivation -> OWNER with architect recommendation. Bank = §37.
 === END §37 ===
+
+=== §37a: KL-PATH RULING (manual disarmed pairs) + §37b RE-DERIVATION LANDED — BUILD CASE REFUTED, OWNER DECISION TERRITORY ===
+§37a KL-PATH: rig worker stopped per stop condition — committed kl-gate.sh @ 87e897d34 CANNOT do
+disarmed-vs-disarmed (pin-file required arg; step 2 unconditionally arms; no servers/ports in flow —
+llama-perplexity direct dump/compare). PRIOR-READING CORRECTION BANKED: 0.0716 FAIL was
+ARMED(E0-pins+E1-dryrun)-vs-DISARMED (kl-cmp.log shows pins loaded 384) — NO prior build-vs-itself
+number exists; isolation question genuinely unanswered. Ground facts: E1 engages iff hydra_e0_armed AND
+HYDRA_E1_DRYRUN/TIMING (hydra-e1.h hydra_e1_wanted()); corpus in-repo scripts/eval/wikitext-2-raw/
+wiki.test.raw; binary 4c2b9cb67 --check exit 0. LEADER RULING: MANUAL DISARMED PAIRS (question was
+authorized, not a script invocation; measurement not gate => condition-3 auditability doesn't bind;
+script --disarmed-compare amendment rides E1 PR). Permission-cross + re-send GO (second crossing this
+session; worker stood down correctly rather than improvise). KL isolation 3 pairs RUNNING on rig
+(ARM_KLISOL_DONE tag; distribution min/median/max + outlier policy).
+§37b RE-DERIVATION LANDED (collector, zero rig): doc docs/analysis/coverage-per-mib-derivation.md
+(uncommitted; full method + identity checks + sensitivities + assumptions ledger). NUMBERS
+(coverage-per-MiB pinning vs D22): slab h>=0.42 1.535/1.467 (coding/general); D22-budget fill 1.506/1.423;
+top-42-experts 1.938/1.814; unweighted 1.03-1.05; tok/s-per-MiB ~1.02. BRANCH READ: NOTHING reaches >=3x
+under any variant => BUILD CASE REFUTED. h-weighted straddles 1.5 by subject (coding marginal-edge,
+general mostly retire); unweighted ~1.03 = retire; retired-vs-marginal hinges on subject/weighting/reading
+— all reported. 5.7x refuted under EVERY variant. Reconciliations: D22 = L0-21 expert bytes exactly
+(20,400); CUDA0=L0-9/CUDA1=L10-21 exactly; architect ~1.15x = tok/s-per-MiB (~1.02) — convergent verdict
+zone. Collector flags: unexplained exact coding==general Sum-h-equality over L0-21 (recorded as found);
+phase-0 N uniform-regime-transfer assumption; adaptive-alloc correctly not used for slab membership.
+ROUTE: architect validates + attaches recommendation -> OWNER package (epic->main gate territory; line
+retirement = OWNER call). Bank = §37a/§37b.
+=== END §37a/§37b ===
