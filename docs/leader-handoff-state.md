@@ -1865,3 +1865,24 @@ seven are in and the freeze list is closed. B2' yield -> architect raw when the 
 settle #151 on the three registered branches.
 
 === END SECTION 30 ===
+
+=== §30b: B2' YIELD (confounded) + E1 DESIGN CLOSED + LEADER SEQUENCING ERROR OWNED ===
+B2' six legs RAN, all gates pass (provenance be4676f11 clean, override-verify exact, fingerprint OK,
+D1/D2 clean, zero crashes) — BOTH METHOD CONTROLS MISSED: D8a 11.8480 vs C = -50.48%; D22 16.7709 vs
+S1 = -38.53%. Pre-registered rule fired: curve-fitting STOPPED. Raw: D0 14.1568, D4a 22.3940, D8a
+11.8480, D4b 9.8755 (below D0 despite 4 GPU layers), D14 12.6443, D22 16.7709. Graphs 164-212 (certified
+family 198/201).
+CONFOUND — LEADER ERROR OWNED: the pristine shelf build ran on the box 10:06 -> session end (full CUDA
+build, compilers at 100-233% CPU; sar %idle 83.8 -> 60.4). I authorized "non-blocking CPU-only
+background" WHILE rig legs ran — on a CPU-bound rig that is an oxymoron. Controls' miss is CONFOUNDED
+(method-vs-contention indistinguishable). NEW STANDING RULE: NO builds/compiles during a rig session —
+"CPU-only" is not a scheduling class on this box; rig sessions own the machine.
+#151 INPUTS (boot facts, confound-immune): D0 BOOTED + D4a BOOTED on certified base => three-branch
+"both boot" => era-mix confirmed => close as build-hygiene (formalization: architect).
+D22 VRAM 14539/10923 = +6.44% vs bridge-implied — OUTSIDE ±1%; worker mapping note (CUDA0-first mapping
+differs; per-layer expert quants heterogeneous: blk.0 gate 306 MiB iq3_xxs vs blk.30 206 MiB iq2_xxs) —
+attribution: architect.
+E1 DESIGN CLOSED: revised draft committed (157 lines); leader grep verified all seven anchors present
+(S1x2, S2x4, S3x2, A4x6, A5x1, A6x1, A7x5, freeze x4) => per §30 no re-review needed; E1 implementation
+may start (CPU code; builds wait for quiet box per new rule). Pristine shelf artifact COMPLETE (EXIT=0).
+=== END §30b ===
