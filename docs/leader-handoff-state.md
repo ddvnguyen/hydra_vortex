@@ -3753,3 +3753,29 @@ BUDGET SANITY (to be measured, not assumed): 28,672 total - ~5,000-5,500 overhea
 ~24 layers. DESIGN NOTE + measured dual H + contiguity-verification method due to architect BEFORE
 leg 1. HOLDING.
 === END §83 ===
+
+=== §83 EXEC: DUAL P0 PROBE — MEASURED H; HYBRID ARCHITECTURE CONFIRMED; DESIGN NOTE ===
+DUAL P0 PROBE (CVD unset, -ts 1,1, ncmoe 48, ctx 16384, verbose, fp 895c522343eeaa53):
+nvidia-smi steady: CUDA0 = 2,998 MiB, CUDA1 = 2,513 MiB => MEASURED H0 = 13,313, H1 = 9,775.
+Expert budget = (13,313-700)+(9,775-700) = 21,688 MiB => /937.5 = 23.1 => P_max ~ 22-23 (architect
+sanity ~24 confirmed within noise; boot decides). ARCHITECTURE FACT: model is HYBRID attention+
+recurrent — llama_memory_recurrent RS buffers (CUDA0 59.58 + CUDA1 52.99 MiB) + KV only 48 MiB
+TOTAL at ctx 16384 (24+24). KV even cheaper than the §82 estimate; the 1,638 MiB ctx-delta was
+mostly compute-reserve scaling. Context cheapness is structural.
+CONTIGUITY INSTRUMENT PROBLEM + SOLUTION: default-placement tensor lines at this verbosity do NOT
+print per-tensor device (only overridden tensors do). SOLUTION: CONSTRUCT contiguity explicitly —
+every leg carries full -ot placement for ALL weights (non-expert ranges + expert dose patterns);
+each -ot match prints "overridden to <device>" => per-tensor device map grep-able from the log =>
+verification = extract map, assert ONE crossing (blk.23|24 boundary), 3 tensors/layer dose counts.
+No assumption that -ts default is contiguous (it may be, but it is not verifiable at this verbosity
+— so we make it explicit instead).
+DOSE PATTERNS (experts fill from the END, matching single-device ladder semantics):
+P0 = -ncmoe 48 (all CPU_Mapped). P7 = -ot 'blk\.(4[1-7])\.ffn_.*_exps.*=CUDA1, ffn_.*_exps.*=CPU'.
+P14 = 'blk\.(3[4-9]|4[0-7])\.ffn_.*_exps.*=CUDA1, ffn_.*_exps.*=CPU'. P_max = CUDA0 13 layers
+(blk.25-37, 12,187 MiB) + CUDA1 9-10 (blk.38-47, 8,437-9,375) — final by boot, ~22-23 total.
+Non-expert split: 'blk\.([01]?[0-9]|2[0-3])\..*=CUDA0, blk\.(2[4-9]|3[0-9]|4[0-7])\..*=CUDA1'.
+FLAGS VERIFIED at 86af0c9af: -dev/--device arg.cpp:2744; -ts arg.cpp:2837; -ot LIST arg.cpp:2760
+(parse_tensor_buffer_overrides, comma-separated pattern=buf type); -ncmoe 2773; -cmoe 2766.
+-dmon on EVERY leg (benign verdict does NOT transfer); report if sustained rx/tx nears ~1 GB/s.
+DESIGN NOTE SENT — HOLDING for architect confirm before leg 1.
+=== END §83-exec ===
