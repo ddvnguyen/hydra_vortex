@@ -2477,3 +2477,14 @@ architect's own miss, reachability-precheck rule minted; 7 assets retained (even
 channels, fail-closed gates, calibrated KL instrument, proven...). [Ruling tail truncated in transit;
 sections 8+/Q5 to be reconciled at next consult.] Bank = §44.
 === END §44 ===
+
+=== §44a: BUILDER SESSION TERMINALLY DEAD — SUCCESSOR SPAWNED (2nd muse-spark session death) ===
+Builder 2ac20e22 hit the SAME non-retryable 400 (reasoning encrypted_content not issued to caller)
+on the post-mortem dispatch — identical signature to late rig worker f4419282 (§41a). PATTERN: long-
+lived muse-spark/opencode sessions die on reasoning-state invalidation; retry futile (confirmed on
+rig worker). ARCHIVED. Successor 7fe20b8a-e06d-457d-8761-ae117e6cea60 spawned (same provider/model,
+fresh session; roster = 6: lead/architect/collector/summarizer/rig 89d25210/builder 7fe20b8a). Init
+prompt: bank §§30-44 + fork code as context, standing rules (bank-cited claims, commit-only-on-
+approval, stamp-after-commit), post-mortem task per §44 spec (draft only, no commit, mechanism
+marked OPEN with discriminator in-flight). ROLES UNCHANGED otherwise.
+=== END §44a ===
