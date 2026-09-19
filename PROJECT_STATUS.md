@@ -339,9 +339,11 @@ premise CONFIRMED (S1 27.2832 tok/s = 1.140×C, CPU%dec 673→510).
 | Step | What | Status |
 |------|------|--------|
 | E0 | Pin-load, timing rings, lookup counters, gate | ▶ PR #152 open (3 commits, closes #142/#143/#144; #146 closed as moved) |
-| E1 | One-site spike timing (paper before number) | ⏳ Design draft `docs/e1-spike-timing-design-DRAFT.md`, awaiting architect review |
+| E1 | One-site spike timing (paper before number) | ▶ Parts 1+2 built+stamped clean (`81f92d5bc`, `739084e4a`; stamp `tree=clean objects=1789790508`); §34a re-freeze layer 31, amended protocol pending architect clearance — NO LEGS yet |
 
-Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.sh`.
+Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.sh`, `scripts/hydra-kl-gate.sh`.
+
+§34a banked: E1 site re-frozen layer 15 → **31** (`ffn_moe_up-31`, host band blk.22–47; L15 GPU-resident, wrong direction). L31 highest-h in-band both corpora (0.766/0.742); GGUF up IQ2_XXS (MMVQ+dequant covered in-tree). Verdict is DIFFERENTIAL (armed−disarmed, stock `stock` branch in E0 ring). Amended order: dry-run → precheck(done) → KL → type-(ii) VOID-gate → A6 graphs-OFF both sides → disarmed-site timing → type-(i) → differential verdict. Placement prerequisite: E1 legs MUST carry the 288-override heterogeneous placement.
 
 ## Leader Contract
 
