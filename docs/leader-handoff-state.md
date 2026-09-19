@@ -3012,3 +3012,14 @@ architect territory per §59). Leg set fully pre-staged in armMTPab.sh; launch =
 window is real. LESSON CANDIDATE: a trigger's own condition needs the same test discipline as the
 legs it gates — the grep-exit-code idiom broke the condition silently (tests passed, fires never).
 === END §68 ===
+
+=== §68a: GATE LADDER CLEARED — LEG SET RUNNING (Q8 fit-probe in flight) ===
+Two silent gate failures fixed in sequence at 22:02-22:08: (1) reconstructed PROVENANCE lacked the
+machine `objects=<epoch>` line the checker requires => checker read empty stamped => "stale". FIXED
+by appending the REAL newest-object mtime (1789537451) with a non-fabrication note + architect
+co-sign — checker PASSES. (2) trigger GPU-idle test bug (§68). LESSON: a reconstructed provenance
+file must satisfy the checker's machine contract, not just document history — prose without the
+contract fields fails closed (correctly). Window REAL this time: load1 1.42/3.05 at launch, GPU
+idle. Q8-probe = fit probe (banner arithmetic: 3060 head margin 617 MiB; draft-KV placement check
+per §67). Binary sha 235600ace98dc017cbfa35caaef81890c7e02e8abd976b54744f1565082ae293.
+=== END §68a ===
