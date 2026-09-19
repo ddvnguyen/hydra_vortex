@@ -1482,3 +1482,15 @@ turn (number reported in the ledger + issue). BANKED B1/B2/B3 PRE-REGISTRATION I
 === END SECTION 25 ===
 
 === §25 DISPATCH RECORD (same clock day): epic issue #148; branch epic/148-per-expert-backend-selection off main; Track 1 -> builder 2ac20e22 (E0: #142+#143+#144+#146-in-scope, test-asserted engagement counter, PR into epic branch); Track 2 -> NEW rig worker f4419282-41e6-4de3-8ca8-55fc4f024a98 (B-series six legs, raw yield, ARM_B_DONE). Roster now 6. ===
+
+=== §25a: E0 BASE + TRAILER RULINGS (builder recon STOP, dispatch-blocking; leader answers banked) ===
+(1) E0 BASE: epic/148 branch (off main) has ZERO pilot code — pilot a744d8019 lives on fork/gather-mmvq-wip
+    (base thousands of lines diverged, merged-decode era). RULING: port pilot onto epic FIRST — cherry-pick
+    a744d8019 as the FIRST epic sub-PR (base-landing PR), resolve conflicts once at the base, E0 instruments
+    on top. Catastrophic-conflict escape: STOP and report the conflict surface, no hand-merged semantics.
+    SIDE EFFECT: PR #134's content is preserved in the epic — its disposition (owner word pending) loses
+    nothing by closing later.
+(2) COMMIT TRAILER: fork AGENTS.md governs the fork — Assisted-by, Co-authored-by FORBIDDEN. The main-repo
+    convention (Co-Authored-By) was misapplied in the dispatch; repo rules win. Conventional-commit format
+    still applies. STANDING for all fork work.
+=== END §25a ===
