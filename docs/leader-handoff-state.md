@@ -3585,3 +3585,23 @@ load/RAM/swap/tmpfs covariates, unfiltered logs, exact allocation lines, content
 fused fingerprint 895c522343eeaa53 on every leg, no builds in session. Run P0, report H+P_max, HOLD
 for one-line confirm before P_max.
 === END §77 ===
+
+=== §78 EXEC: P0 ANCHOR RUN (build-g3, DEV=1, ncmoe 48, MTP Q4) — RAW BANKED ===
+LEG PLACE-P0 (fingerprint 895c522343eeaa53, gate-ok load 0.52/0.65): decode 15.9591 tok/s, accept
+0.92806 (129/139, mean 2.84), prefill 4.61 tok/s (216.93 ms/tok — collapse follows even THIS binary:
+noise-free 86af0c9af, no fork extras, no moe-cache => §76 "unnamed resource limit" is binary-
+independent, NOT fork code). LEG PLACE-P0v (same config + --verbose; --lv flag ABSENT at 86af0c9af,
+used --verbose after arg.cpp:3928 check): decode 11.5623 tok/s, accept 0.52332 (101/193, mean 2.04),
+prefill 4.61 (216.75). => BIMODALITY REPRODUCED ON BUILD-G3: identical config/binary gave accept
+0.928 vs 0.523 and tok/s tracks acceptance (15.96 vs 11.56). THIRD binary showing both clusters =>
+the WIP-nondeterminism hypothesis (§71 R-arm open question) is DEAD: bimodality is universal on this
+box/config, not fork/WIP-caused. CONSEQUENCE FOR §78 STEP-5 GATE: run-to-run spread on this config
+is acceptance-bimodal, ~11.6-16.0 tok/s (~±16%) — the "beyond run-to-run spread" bar must use THIS
+spread, measured on P0 itself, not a tighter historical band.
+ALLOCATION LINES (P0v, CUDA0 = the 3060 under CVD=1): offloaded 50/50 layers; CUDA0 model buffer
+1808.36 MiB; KV 160.00 MiB; compute 185.02 x2; CUDA_Host output 0.95 + compute 105.02 x2. DRAFT
+model buffer NOT itemized in verbose log (gap stated). Swap 23/23 FULL again at leg start (RAM_free
+76G) — refilled since the §73 drain; covariate noted.
+NEXT: load-only nvidia-smi probe on the 3060 for measured H (device truth incl. draft+context),
+derive P_max, ONE-LINE report to architect, HOLD before P_max leg per §78.
+=== END §78-exec ===
