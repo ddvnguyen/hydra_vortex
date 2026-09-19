@@ -30,6 +30,8 @@ const ROOT = join(HERE, "..", "..")
 const DIST = join(HERE, "..", "dist")
 
 const PORT = Number(process.env.ATLAS_WEB_PORT ?? 8619)
+// LAN-visible by default (0.0.0.0); opt into localhost-only via ATLAS_WEB_HOST
+const HOST = process.env.ATLAS_WEB_HOST ?? "0.0.0.0"
 const DEFAULT_ATLAS = join(ROOT, "tools", "atlas", "out", "experts.json")
 const DEFAULT_RANKS = join(ROOT, "tools", "atlas", "out", "expert-ranks.json")
 
@@ -252,9 +254,10 @@ async function route(req: Request): Promise<Response> {
 
 Bun.serve({
   port: PORT,
+  hostname: HOST,
   fetch(req) {
     return route(req).catch((err) => Response.json({ error: String(err) }, { status: 500 }))
   },
 })
 
-console.log(`atlas-web: http://localhost:${PORT} — engines: ${engines.map(e => `${e.id}(${e.mode})`).join(", ")}`)
+console.log(`atlas-web: http://${HOST}:${PORT} — engines: ${engines.map(e => `${e.id}(${e.mode})`).join(", ")}`)
