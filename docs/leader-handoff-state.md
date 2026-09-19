@@ -3725,3 +3725,31 @@ RECOMMENDATION TO ARCHITECT: open lever (3) — dual-GPU engineering-maximum arm
 baseline, -devd CUDA1 + -otd draft pinning, never plotted against the single-device ladder) as the
 only route to 10-12+ layers and the knee. Awaiting §83.
 === END §82-exec ===
+
+=== §83: DUAL-GPU ARM APPROVED — DESIGN NOTE IN PREP; FLAGS VERIFIED; CONTIGUITY MANDATORY ===
+APPROVED: lever (3) dual-GPU engineering-maximum arm. Ladder P0/P7/P14/P_max(~24) ALL dual-GPU
+(P0 too — second card's compute held constant; its speedup over single-device P0 is NOT a placement
+effect; never plot against the single-device ladder). P7 = bridge (slope vs 0.2065 tests cross-
+device cost; weak slope => rethink before P14). Knee pre-registered: s1=(P7-P0)/7, s2=(P14-P7)/7,
+s3=(P_max-P14)/(P_max-14); s3/s2 materially < s1 => KNEE FOUND => bounded engineering number (how
+much VRAM is worth buying); s1~s2~s3 => placement scales, recommend more VRAM. Decode-CPU% at every
+point — CPU% falling across P14/P_max = knee mechanism arriving BEFORE the slope flattens; flag
+immediately. Baseline: ~103-106% of one core, not lifted at 7.
+CONFIG CORRECTION (architect): -devd/-otd are DRAFT flags, MOOT here (MTP off; distinction banked,
+do not re-litigate). Main-model controls needed: --device/-dev (arg.cpp:2744 "<dev1,dev2,..>"),
+-ts/--tensor-split (arg.cpp:2837 "N0,N1,... fractions"), -ot list semantics (arg.cpp:2760
+"<pattern>=<buffer type>,..." — comma-separated, parse_tensor_buffer_overrides), -ncmoe, -ot regex.
+CONTIGUITY MANDATORY (the one way this arm quietly fails): 3060 = x4 gen1 ~1 GB/s; contiguous =
+ONE crossing per pass, interleaved = up to 48. Force contiguous, VERIFY from allocation/device lines
+per leg, do not assume. dmon on EVERY dual-GPU leg — §82 benign verdict does NOT transfer; report
+immediately if sustained rx/tx nears the ceiling.
+DISCIPLINE: MTP off, ctx 16384, fingerprint 895c522343eeaa53, override-verify 3 tensors/layer,
+quiescence, covariates, unfiltered logs, no builds, rule-5 satisfied for this binary. KV-quant
+excluded (lever 1 closed, measurement-only guard recorded).
+BANKED STRUCTURAL FACT (reusable): KV footprint tiny — hybrid/linear-attention architecture =>
+CONTEXT IS CHEAP: 81920 ≈ 2,020 MiB vs ~404 at 16384 = ~1.7 expert layers. Production trade for
+later; NOT a lever here.
+BUDGET SANITY (to be measured, not assumed): 28,672 total - ~5,000-5,500 overhead => ~23,000 =>
+~24 layers. DESIGN NOTE + measured dual H + contiguity-verification method due to architect BEFORE
+leg 1. HOLDING.
+=== END §83 ===
