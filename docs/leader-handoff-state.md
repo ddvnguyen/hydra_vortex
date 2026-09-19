@@ -3954,3 +3954,26 @@ C-P0 19.0734, C-Pmax 23.0901 (MTP-off).
 PRODUCTION-CTX COST: boot P0 at ctx 81920 on CUDA0, record used VRAM, report layers production
 context costs (3060 delta was ~1,638 MiB ≈ 1.7 layers). One boot alongside the MTP H probe.
 === END §88 ===
+
+=== §88 EXEC COMPLETE: MTP H + PRODUCTION-CTX COST + M-P0/M-P8 n=5 (NO-OVERLAP VARIANT) ===
+PROBES: MTP head on CUDA0 = 2,180 MiB total cost (7,366 used vs 5,186 MTP-off; head 1,818 + draft
+scratch/KV) => H = 8,945, budget 8,245 => P_max = 8 layers (blk.40-47 = 7,500; 9th would need
+8,437.5 > budget). Production-ctx boot: P0 at ctx 81920 = 6,824 used vs 5,186 at 16384 => delta
+1,638 MiB = 1.75 expert layers — IDENTICAL to the 3060 delta => ctx cost is compute-reserve
+scaling, card-independent. PRODUCTION ANSWER: ctx 81920 costs ~1.75 placement layers on CUDA0.
+M LEGS (n=5 interleaved, all VERIFY_OK dose asserts 0/8, fp 895c522343eeaa53, NO-OVERLAP MTP
+variant stated every line):
+M-P0  = 24.7848(acc 129/140=0.921) / 19.6176(109/178=0.612) / 21.0913(115/165=0.697) /
+        16.9167(97/202=0.480) / 17.8843(101/195=0.518) => median 19.6176, minmax 16.92-24.78.
+M-P8  = 24.8917(120/157=0.764) / 20.1865(99/199=0.497) / 21.1152(109/178=0.612) /
+        19.7303(100/197=0.508) / 20.0477(101/194=0.521) => median 20.1865, minmax 19.73-24.89.
+BIMODALITY BACK AS EXPECTED: tok/s tracks acceptance run-by-run (16.92@0.48 -> 24.78@0.92). Median
+acceptance ~0.55-0.61 per arm; lucky-run guard held (medians reported, not the 24.9 peak).
+VERDICT DATA (architect decides): MTP-off references C-P0 19.0734 / C-Pmax(11) 23.0901. (1) MTP's
+own contribution at 0 layers: 19.62 vs 19.07 = +2.9% median. (2) M-P8 20.19 vs M-P0 19.62 = +2.9%
+for 8 placed layers under MTP. (3) M-P8 20.19 < C-Pmax 23.09 — the head's 2,180 MiB (=3 layers
+~1.0-1.3 tok/s of placement) roughly CANCELS MTP's median gain; net ~wash-to-negative at median
+acceptance, positive only in high-acceptance runs (24.9 ≈ +5% over 23.09). MTP-off + 11 layers =
+the clean production config at ctx 16384. No-overlap floor stated: decode-overlap/ple-prefetch
+could change this — build-g3 lacks them.
+=== END §88-exec ===
