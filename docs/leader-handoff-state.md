@@ -4000,3 +4000,22 @@ asserts (P0=0+0), decode-scoped dmon, prefill first-class, fp per leg. Extrapola
 handed to owner — measured instead. Also tests whether the 0.42 late-segment slope survives the
 larger compute reserve.
 === END §89 ===
+
+=== §89 EXEC COMPLETE: THE PRODUCTION NUMBER, MEASURED ===
+CTX 81920, MTP OFF, CVD=0, fp 895c522343eeaa53, n=3 interleaved, all VERIFY_OK (P0=0, P9=9):
+X-P0 = 18.9342 / 19.5091 / 19.3863 => median 19.3863 (±1.5%)
+X-P9 = 22.1969 / 22.4534 / 22.2541 => median 22.2541 (±0.6%)
+=> **THE REAL PRODUCTION CONFIG: 22.2541 tok/s median at full ctx 81920 with 9/48 expert layers
+placed on the 5060 Ti** — the extrapolation (~22.2 from the 1.75-layer constant) was SPOT ON; the
+production constant is validated end-to-end. Production slope = (22.2541-19.3863)/9 = 0.3187 tok/s/
+layer — in family with the 16k slope (0.3651 full-range / 0.3158 early segment); the larger compute
+reserve does NOT break the slope. ctx cost visible as expected: 22.25 vs 23.09 (16k, 11 layers) =
+dose -2 layers + ctx overhead ≈ -0.84. Prefill at production ctx stays fast: P0 122.5-123.0, P9
+138.9-141.6 tok/s (link mechanism holds at 81920). Decode-scoped dmon: mean_rx 1,990-3,395 MB/s —
+steady, ~3-5% of gen5 x16 ceiling, not binding.
+OWNER DELIVERABLE STATE (defensible, all measured): 22.25 tok/s decode at full production context,
+n=3, ±0.6%, on the 5060 Ti alone, MTP off; +15.2% over the same-config P0; prefill 122->141 tok/s.
+No-overlap MTP variant is a floor if MTP is ever revisited (acceptance-pinning = the lever worth
+20.2 vs 24.9).
+HOLDING for §90.
+=== END §89-exec ===
