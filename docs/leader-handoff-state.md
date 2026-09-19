@@ -3143,3 +3143,30 @@ load1=4.77 after r1; L2-r2/r3/L4/L3 not run. Architect notified; replication pen
 interpretation. Prior-run conditions per architect §69a: "mean 21.11" across 4 runs — same binary per
 proven script. In-session L2 replicates = the discriminator (cross-session confound vs config drift).
 === END §69 ===
+
+=== §70: ARCHITECT — HYPOTHESIS (b) CONFIRMED; 21.34 BINARY GONE; CROSS-SESSION VOID; MECHANISM REGISTERED ===
+TIMELINE: prior MTP runs 19.85-22.30 ran 2026-09-16 09:25:58-09:39:23; CMakeCache reconfigured 09:34:21
+(MID-SERIES); commit 12f294335 authored+committed 10:23:06 (T-2b counter + deferred-path, moe-cache.cu
++138); current bin relinked 12:44:05-11. The 09:25 binary IS GONE. "Same binary" was PATH identity, not
+BYTE identity. RULE (applies to architect equally — libllama-common 0.4.0/0.4.1 grep false-negative was
+the other instance): A BUILD DIRECTORY IS AN ADDRESS, NOT A BINARY. Identity = embedded commit + link
+mtime, CHECKED every time. §67 armed-but-disarmed hazard was live, not formality.
+VOID: all L1/L2 comparisons vs 19.85-22.30 and the "+75%" (WITHDRAWN to owner by architect). Those runs
+have no MTP-OFF counterpart on their own binary (C1/C2 crashed) — cannot anchor MTP gain either
+direction; may reflect faster binary, indistinguishable now. If 21s ever cited: attach word VOID.
+VALID: in-session matched pair on identical current binary: L1 12.0674 (11.8946, 12.2401) vs L2
+12.6331 (r1) => +4.7% pending r2/r3. THAT is the result.
+MECHANISM REGISTERED (C3 purest recorded form): acceptance 0.92143 > old 0.86897, mean len 2.84,
+overlap confirmed — machinery perfect, conversion ~nil. Spec-decode premise "verify-K costs ~1 decode"
+holds only when bandwidth-bound; under --cpu-moe bottleneck is CPU expert COMPUTE, per-token: 3-token
+verify ≈ 3x cost => net 2.84/3 ≈ 1.05x ≈ +5%. MEASURED +4.7%. Arithmetic fit to within noise —
+strongest mechanism fit of the campaign; consistent with CPU 97% / GPU 27% banked fact. Architect now
+1-for-8 registered (says register don't weight, try to REFUTE).
+FALSIFIABLE CROSS-ARM PREDICTION: MTP's gain should RISE as experts move to VRAM (CPU-compute-bound ->
+GPU-bandwidth-bound transition). Placement thesis and MTP question = SAME QUESTION, two sides. After
+MTP arm + §69 placement curve: architect adds joint placement x MTP point to test directly.
+FINISH SCOPE: L2-r2/r3 => L4 x2 (overlap ABSENT verified) => L3 x3 conditional. NEW per-leg: report
+PREFILL (prompt eval) tok/s alongside decode — prefill is batched CPU-MoE-bound; if mechanism right,
+prefill ≈ flat across L1/L2/L4 while decode moves. Do NOT chase lost binary (rebuild = between-
+sessions at most, not rig work, gates nothing). RAW FIRST.
+=== END §70 ===
