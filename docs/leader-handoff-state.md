@@ -1588,3 +1588,14 @@ cheap. D1/D2, serve-probe, decode-split CPU% exclusively, per-device VRAM + sm%,
 tokens, fresh server, unique port.
 
 === END SECTION 26 ===
+
+=== §26a: B2' STOPPED AT D0 (raw; rig released clean; architect redirect pending) ===
+D0 (anchor, all 48 expert layers -ot to CPU, NO ncm) BOOT_FAILURE: GGML_ASSERT ggml.c:6214
+(state->ne[0] == S_v*S_v*H) in ggml_gated_delta_net via build_delta_net_fused, during resolve_fused_ops
+("fused DeepSeek V4 HC support") / graph_reserve fit-check, ubatch n=4. Placement at death: 144
+CUDA_Host overrides, second loader pass never ran. B3 (same session, GPU-resident experts) cleared the
+same path. ONLY difference between every booting leg this week and D0: all-host expert placement.
+UNRUN: D8a/D4a/D4b/D14/D22. Worker stop-rule executed correctly (no improvisation, exact signature,
+rig free). Log: /tmp/opencode/armB2p-D0.server.log:2992. Same neighbourhood as #139/#149 — filing
+withheld pending architect ruling.
+=== END §26a ===
