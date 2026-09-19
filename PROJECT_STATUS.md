@@ -329,6 +329,20 @@ unconditionally while the engine still rejects `prompt.messages` — the only sh
 Hydra.Core sends — so any live node on this engine build fails every P/D chat
 request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 
+### Per-Expert Backend Selection (fork epic #148)
+
+E0 measurement foundation (pin-load arming + timing hooks + lookup counters +
+engagement gate), built fresh on `epic/148-per-expert-backend-selection`
+(86af0c9af); gather pilot superseded-by-design, not ported. Stage-1 pool
+premise CONFIRMED (S1 27.2832 tok/s = 1.140×C, CPU%dec 673→510).
+
+| Step | What | Status |
+|------|------|--------|
+| E0 | Pin-load, timing rings, lookup counters, gate | ▶ PR #152 open (3 commits, closes #142/#143/#144; #146 closed as moved) |
+| E1 | One-site spike timing (paper before number) | ⏳ Design draft `docs/e1-spike-timing-design-DRAFT.md`, awaiting architect review |
+
+Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.sh`.
+
 ## Leader Contract
 
 - **ADR 0002 signed 2026-08-21 (Option A):** `ddvnguyen ↔ muse-spark-1.2-contributor` — standing until superseded, scoped to **llama.cpp baseline (2×RTX vanilla, `Qwopus3.6`)** running authority (build `--parallel 8`, `infra/llama-baseline/` compose, ctx `98304→65536` yarn `scale 4`, harness `dsh`/`pi` via `:8080`). Revocable via doc removal + this file update; merges still require explicit user confirmation per `CLAUDE.md §4`. Hermes fleet `v2.1.1` stays superseded (`f8b322c73`). No GPG/HMAC. Ref: `docs/decisions/0002-leader-contract.md`.
@@ -357,6 +371,8 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 | P100 binary                  | ✅ llama-engine `6d00536` (build 9670) — switched from llama-server (was RPC-dead in router mode, #577). Boots Q5_K-Balanced, Hydra RPC :9502 up |
 | Merged DECODE prompt shape   | ✅ Coordinator sends bare messages array; engine now wraps it (fork PR #77). Before: `prompt_obj["n_predict"]` threw type_error on the array, silently swallowed by the RPC worker → connection leak → 180s coordinator timeout |
 | `/state/meta` model identity | ✅ Engine now returns tokenizer/model_name/quant/caps (fork PR #77); Gate A requires them |
+| Stage-1 pool anchor (S1 -t16) | 27.2832 tok/s, 1.140×C, CPU%dec 510, VRAM 13699/11809 |
+| BRIDGE B3 (E0 tree, disarmed) | ✅ 27.4374 tok/s (+0.21% vs anchor) — base CERTIFIED |
 | Worker lease on mid-pipeline cancel | ✅ FinalizeAsync called at both exit points (PR #541). Before: BusySince climbed unbounded until coordinator restart |
 | deploy-heads startup_failure | ✅ Root cause: caller workflow lacked `pull-requests: read` for the cross-repo reusable workflow's job-level `permissions` (PR #539) |
 | Head supervision             | ✅ Event-driven (stdout sentinel readiness + exit-event liveness), no HTTP poll (issue #538) |
