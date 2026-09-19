@@ -3616,3 +3616,22 @@ GPU). Boot allocation line will measure the real late-block bytes (delta vs 1808
 confirm before P2 leg. Curve dose 0->2 layers vs acceptance-bimodal spread ~±16% — separation
 unlikely; flagging now per §78 step-5 language.
 === END H-probe ===
+
+=== §79 EXEC: MTP-OFF ANCHOR + CTX CUT + P_max DERIVED (HOLDING FOR CONFIRM) ===
+RULING APPLIED: placement curve runs MTP-OFF (drop --spec-*); bimodality CLOSED as measurement
+condition (box+MTP property, third binary proof); §71 WIP-nondeterminism line DEAD; MTP x placement
+= follow-up arm AFTER slope exists; ladder n=3/point, MEDIAN + min-max; if MTP-off spread does NOT
+collapse => major finding, STOP.
+H MEASURED (load-only nvidia-smi, 3 steady readings each): MTP-off ctx 81920 => 6,811 used =>
+H = 5,477 (draft freed exactly 2,350 vs the 9,161 MTP anchor). 5 layers at 887 est => BELOW 6 =>
+STEP-2 CTX CUT TRIGGERED: ctx 16384 => 5,173 used => H = 7,115. Budget = 6,415. P_max = 7 layers
+(--n-cpu-moe 41) at 887-plateau est; cross-check vs largest known per-layer 1058.5 gives 6 => P_max
+in {6,7}, boot model-buffer line at first dosed leg decides (delta vs 1,808.36 measured late-block
+bytes; re-derive if blk.22-47 != ~887). P_mid = 3-4 layers proposed. LADDER: P0/P_mid/P_max at ctx
+16384 HELD CONSTANT, every result labelled "ctx 16384". nvidia-smi health (idle): CUDA1 PCIe x4 of
+card-max 16 = KNOWN slot wiring (not degradation), gen 1 idle = power saving, clocks/power/temp
+normal — nothing locked or capped; under-compute reading lands with leg 1. Prefill note recorded
+per architect: with --cpu-moe prefill IS expected CPU-bound; the lost 60 tok/s binary may not have
+run --cpu-moe at all (possibility recorded, §76 NOT reopened). ONE-LINE REPORT SENT, HOLDING before
+ladder legs.
+=== END §79-exec ===
