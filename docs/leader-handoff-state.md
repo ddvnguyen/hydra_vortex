@@ -2338,3 +2338,25 @@ LEADS the robustness section (gate needs only h-bar >= 0.2174 at N=38; cleared b
 owner reads. Owner package DELIVERED (turn 1167): decisions (a) land 1.90x -ot config, (b) build #132 for
 VRAM, (c) pending PR #134 / §21a / #153 continuation leg. KL isolation still RUNNING on rig. Bank = §39a.
 === END §39a ===
+
+=== §40: KL ISOLATION YIELD (ARM_KLISOL_DONE) — INSTRUMENT CALIBRATED ===
+4 disarmed-vs-disarmed pairs, build-e0 @ 4c2b9cb67 vs itself (stamp clean, provenance all 8 runs,
+sha256 e9a0b4c1ffbd...; disarm proof 0 [HYDRA e1] lines all 8). Teacher-forced, identical flags,
+head-600 corpus (88 chunks, sha 3cae5a0f02d4e1f8), ctx 512. KLD distribution: P1 0.000235±0.000044,
+P2 0.000939±0.000119, P3 0.000467±0.000059, P4 0.000249±0.000024 (P4 = outlier policy: P2 sat 2.03x
+the P1-P3 spread above nearest; P4 replicated P1, NOT P2 => tail event, not bimodal mode; nothing
+discarded). median 0.000358, absolute spread 0.000704. ARMED prior 0.071563 = 76x (vs P2) to 304x
+(vs P1) ABOVE this floor => the 0.0716 was ARMING EFFECT, not run-to-run nondeterminism. All pairs
+>=10x below the 0.01 gate threshold => gate was ~1 order too coarse; instrument floor now measured.
+Covariates: quiescence clean (baseline-only pre-run; no HOLD fires; zero run fails); during-run
+non-rig spikes incl. P4-cmp 100% indexer yet P4 read LOWEST => load not assigning KLD. P2's only
+distinctive covariate = background gh activity (unassigned cause, reported raw). [HYDRA e0] stats
+lines MISSING all 8 (HYDRA_E0_STATS unset in env; KL3 dump inherited it) — stats-only counters,
+numerics unaffected, covariate asymmetry vs KL3 disclosed. Harness bugs fixed in audit trail:
+quiescence hold self-match (ps|grep) => pgrep -f; libcudart.so.13 path => LD_LIBRARY_PATH fix;
+orphan full-corpus run killed pre-approval. Logs /tmp/opencode/armKLisol*.session.log,
+klisol-P{1..4}.{dump,cmp}.log + samplers; runner armKLisol.sh. Rig FREE, lock released, no strays.
+INTERPRETATION = ARCHITECT'S (worker raw, zero gloss). Forwarding for: KL leg closure ruling;
+bearing on D0 (expected: none — different instrument, contention already excluded by prefill
+paradox; mechanism still unattributed). Bank = §40.
+=== END §40 ===
