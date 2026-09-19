@@ -1812,3 +1812,56 @@ Rig released 02:52:43Z -> B2' six-leg session launched on certified base. Pristi
 in-flight (compile-only). E1 design draft committed (97 lines; amendment-1 constraint verified present
 by leader grep before routing) -> routed to architect. E1 code: NONE written.
 === END §29a ===
+
+=== SECTION 30: VRAM ATTRIBUTION (NOT benign — 3.0x snapshot-cache delta, certification stands, continuation-leg requirement) + E1 DESIGN APPROVED WITH SEVEN CHANGES (architect; commit timestamp is the single clock) ===
+
+VRAM -40 MiB ATTRIBUTION DONE — NOT BENIGN: every allocation line byte-identical between clean B3
+(pilot) and bridge B3 (certified) EXCEPT ONE — llama_kv_cache CUDA0 KV buffer 38.26 MiB (clean) vs
+12.76 MiB (bridge), same log line (5935), same filtered-layer pattern, same 12 unfiltered CUDA0 layers,
+identical n_ctx/n_ctx_seq/n_seq_max/kv_unified. It is the SECOND KV cache instance (102.00 MiB one
+identical in both), constructed t~0.35s. 38.26/12.76 = EXACTLY 3.0. A 3x difference in a secondary
+hybrid KV/CHECKPOINT-SNAPSHOT cache is not a rounding artifact — it is the K snapshot-slot dimension
+(same machinery as #469 trailing-token reuse and #641 hybrid checkpoint rewind, the two nastiest bugs in
+project history). Certification STANDS (0.29% << ±1%, +0.21%, fingerprint identical). BUT invisible to
+all planned legs (B2'/E1 = cold single-turn; snapshot slots bite on CONTINUATION and PROMPT-CACHE REUSE).
+NEW REQUIREMENT (not blocking E1): before the epic goes to the OWNER MERGE GATE, run one continuation/
+cache-reuse leg clean-vs-bridge. FILED (below). STANDING RULE FROM IT: the ±1% VRAM band caught this by
+ACCIDENT; a band on identical-vs-not would have caught it ON PURPOSE — allocation lines are compared
+EXACTLY going forward; any non-identical buffer is NAMED and ATTRIBUTED, not banded.
+
+E1 DESIGN: APPROVED with SEVEN required changes, three structural:
+  S1 — E1 at one site CANNOT be verdicted on throughput: 1 invocation of 144/token; prize 2.689 ms/token
+       /144 = 0.019 ms/token vs 36.45 ms baseline = 0.051% vs ±2.4% band = 47x BELOW RESOLUTION.
+       AMENDMENT 1 CORRECTED: same binary/stamp/session STANDS; disarmed control STANDS as a
+       NO-REGRESSION CHECK, not a gain check. E1's verdict = per-invocation us against 34.5, FULL STOP.
+       The report must say in its own words: E1 is a MECHANISM-COST GATE and does NOT test C3;
+       hits-convert-to-throughput is E2's job at 48-layer scope; NO ONE may read an E1 GO as evidence
+       for the ranking thesis (the owner's actual goal, still 0-for-3).
+  S2 — graph capture vs CUDA events are IN TENSION (events inside captured graph replay every launch;
+       pairing across in-flight replays ambiguous; timing can perturb capture). RESOLUTION — two leg
+       types on one binary: (i) timing ON / graphs OFF -> attribution us; (ii) timing OFF / graphs ON ->
+       no-regression throughput + graphs-reused gate. Report both. BIAS NAMED: graphs-off OVERSTATES
+       launch cost, biases toward NO-GO — the safe direction; a MARGINAL NO-GO IS NOT FINAL.
+  S3 — the 2k doubling is NOT excluded (exactly what killed the last attempt): a mul_mat_id-shaped
+       implementation computes all k per branch = 2k total, returns CORRECT results, yields a WRONG
+       verdict. REQUIRE: total expert-row work across both branches == k, enforced by a rows_computed
+       counter per invocation with HARD GATE rows_computed == 10 — a counter in the log, like the
+       engagement gate, not prose.
+  A4 — middle band UNREGISTERED: register <11.5 us GO; >34.5 us STOP; 11.5-34.5 us CONDITIONAL —
+       proceed to E2 timing harness ONLY, no correctness work, re-price at 144-invocation scope.
+       Asymmetry stated: scope only ADDS cost (144 scheduler switches), never removes it — a marginal
+       E1 predicts an E2 failure.
+  A5 — correctness gate AT E1: teacher-forced --kl-divergence armed vs disarmed (ships in fork,
+       perplexity.cpp:1949) — not sampled trajectories, not PPL, not char-position.
+  A6 — instrument negative control: armed+timing vs armed-no-timing, same binary; if the instrument
+       moves throughput, the us describe the instrument, not the mechanism.
+  A7 — label §7 scopes: the 78/144-invocation pricing is E2 pricing; E1 runs 1 — risk framing, not E1's
+       expected cost.
+  FREEZE LIST: keep the three open items; ADD the timing/graphs leg split (S2) + rows_computed gating
+  (S3). §8 stays — E1 still owes per-leg allocation reporting; the BASE attribution above is discharged.
+
+ROUTE TO BUILDER: approved — implement S1-S3 + A4-A7, return revised draft; NO re-review needed if all
+seven are in and the freeze list is closed. B2' yield -> architect raw when the session lands; D0/D4a
+settle #151 on the three registered branches.
+
+=== END SECTION 30 ===
