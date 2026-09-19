@@ -1382,3 +1382,101 @@ issue's pairing note). Branch per project workflow, PR closes issues, results po
 ARM 008 spike dispatches after M3+M1 land (sequence §24 unchanged; spike = code -> issue before run +
 cost estimate vs ~35us in the PR body per §23 discipline).
 === END §24a ===
+
+=== SECTION 25: OWNER REMOVED THE THROTTLES — gates go TECHNICAL; three tracks stood up; B1/B2/B3 pre-registered; ARM 008 STOP commitment banked verbatim (architect; rig scheduling theirs to direct; commit timestamp is the single clock) ===
+
+OWNER WORDS (verbatim): "I allow full rig time, other I allow implement with my final gate is when merge
+epic into main."
+MEANING: rig time no longer routes to the owner; implementation authorized; single gate = epic -> main.
+NOT faster at the same judgement — the gates must be TECHNICAL now because permission gates are gone.
+
+STANDING CHANGES:
+  - Rig scheduling is the ARCHITECT's to direct from here. Stop routing rig questions to the owner.
+  - Sub-PRs land on the epic branch, CI-gated, NO owner sign-off. Only epic -> main needs their word.
+  - Everything else holds: pre-registration before dispatch; bank-then-dispatch; D1/D2 gates; serve-probe;
+    reference-is-a-configuration; mechanism budget rule; GitHub as the durable record (§23).
+
+THE COMMITMENT (banked VERBATIM, architect, made BEFORE the data — the thing most likely to be quietly
+abandoned later):
+  "With unlimited rig time the failure mode is iterating past a negative verdict until something looks
+   good. If ARM 008 measures above 34.5 us per invocation, we STOP. I will tell the owner the conversion
+   claim is refuted on this hardware and recommend the epic not be built. No re-tuning, no second
+   mechanism, no 'one more variant' — those would need a new pre-registration and a stated reason, not
+   momentum."
+
+TRACK 1 (CODE, NO RIG) — the blocking foundation, immediate:
+  #142 (M3) pin-load hard-fail + load summary + ENGAGEMENT COUNTER.
+  #143 (M1) per-invocation timing on the ENGAGED path, report p50/p99 us per site.
+  #144 (M2) split counters per path; count LOOKUPS not unique rows; label decode-only scope. Rides along
+      (same file, same hour).
+  ARM 008 cannot run without #142+#143. Acceptance: a TEST asserts the engagement counter is non-zero
+  BEFORE any effect number is read — the engagement-gate rule made mechanical.
+
+TRACK 2 (RIG, PARALLEL, DISPATCHED NOW) — resolve the P2 discrepancy properly (11.52-vs-9.48 open since
+§24; decides budget 34.5 vs ~42 us and whether relocating the LAST experts beats the first — an epic
+design input, not a curiosity). Stage 1 UNLOCKED the residency-linearity question banked UNANSWERABLE on
+one card (§20g: window too narrow, 2.6% spread vs 2.4% variance): across two cards the lever widens from
+8-11 resident layers to 0-22. Limit REVERSED because the HARDWARE CHANGED, not because a different answer
+is wanted.
+  B1 DEVICE-IDENTITY CONTROL (1 leg, decisive): 8 expert layers on CUDA1 ONLY, 40 CPU, everything else
+     CUDA0. Same 16.67% coverage as control C, different device.
+     B1 ~= C (23.92 +/- 2.4%) => device identity does not matter; 11.52 must come from curvature.
+     B1 > C materially        => two-device contention relief on CUDA0 is real; 11.52 is an artifact of
+                                 the pool configuration, not a property of coverage.
+     ARCHITECT PREDICTION: B1 ~= C, device-independent. HOLD THEM TO IT.
+  B2 COVERAGE SWEEP ACROSS THE POOL (4 legs, same session): 4/8/14/22 expert-resident layers, 8.3% ->
+     45.8% coverage. Fill CUDA0 first to its servable limit, then CUDA1. Verdict by segment slopes,
+     slope_late/slope_early:
+       0.75-1.25 LINEAR   => 11.52-vs-9.48 was cross-session drift in the 9.48 derivation; budget STAYS
+                             34.5 us; coverage model vindicated as written.
+       > 1.25 SUPERLINEAR => returns accelerate; budget becomes ~42 us AND the epic gains a design input:
+                             the last experts relocated are worth more than the first (favours
+                             high-coverage ranking).
+       < 0.75 SUBLINEAR   => model overstates high-coverage value; ARM 008's 1.08x is an OVERESTIMATE,
+                             re-priced down again.
+     ARCHITECT PREDICTION: SUPERLINEAR, ratio 1.2-1.5 — betting on the explanation they refused to cash
+     in §24, now with a test that can take it away.
+  B3 S1 REPLICATE (1 leg): reproduce 27.28 in-session. Drift rule 2.4%.
+  PROTOCOL: all six legs ONE session, -c 8192, -t 16 unpinned, fresh server, unique port, D1/D2 ON,
+  serve-probe, per-device VRAM + sm% + prefill + n. VERBOSE override lines on EVERY leg — the dead-regex
+  incident is exactly why.
+
+TRACK 3 (EPIC) — structure now, build after ARM 008 passes: epic issue + branch
+`epic/<id>-per-expert-backend-selection` (owner-sanctioned by the directive — their final gate IS the
+epic merge). Milestones IN ORDER, no reordering without a stated reason:
+  E0 Measurement foundation = Track 1 (#142/#143/#144). LANDS FIRST.
+  E1 ARM 008 spike: ONE site, per-expert backend selection, on-device compaction, NO host readback.
+     Deliverable = a NUMBER: wall time per invocation, hits and misses paths. GO/NO-GO at 34.5 us.
+  E2 48-LAYER TIMING HARNESS BEFORE ANY CORRECTNESS WORK — single-site timing cannot see scheduler
+     overhead from 144 backend switches/token (flagged §22; must not be skipped because E1 passed).
+  E3 Implementation + §21a flag surface (--moe-expert-home/--moe-expert-pins/--moe-expert-pin-count);
+     names still pending owner approval — ask WITH the epic.
+  E4 Correctness: teacher-forced --kl-divergence vs unarmed, pre-registered bound. NOT sampled
+     trajectories (banked lesson — flaky gates once already).
+  E5 Resource: #145 slab through a ggml buffer (accounted + freed), #146 dedup/bounds at load.
+  E6 Acceptance for the owner's merge gate (below).
+
+EPIC -> MAIN ACCEPTANCE CRITERIA (written into the epic issue body; checkable without reading the bank):
+  1. ENGAGEMENT PROVEN: pin-load summary emitted; engagement counter non-zero; asserted by a test.
+  2. BUDGET MET: measured per-invocation cost <= 34.5 us (target <= 11.5 us for 3x margin), on the
+     48-layer harness, not just the spike.
+  3. THROUGHPUT: >= 1.05x end-to-end decode vs a SAME-SESSION control in the best stock configuration
+     (the §20.4 best-config gate — never against a stale scalar).
+  4. CORRECTNESS: teacher-forced KLD within the pre-registered bound vs unarmed.
+  5. RESOURCE: slab through a ggml backend buffer, visible to the fit-check, freed on teardown. NO raw
+     cudaMalloc.
+  6. NO SYNC on the engaged path; the CUDA-graph veto at :2163-2175 REMOVED, graphs restored.
+  7. UPSTREAM UNTOUCHED: with our flags unset, behaviour bit-identical to upstream.
+  Any criterion unmet = the epic does not go to the owner. "Rather hand them nothing than something that
+  needs a caveat."
+
+STILL DECLINING (despite free rig time):
+  - The 1-spare replicate (J) — no decision attached; free rig time is not a reason to measure things
+    that change nothing.
+  - Any re-run of the single-card residency linearity test — B2 supersedes it on better hardware; the
+    underpowered version would just give a second, weaker answer to the same question.
+
+DISPATCH: Track 1 -> builder 2ac20e22; Track 2 -> dedicated rig worker (spawned); epic issue opened same
+turn (number reported in the ledger + issue). BANKED B1/B2/B3 PRE-REGISTRATION IS IN THIS SAME COMMIT.
+
+=== END SECTION 25 ===
