@@ -1016,3 +1016,17 @@ read-back as a cross-check. Existing headers are NOT rewritten — the drift is 
    remaining way to test the coverage model on this hardware.
 
 === END SECTION 20g ===
+
+=== OWNER DIRECTIVE (2026-09-19, post-§20g): GOAL REASSERTED — MoE optimization, 3060 main test target ===
+Owner's words (binding): the 5060 Ti config is nice, BUT that is not our goal. We are optimizing the MoE,
+and the 3060 is the MAIN TEST TARGET. Rig access granted: 5060 Ti AND P100 for tests.
+Implications (leader's read, for architect planning):
+- The single-GPU ship config (23.99, -t 16 unpinned, --tensor-split 1,0) EXCLUDES the 3060 — it is an
+  acknowledged nice config, NOT the track destination. Landing it as "the answer" would remove the 3060
+  the epic exists to exploit (COMBINED engine mode / expert-split per architecture docs).
+- All §20-era measurements were 5060-Ti-only; they remain valid as the single-GPU reference and the
+  thread/spare-CPU rule is topology-orthogonal (applies with the 3060 in the loop too).
+- ARM 005's successor arms must be designed and measured WITH THE 3060 PARTICIPATING (expert-split /
+  ggml-RPC peer :9504). The coverage model's hardware arithmetic now extends to a multi-GPU pool:
+  5060 Ti 16GB + 3060 12GB + P100 16GB; 1.79 MiB/expert applies per card.
+- P100 (KVM VM, sm_60, Q5_K-balanced, 192.168.122.21) approved as an additional test host.
