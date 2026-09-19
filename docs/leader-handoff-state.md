@@ -3901,3 +3901,31 @@ fall BEFORE flattening if saturation lifting.
 DECODE-SCOPED dmon: sampling starts AFTER health-ok (§85 gap must not repeat), card0-filtered parse.
 LAUNCH: [P0/P6/P_max] interleaved n=3, all four asserts (P0=0+0), fingerprint, covariates, no builds.
 === END §87 ===
+
+=== §87 EXEC COMPLETE: PREFILL MECHANISM NAMED; CUDA0 CURVE LINEAR-OR-CONVEX, NO KNEE; SLOPES RISING ===
+PREFILL DISCRIMINATOR (FIRST LINE, PRE-REGISTERED): C-P0 prefill = 120.82-122.67 tok/s — MASSIVELY
+> 40 => BIN 1: THE 3060 PATH (gen1 x4 link and/or card) IS THE PREFILL MECHANISM. §76 CLOSED
+FORMALLY AS CONFIG-DEPENDENT: the commit archaeology was a misdiagnosis of a config difference;
+record corrected; bisect NOT reopened. CUDA0-solo 122 vs 3060-solo 4.7 = 26x with no dual-GPU
+involved; fits the link mechanism (gen5 x16 vs gen1 x4 ~50x link, ~26x observed, CPU-expert host
+traffic sustained). §82 PCIe verdict now RESOLVED-POSITIVE: the 3060 link was NEVER benign for
+prefill; the earlier "benign" read sampled the wrong window.
+DECODE (n=3 interleaved, all VERIFY_OK, dose asserts 0/6/11, fp 895c522343eeaa53):
+C-P0 = 19.0208 / 19.0734 / 19.2151 => median 19.0734 (±0.5%)
+C-P6 = 21.2378 / 20.9682 / 20.8127 => median 20.9682 (±1.0%)
+C-Pmax = 23.0901 / 23.0580 / 23.3369 => median 23.0901 (±0.6%)
+SLOPES: s1 = (20.9682-19.0734)/6 = 0.3158 tok/s/layer; s2 = (23.0901-20.9682)/5 = 0.4244 tok/s/
+layer. s2 > s1: the curve STEEPENS with dose — NO KNEE; if anything convex-tilting. Total gain
++21.1% over 11 layers (23% of range). Per §87 honesty constraint: NO full-placement projection
+licensed; terminal wording = "linear over 0-11 of 48 on the 5060 Ti; knee NOT reached on any
+available hardware" (45 GB experts fit no card here) — a complete result.
+CROSS-CARD (same-shape only): 3060 0.2065 (0-7) vs CUDA0 0.32-0.42 (0-11) — a 5060 Ti layer is
+worth MORE per layer (faster card + gen5 host link for the CPU-expert traffic).
+DECODE-SCOPED dmon (§85 fix, card0-filtered): mean_rx 2,265-3,950 MB/s SUSTAINED DURING DECODE —
+substantial host<->device traffic even with 0-11 GPU layers; ~4-6% of gen5 x16 ceiling (not
+binding). On the 3060's gen1 x4 (~1 GB/s) the same traffic would exceed the ceiling => coherent
+with the prefill mechanism AND with CUDA0's higher decode.
+OWNER-NARRATIVE POINT: P0 decode 19.07 and P_max 23.09 sit exactly in the owner-remembered 17-24
+band — the "lost" performance was the CUDA0 config; nothing was ever broken.
+HOLDING for §88.
+=== END §87-exec ===
