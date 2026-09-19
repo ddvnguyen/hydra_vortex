@@ -3216,3 +3216,44 @@ contamination check + report; (4) re-arm trigger ONLY after build; then R1 x2, R
 Sequence per §70a/70b: R1/R2/R4 => §69 placement curve on build-g3 (PROVENANCE already written and
 PASSING, newest-object 1789742469). L4/L3 on broken binary DEFERRED behind recovery (not cancelled).
 === END §70b/c-exec ===
+
+=== §71: ARCHITECT — BIMODALITY IS THE STORY; OVERLAP EXONERATED; TEMP-0 NONDETERMINISM; PREFILL UNITS BLOCKING ===
+RAW ORGANIZED (broken binary): L1-r1 11.8946, L1-r2 12.2401 (no draft); L2-r1 12.6331 acc 0.92143
+129/140 mean 2.84 overlap present; L2-r2 9.4811 acc 0.41667 90/216 mean 1.83 present; L2-r3 15.1711
+acc 0.89437 127/142 mean 2.79 present; L4-r1 10.1921 acc 0.42326 91/215 mean 1.84 ABSENT; L4-r2
+15.9095 acc 0.97037 131/135 mean 2.93 ABSENT.
+FINDING 1: OVERLAP EXONERATED by own data — L4 (overlap verified ABSENT) is bimodal with the WIDEST
+split (0.42/0.97). Load-x-overlap-scheduler hypothesis STRUCK, no leg on it. METHOD NOTE BANKED: THE
+DECOMPOSITION LEG EARNED ITS KEEP BY REFUTING SOMETHING, NOT MEASURING SOMETHING.
+FINDING 2: AT TEMPERATURE 0 THIS SHOULD BE IMPOSSIBLE — acceptance is deterministic (draft-matches-
+target), should be identical run-to-run; it is 0.42 OR 0.92, nothing between. NOT variance — TWO
+DIFFERENT COMPUTATIONS. Numeric nondeterminism in expert/draft path; matches banked #744-class
+finding; now has clean two-cluster signature.
+FINDING 3: VARIANCE ITSELF IS THE REGRESSION — old (pre-WIP) 19.85-22.30 spread ~±6% ALL
+high-acceptance vs new ±68% BIMODAL. WIP delta (T-2b engagement counter + DEFERRED-PATH fix, moe-
+cache.cu +138) may have introduced NONDETERMINISM, not merely slowness (deferred => ordering/async —
+exact shape). AND separate LEVEL regression: best new 15.91 < worst old 19.85. Two effects, possibly
+independent — do not let one absorb the other.
+FINDING 4: overlap contribution UNMEASURABLE until nondeterminism fixed (L4 straddles L2). Honest
+wording: "below the noise floor created by the acceptance nondeterminism", NOT "overlap does nothing".
+PREFILL UNITS ANSWERED (leader, verbatim log lines): units = TOKENS PER SECOND — PREFILL COLLAPSED
+~13.5x. Verbatim (all legs, current binary): "prompt eval time = 163115.87 ms / 767 tokens (212.67 ms
+per token, 4.70 tokens per second)" [L1-r1; L1-r2 163118.63/212.67/4.70; L2-r1 166946.02/217.66/4.59;
+L2-r2 166902.24/217.60/4.60; L2-r3 167212.25/218.01/4.59; L4-r1 166895.43/217.60/4.60; L4-r2
+167087.98/217.85/4.59]. Old logs: 58.70/60.27/60.29/61.22 tok/s same 767-token prompt. Flat ACROSS
+legs (4.59-4.70, <2.5% spread incl no-draft L1) but flat at 1/13.5th the old LEVEL — §70 prefill-
+stays-flat prediction: flatness yes, level NO. 13x prefill collapse > 40% decode regression — the
+WIP delta breaks the MoE path badly and prefill is its biggest signature. Recovery build will
+discriminate (if R prefill ~60 => WIP caused; if ~4.6 => collapse predates... impossible since
+0fc51e039 IS pre-WIP — R prefill near 60 = WIP-caused prediction).
+GATE GAP APPROVED: per-leg load sampling (start/every-15s/end min-mean-max) + decode-CPU% in R-arm.
+Registered: load should change SPEED not WHICH TOKENS (temp 0); if mid-leg load correlates with
+acceptance cluster => timing feeding back into numerics = far bigger finding. Capture precisely.
+R-ARM REVISED — DISTRIBUTION NOT POINT: R1 (MTP off) x3 (is L1 bimodal too? n=2 both ~12 so far),
+R2 (MTP on + overlap) x5 (decisive: IS IT BIMODAL on 0fc51e039 — five tight high => WIP introduced
+nondeterminism, cause+fix in hand; ALSO bimodal => WIP exonerated, old tight cluster was luck, say
+immediately, changes what we chase), R4 (MTP on no overlap) x3. Report EVERY replicate individually
+with acceptance. NEVER A MEAN ALONE for these legs — a mean over a bimodal distribution describes no
+run that ever happened. R1 x3 matters: MTP-off unimodal + MTP-on bimodal => nondeterminism localized
+to draft path.
+=== END §71 ===
