@@ -2151,3 +2151,40 @@ SYNC-JOIN ack + routing are LEAD functions; summary rebuild re-requested (delive
 Native orchestration MCP track_status intermittently failing ("track not found") — REST/curl fallback +
 bank remain the state store (known, non-blocking).
 === END §35a ===
+
+=== §36: E1 SESSION STOP-POINT — DRY-RUN NEVER ENGAGED; SITE RESIDENCY + CUDA INTERCEPT MUTUALLY EXCLUSIVE ===
+Session stopped at first gate (tag ARM_E1_DONE but STOP-POINT report, not yield). Rig FREE, lock released.
+DRYRUN leg: placement VERIFY=OK (D22 bands exact 72/60/156), FINGERPRINT=OK, D1 n=200 @ 27.35, D2 clean,
+binary-identity baselined, provenance stamped. KL3 tracked-script check passed.
+FINDING 1 (BLOCKING): dry-run NEVER ENGAGED — 0 [HYDRA e1] lines. Evidence: layer-31 expert weights
+CPU-resident (156 host overrides, log-confirmed) => ggml assigns layer-31 mul_mat_id to the CPU backend =>
+ggml_cuda_mul_mat_id + E1 intercept never see them. Deeper: attach_device D2D-copies from src0->data
+(presumes device-resident weights). STRUCTURAL: host-resident site (required for mechanism direction) +
+CUDA-side intercept (where the code lives) are MUTUALLY EXCLUSIVE under ggml's scheduler. THREE-AXIS
+TRAP: h x residency x backend-assignment — §34a fixed residency and thereby made the intercept
+unreachable (residency DETERMINES backend-assignment; the two fixes were individually validated, jointly
+incompatible). Builder asks ruling: (a) CPU-side intercept, (b) mechanism redesign, (c) GPU-site reversal
+(rejected already — wrong direction). Nothing downstream runnable: type-(ii)/A6/stock/type-(i) all
+presume engagement.
+FINDING 2: KL FAIL 0.071563 vs 0.01 — VACUOUS as run (E1 engaged in neither step; stock-vs-stock; a PASS
+would have gated nothing). KLD ~0.07 matches prior cross-config scale (0.0798) => readings: (a) instrument
+floor miscalibrated (builder's 0.01 threshold), or (b) pin-arming perturbs numerics (moot until engagement
+works). Builder recommends disarmed-vs-disarmed isolation (same base, env stripped) to calibrate floor
+before re-thresholding; did not burn rig unilaterally.
+FINDING 3 (condition-2 answer): SYNC-JOIN = cudaStreamSynchronize (both SYNC-STAGE and SYNC-JOIN) + D2H
+readbacks => FULL path can NEVER execute under capture (capture-check aborts first). Type-(ii) timing-OFF
+exercises only no-op hook/dry-run path — capture-safe => graphs-reused should HOLD not VOID. Builder
+recommends type-(ii) as ARMED+DRYRUN (capture-neutrality of match path); engaged-path capture infeasible
+(graph-side consult beyond spike scope, disqualified at design). DO NOT run type-(ii) with TIMING (aborts
+fail-closed mid-leg).
+QUANT CORRECTION #2: runtime loader authoritative — L31 up = IQ2_XS (231 MiB), gate = IQ2_XXS, down =
+IQ4_NL; part-3's GGUF type-code map was shifted ("IQ2_XXS" wrong). Type-agnostic code = moot functionally;
+one-word comment fix queued. E2 must-have (compaction scales with row bytes) STANDS.
+CONDITION 1 wired (void_check_stock); not triggered (dry-run expects no-stock); will gate stock leg.
+KL commit 87e897d34; .so sha256 identical (script-only).
+PENDING SUMMARY REBUILD #2: content generated (T1160 deep tick) but superseded by this stop-point before
+commit — held for fold-in at next rebuild (grep-truthful bank: do not commit a stale running-state).
+LEADER ROUTE: three rulings to architect — (1) Finding-1 design (CPU-side intercept / redesign /
+rejected-reversal), (2) KL floor isolation + re-threshold, (3) type-(ii) ARMED+DRYRUN disposition. Rig
+FREE; nothing runs until rulings land. Bank = §36.
+=== END §36 ===
