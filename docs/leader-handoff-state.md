@@ -2654,3 +2654,18 @@ bea932f69 @ 14:35:30+07. NEXT: rig sched-diff discriminator in flight (ARM_SCHED
 three-family leg (pristine vs disarmed vs armed) dispatches after rig frees — establishes WHICH family
 deviates from pristine. Bank = §52.
 === END §52 ===
+
+=== §53: RIG SESSION #2 DEAD (503 overload @ 234K ctx) — SUCCESSOR #3 + SCHED-DIFF ROOT CAUSE ===
+Rig worker 89d25210 first errored 503 service_overloaded (RETRYABLE, unlike the fatal 400s) mid-turn
+after context spiked to 234K reading the sched-diff dumps; session poisoned (new sends bounce the
+same error). ARCHIVED per lesson (4th muse-spark session mortality this session: f4419282, 2ac20e22,
+9b1b3bfa, 89d25210). Successor 8f3d94a4 spawned (fresh session) with TWO sequenced tasks:
+(1) SCHED-DIFF RE-RUN: predecessor's runs COMPLETED (logs on disk, PPL 3.9114) but contained NO
+scheduler output. LEAD ROOT-CAUSED from source: print_assignments emits via GGML_LOG_DEBUG
+(ggml-backend.cpp:1000-1030), suppressed at default verbosity — fix = add --verbose flag to both
+runs (disclosed covariate, no compute effect). Yield = assignment dumps + diff.
+(2) PRISTINE THREE-FAMILY LEG queued: pristine binary confirmed present (§52), which-family-deviates
+question, three dump runs + two compares (pristine vs disarmed base, pristine vs armed base).
+ALSO learned: muse-spark 503 = transient overload, retryable, BUT sessions with >200K ctx are
+prone; keep worker turns lean (files on disk, never paste dumps). Bank = §53.
+=== END §53 ===
