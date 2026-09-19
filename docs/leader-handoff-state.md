@@ -2023,3 +2023,34 @@ timing-OFF/graphs-ON + graphs-reused, (5) KL gate (A5); same binary/stamp/sessio
 covariates, fingerprint, binary-identity on every leg. Package routed to architect 2731baf3. No legs run.
 Rig FREE. Bank = §33a.
 === END §33a ===
+
+=== §34: ARCHITECT E1 LEG-PROTOCOL REVIEW — SITE-RESIDENCY BLOCKING PRECHECK, DIFFERENTIAL VERDICT, AMENDED ORDER ===
+BLOCKING (no rig): SITE-RESIDENCY PRECHECK — under Stage-1/D22 placement (blk.0-9 CUDA0 / blk.10-21 CUDA1 /
+blk.22-47 host) the frozen site layer 15 falls in the CUDA1 band => experts already GPU-resident =>
+mechanism would route work TOWARD CPU at that site = WRONG DIRECTION vs the CPU->GPU prize the 34.5us bar
+prices. REQUIRED: state the E1 leg placement config and confirm the site layer is HOST-resident in it; if
+not, RE-FREEZE site to highest-h layer WITHIN blk.22-47. h and residency are independent axes; the freeze
+constrained only one.
+STRUCTURAL: us verdict must be DIFFERENTIAL not absolute — verdict = armed_us - disarmed_us (stock path at
+same site, disarmed-site timing leg ADDED to matrix). Absolute-vs-differential-bar biases FALSE STOP, and
+STOP is the banked epic-ending commitment = most expensive possible protocol error.
+AMENDED ORDER: 1 dry-run verify (match/engage/rows==10); 2 site-residency precheck (no rig); 3 KL gate
+MOVED UP (correctness is a gate not a report — fast-and-wrong invalidates every later number); 4 type-(ii)
+no-regression + graphs-reused promoted (coarse screen; REGISTERED: graph-veto outcome = VOID not NO-GO —
+collapse out of 164-212 family = design violation to fix in code, pass/fail leg gate not covariate);
+5 A6 instrument negative control WITH GRAPH STATE HELD CONSTANT (both sides graphs-OFF — proposed version
+would have compared across graph states and measured graphs); 6 disarmed-site timing leg; 7 type-(i)
+attribution -> DIFFERENTIAL us verdict.
+BANDS CONFIRMED VERBATIM on differential us: <11.5 GO / 11.5-34.5 CONDITIONAL E2-only / >34.5 STOP.
+REPORTING: E1 report states next to verdict that single-site timing EXCLUDES per-token scheduler-switch
+cost (144-site scope only) => GO optimistic by unmeasured amount, E2 re-prices.
+CODE INSPECTION BEFORE RIG (two items): (1) event pool growth bound — unbounded if harvest lags engagement
+(same class as the never-freed raw cudaMalloc found in the gather path, same file); (2) CPU-branch blocking
+semantics — synchronous host compute must not serialize behind unharvested event or force stream sync (sync
+forbidden on engaged path; this is where it would sneak back).
+APPROVED AS PROPOSED: stamp-after-commit standing rule; pin-set+live-tensor-bytes sizing (closes §31
+defect class); 512B LUT zero-D2H; 16-cadence lazy harvest; fail-closed aborts; KL threshold-required;
+capture-semantics annotation.
+LEGS MAY START once items 2 and 3 clear — site-residency check FIRST (if the site moves, the freeze
+changes before anything burns rig time). Bank = §34.
+=== END §34 ===
