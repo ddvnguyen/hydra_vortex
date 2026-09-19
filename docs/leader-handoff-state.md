@@ -2680,3 +2680,31 @@ three-family leg (ARM_PRISTINE_DONE; pristine binary ready from §52). NOTE for 
 no-opencode fallback path works because every init prompt is bank-self-sufficient. Builder
 (7fe20b8a, opencode/muse) is IDLE and unaffected while idle — will fail over if needed. Bank = §53a.
 === END §53a ===
+
+=== §54: SCHED-DIFF BLOCKED — NEW DEFECT MANIFESTATION: ARMED ENV HANGS THE PROCESS ===
+Lead ran the sched-diff discriminator directly (3 harness deaths made workers impractical; omp
+worker died mid-task: OMP RPC exit 1). RESULT: DISCRIMINATOR BLOCKED by a NEW manifestation of the
+§51 confirmed defect. ISOLATION MATRIX (deterministic, multiple attempts):
+- DISARMED + --verbose + GGML_SCHED_DEBUG=2 => WORKS: 670,051-line dump (sched assignments present:
+  "## SPLIT #1: CUDA0 # 13 inputs", per-node lines), base bin 4.9GB, PPL 3.9114. (omp worker, 597s)
+- ARMED (pins+dryrun) + --verbose + GGML_SCHED_DEBUG=2 => HANG: 3 attempts (bg job 540s rc=0;
+  bg job killed at 120s+; foreground 35s rc=124). /proc/io evidence: banner ONLY (wchar 211 bytes =
+  common_init lines) then ZERO writes for minutes while process spins (57% CPU, D/l state, 31GB RSS
+  loaded); base bin NEVER written (0 bytes); exit code inconsistent (0 or timeout-kill).
+- ARMED + --verbose + NO scheddebug => HANG identically (rc=124, 0 bytes). => interaction is
+  ARMED x --verbose (scheddebug not required).
+- ARMED + non-verbose (no scheddebug) => WORKS (§43/§50: full logs, KLDs, base bins).
+- DISARMED + non-verbose => WORKS (§40, all floor legs).
+MEANING: the armed env deterministically HANGS the process when verbose logging is enabled — hang
+occurs AFTER banner (~0.4s, model load begins) with spin-wait (busy CPU, no I/O, D state). The
+instrument state does not merely shift numerics — under verbose logging it deadlocks execution.
+SCHED-DIFF DISCRIMINATOR DEADLOCKED: per-node assignment capture requires GGML_LOG_DEBUG (verbose)
+which the armed state cannot survive. Note: DIS dump alone still yields the DISARMED half of the
+comparison (670K lines preserved: klscheddiff-v-DIS.dump.log). Evidence files preserved
+(klscheddiff-v-ARM{,2}.* 0-byte, armverb-notest.kld.log 0-byte). Rig FREE (GPUs 1MiB, no procs;
+one benign bash wrapper remains). ROUTE => ARCHITECT: (1) why does armed x verbose deadlock —
+candidates: log I/O timing shifts the lazy pins-load/first-mul_mat_id race; atexit handler
+interaction; stream/sync state under slower graph build; (2) alternative discriminator that does
+not need armed+verbose (e.g. per-layer KLD bisection using non-verbose armed runs which WORK);
+(3) is the hang itself the strongest datum yet for the defect ledger? Bank = §54.
+=== END §54 ===
