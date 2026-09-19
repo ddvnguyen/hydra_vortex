@@ -2188,3 +2188,41 @@ LEADER ROUTE: three rulings to architect — (1) Finding-1 design (CPU-side inte
 rejected-reversal), (2) KL floor isolation + re-threshold, (3) type-(ii) ARMED+DRYRUN disposition. Rig
 FREE; nothing runs until rulings land. Bank = §36.
 === END §36 ===
+
+=== §37: ARCHITECT RULINGS — (b) HOT/COLD SLAB #132 IS THE PATH; 5.7x DEAD; RE-DERIVATION DECIDES THE LINE; KL ISOLATION AUTHORIZED ===
+ARCHITECT OWN MISS ACKNOWLEDGED: 3 review rounds never asked whether the op reaches the hook's backend
+(despite writing "experts are ONE 3D tensor per layer; one node runs on exactly ONE backend" in the same
+review). NEW STANDING RULE: REACHABILITY PRECHECK PRECEDES INSTRUMENT DESIGN — prove the hook site
+executes in the target configuration (one counter, throwaway build) before any harness is built.
+FINDING 1 RULING: (a) CPU-side intercept REJECTED (same one-node-one-backend wall; launch+sync per
+invocation, sync alone 10-50us vs 34.5 budget — disqualified at design, unchanged). (c) GPU-site reversal
+REJECTED (wrong direction). (b) RIGHT, specific shape = HOT/COLD EXPERT SLAB (issue #132): split
+blk.N.ffn_*_exps at LOAD TIME into hot slab (pinned subset -> GPU buffer) + cold slab (remainder -> CPU
+buffer) = two tensors = two mul_mat_id nodes, remapped ids + combine; scheduler assigns hot->CUDA /
+cold->CPU FOR FREE. Residency is per-tensor; no intercept, no per-token transfers, no syncs, graph capture
+preserved natively. Graph/loader work in llama.cpp — why the CUDA-side spike could never reach it.
+BUT (b) GATED behind zero-rig PAPER TEST + owner visibility: banked "pinning 5.7x more VRAM-efficient"
+rested on the RETRACTED uniform constant. Re-estimate with measured bytes: total expert bytes ~43,462 MiB;
+slab at h~0.42 x 48 layers ~18,254 MiB; D22 placement 20,400 MiB @ 27.7349; slab expected ~0.377/CUDA0-layer
+x 20.2 layer-equivalents ~28.6 tok/s => ~11% less VRAM for ~3% more throughput = ~1.15x NOT 5.7x.
+Mechanistically consistent (54% experts/layer touched per turn; pools saturate N=54; h@38~0.39 — skew not
+sharp enough). ORDERED: FORMAL RE-DERIVATION of coverage-per-MiB (pinning vs layer placement) with
+measured per-layer/per-expert bytes + measured h. REGISTERED BRANCHES (before the number): >=3x => build
+#132 (ranking line justified); 1.5-3x => MARGINAL, surface to owner as cost decision not engineering
+default; <1.5x => EXPERT RANKING DOMINATED BY PLAIN -OT LAYER PLACEMENT — RETIRE THE LINE. Architect
+willing to reach branch 3 (estimate lands there; registered not weighted after five wrong predictions).
+OWNER MUST SEE: epic->main gate territory; "retire the line" is the OWNER's call, not the architect's.
+FINDING 2: KL isolation leg AUTHORIZED NOW (rig idle): disarmed-vs-disarmed, same base, env stripped.
+REFRAME: not threshold recalibration — DOES THE CORRECTNESS INSTRUMENT HAVE ANY RESOLUTION? Teacher-forced
+KLD build-vs-itself should be ~0; 0.07 = script not teacher-forcing OR genuine numeric nondeterminism
+(MoE routing ties, atomics). Reusable for #132; quantifies run-to-run nondeterminism — bears on
+unattributed D0 +48%.
+FINDING 3: DO NOT RUN type-(ii). SYNC-JOIN = cudaStreamSynchronize => engaged path graph-incapable BY
+CONSTRUCTION = SECOND independent terminal defect of the CUDA-side approach. ARMED+DRYRUN DECLINED
+(proves a property of an intercept that (b) deletes). Corroboration: #132 has no syncs/intercept =>
+capture native — both terminal defects vanish in the same redesign = aimed correctly.
+L31 quant correction noted; false-GO caveat + E2 must-have stand (type-agnostic code).
+SEQUENCE: paper re-derivation first (zero rig) + KL isolation in parallel (rig free) + NO further E1
+legs. E1 harness (pools, ring channels, counters, gates) REUSABLE, not sunk. ARM 008 STOP untriggered.
+Re-derivation -> OWNER with architect recommendation. Bank = §37.
+=== END §37 ===
