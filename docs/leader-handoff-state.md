@@ -2409,3 +2409,25 @@ builds during rig, quiescence gate, provenance, outlier policy, no-vacuous-label
 DIFF task (ARM_KL3DIFF_DONE; no GPU needed). ROSTER UPDATE: rig = 89d25210. KL3-diff source note:
 KL3-era logs may be under /tmp/opencode/e1-legs-*; if missing worker must say so, not infer.
 === END §41a ===
+
+=== §42: KL3 CONFIG DIFF YIELD (ARM_KL3DIFF_DONE) — BRANCH (b) TRIGGERED, MATCHED PAIR DISPATCHED ===
+Successor rig worker 89d25210 delivered exact 3-column diff (all sources present, zero inference;
+kl-gate script byte-identical to commit 87e897d34; binary sha256 full e9a0b4c1...f0ff matches ×8 + KL3
+prefix). DELTAS OF RECORD (no cause assigned): (1) CORPUS DIFFERS — KL3 = moe-lookahead-improvement-
+plan.md 1954 lines sha aeafe3e9 79 chunks; isolation = wiki.test.raw head-600 sha 3cae5a0f 88 chunks.
+(2) HYDRA_E0_STATS =1 effective BOTH KL3 steps (2 [HYDRA e0] lines each, dump AND cmp) vs never set
+all 8 isolation runs — refutes the "KL3's own two steps differed" sub-hypothesis; KL3-vs-isolation
+diff stands. (3) PIN+E1_DRYRUN on KL3 cmp only = the AUTHORIZED armed-vs-disarmed asymmetry (KL3 cmp
+log: pins loaded 384 pins, engaged=0 armed=1, hits=0). (4) HYDRA_E1_COMPACT stripped in isolation,
+not stripped+not set in KL3 (inert?). (5) LD_LIBRARY_PATH string differs 13.2.2 vs 13.2.1 (effective
+values unlogged both). (6) [HYDRA e1]=0 all 10 logs. SOURCE SEMANTICS: ggml-cuda.cu:2004-2012 pin-
+file load sets hydra_e0_on=true + armed=true; :2110 hydra_e0_active() per mul_mat_id.
+BRANCH SELECTION per §41 pre-registration: configs differ (deltas 1+2+4+5) => (b) COMPARISON VOID;
+valid number requires one armed-vs-disarmed pair on the isolation leg's exact corpus, env fully
+matched except PIN+E1_DRYRUN on armed side. §40's "0.0716 was arming effect" remains UNPROVEN —
+comparison was cross-corpus + cross-env. KL3's dump PPL 10.8072 vs isolation 3.9115 confirms the
+corpora were different texts entirely (PPL gap = corpus gap, not model behavior).
+DISPATCHED to rig worker: matched pair on wiki head-600 (HYDRA_E0_STATS unset BOTH sides; only
+PIN+E1_DRYRUN on armed cmp; dump re-run fresh), tag ARM_KLARMEDPAIR_DONE. Ruling on the result =>
+architect. Bank = §42.
+=== END §42 ===
