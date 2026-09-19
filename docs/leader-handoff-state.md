@@ -1917,3 +1917,19 @@ nominally identical placement — method-control failure on CLEAN data => issue 
 count against ncm/-ot equivalence alongside #149; supports owner directive to ship own flags.
 E1 implementation proceeds (CPU code, build queued for quiet box). Bank = §31.
 === END §31 ===
+
+=== §31a: B2' QUIET-BOX RE-RUN YIELD (ARM_B2P3R_DONE) — CONTROLS PASS, D0 NON-REPLICATES, #154 PREMISE SHAKEN ===
+All six legs clean (provenance be4676f11, fingerprint OK, D1/D2, quiescence gate HELD every leg — during-leg
+transients btop/git/mcp-daemon reported+kept, none toolchain; zero boot failures, second consecutive D0+D4a
+boots). REPLICATION: D4a +1.47% INSIDE. METHOD CONTROLS PASS: D8a -1.00%, D22 +1.66% vs S1 (+1.08% vs
+bridge) => pure--ot equivalence RESTORED on quiet box; confounded-session misses = pure contention. D0 DOES
+NOT REPLICATE: 20.9780 vs 14.1568 = +48.20% (different trajectory content_len 589 vs 655; decode-CPU 610 vs
+485) — two ruled-clean D0s disagree. BEARING ON #154: re-run D0 20.98 vs L1 21.28 = -1.4% (vs prior -33%)
+=> #154 premise rests on one leg of a non-replicating config — disposition: architect.
+RAW CURVE: D0 20.9780 / D4a 22.7226 / D8a 23.6862 / D4b 21.9293 / D14 25.5666 / D22 27.7349. Graphs
+196/180/164/212/172/204. Decode-CPU: 610/649/594/601/563/447. Prior SUBLINEAR registration was anchored on
+the non-replicating D0 (+58.2% first-4 read collapses to +8.3% on re-run); increments 1.74/0.96/1.88/2.17,
+no clean curvature read. BYTES measured: blk.0-3 ~1058.5 / blk.4-7 ~937.0 / blk.8-21 ~887 MiB/layer —
+uniform-constant kill CONFIRMED + quantified. D4b vs D4a (same 4 layers, CUDA1 vs CUDA0): -3.5% device-identity
+signal, ruling pending. Builder E1 part-1 build window OPENED (rig free). Bank = §31a.
+=== END §31a ===
