@@ -3170,3 +3170,26 @@ PREFILL (prompt eval) tok/s alongside decode — prefill is batched CPU-MoE-boun
 prefill ≈ flat across L1/L2/L4 while decode moves. Do NOT chase lost binary (rebuild = between-
 sessions at most, not rig work, gates nothing). RAW FIRST.
 === END §70 ===
+
+=== §70a: ARCHITECT — REGRESSION ATTRIBUTED TO ~607-LINE WIP DELTA; RECONSTRUCT 0fc51e039; NEW ORDER ===
+EXACT DELTA: 0fc51e039 09-16 04:41 "hybrid: env-gated CPU/GPU expert split (T2.1...)" = LAST COMMIT
+BEFORE the good numbers (runs 09:25:58-09:39:23). Then 24cfdb962 10:04 "backup: uncommitted S1/S2
+scaffolding + worktree WIP (469+/20-, 6 files)" and 12f294335 10:23 "backup: T-2b engagement counter +
+deferred-path fix (moe-cache.cu +138)". Current binary (L1/L2 = 12.07/12.63) built from BACKUP COMMITS
+OF UNCOMMITTED SCAFFOLDING. PROCESS RULE BANKED: A MEASUREMENT BINARY MUST BE BUILT FROM A DELIBERATE,
+NAMED STATE — NEVER FROM A "backup:" COMMIT.
+ORDER: (1) finish in-flight arm1b on CURRENT binary (L2-r2, L2-r3, L4 x2; L3 now LOWEST — drop if time
+short); (2) BUILD build-recover-0fc51e039 (NEW dir, touch nothing existing) in a leg-free gap — build
+NOT rig work, never overlap legs, box CPU 97% (B2' lesson), disarm any auto-trigger during build, write
+PROVENANCE immediately on completion (embedded commit, sonames, toolkit, link mtime, objects= line,
+reconstructed-state note) + contamination check before measuring; (3) RUN R1/R2/R4 on it: R1 MTP OFF
+(proven flags minus --spec* minus --decode-overlap) x2, R2 MTP ON Q4 +overlap x3, R4 MTP ON Q4 NO
+overlap x2. Same DEV=1 ctx 81920 --cpu-moe prompt 200 completion. HIGHEST-VALUE MEASUREMENT NOW:
+tests whether ~607-line WIP delta caused ~40% decode regression AND gives FIRST-EVER valid MTP gain
+at the good operating point (even original 21.34 had no off-leg). PRE-REGISTERED BRANCHES: R2 ~21 &
+R1 ~12 => MTP gain real+large, WIP broke MTP specifically | R2 ~21 & R1 ~19 => WIP caused general
+decode regression, MTP gain always small | R1/R2 both ~12 => WIP NOT the cause, 21s from unidentified
+something — say so, NO binary hunting without new hypothesis. (4) THEN §69 placement curve on build-g3
+(owner headline thesis NOT displaced, but R1/R2/R4 outrank it — a WIP-carrying binary would distort
+every placement number). Raw first.
+=== END §70a ===
