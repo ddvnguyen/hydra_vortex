@@ -885,3 +885,55 @@ NEXT — PROPOSED-NOT-SCHEDULED (owner's call on rig time; the architect is NOT 
   AWAITING OWNER: rig-time approval for this sweep.
 
 === END SECTION 20e ===
+
+=== SECTION 20f: OWNER DECISIONS + reduced 3-point n-cpu-moe sweep PRE-REGISTRATION (architect relaying owner; banked BEFORE dispatch, 2026-09-19 ~06:00 ICT) ===
+
+OWNER DECISIONS (both binding):
+1. REDUCED 3-POINT SWEEP APPROVED — run it (not the full six).
+2. CONFIG WINS LAND AFTER THE SWEEP, NOT NOW — do not ship the thread or topology change yet; the sweep
+   runs against the exact configuration measured all session. Config wins stay a standing item.
+§20e's PROPOSED-NOT-SCHEDULED (800c5f25a) flips to SCHEDULED-REDUCED via this section.
+
+ARCHITECT NOTE IN THE OWNER'S FAVOUR: three points is the MINIMUM for a linearity test and sufficient for
+the question that matters ("is ARM 005's extrapolation honest"). Two points show no curvature; three can.
+The reduction costs precise location of a VRAM-optimal point, not the validity answer — and the architect
+commits to not requesting the other three legs later by the back door.
+
+THE THREE LEGS (all at -t 16 unpinned, t40's other flags unchanged, fresh server per leg, unique port,
+D1+D2 gates ON; report per leg tok/s, CPU%, GPU sm%, VRAM used AND headroom, prefill, n):
+  L1) --n-cpu-moe 48   (0 layers resident)              — anchor
+  L2) --n-cpu-moe 36   (12 resident)                    — midpoint
+  L3) --n-cpu-moe <lowest that fits> (max resident)     — determined by VRAM probe, see constraint
+
+VALIDITY CONSTRAINT (decides whether the sweep is valid at all): CONTEXT LENGTH AND BATCH SIZE MUST BE
+IDENTICAL ACROSS ALL THREE LEGS. Moving layers onto the GPU eats the VRAM the KV cache lives in; if L3
+quietly gets a smaller context to fit, the comparison measures context length, not residency — VOID.
+Fix context at the value used all session; find the lowest --n-cpu-moe that fits WITH that context
+intact. If nothing below some value fits, THAT VALUE IS L3 — report the binding constraint rather than
+shrinking context to reach a nicer number. If the builder cannot hold context constant: STOP AND REPORT,
+do not proceed.
+
+SAME-SESSION RULE: all three legs in ONE session, same binary. Cross-session comparison at this
+precision is untrustworthy (our own 2.4% drift rule; violated at 4.1% by leg C). Do NOT reuse the
+earlier t40/t48 numbers as a fourth point.
+
+PRE-REGISTRATION (banked BEFORE dispatch):
+  slope_1 = (L2 - L1) / 12            [tok/s per resident layer]
+  slope_2 = (L3 - L2) / (resident_L3 - 12)
+  Verdict by slope_2 / slope_1:
+   - LINEAR      0.75-1.25: ARM 005's 1.14x ceiling stands as quoted; arm stays BLOCKED.
+   - SUBLINEAR   < 0.75:    the extrapolation is dishonest, 1.14x is an OVERESTIMATE, and
+                           ARM 005 IS KILLED, NOT BLOCKED — committed now so it cannot be softened
+                           when the number is in front of the architect.
+   - SUPERLINEAR > 1.25:    the arm is worth more than 1.14x; the architect will say so in exactly
+                           those words.
+  PREDICTION: roughly LINEAR, slope 0.15-0.25 tok/s/layer on both segments. Held to it.
+  SECONDARY (stated falsifiable): L3 expected to be the fastest leg. If L3 is NOT faster than L2,
+  residency has already saturated below the VRAM limit — a bigger result than any slope.
+
+SCOPE LIMIT ON RECORD BEFORE THE DATA ARRIVES: this sweep measures LAYER residency. ARM 005 is EXPERT
+residency within layers. The 1.14x figure applies the per-layer slope through the h=0.4207 expert hit
+rate — an ASSUMPTION this sweep does NOT check. A LINEAR result validates the extrapolation but NOT the
+h-transfer; do not let a linear slope be read as a full vindication of the arm's price.
+
+=== END SECTION 20f ===
