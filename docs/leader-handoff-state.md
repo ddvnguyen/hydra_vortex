@@ -1754,3 +1754,47 @@ epic" certification, or is pristine-base required; (2) does the indirect-only fi
 §28 conservative-default rule (unverifiable != differs, or resolves to (b)?). E0 continuation proceeding
 per pre-registered (a) unless countermanded.
 === END §28a ===
+
+=== SECTION 29: BRIDGE CERTIFIED — branch (a); both gaps resolved (one a conflation); VRAM threshold registered; E1 anchor RE-BASED to 27.4374 on stamp be4676f11; #151 settles free via B2' legs (architect; commit timestamp is the single clock) ===
+
+CERTIFIED — BRANCH (a). Architect verified discriminators DIRECTLY, not from the summary:
+  fused fingerprint: HC pre/comb/post enabled x2 — IDENTICAL to clean B3 (match)
+  graphs reused: 198 vs 201 (+4 warmup req in clean B3) — equivalent (~1 reuse per decode step)
+  eval tok/s: 27.44 vs 27.38 = +0.21% in band
+  VRAM: -40 MiB = -0.29%
+
+GAP (2) DISSOLVES — CONFLATION, not a gap: §28's "fused fingerprint" means resolve_fused_ops output,
+which the BASE binary emits regardless of arming; the hydra MMVQ/MMQ kernel-path counters are
+arming-dependent and a different thing. Bridge log carries the fingerprint DIRECTLY and matches clean
+B-series exactly. Gate satisfied on direct evidence. (Worker's escalate-don't-self-certify instinct
+praised even though the premise was wrong — that is the wanted behaviour.)
+VRAM -40 MiB: absolute replaced by a REGISTERED THRESHOLD, effective now for all future bases — VRAM
+footprint band ±1% (±137 MiB here); 0.29% passes. ATTRIBUTION OWED BEFORE E1 GO/NO-GO (not now): E1
+allocates expert slabs, VRAM accounting becomes load-bearing; obtainable free from existing logs'
+allocation lines, no rig time.
+
+GAP (1): CERTIFY base+E0-disarmed. NO pristine gate. Decisive argument (asymmetry): if disarmed E0 cost
+anything it would DEPRESS the anchor and INFLATE E1's apparent gain — a manufactured GO, the exact
+failure mode E1's design must protect against; the bridge bounds that cost at +0.21% in the FAVOURABLE
+direction (faster, not slower). Known limitation recorded: lineage change and E0 presence are confounded
+in that single comparison; both would have to cancel to hide a real cost, against ±2.4%.
+Pristine build: AUTHORIZED as non-blocking CPU-only background shelf artifact — retires the confound if
+it ever matters. NOT a gate; E0 not held for it.
+
+AMENDMENTS:
+  1. E1 GO/NO-GO ANCHOR = base+E0-disarmed on stamp be4676f11 = 27.4374 (NOT the historical 27.3789).
+     Arm/disarm A/B must run on the SAME BINARY, SAME STAMP, SAME SESSION — pre-registered requirement;
+     a cross-binary mechanism delta is NOT admissible.
+  2. B2' PROCEEDS on the certified base, six legs (D0 restored), all three gates live per leg:
+     provenance-at-launch, fused fingerprint, graphs reused.
+  3. #151 SETTLES FOR FREE: certified base = clean-base repro platform; D0 and D4a are already B2' legs.
+     THREE BRANCHES: both boot => era-mix confirmed, CLOSE #151 as build-hygiene; both die =>
+     lineage-intrinsic, #151 gets a real root cause, B2' halts; SPLIT (one boots one dies) => genuine
+     placement dependence exists — most interesting result of the week. No extra rig time either way.
+
+ACK: builder CERTIFIED, proceed to E0 verify legs. Worker: B2' six legs on the certified base when the
+builder releases the rig.
+E1 TIMING DESIGN REVIEW: UNBLOCKED — route the design NOW with the arm/disarm A/B protocol (amendment 1)
+already reflected in it.
+
+=== END SECTION 29 ===
