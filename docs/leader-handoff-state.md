@@ -1367,3 +1367,18 @@ call to land, as always. Honest counterweight in the same breath: the better the
 expert ranking has left to win — ARM 008 is now worth ~1.08x, not ~1.14x.
 
 === END SECTION 24 ===
+
+=== §24a: OWNER DIRECTIVE — full rig time standing; implementation AUTHORIZED; final gate = epic->main merge (commit timestamp is the single clock) ===
+
+OWNER WORDS (verbatim): "I allow full rig time, other I allow implement with my final gate is when merge
+epic into main."
+READING (recorded): (1) rig time is standing — no per-leg rig-time asks; (2) implementation is authorized
+— the M3+M1 fixes (#142/#143, incl. #146 slot-sizing in the same load path) proceed now, and the ARM 008
+mechanism spike is unblocked after them; (3) the ONLY remaining owner gate is the epic->main merge at the
+end. Explicitly NOT covered: PR #134 disposition (still owner's word on the close recommendation).
+DISPATCH: builder 2ac20e22 -> M3 (#142 fail-loud pin loading + load summary + dedupe/range validation) +
+M1 (#143 sync counters into gather path) + #146 slot-sizing-from-validated-set (same load path, per the
+issue's pairing note). Branch per project workflow, PR closes issues, results posted to issues per §23.
+ARM 008 spike dispatches after M3+M1 land (sequence §24 unchanged; spike = code -> issue before run +
+cost estimate vs ~35us in the PR body per §23 discipline).
+=== END §24a ===
