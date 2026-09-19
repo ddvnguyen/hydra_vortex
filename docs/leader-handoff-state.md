@@ -3326,3 +3326,31 @@ live in the S1/S2 scaffolding delta, fully recoverable. H1 (env-gated defaults) 
 RIG QUEUE per stop-and-report: NOTHING probing/bbuilding until architect rules (build-cuda1322 probe
 and 24cfdb962 build both candidates; architect decides order).
 === END ADDENDUM ===
+
+=== §73 EXEC: EVIDENCE PRESERVED, DUMPS RECLAIMED, Q-b CONFIRMED — PAGE-CACHE MECHANISM INSUFFICIENT ===
+STEP 1 DONE: /tmp/opencode evidence (2236 files, 81,415,897 bytes .log/.sh/.tsv/.txt) copied to
+/mnt/WorkDisk/tmp-opencode-archive-20260919/ and VERIFIED byte-exact (count+bytes both sides). /tmp
+is volatile — the only record of the fast state is now persistent.
+STEP 2 DONE: deleted klrepl-AA (11G), e1-legs-KL3 (9.4G), klscheddiff-DIS (5.4G), kld-base.bin (1.2G),
+kld-smoke (121M), seg.core (1.4G) per architect (terminated-arm dumps, no consumer; /mnt/storage
+already holds klarmedpair + klscheddiff-v-DIS + gdb-probe copies). /tmp/opencode 32G -> 4.1G.
+STEP 3 DONE: shared 41->24G, available 50->67G (later 73G), used 72->49G, swap DRAINING 23/23->13/23.
+STEP 4 = PROBE RE-RUN on UNCHANGED build-recover-0fc51e039: cold-cache probe 163138.92 ms / 767
+(212.70 ms/tok, 4.70 tok/s) — UNCHANGED. THEN warming test (same binary, buff/cache grew to 51G —
+model resident): SECOND probe 163307.01 ms (212.92 ms/tok, 4.70 tok/s) — STILL COLLAPSED. => Q-b:
+MEMORY PRESSURE NOT SUFFICIENT as sole cause; page-cache-eviction mechanism REFUTED as the (whole)
+explanation despite the reclaim + warm cache. Reporting immediately per ruling; NOT bisecting further.
+NEW FACT (covariate check, model identity): /mnt/SSD/qwen3.8-flash-next-apex-mini shard 2 IS A SYMLINK
+-> /mnt/WorkDisk/apex-mini-nvme/Qwen3.8-...-00002-of-00006.gguf (created Sep 13 17:32 — BEFORE the
+good runs, so old runs were mixed-device too). Model = 5 shards on SATA ntfs3 + 1 shard on WorkDisk
+NVMe. The 288 MB/s single-device arithmetic was an approximation. Shard-1 sha f9e647515d77a360
+(recorded; full md5 not completed — 539MB read).
+STANDING RULES BANKED (§73): RAM/swap/tmpfs recorded per leg as covariates (added to R-arm script
+requirements alongside §71 load sampling); artifact hygiene = measurement gate — large dumps to
+/mnt/WorkDisk NEVER tmpfs, terminated arms delete dumps at termination. PROBE-FIRST + these make the
+pre-flight checklist. BIMODALITY remains OPEN (architect: re-measure post-reclaim; if it persists it
+is NOT memory-pressure — the tension with temp-0 determinism is unresolved). WIP question status:
+"UNMEASURED" (not exonerated in general) — both probes were disk/collapse-bound.
+Note: /tmp/opencode/mtp proven scripts + logs preserved in the archive; recovery worktree + build
+intact at /mnt/WorkDisk/tmp-recover/.
+=== END §73-exec ===
