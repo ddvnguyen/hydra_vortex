@@ -3929,3 +3929,28 @@ OWNER-NARRATIVE POINT: P0 decode 19.07 and P_max 23.09 sit exactly in the owner-
 band — the "lost" performance was the CUDA0 config; nothing was ever broken.
 HOLDING for §88.
 === END §87-exec ===
+
+=== §88: TWO TEMPERINGS APPLIED; MTP-ON-CUDA0 ARM + PRODUCTION-CTX COST ===
+TEMPERING 1 (owner-narrative): "lost performance was the CUDA0 config / nothing was broken" is
+WITHDRAWN — unsupported (owner's 17-24 band came from MTP ON THE 3060, different binary, decode-
+overlap+ple-prefetch). SUPPORTED AND BANKED: "clean, reproducible config in the owner's target band
+(23.09 tok/s, n=3, ±0.6%), reached WITHOUT MTP at all."
+TEMPERING 2 (convexity): s2 > s1 at ~1.7σ — NOT established. Bank: "no knee detected over 0-11;
+slope possibly increasing with dose (s2 > s1 at ~1.7σ, not established)." Headline = no-knee
+(solid); convexity = lead with architectural consequence (superlinear VRAM capacity => bigger-card
+argument) — firmable later with ONE extra ladder point (P3 or P9), NOT now (worth less than the
+next arm).
+DMON METHOD BANKED AS STANDARD (decode-scoped, started after health-ok, card-filtered): the
+instrument fix produced the mechanism — sustained 2,265-3,950 MB/s during decode = 4-6% of gen5 x16
+but 2.3-4x OVER a gen1 x4 ~985 MB/s ceiling. §76 closed as config misdiagnosis (architect: "my
+conclusion there was wrong and the record is now right").
+NEXT ARM (owner's actual goal): MTP ON CUDA0, stacked on placement. Trade to MEASURE not assume:
+Q4 head ~1,818 MiB ≈ 2 expert layers ≈ ~0.85 tok/s placement given up; MTP must beat that. M-P0
+(MTP on, 0 layers) + M-P_max (~9 after head), interleaved, n=5 MINIMUM (bimodality returns with
+MTP; do not let a lucky high-acceptance run become the headline), median + FULL min-max, acceptance
+per run alongside decode for cross-reading. NO-OVERLAP MTP variant (build-g3 has no decode-overlap/
+ple-prefetch) — STATE IN EVERY LINE: it is a FLOOR for MTP's value here, not a ceiling. References:
+C-P0 19.0734, C-Pmax 23.0901 (MTP-off).
+PRODUCTION-CTX COST: boot P0 at ctx 81920 on CUDA0, record used VRAM, report layers production
+context costs (3060 delta was ~1,638 MiB ≈ 1.7 layers). One boot alongside the MTP H probe.
+=== END §88 ===
