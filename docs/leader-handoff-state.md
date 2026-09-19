@@ -3847,3 +3847,27 @@ overhead and continue P14/P_max (slope 0.146 still positive; dose 23 projects +4
 (b) attack the 29% slope deficit first (crossing/scheduler overhead — where does the bridge lose
 0.06 tok/s/layer vs single-device?). HOLDING FOR §86.
 === END §85-exec ===
+
+=== §86: REDIRECT — CUDA0 SOLO LADDER; BANK CORRECTIONS (incl. LEADER'S OWN +46% ERROR) ===
+ARITHMETIC CORRECTION (leader error, caught by architect, matters for the decision): dose-23 dual
+projection = 0.1459 x 23 = 3.36 on 12.0074 => 15.37 tok/s = +28%, NOT +46% (cross-check: +8.5% for
+7 layers scaled to 23 = +27.9%). Dual dose-23 (~15.4) barely beats single-device P7 ALREADY IN HAND
+(14.60) by ~5% unvalidated => option (a) not worth 6 legs. Option (b) = open-ended diagnosis of an
+abandoned config. BOTH REJECTED.
+BANK AMENDMENTS: (1) §76 AMENDED — prefill collapse is CONFIG-DEPENDENT, not code-specific (dual
+prefill 87-98 tok/s vs single 4.7, SAME binary, 19-21x): the §76 "uncommitted-source, never
+reproducible" conclusion is WITHDRAWN pending the device-config explanation; bisect NOT reopened,
+no legs spent. (2) §82 PCIe verdict DOWNGRADED: RETIRED => PROVISIONAL-UNSAMPLED (dmon rows covered
+only the ~34-48s load window of ~285s legs; a benign verdict from an unsampled window is not a
+verdict). Mechanism fit: CPU experts = sustained host<->device traffic; 3060 gen1 x4 ~1 GB/s vs
+CUDA0 gen5 x16 (12-14 GB/s bursts measured) = ~50x link difference vs 19-21x observed — coherent.
+(3) DUAL ARM CLOSED as a FINDING, not a failure: dual-GPU NET-NEGATIVE for this workload (-9% at
+zero dose from crossing/scheduler overhead; per-layer benefit 71% of single-device; does not beat
+single-device P7 even at 23 layers) — closes the "just add the second GPU" answer with measurements.
+CUDA0 SOLO LADDER: CVD=0, ctx 16384, MTP off, P0/P6/P_max(11-12), interleaved n=3, same explicit
+-ot mechanism + four asserts (P0=0+0). Slope comparable to 0.2065 as same-shape comparison ONLY —
+different card, plot separately, say so. build-g3 arch 86;120 — verify sm_120 at boot. Prefill is
+FIRST-CLASS on every CUDA0 leg (if link is the mechanism, CUDA0-solo prefill >> 4.7 with no dual
+involved — settles the question on legs we run anyway). Decode-scoped dmon (start AFTER health-ok)
+carried forward. H probe next; report H + P_max BEFORE ladder. HOLDING after that.
+=== END §86 ===
