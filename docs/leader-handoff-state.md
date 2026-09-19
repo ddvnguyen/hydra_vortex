@@ -2446,3 +2446,34 @@ RETAINED (11.1 GB). Rig FREE. Single pair per design, no replicate, nothing disc
 causes (both rc=0 first attempt). INTERPRETATION => ARCHITECT (this lands in registered branch (a)
 territory: attach-path perturbation with no engagement — architect rules, not leader). Bank = §43.
 === END §43 ===
+
+=== §44: ARCHITECT RULING — ARMING FACT CONFIRMED / MECHANISM OPEN; #132 GATE REDESIGNED; POST-MORTEM ORDERED ===
+Q1 Branch (a) FACT CONFIRMED: armed 0.032906 = 92x floor median, armed MEDIAN 0.008325 = 23x floor
+median => typical chunk perturbed, not tail. ARMING CHANGES NUMERICS WITHOUT ENGAGING. MECHANISM NOT
+confirmed — leader's framing (attach_device D2D + weight backup) pre-attributed; two candidates with
+different consequences: (i) WEIGHT MODIFICATION (correctness defect) vs (ii) ALLOCATION/SCHEDULING
+ORDER (not a defect but breaks every armed-vs-disarmed A/B premise). DISCRIMINATOR ORDERED (one
+leg): ARM WITH EMPTY PIN SET (env set, zero pins). KLD returns to floor => attach-dependent;
+stays elevated => allocation path. Ordered as #132 PREREQUISITE, not E1 autopsy: if allocation-
+order, ANY added device allocation perturbs numerics incl. #132 => the calibrated gate would fail
+#132 spuriously.
+Q2 KL3 CLOSED: 2.2x residual = corpus scale, recorded unverified-but-immaterial (E1 terminated, not
+worth chasing). Amendment chain complete: §36 vacuous -> §41 real-signal-unknown-origin -> §43
+arming-effect-matched-config.
+Q3 #132 GATE CANNOT BE "armed ~ disarmed at floor": #132 splits one mul_mat_id into two nodes +
+combine => summation order changes BY CONSTRUCTION, not bit-identical to stock, cannot be. THREE-WAY
+DECOMPOSITION designed before code: (1) stock vs split-both-on-CPU => split/combine numeric cost
+alone = THE GATE; (2) split-both-on-CPU vs split-hot-on-GPU => backend-assignment effect; (3) stock
+vs full slab => end-to-end, must reconcile as ~ (1)+(2). Exceeds (1)+(2) => real defect; lands at
+(1)+(2) => correct despite not matching stock. Without decomposition #132 would be gated against an
+unachievable standard.
+Q4 E1 POST-MORTEM: WRITE NOW, do not wait on open mechanism (that is how post-mortems never get
+written). BUILDER DRAFTS (holds code detail), ARCHITECT REVIEWS. Sections: 1 what E1 was for
+(mechanism-cost gate for C3, never throughput test); 2 what was built + surviving assets; 3 terminal
+defect 1 reachability (h x residency x backend-assignment coupling); 4 terminal defect 2 capture
+infeasibility (SYNC-JOIN = cudaStreamSynchronize); 5 correctness defect arming-perturbs-numerics at
+engaged=0, mechanism OPEN, discriminator named; 6 why review missed them — premise never checked,
+architect's own miss, reachability-precheck rule minted; 7 assets retained (event pools, ring
+channels, fail-closed gates, calibrated KL instrument, proven...). [Ruling tail truncated in transit;
+sections 8+/Q5 to be reconciled at next consult.] Bank = §44.
+=== END §44 ===
