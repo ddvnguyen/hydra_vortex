@@ -3023,3 +3023,24 @@ contract fields fails closed (correctly). Window REAL this time: load1 1.42/3.05
 idle. Q8-probe = fit probe (banner arithmetic: 3060 head margin 617 MiB; draft-KV placement check
 per §67). Binary sha 235600ace98dc017cbfa35caaef81890c7e02e8abd976b54744f1565082ae293.
 === END §68a ===
+
+=== §68c: ARCHITECT — CAPACITY BASE CORRECTION + IN-WINDOW LADDER (BINDING) ===
+ROOT ERROR (architect, self-reported): CUDA1 budget base 12,288 MiB is NOMINAL, not usable. Strike
+12,288 everywhere in the MTP arm. Leader's 9-layer "1,514 margin" repeated the same nominal-base
+error AND subtracted a lower bound (627) on unaccounted overhead — lower bounds don't make margins.
+MEASURED ANCHOR (D22 banner): 10,923 <= U < 11,661 (D22 booted at 10,923; Q8 probe needed 11,661
+and failed). Ladder at conservative end U=10,923: 9 layers = 10,774 -> TIGHT (~149, coin-flip);
+8 layers = 9,887 -> safe (~1,036). IN-WINDOW LADDER (windows are the scarce resource): rung 1
+probe 9 CUDA1 (blk.10-18); alloc fail -> rung 2 probe 8 CUDA1 (blk.10-17) SAME WINDOW, no re-queue;
+rung 3 (8 also fails) = STOP+REPORT (would mean U below bracket / 3060 consumed by something else).
+Whichever rung loads: ALL THREE LEGS at that placement — matched design non-negotiable. First
+successful boot: capture device-memory lines = MEASURED U (highest-value number in the arm; ends
+bracketing forever). Placement sized to the LARGER head (Q8 2,647 measured — confirms file-size
+2,657.5 was right; capacity base was the error, head arithmetic never was). If 8 is the rung:
+report the reservation price as a measured number — 4 expert layers off D22's 12 ≈ 1.0-1.5 tok/s
+at banked per-layer marginal 0.25-0.38. Diagnostic (one grep): non-expert tensors on CUDA1 from
+allocation lines (default layer split w/ -ngl 99 + both GPUs visible can place beyond -ot; D22
+banner says unlikely: 10,923-10,644 leaves ~279 for compute; if present, pin + report — changes
+the campaign placement model). Gate fixes accepted+banked. Probe alloc measurement 2,647.04 MiB
+exactly = head weights at model load.
+=== END §68c ===
