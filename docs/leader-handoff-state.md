@@ -2575,3 +2575,13 @@ VRAM at matched coverage, ~45% ceiling). WORTH A LINE: L19 h=0.4207-vs-0.39 reco
 (b69c55f8f reproducible); cost-accounting sentence (~800 lines, 3 review rounds, rig sessions).
 LEAD MAY COMMIT WITHOUT RE-REVIEW once applied. Builder applying all eight now. Bank = §48.
 === END §48 ===
+
+=== §49: POST-MORTEM COMMITTED (architect pre-authorized) ===
+Builder applied all 8 review items; lead spot-verified (bands: 36.3/12.1 labelled ORIGINAL + 34.5/11.5
+REGISTERED quoted in verdict list; exacta× gone; §5 body text; attach_device presumption + never-
+executed; §§8 rules-minted + 9 #132-implications present; h-reconcile + cost accounting) and
+COMMITTED per §48 authorization without re-review. Commit sha recorded in git log (docs: E1
+post-mortem (architect-reviewed)). Replicate legs still in flight (ARM_KLREPL_DONE). E1 line now has
+its closed record: design closed, code halted, post-mortem committed, remaining open item = the §5
+anomaly (n=1) + owner decisions (a)(b)(c). Bank = §49.
+=== END §49 ===
