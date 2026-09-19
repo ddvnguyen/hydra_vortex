@@ -2957,3 +2957,19 @@ Lineage verified by architect: baseline-qwen4exp-mtp + epic/148 correctly at 86a
 LEADER REGISTER RENEWED post-restoration (contract 2.2.0); queue task-c855c420bf = prior MTP baseline
 (Q4 head via -md, cache OFF, N=36) — fetch full detail for the prior-tested invocation.
 === END §65a ===
+
+=== §66: KL WINDOW LEG1 COMPLETED BEFORE SUPERSESSION — DEFECT REPRODUCES ON EAGER BINARY (NO COLLAPSE); PPL DELTA IS BINARY-INTRINSIC ===
+The armed §60 window auto-trigger (e0efc5471da7) FIRED at quiet (load 1.52/9.51) before the §65
+supersession kill. LEG1 (armed-vs-disarmed, NEW eager binary 9aef19b6, corpus 3cae5a0f, ctx 512):
+Mean KLD = 0.033600 +/- 0.000467. NOT collapsed (floors 4e-4/1.3e-4 => ~80x). Per §60 registered
+branches: >=10x floor => DEFECT REPRODUCES ON THE EAGER-ARM BINARY => dispatch-branch histogram is
+the next discriminator (deferred behind the owner's MTP arm). LEG1 dump PPL = 4.8347 +/- 0.07532
+(disarmed, QUIET window) — matches the §58 loaded-window 4.8334 to 3 digits => the new-binary PPL
+delta vs §43-era 3.9114 is BINARY-INTRINSIC, NOT a load artifact (§59 voiding was correct for the
+old-binary control leg but the new-binary PPL is stable across load states). Mechanism unknown:
+eager-arm patch itself OR its build delta (CUDA 13.2.1 + explicit -lcudart -lcublas vs 13.2.2) —
+NOT ATTRIBUTED (no refuting check yet). LEG2 (same-window floor) NEVER RAN — window closed
+(load 7.23/23.40) before its dump; no same-window floor exists for the eager binary. DATA KEPT RAW,
+provenance in log e0efc5471da7 (binary sha 9aef19b6, corpus sha verified at launch). NOTE: MTP arm
+binary = build-gs-cuda1322 lineage — unaffected by the eager binary's findings.
+=== END §66 ===
