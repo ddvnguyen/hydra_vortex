@@ -2794,3 +2794,26 @@ base bin on WorkDisk; leg-2 armed cmp (PIN_FILE+DRYRUN) vs leg-1 base. VERDICT R
 collapses to ~4e-4 floor => BOTH defects close, issue B unblocks, histogram NOT needed; stays
 ~0.033 => kernel-dispatch divergence confirmed, dispatch-branch histogram becomes the discriminator.
 === END §58 ===
+
+=== §59: HOST-LOAD CONFOUNDER DISCOVERED (owner, 18:12) — §58 LEGS VOID; HANG HYPOTHESIS CONFOUNDED; QUIET-WINDOW PROTOCOL REQUIRED ===
+Load average 26.9-34.5 (20 hw threads) during ALL of tonight's legs; 13 users; memory 82G used/40G
+avail. Load source visible in quiescence snapshot: paseo CI Android builds (gradle assembleRelease,
+Kotlin daemon, Runner.Worker) + hardlink fan-out. CONSEQUENCES:
+1. §58 KL re-run VOID: new-binary disarmed dump completed (rc=0, 533s, 88 chunks) but PPL=4.8334 vs
+§43-era 3.9114 — NOT attributable to the patch: old-binary control run SAME env/corpus gave a THIRD
+result (silent stop at chunk 9/88, rc=0, truncated log, chunk[1]=2.8519 vs new-binary 3.3369).
+Three disarmed configs = three different outputs = host interference, not code. All three legs VOID.
+2. §55 DEADLOCK HYPOTHESIS CONFOUNDED: the /proc census (10 futex-waiters, 4 pollers, 1 page-wait,
+NO spinners, wchar crawl 101->227/13min) is equally consistent with CPU/disk starvation (lock-holder
+descheduled, I/O saturated) as with the call_once deadlock. The §54 armedxverbose hang matrix
+(15:00-16:57) ran under unknown load — RE-TEST REQUIRED under quiet conditions before the hypothesis
+is accepted. Registered gdb signature still falsifiable when quiet (gdb blocked; /proc census again,
+but quiet-load makes futex-waiters-with-runnable-holder distinguishable from starvation).
+3. QUIET-WINDOW PROTOCOL (new standing rule): every GPU/evidence leg from now on logs load-average at
+launch and HARD-FAILS if load > 4 (20 threads); evidence obtained above that line is void by
+construction. §43/§50 results (3.9114/0.0329) were obtained in earlier windows of unknown load —
+treat as PROVISIONAL until one quiet-window replicate confirms.
+4. Builder patch 1b0ac08bb itself NOT indicted and NOT exonerated — verdict deferred to the
+quiet-window KL re-run (armKLrereager.sh patched: cmp -f fix, WorkDisk base-bin path).
+5. ACTION: GPU legs paused until load < 4. Eager-arm re-run queued as next leg.
+=== END §59 ===
