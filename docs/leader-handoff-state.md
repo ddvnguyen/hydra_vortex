@@ -2644,3 +2644,13 @@ no A/B in this codebase is trustworthy until we know why." BLOCKS issue B (corre
 acceptance criteria. Does NOT block C (load-time split) or F (pin-set generation) — parallel. Land
 the config win first regardless (owner decision (a), still pending). Bank = §51.
 === END §51 ===
+
+=== §52: PRISTINE BINARY DELIVERED + POST-MORTEM AMENDED/COMMITTED ===
+Builder 7fe20b8a: pristine llama-perplexity BUILT (§29 shelf artifact tree /tmp/opencode/pristine-src,
+HEAD 86af0c9af clean detached, NO E0/E1 hooks) — sha256 302e5a64f79cfd7cf40dda4da8d2993293d101e56bbc
+5d3476d7cbd8e6f389e9. Post-mortem amended: old §5 stamped [SUPERSEDED in §51], operative §5 =
+confirmed-defect wording verbatim, §7 retention sentence added; lead verified structure and COMMITTED
+bea932f69 @ 14:35:30+07. NEXT: rig sched-diff discriminator in flight (ARM_SCHEDDIFF_DONE); pristine
+three-family leg (pristine vs disarmed vs armed) dispatches after rig frees — establishes WHICH family
+deviates from pristine. Bank = §52.
+=== END §52 ===
