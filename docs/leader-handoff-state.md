@@ -1660,3 +1660,20 @@ EXECUTION ORDER: (4) lineage check -> (1) five B2' legs -> (2)/(3) filings. E1 t
 stands, now blocked behind the lineage answer.
 
 === END SECTION 27 ===
+
+=== §27a: B2' SECOND STOP (D4a) + PROVENANCE HAZARD (raw; rig released clean; architect adjudication pending) ===
+D4a (4 CUDA0 + 44 host, pure -ot, no ncm) BOOT_FAILURE — frame-for-frame IDENTICAL to D0: ggml.c:6214
+assert in ggml_gated_delta_net via build_delta_net_fused, resolve_fused_ops -> graph_reserve fit-check.
+Worker boundary observation (forensic, verified logs): boots at 26 host (B3) / 40 host (B1); aborts at 44
+host (D4a) / 48 host (D0). D8a/D4b/D14/D22 UNRUN; fingerprint + graphs-reused gates never reached a live
+leg. GPUs healthy; -ot DEPRECATED warning benign (present in clean boots too).
+PROVENANCE HAZARD (facts, no conclusion): builder stamped build-merge-full CONTAMINATED (era-mixed
+epic-object relink; attributes their three E0 verify-leg crashes to it) BEFORE the worker's D4a run —
+D4a's binary may not have been Stage-1-exact; relink-vs-D0 timing unverified. The §27 provenance-stamp
+rule arrived one session too late to settle it. NO further legs can run on build-merge-full (stamped
+do-not-measure); next measurement base = builder's fresh build-e0 from the rebased epic (gated on
+architect ack of continuation plan).
+FORWARDED QUESTIONS: (1) D4a as #151-branch-(c) evidence vs era-mix confound; (2) does the 40/44 host
+boot boundary survive a suspect binary; (3) B2' path — hold until fresh build-e0 then re-run five legs
+on the new base (also makes the curve E1-comparable), or rebuild merge-full-equivalent first.
+=== END §27a ===
