@@ -1307,3 +1307,63 @@ DISPOSITION: raw to architect under pre-registered adjudication (§22 premise fr
 for the superseded arm framing). Result posted to GitHub per §23 discipline. No dispatch until ruling.
 
 === END §23a ===
+
+=== SECTION 24: ARM 007 STAGE 1 RULING — premise CONFIRMED (sharper form: 3060-hosted expert layers perform at least as well as 5060Ti-hosted); P2 pre-registration FAILED HIGH and the favourable upgrade is REFUSED; ARM 008 re-priced DOWN ~1.08x with budget UNCHANGED (stable ~35us rule) (architect; commit timestamp is the single clock) ===
+
+BUILDER DIAGNOSIS CREDITED: `ffn_*_exps` dead regex (`_*` = zero-or-more underscores, never matches `up`)
++ `ffn_gate_up_exps` dead file weight (factory zero callers). Two real root causes by probing instead of
+retrying — why the engagement gate exists. Credit forwarded to 2ac20e22.
+
+SCORECARD (architect, own pre-registrations):
+  P1 STAGE 1 BEATS THE REFERENCE — HIT. Predicted ~26.4/1.10x; measured 27.2832 = 1.140x C, above the
+      >=25.5 confirm band; conservative by 3.3%.
+  P2 COVERAGE CONSTANT COMES IN LOW (60-90% of 9.48) — FAILED. Realized (27.2832-23.9244)/(45.83%-16.67%)
+      = 11.52 tok/s per 100% coverage = 121% of 9.48. Pre-registration said: if it lands ABOVE 9.48
+      something is wrong with the model, want to know before Stage 3 is costed. Taken seriously below.
+  P3 SPARE-CPU THRESHOLD RISES >=3 — NOT TESTED. CPU%dec 510 on 20 CPUs = 5.1 cores; legs never
+      approached saturation; -t16 vs -t14 = 0.72%. Record UNTESTED, not pass.
+  P4 PREFILL IMPROVES 5-10% — direction RIGHT, magnitude UNDERESTIMATED: 39.3s -> 32.5s = -17.3%. O1
+      prefill residency-sensitivity confirmed twice, stronger than priced.
+
+PREMISE VERDICT: CONFIRMED, stated more precisely than asked — expert layers hosted on the 3060 perform
+AT LEAST AS WELL as expert layers hosted on the 5060 Ti. If the 3060 were a drag, 29.17 coverage points
+would have returned <9.48; they returned 11.52. sm1 50.6 confirms genuine computing (idle in C). The 3060
+is not a liability in this role. PREMISE CLOSED. Secondary (raw): sm1 on ~18/39 samples is what serialized
+layer-split predicts (CUDA1 works during blk.0-11 only) — idleness is a PLACEMENT ARTIFACT, not spare
+capacity; card at 11809/12288 MiB, effectively full.
+
+P2 DIAGNOSIS — REFUSING THE UPGRADE IT OFFERS:
+  (i) superlinear coverage curve (relieving the CPU has accelerating returns): efficiency rose 50%
+      (0.0355 -> 0.0535 tok per CPU%) while CPU% FELL 24% — CPU-side work got CHEAPER per unit, not just
+      less of it; also supported by prefill -17.3%.
+  (ii) two-device config removes CUDA0 contention the single-device measurement never had — 11.52 may
+      measure a different quantity than 9.48.
+  Separable neither with this data. NOT raising the mechanism budget: taking 11.52 would loosen the ARM
+  008 bar from 36.3 to ~42 us on ONE unreplicated leg from a confounded two-device config. Declining
+  favourable evidence on the same standard as unfavourable evidence is the entire value of
+  pre-registration. GOVERNING BUDGET STAYS AS BANKED. 11.52 recorded as an OPEN DISCREPANCY against the
+  coverage model, not an update to it.
+
+ARM 008 RE-PRICED — DOWN, budget unchanged anyway:
+  Stage 1's config already captured coverage ranking was going to sell. Ranking operates only on the 26
+  CPU-resident layers: 26/48 x h=0.4207 = 22.8 coverage points x 9.48 = +2.16 tok/s on 27.28 = 1.079x.
+  PRIZE FALLS ~1.14x -> ~1.08x. THIRD TIME a config win ate the mechanism's headroom — NAMED PATTERN
+  (bank): mechanisms priced against an untuned system lose headroom as the system gets tuned. It is not
+  bad luck; it is what pricing-against-untuned does.
+  Per-invocation budget essentially UNCHANGED — invocation count falls with the prize: 2.689 ms/token
+  over 26 layers x 3 sites = 78 invocations -> 34.5 us break-even, 11.5 us at 3x (vs 36.3/12.1 banked).
+  STABLE FORM OF THE RULE (bank): the engineering bar for expert ranking on this rig is ~35 us per
+  invocation regardless of how well the config around it is tuned.
+  VRAM feasibility: ranked pins over 26 layers at N=38 need 1769 MiB; free 2612 (5060 Ti) + 479 (3060) =
+  3091 MiB. FITS, little margin on the 3060 — pins for CPU-resident layers go on CUDA0.
+
+SEQUENCE — UNCHANGED: M3 (#142) + M1 (#143) land first, then ARM 008. Without M3 we cannot prove the
+mechanism engaged — Stage 1 just demonstrated M3's exact failure mode with a different flag (dead regex
+silently placed nothing; only a verbose probe caught it).
+
+FOR THE OWNER (posted to #147): Stage 1 config = 27.2832 tok/s = 1.90x vs default split 14.39; 1.50x vs
+the 18.19 called baseline a day ago. Zero code, just correct expert placement across both cards. Their
+call to land, as always. Honest counterweight in the same breath: the better the config gets, the less
+expert ranking has left to win — ARM 008 is now worth ~1.08x, not ~1.14x.
+
+=== END SECTION 24 ===
