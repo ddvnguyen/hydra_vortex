@@ -2488,3 +2488,20 @@ prompt: bank §§30-44 + fork code as context, standing rules (bank-cited claims
 approval, stamp-after-commit), post-mortem task per §44 spec (draft only, no commit, mechanism
 marked OPEN with discriminator in-flight). ROLES UNCHANGED otherwise.
 === END §44a ===
+
+=== §45: EMPTY-PIN DISCRIMINATOR — FAIL-CLOSED BOUNDARY (LEG UNANSWERABLE AS DESIGNED) ===
+Rig worker 89d25210: binary REFUSES zero-pin arming — GGML_ABORT at ggml-cuda.cu:2008 (via
+hydra-pins.h:119 zero-count gate; parser skips # comments so header-only file parsed to 0 pins
+cleanly, hit zero-count gate not parse error). rc=134 SIGABRT, wall 68s, abort during model load,
+BEFORE any [HYDRA e0]/[HYDRA e1]/pins lines; no KLD produced. Verbatim: "HYDRA_PIN_FILE set but
+zero pins loaded from /tmp/opencode/e0-pins-empty.txt" (file sha a49c28d2, 1 line header-only).
+Everything else §43-identical (base bin REUSED + now hashed cb0ebec9 (first hash on record);
+binary/corpus/LD/provenance all verified pre-run; quiescence clean). 0-byte-vs-header-only
+difference: untested per stop rule; both parse to zero pins, same gate applies (source reading,
+not run claim). CONSEQUENCE: the §44 discriminator (attach vs allocation path) is UNANSWERABLE by
+empty-arm — condition unreachable at runtime. Fail-closed gate WORKED as designed (arming without
+pins = config error). Artifacts: armKLemptypin.{sh,session.log}, klemptypin.cmp.log + sidecars,
+empty pin file retained. Rig FREE. NEXT (leader): dispatch read-only SOURCE-FACT pass to worker —
+in dryrun+pins arm mode, what executes (attach_device? D2D copies? weight backup? allocations?)
+— so architect can redesign the discriminator from code facts, not conjecture. Bank = §45.
+=== END §45 ===
