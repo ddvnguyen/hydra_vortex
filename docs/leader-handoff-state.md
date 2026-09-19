@@ -1161,3 +1161,14 @@ STATUS: banked. Flag surface pending OWNER approval. Epic + flag implementation 
 Stage 1 reports. Stage 1 in flight on the rig.
 
 === END SECTION 21a ===
+
+=== §21 ERRATUM (Stage 1 spec, caught by the builder before any burn): the C-leg control as written
+("NO -ot", plain) NEVER BOOTS — plain config attempts the full 47,263 MiB expert+non-expert alloc on the
+16 GB card. The ~23.9 tok/s reference this session was ALWAYS --n-cpu-moe 40 (8 resident) at -t 16.
+CORRECTED CONTROL: -t 16 --n-cpu-moe 40 --tensor-split 1,0 (configuration-not-scalar rule intact; verdict
+bands unchanged — they were priced against ~23.9). S1/S1b -ot legs also BOOT_FAILed with the identical
+full-alloc-on-device-0 signature DESPITE 26 CPU -ot patterns: either the regex did not match (override
+silently unapplied) or a fit-params fallback path fired — undetermined. Builder authorization granted:
+(1) corrected control; (2) -ot MATCH-VERIFICATION PROBE FIRST (boot with verbose logging, read the
+override/apply lines, verify exactly 12 ffn_*_exps tensors land on CUDA1) before any timed leg retry.
+No blind retries. Escaping (backslash-dot in shell quoting) is a prime suspect for the regex miss.
