@@ -2328,3 +2328,13 @@ OWNER PACKAGE BASIS: build #132 for VRAM + land the -ot config win for throughpu
 EXPERT RANKING CANNOT EXCEED ~45% COVERAGE ON THIS MODEL AT ANY VRAM BUDGET — "that last sentence is the
 campaign's real scientific result." Leader assembles package. Bank = §39.
 === END §39 ===
+
+=== §39a: DERIVATION DOC COMMITTED (b69c55f8f) — DECISION BASIS FINAL ===
+Both §39 nits applied and committed: b69c55f8f `docs: coverage-per-MiB derivation v2 (architect-validated)
+— BUILD branch with re-scoped currency finding` (+299, doc-only, pre-existing M src/llama-cpp untouched).
+Nit 1 fixed with rounding-slip correction (h-bar/f = 4.2392, Ratio = 4.3413 exact); Nit 2 break-even line
+LEADS the robustness section (gate needs only h-bar >= 0.2174 at N=38; cleared by every measured h incl.
+§20d-dead h_prefill = 0.238 => build case independent of decode-window quality). Doc = decision basis the
+owner reads. Owner package DELIVERED (turn 1167): decisions (a) land 1.90x -ot config, (b) build #132 for
+VRAM, (c) pending PR #134 / §21a / #153 continuation leg. KL isolation still RUNNING on rig. Bank = §39a.
+=== END §39a ===
