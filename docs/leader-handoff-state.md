@@ -1480,3 +1480,5 @@ DISPATCH: Track 1 -> builder 2ac20e22; Track 2 -> dedicated rig worker (spawned)
 turn (number reported in the ledger + issue). BANKED B1/B2/B3 PRE-REGISTRATION IS IN THIS SAME COMMIT.
 
 === END SECTION 25 ===
+
+=== §25 DISPATCH RECORD (same clock day): epic issue #148; branch epic/148-per-expert-backend-selection off main; Track 1 -> builder 2ac20e22 (E0: #142+#143+#144+#146-in-scope, test-asserted engagement counter, PR into epic branch); Track 2 -> NEW rig worker f4419282-41e6-4de3-8ca8-55fc4f024a98 (B-series six legs, raw yield, ARM_B_DONE). Roster now 6. ===
