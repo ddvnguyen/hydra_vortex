@@ -1494,3 +1494,18 @@ turn (number reported in the ledger + issue). BANKED B1/B2/B3 PRE-REGISTRATION I
     convention (Co-Authored-By) was misapplied in the dispatch; repo rules win. Conventional-commit format
     still applies. STANDING for all fork work.
 === END §25a ===
+
+=== §25c: ARM B SERIES YIELD (raw, banked before adjudication; rig released clean; dispatch-record same turn) ===
+B3 (S1 replicate, verify OK 72/60/156): 27.3789 = +0.35% vs 27.2832, INSIDE ±2.4% band. D1/D2 PASS.
+B1 (device-identity control, 8 experts CUDA1-only, verify OK 48/0/240): 23.1321 = -3.31% vs C 23.9244,
+OUTSIDE ±2.4% band LOW. D1/D2 PASS. (Architect prediction was B1 ~= C — adjudication pending.)
+B2-4/8/14/22: ALL VOID, no timing — override verify MISMATCH (all 288 expert tensors HOST, both cards
+idle) on every leg. Common factor: --n-cpu-moe alongside -ot (both OK legs were -ot-only). B2 sweep as
+speced BLOCKED on this flag interaction; redesign pending architect ruling.
+MODEL SUBSTITUTION (worker disclosure, correct): dispatch named stale model; worker used Stage-1-exact
+model (/mnt/SSD/qwen3.8-flash-next-apex-mini 6-shard) so B3 could replicate. NOTE: CLAUDE.md hardware
+facts are STALE on the rig model name — flagged for correction.
+CPU reconciliation (worker note): decode-split family comparable (Stage-1 510/673 ~ B3 455.4 / B1 597.8);
+whole-window means (184.6/207.3) not comparable to decode-split.
+Logs: /tmp/opencode/armB.session.log + per-leg artifacts; script armB.sh, parser parseB.py.
+=== END §25c ===
