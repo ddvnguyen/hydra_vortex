@@ -2166,10 +2166,13 @@ unreachable (residency DETERMINES backend-assignment; the two fixes were individ
 incompatible). Builder asks ruling: (a) CPU-side intercept, (b) mechanism redesign, (c) GPU-site reversal
 (rejected already — wrong direction). Nothing downstream runnable: type-(ii)/A6/stock/type-(i) all
 presume engagement.
-FINDING 2: KL FAIL 0.071563 vs 0.01 — VACUOUS as run (E1 engaged in neither step; stock-vs-stock; a PASS
+FINDING 2: KL FAIL 0.071563 vs 0.01 — VACUOUS as run [AMENDED §41: "VACUOUS" was half wrong — could
+not gate the mechanism, yes; but 0.0716 = 76-304x the measured floor, a REAL signal of unknown origin,
+remains open; see §41] (E1 engaged in neither step; stock-vs-stock; a PASS
 would have gated nothing). KLD ~0.07 matches prior cross-config scale (0.0798) => readings: (a) instrument
 floor miscalibrated (builder's 0.01 threshold), or (b) pin-arming perturbs numerics (moot until engagement
-works). Builder recommends disarmed-vs-disarmed isolation (same base, env stripped) to calibrate floor
+works). [§41: both readings OVERTURNED — gate 0.01 is well-placed (10.6x above observed max floor);
+0.0716 signal origin = OPEN, gated on KL3 config diff, §41 branches (a)/(b)/(c)] Builder recommends disarmed-vs-disarmed isolation (same base, env stripped) to calibrate floor
 before re-thresholding; did not burn rig unilaterally.
 FINDING 3 (condition-2 answer): SYNC-JOIN = cudaStreamSynchronize (both SYNC-STAGE and SYNC-JOIN) + D2H
 readbacks => FULL path can NEVER execute under capture (capture-check aborts first). Type-(ii) timing-OFF
@@ -2360,3 +2363,38 @@ INTERPRETATION = ARCHITECT'S (worker raw, zero gloss). Forwarding for: KL leg cl
 bearing on D0 (expected: none — different instrument, contention already excluded by prefill
 paradox; mechanism still unattributed). Bank = §40.
 === END §40 ===
+
+=== §41: ARCHITECT KL-ISOLATION RULING — LEG CLOSED, GATE KEPT, §36 AMENDED, KL3 CONFIG DIFF REQUIRED ===
+Architect rulings on §40 yield (interpretation = architect's, per protocol):
+Q1 KL LEG CLOSED on its authorized question (does the correctness instrument have resolution? YES,
+~2 orders of magnitude). GATE 0.01 KEPT — "miscalibrated ~1 order" framing from §40 OVERTURNED:
+0.01 sits 10.6x ABOVE the observed MAX floor (9.39e-4, correct practice at n=4 vs median) and 7.2x
+below armed 0.0716 = well-placed with headroom AND resolution. Bonuses banked: dump PPL spread 8
+runs = 0.031% (3.9108-3.9120); wall-time spread 4.7% (359-376s) = independent quiet-box run-to-run
+timing variance, CORROBORATES the ±2.4% replication band used all session.
+§36 AMENDMENT (header-retraction-stamp rule, same commit): KL FAIL 0.0716 "VACUOUS as run" was half
+wrong — could not gate the mechanism, but 0.0716 = 76-304x floor = REAL SIGNAL of unknown origin,
+remains open. New standing rule: a datum 2 orders above floor never gets labeled vacuous — label
+the gate outcome, keep the datum.
+Q2 ARMING-EFFECT ATTRIBUTION BLOCKED: KL3 (0.0716) vs isolation (4e-4) comparison rests on configs
+being identical — KNOWN DIFFERENCE: HYDRA_E0_STATS inherited by KL3's dump, unset in all 8 isolation
+runs ("stats-only, numerics unaffected" = ASSUMPTION not measurement; worse if KL3's cmp lacked it,
+KL3's own two steps differed = the exact flaw that manufactures spurious KLD). REQUIRED before any
+post-mortem entry: full config diff KL3 dump vs KL3 cmp vs isolation leg (corpus, sha, chunks, ctx,
+every env var, flags). REGISTERED BRANCHES: (a) fully identical => arming perturbs numerics without
+engaging = real correctness defect, enters post-mortem, implicates attach path (attach_device D2D
+copy src0->data + weight backup run before any intercept); (b) configs differ => comparison VOID,
+re-run one armed-vs-disarmed KL on isolation leg's exact corpus; (c) identical except stats
+asymmetry => attribute there, prove by re-running KL3 pair with variable matched. Architect
+prediction (b) or (c), registered 0-for-5 on session predictions (pattern named: accepting a
+mechanism that fits before checking the config that would refute it).
+Q3 D0 LEDGER TIGHTENS: numeric reproducibility (~4e-4 KLD, 0.03% PPL) EXCLUDES numeric drift as D0
+mechanism — now: not MTP (log), not contention (prefill paradox), not numerics (this leg). 48.2%
+swing looks MORE anomalous vs 4.7% wall-time spread. Still unattributed.
+Q4 STANDING ITEMS: owner package +1 asset line (calibrated correctness instrument, floor ~4e-4,
+validated 0.01 gate = prerequisite for ever shipping #132 — campaign product); #132 gate untouched;
+OUTLIER STANDING PATTERN BANKED: P2-tail => P4 replicated P1, nothing discarded, tail not promoted
+to mode; P2 gh-activity covariate stays UNASSIGNED (endorsed raw-reporting discipline).
+KL3 CONFIG DIFF dispatched to rig worker (has KL3 + isolation logs in session ctx; box free, no GPU).
+Bank = §41.
+=== END §41 ===
