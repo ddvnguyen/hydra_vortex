@@ -2302,3 +2302,29 @@ recommendation -> leader assembles owner package (§22 thesis -> budget -> E1 pr
 slab -> corrected coverage-per-MiB -> recommendation -> decision stated as owner's). KL isolation still
 running on rig (independent thread). Bank = §38a.
 === END §38a ===
+
+=== §39: ARCHITECT VALIDATES v2 — GATE FIRES BUILD, PROSECUTORIAL FINDING: WRONG CURRENCY; OWNER PACKAGE BASIS SET ===
+ALGEBRA INDEPENDENTLY RECOMPUTED AND CHECKED (residual 1.02409; gates 2.9294/1.4647; N=38 5.3813; N=54
+floor 3.9443). Unit identity independently confirmed pre-landing. Sum-h closure accepted (proof standard).
+NIT 1: N=54 line mislabels Ratio as h-bar/f (4.3415 is Ratio; h-bar/f = 4.2392) — fix before package.
+NIT 2: state break-even explicitly — at N=38 build gate needs h-bar >= 0.2174; EVERY measured h clears it
+INCLUDING dead h_prefill = 0.238 — strongest robustness line, better than adversarial byte bound.
+PROSECUTORIAL FINDING (changes what BUILD means): h-bar SATURATES at N~54 (banked; v2 floor ~zero marginal
+gain) => slab coverage CEILING ~0.45, no VRAM raises it. At matched VRAM: slab ~4.6 GB @ cov ~0.447 vs D22
+20.4 GB @ 0.4583 — THEY TIE, placement fractionally ahead + headroom while slab capped. The 5.4x is
+realizable as FREED VRAM, not additional coverage. The derivation is a COVERAGE argument; C3 (hits ->
+throughput) REMAINS UNTESTED and is not advanced by it. The registered gate was chosen when VRAM efficiency
+was believed to convert to throughput — it does not at this operating point.
+RECOMMENDATION: HONOR THE GATE — BUILD #132 (fires 4.3-5.4x vs >=2.93, robust to every sensitivity; will
+not retrofit a gate because the answer arrived in an inconvenient currency — discipline applies when the
+number favours building too). BUT success criterion RE-SCOPED BEFORE CODE: #132 payoff = VRAM EFFICIENCY
+AT MATCHED COVERAGE (~4.6 GB vs 20.4 GB), NOT decode throughput. Specifically: (1) throughput goal better
+served NOW by the already-measured -ot placement win — 27.73 tok/s = 1.90x default split, replicated 4x,
+STILL UNLANDED (the deliverable the owner has waited on since before the sweep); (2) #132's one genuine
+throughput angle is second-order: ~4.6 GB slab fits 5060 Ti ALONE -> frees 3060 entirely -> recovers ~3%
+CUDA1 fixed toll + removes PCIe x4 constraint, simplifies architecture; (3) remaining ranking-as-throughput
+door: session-adaptive pools (warm+allpool POC) could exceed static h ceiling — untested, not proposed now.
+OWNER PACKAGE BASIS: build #132 for VRAM + land the -ot config win for throughput + RECORD THAT STATIC
+EXPERT RANKING CANNOT EXCEED ~45% COVERAGE ON THIS MODEL AT ANY VRAM BUDGET — "that last sentence is the
+campaign's real scientific result." Leader assembles package. Bank = §39.
+=== END §39 ===
