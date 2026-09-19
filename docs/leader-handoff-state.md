@@ -1979,3 +1979,29 @@ architect re-examination. Covariates: content_len 633/656, decode-CPU 549.8/563.
 D8b C1 7982.0 (identical to D8a), D10a C0 9756.0 (identical to D14/D22). E1 build window RE-OPENED per §32
 sequencing (legs cleared, box released). Bank = §32a.
 === END §32a ===
+
+=== §33: ARCHITECT FINAL B2PRIME RULING — P-a RESOLVED (PROPORTIONAL REFUTED), P-b CLOSED UNRESOLVED, B2PRIME CLOSED, MTP ATTRIBUTION SELF-AMENDED ===
+P-a RESOLVED: absolute tolls discriminate — D4b/D4a (4 CUDA1 layers) -0.7933 tok/s (-3.49%); D8b/D8a (8
+layers) -0.5845 (-2.47%). PROPORTIONAL demands 8-layer toll ~double 4-layer; it is SMALLER => REFUTED
+decisively. FIXED not confirmed (registered ~-3.5%, got -2.47% — gate fails on own terms, no retrofit).
+Weak form banked: PLAUSIBLE ~3% CUDA1 toll, no count dependence over 4-8 layers; SIGN certain (3/3
+negative), constancy not. RETRACT §26's "0.099 tok/s per CUDA1-hosted layer" (proportional model, refuted).
+Replacement (architecturally actionable): CUDA1 has a FIXED ENTRY COST and is then nearly free per layer —
+never engage lightly; either don't engage CUDA1 or engage it heavily. Corroborated by campaign-best D10a+12
+CUDA1 = 24.7432 -> 27.7349 = +2.99 tok/s NET after the toll.
+P-b CLOSED UNRESOLVED: intervals 0.436/0.241/0.529 tok/s/layer (4.12/2.57/5.96 e-4 per MiB), non-monotonic,
+2.3x spread, I3 highest. Sublinear dead, superlinear dead, NO incumbent. Fragility named: D8a alone drives
+I2+I3, no replicate — architect NOT ordering one. B2PRIME CLOSED. Products: (1) pure--ot == ncm on quiet
+box (4 confirmations); (2) CUDA1 toll ~3%, proportional refuted; (3) per-layer byte heterogeneity measured
+(1058.5/937/887 MiB) — uniform constant killed by numbers; (4) 4th Stage-1 replicate; (5) #151 closed;
+(6) #154 withdrawn.
+MTP ATTRIBUTION AMENDED — ARCHITECT OWN ERROR: both D0 logs show NO draft activity (one prompt_save line
+each, zero acceptance lines) => MTP EXCLUDED. Contention ALSO excluded: slow-decode D0 was FASTER at
+prefill (180.63 vs 168.16 tok/s) — a starved box loses both phases. +48.2% is DECODE-SPECIFIC, correlates
+with decode-CPU% (485 slow / 610 fast), on the maximally CPU-bound config — MECHANISM UNATTRIBUTED.
+Covariate rule stands on own merits; D0 anchors nothing in either direction. NEW STANDING RULE (architect,
+minted against self): NO mechanism attribution enters the bank without the log check that would refute it —
+"a coincidence that fits is a hypothesis, not a finding."
+STANDING: E1 build window PROCEED; no further rig requests from architect; next architect deliverable = E1
+leg-protocol review when builder part-2 lands. Bank = §33.
+=== END §33 ===
