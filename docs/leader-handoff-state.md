@@ -3702,3 +3702,26 @@ collapse stays unexplained-but-benign (clocks/power PASS + link benign). Pmid pr
 tracks the same direction (P0 4.70 -> Pmax 5.41).
 RAW: place-ladder/{resp,srv,dmon,gen}-PL-*; dmon n=880/leg x6.
 === END §81-exec ===
+
+=== §82 EXEC: LEVER (1) KV QUANT MEASURED — CANNOT EXTEND THE DOSE; SINGLE-DEVICE CAPPED AT 7 ===
+EXTRAPOLATION DISCIPLINE ADOPTED: +70-75% NOT an expectation; report = "linear over measured 0-7
+of 48; per-layer slope 0.2065 tok/s; beyond ~7 UNVALIDATED, expected to flatten once CPU saturation
+lifts." Owner line = architect's verbatim defensible statement. Knee = the headroom arm's PRIMARY
+job; throughput = by-product.
+LEVER (1) MEASURED (load-only probe, 3 steady readings, -ctk/-ctv q8_0 at ctx 16384, flags verified
+at arg.cpp:2434/2447): P0-with-KVq uses 4,971 MiB vs 5,173 unquantised => freed = 202 MiB (H =
+7,317, budget 6,617 => 7.06 layers => P_max STILL 7). BOUNDS: KV@16384 ≈ 404 MiB total (this model
+has a tiny KV footprint — hybrid/linear-attention architecture); q4_0 frees ~303 MiB; lever (2)
+ctx->8192 frees ~200 MiB. ALL cheap levers < 937.5 MiB = one layer. THE 10-12 LAYER TARGET IS
+UNREACHABLE ON THE SINGLE 3060 BY ANY CHEAP LEVER; the single-device dose is PHYSICALLY CAPPED at
+7 layers (independently boot-verified: 8th OOMs). THE KNEE IS UNREACHABLE SINGLE-DEVICE.
+CPU% COVARIATE (recorded per §82): load-*.tsv sampler (prefill+decode mixed, caveat): llama-server
+~103-106% of one core mean during legs, peaks 144-196% — decode loop is memory-bound ~1-core
+dominated; saturation NOT lifted at 7 layers (consistent with slope still linear at bracket edge).
+Clean decode-window-only CPU% would need a decode-gated sampler (noted, not blocking).
+QUALITY GUARD RECORDED: KV-quant configs are MEASUREMENT-ONLY; must not silently become a
+production recommendation.
+RECOMMENDATION TO ARCHITECT: open lever (3) — dual-GPU engineering-maximum arm (separate P0
+baseline, -devd CUDA1 + -otd draft pinning, never plotted against the single-device ladder) as the
+only route to 10-12+ layers and the knee. Awaiting §83.
+=== END §82-exec ===
