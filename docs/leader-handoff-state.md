@@ -2585,3 +2585,23 @@ post-mortem (architect-reviewed)). Replicate legs still in flight (ARM_KLREPL_DO
 its closed record: design closed, code halted, post-mortem committed, remaining open item = the §5
 anomaly (n=1) + owner decisions (a)(b)(c). Bank = §49.
 === END §49 ===
+
+=== §50: REPLICATE YIELD (ARM_KLREPL_DONE) — (iv) REFUTED; ANOMALY IS DETERMINISTIC ===
+Two legs, §47 order, rig 89d25210, all rc=0 first attempt, provenance/quiescence clean:
+LEG 1 ARMED-vs-ARMED (armed dump + armed cmp vs armed base): mean KLD 0.000131 ± 0.000027, median
+0.000000, max 0.402 (heavy tail, mean tiny). PPL 3.9248 (corpus gate pass). Armed runs agree with
+armed runs AT FLOOR.
+LEG 2 ARMED-vs-DISARMED (armed cmp vs reused §43 base, sha cb0ebec9 verified pre-run): mean KLD
+0.032902 ± 0.000579 — matches §43's 0.032906 to 0.000004 (5 significant figures). Perfectly
+reproducible.
+PATTERN: disarmed~disarmed (4e-4, §40); armed~armed (1.3e-4); armed-vs-disarmed = 0.0329 BOTH TIMES
+deterministically. => §47 (iv) "not systemic" REFUTED — the anomaly is a DETERMINISTIC, REPRODUCIBLE
+numeric difference between armed and disarmed computation families, with every registered code-path
+mechanism still eliminated (§46). Additional datum: armed dump PPL 3.9248 vs disarmed 3.9114 — the
+families differ in PPL too. Same base-bin byte size both families (11,144,961,364 B; stated not
+interpreted). New base klrepl-AA.kld-base.bin retained; §43 base untouched. Rig FREE. One candidate
+NOT yet examined (leader note, not banked interpretation): disarmed-only lazy event pool (e1.h:434-
+440 cudaEventCreate) runs in DISARMED stock_begin but returns immediately when armed — the families
+DO differ in device-side bookkeeping, direction opposite to naive expectation. INTERPRETATION =>
+ARCHITECT. Bank = §50.
+=== END §50 ===
