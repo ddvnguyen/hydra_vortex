@@ -2110,3 +2110,30 @@ pass/fail -> A6 graphs-OFF both -> disarmed stock timing -> type-(i) attribution
 vs bands) on certified base be4676f11 + stamp 4c2b9cb67; quiescence + covariates live per leg. No legs
 until architect clears. Rig FREE. Bank = §34c.
 === END §34c ===
+
+=== §35: ARCHITECT GO — LEG SESSION CLEARED, THREE LEG-SPECIFIC CONDITIONS ===
+Site re-freeze independently verified by architect (layer 31 ∈ [22,47] = host-resident under both
+variants; deterministic, not judgment). All §34 items addressed specifically. Deferrals (submodule bump,
+kl-gate script -> E1 PR) endorsed as PR hygiene.
+CONDITION 1: stock.n == 0 => disarmed-site leg VOID, never disarmed_us = 0 — fail-closed on the READING
+side (zero baseline would revert differential to absolute = the false-STOP the differential exists to
+prevent; complement of the silent-delegation choice).
+CONDITION 2: name the exact CUDA primitive behind SYNC-JOIN BEFORE type-(ii) — if cudaStreamSynchronize
+(or any blocking stream/event sync) => graphs vetoed BY CONSTRUCTION => type-(ii) would VOID predictably
+(a wasted leg under the registered rule); ggml-level or event-dependency join = no issue. Hard stop-point
+in execution: report primitive, WAIT for leader ack, then type-(ii).
+CONDITION 3: commit scripts/hydra-kl-gate.sh BEFORE leg 3 (KL) — a gate executed from an untracked file
+is not auditable/reproducible. Leader pre-approved the commit.
+REPORTING (false-GO direction): layer-31 frozen site up = IQ2_XXS (~2.06 bpw) vs gate Q8_K (~8.5 bpw) in
+the same layer (~4x row bytes); mechanism overhead largely fixed but COMPACTION SCALES WITH ROW BYTES =>
+differential at IQ2_XXS UNDERSTATES cost at heavier-quant sites. State next to verdict: a GO at
+layer-31/up/IQ2_XXS does not generalize to heavier sites without re-measurement. Architect explicitly NOT
+widening E1 scope to add the gate site (freeze + STOP commitment worth more than the bracket); carried as
+E2 MUST-HAVE.
+CLEARED ORDER: dry-run -> KL(pos3) -> type-(ii) graphs pass/fail -> A6 graphs-OFF both -> disarmed stock
+timing -> type-(i) attribution -> DIFFERENTIAL verdict vs <11.5 GO / 11.5-34.5 CONDITIONAL E2-only /
+>34.5 STOP. Base be4676f11, stamp 4c2b9cb67, same binary/stamp/session arm-disarm, quiescence + covariates
+per leg. Yield raw -> architect rules against bands WITHOUT adjustment — "including STOP, which stands as
+a commitment, not a negotiation." Leader dispatch executed (kl commit pre-approved; hard stop-point at
+SYNC-JOIN report). Bank = §35.
+=== END §35 ===
