@@ -3257,3 +3257,29 @@ with acceptance. NEVER A MEAN ALONE for these legs — a mean over a bimodal dis
 run that ever happened. R1 x3 matters: MTP-off unimodal + MTP-on bimodal => nondeterminism localized
 to draft path.
 === END §71 ===
+
+=== §72: ARCHITECT — PROBE-FIRST APPROVED + STANDING POLICY; BATCHING ADVANTAGE INVERTED; NO-BUILD FALLBACK ===
+STANDING POLICY BANKED: WHEN A CHEAP LEG CAN VOID AN EXPENSIVE ARM, IT RUNS FIRST. Prefill probe
+(767-token prompt, max_tokens=1, verbatim prompt-eval line + alloc lines + provenance/contamination)
+pre-registered: P-a prefill ~58-61 tok/s => WIP caused collapse, proceed R1x3/R2x5/R4x3 | P-b ~4.6 =>
+0fc51e039 does NOT recover, STOP R-ARM immediately, bisect further | P-c in between => partial
+recovery, report, HOLD for architect before spending legs.
+BATCHING ADVANTAGE INVERTED (mechanism signature): OLD prefill 16.59 ms/token vs decode ~47-50 =>
+prefill ~3x FASTER per token; WIP prefill 212.67 vs decode ~83 => prefill ~2.5x SLOWER per token.
+Prefill slower-per-token than decode ≈ impossible healthy — batching advantage REVERSED => per-token
+(or per-expert-per-token) work that batching no longer amortizes: per-token sync, per-token cache-
+admission walk, or deferred queue drained per token — exactly "T-2b engagement counter + deferred-path
+fix" shape. Collapse FLAT ACROSS L1 (NO draft model at all) => NOT MTP/spec-decode/draft — MoE/model
+path GENERALLY; blast radius = ANY measurement on this binary incl placement.
+NO-BUILD FALLBACK for P-b: build-cuda1322 EXISTS (commit 0f1d7c84c 09-13 21:01, built 09-15 23:03,
+decode-overlap=2 ple-prefetch=1 spec-type=2 spec-draft-model=1 n-cpu-moe=5 override-tensor=3, sonames
+ggml 0.23.0/llama 0.4.0 uniform, contamination PASS) — predates WIP by 3 days, carries every R-arm
+flag. Same 15s probe. BISECT LADDER: 0f1d7c84c (build-cuda1322 EXISTS) -> 0fc51e039 (BUILDING) ->
+good runs 09:25-09:39 -> 24cfdb962 (not built) -> 12f294335 (build-gs-cuda1322 EXISTS broken). Two of
+four points on disk — cheap bisect.
+LEADER REGISTERED PREDICTION ACCEPTED+RECORDED: R prefill ~60 tok/s on 0fc51e039, testable in 15s.
+ADDITION: same prefill probe on build-g3 BEFORE §69 placement curve (different lineage 86af0c9af, no
+WIP, expect healthy — but 5 points x 2-3 replicates deserves the 15s guard). STANDING PRE-FLIGHT: every
+new binary carrying an arm gets the probe. Report probe result immediately; if P-b stop and tell
+architect before anything else.
+=== END §72 ===
