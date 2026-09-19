@@ -3655,3 +3655,29 @@ BEFORE the rest; override-verify 3k tensors on dosed legs; fingerprint 895c52234
 quiescence; covariates; unfiltered logs; no builds. Report after leg 2 (P0 spread) and after cycle 3
 (bracket medians).
 === END §80 ===
+
+=== §80 EXEC COMPLETE: BRACKET SEPARATES — +10.8% AT 7/48 LAYERS (~15% EXPERT BYTES) ===
+DESIGN: interleaved cycles [P0, Pmax] x3, ctx 16384 constant, MTP-OFF, ncmoe 48 vs 41, build-g3
+895c522343eeaa53, all gates green (load1 max 2.49, swap 23/23 noted, tmpfs 6.7G stable).
+RESULTS (decode tok/s, RAW in place-ladder/): P0 = 13.1761 / 12.8547 / 13.2371, median 13.1761,
+minmax 12.8547-13.2371 (±1.5%). Pmax = 14.6229 / 14.5988 / 14.5828, median 14.5988, minmax
+14.5828-14.6229 (±0.14%). SEPARATION +10.79% median-to-median; distributions NON-TOUCHING
+(min-Pmax > max-P0). => THE OWNER'S THESIS HOLDS AT THIS DOSE: experts on VRAM speed up decode.
+SPREAD GATE (§80-2): PASSED — MTP-off P0 spread ±1.5% vs ±16% MTP-on (draft-acceptance explanation
+of bimodality CONFIRMED; spread collapsed to low single digits as predicted). Pmax spread ±0.14%.
+LATE-BLOCK BYTES MEASURED (§80 binding): Pmax-r2/r3 model buffer 9,988.04 vs P0 3,425.54 (same
+config, both verbose, ctx 16384) => delta 6,562.50 / 7 = 937.5 MiB per late-block layer — NOT ~887
+(the blk.8-21 plateau value); late blocks match blk.4-7 (~937). P_max = 7 CONFIRMED: 8th layer needs
++937.5 => 12,672 > 12,288 OOM; boot-verified at 7 (553 MiB spare). NOTE: delta baseline is 3,425.54
+(ctx-16384 MTP-off P0), NOT 1,808.36 (that was ctx-81920 MTP-on composition — same-config delta is
+the valid instrument, composition-shift explained to architect). OVERRIDE-VERIFY: verbose lines show
+ncmoe 41 => blk.0-40 ffn_{down,gate,up}_exps overridden to CUDA_Host; blk.41-47 default CUDA0; 21
+expert tensors on GPU = 6,562.5 MiB delta. Mechanism = LAST 7 layers on GPU as §78 predicted.
+UNDER-LOAD PRE-REGISTERED READ (all 6 legs): SM 2122-2130 MHz (PASS, above 1.7-1.9 band), power
+80-85.4 W of 170 (PASS, ~50%), temp 49-51C; PCIe gen stays 1 under load (width 4) => FAIL disjunct
+fires on gen alone. Per §80: link/clock NOT fully exonerated — gen1-under-load goes to the architect
+as a separate-investigation candidate. Prefill covariate: P0 4.71-4.72, Pmax 5.40-5.41 (+15% — same
+direction, supports mechanism). CPU% series in load-*.tsv.
+NEXT (pre-authorized by §80 on separation): P_mid = ncmoe 44 (4 layers, closest to 0-7 midpoint),
+n=3 interleaved among themselves, linearity test vs linear prediction 13.989 (4/7 of the effect).
+=== END §80-exec ===
