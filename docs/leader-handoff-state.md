@@ -2669,3 +2669,14 @@ question, three dump runs + two compares (pristine vs disarmed base, pristine vs
 ALSO learned: muse-spark 503 = transient overload, retryable, BUT sessions with >200K ctx are
 prone; keep worker turns lean (files on disk, never paste dumps). Bank = §53.
 === END §53 ===
+
+=== §53a: OPCODE/PROVIDER OUTAGE — RIG FAILOVER TO OMP HARNESS ===
+The opencode provider went DOWN entirely ("Timed out refreshing OpenCode after 120000ms") — root
+cause of both 503s (service_overloaded on old session, backend_unavailable on fresh spawn). muse-
+spark/zen unreachable. FAILOVER: rig tasks moved to OMP harness (available) — rig worker s4 =
+0f69b49a-7dcc-4037-a0cb-2b51b44075df on omp/opencode-go/glm-5.3-flash (full-access mode), carrying
+both sequenced tasks: (1) sched-diff re-run with --verbose fix (ARM_SCHEDDIFF_DONE), (2) pristine
+three-family leg (ARM_PRISTINE_DONE; pristine binary ready from §52). NOTE for fleet design: the
+no-opencode fallback path works because every init prompt is bank-self-sufficient. Builder
+(7fe20b8a, opencode/muse) is IDLE and unaffected while idle — will fail over if needed. Bank = §53a.
+=== END §53a ===
