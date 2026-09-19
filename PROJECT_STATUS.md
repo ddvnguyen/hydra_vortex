@@ -365,6 +365,14 @@ Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.
 | Restored logits are per-slot | ⚠️ `llama_get_logits()` is context-wide; a concurrent slot clobbers it |
 | Only P/D cross-node has restored logits | COMBINED / warm / cold have none → 1-token trick still required |
 | Core cannot compute a token delta | No tokenizer — engine runs `get_common_prefix` |
+| **MoE placement: 5060 Ti production config** | **22.2541 tok/s decode, ctx 81920, 9/48 expert layers via `-ot 'blk\.(39|4[0-7])\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU'`, MTP off, n=3 ±0.6%; prefill 141.6** (build-g3 86af0c9af, fp `895c522343eeaa53`) |
+| **MoE placement slope, 5060 Ti** | 0.3187 tok/s/layer at ctx 81920 (0.3158/0.4244 over 0-11 at 16K); no knee through 23% of range |
+| **MoE placement slope, 3060** | 0.2065 tok/s/layer over 0-7 of 48 (physical cap: 8th layer OOMs); 13.15→14.60 tok/s |
+| **3060 gen1 x4 link is the prefill limiter** | CPU-expert configs stream 2.3–4 GB/s sustained (decode-scoped dmon) = 2.3–4× over the ~985 MB/s gen1-x4 ceiling; CUDA0-solo prefill 122 vs 3060 4.7 tok/s (26×, same binary) — §76 prefill collapse was config, not code |
+| **Decode bimodality = draft acceptance** | ±16% MTP-on vs ±1.5% MTP-off, three binaries; tok/s tracks acceptance run-by-run |
+| **Dual-GPU net-negative for this workload** | −9% at zero dose; per-layer benefit 71% of single-device |
+| **ctx cost is compute-reserve scaling** | ctx 81920 = 1,638 MiB = 1.75 expert layers, card-independent (KV itself only 48 MiB @16K — hybrid attention+recurrent model) |
+| **MTP verdict (no-overlap floor)** | Median gain +2.9% does not pay the 2,180 MiB head cost (3 placement layers); at acc≈0.92 MTP hits 24.8–24.9 and beats 23.09 — acceptance pinning is the lever |
 | AutoRouter routing           | ✅ 4-step algorithm |
 | EngineConfig via 0x40        | ✅ Config push works |
 | COMBINED mode (MoE)          | ✅ Expert-split verified |
