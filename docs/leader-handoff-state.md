@@ -3096,3 +3096,50 @@ ARM 2 (SECONDARY, DEFERRED until owner has Arm 1 answer): both-GPU placement + M
 21.34 = one 3060, all experts CPU, MTP; 27.73 = D22 both GPUs 22 expert layers, MTP off — MTP alone
 within ~23% of the whole placement campaign's buy.
 === END §68e ===
+
+=== §69: OWNER RESET PRIORITY — PLACEMENT PROOF PRIMARY, MTP SECONDARY (RESEQUENCED BY §69a) ===
+Owner verbatim: "Sure I keep it as it is try reduce noise that effect our custom implement to prove
+does the optimize placing exports on VRAM will improve decode speed". (1) NO REBASE — lineage stays;
+danielhanchen base REJECTED (no borrow_shared_tensor, no decode-overlap, no ple-prefetch, NO
+NEXTN_SHARED_TARGET_TENSORS — cannot load our heads). (2) Thesis: DOES PUTTING EXPERTS ON VRAM MAKE
+DECODE FASTER, noise stripped.
+BINARY: build-g3 (86af0c9af campaign base). USE NOTHING ELSE. Corrected strings via libllama-common.so
+SYMLINK (versioned filename false-negative — architect caught self): decode-overlap=0 ple-prefetch=0
+moe-expert-cache-size=0 override-tensor=3 n-cpu-moe=4 => ZERO fork extras, BOTH thesis controls (-ot
+placement, --n-cpu-moe all-CPU point). Sonames ggml 0.24.0/llama 0.4.1 uniform, contamination PASS.
+DO NOT USE build-e0/build-e0-eager (same flag profile but carry E0/E1 instrumentation = banked 80x
+gate-floor shift; eager also under §67 quality bar). build-g3 HAS NO PROVENANCE — write reconstructed
+one (embedded 86af0c9af, ggml 0.24.0/llama 0.4.1, built 2026-09-18 21:41, machine objects= line per
+§68a format, marked reconstructed) BEFORE first leg.
+EXPERIMENT: ONE binary, ONE session, ONE variable = expert layers in VRAM, FIVE points:
+P0 --cpu-moe (0 GPU layers, THE MISSING ANCHOR — placement has never been measured against NONE on
+this lineage), P5 blk.0-4 CUDA0, P10 blk.0-9 CUDA0 (re-anchor D10a 24.7432), P14 blk.0-9 CUDA0 +
+blk.10-13 CUDA1 (re-anchor D14 25.5666), P22 blk.0-9 CUDA0 + blk.10-21 CUDA1 (re-anchor D22 27.7349).
+Replicates P0x3 others x2. RE-RUN already-"have" points — old numbers off other binaries would
+reintroduce cross-binary noise. Two slopes: P0->P5->P10 = CPU->CUDA0 (x8, no cross-device activation);
+P10->P14->P22 = CUDA0->CUDA1 (x4 + per-token cross-device activation, banked ~3% toll). Report
+per-layer marginal tok/s SEPARATELY per segment. decode-CPU% = FIRST-CLASS series across all five
+points (banked: CPU 97% saturated, GPU 27% idle); prediction: falls monotonically. IF tok/s rises but
+decode-CPU% does not fall => MECHANISM WRONG, report as finding. Curve known non-linear ("P-a
+proportional REFUTED") — do not assume monotonicity. Gates: standing, quiet<=4 hard, same session,
+provenance, override-verify exact counts per point, graphs reused, unfiltered logs, content_len +
+decode-CPU% covariates, exact allocation lines, no builds in session, RAW FIRST.
+PRE-REGISTERED: A monotonic tok/s up + decode-CPU% down => thesis PROVEN with mechanism | B tok/s up,
+CPU% flat/rising => thesis holds mechanism WRONG | C CUDA0 segment gains, CUDA1 flat/negative =>
+placement works, x4 3060 does not pay (architect prediction C, 0-for-7, do not weight) | D no
+significant rise => REFUTED, publishable.
+=== §69a: SEQUENCING AMENDMENT — FINISH MTP ARM FIRST (L1 LANDED, L2-r1 LANDED, WINDOW CLOSED MID-ARM) ===
+L1 REAL FIRST: 11.8946/12.2401 mean 12.0674 — vs prior MTP-ON mean 21.11 ≈ +75% (band-A scale) IF L2
+reproduces in-session. L4 ADDED (decomposition, cheap): MTP ON Q4 head, --decode-overlap OMITTED,
+everything else = L2, x2, run AFTER L2 before L3. Decomposition: L1 neither ~12.07 | L4 MTP-no-overlap ?
+| L2 MTP+overlap ? — without L4 the gain is a COMBINED figure, unattributable. Every MTP-ON leg: draft
+acceptance, "decode overlap:" line (L4 must confirm ABSENT), eval tok/s, gates, unfiltered logs.
+MTP arm: L2-r2, L2-r3, L4 x2, L3 x3 (drop-if-fail), THEN placement arm (§69).
+=== §69b: RAW — L2-Q4-r1 NON-REPRODUCTION + WINDOW CLOSE ===
+L2-Q4-r1: tok_s=12.6331, accept=0.92143 (129/140, mean len 2.84), overlap line PRESENT ("MTP draft
+enabled after target acceptance"), DEV=1, ctx 81920, prompt 767, completion 200. Does NOT reproduce
+prior ~21 (delta vs L1 only +4.7% despite acceptance HIGHER than prior 0.86897). Window closed at
+load1=4.77 after r1; L2-r2/r3/L4/L3 not run. Architect notified; replication pending before any
+interpretation. Prior-run conditions per architect §69a: "mean 21.11" across 4 runs — same binary per
+proven script. In-session L2 replicates = the discriminator (cross-session confound vs config drift).
+=== END §69 ===
