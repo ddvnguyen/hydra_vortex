@@ -1237,3 +1237,51 @@ HOLD: ARM 008 needs the OWNER's word (small code spike, one site, instrumented).
 lands first (already on the rig).
 
 === END SECTION 22 ===
+
+=== SECTION 23: OWNER-REQUESTED THEORY-TO-IMPLEMENTATION CODE REVIEW — delivered on PR #134; answer NO (two independent reasons); five issues M1/M2/M3/R1/R2; M1-M3 BLOCKING ARM 008; GitHub communication discipline standing (architect on owner request; banked before any fix work; commit timestamp is the single clock) ===
+
+OWNER ASKED: careful review of theory-to-implementation gaps; team communicates on issues/PRs, not only
+in-band. Review posted on PR #134 at a744d8019, every finding file:line-cited, every finding carrying a
+solution, every finding priced against the 36.3 us per-invocation budget (§22).
+COMMENT: https://github.com/ddvnguyen/llama.cpp/pull/134#issuecomment-5738403500
+
+ANSWER TO THE OWNER'S QUESTION ("does the code look good enough to deliver a number in the paper"):
+NO — for two independent reasons.
+
+CLASS A — MEASUREMENT gaps (block ANY trustworthy number, whichever mechanism wins):
+  M3 (worst) Pin-file loading SILENT on every failure — fopen error silent, unparseable lines silently
+      skipped, no load summary. A typo in HYDRA_PIN_FILE produces an UNARMED run that looks armed. This
+      is the engagement-gate rule violated in the source itself; burned twice already (fire=[0,1,1,1]
+      episode; the -ot match probe).
+  M1  The gather path's stream sync is UNCOUNTED and UNTIMED — hydra_n_sync/hydra_sync_us incremented
+      only in the OLD fallback path (:2288, :2316). Zero budget instrumentation on the path under test.
+      ARM 008 cannot run until this exists.
+  M2  Two coexisting mechanisms (gather :2046, fallback :2339) write the SAME hit counters with
+      DIFFERENT semantics (unique-experts vs per-slice) — neither matches the paper's h (over lookups,
+      k=10/token). Any mixed run reports a blended h that means nothing.
+CLASS B — RESOURCE correctness:
+  R1  Slab is raw cudaMalloc (:2022), outside ggml accounting, never freed. ~3.2 GB at N=38, invisible
+      to the fit-check — compounds #139 directly.
+  R2  Duplicate/out-of-range pins over-allocate slots silently (:2020 sizes from the raw list).
+CLASS C — the MECHANISM gap, already banked (#140, #141): misses ship to GPU instead of computing on
+  CPU. Not fixable by patching; superseded by design.
+
+ACTIONS (executed this turn):
+1. M1/M2/M3/R1/R2 filed as FIVE separate issues on ddvnguyen/llama.cpp, label review-finding, explicit
+   --repo, each with file:line + failure scenario + solution restated (issues outlive comments);
+   cross-linked to #134 and (R1) to #139. Issue numbers reported in the turn ledger + architect ack.
+2. M1/M2/M3 marked BLOCKING ARM 008. Real dependency, not process: ARM 008 measures wall time per
+   invocation — without M1 there is nothing to read; without M3 we cannot prove the mechanism engaged.
+   SEQUENCE: M3 + M1 land first, then the spike.
+3. PR #134 recommended CLOSED in favour of per-expert backend selection, with B1/B2 recorded as
+   superseded-by-design rather than to-fix. PR DISPOSITION IS THE OWNER'S WORD — not closed.
+4. GITHUB COMMUNICATION DISCIPLINE, STANDING FROM NOW: every arm gets an issue before it runs and its
+   result posted back to that issue; every mechanism change gets a PR with the per-invocation cost
+   estimate against 36.3 us IN THE PR BODY (mechanism budget rule §22 — estimate in the brief, not
+   after). Bank sections stay the internal write-ahead log; GitHub is the durable record the owner can
+   read without us. Always explicit --repo (§19 amendment).
+
+BUILDER CREDIT (on record): ggml_cuda_mul_mat_id_needs_sync correctly extended at :2163-2175 to veto
+CUDA graphs on engaged nodes — careful work; it means the sync is a COST bug, not a correctness bug.
+
+=== END SECTION 23 ===
