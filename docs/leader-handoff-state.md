@@ -3779,3 +3779,25 @@ FLAGS VERIFIED at 86af0c9af: -dev/--device arg.cpp:2744; -ts arg.cpp:2837; -ot L
 -dmon on EVERY leg (benign verdict does NOT transfer); report if sustained rx/tx nears ~1 GB/s.
 DESIGN NOTE SENT — HOLDING for architect confirm before leg 1.
 === END §83-exec ===
+
+=== §84: THREE BLOCKERS FIXED — CO-LOCATION RULE, CORRECTED DOSES, DEBUG-MAP ASSERT; SCRIPT READY ===
+BLOCKER 1 (co-location): RULE = a layer's experts go on that layer's home device (blk.0-23 home
+CUDA0, blk.24-47 home CUDA1) or CPU — NEVER the other card. My P_max (blk.25-37 -> CUDA0) violated
+it: 26 extra crossings/token. Now a HARD ASSERT per leg: every overridden expert tensor's blk index
+must fall in the home range of its assigned device.
+BLOCKER 2 (P14 OOM): 14x937.5 = 13,125 > CUDA1 budget 9,075. CORRECTED DOSES (fill from the end of
+EACH device's own range): P0 = -ncmoe 48 + home ranges. P7 = blk.41-47 -> CUDA1 (6,562 <= 9,075 OK).
+P14 = blk.39-47 -> CUDA1 (9, 8,437) + blk.19-23 -> CUDA0 (5, home CUDA0) = 14. P_max = blk.39-47
+-> CUDA1 (9) + blk.10-23 -> CUDA0 (13-14; early blocks ~887 make 14 = 12,519 <= 12,613 plausible;
+boot decides) = 22-23. Non-contiguous dose (CPU gap blk.24-38) is CORRECT: co-location beats dose
+contiguity; CPU layers cost as at P0. 'ffn_.*_exps.*=CPU' LAST in every -ot list.
+BLOCKER 3 (vacuous assert): override line = LLAMA_LOG_DEBUG (llama-model-loader.cpp:1246) — every
+leg runs --verbose; assert map NON-EMPTY before contents; assert TOTAL override count == expected
+(a pattern typo dropping tensors to default is invisible to crossing-only checks). Specific-before-
+general ordering verified EMPIRICALLY per leg.
+KV=48 MiB correction banked AGAINST architect §83 "~2,020" line (ctx cost = compute reserve, not KV).
+armDUAL.sh WRITTEN: dose in {P0,P7,P14,Pmax}, --verbose, dmon per leg + immediate report if
+sustained rx/tx nears ceiling, verify python (non-empty map + co-location + per-device expert-layer
+counts), covariates, fingerprint, RAW first. Bridge policy: [P0,P7]x3 first; weak P7 slope => STOP
+before P14 per §83/§84. CORRECTED PATTERNS SENT for sight-check; launching cycle 1.
+=== END §84 ===
