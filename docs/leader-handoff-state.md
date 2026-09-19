@@ -3354,3 +3354,39 @@ is NOT memory-pressure — the tension with temp-0 determinism is unresolved). W
 Note: /tmp/opencode/mtp proven scripts + logs preserved in the archive; recovery worktree + build
 intact at /mnt/WorkDisk/tmp-recover/.
 === END §73-exec ===
+
+=== §74 EXEC: D2/D3 CLEAN + SYSTEM_INFO IDENTICAL + 09:25-TREE IDENTITY PINNED; AWAITING RULING ===
+CORRECTION BANKED PER §74: warm-cache test measured PAGE CACHE; --load-mode none = model in ANONYMOUS
+RSS. Status: page-cache eviction REFUTED | anonymous/swap pressure NOW ALSO TESTED (D2 below). 288
+MB/s arithmetic STRUCK. Kept: 4 measurements, 2 binaries, 212.67-212.92 ms/token within 0.15% = a
+resource limit, unnamed.
+D1 (ubatch grep): OLD fast log = 223 lines, prefill ubatches 2->42->209->512->4 over ~16s, intent
+match=0 slots=0 on EVERY line (verification scaffolding ran and was fast). NEW probe log = 0 lines —
+BUT the site=decode:3378 calls enter llama-context.cpp at 24cfdb962 behind #ifdef
+LLAMA_MOE_GROUPED_DEBUG (compile flag), absent in pure 0fc51e039. => The old 09:25 binary was built
+from the SCAFFOLDING-BEARING tree (llama-context.cpp identical to 24cfdb962's — the log format matches
+12f294335 source exactly). Batching question UNDECIDABLE from new-binary logs; instrumentation itself
+differs. H2' (dirty tree) now EVIDENCE-BACKED, not just inferred.
+D2 (process memory, §74-approved sampler): peak VmRSS 44.3 GB (model fully resident), VmSwap 0.0,
+vmstat si=0 throughout => ANONYMOUS/SWAP PRESSURE EXONERATED. (Timing line of that probe invalid for
+comparison — sampler sent a 1-token prompt; memory purpose fulfilled. Script gap noted.)
+D3 (mmap+mlock probe): mlock failed on rlimit ("Cannot allocate memory" after 0 bytes) -> degraded to
+plain mmap; prefill STILL 212.32 ms/tok (4.71) => LOADING PATH EXONERATED. Escalation to CPU path per
+§74.
+CPU PATH CHECK: system_info old (archived a1 bench era) vs new (verbose probe, -lv 9): CPU features
+IDENTICAL — SSE3/SSSE3/AVX/AVX_VNNI/AVX2/F16C/FMA/BMI2/LLAMAFILE/OPENMP/REPACK=1, no AVX512 EITHER
+era (i7-12700K). Only CUDA-side diff: BLACKWELL_NATIVE_FP4=1 in old, absent in new (irrelevant to CPU
+prefill). No per-arch CPU variant dylibs either build (single libggml-cpu.so.0.23.0 both). No
+variant-selection log lines even at -lv 9. Kernel-variant-at-feature-level: SAME.
+CODE READ: Phase D cpu-recompute + shadow-dump are env-gated OFF by default (device_split_cpu/shadow =
+false at 0fc51e039) — not the default-path collapse. moe-cache.cu EXISTS already at 0f1d7c84c (0fc51e039
+MODIFIED +686, not added) => "layer absent vs present" clean test DEAD.
+STRUCTURAL CONCLUSION: collapse is NOT memory (page-cache/anonymous/swap), NOT loading mode, NOT CPU
+feature/variant selection, NOT env-gated Phase D. The ONE binary that was fast (09:25, gone) differs
+from all three collapsed ones by: built from scaffolding-bearing tree (llama-context.cpp with
+verification-intent wiring + LLAMA_MOE_GROUPED_DEBUG ON + CMakeLists +3 from 24cfdb962) and possibly
+moe-cache.cu intermediate state. => 24cfdb962 build+probe (previously stopped at §73) is NOW the top
+discriminator: ~60 tok/s => dispatch-path difference (verification-intent route) is the mechanism;
+4.7 => host changed since 09-16 (would point back outside code entirely). AWAITING ARCHITECT RULING —
+no build started, stop-and-report honored. RIG TIME USED: D2+D3+verbose probes ≈ 8 min total.
+=== END §74-exec ===
