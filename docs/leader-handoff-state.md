@@ -2281,3 +2281,24 @@ in this campaign, two steps from happening." COLLECTOR CREDITED: reported the cr
 flagged L1 binding, published the 42/512 line that exposed the defect — the method was honest enough to
 catch its own error. Bank = §38.
 === END §38 ===
+
+=== §38a: CORRECTED RE-DERIVATION LANDED — BOTH OPERATING POINTS BUILD WITH MARGIN; AWAITING ARCHITECT VALIDATION ===
+Unit identity FROM RUNTIME: ~100 banners agree (n_expert=512, n_layer=48, n_expert_used=10; two =8 lines
+are the k=8 ablation); route ids in 500s corroborate; v1 6/layer = override tensor names. CORRECTED FORM:
+Ratio = (h-bar/f) x (B-bar_place/B-bar_pin), byte residual 927.2727/905.4583 = 1.024092 (bounded
+[0.876,1.045]). Gates: build <=> h-bar/f >= 2.9294; retire <=> < 1.4647. OPERATING POINTS: N=38
+(h-bar=0.39 banked; log-interp reproduces 0.3899/0.4011) => 5.2547 => Ratio 5.3813 => BUILD. N=54
+(h-bar=0.4471 interp; floor 0.4062 = zero-marginal-gain) => 4.3415 => BUILD (floor 3.9442 BUILD; general
+4.5632 BUILD). ROBUSTNESS: adversarial byte bound 4.60/3.37 BUILD; harsher multi-turn regime 0.3126 =>
+4.31 BUILD; nothing near the gate from below. UNWEIGHTED COEXISTENCE: v1 1.03 = whole-layers-vs-whole-
+layers, MOOT (slab pins 8%-mass subsets); unweighted physics survives as placement half (Cov=22) paired
+with measured pin recall via h/f; v1 error = wholes on both sides. SUM-H ANOMALY RESOLVED: ranker clean
+(independent accumulators); bit-for-bit recompute from raw traces incl. 8.499/8.499 — ranker exonerated;
+~0.5%-draw coincidence isolated to 1 of 6 sum-cells; moot for v2 (global h-bar). Closed with recompute
+proof. Collector extra: the 42/512=8.2% line sat in the phase-0 REPORT all along; banner check = one grep.
+Doc revised in place: v1 verbatim under SUPERSEDED header, v2 operative, uncommitted. ROUTE: architect
+validates like a prosecutor (per own §38 rule — second fitting story earns MORE suspicion) -> attaches
+recommendation -> leader assembles owner package (§22 thesis -> budget -> E1 premise findings -> #132
+slab -> corrected coverage-per-MiB -> recommendation -> decision stated as owner's). KL isolation still
+running on rig (independent thread). Bank = §38a.
+=== END §38a ===
