@@ -3605,3 +3605,14 @@ model buffer NOT itemized in verbose log (gap stated). Swap 23/23 FULL again at 
 NEXT: load-only nvidia-smi probe on the 3060 for measured H (device truth incl. draft+context),
 derive P_max, ONE-LINE report to architect, HOLD before P_max leg per §78.
 === END §78-exec ===
+
+=== §78 H-PROBE: MEASURED (load-only, nvidia-smi, 3 steady readings 45s apart) ===
+P0 steady state CUDA1(3060) = 9161 MiB used / 12288 => H = 3127 MiB FREE. The Q4 draft head + context
+dominate (main model non-expert on GPU is only 2338 MiB per lines; draft+ctx ~6.8G unitemized). With
+700 MiB margin: expert budget 2427 MiB. Late-block (blk.22-47) per-layer bytes UNOBSERVABLE at P0
+(experts all-CPU); 887-plateau estimate => floor(2427/887) = 2 layers. P_max = ncmoe 46 (2 layers on
+GPU). Boot allocation line will measure the real late-block bytes (delta vs 1808.36). 3 layers =
+11,822 projected > 11,588 budget line — fails margin. ONE-LINE REPORT SENT, HOLDING for architect
+confirm before P2 leg. Curve dose 0->2 layers vs acceptance-bimodal spread ~±16% — separation
+unlikely; flagging now per §78 step-5 language.
+=== END H-probe ===
