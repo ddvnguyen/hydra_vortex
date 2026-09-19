@@ -2005,3 +2005,21 @@ minted against self): NO mechanism attribution enters the bank without the log c
 STANDING: E1 build window PROCEED; no further rig requests from architect; next architect deliverable = E1
 leg-protocol review when builder part-2 lands. Bank = §33.
 === END §33 ===
+
+=== §33a: E1 PART-2 LANDED — CLEAN STAMP, PACKAGE ROUTED FOR LEG-PROTOCOL REVIEW ===
+Builder part-2 package: commit `739084e4a` (feat(hydra-e1): E1 part 2 — split compute kernels, event-pool
+harvest, per-branch split counting, KL leg; +431/-55, 2 files, no trailers per §25a) on part-1 `81f92d5bc`.
+3 review defects fixed in-code (output misalignment, uninit packet, hardcoded sizes). FINAL STAMP:
+sha=739084e4a tree=clean objects=1789790508 @ 2026-09-19T04:01:48Z (relink-only restamp EXIT=0). Disclosed
+deviation: dirty-tree build 81f92d5bc-dirty superseded by restamp — builder proposed + leader adopted
+STANDING RULE: stamp-after-commit MANDATORY; dirty-tree builds are disclosure-required deviations, never
+the record of achievement. Freeze choices in code: site (15, ffn_moe_up-15, id 1) + weight backup + merged
+gate_up never-engaged; 512B device LUT consult (zero D2H); 16-cadence lazy harvest; HYDRA_E1_DRYRUN x
+HYDRA_E1_TIMING leg matrix (+GGML_CUDA_DISABLE_GRAPHS type-(i)); fail-closed aborts; KL script (threshold
+required); capture-semantics annotation design §2; zero layer-count-derived sizes.
+LEADER-PROPOSED LEG SEQUENCE (architect review pending): (1) dry-run verify legs, (2) instrument negative
+control (A6), (3) type-(i) attribution timing-ON/graphs-OFF -> us vs 34.5, (4) type-(ii) no-regression
+timing-OFF/graphs-ON + graphs-reused, (5) KL gate (A5); same binary/stamp/session A/B, quiescence,
+covariates, fingerprint, binary-identity on every leg. Package routed to architect 2731baf3. No legs run.
+Rig FREE. Bank = §33a.
+=== END §33a ===
