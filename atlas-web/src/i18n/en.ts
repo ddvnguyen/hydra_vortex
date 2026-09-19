@@ -133,6 +133,7 @@ const en: Record<string, string> = {
   "profile.lmHead": "LM head",
   "profile.other": "Other",
   "profile.empty": "No profiled turns yet — send a chat message and the breakdown appears here.",
+  "profile.noEndpoint": "The engine has no /profile endpoint yet (fork follow-up) — per-turn phase breakdown unavailable.",
   "profile.connectHint": "Connect to the engine to collect per-turn timings.",
   "profile.lastTurn": "Last turn",
   "profile.wallTime": "Wall time",

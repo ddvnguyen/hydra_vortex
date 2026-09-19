@@ -78,6 +78,10 @@ function TurnColumns({ turns, stacked, height, format, footLabel, footLabelOne }
 export function Profiling({ baseUrl, apiKey, connected }: { baseUrl: string; apiKey: string; connected: boolean }) {
   const { t } = useLocale()
   const [turns, setTurns] = useState<Turn[]>([])
+  // hydra: fork has no GET /profile yet (server.cpp route table) — the poll
+  // 404s forever. Track it so the tab says so instead of inviting chat turns
+  // that will never produce a breakdown (#777 option 2 pending).
+  const [noEndpoint, setNoEndpoint] = useState(false)
 
   useEffect(() => {
     if (!connected) return
@@ -86,8 +90,12 @@ export function Profiling({ baseUrl, apiKey, connected }: { baseUrl: string; api
       if (document.visibilityState === "hidden") return
       try {
         const result = await getProfile(baseUrl, apiKey)
-        if (!disposed) setTurns(result.turns.map(derive))
-      } catch { /* engine busy or restarting — keep the last snapshot */ }
+        if (!disposed) { setTurns(result.turns.map(derive)); setNoEndpoint(false) }
+      } catch (err) {
+        // engine busy or restarting — keep the last snapshot; a clean 404
+        // means the endpoint itself is missing, not that turns are pending
+        if (!disposed && /404/.test(String(err))) setNoEndpoint(true)
+      }
     }
     void poll()
     const timer = window.setInterval(() => void poll(), 2000)
@@ -108,7 +116,7 @@ export function Profiling({ baseUrl, apiKey, connected }: { baseUrl: string; api
       </div>
 
       {!latest ? (
-        <p className="runtime-unavailable">{connected ? t("profile.empty") : t("profile.connectHint")}</p>
+        <p className="runtime-unavailable">{!connected ? t("profile.connectHint") : noEndpoint ? t("profile.noEndpoint") : t("profile.empty")}</p>
       ) : (
         <>
           <div className="prof-tiles">
