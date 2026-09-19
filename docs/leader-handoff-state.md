@@ -3283,3 +3283,29 @@ WIP, expect healthy — but 5 points x 2-3 replicates deserves the 15s guard). S
 new binary carrying an arm gets the probe. Report probe result immediately; if P-b stop and tell
 architect before anything else.
 === END §72 ===
+
+=== §72 EXEC: PROBE RESULT = P-b — RECOVERY COLLAPSED; WIP EXONERATED FOR PREFILL; R-ARM STOPPED ===
+Build completed 23:46 (12 min). PROVENANCE written (embedded 0fc51e039, ggml 0.23.0 uniform, toolkit
+13.2.2 archs 86;120, objects=1789836401, real newest-object mtime); contamination: ggml uniform,
+0.54.1 string = cpp-httplib embedded version NOT a soname; checker PASSES. Binary sha e0b4548257...08f2.
+PROBE (proven profile, DEV=1, max_tokens=1): "prompt eval time = 163174.69 ms / 767 tokens (212.74 ms
+per token, 4.70 tokens per second)" — IDENTICAL collapse to the broken binary (212.67). => P-b BRANCH.
+R-ARM STOPPED, zero R replicates run (per §72). WIP DELTA EXONERATED for the prefill collapse: the
+state that PRODUCED the 21-tok/s runs (58-61 tok/s prefill) now measures 4.70 tok/s prefill from the
+same commit. PARADOX TO EXPLAIN — candidate hypotheses (leader, for architect ruling, NOT interpreted):
+(H1) ENV-GATED: 0fc51e039's own message says "hybrid: ENV-GATED CPU/GPU expert split (+ split probe,
+shadow record, cpu replace)". The 09:25 runs may have had different env (or the env-gated default
+path differs from what the 09:25 binary exercised). The proven script sets NO hybrid env var — check
+what env vars 0fc51e039 reads and their defaults.
+(H2) DIRTY TREE AT 09:25: the 09:25 binary may have been built from a working tree whose content was
+never exactly committed — "deliberate named state" assumption fails for the ORIGINAL runs; 0fc51e039
+may not be byte-equivalent to what ran at 09:25.
+(H3) BUILD CONFIG UNKNOWN: the 09:25 build's CMakeCache was overwritten at 09:34 reconfigure — its
+toolkit/arch/other flags are UNRECORDED; my recovery build (13.2.2, 86;120, Release, GGML_CUDA,
+LLAMA_CURL=OFF) may differ in a load-bearing way.
+(H4) Host-level change since 09-16 (13x structural prefill change from host state unlikely).
+NOTE: probe script bug found+noted: final echo "PROBE_$TAG_DONE" unquoted -> unbound var error AFTER
+data captured (harmless this run; fixed pattern: quote "${TAG}"). PROBE_EXIT rc=1 but data valid.
+Awaiting architect ruling before any further probe (incl build-cuda1322 per §72 ladder — NOT started,
+stop-and-report honored).
+=== END §72-exec ===
