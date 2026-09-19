@@ -1886,3 +1886,34 @@ E1 DESIGN CLOSED: revised draft committed (157 lines); leader grep verified all 
 (S1x2, S2x4, S3x2, A4x6, A5x1, A6x1, A7x5, freeze x4) => per §30 no re-review needed; E1 implementation
 may start (CPU code; builds wait for quiet box per new rule). Pristine shelf artifact COMPLETE (EXIT=0).
 === END §30b ===
+
+=== §31: ARCHITECT B2PRIME RULING — ERROR OWNERSHIP SETTLED, TWO LEGS CLEAN, QUIET-BOX RE-RUN, #151 CLOSED, UNIFORM CONSTANTS INVALIDATED ===
+ERROR OWNERSHIP: architect owns the sequencing error (wrote "non-blocking CPU-only background" in §29 while
+holding their own CPU-saturation finding); leader's rule adopted mutually — NO compiles during rig sessions.
+CLEAN LEGS: D0 (10:04:18) + D4a (10:05:32) completed BEFORE the 10:06 compile start = CLEAN. Decode-CPU%
+series breaks EXACTLY at the boundary (485/602 before vs 305/280/283/272 after) — cause + CPU%-as-detector
+both independently confirmed. D8a straddles; D4b/D14/D22 void. CLEAN D0->D4a = +58.2% (2.06 tok/s/layer for
+first 4 vs 0.60 avg over 22) — SUBLINEAR hint, AGAINST the architect's registered SUPERLINEAR 1.2-1.5; not
+ruled (two points, cross-idiom, layer identity changes VRAM 1.5x). Fourth wrong prediction this session;
+pattern = directional over-optimism about payoff curve; E1 priced with that in mind.
+(1) RE-RUN all six on quiet box. NO splicing — clean D0/D4a = EXTERNAL REPLICATION CHECKS (±2.4%) doubling
+as quiescence-gate validation. NEW GATE: system QUIESCENCE — sample non-rig CPU before/during each leg,
+abort if any non-rig process materially active. Decode CPU% = reported COVARIATE, flagged when anomalous,
+NEVER auto-voiding (absolute band deliberately rejected: config-dependent).
+(2) #151 CLOSED per branch (a): root cause = ERA-MIXED LINK (pilot libllama.so.0.4.0 + epic ggml 0.13.1
+across soname boundary, onset 09:22:43). Architect's §27 resolve_fused_ops attribution RETRACTED. "40 host
+boots / 44 host dies" boundary FORMALLY DEAD (collinear). Lesson disposition: binary-identity gate (live).
+(3) D22 VRAM attributed: mapping x heterogeneous per-layer expert quant (1.49x) => INVALIDATES banked
+uniform constants (916.7 MiB/layer, 1.79 MiB/expert). Offline re-derivation from actual per-layer tensor
+table; servable-window [8,12) + "5.7x more VRAM-efficient" claims RECOMPUTE-OR-RETRACT (rig-free).
+Layer-count-indexed sweeps DON'T hold VRAM constant: B2prime re-run states layer-selection rule + reports
+actual bytes per leg.
+(4) E1 coupling (no design change): no-build rule + quiescence gate apply; E1 CPU branch is
+CPU-availability-sensitive (synchronous host compute) => decode CPU% + quiescence reported alongside every
+us number; 34.5us bar derived at normal load — marginal NO-GO on a noisy box is NOT final (safe bias).
+(5) NEW FINDING (verified by leader: L1 log = -t16 matching D0, completed 08:18:32 << 09:22:43 onset):
+clean D0 pure--ot all-host = 14.1568 vs L1 --n-cpu-moe 48 all-host = 21.28 = -33% for pure--ot at
+nominally identical placement — method-control failure on CLEAN data => issue filed; second independent
+count against ncm/-ot equivalence alongside #149; supports owner directive to ship own flags.
+E1 implementation proceeds (CPU code, build queued for quiet box). Bank = §31.
+=== END §31 ===
