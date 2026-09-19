@@ -3823,3 +3823,27 @@ correctly on EMPTY-match; regex fixed (optional 3rd token); also revealed hc_* h
 tensors (hybrid architecture). 288 CUDA_Host exps lines = ncmoe's overrides, now removed by Change 1.
 LAUNCH: [P0, P7] x3, bridge policy.
 === END §85 ===
+
+=== §85 EXEC: BRIDGE RESULT — SLOPE 0.1459 = 71% OF 0.2065 => STOPPED BEFORE P14 PER PRE-REGISTRATION ===
+ALL 6 LEGS VERIFY_OK (dose asserts: P0=0+0, P7=0+7; co-location clean; 2,436 overrides = full
+explicit placement, map non-empty; §85 changes live: pure -ot P0, 0+0 assert).
+RAW (decode tok/s): D-P0 = 12.0074 / 11.7483 / 12.1145 => median 12.0074. D-P7 = 12.7085 / 13.0286
+/ 13.1256 => median 13.0286. BRIDGE SLOPE s1_dual = (13.0286-12.0074)/7 = 0.1459 tok/s/layer = 71%
+of single-device 0.2065 => MATERIALLY BELOW => STOPPED BEFORE P14 AND P_max PER §85.
+FINDING: dual-GPU presence COSTS ~9% at P0 (12.01 vs single-device 13.15) — the held-constant second
+card's compute is NOT free (crossing + scheduler overhead). Dose still gains: +8.5% over dual-P0 at
+7 layers.
+DMON INSTRUMENT GAP (honest): rows cover only ~34-48s of ~285s legs (load window), NOT steady-state
+decode; per-card: rx concentrated on card 0 (gen5 x16, peaks 12-14 GB/s = weight-load bursts,
+plausible on gen5), 3060 rx mean 112-238 MB/s << 985 gen1-x4 ceiling => NO evidence of 3060 link
+saturation, but decode-window traffic UNSAMPLED — decode-scoped dmon (start after health-ok) needed
+before any link claim. Under-load gen reads: 3060 stays gen1 (no uptrain even under load).
+PREFILL LEAD (secondary, potentially important): dual-GPU prefill = 87-98 tok/s vs 4.7 single-device
+(19-21x!). The §76 unnamed resource limit does NOT manifest in the dual-GPU config. Lead for the
+prefill investigation — the collapse is single-GPU-config-specific. NOT a decode-metric claim.
+CPU% covariate in load-*.tsv (mixed phases, as before).
+STATUS: knee ladder HALTED at bridge per pre-registration. OPTIONS for architect: (a) accept dual
+overhead and continue P14/P_max (slope 0.146 still positive; dose 23 projects +46% over dual-P0);
+(b) attack the 29% slope deficit first (crossing/scheduler overhead — where does the bridge lose
+0.06 tok/s/layer vs single-device?). HOLDING FOR §86.
+=== END §85-exec ===
