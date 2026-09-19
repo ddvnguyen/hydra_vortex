@@ -3871,3 +3871,14 @@ FIRST-CLASS on every CUDA0 leg (if link is the mechanism, CUDA0-solo prefill >> 
 involved — settles the question on legs we run anyway). Decode-scoped dmon (start AFTER health-ok)
 carried forward. H probe next; report H + P_max BEFORE ladder. HOLDING after that.
 === END §86 ===
+
+=== §86 EXEC: CUDA0 SOLO H PROBE — MEASURED; P_max = 11 (HOLDING FOR LADDER CONFIRM) ===
+CVD=0 P0 probe (pure -ot 'ffn_.*_exps.*=CPU', ctx 16384, MTP off, fp 895c522343eeaa53): 5,186 MiB
+used => H = 16,311 - 5,186 = 11,125 free; budget 10,425 => 11.1 => P_max = 11 layers (architect
+est. 11-12 confirmed). sm_120 SUPPORT VERIFIED at boot (log names the device RTX 5060 Ti, 15,712
+MiB free at init; build arch 86;120). Override map works (288 lines; =CPU maps to CUDA_Host pinned
+buffer — same mechanism family as ncmoe's, single mechanism = explicit -ot across the ladder).
+DOSES: P0 = exps CPU (0+0 assert). P6 = blk.42-47 -> CUDA0 (5,625 <= 10,425). P_max = blk.37-47
+(10,312.5) boot decides. Ladder: [P0/P6/P_max] interleaved n=3, decode-scoped dmon, prefill
+FIRST-CLASS. ONE-LINE REPORT SENT — HOLDING per §86 before ladder legs.
+=== END §86-exec ===
