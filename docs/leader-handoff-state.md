@@ -2759,3 +2759,12 @@ file — no tensor dependency — safe at load). New stamp required (stamp-after
 the instrument changes => all subsequent gate legs (incl. #132 three-way decomposition §44) run
 POST-fix builds for instrument coherence; §43/§50 numbers remain banked as pre-fix record.
 === END §55a ===
+
+=== §56: HANG FILED AS OWN ISSUE (#155); SUMMARY REBUILD #5 DISPATCHED ===
+Architect §55 point-3 ruling executed: hang filed as its own issue --repo ddvnguyen/llama.cpp =>
+https://github.com/ddvnguyen/llama.cpp/issues/155 (review-finding label; full §54 evidence matrix +
+/proc census + registered hypothesis + eager-arm fix direction; blast-radius bounded note). Numeric
+defect issue HELD until KL re-run verdict (may close with fix per §55 sequence).
+Summary rebuild #5 dispatched to summarizer ee9633ba (folding §§51-55a onto rebuild #4 base);
+write-to-file protocol; validation cap 8000 tokens.
+=== END §56 ===
