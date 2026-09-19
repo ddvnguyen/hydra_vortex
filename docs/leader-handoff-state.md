@@ -1798,3 +1798,17 @@ E1 TIMING DESIGN REVIEW: UNBLOCKED — route the design NOW with the arm/disarm 
 already reflected in it.
 
 === END SECTION 29 ===
+
+=== §29a: E0 LANDED (builder final report; PR #152; gate proven both ways; E1 draft routed) ===
+Verify legs on certified tree (stamped build-e0 be4676f11): armed boot -> load summary (48 layers, 384
+pins, min8/max8, dups_removed=0) + [HYDRA e0] engaged=0 armed=1 (decode-only); gate CLOSED exit 1
+pre-E1 as designed; BADPATH -> GGML_ABORT ggml-cuda.cu:2008; BADLINE -> abort; fixture self-test PASS
+(open=0 closed=1 unwired=2). Zero nvcc warnings.
+PR #152 -> epic/148 closing #142/#143/#144 (commits c7f36d52b/3553a8749/b07d41651; end tree
+byte-identical to verified build; intermediates reviewed as mechanical subsets). #146 CLOSED (pointer
+disposal: dedupe->#142/PR#152-c1, range-check->E1 hook). #148 criterion 1 extended (range-check
+acceptance). Parent 6b02a71d7 (gate + stamp scripts + E1 draft). No effect numbers read anywhere.
+Rig released 02:52:43Z -> B2' six-leg session launched on certified base. Pristine shelf build
+in-flight (compile-only). E1 design draft committed (97 lines; amendment-1 constraint verified present
+by leader grep before routing) -> routed to architect. E1 code: NONE written.
+=== END §29a ===
