@@ -1964,3 +1964,18 @@ legs clear). LEADER EXECUTION NOTE: my earlier window-opening was PREMATURE (cro
 builder (compile killed if started; part-2 code only); legs dispatched D8b->D10a with new covariate rule.
 Bank = §32.
 === END §32 ===
+
+=== §32a: D8b + D10a YIELD (ARM_B2P3R2_DONE) — THIRD CURVATURE INTERVAL NON-MONOTONIC, MTP-ABSENCE OBSERVATION ===
+Both legs clean (provenance be4676f11, D1/D2, fingerprint 2/2/2/2, graphs 201+4, quiescence baseline-only,
+zero boots failures). D8b (blk.0-7 CUDA1, D8a mirror): 23.1017 = -2.47% vs D8a / -3.44% vs C. Direct
+mirrors now: D4b/D4a -3.49% (4 layers) vs D8b/D8a -2.47% (8 layers) — neither cleanly FIXED nor PROPORTIONAL;
+branch call = architect. D10a (blk.0-9 CUDA0, = D14 minus 4 CUDA1): 24.7432. Third device-constant interval:
+I1 +1.7446 (4234 MiB) = 0.436/layer 4.12e-4/MiB; I2 +0.9636 (3748) = 0.241/layer 2.57e-4/MiB; I3 +1.0570
+(1774) = 0.529/layer 5.96e-4/MiB — NON-MONOTONIC across all indices; two-interval sublinear indication does
+NOT survive interval 3 cleanly. D14-D10a = +0.8234 for exactly 4 CUDA1 layers. MTP OBSERVATION (bears on §32
+D0 attribution): NO draft activity on either leg — DRAFT_FIELDS absent, zero acceptance lines, draft 0.000
+MiB; if original D0 legs also MTP-inactive (logs: armB2p3-D0 vs armB2p3r-D0), the +48.2% attribution needs
+architect re-examination. Covariates: content_len 633/656, decode-CPU 549.8/563.6, host-layers 40/38. Bytes:
+D8b C1 7982.0 (identical to D8a), D10a C0 9756.0 (identical to D14/D22). E1 build window RE-OPENED per §32
+sequencing (legs cleared, box released). Bank = §32a.
+=== END §32a ===
