@@ -241,13 +241,14 @@ async function route(req: Request): Promise<Response> {
     return Response.json({ status: out.some(e => e.ok) ? "ok" : "down", engines: out }, { headers: cors() })
   }
 
-  // static Brain build
-  if (req.method === "GET") {
+  // static Brain build — GET serves bytes; HEAD serves headers only
+  // (health checkers and proxies probe assets with HEAD)
+  if (req.method === "GET" || req.method === "HEAD") {
     const rel = path === "/" ? "index.html" : path.slice(1)
     const f = Bun.file(join(DIST, rel))
-    if (await f.exists()) return new Response(f)
+    if (await f.exists()) return new Response(req.method === "HEAD" ? null : f, { headers: { "Content-Type": f.type, "Content-Length": String(f.size) } })
     const index = Bun.file(join(DIST, "index.html"))
-    if (await index.exists()) return new Response(index)
+    if (await index.exists()) return new Response(req.method === "HEAD" ? null : index, { headers: { "Content-Type": index.type, "Content-Length": String(index.size) } })
   }
   return new Response("not found", { status: 404 })
 }
