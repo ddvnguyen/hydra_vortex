@@ -3977,3 +3977,26 @@ acceptance, positive only in high-acceptance runs (24.9 ≈ +5% over 23.09). MTP
 the clean production config at ctx 16384. No-overlap floor stated: decode-overlap/ple-prefetch
 could change this — build-g3 lacks them.
 === END §88-exec ===
+
+=== §89: ACCEPTANCE-ADJUSTED MTP COMPARISON (FREE) + PRODUCTION LEG ===
+REGRESSION (5 pts/arm, decode ~ acceptance within arm): M-P0 intercept 8.713±0.363, slope(acc)
+17.574±0.546; M-P8 intercept 10.440±1.384, slope(acc) 18.529±2.349. RAW mean diff M-P8 - M-P0 =
++1.135 ± 1.679, t = 0.68 => NOT SIGNIFICANT at n=5 with this spread — the unadjusted comparison is
+UNDERPOWERED, which is exactly why covariate adjustment is the right instrument (not more legs).
+ACCEPTANCE-ADJUSTED diff @ acc=0.61: M-P8 - M-P0 = +2.309 ± 1.431 => per-layer ~0.289 tok/s/layer —
+IN FAMILY with MTP-off 0-11 slope 0.3651. Matched-pair sanity: +1.50 @ acc~0.61; ~+2.6 across the
+low-acc cluster (P0 16.92/17.88 vs P8 20.19/19.73/20.05); top run M-P8 24.89 @ acc 0.764 MATCHES
+M-P0 24.78 @ 0.921 at much lower acceptance. VERDICT: PLACEMENT DOES NOT STOP WORKING UNDER MTP —
+it was masked by acceptance variance.
+CORRECTED BANK WORDING (replaces verdict b): "MTP's own median gain (+2.9%) does not pay for the 3
+placement layers its head costs." Verdict (c) stands: M-P8 20.19 < C-P11 23.09.
+REAL LEVER = ACCEPTANCE, NOT PLACEMENT: at acc ~0.92 MTP legs hit 24.78-24.89 and BEAT 23.09; at
+~0.5 cluster they lose. "Can draft acceptance be pinned near 0.9" = difference between 20.2 and
+24.9 => TOP CANDIDATE for next arm; NOT STARTED. No-overlap floor caveat attached to every MTP line.
+PRODUCTION LEG (the deliverable): MTP OFF, CVD=0, ctx 81920, P_max boot-decides (H = 16,311 -
+6,824 = 9,487, budget 8,787 => 9.37 => P_max = 9 layers, blk.39-47 = 8,437.5; 10th = 9,375 misses),
+n=3 interleaved with ctx-81920 P0 replicates (internally comparable pair), same explicit -ot, four
+asserts (P0=0+0), decode-scoped dmon, prefill first-class, fp per leg. Extrapolation (~22.2) NOT
+handed to owner — measured instead. Also tests whether the 0.42 late-segment slope survives the
+larger compute reserve.
+=== END §89 ===
