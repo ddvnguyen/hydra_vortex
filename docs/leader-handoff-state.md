@@ -937,3 +937,10 @@ rate — an ASSUMPTION this sweep does NOT check. A LINEAR result validates the 
 h-transfer; do not let a linear slope be read as a full vindication of the arm's price.
 
 === END SECTION 20f ===
+
+=== STANDING RULE: single clock in the bank (architect directive, committed with this rule) ===
+Section headers from §20g onward carry EITHER the commit timestamp (written after the commit, or amended
+to match it) OR no time at all — the commit timestamp is the single source. Two clocks in one artifact is
+the defect: in-header estimate times have drifted from commit times in both directions (§20e "~04:20" vs
+02:05:48; §20f "~06:00" vs 08:15:18), which breaks sequence reconstruction and voids the sha-AND-timestamp
+read-back as a cross-check. Existing headers are NOT rewritten — the drift is itself part of the record.
