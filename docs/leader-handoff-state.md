@@ -2842,3 +2842,25 @@ WINDOW LEG ORDER: 1 armed-vs-disarmed new (verdict); 2 disarmed-vs-disarmed new 
 corroboration); 5 armed-vs-armed new (only if leg 1 lands 3-10x). Per-leg load gate: if load > 4
 before a leg, STOP sequence (window closed; completed legs keep provenance, no salvage).
 === END §60 ===
+
+=== §61: OWNER DECISIONS DISPOSITIONED; CONFIG-WIN PR #780 OPENED (wire-shape verified pre-commit) ===
+OWNER WORDS: "(a) -> config we already land -> should land as PR. (b)(c) need test result before any
+verdict — see the architect, how right consult already." READING: (a) = formalize the D22 placement as
+a PR (merge still owner-gated); (b)(c) = PARKED pending quiet-window test results (architect consult
+correct — §60 stands).
+PR #780 (ddvnguyen/hydra_vortex, base main, branch feat/d22-expert-placement-config, commit 25b302b5c):
+models.json new routing identity moe-flashnext-solo (Qwen3.8-Flash-Next-APEX-I-Mini) + preset ini
+section; D22 placement EXACT as measured (0-9 CUDA0 / 10-21 CUDA1 / 22-47 CPU, non-expert CUDA0);
+provenance + 4x replication in description. WIRE-SHAPE VERIFIED IN SOURCE BEFORE COMMIT: llama-hydra
+override_tensor parses COMMA-separated pairs in one string (server-context.cpp) => single comma-packed
+override_tensors entry (EngineConfig.cs newline-join would silently drop multi-entry arrays — latent
+bug NOTED, follow-up fix candidate, NOT in this PR). Preset path replays CLI handler = comma-native.
+requires_workers [rtx3060] (CUDA1 overrides load-bearing); n_ctx 32768 conservative (measured leg
+8192 bench ctx); measured WITHOUT MTP, spec omitted (interplay untested). MANDATORY BOOT VERIFICATION
+in description + config description: verbose boot must show 48 ffn_*_exps placement lines (10/12/26),
+count them. MERGE OWNER-GATED. Plumbing notes: no hydra containers currently running (infra only);
+qwen3.8 lives on /mnt/SSD (mounted /models :ro) — production relocation to WorkDisk/LLM-Models =
+deploy-time concern, noted in PR. WORKTREE: superproject temporarily on origin/main for the PR branch
+(reset 96d38613a), restored to baseline-flash-next bank tip (5f8cb72e3); submodule stays at 1b0ac08bb
+on e0/measurement-foundation.
+=== END §61 ===
