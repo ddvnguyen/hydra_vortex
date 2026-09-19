@@ -2558,3 +2558,20 @@ incorrect computation; asserting one would misdirect #132 design.
 4. POST-MORTEM: send for review as written (builder applies §5 reframe first, then architect
 reviews). [Ruling tail truncated ~296 chars in transit; reconcile at next consult.] Bank = §47.
 === END §47 ===
+
+=== §48: POST-MORTEM REVIEW — REQUEST_CHANGES (4 must-fix, 2 should-add, 2 lines), COMMIT AUTHORIZED ON COMPLETION ===
+Architect reviewed docs/analysis/e1-postmortem.md (builder successor draft, uncommitted): structure
+holds, line refs check out, §5 substance correct. MUST FIX: (1) L28 verdict bands misquoted —
+registered bands are <11.5 GO / 11.5-34.5 CONDITIONAL / >34.5 STOP (§30 A4, re-confirmed §34/§35);
+L27 keeps both pairs labelled original(36.3/12.1) vs registered(34.5/11.5), verdict list quotes ONLY
+registered; (2) L74-vs-L118 contradiction — attach_device PRESUMES device-resident weights BY DESIGN
+(why host-resident site has no viable engaged path) AND never executed in dryrun; (3) L78 corrupted
+token exacta× in the central-structural-result sentence; (4) L118 §5 pasted as literal quotation —
+set as body text. SHOULD ADD: rules-minted section (reachability-precheck + stamp-after-commit +
+no-builds-during-rig + no-attribution-without-refuting-check + floor-before-threshold + exact-
+allocation-lines + quiescence-over-CPU%); consolidated #132 implications list (not bit-identical by
+construction => three-way decomposition IS the gate; no intercept/no per-token transfer; payoff =
+VRAM at matched coverage, ~45% ceiling). WORTH A LINE: L19 h=0.4207-vs-0.39 reconcile/cite both
+(b69c55f8f reproducible); cost-accounting sentence (~800 lines, 3 review rounds, rig sessions).
+LEAD MAY COMMIT WITHOUT RE-REVIEW once applied. Builder applying all eight now. Bank = §48.
+=== END §48 ===
