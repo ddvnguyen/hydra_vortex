@@ -2,6 +2,11 @@ const en: Record<string, string> = {
   // nav
   "nav.chat": "Chat",
   "nav.brain": "Brain",
+  "nav.outOfScope": "Not part of the atlas service — Brain only (design §D)",
+  "sidebar.atlasEngine": "Engine",
+  "sidebar.atlasEngineHelp": "Select the engine whose expert atlas to inspect.",
+  "sidebar.atlasRefresh": "Re-poll engine health",
+  "topbar.activeEngine": "ACTIVE ENGINE",
   "nav.profiling": "Profiling",
 
   // brand

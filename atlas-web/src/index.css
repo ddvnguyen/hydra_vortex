@@ -253,3 +253,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   font-size: .7rem; cursor: pointer;
 }
 .attachment button:hover { color: hsl(var(--foreground)); }
+
+/* hydra: atlas shell additions — engine rows in the sidebar runtime section,
+   refresh action. Everything else reuses the Colibri classes verbatim. */
+.side-engines { display: grid; gap: 6px; }
+.runtime-dot.down { background: #e05252; }
+.runtime-foot code { margin-left: auto; }
+.atlas-refresh { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--muted-foreground); cursor: pointer; }
+.atlas-refresh:hover { color: var(--primary); }
+.view-tabs button:disabled { opacity: .38; cursor: not-allowed; }
