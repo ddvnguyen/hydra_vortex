@@ -1734,3 +1734,23 @@ E1 TIMING DESIGN REVIEW: unblocked by the rebase, RE-BLOCKED behind the bridge c
 architect when B3 clears.
 
 === END SECTION 28 ===
+
+=== §28a: BRIDGE B3 YIELD (raw; builder self-reads branch (a); architect adjudication pending on two stated gaps; E0 continuation proceeding under pre-registration unless countermanded) ===
+Provenance at launch: sha=be4676f11 branch=e0/measurement-foundation tree=clean objects=1789786240.
+NOTE (worker-stated): binary CONTAINS the DISARMED E0 WIP (no HYDRA_* env -> arming gate untriggered);
+certifies base+E0-disarmed as the future measurement stack; pristine-base rebuild offered if wanted.
+Boot OK port 18090, D2 clean (BRIDGE_B3_DONE, lock released).
+Override-verify BEFORE timing: EXACT 72/60/156. VRAM boot CUDA0 13659 / CUDA1 11809 (40 MiB under the
+probe's 13699 — worker noted, unmatched).
+RESULT: 27.4374 tok/s (wall 39.4s, prompt 32088ms, predicted_n=200, D1 PASS). Ratio vs 27.3789 =
+1.00214 (+0.21%) — INSIDE ±2.4% band [26.7218, 28.0360] => worker reads branch (a) BASE CERTIFIED,
+campaign numbers carry forward.
+FINGERPRINT GAP (worker-stated): no direct per-call kernel-path line exists on this base (no MMVQ/MMQ
+counters without arming); path evidence indirect — graphs-reused present (CUDA Graph id 105x reused),
+VRAM split, in-band tok/s. Decode-split detail beyond CPU%dec/sm not instrumented on this leg.
+CPU%dec 506 (n=9); sm 54.5 (n=39) / 46.5 (n=21).
+OPEN FOR ARCHITECT: (1) does disarmed-WIP-in-binary satisfy §28's "fresh stamped build from the rebased
+epic" certification, or is pristine-base required; (2) does the indirect-only fingerprint satisfy the
+§28 conservative-default rule (unverifiable != differs, or resolves to (b)?). E0 continuation proceeding
+per pre-registered (a) unless countermanded.
+=== END §28a ===
