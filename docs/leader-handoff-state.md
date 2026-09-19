@@ -3441,3 +3441,30 @@ PARALLEL ZERO-RIG TASK (worth more than the probe): hunt the 09:25 tree directly
 (3) build-* dirs: retained CMakeCache/compile DB/.o/.d timestamped 09:2x naming source paths. A
 recovered tree beats any bisect between two slow points.
 === END §75c ===
+
+=== §75c HUNT DELIVERABLE: 09:25 BINARY STATE RECONSTRUCTED FROM OBJECT-FILE FORENSICS ===
+REFLOG: HEAD@{2026-09-16 10:04:34} = "checkout: moving from feat/moe-early-router-debug to
+backup/t2-combine-diff" — the runs ran on feat/moe-early-router-debug (tip = 0fc51e039) + DIRTY TREE.
+stash@{0} "StripBranch12-preserve-T2b-WIP-20260916" (22:11, on backup/t2b-engage-counter) = later
+T2b WIP, not the 09:25 state. Telemetry retro-grep: llama-mtp-verify-telemetry ABSENT in ALL retained
+leg+probe logs => env was off everywhere, no confound (§75b free check DONE).
+OBJECT-FILE FORENSICS (build-gs-cuda1322): .o mtime clusters = 308 @ 07:55 + 12 @ 07:56 + 8 @ 07:54
+(THE FAST BUILD — linked before 09:25, debug ON per old log), 43 @ 09:34 (reconfigure mid-series
+REBUILT THE ENTIRE llama lib: adapter/arch/batch/CONTEXT/graph... = LLAMA_MOE_GROUPED_DEBUG ON->OFF
+flip), 3 @ 11:31 (ggml.c + build-info.cpp + llama.cpp = T-2b version bump after 10:23 commit), then
+12:44 relink = the slow binary we measured. => The 09:25 fast binary = 07:55 objects; it was
+OVERWRITTEN in place by the 11:31/12:44 relinks. Its .o files SURVIVE (moe-cache.cu.o @ 07:55 =
+24cfdb962-era source; llama lib @ 07:55 = debug-ON compile of the dirty tree).
+BINARY DELTA fast-vs-slow inside build-gs-cuda1322: (a) macro ON->OFF (logging-only, closed), (b)
+moe-cache.cu.o 07:55 vs 11:31 = EXACTLY the T-2b +138, (c) version-bump files, (d) whatever else the
+09:34 reconfigure changed. NOTE the tension with endpoints: pure-0fc51e039 rebuild (my recovery, no
+scaffolding, macro OFF) is ALSO slow 4.70 — so the +138 alone cannot be the whole story either; the
+fast state requires the 07:55 dirty-tree CONTENT which is only approximately captured by 24cfdb962
+(committed 10:04, 25 min after runs ended). THE RUNNING 24cfdb962 PROBE (macro ON) DECIDES: fast =>
+dirty state stable 07:55->10:04 and cell reconstructed (demand repeat per §75c S-a); slow => fast
+state off-chain AND off-24cfdb962 (edits in 09:39->10:04 or later-15:55 changes — unrecoverable from
+git, but the 07:55 .o FILES still hold the compiled truth).
+NEXT-LEVEL OPTION (architect ruling needed): relink experiment — swap the 07:55 moe-cache.cu.o into a
+recovery build tree (or rebuild ONLY moe-cache.cu from 24cfdb962 source into the 0fc51e039 build) to
+isolate (b) directly without touching anything else.
+=== END §75c-hunt ===
