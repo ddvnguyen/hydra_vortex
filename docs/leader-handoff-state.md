@@ -2864,3 +2864,27 @@ deploy-time concern, noted in PR. WORKTREE: superproject temporarily on origin/m
 (reset 96d38613a), restored to baseline-flash-next bank tip (5f8cb72e3); submodule stays at 1b0ac08bb
 on e0/measurement-foundation.
 === END §61 ===
+
+=== §62: ARCHITECT PR REVIEW — REQUEST_CHANGES (D4/D6/D7); OWNER 3060 REMINDER VERIFIED; RULE GENERALIZED ===
+OWNER: "main test target is 3060, do you remember?" (standing directive re-invoked). DEVICE-INVERSION
+CHECK RUN: D22 sweep scripts (armB2p2/armB2p3r/armB2p3r2.sh) contain NO CUDA_VISIBLE_DEVICES pin =>
+unpinned => CUDA0 = physical 5060 Ti (nvidia-smi order, 10d) => PR #780 device mapping (0-9 CUDA0/
+10-21 CUDA1) CORRECT, no inversion. 3060-anchored testing applies to upcoming verification legs.
+ARCHITECT REVIEW (verified 2 source claims independently: EngineConfig.cs:96-97 join("\n") confirmed;
+arg.cpp:264 comma-split confirmed): D1 APPROVED + gap named — measured legs used 48 separate -ot
+flags (the 47 DEPRECATED lines!), PR ships ONE comma-packed string; identical-placement is an
+INFERENCE from two code paths, not a measurement => D6 must gate. FILE EngineConfig newline-join bug
+as ISSUE (--repo explicit), not PR comment. D2 APPROVED (same boot caveat). D3 APPROVED hard-require
+peer; fallback question has a MEASURED answer: D10a (0-9 CUDA0, rest CPU, no peer) = 24.7432 tok/s
+~1.72x, quiet-box, gates passed — file as FOLLOW-UP solo profile, labeled measured-once-not-
+replicated; two honest profiles beat one with a degradation path. D4 REQUEST_CHANGES: ship n_ctx
+8192 = the measured value (PR argued honest-config for D5 then shipped 4x measured ctx in D4 —
+inconsistent); 32768 = deployer-tunable untested; KV-sizing measurement = follow-up. D5 APPROVED.
+D6 REQUEST_CHANGES: boot-verification leg is MERGE-GATING — one boot on the comma-packed form,
+count ffn_*_exps placement lines, expect exactly 10 CUDA0/12 CUDA1/26 CPU, paste into PR; closes the
+measured-form-vs-shipped-form gap. D7 REQUEST_CHANGES: rename moe-flashnext-solo =>
+moe-flashnext-combined (peer-requiring profile named solo is misleading + collides with the D10a
+follow-up which deserves 'solo'). STANDING RULE (generalized): a config PR must ship the invocation
+form that was measured, OR carry a boot-verification leg proving the shipped form produces the
+measured placement.
+=== END §62 ===
