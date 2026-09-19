@@ -2137,3 +2137,17 @@ per leg. Yield raw -> architect rules against bands WITHOUT adjustment — "incl
 a commitment, not a negotiation." Leader dispatch executed (kl commit pre-approved; hard stop-point at
 SYNC-JOIN report). Bank = §35.
 === END §35 ===
+
+=== §35a: CONDITION-3 SATISFIED + LEG SESSION MID-FLIGHT; SUMMARIZER ROLE CORRECTION ===
+Builder (via summarizer's verification pass, banked as facts): scripts/hydra-kl-gate.sh COMMITTED 87e897d34
+BEFORE the KL leg => §35 condition 3 SATISFIED. Dry-run complete (e1-legs-DRYRUN.server.log shows blk.31
+overrides live — layer-31 freeze on the box). KL leg RUNNING (kl-cmp.log chunk ~20). Rig worker idle, no
+contention (E1 legs with builder as instrument author — division confirmed). Remaining sequence: KL done ->
+SYNC-JOIN primitive report -> LEADER ACK (hard stop-point, condition 2) -> type-(ii) -> A6 graphs-OFF both
+-> disarmed stock (stock.n==0 => VOID) -> type-(i) -> differential verdict -> raw yield ARM_E1_DONE ->
+architect band ruling without adjustment.
+LEADER RULING: summarizer attempted monitoring/ack role — CORRECTED to summarizer-only; monitoring +
+SYNC-JOIN ack + routing are LEAD functions; summary rebuild re-requested (deliverable = markdown only).
+Native orchestration MCP track_status intermittently failing ("track not found") — REST/curl fallback +
+bank remain the state store (known, non-blocking).
+=== END §35a ===
