@@ -3309,3 +3309,20 @@ data captured (harmless this run; fixed pattern: quote "${TAG}"). PROBE_EXIT rc=
 Awaiting architect ruling before any further probe (incl build-cuda1322 per §72 ladder — NOT started,
 stop-and-report honored).
 === END §72-exec ===
+
+=== §72-exec ADDENDUM: H2 REFINED — THE GOOD RUNS LIKELY RAN 0fc51e039 + PARTIAL UNCOMMITTED WIP (H2') ===
+Evidence from 0fc51e039's own message: "Step-1: GGML_CUDA_MOE_DEVICE_SPLIT probe gate, off by default,
+zero behavior change. Phase D: cpu mode recomputes cache-miss expert rows on a persistent CPU backend
+and overwrites DOWN output rows in finish_graph_group (DIRECT eager". GGML_CUDA_MOE_FREQUENCY getenv
+predates; GGML_CUDA_MOE_DEVICE_SPLIT added here (+line). Proven script sets NEITHER env var.
+TIMELINE SHARPENING: 24cfdb962 (10:04) = "backup: uncommitted S1/S2 scaffolding + worktree WIP
+(469+/20-, 6 files)" — that WIP ACCUMULATED between 04:41 and 10:04, i.e. PARTIALLY PRESENT during the
+good runs (09:25-09:39). The 09:25 binary = tree at ~09:20 = 0fc51e039 + SOME uncommitted scaffolding
+=> NEITHER pure 0fc51e039 (measured: collapsed 4.70) NOR full WIP 12f294335 (measured: collapsed 4.59)
+equals the 09:25 state. The fast configuration lives in the INTERMEDIATE delta. H2' = build 24cfdb962
+(bisect rung already identified as "not built") and probe — if ~60 tok/s prefill, the cause AND fix
+live in the S1/S2 scaffolding delta, fully recoverable. H1 (env-gated defaults) weakened: same env
+(absent) at 09:25 and now. H3 (build config) still possible but cannot explain 13x alone. H4 unlikely.
+RIG QUEUE per stop-and-report: NOTHING probing/bbuilding until architect rules (build-cuda1322 probe
+and 24cfdb962 build both candidates; architect decides order).
+=== END ADDENDUM ===
