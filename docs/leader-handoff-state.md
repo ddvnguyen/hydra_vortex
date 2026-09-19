@@ -2398,3 +2398,14 @@ to mode; P2 gh-activity covariate stays UNASSIGNED (endorsed raw-reporting disci
 KL3 CONFIG DIFF dispatched to rig worker (has KL3 + isolation logs in session ctx; box free, no GPU).
 Bank = §41.
 === END §41 ===
+
+=== §41a: RIG WORKER SESSION TERMINALLY DEAD — SUCCESSOR SPAWNED ===
+Rig worker f4419282 hit non-retryable upstream 400 (reasoning encrypted_content not issued to this
+caller, muse-spark via opencode zen) on its NEXT turn after ARM_KLISOL_DONE delivery; identical
+error on retry => session state unrecoverable (not task-dependent). ARCHIVED. Successor spawned:
+89d25210-b9eb-4e8a-b060-0b3c00005a90 (opencode / opencode-go/muse-spark-1.3-contributor, same
+workspace, fresh session; roster = 6 again). Init prompt carries standing rules (raw yields, no
+builds during rig, quiescence gate, provenance, outlier policy, no-vacuous-label rule) + KL3 CONFIG
+DIFF task (ARM_KL3DIFF_DONE; no GPU needed). ROSTER UPDATE: rig = 89d25210. KL3-diff source note:
+KL3-era logs may be under /tmp/opencode/e1-legs-*; if missing worker must say so, not infer.
+=== END §41a ===
