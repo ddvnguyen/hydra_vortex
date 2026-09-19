@@ -3801,3 +3801,25 @@ sustained rx/tx nears ceiling, verify python (non-empty map + co-location + per-
 counts), covariates, fingerprint, RAW first. Bridge policy: [P0,P7]x3 first; weak P7 slope => STOP
 before P14 per §83/§84. CORRECTED PATTERNS SENT for sight-check; launching cycle 1.
 === END §84 ===
+
+=== §85: APPROVED + 3 CHANGES APPLIED — LAUNCHING ===
+(1) P0 DROPS -ncmoe: pure -ot 'ffn_.*_exps.*=CPU, <home ranges>' — ONE placement mechanism across
+all four legs (no boot-resolved ordering question on the baseline; no mechanism difference inside
+P0-vs-dose deltas). (2) P0 DOSE ASSERT 0+0 GPU expert layers — the hijack-catcher (a total-count
+check cannot see a device change; a corrupted P0 baseline would wrong every slope). DOSE table in
+verify: P0=0+0, P7=0+7, P14=5+9, Pmax=14+9, hard assert per leg. (3) KNEE CONFOUND PRE-REGISTERED:
+s1 = all-CUDA1 layers, s2 mixed, s3 all-CUDA0 — s3 < s1 has TWO explanations (real knee vs card
+heterogeneity: a 5060 Ti layer ≠ a 3060 layer). CONTROL pre-registered: 7-layer dose ALL on CUDA0
+(blk.17-23, home CUDA0) n=3 interleaved with P0, ONLY IF s3/s2 materially < s1. control ~ P7 slope
+=> low s3 IS a knee; control < P7 => heterogeneity, correct s3 before any knee claim. CPU% =
+independent tiebreaker: knee should show CPU% falling BEFORE the slope flattens; slope-flat + CPU%
+pinned ~104% => heterogeneity or transfer cost, NOT saturation lifting.
+BRIDGE stated for the report: P7 = all 7 on CUDA1 = same card as the single-device ladder => its
+per-layer slope IS directly comparable to 0.2065; materially below => STOP before P14.
+Regexes + bytes independently verified by architect (incl. blk.24/blk.40 rejection). armDUAL.sh
+updated + syntax-checked. Earlier aborted D-P0-r1 log forensics: 2,436 override lines existed, my
+verify regex was wrong (2-token paren pattern vs actual 3-token "450 MiB iq4_nl") — guard fired
+correctly on EMPTY-match; regex fixed (optional 3rd token); also revealed hc_* hyper-connection
+tensors (hybrid architecture). 288 CUDA_Host exps lines = ncmoe's overrides, now removed by Change 1.
+LAUNCH: [P0, P7] x3, bridge policy.
+=== END §85 ===
