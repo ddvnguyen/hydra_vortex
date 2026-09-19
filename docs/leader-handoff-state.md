@@ -1285,3 +1285,25 @@ BUILDER CREDIT (on record): ggml_cuda_mul_mat_id_needs_sync correctly extended a
 CUDA graphs on engaged nodes — careful work; it means the sync is a COST bug, not a correctness bug.
 
 === END SECTION 23 ===
+
+=== §23a: ARM 007 STAGE 1 (PREMISE CHECK) YIELD — raw builder numbers, D1/D2 PASS, forwarded to architect for adjudication (single clock) ===
+
+PROBE: placement PROVEN — 288 override lines = 48 layers x 3 tensors x 2 loader passes; distribution
+EXACT: 72 CUDA1 (blk.0-11), 60 CUDA0 (blk.12-21), 156 Host (blk.22-47). Root causes of the first VOID:
+(a) `ffn_*_exps` was a dead regex (`_*` = literal underscores, never matches `up`); (b) 4th expert
+tensor `ffn_gate_up_exps` is NEVER model-resident (factory `create_tensor_gate_up_exps` has zero
+callers — dead file weight, no placement needed). VRAM probe 13699/11809; serve-probe OK; timed legs
+evidenced by identical VRAM splits.
+C (corrected control ncm=40, -t16): 23.9244 tok/s — reproduces ~23.9 anchor to 0.1%. VRAM 12287/113.
+CPU%dec 673. sm0 60.1, gpu1 idle. D1 PASS.
+S1 (pool 12/10/26, -t16): 27.2832 tok/s = 1.140x C. VRAM 13699/11809. CPU%dec 510. sm0 58.1, sm1 50.6
+(n=18 of 39 — 3060 engaged ~half the leg, raw observation). D1 PASS.
+S1b (pool, -t14): 27.0875 tok/s = 1.132x C. CPU%dec 465. sm0 60.2, sm1 53.8. D1 PASS. Threads not the
+lever (0.7% apart).
+D2/CTX: n_ctx_slot 8192 all logs; PID-exact kills; zero strays; ports silent; lock released;
+ARM007_DONE. Spare-CPU input: pool legs use LESS CPU (510/465 vs 673) while FASTER — ~75% machine CPU
+free in all legs.
+DISPOSITION: raw to architect under pre-registered adjudication (§22 premise framing; §21 bands were
+for the superseded arm framing). Result posted to GitHub per §23 discipline. No dispatch until ruling.
+
+=== END §23a ===
