@@ -1172,3 +1172,68 @@ silently unapplied) or a fit-params fallback path fired — undetermined. Builde
 (1) corrected control; (2) -ot MATCH-VERIFICATION PROBE FIRST (boot with verbose logging, read the
 override/apply lines, verify exactly 12 ffn_*_exps tensors land on CUDA1) before any timed leg retry.
 No blind retries. Escaping (backslash-dot in shell quoting) is a prime suspect for the regex miss.
+
+=== SECTION 22: RE-ANCHOR — the goal is proving EXPERT RANKING (C3); ARM 007 demoted/withdrawn; ARM 008 mechanism spike vs the 36.3 us budget (architect, owning the drift; banked before any ARM 008 work; commit timestamp is the single clock) ===
+
+THE OWNER'S CORRECTION: the goal is to prove EXPERT RANKING for MoE — not llama.cpp config tuning, not
+RPC, not the 5060 Ti. The architect names the config drift as theirs. §22 supersedes the FRAMING of
+§21/§21a, not their content.
+
+1. THESIS SCORED HONESTLY — three claims:
+   C1 skew + ranking predicts it: PROVEN (N=38/512 = 7.4% captures h=0.4207; validated live both ends,
+   0.4207 vs 0.4207 predicted; cross-domain 0.1457 vs 0.144). STOP RE-TESTING IT.
+   C2 value if realised, measurable: MEASURED this session — 12.44 ms/token per 100% of expert work
+   relocated CPU->GPU; at h=0.4207 = 5.23 ms/token = ~+4 tok/s = ~1.14-1.17x (coverage model, measured).
+   C3 hits convert into throughput: NEVER DEMONSTRATED. Zero for three (dual-construction 0.82x; gather
+   moves weights instead of saving them; layer placement cannot express ranking at all).
+   THE GAP IS MECHANISM. Not evidence, not ranking quality, not baseline, not topology. Anything that
+   does not attack C3 is SCAFFOLDING and is labelled as such in the queue.
+
+2. THE MECHANISM BUDGET RULE (governs every mechanism proposal from now on):
+   Ranking prize = 5.23 ms/token. Mechanism fires 144x/token (48 layers x 3 sites)
+   => 36.3 us per invocation is BREAK-EVEN; 12.1 us is the 3x-margin bar.
+   Past attempts against it: cudaStreamSynchronize (#140) ~10-50 us — at/over break-even BEFORE any work;
+   one 0.597 MiB miss-expert H2D @ 8 GB/s ~78 us = 2.1x over for ONE expert; 5.79 misses/invocation (#141)
+   ~450 us = 12x over; dual-construction = 2k instead of k = doubles the work the prize is made of.
+   EVERY failure is the same failure with a number on it: the mechanism spent more time than the ranking
+   saves. RULE: no expert-ranking mechanism gets built until its per-invocation cost is ESTIMATED against
+   36.3 us, in the design brief, not after.
+   Sobering corollary (against the architect's own preferred design): clean on-device compaction still
+   needs ~2 extra kernel launches at ~5-10 us each = 10-20 us vs the 12.1 us 3x bar — even the correct
+   mechanism may only just clear it. That is why the next step is a MEASUREMENT, not an epic.
+
+3. ARM 007 RE-SCOPED: Stage 1 (running) DEMOTED to a PREMISE CHECK — answers "is the 3060 faster than
+   the CPU at expert work" (any multi-device ranking pool needs this); costs nothing more now it is on
+   the rig; does NOT test ranking (layer-granular placement cannot discriminate hot from cold — every
+   layer is used by every token). Report as a PREMISE result, not an arm result. Stages 2+3 as written:
+   WITHDRAWN (Stage 2 = pure config, does not touch C3; Stage 3 = right principle at the wrong altitude).
+
+4. THE REAL ARM — ARM 008: MECHANISM SPIKE, one layer, measured against 36.3 us. Smallest experiment that
+   proves or kills C3; NOT the epic — the thing that decides whether the epic is fundable.
+   BUILD: per-expert backend selection for a SINGLE expert-matmul site — CUDA side: on-device compaction
+   of the promoted subset (prefix-sum over pin mask, gather rows from the resident slab), matmul over
+   hits only, NO HOST READBACK anywhere (the hard requirement that killed every previous attempt); CPU
+   side: loop over the miss subset only; combine the two partial outputs. Experts live in host RAM;
+   promoted subset is a device slab; weights never move at runtime.
+   MEASURE (the whole deliverable): WALL TIME PER INVOCATION, hits path and misses path, against 36.3 us
+   break-even and 12.1 us 3x bar. Not tok/s. Not perplexity. One number, instrumented directly.
+   PRE-REGISTERED VERDICTS (before any code):
+     <= 12.1 us   : mechanism clears with margin -> FUND THE EPIC. Architect predicts achievable, not
+                    certain; will not claim better than 50/50 in advance.
+     12.1-36.3 us : clears break-even only -> epic returns <1.1x, NOT funded on this rig.
+     > 36.3 us    : C3 REFUTED ON THIS HARDWARE — expert ranking does not convert to throughput here;
+                    ranking valuable only on hardware with a different CPU/GPU cost ratio; STOP spending
+                    this rig on it.
+   SPIKE LIMITATION (noted): single-site timing will not capture scheduler overhead from 144 backend
+   switches/token. If the spike passes, the epic's FIRST milestone is a 48-layer timing harness BEFORE
+   any correctness work, to catch that.
+
+5. DROPPED (so it stops consuming attention): no P100, no RPC, no further thread/affinity/topology work
+   (banked, closed; the owner may land the 1.67x whenever as an OPERATIONAL matter, not track work); no
+   residency-linearity retry; no n-cpu-moe sweeps. §21a flag surface stays as designed, pending owner
+   approval — it is the epic's interface, and the epic is gated on ARM 008.
+
+HOLD: ARM 008 needs the OWNER's word (small code spike, one site, instrumented). Stage 1's premise result
+lands first (already on the rig).
+
+=== END SECTION 22 ===
