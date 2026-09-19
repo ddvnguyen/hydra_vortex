@@ -2768,3 +2768,14 @@ defect issue HELD until KL re-run verdict (may close with fix per §55 sequence)
 Summary rebuild #5 dispatched to summarizer ee9633ba (folding §§51-55a onto rebuild #4 base);
 write-to-file protocol; validation cap 8000 tokens.
 === END §56 ===
+
+=== §57: SUMMARY REBUILD #5 COMMITTED (6817 tokens); /tmp EDQUOT — EVIDENCE RELOCATED ===
+Rebuild #5 folded §§51-55a onto rebuild #4; committed to orchestration.md, tokens_estimate=6817
+(within 8000 cap). /tmp hit user QUOTA (EDQUOT, "13G free but writes blocked") — ROOT CAUSE: our own
+retained artifacts (11.1GB klarmedpair + 4.9GB DIS base + 136MB sched dump). EVIDENCE RELOCATED to
+.evidence-e1/ in worktree (NVMe): klarmedpair.kld-base.bin, klscheddiff-v-DIS.{kld-base.bin,dump.log},
+gdb-probe{,2}.kld-base.bin (0-byte), klscheddiff-v-ARM{,2}.dump.log (0-byte hang evidence). /tmp now
+28G free. RULE MINTED: large instrument artifacts do NOT live in /tmp long-term — /tmp has user
+quota; staging area for evidence = .evidence-e1/ (gitignored path, verify). Retention: klarmedpair +
+0-byte pair kept until defect campaign closes.
+=== END §57 ===
