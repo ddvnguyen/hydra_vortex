@@ -3882,3 +3882,22 @@ DOSES: P0 = exps CPU (0+0 assert). P6 = blk.42-47 -> CUDA0 (5,625 <= 10,425). P_
 (10,312.5) boot decides. Ladder: [P0/P6/P_max] interleaved n=3, decode-scoped dmon, prefill
 FIRST-CLASS. ONE-LINE REPORT SENT — HOLDING per §86 before ladder legs.
 === END §86-exec ===
+
+=== §87: LAUNCH CONFIRMED — P0 PREFILL PRE-REGISTERED AS §76 DISCRIMINATOR; armC0.sh READY ===
+H reconciliation by architect: 599 MiB pre-existing non-process usage already inside card-wide 5,186
+=> free 11,125 correct; P_max = 11 (112.5 inside budget, ~812 real headroom). CUDA_Host equivalence
+BANKED EXPLICITLY: 3060 -ncmoe and CUDA0 -ot =CPU both materialise CUDA_Host pinned => same offload
+mechanism family => this licenses cross-card slope comparison (shape only).
+PRE-REGISTERED PREFILL READ (P0, first-class, report in FIRST line): >40 tok/s => 3060 path (gen1
+x4 link and/or card) IS the prefill mechanism => §76 closed formally as CONFIG-DEPENDENT, archaeology
+= misdiagnosis of a config difference, record corrected, bisect NOT reopened. ~4.7 => card/link NOT
+the mechanism; dual's 87-98 from something else (split/scheduler); question stays OPEN and
+unattributed — say so plainly.
+HONESTY CONSTRAINT: 11/48 = 23% of range — linear does NOT license full-placement projection. If
+linear: "linear over 0-11 of 48 on the 5060 Ti; knee NOT reached on any available hardware." ~45 GB
+total expert weight fits no card on this rig — knee-unreachable may be the TERMINAL answer for this
+line; a complete result, not a shortfall. Knee check: s1 = (P6-P0)/6, s2 = (P_max-P6)/5; CPU% should
+fall BEFORE flattening if saturation lifting.
+DECODE-SCOPED dmon: sampling starts AFTER health-ok (§85 gap must not repeat), card0-filtered parse.
+LAUNCH: [P0/P6/P_max] interleaved n=3, all four asserts (P0=0+0), fingerprint, covariates, no builds.
+=== END §87 ===
