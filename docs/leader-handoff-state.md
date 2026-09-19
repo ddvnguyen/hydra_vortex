@@ -2817,3 +2817,28 @@ treat as PROVISIONAL until one quiet-window replicate confirms.
 quiet-window KL re-run (armKLrereager.sh patched: cmp -f fix, WorkDisk base-bin path).
 5. ACTION: GPU legs paused until load < 4. Eager-arm re-run queued as next leg.
 === END §59 ===
+
+=== §60: ARCHITECT RULING — WINDOW LEG ORDER + REGISTERED INTERPRETATION; §55 HYPOTHESIS RECORDED UNTESTED; CONFIG-WIN GREEN-LIT ===
+Q1: KL pair = verdict leg but INCOMPLETE: same-stamp DISARMED-vs-DISARMED floor leg REQUIRED in the
+same window (collapse unreadable without this binary's quiet floor). INTERPRETATION REGISTERED BEFORE
+NUMBERS: armed-vs-disarmed >=10x same-window floor => defect reproduces on eager-arm binary =>
+dispatch-branch histogram next; within 3x => collapsed => both defects close, issue B unblocks;
+3-10x => ambiguous, armed-vs-armed decides (never adjudicate on first two); anything else (leg voids,
+PPL families diverge, chunk counts differ) => VOID THE WINDOW, no salvage.
+Q2: post-fix ARMED+VERBOSE clean run proves little (quiet+fix both explain it); the SEPARATING leg =
+OLD BINARY + ARMED + VERBOSE in same window: hangs => hang real+code-caused, new clean run means
+something; completes => original hang was HOST ARTIFACT, §55 deadlock hypothesis DEAD. #155 closes on:
+mechanism removed + new binary clean + old-binary leg outcome recorded; closure states explicitly the
+original hang was NEVER REPRODUCED under controlled conditions.
+Q3: §55 call_once-deadlock hypothesis recorded: "mechanism-consistent with every observed symptom;
+NEVER TESTED (gdb blocked by ptrace_scope, census confounded by load); the fix removed the mechanism,
+now untestable on this code. Neither confirmed nor refuted." #155 cause = UNATTRIBUTED, deadlock =
+leading untested candidate unless old-binary leg settles it. Architect self-flag: 6-for-6 wrong on
+registered predictions this session — elegance of a hypothesis is suspicion, not support.
+Q4: CONFIG-WIN (decision (a), 27.2832/27.3789/27.4374/27.7349 tok/s) CONFIRMED land-now-in-parallel,
+blocked by nothing; open PR today; MERGE still needs owner word (standing rule).
+WINDOW LEG ORDER: 1 armed-vs-disarmed new (verdict); 2 disarmed-vs-disarmed new (same-window floor);
+3 old binary armed+verbose (deadlock-vs-artifact separator); 4 new binary armed+verbose (#155
+corroboration); 5 armed-vs-armed new (only if leg 1 lands 3-10x). Per-leg load gate: if load > 4
+before a leg, STOP sequence (window closed; completed legs keep provenance, no salvage).
+=== END §60 ===
