@@ -1030,3 +1030,71 @@ Implications (leader's read, for architect planning):
   ggml-RPC peer :9504). The coverage model's hardware arithmetic now extends to a multi-GPU pool:
   5060 Ti 16GB + 3060 12GB + P100 16GB; 1.79 MiB/expert applies per card.
 - P100 (KVM VM, sm_60, Q5_K-balanced, 192.168.122.21) approved as an additional test host.
+
+=== SECTION 21: ARM 007 — MULTI-GPU EXPERT COVERAGE POOL (architect redesign, supersedes ARM 005; banked BEFORE any dispatch; commit timestamp is the single clock) ===
+
+PART A — RANKING IMPLEMENTATION (read at a744d8019): CORRECT THE DESIGN, NOT THE DEFECTS.
+  DEFECT 1 (ggml-cuda.cu:2070-2071, hydra_gather_mmvq): per-call full stream sync (cudaMemcpyAsync D2H +
+  cudaStreamSynchronize) inside the pinned-layer path = ~144 host syncs/token at 48 layers x 3 sites;
+  sits in the CUDA-graph-capturable branch and suppresses graph capture (the fallback comment says so).
+  DEFECT 2 (:2110): miss experts re-fetched H2D EVERY token into a pool allocation that dies with the
+  call, no reuse. Cost at measured arithmetic: 10 used x (1-0.4207) = 5.79 misses x 0.597 MiB/expert/site
+  x 3 sites x 48 layers = ~498 MiB/token, needing ~11.6 GB/s sustained in 0.6 MiB serialized memcpys.
+  DEFECT 3 (the regime, :2014): hard-aborts unless expert weights are CPU-resident — mutually EXCLUSIVE
+  with --n-cpu-moe, the config that produced every good number. Arming replaces our best config with a
+  weight-streaming one rather than accelerating it.
+  RULING: fixing Defects 1+2 would not make this win — Defect 3's ~498 MiB/token miss-side PCIe floor
+  stands. DO NOT spend build time correcting the gather. The correction is ARCHITECTURAL: never move the
+  weights — move the activations, compute each expert where its weights already live. ARM 005 as scoped
+  is WITHDRAWN (superseded by this section). Defects 1+2 get issues (filed by leader this turn) but are
+  NOT on the critical path.
+
+PART B — ARM 007, STAGED, CONFIG FIRST. Thesis: the relevant comparison for the 3060 is 3060 vs CPU, not
+  3060 vs 5060 Ti. The §20 topology loss (split 14.39 vs single 18.19) moved work from the FAST GPU to
+  the slow one; moving expert work from CPU to the 3060 is the opposite trade. Falsifiable in one
+  config-only stage. Sizing (916.7 MiB/layer; >=2.3 GB request-time headroom rule): 5060 Ti 11472 MiB
+  free -> 10 expert layers; 3060 ~11088 MiB -> 12; P100 ~15184 MiB -> 16; total experts 44,002 MiB.
+  STAGE 1 (ZERO CODE): 5060 Ti + 3060 expert-layer pool via -ot: 10 layers CUDA0 + 12 CUDA1 + 26 CPU;
+  everything non-expert on CUDA0. Idiom -ot "blk\.(...)\.ffn_.*_exps=CUDA1" (same mechanism --n-cpu-moe
+  uses internally). Coverage 22/48 = 45.8% (up from 16.7%). Dispatch: LOCAL CUDA1, NOT ggml-RPC (same
+  host; :9504 stays out of Stage 1 — one variable).
+  STAGE 2 (ZERO CODE, gated): +P100 over RPC -> 38/48 = 79.2%. BUT KVM/virtio round-trip model says
+  300 us x 16 layers x 2 crossings = 9.6 ms/token = 23% of budget (vs 3060 local 0.6 ms = 1.4%).
+  GATE: microbenchmark the actual RPC round-trip FIRST (no decode run); if > ~150 us, Stage 2 is not
+  viable as interleaved layers — re-plan as one contiguous tail block or drop. Do not run blind.
+  STAGE 3 (CODE, gated on 1-2): true expert-parallel MoE — hotness-ranked slice of EVERY layer's experts
+  per device, outputs reduced; traffic = hidden state (~8-16 KB/token/layer), never weights. Ranking
+  work earns its keep here (hottest experts on fastest device); only variant where devices work in
+  PARALLEL. An epic; epic branch; not started before Stage 1 reports.
+
+PART C — PRE-REGISTRATION (banked before dispatch; architect's to be wrong about):
+  Reference: best single-GPU stock, same-session matched control, configuration-not-scalar (~23.9).
+  P1 STAGE 1 BEATS THE REFERENCE: predicted ~26.4 tok/s (~1.10x) = +2.76 pre-link (29.2 coverage pts x
+    9.48) minus ~1.4% link overhead. Below reference => "3060 beats CPU" thesis WRONG, multi-GPU frame
+    collapses, arm ends at Stage 1 (architect will say so in those words). Bands: >=25.5 confirms;
+    23.9-25.5 weak pass, Stage 3 re-priced down; <23.9 kills.
+  P2 COVERAGE CONSTANT COMES IN LOW: 9.48 was measured CPU->primary GPU; 3060 is ~3.3x slower on x4 —
+    predicted realized constant on the 3060 share = 60-90% of 9.48. Above 9.48 => model wrong; find out
+    before Stage 3 is costed.
+  P3 SPARE-CPU THRESHOLD MOVES: >=2 spare carries over but a second CUDA device adds helper threads;
+    predicted required spare >=3. Cheap 2-point check (-t 16 vs -t 14) same session, not a new sweep.
+  P4 PREFILL: predicted Stage 1 improves prefill ~5-10% as expert work leaves the CPU (O1: residency-
+    sensitive, thread-insensitive). If prefill does not move, O1's anomaly deepens -> its own diagnostic.
+
+PART D — MEASUREMENT PROTOCOL (carries over; do not re-derive): -c 8192, batch defaults, 200 fixed
+  tokens, fresh server per leg, unique port; context IDENTICAL across every leg or VOID (same STOP rule
+  that ended the last sweep); D1+D2 gates ON; SERVE-probe never boot-probe (§20g rule 6); same-session
+  matched control at the single-GPU reference in EVERY stage (reference is a configuration); report
+  per leg: tok/s, CPU%, PER-DEVICE VRAM used+headroom, PER-DEVICE GPU sm% (non-negotiable — near-idle
+  CUDA1 means the pool is not doing what we think), prefill, n; spare count recorded explicitly per leg.
+
+PART E — NOT PROPOSED (stated so nobody re-adds): no ggml-RPC for the 3060 (local CUDA1); no
+  gather-MMVQ fixes on the critical path; no --override-kv for k; no N change (parked 38-42; Stage 3
+  slice sizing is separate — no N revision smuggled through it); no residency-linearity re-run (banked
+  unanswerable at -c 8192 on the 5060 Ti; Stage 1's wider range may answer it for free — a bonus, not a
+  justification).
+
+DISPATCH STATE: HOLD. Stage 1 needs the OWNER's word on rig time — access was granted, scheduling is
+theirs. Banked before any dispatch per standing rule.
+
+=== END SECTION 21 ===
