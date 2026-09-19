@@ -944,3 +944,75 @@ to match it) OR no time at all — the commit timestamp is the single source. Tw
 the defect: in-header estimate times have drifted from commit times in both directions (§20e "~04:20" vs
 02:05:48; §20f "~06:00" vs 08:15:18), which breaks sequence reconstruction and voids the sha-AND-timestamp
 read-back as a cross-check. Existing headers are NOT rewritten — the drift is itself part of the record.
+
+=== SECTION 20g: VOID-sweep ruling — verdict UNDECIDABLE, hard VRAM arithmetic, RETRACTION #3 (pricing model -> coverage model), linearity test withdrawn as underpowered, boot-fit rule, product issue (architect; committed with this rule in force — commit timestamp is the single clock) ===
+
+0. THE STOP WAS CORRECT — SECOND GATE THIS WEEK THAT DID ITS JOB. Builder held context constant, reported
+   the binding constraint, refused the nicer number, stopped. Commended explicitly. A constraint that
+   never stops anything is decoration; this one stopped a sweep.
+
+1. VERDICT: UNDECIDABLE. No slope, no branch, nothing banked as a result. LINEAR/SUBLINEAR/SUPERLINEAR
+   all require two servable resident points; we have zero. §20f branches stay open and unexercised —
+   the SUBLINEAR kill condition did NOT fire: ARM 005 is not killed, exactly as blocked as before.
+   L1 coherence accepted (21.28 vs 21.42 = -0.65%, inside 2.4%) — earns comparability for THIS binary
+   and config, does NOT license merging the sessions into one dataset.
+
+2. HARD VRAM ARITHMETIC (first time this track has had it): (15839-4839) MiB / 12 layers =
+   916.7 MiB per layer of expert weights = 1.79 MiB per expert (512/layer) — independently matches the
+   1.875 MB/expert figure from the PCIe analysis, derived a completely different way. Two routes, same
+   number. Headroom at ncm=48: 11472 MiB. Servable window [8,12) resident. Per-leg headroom:
+   9res 3222 | 10res 2305 | 11res 1389 | 12res 472 (crashes).
+
+3. RETRACTION #3 — THE PRICING MODEL: full 48-layer residency needs 44,000 MiB — 43 GiB, THREE TIMES
+   the entire card. "Full residency = 48 x 0.1975 = +9.48 tok/s" priced a configuration that cannot be
+   built and never could be — a counterfactual, not a bounded extrapolation. Retracted.
+   REPLACEMENT — THE COVERAGE MODEL: gain proportional to the FRACTION OF EXPERT LOOKUPS SERVED FROM
+   VRAM. Measured: 8 resident layers = 8/48 = 16.7% coverage -> +1.58 tok/s (same-session t16 pair,
+   23.00 vs 21.42) = 9.48 tok/s per 100% coverage. Same arithmetic product as before; the PREMISE changes
+   from "linear across 40 layers that cannot exist" to "linear in coverage fraction" — a real quantity,
+   bounded [0,1], partially measured. Same number, defensible for the first time.
+
+4. THE SAME ARITHMETIC ARGUES *FOR* THE ARM (stated plainly after a bearish stretch):
+   layer residency: 7,333 MiB buys 16.7% coverage.
+   expert pinning at N=38: 38 x 48 x 1.79 = 3,266 MiB buys ~42% coverage.
+   EXPERT PINNING IS 5.7x MORE VRAM-EFFICIENT PER POINT OF COVERAGE — the skew payoff stated as
+   hardware, the first version of ARM 005's thesis that survives contact with VRAM numbers. Fits with
+   room: N=54 (where our h data saturates) = 4,641 MiB against 11,472 available. VRAM IS NOT ARM 005's
+   BINDING CONSTRAINT; h-SATURATION IS. Best configuration if the arm worked: ncm=40 (8 resident) PLUS
+   pinning in the remaining 40 layers (~N=48/layer after request-time reserve) -> coverage
+   8/48 + (40/48 x 0.40) = 0.50 -> +4.74 tok/s -> 26.02 vs 22.86 stock = 1.138x — where the 1.14x
+   quoted for four rounds actually comes from; third independent convergence. Confidence in the NUMBER
+   up; confidence in EXECUTION unchanged (last armed measurement 0.82x).
+
+5. PROPOSED EXPERIMENT WITHDRAWN BY ITS AUTHOR — the linearity test is UNDERPOWERED: servable range
+   8-11 resident spans 22.86 -> 23.45 tok/s = 0.59 tok/s = 2.6%, against the 2.4% session-variance rule.
+   The entire testable window is one tenth of one percentage point outside noise. A curvature test
+   across it cannot return a trustworthy answer, and a false "linear" would launder the number just
+   re-derived. BANKED AS A LIMIT OF THE RIG: the linearity of the residency curve is not answerable on
+   this card at -c 8192 — not an open question to keep meaning to close.
+
+6. METHODOLOGY STANDING RULE: BOOT-FIT IS NOT SERVABLE-FIT. ncm=36 boots clean, passes D2, dies on the
+   first request (CUDA alloc failure in server_context_impl::decode at 472 MiB headroom). Our VRAM probe
+   methodology was boot-only and would have reported 36 as "fits". EVERY VRAM PROBE MUST ISSUE AT LEAST
+   ONE REAL REQUEST BEFORE REPORTING A FIT. Banked alongside D1/D2.
+
+7. PRODUCT FINDING -> GitHub issue (filed by leader this turn, explicit --repo per §19 amendment): a
+   server that boots and dies on its first request is a deployment hazard — startup health passes, node
+   enters rotation, fails under real traffic. The fit-check admits configurations with no request-time
+   allocation reserve. Repro: ncm=36, -c 8192, 472 MiB headroom, reproduced twice.
+
+8. O1 UPDATED: prefill is RESIDENCY-SENSITIVE but NOT THREAD-SENSITIVE — L1 (0 resident) prefill 43s vs
+   39s across all nine thread legs (8 resident) = +10%, well outside variance; thread count 8->20
+   invariant. Both facts measured; the pair is genuinely odd; O1 stays OPEN with this added. Do not
+   optimise prefill until someone explains it.
+
+9. QUEUE: (a) OWNER LANDING GATE SATISFIED — owner said config wins land "after the residency sweep";
+   the sweep has concluded (void, concluded, will not be re-run as specified). The 1.67x (threads +
+   topology, ship -t 16 unpinned) is LANDABLE ON THE OWNER'S WORD. (b) ARM 005: BLOCKED unchanged
+   ~1.14x — price better-founded than this morning, execution risk untouched. (c) OPTIONAL, owner's rig
+   time, probe-only and cheap: a SERVE-probe (boot + one request, per rule 6) at reduced context to find
+   whether a wider servable window exists; if a context exists where ~50% coverage is servable, ARM
+   005's price becomes INTERPOLATED rather than extrapolated. Not requested; recorded as the only
+   remaining way to test the coverage model on this hardware.
+
+=== END SECTION 20g ===
