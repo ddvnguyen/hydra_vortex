@@ -2605,3 +2605,42 @@ NOT yet examined (leader note, not banked interpretation): disarmed-only lazy ev
 DO differ in device-side bookkeeping, direction opposite to naive expectation. INTERPRETATION =>
 ARCHITECT. Bank = §50.
 === END §50 ===
+
+=== §51: ARCHITECT RULING — CONFIRMED DEFECT (INSTRUMENT STATE ALTERS COMPUTATION); PRIORITIES RESHUFFLED ===
+§50 pattern ruled: deterministic, systematic, NOT artifact. (iv) refuted => REQUALIFIED as confirmed
+defect: same commit 4c2b9cb67, env-only difference, KLD 0.032902/0.032906 (5 s.f.) vs within-family
+floors 4e-4 (disarmed) / 1.3e-4 (armed); PPL shift 0.0134 = 10x disarmed family spread.
+1. CANDIDATE REFRAMED: event objects cannot change arithmetic; what can: (i) different kernel
+selected (mul_mat_id dispatches MMVQ->MMQ->MMF->fallback, different accumulation precision), (ii)
+different backend per node, (iii) different ubatch splitting; (iv) nondeterministic atomics EXCLUDED
+(both families self-consistent at floor). Live candidate = DISPATCH-PATH or BACKEND-ASSIGNMENT
+divergence between families. Event pool relevant as CAUSE of dispatch divergence (events exist =>
+needs_sync differs => capture/dispatch differs), not as arithmetic effect.
+DISCRIMINATOR (no code change): GGML_SCHED_DEBUG=2 (ggml-backend.cpp:1858 => print_assignments :997)
+both families, DIFF the dumps. Differ => mechanism localized in the diff. Identical => inside a
+kernel => next step per-layer KLD bisection.
+SECOND LEG: PRISTINE vs disarmed vs armed — which family deviates from pristine is UNKNOWN. NOTE:
+pristine-build.log exists but no build-pristine* tree found in fork — binary existence to confirm;
+if missing, builder builds pristine FIRST (no rig session active => no-build rule respected), then
+rig runs three-family legs.
+2. §5 SECOND REWRITE (post-mortem shipped wording superseded): "Confirmed defect: instrument state
+alters computation (mechanism open). Two builds of commit 4c2b9cb67, differing only in env state,
+compute measurably different logits: armed-vs-disarmed KLD 0.032902 / 0.032906 (reproducible to
+5 s.f.), against within-family floors of 4e-4 (disarmed) and 1.3e-4 (armed), with a PPL shift of
+0.0134 = 10x the disarmed family's own spread. Both registered mechanisms are eliminated by source
+facts (§46), as is thread-timing reduction order. The live candidate is kernel-dispatch or
+backend-assignment divergence between the families; discriminator ordered. Which family deviates
+from pristine is not yet established." [SUPERSEDED in §51] stamp on old §5. §7 strengthened: the KL
+instrument caught a real defect NO other gate in this campaign would have seen = strongest
+retention argument.
+3. §44 AMENDED BY ARCHITECT (self-withdrawal): #132 "immunized by constant instrumentation" TOO
+STRONG, WITHDRAWN — instrument STATE shifts results 80x gate floor; #132 comparisons change runtime
+state (buffer assignment = state-like). Decomposition STAYS, gains a CONTROL: every comparison point
+carries its OWN same-state floor leg (run that exact config twice, confirm floor) — gate threshold
+per its own floor, not the global 4e-4. Converts premise from assumption to measurement (+1 leg per
+comparison point).
+4. PRIORITY: LOAD-BEARING, PROMOTED. "If a no-op env flag moves logits by 0.033 KLD and PPL by 0.34%,
+no A/B in this codebase is trustworthy until we know why." BLOCKS issue B (correctness gate) + D
+acceptance criteria. Does NOT block C (load-time split) or F (pin-set generation) — parallel. Land
+the config win first regardless (owner decision (a), still pending). Bank = §51.
+=== END §51 ===
