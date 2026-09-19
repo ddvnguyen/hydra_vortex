@@ -2054,3 +2054,21 @@ capture-semantics annotation.
 LEGS MAY START once items 2 and 3 clear — site-residency check FIRST (if the site moves, the freeze
 changes before anything burns rig time). Bank = §34.
 === END §34 ===
+
+=== §34a: SITE-RESIDENCY PRECHECK VERDICT — SITE INVALID, RE-FREEZE TO LAYER 31 CONFIRMED ===
+Builder precheck (zero rig): site layer 15 is GPU-RESIDENT under BOTH documented band variants (ARM007
+probe: blk.0-11 CUDA1 / blk.12-21 CUDA0 / blk.22-47 Host; D22: blk.0-9 CUDA0 / blk.10-21 CUDA1 / blk.22-47
+Host) => original freeze INVALID for the mechanism direction (would route miss work TOWARD CPU at a
+GPU-resident site). Config statement: E1 legs' base placement = heterogeneous tensor-override deployment
+(288 --override-tensor lines); PREREQUISITE NOW EXPLICIT: E1 legs MUST carry override placement — under
+-ngl 99 nothing is host-resident anywhere.
+RE-FREEZE CONFIRMED (leader, deterministic application of architect's §34 rule — highest-h within
+blk.22-47): LAYER 31, ffn_moe_up-31 / blk.31.ffn_up_exps (gate_up merged-node recognition as
+ffn_moe_gate_up-31). Data: phase0_rank.json self_heldout per_layer @42 — coding 31 @ 0.766 (next 44 @
+0.704), general 31 @ 0.742 (next 32 @ 0.626); both corpora converge on 31. Host-resident under both band
+variants; pin-covered (E0 verify min8/max8 x 48 layers = 384); code type-agnostic to layer-31 quant.
+Layer 15 reference: 0.813/0.789 top overall, disqualified on residency — h vs residency independent axes.
+Builder proceeding steps 2-4 (differential verdict code, event-pool/CPU-branch inspections, KL-first +
+VOID-not-NOGO + A6 protocol changes) on the new freeze; commit approval due at part-3 code-complete
+(stamp-after-commit). No legs until architect clears amended protocol with new freeze. Bank = §34a.
+=== END §34a ===
