@@ -2743,3 +2743,19 @@ blocking C (load-time split), F (pin set), or the config-win landing — TOP UNS
 wait behind any of this. AMENDMENTS: §51 candidate (2) => eliminated by static argument; §51
 discriminator sched-diff => SUPERSEDED by dispatch-branch histogram. Bank = §55.
 === END §55 ===
+
+=== §55a: GDB BLOCKED (no root); /proc CENSUS PARTIAL; PROCEEDING TO FIX (intervention = confirmation) ===
+ptrace blocked (yama ptrace_scope=1, no sudo); gdb attach + gdb-under-launch both unusable.
+/proc per-thread census of hung process (13 min in): 10 threads futex_do_wait (S) — CONSISTENT with
+threads queued on the once-flag/mutex; 4 poll_schedule_timeout; 1 folio_wait_bit_common (D, page
+I/O); ZERO threads spinning in user space — the ggml_barrier-spin portion of the predicted signature
+did NOT show; futex cluster DID. wchar crawled 101->227 bytes over 13 min => effectively frozen.
+PARTIAL evidence, not conclusive. DECISION (leader, per architect sequence): proceed to STEP 2 (fix)
+without gdb confirmation — the intervention test is STRONGER confirmation anyway: eager-arm fix ->
+re-run armed-vs-disarmed KL pair; if 0.0329 collapses to floor both defects close and issue B
+unblocks (§55 step 3). Dispatching fix to builder: move hydra_e0_init out of the mul_mat_id hot path
+(call_once at first invocation) to EAGER arm at model-load time (init only reads env + parses pins
+file — no tensor dependency — safe at load). New stamp required (stamp-after-commit). NOTE: post-fix
+the instrument changes => all subsequent gate legs (incl. #132 three-way decomposition §44) run
+POST-fix builds for instrument coherence; §43/§50 numbers remain banked as pre-fix record.
+=== END §55a ===
