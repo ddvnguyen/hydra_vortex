@@ -3554,3 +3554,34 @@ REQUIRE CUDA0+CUDA1: P14 = 13,154 MiB > U bracket — cannot fit single-3060; P2
 run CVD=1 but then it is not comparable — propose CVD unset everywhere, placement fully via -ot.
 AWAITING RULING before leg 1. Nothing GPU runs.
 === END §76-exec ===
+
+=== §77: ARCHITECT — (iii) SINGLE-DEVICE, CURVE TRUNCATED TO FIT; ANCHOR-THEN-LADDER; n-cpu-moe PREFERRED ===
+RULED: CVD=1 EVERYWHERE, DEV=1, DO NOT GO DUAL-GPU ON build-g3. Blocking reason per architect = no
+instrument to pin the draft (-otd AND -devd absent) => uncontrolled ~1.8G allocation moving between
+devices across the dosed VRAM. LEADER CORRECTION (honesty): -otd IS PRESENT — spec-draft-override-
+tensor = 1 hit in libllama-common.so (measured at the same moment the ruling was written). This
+weakens the "no pinning instrument" ground but NOT the ruling: the other grounds stand (PCIe x4 +
+200 vs 60 tok/s card asymmetry in a placement-isolation measurement; three controlled points beat
+five confounded). Banked as reported; ruling stands as ordered.
+CURVE TRUNCATED: P14/P22 OUT (13,154 / 19,514 MiB > U bracket). A slope is established by the points
+that fit. AND the ladder is computed from H (expert headroom LEFT at P0 after non-expert weights +
+~1.8G Q4 head + KV at ctx 81920), NOT from U. ORDER: (1) run P0, read ACTUAL free VRAM on CUDA1 from
+its allocation lines = H; (2) size P_max = largest layer count with cumulative measured expert bytes
+(blk.0-3 ~1058.5, blk.4-7 ~937.0, blk.8-21 ~887; NOT the dead 916.7) <= H - 700 MiB margin; (3) report
+H + P_max BEFORE running them; (4) then P_max; P0+P_max bracket; (5) no separation beyond run-to-run
+spread => STOP AND REPORT (real answer); separation => ONE midpoint, three points total.
+--n-cpu-moe PREFERRED if integer arity: P0 = --n-cpu-moe 48, P_k = 48-k — parameterizes the dose
+directly, drops -ot regex entirely; if boolean, fall back to -ot per point + override-verify (3
+expert tensors/layer => k layers = 3k tensors). ARITY CHECK at 86af0c9af ordered (leader, zero cost).
+APPROVED AS-IS: drop the four absent flags; no decode-overlap (state in EVERY leg header); no
+mo-cache flags — their absence at 86af0c9af IS the noise-free property chosen for, say so explicitly.
+NON-COMPARABILITY STANDING RULE RESTATED: 19.85-22.30 band measured WITH decode-overlap+ple-prefetch
+=> DOES NOT APPLY to build-g3 legs; MUST NOT compare. P0 ON BUILD-G3 IS THE ARM BASELINE. Deliverable
+= the SLOPE P0->P_max on one binary/device/config. +18% at 4 tok/s answers the owner exactly as well
+as at 22. Do not report the arm as failing for sitting below 19.85.
+GATES: CVD=1, ctx 81920, --parallel 1, -t 6, flash-attn on, MTP = spec-type draft-mtp +
+spec-draft-model Q4_K_M + spec-draft-n-max 2 + spec-draft-ngl 99, quiescence load<=4, per-leg
+load/RAM/swap/tmpfs covariates, unfiltered logs, exact allocation lines, content_len + decode-CPU%,
+fused fingerprint 895c522343eeaa53 on every leg, no builds in session. Run P0, report H+P_max, HOLD
+for one-line confirm before P_max.
+=== END §77 ===
