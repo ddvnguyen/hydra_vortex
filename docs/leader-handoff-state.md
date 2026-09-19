@@ -3419,3 +3419,25 @@ POLICY: 12-min build in loaded window OK (§70c); disarm triggers (none armed); 
 (expect ggml 0.23.0/llama 0.4.0 uniform); then 15s probe: 767-token prompt, max_tokens=1, verbatim
 prompt-eval line + ubatch grep.
 === END §75 ===
+
+=== §75c: ARCHITECT STRIKES THE §75 2x2 — CHAIN IS LINEAR; PROBE = BISECT MIDPOINT; HUNT THE 09:25 TREE ===
+REAL SHAPE: 0fc51e039 -> 24cfdb962 (CMakeLists +3, moe-cache.cu +252, moe-cache.cuh +11, src/CMakeLists
++4, llama-context.cpp +214, llama-context.h +5) -> 12f294335 (moe-cache.cu +138, ONE file). Linear.
+24cfdb962 ALREADY BUNDLES moe-cache.cu +252 WITH the scaffolding. No commit on the chain has
+scaffolding-present + cu-change-absent => the "untested cell" DOES NOT EXIST, cannot be constructed by
+checkout. §75 conclusion withdrawn; WIP back to PLAIN UNTESTED.
+RE-REGISTERED: S-a FAST = NON-MONOTONIC slow->fast->slow, requires TWO separate causes — demand a
+REPEAT before banking. S-b SLOW = EXPECTED and informative-strong: the WHOLE chain uniformly slow =>
+fast 09:25 state is OFF-CHAIN — uncommitted worktree content never backed up (matches "backup:" commit
+titles). S-b better than §75's version: not "code-space exhausted" but "fast state off-chain entirely".
+STILL VALID (do not re-derive): macro logging-only (build ON as ordered); record_only env-gated OFF,
+mismatch hard-fails LOUD (no silent path); verification-intent INERT in MAIN prefill at cache-size 0
+(S-a would NOT identify mechanism even if fast); telemetry retro-grep worth doing; falsifiable
+prediction: decode:3378 ABSENT in prefill, graph:4133-spec only on spec steps — if decode:3378 appears
+in prefill the flags/domain reading is WRONG, say so immediately.
+PARALLEL ZERO-RIG TASK (worth more than the probe): hunt the 09:25 tree directly — (1) git fsck
+--lost-found --unreachable + git reflog --all in src/llama-cpp, any dangling commit/stash timestamped
+2026-09-16 BEFORE 10:04:34; (2) stash entries BY TAG (never bare pop — shared stack across worktrees);
+(3) build-* dirs: retained CMakeCache/compile DB/.o/.d timestamped 09:2x naming source paths. A
+recovered tree beats any bisect between two slow points.
+=== END §75c ===
