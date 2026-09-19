@@ -1933,3 +1933,34 @@ no clean curvature read. BYTES measured: blk.0-3 ~1058.5 / blk.4-7 ~937.0 / blk.
 uniform-constant kill CONFIRMED + quantified. D4b vs D4a (same 4 layers, CUDA1 vs CUDA0): -3.5% device-identity
 signal, ruling pending. Builder E1 part-1 build window OPENED (rig free). Bank = §31a.
 === END §31a ===
+
+=== §32: ARCHITECT RE-RUN RULING — METHOD-CONTROL CHAPTER CLOSED, #154 WITHDRAWN, D0 FINDING, TWO LEGS BEFORE BUILD ===
+SWEEP COHERENCE: architect reconstructed placements from measured bytes — reconciles EXACTLY with override
+counts; D22 = Stage-1 by construction (10 C0 / 12 C1).
+(4) METHOD CONTROLS CLOSED: 4 independent confirmations pure--ot == --n-cpu-moe on quiet box (D8a/C -1.00%,
+D22/S1 +1.66%, D22/bridge +1.08%, D0/L1 -1.4%); confounded-session misses = contention, full stop. E1 verdict
+path free — but was ALREADY decoupled by S1 (per-invocation us + same-session disarmed control never
+depended on this sweep). D22 27.7349 = highest campaign number but +1.08% over bridge, INSIDE band = replicate,
+not record — no win claimed.
+(1) #154 WITHDRAWN+CLOSED: premise (clean D0 14.1568 vs L1 -33%) gone (re-run D0 -1.4% vs L1); amendment
+unavailable. Owner's own-flags directive UNTOUCHED — stands on #149 (directly observed ncm-discards-ot) +
+design argument. #149 stays open on own evidence.
+D0 FINDING (do not bury): two gate-passing legs disagree +48.2% with different decode trajectories =>
+matches banked MTP draft-acceptance nondeterminism (190x variance drop with MTP off, 2026-09-12); all-host
+amplifies (max miss cost). D0 NOT a usable anchor in ANY configuration. NEW RULE: content_len + draft-
+acceptance stats = per-leg covariate; >=40-host-layer legs have wider UNQUANTIFIED band until measured.
+(2) P-b UNRESOLVED, NO INCUMBENT: architect withdrew BOTH registrations (sublinear rested on dead D0 anchor;
+superlinear equally unsupported). Clean sub-segment D0->D4a->D8a (CUDA0-only contiguous): 0.436->0.241
+tok/s/layer, 4.12e-4->2.57e-4 tok/s/MiB, ~1.6x decline = sublinear INDICATION from 2 intervals, not a ruling.
+ORDERED leg D10a (blk.0-9 CUDA0, nothing CUDA1): third device-constant interval + exact D14 decomposition
+(D14 = D10a + 4 CUDA1). CUDA0 VRAM ceiling ~10 layers = last point on this axis; 3 intervals is P-b's budget.
+(3) DEVICE IDENTITY PLAUSIBLE, one leg from CONFIRMED: D4a/D4b identical layers/bytes/device-only diff = -3.49%
+vs B1's -3.31% for 8 CUDA1 layers => does not scale with count = FIXED-COST signature, but cross-basis pair
+won't confirm. ORDERED leg D8b (blk.0-7 CUDA1, mirrors D8a). THREE BRANCHES REGISTERED: ~-3.5% => FIXED
+(P-a resolved, constant toll); ~-7% => PROPORTIONAL (per-layer CUDA1 pricing); else => P-a open, D4a/D4b
+suspect. Architect prediction: FIXED.
+SEQUENCING: D8b + D10a FIRST, then release box to builder for E1 part-1 build window (approved, starts when
+legs clear). LEADER EXECUTION NOTE: my earlier window-opening was PREMATURE (crossed with §32) — revoked to
+builder (compile killed if started; part-2 code only); legs dispatched D8b->D10a with new covariate rule.
+Bank = §32.
+=== END §32 ===
