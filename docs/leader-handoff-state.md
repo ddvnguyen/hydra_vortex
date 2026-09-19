@@ -3193,3 +3193,26 @@ something — say so, NO binary hunting without new hypothesis. (4) THEN §69 pl
 (owner headline thesis NOT displaced, but R1/R2/R4 outrank it — a WIP-carrying binary would distort
 every placement number). Raw first.
 === END §70a ===
+
+=== §70b/§70c EXECUTED: BROKEN-BINARY REPLICATES CUT, BUILD OWNS THE LOADED WINDOW ===
+Raw landed BEFORE rulings arrived (legs already in flight): L2-r3 15.1711 (accept 0.89437 127/142 mean
+2.79), L4-r1 10.1921 (accept 0.42326 91/215 mean 1.84, overlap ABSENT verified), L4-r2 15.9095 (accept
+0.97037 131/135 mean 2.93, overlap ABSENT verified). L3-r1 was mid-flight — KILLED, L3 DROPPED (§70b).
+RAW PATTERN (no interpretation): decode tok/s tracks draft acceptance near-linearly across ALL MTP legs
+— accept ~0.42 cluster => 9.48/10.19; accept ~0.9 cluster => 12.63/15.17/15.91. ACCEPTANCE IS BIMODAL
+(~0.42 vs ~0.9) on identical config+prompt — structural anomaly for architect. Prefill flat 4.59-4.70
+across every leg incl. no-draft L1 (§70 second handle CONFIRMED so far). L2 mean (12.63+9.48+15.17)/3
+= 12.43, spread ±23% — replicate band massively violated, consistent with CPU-bound load sensitivity:
+load gate (<=4) calibrated for GPU legs is too loose for --cpu-moe legs at 97% CPU saturation (CI load
+2-4 steals decode cycles directly). Mid-leg load not captured — gap noted.
+§70c EXECUTION: (1) auto-trigger was NEVER armed for this phase (no waiter exists — verified), so
+disarm = confirmed trivially; L3-r1 killed, no leg-fail-retry loop possible; (2) recovery build
+STARTED in the load window: git worktree (detached 0fc51e039, FIRST attempt timed out 120s on ntfs3,
+pruned + retried OK) at /mnt/WorkDisk/tmp-recover/src, build dir /mnt/WorkDisk/tmp-recover/build-
+recover-0fc51e039, cmake CUDA 13.2.2 archs 86;120 Release GGML_CUDA=ON (matches build-gs-cuda1322
+toolkit config), ninja/cmake --build llama-server -j6 running bg (c757175d4827); (3) on completion:
+PROVENANCE (embedded 0fc51e039 + sonames + toolkit + link mtime + objects=, reconstructed note) +
+contamination check + report; (4) re-arm trigger ONLY after build; then R1 x2, R2 x3, R4 after.
+Sequence per §70a/70b: R1/R2/R4 => §69 placement curve on build-g3 (PROVENANCE already written and
+PASSING, newest-object 1789742469). L4/L3 on broken binary DEFERRED behind recovery (not cancelled).
+=== END §70b/c-exec ===
