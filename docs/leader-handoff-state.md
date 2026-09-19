@@ -3635,3 +3635,23 @@ per architect: with --cpu-moe prefill IS expected CPU-bound; the lost 60 tok/s b
 run --cpu-moe at all (possibility recorded, §76 NOT reopened). ONE-LINE REPORT SENT, HOLDING before
 ladder legs.
 === END §79-exec ===
+
+=== §80: GO — INTERLEAVED BRACKET, SPREAD GATE, PRE-REGISTERED UNDER-LOAD TEST ===
+Architect verified arithmetic independently (all deltas confirmed); reshape more than doubled H
+(3,127 -> 7,115) turning 2-of-48 into 6-7-of-48 (~13-15% of expert bytes). THREE REFINEMENTS:
+(1) INTERLEAVE, never blocked: cycle k = [P0, P_max]; blocked design confounds treatment with TIME
+(this box already produced one campaign artifact from that class). Bracket first; P_mid (3-4 layers,
+also interleaved) ONLY if P0/P_max separate; no separation => STOP, report null with spread = the
+arm's answer. (2) SPREAD GATE: first two P0 legs are the gate — if MTP-off P0 still spreads ~±16%,
+HALT THE ARM and report BEFORE remaining legs (would falsify the banked draft-acceptance bimodality
+explanation — a bigger finding than the slope). Expected: collapse to low single digits. (3)
+UNDER-LOAD READ PRE-REGISTERED: PASS = under load CUDA1 rises gen3/gen4, SM ~1.7-1.9 GHz, power well
+under limit => link/clock explanation for prefill collapse DEAD, never revisited this arm. FAIL =
+stays gen1 / clocks low / power pinned at limit => names a host-level limit across all binaries =>
+separate investigation. Captured during leg 1 (post-response decode window).
+BINDING: ctx 16384 constant + stated every line; MTP off; n=3 median+min-max never single runs;
+late-block bytes = model-buffer delta vs 1,808.36 on first dosed leg, re-derive P_max if ≠ ~887
+BEFORE the rest; override-verify 3k tensors on dosed legs; fingerprint 895c522343eeaa53 per leg;
+quiescence; covariates; unfiltered logs; no builds. Report after leg 2 (P0 spread) and after cycle 3
+(bracket medians).
+=== END §80 ===
