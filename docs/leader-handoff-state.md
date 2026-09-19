@@ -3390,3 +3390,32 @@ discriminator: ~60 tok/s => dispatch-path difference (verification-intent route)
 4.7 => host changed since 09-16 (would point back outside code entirely). AWAITING ARCHITECT RULING —
 no build started, stop-and-report honored. RIG TIME USED: D2+D3+verbose probes ≈ 8 min total.
 === END §74-exec ===
+
+=== §75: ARCHITECT — BUILD 24cfdb962 APPROVED WITH LLAMA_MOE_GROUPED_DEBUG=ON; THE 2x2 FRAME ===
+CONFOUND CLOSED: debug macro is LOGGING-ONLY (use_verification_intent computed at llama-context.cpp:3406
+OUTSIDE any #ifdef; live route checks :3496/:4247/:4282; actual dispatch :3530 use_verification_intent ?
+&execution_intent : nullptr; #ifdef blocks only feed dbg_match into a log; src/CMakeLists.txt:76-77 only
+adds the definition). Strike build-config-flip hypothesis. H2' unaffected (rests on instrumentation CODE
+present in tree). NOTE: build-gs-cuda1322's 09:34 CMakeCache records LLAMA_MOE_GROUPED_DEBUG:BOOL=OFF —
+the macro flipped inside the window; suspect closed by source read.
+THE 2x2 (cells): scaffolding-absent/+138-absent = 0fc51e039 SLOW 4.70 | scaffolding-present/+138-present
+= 12f294335 SLOW 4.59 | scaffolding-present/+138-absent = 09:25 binary FAST 60 (GONE) | 24cfdb962 =
+UNTESTED — the only untested cell. ALREADY PROVEN: 12f294335 has scaffolding and is slow => scaffolding
+alone NOT sufficient; 0fc51e039 lacks it and is slow. FAST REQUIRES BOTH: scaffolding present AND +138
+absent. Both tested endpoints each fail a different condition — why both measured identical and why
+bisect looked hopeless. BANK CORRECTION: "+138 exonerated" => "+138 UNTESTED IN THE PRESENCE OF THE
+SCAFFOLDING" — conditionally implicated, not exonerated.
+BUILD INSTRUCTION: -DLLAMA_MOE_GROUPED_DEBUG=ON — macro logging-only, cannot bias speed; the probe then
+emits ubatch lines WHATEVER the speed: S-a fast => compare trace to old 2->42->209->512->4, mechanism
+confirmed, route visible, stand up full R-arm on THIS binary; S-b slow => STILL get slow-binary trace
+vs old fast trace = the D1 comparison that was impossible — if slow trace shows n=1/small, batching
+collapse confirmed as proximate mechanism even though commit hunt failed. One build, two questions.
+PRE-REGISTERED WITH ASYMMETRY STATED: S-a ~58-61 => conclusive, fast cell real+reconstructable, cause =
+scaffolding-present+WIP-absent combination; capture trace, R-arm on this binary. S-b ~4.7 => WEAKER:
+"code-space exhausted at reconstructable granularity" (09:25 tree held only PART of the scaffolding) —
+do NOT conclude "host changed" from S-b alone; ubatch trace becomes primary evidence, reason from
+mechanism. S-c between => report and hold.
+POLICY: 12-min build in loaded window OK (§70c); disarm triggers (none armed); PROVENANCE + contamination
+(expect ggml 0.23.0/llama 0.4.0 uniform); then 15s probe: 767-token prompt, max_tokens=1, verbatim
+prompt-eval line + ubatch grep.
+=== END §75 ===
