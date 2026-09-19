@@ -1308,7 +1308,7 @@ for the superseded arm framing). Result posted to GitHub per §23 discipline. No
 
 === END §23a ===
 
-=== SECTION 24: ARM 007 STAGE 1 RULING — premise CONFIRMED (sharper form: 3060-hosted expert layers perform at least as well as 5060Ti-hosted); P2 pre-registration FAILED HIGH and the favourable upgrade is REFUSED; ARM 008 re-priced DOWN ~1.08x with budget UNCHANGED (stable ~35us rule) (architect; commit timestamp is the single clock) ===
+=== SECTION 24: ARM 007 STAGE 1 RULING — premise CONFIRMED [PARTIALLY RETRACTED in §26: the 'at least as well as 5060Ti-hosted' superlative is retracted; a direct control (B1) measured 3060-hosted layers -3.31% vs 5060Ti-hosted; premise that 3060-hosted >> CPU-hosted SURVIVES] (sharper form: 3060-hosted expert layers perform at least as well as 5060Ti-hosted); P2 pre-registration FAILED HIGH and the favourable upgrade is REFUSED; ARM 008 re-priced DOWN ~1.08x with budget UNCHANGED (stable ~35us rule) (architect; commit timestamp is the single clock) ===
 
 BUILDER DIAGNOSIS CREDITED: `ffn_*_exps` dead regex (`_*` = zero-or-more underscores, never matches `up`)
 + `ffn_gate_up_exps` dead file weight (factory zero callers). Two real root causes by probing instead of
@@ -1509,3 +1509,82 @@ CPU reconciliation (worker note): decode-split family comparable (Stage-1 510/67
 whole-window means (184.6/207.3) not comparable to decode-split.
 Logs: /tmp/opencode/armB.session.log + per-leg artifacts; script armB.sh, parser parseB.py.
 === END §25c ===
+
+=== SECTION 26: B SERIES RULING — B3 replication PASS (first clean cross-session replication); B1 prediction FAILED into unregistered third branch (B1 < C); §24 superlative RETRACTED; P2 curvature reading STRENGTHENED but budget UNCHANGED; B2 VOID = real finding (ncm silently discards user -ot); B2' redesigned pure -ot with pre-registration P-a/P-b/P-c (architect; commit timestamp is the single clock) ===
+
+ENDORSED (worker calls, both correct): (1) model substitution — a replicate MUST use the Stage-1-exact
+model or it is not a replicate; the worker caught that the dispatch named a model absent on disk.
+(2) CPU% reconciliation — decode-split and whole-window are different quantities; ONLY the decode-split
+family is comparable across legs. Use decode-split exclusively from here and say so in every report.
+
+SCORECARD:
+  B3 REPLICATE: PASS. 27.3789 vs 27.2832 = +0.35%, well inside 2.4%. S1 is real, session method sound.
+  BANKED AS: first clean cross-session replication this track has produced.
+  B1: ARCHITECT PREDICTION FAILED. Predicted B1 ~= C (device-independent); measured 23.1321 vs 23.9244 =
+      -3.31%, outside the band, LOW — a THIRD outcome never registered (branches were written for "~= C"
+      and "> C" only). Second time this week the pre-registration outcome space was too small (same
+      defect as P4's missing middle in §20b). REGISTRATION ERROR IS A PATTERN: two-branch registrations
+      written for quantities that have THREE directions. BANKED AS THE LESSON (three-branch rule, P-c).
+
+WHAT B1 ESTABLISHES: hosting expert layers on the 3060 costs ~0.79 tok/s across 8 layers = ~0.099 tok/s
+per layer (~-3.3%) vs hosting the same layers on the 5060 Ti. NET of the slower card and the x4 link
+round-trips; this design cannot decompose the two and does not pretend to.
+RETRACTION: §24's "3060-hosted expert layers perform AT LEAST AS WELL as 5060-Ti-hosted" was inferred
+indirectly (aggregate constant > 9.48); a direct control now contradicts it. §24 header STAMPED
+[PARTIALLY RETRACTED in §26]. What survives (the part that mattered): 3060-hosted layers remain enormously
+better than CPU-hosted — the premise for using the card holds; the superlative does not.
+PRACTICAL PLACEMENT CONSEQUENCE: fill CUDA0 to its servable limit FIRST, then spill to CUDA1. The Stage-1
+config (10 CUDA0, 12 CUDA1) is already correctly ordered. ARM 008 pin placement guidance unchanged — pins
+go on CUDA0, so the penalty does not apply to them.
+
+B1 vs THE P2 DISCREPANCY — STRENGTHENS THE CURVATURE READING: if the 3060 is WORSE per hosted layer, S1
+hit 11.52 tok/s per 100% DESPITE carrying a penalty on 12 of 22 resident layers. CUDA0-equivalent
+correction: 27.2832 + 12x0.099 = 28.47 -> gain 4.55 over 29.17 points -> 15.6 tok/s per 100% = 164% of
+9.48. STILL NOT RAISING THE MECHANISM BUDGET: that correction leans on a per-layer penalty estimated from
+a single point and extrapolated to 12 layers — the exact two-point-extrapolation class retracted in §20g.
+It is a reason to BELIEVE curvature is real, not a measurement of it. Budget stays 34.5 us until B2'
+measures the curve directly.
+
+B2 VOID = REAL FINDING, NOT A HARNESS PROBLEM: all four legs — -ot overrides not applied when
+--n-cpu-moe present; all 288 expert tensors HOST; both cards idle. Both OK legs were -ot-only. Clean
+common factor. --n-cpu-moe SILENTLY OVERRIDES user -ot placements for the same tensors (injects its own
+overrides; catch-all wins; user placement discarded without warning) — the same silent-override class
+filed four times this week. Issue filed (below). NOTE IN BODY: independently VINDICATES THE OWNER'S
+DIRECTIVE that our placement policy must own its own flags rather than compose with upstream's — exactly
+the collision they anticipated.
+ISSUE 2: CLAUDE.md model facts STALE (names Qwopus3.6-35B-A3B Q3_K-mini at /mnt/WorkDisk/LLM-Models —
+absent; live model /mnt/SSD/qwen3.8-flash-next-apex-mini, 6-shard). Stale hardware docs produce dispatch
+errors; this one nearly voided a replicate. FIXED in the doc, not just filed.
+
+B2' REDESIGN — PURE -ot, NO --n-cpu-moe ANYWHERE, six legs one session, everything else Stage-1-exact:
+  D0   0 resident (all experts -ot to CPU)                    anchor
+  D4a  4 on CUDA0                                             curve
+  D8a  8 on CUDA0                                             curve + METHOD CONTROL (should
+                                                              reproduce C 23.9244 at pure -ot)
+  D4b  4 on CUDA1                                             penalty control #2
+  D14  10 on CUDA0 + 4 on CUDA1                                curve
+  D22  10 on CUDA0 + 12 on CUDA1                              curve + METHOD CONTROL (should
+                                                              reproduce S1/B3 at ~27.3)
+  Two free replications built in: if D8a or D22 misses its target, the pure--ot method is NOT equivalent
+  to the mixed method and everything must be re-read BEFORE the curve is fitted — the report says so
+  before giving a slope.
+PRE-REGISTRATIONS (banked in this same commit, BEFORE dispatch):
+  P-a) DEVICE PENALTY PROPORTIONAL to CUDA1-hosted layer count: D4b penalty ~= half of B1's -3.31%, i.e.
+       -1.5 to -1.9%. If instead the penalty is roughly FIXED regardless of layer count -> link-setup cost
+       rather than per-layer compute cost -> changes epic placement design (want FEW CUDA1 layers or MANY,
+       not a middle).
+  P-b) CURVATURE on penalty-corrected values, slope_late/slope_early:
+         0.75-1.25 LINEAR   => 11.52/15.6 excess was drift in the original 9.48 derivation; budget STAYS
+                              34.5 us; coverage model right as written.
+         > 1.25 SUPERLINEAR => budget rises to ~42 us; epic gains a design input (last experts relocated
+                              worth more than the first).
+         < 0.75 SUBLINEAR   => ARM 008's 1.08x is an OVERESTIMATE; re-priced down again.
+       ARCHITECT PREDICTION: SUPERLINEAR, ratio 1.2-1.5 (unchanged from §25, better instrument).
+  P-c) THREE-BRANCH RULE APPLIED TO SELF: every branch above has a defined outcome including the one that
+       embarrasses the architect. No two-branch registrations from here.
+PROTOCOL UNCHANGED + PROMOTED: override-verify BEFORE timing is NON-OPTIONAL in every rig dispatch
+(alongside serve-probe) — it is 3-for-3 against confident wrong numbers. Two gates, both earned, both
+cheap. D1/D2, serve-probe, decode-split CPU% exclusively, per-device VRAM + sm%, temp 0.0 seed 42, 200
+tokens, fresh server, unique port.
+
+=== END SECTION 26 ===
