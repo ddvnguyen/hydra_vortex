@@ -2973,3 +2973,29 @@ NOT ATTRIBUTED (no refuting check yet). LEG2 (same-window floor) NEVER RAN — w
 provenance in log e0efc5471da7 (binary sha 9aef19b6, corpus sha verified at launch). NOTE: MTP arm
 binary = build-gs-cuda1322 lineage — unaffected by the eager binary's findings.
 === END §66 ===
+
+=== §67: ARCHITECT RULING — ALL THREE CONFIRMED (-otd VERIFIED arg.cpp:4119-4124); PROVENANCE GATE VIOLATION FIXED; EAGER BINARY BARRED ===
+(1) -otd CONFIRMED by architect source-read (same parse_tensor_buffer_overrides, draft-scoped,
+comma-native). ADDED REQUIREMENT: -otd pins WEIGHTS not KV — READ ALLOCATION LINES, CONFIRM DRAFT KV
+ON CUDA1; if on CUDA0 REPORT (VRAM accounting changes). (2) n_ctx 8192 confirmed; draft carries its
+OWN KV (banner accounting includes both); absolute tok/s at 8192 are NOT production-ctx numbers —
+state in report. (3) Carried flags verified at BUILD commit; four (moe-expert-cache-size,
+spec-draft-moe-expert-cache-size, decode-overlap, ple-prefetch) MISSING at HEAD — branch-specific
+flags; BIND FLAG SET TO BINARY, NEVER HEAD (clerical band-D risk).
+GATE VIOLATION FIXED: build-gs-cuda1322 had NO PROVENANCE FILE — architect reconstructed:
+LLAMA_BUILD_COMMIT=12f294335 (backup/t2b-engage-counter, NOT campaign lineage), CUDA 13.2.2, archs
+86;120 (BOTH GPUs — CVD-unpinned placement viable), Release, ggml 0.23.0 + llama 0.4.0 UNIFORM
+(contamination check PASSES, no era mixing; NOT a build-merge-full repeat). PROVENANCE file WRITTEN
+(pre-first-leg; file write != build). 12f294335 carries MoE-cache WIP compiled in + cache-size 0 =
+ARMED-BUT-DISARMED (80x-gate-floor class): MTP on/off DELTA VALID (internally matched, cancels);
+ABSOLUTE tok/s NOT COMPARABLE to D22/bridge — non-comparability stated in report, owner not invited
+to cross-compare.
+SEQUENCE AFFIRMED: Q8_0 first = FIT PROBE (not a replicate); L1 x2, L2 x3, L3 x3; alloc fail => 9
+CUDA1 rerun all. ACCEPTANCE GUARD: 0.68 = sanity reference NOT prediction; acceptance <0.3 = CONFIG
+problem reported as such, NOT band C; band C requires healthy acceptance + poor throughput
+conversion.
+§66 ACCEPTED; architect 7th consecutive wrong prediction recorded. §55 step-3 collapse branch
+REFUTED. STANDING RULE: EAGER BINARY BARRED from quality-gated measurement (no KL gating, no PPL
+comparison, no correctness claims) until the 24% PPL shift is attributed; throughput-only work may
+continue. Does not block MTP arm. Bank = §67.
+=== END §67 ===
