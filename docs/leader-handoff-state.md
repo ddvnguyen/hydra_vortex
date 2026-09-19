@@ -2532,3 +2532,29 @@ candidate, e.g. host-timing-amplified GPU nondeterminism — note §40 P4 100%-l
 argues against) / require armed-pair REPLICATE (§43 was single-pair by design; its median 23x floor
 argues systemic not tail) / or other. No interpretation banked. Bank = §46.
 === END §46 ===
+
+=== §47: ARCHITECT RULING — PRIOR SHIFTS TO (iv) NOT SYSTEMIC; TWO REPLICATE LEGS ORDERED (IDLE-TIME); §5 REFRAMED ===
+1. Candidate (iii) SELF-ELIMINATED by architect source check: ggml CPU mul_mat dynamic chunking
+(ggml-cpu.c:1432-40, atomic_fetch_add) partitions the OUTPUT matrix into DISJOINT elements — timing
+changes WHO computes a chunk, not HOW anything is summed => cannot change results. Combined with §46:
+no known path by which the armed build produces different numbers. PRIOR SHIFTS TO (iv): the §43
+result is not systemic. Architect also REFUTED the "median 23x argues systemic" argument: the median
+is ACROSS 88 CHUNKS within ONE pair (spread across chunks, not across pairs); median-across-chunks
+is not replication; n=1.
+2. REPLICATE ORDERED — two legs, §43 protocol, scheduled as CHEAP CURIOSITY-CLOSING, NOT critical
+path: (a) ARMED-vs-ARMED pair (better discriminator, no code change: if ~0.03, effect is a run-family
+property, not arming => (iv) confirmed strongest form); (b) one more ARMED-vs-DISARMED pair (gives
+§43 an n). Empty-pin gate NOT relaxed (do not relax a gate in a dead spike to enable a test).
+NOT LOAD-BEARING: #132 immunized against this whole class by the three-way decomposition (each
+comparison holds instrumentation constant on both sides) — run when rig otherwise idle, nothing waits.
+3. POST-MORTEM §5 REFRAME (exact architect wording): "Unexplained measurement anomaly (open). A
+single matched armed-vs-disarmed KL pair read 0.032906 mean (92x the measured floor median, 23x at
+the chunk median) with zero engagement. Both registered mechanisms — weight modification via
+attach_device, and allocation/scheduler perturbation — are eliminated by source facts (§46); a third,
+thread-timing-dependent reduction order, is eliminated by ggml's CPU chunking being disjoint-output.
+No known mechanism remains. n=1; replication ordered. Leading candidate is that the result is not
+systemic. Not established as a defect in E1 code." NOT a correctness defect — no evidence of
+incorrect computation; asserting one would misdirect #132 design.
+4. POST-MORTEM: send for review as written (builder applies §5 reframe first, then architect
+reviews). [Ruling tail truncated ~296 chars in transit; reconcile at next consult.] Bank = §47.
+=== END §47 ===
