@@ -3533,3 +3533,24 @@ context), acceptance ~0.869. Gates: quiescence load<=4, per-leg load/RAM/swap/tm
 override-verify counts, unfiltered logs, exact allocation lines, content_len + decode-CPU%.
 Option (c) stray-source hunt: read-only, opportunistic in gaps, gates NOTHING, no rig time.
 === END §76 ===
+
+=== §76 EXEC: BUILD-G3 FLAG REALITY + RULE-5 ARCHIVE DONE; CONFIG CONFLICT TO ARCHITECT ===
+RULE 5 EXECUTED FIRST: build-g3/bin (111 files) archived to /mnt/WorkDisk/binary-archive/build-g3/
+VERIFIED count-exact, FUSED FINGERPRINT recorded (llama-server 895c522343eeaa53 | libllama.so
+b6abfd2ef76d0c27 | libllama-common.so d5662c509eb5a67f | libggml-cuda.so 09fcd3c233cd59c5).
+FLAG REALITY (via libllama-common.so — version-independent symlink, NOT the versioned name): PRESENT =
+spec-type(1) spec-draft-model(1) spec-draft-n-max(3) spec-draft-ngl(1) draft-mtp(2) override-tensor(3)
+n-cpu-moe(4) => MTP core + placement controls RUNNABLE. ABSENT = decode-overlap(0) moe-expert-cache-
+size(0) ple-prefetch(0) + spec-draft-device/-devd(0) => THE §76 CONFIG BLOCK AS WRITTEN IS UNRUNNABLE
+on build-g3: four flags would hard-error at arg parse (boot nothing). CONFLICT: binary ordered (build-g3)
+vs config ordered (proven flag set incl. the four). PROPOSED REDUCTION (awaiting ruling): drop the four
+missing flags; MTP = spec-type draft-mtp + spec-draft-model Q4 + spec-draft-n-max 2 + spec-draft-ngl 99;
+NO decode-overlap (stated config difference — L4-type MTP without overlap); NO moe-cache flags (the
+moe-cache code may not exist at 86af0c9af — its default absence IS the point of the noise-free binary);
+NO -devd available (§68d fix impossible on this binary) => with both GPUs visible the draft device list
+= 2; at 86af0c9af does draft_overlap_supported exist? (overlap flag itself absent — likely pre-overlap
+fork => no overlap semantics at all, moot). Placement -ot per P-point + CVD unset for P5-P22 (P14/P22
+REQUIRE CUDA0+CUDA1: P14 = 13,154 MiB > U bracket — cannot fit single-3060; P22 = D22 split). P0 could
+run CVD=1 but then it is not comparable — propose CVD unset everywhere, placement fully via -ot.
+AWAITING RULING before leg 1. Nothing GPU runs.
+=== END §76-exec ===
