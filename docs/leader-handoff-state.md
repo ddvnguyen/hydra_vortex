@@ -2431,3 +2431,18 @@ DISPATCHED to rig worker: matched pair on wiki head-600 (HYDRA_E0_STATS unset BO
 PIN+E1_DRYRUN on armed cmp; dump re-run fresh), tag ARM_KLARMEDPAIR_DONE. Ruling on the result =>
 architect. Bank = §42.
 === END §42 ===
+
+=== §43: MATCHED ARMED-PAIR YIELD (ARM_KLARMEDPAIR_DONE) — ARMING EFFECT MEASURED AT MATCHED CONFIG ===
+Single pair per §42 design, isolation corpus exactly (wiki head-600 sha 3cae5a0f, 88 chunks, PPL
+sanity dump 3.9114 = correct corpus), binary 4c2b9cb67 clean + full sha256 verified each run, env
+attested identical except HYDRA_PIN_FILE + HYDRA_E1_DRYRUN=1 on armed side (parent env logged none;
+LD_LIBRARY_PATH identical both steps). RESULT: ARMED cmp mean KLD 0.032906 ± 0.000579 (median
+0.008325, max 3.397699 — heavy-tailed per-chunk), [HYDRA e1]=0, e0 lines 2 engaged=0 armed=1 hits=0,
+pins line 384. VS disarmed floor 0.000235-0.000939 (median 0.000358): 35x-140x ABOVE FLOOR at
+matched config with ZERO engagement. VS KL3 0.071563: ~half — remainder = corpus difference
+(architect's to rule). Arm mode replicates KL3 cmp exactly (pins loaded, dryrun, engaged=0).
+Artifacts: armKLarmedpair.{sh,session.log}, klarmedpair.{dump,cmp}.log + sidecars, base bin
+RETAINED (11.1 GB). Rig FREE. Single pair per design, no replicate, nothing discarded, no unassigned
+causes (both rc=0 first attempt). INTERPRETATION => ARCHITECT (this lands in registered branch (a)
+territory: attach-path perturbation with no engagement — architect rules, not leader). Bank = §43.
+=== END §43 ===
