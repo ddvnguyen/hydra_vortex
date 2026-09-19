@@ -2924,3 +2924,36 @@ failed, which is a probe-design artifact: perplexity allocates a logits buffer t
 never had). (2) Wait-for-listening-line fix KEPT for every MTP leg; a load timeout is NOT band D —
 band D = genuine boot failure or zero draft activity only.
 === END §65 ===
+
+=== §65a: ARCHITECT AMENDMENT — MTP ARTIFACTS FOUND (SHARED DRAFT HEADS); TRAP-2 WITHDRAWN; PLACEMENT STANDARDIZED 10 CUDA1; LEG SET L1/L2/L3; PROVENANCE RULE ===
+STEP 0 DONE BY ARCHITECT (filesystem, no rig): /mnt/SSD/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
+2,657.5 MiB (Sep 12) + mtp-...-Q4_K_M.gguf 1,818.8 MiB (Sep 14); both qwen4exp arch, carry
+qwen4exp.nextn_predict_layers + nextn_shared_target_tensors. SHARED DRAFT HEADS = separate ~2GB files
+attaching to the EXISTING 6-shard target (reusing its tensors). NO CONVERSION NEEDED/ALLOWED; no
+HF source weights on box anyway (86af0c9af has the nextn constants + qwen4exp.py MTP handling with
+--no-nextn). TRAP-2 WITHDRAWN: A/B = SAME 6-shard target both legs, head attached (on) vs not
+(off); model file IDENTICAL across legs; no model-file confound; no hunting for MTP full GGUF.
+Trap-1 stands: never compare against D22.
+PLACEMENT (standardized, tightest common): Q8_0 head -> (12288-2657.5-144-512)/887 = 10.12 -> 10;
+Q4_K_M -> (12288-1818.8-144-512)/887 = 11.06 -> 11; DO NOT give each head its own placement (re-
+confounds). EVERY LEG AT 10 CUDA1: CUDA0 blk.0-9 = 9,756 MiB; CUDA1 blk.10-19 = 8,870+144 = 9,014;
+free for head = 3,274 MiB; Q8_0 margin ~617 MiB TIGHT (head compute/KV unaccounted), Q4_K_M ~1,455.
+DO NOT TRUST ARITHMETIC OVER BANNER: boot Q8_0 leg first, read allocation lines; no fit => drop to 9
+CUDA1 layers AND RERUN ALL LEGS AT 9. Report banner numbers either way. Cost vs D22 = ~0.5-0.76
+tok/s (~2-3% off 27.7349) = price of the 3060 reservation.
+LEG SET: L1 = 10 CUDA1 MTP OFF (2 replicates, baseline); L2 = 10 CUDA1 MTP ON Q8_0 (>=3, primary);
+L3 = 10 CUDA1 MTP ON Q4_K_M (>=3, secondary). Same binary/stamp/session/target/placement; cut L3
+never L1 if forced. BEFORE L2: determine the fork's shared-target draft attachment (--model-draft
+vs fused nextn path), REPORT THE INVOCATION, no guessing.
+ALL §65 STANDS: replicates, draft-acceptance first-class covariate, no +/-2.4% band on MTP-on, all
+gates, no builds in rig, bands A-D, raw-first, log-check before attribution.
+PROVENANCE HAZARD (architect-fixed): be4676f11 = CERTIFIED MEASUREMENT BASE (bridge B3 27.4374,
+fused fingerprint verified) was ORPHANED by the 2026-09-19T10:01:11 reset of e0/measurement-foundation
+to 86af0c9af — survived only in reflog, one gc away from gone. NOW TAGGED
+certified/be4676f11-measurement-base. NEW RULE: BEFORE ANY RESET/REBASE MOVING A BRANCH OFF A
+MEASURED COMMIT, TAG THE COMMIT FIRST — a certified stamp that is not a ref is not certified. /tmp
+tmpfs note: /tmp/opencode/* worktrees volatile across reboot; nothing load-bearing only there.
+Lineage verified by architect: baseline-qwen4exp-mtp + epic/148 correctly at 86af0c9af, clean.
+LEADER REGISTER RENEWED post-restoration (contract 2.2.0); queue task-c855c420bf = prior MTP baseline
+(Q4 head via -md, cache OFF, N=36) — fetch full detail for the prior-tested invocation.
+=== END §65a ===
