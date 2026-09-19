@@ -1098,3 +1098,66 @@ DISPATCH STATE: HOLD. Stage 1 needs the OWNER's word on rig time — access was 
 theirs. Banked before any dispatch per standing rule.
 
 === END SECTION 21 ===
+
+=== SECTION 21a: OWNER DESIGN DIRECTIVE — upstream params untouched, own flag family owns expert placement; RAM is home, VRAM is a usage-driven cap (architect relaying owner; banked BEFORE any build; commit timestamp is the single clock) ===
+
+OWNER WORDS (verbatim): "The -n-moe-cpu — let not change behavior of upstream params. We should create our
+new params. At first we could allow all experts in CPU mean RAM; when optimize we will allow experts that
+used by subjects and not prioritize on VRAM."
+
+ARCHITECT READING (explicit, owner may correct before anything is costed):
+(a) --n-cpu-moe and ALL upstream flags keep upstream semantics EXACTLY; with our flags unset the engine is
+    bit-identical to upstream.
+(b) Our own flag family owns expert PLACEMENT POLICY end to end.
+(c) Base state = ALL experts in host RAM — RAM is the home, VRAM is the exception (not "fit what you can").
+(d) Optimisation promotes experts INTO VRAM by measured USAGE. VRAM is a CAP, not an objective.
+WHY (d) IS CHEAPER, from our numbers: h saturates ~N=54/layer = 4,641 MiB = 40% of available; capacity-
+filling would consume 6.8 GB more VRAM for h it cannot raise — usage-driven leaves ~6.8 GB free for
+context, MTP head, KV.
+
+CONSEQUENCE 1: dissolves the Part A Defect 3 regime clash — our flag makes host residency the base state,
+so the mechanism never fights upstream placement; no abort, no workaround.
+
+CONSEQUENCE 2 — THE HARD PART (must be in the brief before anyone estimates): experts are ONE 3D tensor
+per layer (ffn_*_exps = [n_embd, n_ff, n_expert], llama-model.cpp); a ggml node runs on ONE backend, so
+partial placement cannot be expressed by tensor placement. The two-branch construction (GPU slab + CPU
+branch + combine) is the DELETED build_hydra_mm_id and is why arming measured 0.82x: ggml_mul_mat_id
+computes all k selected experts on EACH branch -> 2k work. Masking fixes arithmetic, not cost. DO NOT
+RE-PROPOSE. The only escape: a fork-native op on BOTH backends that skips experts it does not own —
+CUDA: on-device promoted-subset determination (prefix-sum/compaction kernel), launch over hits only,
+NO host readback (kills issue #140's per-call sync at the root); CPU: plain C loop over the miss subset;
+combine partials. Work returns to k. EPIC — epic branch per project rule; must not start before ARM 007
+Stage 1 reports.
+
+CONSEQUENCE 3: "used by subjects" brushes a banked finding — the SUBJECT dimension was measured and did
+NOT carry (POC shipped session-warm + all-pool, dropped subject rankings; one turn touches ~54% of
+experts/layer; same-subject pools saturate N=54). The param takes a USAGE-DERIVED PIN SET, agnostic to
+producer (session-warm / subject / global-frequency / future ranker); file format is the contract, the
+ranking policy is swappable and NOT baked into a flag name. Subject-keyed re-open = deliberate owner
+call, gated design available on request — not an implicit one.
+
+FLAG SURFACE (DRAFT, owner approval pending, names negotiable):
+  --moe-expert-home {gpu|cpu}   default gpu = upstream behaviour untouched. cpu = all expert tensors in
+                                host RAM (our base state), independent of --n-cpu-moe (neither read nor
+                                modified).
+  --moe-expert-pins FILE        usage-derived pin set (per-layer expert ids). Requires home cpu.
+  --moe-expert-pin-count N      cap per layer; default from file. VRAM asserted as a CAP: if the set
+                                does not fit, FAIL LOUDLY with the arithmetic. Never silently truncate,
+                                never silently spill.
+  None set -> every code path is upstream's. One implementation path when enabled — no fallback branch,
+  no runtime capability toggle (standing alpha-stage rule); the flag chooses the regime, the regime does
+  not negotiate with itself.
+
+WHAT DOES NOT CHANGE: ARM 007 Stage 1 is CONFIG-ONLY on upstream flags and still gates everything
+downstream (NOTE — Stage 1 was ALREADY DISPATCHED on the owner's rig grant before this directive landed;
+unaffected, but the architect's "no dispatch" status was stale). Stage 3 is now specified by THIS
+directive (same principle — move activations, never weights — as the owner's placement policy), replacing
+the earlier expert-parallel-slices sketch. Issues #140/#141 stay off critical path; the epic SUPERSEDES
+rather than fixes them (#140's sync disappears with on-device compaction; #141's re-fetch disappears
+because misses never move). N stays parked 38-42; --moe-expert-pin-count exposes the knob, does not
+license changing it.
+
+STATUS: banked. Flag surface pending OWNER approval. Epic + flag implementation NOT started before
+Stage 1 reports. Stage 1 in flight on the rig.
+
+=== END SECTION 21a ===
