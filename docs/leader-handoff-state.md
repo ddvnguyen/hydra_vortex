@@ -2708,3 +2708,38 @@ interaction; stream/sync state under slower graph build; (2) alternative discrim
 not need armed+verbose (e.g. per-layer KLD bisection using non-verbose armed runs which WORK);
 (3) is the hang itself the strongest datum yet for the defect ledger? Bank = §54.
 === END §54 ===
+
+=== §55: ARCHITECT RULING — UNIFYING HYPOTHESIS (call_once DEADLOCK); SCHED-DIFF DROPPED; SEQUENCE ORDERED ===
+1. PRIMARY HYPOTHESIS (registered so it can fail): arm is LAZY (§46) — first mul_mat_id fires
+hydra_e0_init via call_once ON THE COMPUTE PATH: thread A takes once-flag, calls log path; --verbose
+gives the log real backpressure (670K lines in the working case) so the write BLOCKS; other compute
+threads block on the once-flag or SPIN in ggml_barrier, never yielding => log never drains =>
+deadlock. Matches every symptom: 57% CPU zero I/O (spinning barriers + blocked write), D/l state,
+banner via pipe but 0 bytes via file (buffered, unflushed), base bin never written, inconsistent
+exits. Non-verbose works: log call completes cheaply, once-flag releases.
+INSTRUMENT: gdb -p <pid> -batch -ex "thread apply all bt" during hang. REGISTERED PREDICTED
+SIGNATURE: one thread inside hydra_init_once_fn in write/lock; >=1 in pthread_once/__gthread_once;
+remainder in ggml_barrier. If backtrace shows otherwise (CUDA sync, atexit) hypothesis is WRONG,
+follow the actual stack. (Architect notes: flagged call_once-on-hot-path as perf concern in original
+review — it is a LIVENESS bug.)
+2. SCHED-DIFF DROPPED — static argument: backend assignment lives in ggml_backend_sched_split_graph
+which has no hydra knowledge; a bool CANNOT change backend assignment. Candidate (2) from §51
+eliminated on inspection; by elimination the divergence = KERNEL DISPATCH inside
+ggml_cuda_mul_mat_id (MMVQ/MMQ/MMF/fallback differ in accumulation precision). REPLACEMENT
+DISCRIMINATOR (only if needed): dispatch-branch histogram — count branch per invocation, emit at
+teardown via E0 stats channel, diff armed vs disarmed; counters not log lines = deadlock-proof;
+names the kernel if counts differ.
+3. HANG = SEPARATE DEFECT from §5 (shared origin: arm work on compute path; different failure mode/
+severity/evidence). §5 keeps §51 wording; hang gets its own numbered finding + OWN ISSUE (--repo
+explicit). ARCHITECTURAL POINT: lazy arming on the compute path is the design error — ARM EAGERLY
+AT MODEL-LOAD TIME, off compute threads: removes deadlock by construction, plausibly upstream of
+the numeric divergence (removes serialization point inside graph execution).
+4. EFFICIENT SEQUENCE: (1) gdb backtrace confirm/refute; (2) fix by eager arm at load; (3) re-run
+armed-vs-disarmed KL pair — if 0.0329 collapses to floor, BOTH defects close together and ISSUE B
+UNBLOCKS DIRECTLY, no histogram needed. Histogram only if it does not. NOTE: free design validation
+for #132 — it arms at load by construction, never had this exposure.
+5. PRIORITY: hang files as own issue but does NOT escalate above B. Still blocking issue B; not
+blocking C (load-time split), F (pin set), or the config-win landing — TOP UNSHIPPED ITEM should not
+wait behind any of this. AMENDMENTS: §51 candidate (2) => eliminated by static argument; §51
+discriminator sched-diff => SUPERSEDED by dispatch-branch histogram. Bank = §55.
+=== END §55 ===
