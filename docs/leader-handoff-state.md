@@ -2779,3 +2779,18 @@ gdb-probe{,2}.kld-base.bin (0-byte), klscheddiff-v-ARM{,2}.dump.log (0-byte hang
 quota; staging area for evidence = .evidence-e1/ (gitignored path, verify). Retention: klarmedpair +
 0-byte pair kept until defect campaign closes.
 === END §57 ===
+
+=== §58: EAGER-ARM FIX DELIVERED (1b0ac08bb); DECISIVE KL RE-RUN LAUNCHED (lead-run) ===
+Builder 7fe20b8a delivered: commit 1b0ac08bb (e0/measurement-foundation, +31/-9); NEW STAMP
+sha=1b0ac08bb tree=clean; binaries build-e0-eager/bin/ (perplexity sha256 9aef19b6...45c213ea71,
+server ca511215...f94006eb3). FIX SHAPE: hydra_e0_arm_eager() at top of ggml_backend_cuda_init
+(post device-validation); relaxed-atomic flags REPLACE call_once — hot path = one relaxed load,
+ZERO futex potential; init once at backend init, identical env/abort/flags/dump semantics.
+KL runner prepared /mnt/WorkDisk/tmp-eager/armKLrereager.sh (NOT run by builder). Build notes:
+TMPDIR=/mnt/WorkDisk/tmp-eager (quota workaround); CUDA 13.2.1 needs explicit -lcudart -lcublas
+exe-link flags (13.2.2 does not). LEAD RUNS the decisive pair directly (§55 step 3, airtight
+protocol: NEW BINARY BOTH LEGS, env-only difference): leg-1 disarmed dump (no HYDRA env) -> new
+base bin on WorkDisk; leg-2 armed cmp (PIN_FILE+DRYRUN) vs leg-1 base. VERDICT RULE: mean KLD
+collapses to ~4e-4 floor => BOTH defects close, issue B unblocks, histogram NOT needed; stays
+~0.033 => kernel-dispatch divergence confirmed, dispatch-branch histogram becomes the discriminator.
+=== END §58 ===
