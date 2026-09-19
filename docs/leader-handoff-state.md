@@ -4019,3 +4019,17 @@ No-overlap MTP variant is a floor if MTP is ever revisited (acceptance-pinning =
 20.2 vs 24.9).
 HOLDING for §90.
 === END §89-exec ===
+
+=== §90: CAMPAIGN CONSOLIDATED — HOLD FOR OWNER DIRECTION ===
+FINDINGS DOCUMENT WRITTEN: docs/findings-moe-placement-campaign.md — production config verbatim
+(22.2541 tok/s, ctx 81920, 9/48 layers, fp + flag line), both measured curves as separate curves,
+four closed questions with evidence (prefill=config; bimodality=acceptance; dual net-negative;
+ctx=compute-reserve constant 1.75 layers card-independent), three open leads honestly scoped
+(acceptance-pinning recommended ~+12%; convexity point 1-2 legs; overlap port = build risk), MTP
+statistical status worded per §90 (consistent-with, NOT demonstrated, t≈1.61), terminal limits
+stated plainly (45GB experts fit no card => knee unreachable here = complete result), six method
+rules minted. PROJECT_STATUS.md Verified Facts updated with 8 new rows (production config + curves
++ link limiter + bimodality + dual verdict + ctx constant + MTP floor verdict). Commits d1e6b4655.
+HOLD: no new arm (acceptance / convexity / overlap port ALL awaiting owner's direction — architect
+has put the question to the owner). Leader idle until owner answers or §91 lands.
+=== END §90 ===
