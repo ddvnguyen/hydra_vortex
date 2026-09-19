@@ -2072,3 +2072,28 @@ Builder proceeding steps 2-4 (differential verdict code, event-pool/CPU-branch i
 VOID-not-NOGO + A6 protocol changes) on the new freeze; commit approval due at part-3 code-complete
 (stamp-after-commit). No legs until architect clears amended protocol with new freeze. Bank = §34a.
 === END §34a ===
+
+=== §34b: E1 PART-3 CODE-COMPLETE — DIFFERENTIAL TIMER, BOUNDED POOLS, PROTOCOL DRAFT AMENDED ===
+Builder part-3: re-freeze applied (HYDRA_E1_LAYER 15->31, node/weight/gate_up to -31 names). GGUF ground
+truth direct-parsed shard 5: L31 up (2560,640,512) IQ2_XXS / gate Q8_K / down IQ1_S — MMVQ + device-dequant
++ getrows coverage verified in-tree; zero ffn_moe_up-15 strings in built .so. HONEST FLAG accepted: direct
+parse shows L15-up IQ2_XXS (earlier session summary said IQ2_XS — direct parse authoritative; code
+type-agnostic, moot).
+DIFFERENTIAL VERDICT CODE: stock_begin/stock_end bracket stock dispatch (disarmed + HYDRA_E1_TIMING +
+name-match + MMVQ-decode scope gate; silent delegation never aborts disarmed — fail-open instrument /
+fail-closed mechanism split, leader-endorsed); 4th E0 ring channel `stock` (n/p50/p99/mean); verdict =
+armed - disarmed from same log.
+INSPECTION (a) POOL BOUND: fixed 16-slot pools — no growth possible under lag (lag = counted skips);
+slot_recorded/stock_recorded masks (elapsed time can never touch unrecorded event); per-slot ordering
+argument; drops counted; NO CUDA calls at teardown (tail excluded by construction).
+INSPECTION (b) BLOCKING: harvest query-only (zero syncs); two labeled syncs — SYNC-STAGE (consult staging,
+prior stream work only) + SYNC-JOIN (single join incl. GPU branch => SUM not max per design §2); host dots
+host-memory only; no path waits on unharvested events (fence-ready proves bracket complete).
+PROTOCOL DRAFT amended: §0 placement prerequisite (override mandatory, -ngl 99-only legs VOID) + frozen
+site; leg type (iii) + differential definition; bands on differential; VOID-not-NOGO graph veto; A6
+graphs-OFF both sides; KL position 3; full amended order; scheduler-switch exclusion note on GO; open
+items site CLOSED.
+Build EXIT=0 zero nvcc warnings (.so relinked). APPROVED: fork commit `feat(hydra-e1): E1 part 3 ...` +
+parent docs commit (draft + PROJECT_STATUS) + restamp clean. Package routes to architect for
+amended-protocol clearance after stamp. No legs. Bank = §34b.
+=== END §34b ===
