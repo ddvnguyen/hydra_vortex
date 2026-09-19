@@ -2252,3 +2252,32 @@ phase-0 N uniform-regime-transfer assumption; adaptive-alloc correctly not used 
 ROUTE: architect validates + attaches recommendation -> OWNER package (epic->main gate territory; line
 retirement = OWNER call). Bank = §37a/§37b.
 === END §37a/§37b ===
+
+=== §38: ARCHITECT HOLDS OWNER PACKAGE — VERDICT-FLIPPING UNIT ERROR (6 tensor-names CONFLATED WITH 512 EXPERTS); CORRECTED FORM Ratio = 1.024 x (h/f) ===
+THE DEFECT (verified against runtime load banner): arch=qwen4exp n_layer=48 n_expert=512 n_expert_used=10
+— LIVE MODEL HAS 512 EXPERTS/LAYER, NOT 6. The 6 = count of expert TENSOR NAMES per layer (the same 6
+producing 48x6=288 override count read off every leg). Expert-tensor count conflated with expert count.
+Consequence: slab byte cost overstated ~by the skew factor (top-42/layer slab = 42/512 = 8.2% ~ 3.6 GB,
+NOT ~43% ~ 18.9 GB). Doc CONTAINED the correct figure ("chance line 42/512 = 8.2%") and did not use it.
+L1 regime-transfer caveat VOIDS in the FAVOURABLE direction: phase-0 AND live model both 512-expert
+regimes — no cross-model transfer needed.
+ARCHITECT OWN 1.15x HAD THE SAME ERROR: set f = h = 0.42 (NO-SKEW assumption — the assumption the ranking
+thesis exists to contradict). Convergence = shared defect, not independence — "worthless as corroboration".
+§37's "5.7x refuted" PREMATURE.
+CORRECTED FORM: Ratio = (h/f) x 1.024 — everything cancels except skew ratio h/f (to 2.4%). Branches
+become ONE measured quantity: build(>=3x) <=> h/f >= 2.93; retire(<1.5x) <=> h/f < 1.46. Banked h@38~0.39
+at f=38/512=0.0742 => h/f = 5.26 => Ratio ~5.4x = BUILD territory, RE-VINDICATES original 5.7x. Slab
+~3.2 GB fits 5060 Ti (vs 18 GB — far better proposition). ARCHITECT NOT RULING BUILD: "produced a fitting
+story in each direction inside one session; the second deserves MORE suspicion than the first."
+ORDERED (collector): (1) re-derive with f,h separate; n_expert=512 FROM RUNTIME BANNER (not doc/memory);
+result as 1.024 x (h/f); byte tables no longer load-bearing. (2) operating point EXPLICIT — h@38=0.39 AND
+h@54 (saturation) as the two candidate points. (3) re-register branches BEFORE the number, same
+thresholds as h/f. (4) KEEP the unweighted insight (fully resident layer serves 100% of slots regardless
+of h_l — collector's best observation, survives correction; why corrected form has no h_l weighting).
+(5) RESOLVE the Sum-h exact-equality anomaly (exact cross-corpus equality = bug signature — explain, not
+outlive). NOTHING TO OWNER until this lands — "a retire recommendation on a defective derivation would
+have ended the owner's stated goal on an arithmetic error — the single most expensive mistake available
+in this campaign, two steps from happening." COLLECTOR CREDITED: reported the crossing assumption,
+flagged L1 binding, published the 42/512 line that exposed the defect — the method was honest enough to
+catch its own error. Bank = §38.
+=== END §38 ===
