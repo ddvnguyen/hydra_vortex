@@ -2097,3 +2097,16 @@ Build EXIT=0 zero nvcc warnings (.so relinked). APPROVED: fork commit `feat(hydr
 parent docs commit (draft + PROJECT_STATUS) + restamp clean. Package routes to architect for
 amended-protocol clearance after stamp. No legs. Bank = §34b.
 === END §34b ===
+
+=== §34c: E1 PART-3 LANDED — PACKAGE ROUTED FOR LEG CLEARANCE ===
+Fork commit `4c2b9cb67` (part 3, +166/-16, no trailers); parent `1dc3e43ac` (draft + PROJECT_STATUS,
++89/-21). FINAL STAMP sha=4c2b9cb67 tree=clean objects=1789791310 @ 2026-09-19T04:15:10Z (dirty
+verification build disclosed + superseded; stamp-after-commit holds). Package for architect clearance:
+81f92d5bc + 739084e4a + 4c2b9cb67 + stamp + amended draft + layer-31 freeze.
+LEADER RULING — TWO DEFERRALS into the E1 PR (not per-part commits): submodule pointer bump + untracked
+scripts/hydra-kl-gate.sh; architect flag-invited.
+CLEARANCE REQUESTED: GO/NO-GO for leg session on amended order (dry-run -> KL pos3 -> type-(ii) graphs
+pass/fail -> A6 graphs-OFF both -> disarmed stock timing -> type-(i) attribution -> differential verdict
+vs bands) on certified base be4676f11 + stamp 4c2b9cb67; quiescence + covariates live per leg. No legs
+until architect clears. Rig FREE. Bank = §34c.
+=== END §34c ===
