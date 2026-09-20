@@ -4167,3 +4167,18 @@ VALIDITY CHECK (CUDA0, M-P0 = MTP on dose 0, flags OFF both sides, n=5 INTERLEAV
 - CONSEQUENCES (per §101 pre-registration): ladder PROCEEDS on 763 lineage — flag attribution WITHIN lineage VALID; ALL absolute comparisons vs our production base VOID — every result line carries B3 declaration. Terminal read (3060, 17-23 or figure-in-question) UNCHANGED. C trigger dead (requires B1).
 - v763 acc also reached .94/.97 (2/5 reps) — higher-acc tail exists on 763; per Q1 this is numeric nondeterminism + era draft-path difference, not deterministic.
 NEXT: ladder L0/L1/L2/L3 (+L4 opt) CUDA0 n=5 interleaved, MTP on, PROFILER ON (t_draft readout) -> best rung on 3060 @ P_max=4 -> terminal read.
+
+## BANK §101-TERMINAL — 2026-09-20 (ladder + 3060 terminal read COMPLETE — §96 pre-registered read #3 FIRED)
+CUDA0 LADDER (763+profiler, MTP on, dose 0, ctx 16384, n=5/leg INTERLEAVED, mechanisms CONFIRMED ENGAGED via logs "overlap: MTP draft enabled"/"prefetch: lazy row prefetch enabled"):
+- L0 (flags off): fit 17.15*acc+8.37, raw median 17.5140
+- L1 (+decode-overlap): 17.39*acc+8.19 -> acc-matched -0.3..+0.2% vs L0 = NIL
+- L2 (+boundary-overlap): 17.09*acc+8.38 -> -0.2% = NIL
+- L3 (+ple-prefetch): 16.51*acc+8.92 -> +1.1..-0.1% = NIL
+- PROF t_draft readout: draft_ms 262 of 10,283 ms decode wall = 2.5% -> nothing to win; overlap engages and delivers ~0.
+3060 TERMINAL READ (owner config: ctx 81920, MTP on, P_max@81920 RE-DERIVED = 2 (dose 3 OOMs, dose 2 boots; dose 4 OOMs), dose 2, n=5/leg INTERLEAVED, B3 declared):
+- TL3 (all flags): fit 10.73*acc+6.17 | raw median 15.8653 | best 16.4567@.963
+- TL0 (flags off): fit 10.99*acc+5.84 | raw median 13.9826 | best 16.4829@.970
+- Acc-matched TL3 vs TL0: +0.44..+1.35% = sub-materiality (±1.5%) => flags NIL on 3060 too.
+- **0/10 legs >= 17.0 tok/s; max 16.48 @ acc .970.**
+VERDICT (pre-registered §96 read #3 + §101 terminal read): the decode-overlap + ple-prefetch flags are NOT the explanation for the owner's remembered 17-23 tok/s; the figure itself is IN QUESTION (acceptance-lottery high: acc .96-.97 runs reach 16.5, an acc~1.0 print could read ~17; old binary destroyed so exact conditions unverifiable). Best measured on the mechanism-bearing lineage with mechanisms engaged: 16.46 tok/s (3060, ctx 81920, dose 2, MTP on). Our production stack (22.2541 @81920 CUDA0) REMAINS the best config; 3060 decode ceiling under today's discipline ~16.5 at top-of-lottery acceptance.
+CONSEQUENCE: STOP CHASING the 17-23 number (per §96: report PLAINLY). C trigger permanently dead (no B1, no flag-attributable gain). Port work concludes: feat/profiler-on-763 = measurement vehicle, archived; production stack unchanged (build-g3 fp 895c522343eeaa53). Remaining open per §99 ranking: P2 sm_86 per-prefill fixed-cost kernel hunt (Q5, justified, unscoped) — OWNER DECISION whether to pursue.
