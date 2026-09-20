@@ -26,7 +26,7 @@ fingerprint-verified; dose asserts (0 vs 9 GPU expert layers) pass per leg.
 
 ## 2. The Measured Curves (two cards, two curves — never one)
 
-**RTX 3060 (CUDA1, sm_86, PCIe gen1 x4 ≈ 985 MB/s), ctx 16384, MTP off, n=3–6:**
+**RTX 3060 (CUDA1, sm_86; PCIe link state under load UNKNOWN — see §91/§92 correction), ctx 16384, MTP off, n=3–6:**
 0L → 13.1536, 4L → 14.0290, 7L → 14.5988 tok/s. **Slope 0.2065 tok/s/layer.**
 7/48 layers is the physical cap (8th OOMs; KV/ctx levers free <1 layer).
 
@@ -42,12 +42,18 @@ slope-shape comparison.
 
 ## 3. Closed Questions (each: verdict + evidence)
 
-- **Prefill collapse was CONFIG, not code (§76 closed, archaeology withdrawn).**
+- **[§91 CORRECTION — MECHANISM VOIDED] Prefill collapse is UNEXPLAINED again.**
   Same binary, one card each: CUDA0-solo prefill 122 tok/s vs 3060-solo 4.7 (26×).
-  Mechanism measured: CPU-expert configs stream 2.3–4 GB/s sustained host↔device
-  (decode-scoped dmon) — 2.3–4× OVER the 3060's gen1 x4 ceiling, ~5% of the 5060
-  Ti's gen5 x16. The multi-day commit bisect hunted a code difference that never
-  existed. Bisect NOT reopened.
+  The earlier closure attributed this to the 3060's gen1-x4 link ceiling (985 MB/s
+  vs 2.3–4 GB/s measured demand, decode-scoped dmon). The owner corrected the
+  premise: **the 3060 is PCIe gen4 x4 (~7.88 GB/s); gen1 readings were idle
+  downtrain states** — every gen sample sat in a low-traffic window, so the link
+  state under sustained decode was never observed. The measured 2.3–4 GB/s is
+  only ~30–50% of a gen4-x4 link. §76 REOPENS as UNEXPLAINED (config/host
+  question; the commit bisect stays closed — it hunted code, the delta is not
+  code). The in-source decode profiler (§92, `docs/design-decode-profiler.md`)
+  measures the link state under load and the per-step time split; that report
+  replaces this section.
 - **Decode bimodality = draft-acceptance nondeterminism.** ±16% spread with MTP
   on vs ±1.5% with MTP off, reproduced on three binaries (including the "pristine"
   86af0c9af). Decode tok/s tracks acceptance run-by-run (16.92@acc0.48 → 24.78@0.92).

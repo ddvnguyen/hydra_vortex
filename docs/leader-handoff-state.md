@@ -4069,3 +4069,31 @@ what happens", above tok/s.
 ARCHITECT PREDICTION ON RECORD (falsifiable): 3060 MTP + 4-5 placed layers lands ~20-21 tok/s
 (inside owner's remembered 17-23) — self-declared poor record, treat as target not guide.
 === END §91 ===
+
+=== §92: DESIGN APPROVED — IMPLEMENT; 4 CHANGES; ARCHITECT PREDICTION WITHDRAWN ===
+ARCHITECT APPROVED the decode-profiler design (docs/design-decode-profiler.md). "Note is good work."
+dlopen-NVML + graceful degrade, no hot-path sync, out-of-band readback every 64 steps, ON-delta >2%
+⇒ VOID, stderr not LLAMA_LOG_DEBUG, gate leg vs pre-profiler binary, gen5/x16 self-check — all
+confirmed right shape; permanently fixes the sampling-window failure.
+(ii) INFERRED residual + NVML bytes ACCEPTED as scoped — do not widen diff; escalate to memcpy
+bracketing only if residual comes back large AND ambiguous. (iii) fallback accepted as declared.
+ARCHITECT PREDICTION WITHDRAWN (rested on the voided link ceiling; no mechanism). Leader's 13.6-15.0
+is THE prediction: 13.15 × ~1.05 + 4-5 × 0.2065 ≈ 14.8. Shoot at ours.
+CHANGE 1 — ADD MTP-OFF ANCHOR: C-P0 on 3060, MTP off, 0 layers, same binary/ctx, interleaved n=3.
+Decomposition on ONE binary: M-P0 − C-P0 = MTP's contribution; M-P_max − M-P0 = placement's
+contribution under MTP.
+CHANGE 2 — REPRODUCTION LEG FIRST-CLASS: M-P0 @ ctx 81920 n=5 (owner's remembered config = MTP +
+81920 + all-CPU experts = exactly M-P0@81920, minus absent overlap/ple). Ladder stays ctx 16384
+(81920 costs 1.75 layers + head 2.3 ⇒ no dose left). Two separate sets; NEVER plot across ctx.
+CHANGE 3 — PRE-REGISTERED ATTRIBUTION: M-P0@81920 ≈ 17-23 ⇒ reproduced without overlap, old result
+needed neither, placement pure upside. ≈ 14 ⇒ NOT reproducible without decode-overlap + ple-prefetch;
+missing ~6-8 tok/s IS those mechanisms and THE PORT BECOMES CRITICAL PATH for the owner's goal.
+Anything else ⇒ report, do not force.
+CHANGE 4 — REPORT ORDER FIXED: NVML gen/width DURING sustained decode = FIRST LINE (settles the
+publicly-wrong, never-taken reading), then per-step time split, THEN tok/s.
+LIFECYCLE BINDING: branch feat/decode-profiler off 86af0c9af; PR CI-gated; no merge without owner
+confirmation; loaded-window build only; provenance + contamination + rule-5 archive pre-leg; gate
+leg FIRST (pre-profiler vs flag-OFF ±1.5% — FAIL ⇒ STOP, profiler perturbing, nothing counts).
+Voided link-limiter rows STRUCK from findings doc + PROJECT_STATUS openly as part of this arm (done
+this turn). IMPLEMENT; report gate-leg result before any measurement leg.
+=== END §92 ===
