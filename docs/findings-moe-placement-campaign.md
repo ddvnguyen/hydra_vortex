@@ -192,3 +192,26 @@ repetitive harness prompt reused 715–757 of 767 tokens (prompt_n 52 and 10); u
 
 §97/§98/§99/§99a/§100 rulings (Q-rank revisions, flag-mapping table, bundle decision,
 port set + ladder) are banked in docs/leader-handoff-state.md §§97–100.
+
+## 9. §101 FINDING — the overlap mechanism was never two flags on our stack
+
+Owner's standing question ("why did our implement not deliver") is largely answered by source
+archaeology: `--decode-overlap`'s queue-draft mechanism (77b80e2e7) depends on retained-draft-state
+machinery — `retained[]` per-seq state, `retain_draft_state` / `finish_accept(vector)` interface in
+common/speculative.cpp — that OUR lineage deleted before diverging (merge-base 82d6bb284). The gap
+to the mechanism-bearing lineage (feat/763-reconcile-qwen4exp-mtp) is **318 commits / 484 files /
++27,579 −52,439 lines**. The first cherry-pick attempt failed semantically, not textually: the
+incoming `retain_draft_state` override targets a virtual our base removed and references three impl
+members (`retained`, `queued_draft`, `n_overlap_discarded`) that do not exist in our base
+(common/speculative.cpp:1330+ draft-MTP impl). Consequence: the old 17–23 binary carried the whole
+moe-cache era, so the flag pair alone was never the deliverable.
+
+Resolution per §101: option B — the PROFILER (our 4 commits, 11 files, +403 lines) is ported onto
+feat/763-reconcile (branch feat/profiler-on-763, tip 081f5da5d) and the flag ladder runs THERE as a
+MEASUREMENT VEHICLE (never a production figure). Conflicts resolved: ggml-cuda.h (both sides kept),
+ggml-cuda.cu (duplicate destructor dropped; prof event cleanup spliced into 763 destructor),
+llama-context.cpp (both kept; span wraps the 763 certificate-gated dispatch block — 4 compute call
+sites — and prof_finish() prepended to the 763 destructor), server-context.cpp (763 overlap loop +
+prof_verify bracket both kept). End-verification per §100(b): all 3 flags in common/arg.cpp,
+queue/discard_draft_overlap present, staged_input machinery present (ba47f35ef dependency
+satisfied), ple_prefetch live, Linux gates present.
