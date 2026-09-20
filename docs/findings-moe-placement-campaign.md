@@ -107,3 +107,65 @@ placement benefit is still rising at 23% of the dose range on the best card.
 6. **A number from a comment is not a measurement** — and a vacuous assert (empty
    override map, grep exit codes) is worse than no assert; verify instruments read
    what they claim to read.
+
+## 7. §92–§94 Profiler Arm (feat/decode-profiler, PR #156)
+
+**Instrument:** `--profile-decode` (default OFF), in-source, single hot-path branch.
+NVML via dlopen; CUDA event bracket — caller-managed span per decode step
+(span-begin before sched compute, span-end after; per-call records suppressed
+while open) after two instrument bugs were caught by calibration: (a) event
+readout must cudaEventSynchronize (decode returns before GPU drain; the query
+guard always failed → −1 sentinel), (b) per-graph_compute records only measured
+the last split segment (t_dev≈0 even for GPU-bound prefill). Prefill step gets
+its own `PROF prefill` line (threshold n>256 so the 42-token warmup cannot steal
+the tag). Gate PASS: profiler-off vs build-g3 median +0.31% (±1.5% band); CUDA0
+calibration leg reads t_dev≈t_wall clean.
+
+**§93 CPU-fallback hypothesis: REFUTED.** 512-token prefill: 3060 t_wall 72,681.6 ms
+/ **t_dev 72,674.8 ms (~100% device)**; CUDA0 2,860.7 / 2,854.1 (~100%). The 26×
+prefill gap is genuine device-side slowness on sm_86, shape-dependent (prefill
+25×, decode 1.45×). Fatbin verified: 143× sm_86 + 143× sm_120 SASS, no PTX.
+Standard gates exonerated (AMPERE_MMA_AVAILABLE + CP_ASYNC_AVAILABLE both defined
+≥ Ampere; BLACKWELL path is NVFP4-only). Pinning the exact slow kernel needs
+per-kernel profiling → follow-on (§94 open item).
+
+**§91 correction holds under load:** 3060 PCIe during decode legs rx ≈ 197–207
+MB/s, tx ≈ 23–25 (demand-driven, ~2.5% of gen4-x4 capacity — link NOT the
+bottleneck); CUDA0 rx ≈ 1,691 MB/s. No gen1 story anywhere in the data.
+
+**3060 results (CVD=1, fp ff0bda54d59eb659 / libllama d3448cb406018ff9):**
+
+| Leg | ctx | dose | MTP | prof | tok/s (acc) |
+|-----|-----|------|-----|------|-------------|
+| C-P0 ×3 | 16384 | 0 | off | on | 12.8828 / 13.0949 / 12.9823 → **median 12.9823** |
+| C-P0off | 16384 | 0 | off | off | 12.9380 (overhead nil) |
+| M-P0 ×5 | 16384 | 0 | on | on | 11.25(.510) 14.40(.797) 10.30(.423) 13.92(.744) 13.48(.738) → **median 13.4832** |
+| MP0off | 16384 | 0 | on | off | 15.2541 (.863) |
+| M-P4 ×5 (P_max) | 16384 | 44 | on | on | 16.78(.921) 14.23(.718) 11.52(.475) 15.20(.786) 11.38(.452) → **median 14.2290** |
+| MP4off | 16384 | 44 | on | off | 11.5183 (.452) |
+| REPRO M-P0 ×5 | 81920 | 0 | on | on | 15.02(.863) 13.63(.728) 11.19(.500) 12.24(.593) 12.34(.616) → **median 12.3441** |
+| REPROoff | 81920 | 0 | on | off | 10.1459 (.390) |
+| C0CAL (CUDA0) | 16384 | 0 | off | on | 18.8729 / 18.9195, prefill ~121 |
+
+H probe: MP0 boot leaves 6,229 MiB → MTP head 2,350 + ~916 MiB/layer →
+**P_max = 4** (ncmoe 44; MP4 dose assert: 264 CUDA_Host overrides = 44×6).
+
+**Reads (pre-registered attribution):**
+1. **MTP at P0 helps when acceptance is high** (13.92–15.25 vs C-P0 12.98,
+   +7…+17.5%) and **hurts when low** (10.30–11.52, −13…−21%). Acceptance is
+   graded today (0.39–0.92), not strictly bimodal. M-P0off 15.25@.863.
+2. **Placement under MTP (P_max=4 vs P0), median: 14.2290 vs 13.4832 = +5.5%.**
+   At matched high acceptance: 16.78(.921) vs 15.25(.863) ≈ +10%. Positive,
+   consistent with MTP-off 0.2065 GB/layer slope direction; underpowered at n=5.
+3. **REPRO M-P0@81920: median 12.34, best 15.02 — owner's 17–23 NOT reproduced.**
+   Per pre-registration (≈14 ⇒ missing ~6–8 tok/s IS decode-overlap +
+   ple-prefetch) → **porting decode-overlap + ple-prefetch to the fork is the
+   critical path** for the 3060 production number.
+4. **§76 closes as: sm_86 shape-dependent device-side kernel slowness**
+   (config/OS/link/CPU-fallback all exonerated; mechanism pinned one level deep,
+   exact kernel pending per-kernel profiling).
+
+**Process lessons minted:** never patch a running leg script (bash incremental
+read); dose verify counts CUDA_Host expert layers = 48 − dose (CVD masking
+removes CUDA1); cancel mid-leg leaves leg-script children (kill orphans before
+relaunch); wait for load transients to decay before relaunching gated legs.
