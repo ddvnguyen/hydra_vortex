@@ -19,9 +19,17 @@ the fork's live endpoints:
 
 | Endpoint | Field(s) | Description |
 |---|---|---|
-| `GET /profile` | `profile.wall_s`, `profile.forwards`, `profile.n_prompt_tokens` | Wall-clock timing + forward pass counts |
+| `GET /profile` | `profile.wall_s`, `profile.forwards`, `profile.prompt_tokens`, `profile.completion_tokens`, `profile.slot`, `profile.ts` + 5 phase fields | Wall-clock timing + token counts + slot + honest-zero phase timings |
 | `GET /turns` | `turn_seq` | Monotonic turn sequence number (resets on session restart) |
 | `GET /experts?turn=N` | `experts_snapshot` | EMAP grid snapshot for turn N (null when telemetry off) |
+
+The `profile` object mirrors the fork's `/profile` ProfileTurn object
+verbatim (`src/llama-cpp/tools/server/server-atlas.cpp`, `profile_json`):
+`wall_s`, `forwards`, `prompt_tokens`, `completion_tokens`, `slot`,
+`ts`, plus phase fields `expert_disk_s`, `expert_wait_s`,
+`expert_matmul_s`, `attention_s`, `lm_head_s` (live fork emits honest
+`0.0` until phase capture lands). The fork does not emit
+`cache_hit_rate` — it is not part of this schema.
 
 Schema version is bumped to **1** for turn records (distinct from
 `run-record.schema.json` v1 and `experts.schema.json` v2).
@@ -33,22 +41,25 @@ turn-record.schema.json
 ├── schema_version: 1 (const)
 ├── turn_seq: integer ≥ 0
 ├── turn_id: ISO 8601 timestamp
-├── profile
+├── profile (mirrors fork /profile ProfileTurn verbatim)
 │   ├── wall_s: number ≥ 0
 │   ├── forwards: integer ≥ 0
-│   ├── n_prompt_tokens: integer ≥ 0
-│   ├── n_gen_tokens: integer ≥ 0 (optional)
-│   └── cache_hit_rate: 0..1 (optional)
+│   ├── prompt_tokens: integer ≥ 0
+│   ├── completion_tokens: integer ≥ 0
+│   ├── slot: integer ≥ 0
+│   ├── ts: integer ≥ 0 (unix epoch)
+│   ├── expert_disk_s, expert_wait_s, expert_matmul_s: number ≥ 0 (honest 0.0)
+│   └── attention_s, lm_head_s: number ≥ 0 (honest 0.0)
 ├── experts_snapshot: object | null
 │   ├── rows, cols: integer
 │   ├── map: string[] (hex EMAP rows)
 │   ├── hits_seq, hits_bitmap
 │   └── tier_summary: {vram, ram, disk}
-└── provenance
+├── provenance
     ├── engine_id, model_hash, llama_cpp_commit
     ├── atlas_stage, session_id, host
     ├── recorded_at: ISO 8601
-    └── telemetry_enabled: boolean
+    └── telemetry_enabled: boolean (REQUIRED — telemetry-off records carry false explicitly)
 ```
 
 ### Honest-state discipline
@@ -60,83 +71,9 @@ the `expert-metrics` repo.
 
 ## Predictor definitions (from #786 STEP1 proposal)
 
-Three predictor tiers are defined for the Edge0 prerouter predictability
-family. These predict **which experts will be selected in the next turn's
-decode** given the current turn's routing history.
+Verbatim from #786 STEP1 §4 — do not paraphrase. Predictor change = new schema_version.
 
-### 1. Linear-probe (primary, #786 STEP1)
-
-A lightweight logistic-regression probe that predicts per-(layer, expert)
-selection probability from the current turn's routing features.
-
-**Input features:**
-- Per-(layer, expert): selection count from the current turn's EMAP
-- Per-layer: total forward count, cache hit rate, n_prompt_tokens
-- Global: turn_seq (positional encoding)
-
-**Output:** Per-(layer, expert) probability of being in the next turn's
-top-k set.
-
-**Training:** Online logistic regression (sklearn LogisticRegression or
-equivalent), fit on a sliding window of the last N turns (default N=16).
-Warm-start each turn; evaluate top-k hit-rate on the next turn's EMAP.
-
-**Hit-rate metric:** `predictability = fraction of next-turn top-k
-experts that were predicted in the top-k by the linear probe.`
-
-**Complexity:** O(n_layers × n_experts × window) per turn update.
-Negligible — runs in the telemetry collector, not the engine.
-
-### 2. LTR baseline (Learning-to-Rank, #786 STEP1)
-
-A gradient-boosted decision tree (LightGBM RankNet-style) that ranks
-experts by predicted selection probability.
-
-**Input features:** Same as linear-probe.
-
-**Output:** Per-layer ranked expert list (replaces the probability
-vector with a rank order).
-
-**Training:** Offline batch training on accumulated turn records.
-Evaluate using NDCG@k and hit-rate@k against held-out turns.
-
-**Why a baseline:** Linear-probe is online and fast; LTR captures
-non-linear feature interactions that logistic regression misses. The
-comparison validates whether the simpler model is sufficient.
-
-**Complexity:** O(n_trees × n_experts × n_layers) per inference.
-One inference per turn (batch); cost is dominated by tree traversal.
-
-### 3. LRU-k follow-up (#786 STEP1)
-
-A per-layer LRU cache of the last k distinct expert selections, used as
-a "recently active" predictor.
-
-**Input:** Per-layer ordered list of recently selected experts.
-
-**Output:** The k most recent experts per layer as the predicted next
-turn's top-k set.
-
-**Hit-rate metric:** Same as linear-probe — fraction of next-turn
-top-k experts present in the LRU-k set.
-
-**Why follow-up:** LRU-k has zero training cost and captures the
-strong temporal locality of MoE routing (recent experts are likely to
-fire again). It serves as a non-parametric lower bound — if a trained
-model cannot beat LRU-k, the training overhead is not justified.
-
-**Complexity:** O(k) per layer per turn. Essentially free.
-
-### Predictor comparison protocol
-
-| Metric | Definition | Target |
-|---|---|---|
-| `predictability` | top-k hit-rate of the predictor on the next turn's EMAP | > 0.5 (better than random) |
-| `prefetch_gain` | estimated fraction of expert-weight bytes avoidable per layer under the predictor's hits | Measured, not targeted |
-| Coverage | fraction of turns where the predictor ran | 1.0 (no gaps) |
-
-The predictor with the highest `predictability` becomes the primary
-Edge0 metric. The others are recorded for ablation studies.
+`predictability[layer]` = top-k hit-rate @k of a per-layer linear probe mapping the router-input hidden state to the top-k expert set, measured on HELD-OUT tokens of the probe corpus (train/eval split documented in provenance, e.g. leave-one-prompt-out per category). `prefetch_gain[layer]` = (sum over hit tokens of hit experts' weight bytes) / (sum over all routed experts' weight bytes) under that probe's hits. Comparison baseline column: `predictability_ltr[layer]` = last-token-routing-repeat hit-rate @k computed capture-free from the Stage-A topk stream (fraction of tokens whose topk set is subset of previous token's topk set, per layer). Follow-up column: per-layer LRU-k (k=4).
 
 ## Usage
 

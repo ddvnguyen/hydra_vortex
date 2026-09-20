@@ -5,9 +5,15 @@
   "profile": {
     "wall_s": 1.234,
     "forwards": 42,
-    "n_prompt_tokens": 1024,
-    "n_gen_tokens": 42,
-    "cache_hit_rate": 0.0
+    "prompt_tokens": 1024,
+    "completion_tokens": 42,
+    "slot": 0,
+    "ts": 1789905600,
+    "expert_disk_s": 0.0,
+    "expert_wait_s": 0.0,
+    "expert_matmul_s": 0.0,
+    "attention_s": 0.0,
+    "lm_head_s": 0.0
   },
   "experts_snapshot": {
     "rows": 48,
@@ -26,7 +32,7 @@
   "provenance": {
     "engine_id": "qwen35b-a3b",
     "model_hash": "Qwopus3.6-35B-A3B-Q3_K-mini.gguf",
-    "llama_cpp_commit": "c0a073e47deadbeef",
+    "llama_cpp_commit": "c0a073e47905d8480902944fe933493d7d878c71",
     "atlas_stage": "B",
     "session_id": "sess-20260920-120000",
     "host": "rtx5060ti",

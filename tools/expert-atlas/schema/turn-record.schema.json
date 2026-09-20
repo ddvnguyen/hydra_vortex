@@ -22,7 +22,8 @@
     },
     "profile": {
       "type": "object",
-      "required": ["wall_s", "forwards", "n_prompt_tokens"],
+      "description": "Per-turn timing + token counts, mirroring the fork's /profile ProfileTurn object verbatim (server-atlas.cpp profile_json). Phase timings are honest 0.0 until phase capture lands in the fork.",
+      "required": ["wall_s", "forwards", "prompt_tokens", "completion_tokens", "slot", "ts", "expert_disk_s", "expert_wait_s", "expert_matmul_s", "attention_s", "lm_head_s"],
       "properties": {
         "wall_s": {
           "type": "number",
@@ -34,21 +35,50 @@
           "minimum": 0,
           "description": "Number of forward passes (decode steps) in this turn, from /profile."
         },
-        "n_prompt_tokens": {
+        "prompt_tokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Number of prompt tokens processed in this turn."
+          "description": "Number of prompt tokens processed in this turn, from /profile."
         },
-        "n_gen_tokens": {
+        "completion_tokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Number of tokens generated (decode output) in this turn."
+          "description": "Number of tokens generated (decode output) in this turn, from /profile."
         },
-        "cache_hit_rate": {
+        "slot": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Slot id that served this turn, from /profile."
+        },
+        "ts": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unix epoch seconds when the turn was recorded, from /profile."
+        },
+        "expert_disk_s": {
           "type": "number",
           "minimum": 0,
-          "maximum": 1,
-          "description": "Prompt-cache hit rate for this turn (fraction of cached tokens / total prompt tokens)."
+          "description": "Phase timing: expert weights disk-load seconds. Live fork emits honest 0.0 until phase capture lands."
+        },
+        "expert_wait_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: expert prefetch wait seconds. Live fork emits honest 0.0 until phase capture lands."
+        },
+        "expert_matmul_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: expert matmul seconds. Live fork emits honest 0.0 until phase capture lands."
+        },
+        "attention_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: attention seconds. Live fork emits honest 0.0 until phase capture lands."
+        },
+        "lm_head_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: lm-head seconds. Live fork emits honest 0.0 until phase capture lands."
         }
       },
       "additionalProperties": false
@@ -103,7 +133,6 @@
   "$defs": {
     "provenance": {
       "type": "object",
-      "required": ["engine_id", "model_hash", "llama_cpp_commit"],
       "properties": {
         "engine_id": {
           "type": "string",
@@ -137,9 +166,11 @@
         },
         "telemetry_enabled": {
           "type": "boolean",
-          "description": "Whether engine telemetry (HYDRA_EXPERT_STATS) was active for this turn."
+          "enum": [true, false],
+          "description": "Whether engine telemetry (HYDRA_EXPERT_STATS) was active for this turn. REQUIRED on every record — the telemetry-off example carries telemetry_enabled:false explicitly."
         }
-      }
+      },
+      "required": ["engine_id", "model_hash", "llama_cpp_commit", "telemetry_enabled"]
     }
   }
 }

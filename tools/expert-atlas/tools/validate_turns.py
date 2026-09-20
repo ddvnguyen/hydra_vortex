@@ -17,6 +17,18 @@ from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema" / "turn-record.schema.json"
 
+# Live fork contract (src/llama-cpp/tools/server/server-atlas.cpp, profile_json).
+# The profile object MUST mirror the fork's /profile ProfileTurn keys exactly.
+LIVE_PROFILE_REQUIRED = [
+    "wall_s", "forwards", "prompt_tokens", "completion_tokens",
+    "slot", "ts",
+    "expert_disk_s", "expert_wait_s", "expert_matmul_s",
+    "attention_s", "lm_head_s",
+]
+# Keys from the rejected schema revision — the fork never emitted these.
+# Reject explicitly so a schema drift of this class fails loudly.
+LIVE_PROFILE_FORBIDDEN = ["cache_hit_rate", "n_prompt_tokens", "n_gen_tokens"]
+
 
 def load_schema() -> dict:
     with open(SCHEMA_PATH) as fh:
@@ -151,10 +163,47 @@ def validate_turn_record(record: dict, schema: dict | None = None) -> list[str]:
             subval = prov[field]
             if "type" in subdef:
                 errors.extend(_validate_type(subval, subdef["type"], subpath))
+            if "enum" in subdef and subval not in subdef["enum"]:
+                errors.append(f"{subpath}: value {subval!r} not in enum {subdef['enum']}")
             if "pattern" in subdef and isinstance(subval, str):
                 import re
                 if not re.match(subdef["pattern"], subval):
                     errors.append(f"{subpath}: value {subval!r} does not match pattern {subdef['pattern']!r}")
+
+    # Live-contract enforcement (explicit, beyond the generic schema walk):
+    # 1. telemetry_enabled is REQUIRED and must be an explicit bool.
+    #    The telemetry-off example carries telemetry_enabled:false — a
+    #    record without this key FAILS validation.
+    if "provenance" not in record or not isinstance(record.get("provenance"), dict):
+        errors.append("$.provenance: missing required object 'provenance'")
+    else:
+        prov = record["provenance"]
+        if "telemetry_enabled" not in prov:
+            errors.append("$.provenance: missing required field 'telemetry_enabled' "
+                          "(enum true/false — telemetry-off records must carry false explicitly)")
+        elif not isinstance(prov["telemetry_enabled"], bool):
+            errors.append("$.provenance.telemetry_enabled: expected boolean true/false, "
+                          f"got {type(prov['telemetry_enabled']).__name__}")
+    # 2. profile MUST carry every live-contract key, including the five
+    #    honest-zero phase fields.
+    if "profile" not in record or not isinstance(record.get("profile"), dict):
+        errors.append("$.profile: missing required object 'profile'")
+    else:
+        prof = record["profile"]
+        for key in LIVE_PROFILE_REQUIRED:
+            if key not in prof:
+                errors.append(f"$.profile: missing live-contract field '{key}' "
+                              "(must mirror fork /profile ProfileTurn)")
+        for key in LIVE_PROFILE_FORBIDDEN:
+            if key in prof:
+                errors.append(f"$.profile: forbidden field '{key}' "
+                              "(fork never emitted this — use prompt_tokens/completion_tokens, drop cache_hit_rate)")
+    # 3. Honest-state: telemetry off MUST have a null experts_snapshot
+    #    (never zeros pretending to be data).
+    if (isinstance(record.get("provenance"), dict)
+            and record["provenance"].get("telemetry_enabled") is False
+            and record.get("experts_snapshot") is not None):
+        errors.append("$.experts_snapshot: must be null when telemetry_enabled is false")
 
     return errors
 
