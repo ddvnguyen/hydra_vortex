@@ -361,8 +361,8 @@ Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.
 | Production decode (CUDA0, 81920, dose 9, MTP off) | 22.2541 tok/s (build-g3 fp 895c522343eeaa53) |
 | 3060 chased config (dose 0, ctx 81920, MTP on)    | 14.97 tok/s @ acc .869; ceiling ~16.1-16.5 — recorded 19.85-22.30 DOES NOT reproduce (§107) |
 | Drafting share of decode wall                     | 2.5% (262/10,283 ms) — overlap class Amdahl-capped, permanently |
-| Expert-weight load path (all offload configs)     | two-stage fallback → PAGEABLE CPU_Mapped (mmap cannot pin); GPU-computed via 136 MiB bounce buffer; --load-mode none pins (44.2 GiB) and DOES NOT help (D2) |
-| sm_86 prefill marginal                            | ~4.9× CUDA0 per token (27.7 vs 5.6 ms/tok); fixed ~58 s cost is PER-PREFILL (163,290.2 vs 163,112.0 ms, same process, cache_prompt:false) |
+| Expert compute location (all offload configs)     | CPU backend computes expert GEMMs against host-RAM weights (PCIe 6.2-7.9 MB/token = activations only; ~0.88 GB/token would be needed for GPU compute). sched_reserve buffer-absence is NOT evidence of CPU-op absence (X-P0 counterexample). load-mode-none nil = pinning is invisible to CPU reads. Contention signature: t_cpu 1.25 cores vs era 4.39 |
+| sm_86 prefill marginal                            | PROVISIONAL — TWO-POINT FIT, FAILS OUT-OF-SAMPLE AT 767 tok BY 2.07×. Raw points: 259 tok→64,831.4 ms / 512→71,817.1 / 767→163,290.2 (two-prefill). Fit-predicted 767 ≈ 78,900 ms vs measured 163,290. Fixed ~58 s cost is PER-PREFILL and DOES NOT AMORTISE — that conclusion is UNAFFECTED (163,290.2 vs 163,112.0 ms, same process, cache_prompt:false) |
 | Profiler t_dev semantics                          | submit-to-complete WALL time, NOT GPU-busy (util 38% vs t_dev 99.9% worked example) |
 | Quiescence gate limitation                        | load1≤4 cannot see memory-controller contention; record resident inference procs (pid/port/threads/ngl) for host-resident-weight configs |
 | cache_n after restore        | 2964 / 2968  |

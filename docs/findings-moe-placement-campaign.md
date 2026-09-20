@@ -172,6 +172,9 @@ relaunch); wait for load transients to decay before relaunching gated legs.
 
 ## 8. §100 AMENDMENT — the 26× is a PER-PREFILL FIXED COST; marginal is 4.9×
 
+### §108 QUALIFICATION (2026-09-20, architect-ordered) — the 4.9× marginal is PROVISIONAL
+The marginal rate (27.7 ms/tok, "4.9× CUDA0") derives from a TWO-POINT fit (259 tok → 64,831.4 ms; 512 tok → 71,817.1 ms) and **FAILS OUT-OF-SAMPLE at 767 tokens by 2.07×**: fit predicts ≈78,900 ms; measured (two-prefill, same binary family, dose 0) = 163,290.2 ms. The three raw points sit at 4.0 / 7.1 / 4.70 tok/s — the 767-tok point lands exactly on the ORIGINAL prefill-collapse figure (4.7), making the Q3 fit the outlier, not the anchor. UNAFFECTED by this qualification: (a) a large per-prefill fixed cost exists (~58 s class), (b) it does NOT amortise across a served session (163,290.2 vs 163,112.0 ms, same process, cache_prompt:false), (c) Q5 per-kernel hunt is justified. IN QUESTION: only the MAGNITUDE of the marginal per-token rate — do not cite 4.9× or 26× as verified.
+
 §100(d) two-prefill leg (same server process, same 767-token prompt, `cache_prompt:false`,
 fp ff0bda54d59eb659): prefill1 163,290.2 ms / prefill2 **163,112.0 ms** — the fixed cost
 RECURS on every prefill. STRIKE the "26× device-side slowness" framing: it is a fixed
@@ -238,7 +241,7 @@ satisfied), ple_prefetch live, Linux gates present.
 ### 10.4 Elimination ledger (eight candidates, each killed by a number)
 | candidate | killed by |
 |---|---|
-| CPU cores | t_cpu 125% (would be ~600% for CPU GEMMs) |
+| CPU cores | ~~t_cpu 125%~~ RETRACTED (§109): under CPU-compute, 125% IS the starvation signature |
 | PCIe bandwidth | rx 1.5% of gen4-x4 ceiling during decode |
 | pinned vs pageable | --load-mode none: −4.9% (nil vs ~5% floor) |
 | build lineage | −0.3% cross-lineage, same day, matched acc |
@@ -256,3 +259,12 @@ satisfied), ple_prefetch live, Linux gates present.
 
 ### 10.6 Next optimisation target (so nobody re-runs the dead ones)
 **Fetch latency for host-resident experts.** Not overlap (Amdahl-capped), not pinning (nil, D2), not placement (linear ~0.2 tok/s/layer but P_max is only 2 at ctx 81920 on the 3060), not expert ranking (dead on its own budget), not load-mode (D2). The offload fetch path — pageable staging through the bounce buffer — is where the time goes; the Q5 per-kernel hunt (per-prefill fixed-cost op) and the fetch-latency path are the only live directions.
+
+### §109 AMENDMENT (2026-09-20, architect-found contradiction) — §10.2's mechanism is WRONG; corrected: experts COMPUTE ON THE CPU
+Two of our own measurements contradicted each other; the PCIe numbers agree and decide it:
+- 2026-09-18/19 (prod, --n-cpu-moe era): expert FFN on CPU — CPU 439/449 cores (97.8%) saturated, GPU sm 26.6%, **6.2 MB/token** PCIe.
+- 2026-09-20 (§105): I read "no CPU compute buffer in sched_reserve" as GPU-computed-from-pageable. **That inference was wrong.** All-GPU expert compute would stream ~0.88 GB/token ≈ 13 GB/s at 15 tok/s — two orders above the measured ~0.12 GB/s and above the gen4-x4 ceiling itself. Weights never cross ⇒ **the GPU cannot be computing the experts. CPU does.**
+- Inference-method refutation from our own logs: `place-prod/srv-X-P0-r1.log` (prod, ctx 81920 — SAME ctx) shows `CUDA_Host model buffer = 0.00 / CPU model buffer = 0.00` while that era measured 97.8% CPU saturation ⇒ **absence of a CPU compute-buffer line proves nothing about CPU op presence.** No GGML_SCHED/split dump exists in any leg to settle assignment directly; the bandwidth arithmetic is decisive anyway.
+- **D2's nil unifies under the corrected model:** `--load-mode none` pinned 44.2 GiB and changed nothing because pinning is a GPU-accessibility property — CPU-side GEMMs read pinned and pageable host RAM at the same speed. D2 stops being a curiosity and becomes corroborating evidence for CPU-compute.
+- Consequences for §10.2/§10.4/§10.6: the "CPU cores" elimination is **retracted** (t_cpu 125% is the memory-bandwidth-STARVATION signature of CPU GEMMs competing with the resident 27B server, not evidence against CPU compute); the "next target" is **CPU expert-GEMM throughput under host memory contention**, not GPU fetch latency. The contention hypothesis now has a PREDICTED SIGNATURE: with the 27B idle, t_cpu should rise toward the era's ~4.4 cores AND tok/s toward ~19.85 (pre-registered E1/E2/E3, quiet-window leg).
+- Q3-vs-2PF covariate read (§108 item 2, closed): identical n_ctx (16384), threads (6), CUDA0 compute buffer (1036.07 MiB), binary (ff0bda54), dose (0); the resident 27B server started ~13:31 and was resident for NEITHER (Q3 legs 12:00–12:06, two-prefill 12:54–12:57). **No captured covariate explains the 2.07× out-of-sample failure — the 4.9× marginal stays PROVISIONAL permanently.**
