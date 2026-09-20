@@ -153,6 +153,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .brain-metrics-ok { color: #4ed6a5; font-style: normal; }
 .brain-metrics-off { color: #8b9aa3; font-style: normal; }
 .brain-metrics-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.brain-metrics-tabs { align-self: start; }
+.brain-metrics-pending { color: #c9a34a; font-size: 8px; vertical-align: super; margin-left: 4px; }
 .brain-metrics-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: grid; gap: 3px; }
 .brain-metrics-card-title { font-weight: 700; color: var(--primary); }
 .brain-metrics-src { color: var(--muted-foreground); font-size: 10px; }

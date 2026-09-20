@@ -59,6 +59,8 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
   const [atlas, setAtlas] = useState<Record<string, AtlasEntry> | null>(null)
   // hydra: Metrics panel state (expert-metrics schema v2 provenance + summary)
   const [metrics, setMetrics] = useState<{ prov: AtlasProvenance; fams: { specialists: number; generalists: number; weak: number; meanSpec: number; reap: number; edge0: number } } | null>(null)
+  // hydra: active telemetry-family tab in the Recorded metrics panel
+  const [metricsTab, setMetricsTab] = useState<"colibri" | "reap" | "edge0">("colibri")
   const [tip, setTip] = useState<{ x: number; y: number; row: number; col: number; tier: number; heat: number } | null>(null)
   const pulseRef = useRef<Float32Array | null>(null)   // per-expert pulse intensity 0..1
   const lastSeq = useRef(0)
@@ -232,13 +234,26 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
               <span className="brain-metrics-off">{t("brain.metrics.missing", { cats: metrics.prov.categories_missing.join(", ") })}</span>
             ) : null}
           </div>
-          <div className="brain-metrics-cards">
+          {/* hydra: one tab per telemetry family (owner directive) — Colibri
+              shows measured numbers; REAP/Edge0 tabs render their honest
+              not-wired state until their observers land (never fabricated). */}
+          <div className="view-tabs brain-metrics-tabs">
+            {(["colibri", "reap", "edge0"] as const).map(fam => (
+              <button key={fam} className={metricsTab === fam ? "active" : ""} onClick={() => setMetricsTab(fam)}>
+                {t(`brain.metrics.${fam}`)}
+                {fam !== "colibri" && metrics.fams[fam] === 0 ? <span className="brain-metrics-pending" title={t("brain.metrics.notWired")}>●</span> : null}
+              </button>
+            ))}
+          </div>
+          {metricsTab === "colibri" && (
             <div className="brain-metrics-card">
               <div className="brain-metrics-card-title">{t("brain.metrics.colibri")}</div>
               <div>{t("brain.metrics.specialists", { n: metrics.fams.specialists })} · {t("brain.metrics.generalists", { n: metrics.fams.generalists })}</div>
               <div>{t("brain.metrics.weak", { n: metrics.fams.weak })}</div>
               <div>{t("brain.metrics.meanSpec", { v: metrics.fams.meanSpec.toFixed(2) })}</div>
             </div>
+          )}
+          {metricsTab === "reap" && (
             <div className="brain-metrics-card">
               <div className="brain-metrics-card-title">{t("brain.metrics.reap")}</div>
               {metrics.fams.reap > 0
@@ -246,6 +261,8 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
                 : <div className="brain-metrics-off">{t("brain.metrics.notWired")}</div>}
               <div className="brain-metrics-src">{t("brain.metrics.reapSrc")}</div>
             </div>
+          )}
+          {metricsTab === "edge0" && (
             <div className="brain-metrics-card">
               <div className="brain-metrics-card-title">{t("brain.metrics.edge0")}</div>
               {metrics.fams.edge0 > 0
@@ -253,7 +270,7 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
                 : <div className="brain-metrics-off">{t("brain.metrics.notWired")}</div>}
               <div className="brain-metrics-src">{t("brain.metrics.edge0Src")}</div>
             </div>
-          </div>
+          )}
         </div>
       )}
       {tip && data && (() => {
