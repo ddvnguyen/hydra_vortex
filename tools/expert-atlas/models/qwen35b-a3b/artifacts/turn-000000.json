@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "turn_seq": 0,
+  "turn_id": "2026-09-20T12:00:00Z",
+  "profile": {
+    "wall_s": 1.234,
+    "forwards": 42,
+    "n_prompt_tokens": 1024,
+    "n_gen_tokens": 42,
+    "cache_hit_rate": 0.0
+  },
+  "experts_snapshot": {
+    "rows": 48,
+    "cols": 16,
+    "map": [
+      "00123456789abcdef0"
+    ],
+    "hits_seq": 0,
+    "hits_bitmap": "00ff00ff00ff",
+    "tier_summary": {
+      "vram": 768,
+      "ram": 0,
+      "disk": 0
+    }
+  },
+  "provenance": {
+    "engine_id": "qwen35b-a3b",
+    "model_hash": "Qwopus3.6-35B-A3B-Q3_K-mini.gguf",
+    "llama_cpp_commit": "c0a073e47deadbeef",
+    "atlas_stage": "B",
+    "session_id": "sess-20260920-120000",
+    "host": "rtx5060ti",
+    "recorded_at": "2026-09-20T12:00:01Z",
+    "telemetry_enabled": true
+  }
+}
