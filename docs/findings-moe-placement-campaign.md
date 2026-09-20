@@ -215,3 +215,44 @@ sites — and prof_finish() prepended to the 763 destructor), server-context.cpp
 prof_verify bracket both kept). End-verification per §100(b): all 3 flags in common/arg.cpp,
 queue/discard_draft_overlap present, staged_input machinery present (ba47f35ef dependency
 satisfied), ple_prefetch live, Linux gates present.
+
+## 10. §107 CAMPAIGN CLOSE-OUT (2026-09-20) — the 17–23 chase, resolved
+
+### 10.1 What ships / what is true now
+- **Production stands: 22.2541 tok/s decode @ ctx 81920 CUDA0, dose 9, MTP off** (build-g3, fp 895c522343eeaa53) — unchanged, still best, load-insensitive (experts in VRAM).
+- **The recorded 3060 figure (19.85–22.30 tok/s @ acc .869) DOES NOT REPRODUCE.** Exact recorded config on the mechanism-bearing lineage (same Q4_K_M head by sha `f521868a9e143718`, same n_max 2, dose 0, ctx 81920, overlap armed): **14.97 tok/s at matched acceptance .869 (−24.6%)**. Today's ceiling for that config under every controllable factor: **~16.1–16.5 tok/s at acc .96–.98**. The old binary is destroyed; its exact conditions are unverifiable. The chase is CLOSED.
+
+### 10.2 Durable mechanism findings (outlive the chase)
+- **Drafting = 2.5% of decode wall** (262 ms of 10,283 ms, PROF). The entire overlap/prefetch optimisation class is Amdahl-capped here — permanently, on any lineage. Measured ladder deltas (−0.3…+1.1%) sit inside that ceiling. Do not rebuild it.
+- **Two-stage load fallback → pageable expert weights.** Tensor overrides cannot place the 144 expert tensors in CUDA0 (→ CUDA_Host attempted), and mmap cannot pin file-backed pages (→ CUDA_Host rejected, `token_embd + 144 others … using CPU instead`). Final: NO CUDA_Host model buffer; experts in 27,465.95 MiB of **pageable CPU_Mapped** memory; **no CPU compute buffer exists** — all expert GEMMs run on the CUDA backend, fetching through a 136 MiB pinned bounce buffer. Every offload config ever measured on this rig — production included — ran this path.
+- **`--load-mode none` removes the pageable fallback (pinning verified real: CUDA_Host model buffer 44,159.57 MiB) and DOES NOT HELP** (matched-acc −4.9% vs mmap, within a ~5% noise floor). That nil is itself the finding: **the cost is fetch LATENCY, not pageability** — rx 1.5% of the gen4-x4 ceiling with GPU util 38% rules out bandwidth; `t_cpu` 125% rules out cores.
+- The recorded number may have been a host-contention artifact (a resident 27B CPU-inference server competed for the memory controller through every leg of this campaign) — a coordinated quiet window was sought and not obtained, so this remains unresolved-but-plausible. The destroyed binary makes it permanently unverifiable.
+
+### 10.3 Instrument caveats (found the hard way — future readers, read before trusting any number here)
+- **`t_dev` in the profiler is submit-to-complete WALL time, not GPU-busy.** Worked example: t_dev 99.9% alongside NVML util 38%. PCIe-inclusive: with host-resident weights it cannot distinguish GPU-compute-busy from GPU-stalled-on-fetch.
+- **The load-based quiescence gate (load1 ≤ 4) cannot see memory-controller contention.** For any host-resident-weight config, record resident competing inference processes (pid/port/threads/-ngl) at leg start and end. Lesson: `load-gate-cannot-see-memory-contention`.
+- **NVML-by-CUDA-ordinal is wrong under CUDA_VISIBLE_DEVICES remap** — the in-profiler NVML readout returned zeros on every CVD=1 leg; use the PHYSICAL index (3060 = NVML index 1).
+- **`CUDA_Host` in a placement/override check is a REQUESTED type** — confirm the final buffer table (`load_tensors` summary); the request can be silently rejected (this campaign's central mechanism).
+- **Noise floor under resident-27B contention: ~5%** (acc .97037 printed both 15.27 and 16.03 in one session). Legs on this box cannot resolve <5% deltas while that server runs.
+
+### 10.4 Elimination ledger (eight candidates, each killed by a number)
+| candidate | killed by |
+|---|---|
+| CPU cores | t_cpu 125% (would be ~600% for CPU GEMMs) |
+| PCIe bandwidth | rx 1.5% of gen4-x4 ceiling during decode |
+| pinned vs pageable | --load-mode none: −4.9% (nil vs ~5% floor) |
+| build lineage | −0.3% cross-lineage, same day, matched acc |
+| draft head quant | same Q4_K_M file (sha16 f521868a9e143718) |
+| spec-draft-n-max | same value (2) in every leg |
+| expert dose | +0.35 measured vs +0.41 predicted (reconciles) |
+| overlap/prefetch flags | ladder ±1% acc-matched; drafting 2.5% Amdahl cap |
+
+**Remaining:** host memory-controller contention during expert fetch (window-gated, unresolved) OR an unidentifiable property of the destroyed binary. Stated once, plainly.
+
+### 10.5 Two-prefill (§100(d)) — verbatim, same process, cache_prompt:false, 767-token prompt, cached=0 both
+- prefill1: **163,290.2 ms** (4.70 tok/s)
+- prefill2: **163,112.0 ms** (4.70 tok/s)
+- ⇒ **PER-PREFILL fixed cost (~58 s), not per-process.** The 3060 is unusable for multi-turn prefill as configured; the serving defect is real and the per-kernel hunt (Q5) is justified — target: shape-selected, n-insensitive, per-prefill fixed-cost op. Marginal correction stands: sm_86 prefill ≈ 4.9× CUDA0 per token (27.7 vs 5.6 ms/tok), NOT 26×.
+
+### 10.6 Next optimisation target (so nobody re-runs the dead ones)
+**Fetch latency for host-resident experts.** Not overlap (Amdahl-capped), not pinning (nil, D2), not placement (linear ~0.2 tok/s/layer but P_max is only 2 at ctx 81920 on the 3060), not expert ranking (dead on its own budget), not load-mode (D2). The offload fetch path — pageable staging through the bounce buffer — is where the time goes; the Q5 per-kernel hunt (per-prefill fixed-cost op) and the fetch-latency path are the only live directions.
