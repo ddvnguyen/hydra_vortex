@@ -169,3 +169,26 @@ H probe: MP0 boot leaves 6,229 MiB → MTP head 2,350 + ~916 MiB/layer →
 read); dose verify counts CUDA_Host expert layers = 48 − dose (CVD masking
 removes CUDA1); cancel mid-leg leaves leg-script children (kill orphans before
 relaunch); wait for load transients to decay before relaunching gated legs.
+
+## 8. §100 AMENDMENT — the 26× is a PER-PREFILL FIXED COST; marginal is 4.9×
+
+§100(d) two-prefill leg (same server process, same 767-token prompt, `cache_prompt:false`,
+fp ff0bda54d59eb659): prefill1 163,290.2 ms / prefill2 **163,112.0 ms** — the fixed cost
+RECURS on every prefill. STRIKE the "26× device-side slowness" framing: it is a fixed
+~58 s per-prefill cost plus a marginal rate of ~27.7 ms/token (259→512-token curve) vs
+~5.6 ms/token on CUDA0 = **4.9× marginal — a plausible card-to-card ratio**. Decode
+(13.15/12.98/14.60) is unaffected.
+
+Consequences: (1) the 3060 as configured is unusable for multi-turn serving (every new
+prefill pays ~58 s); (2) Q5 per-kernel profiling is JUSTIFIED with a sharp target: a
+batch-shape-selected, n-insensitive, PER-PREFILL fixed-cost operation (its cost recurs at
+identical shapes, so it is not one-time graph capture/autotune); (3) v1 profiler limitation
+noted: the prefill tag fires once per context, so the second prefill emitted no PROF
+prefill line — response prompt_ms carried the proof.
+
+Two-prefill leg also exposed prompt-cache confounds: with cache ON, slices of the
+repetitive harness prompt reused 715–757 of 767 tokens (prompt_n 52 and 10); use
+`cache_prompt:false` for any prefill re-measurement.
+
+§97/§98/§99/§99a/§100 rulings (Q-rank revisions, flag-mapping table, bundle decision,
+port set + ladder) are banked in docs/leader-handoff-state.md §§97–100.
