@@ -102,6 +102,14 @@ via OCI registry (ghcr.io) with 2-layer YAML config.
   injected into the PREFILL request body (`WorkerSchedulerService.cs:1209`, #481 Phase 2b)
 - **`HydraEngineClient.SetEngineConfigAsync`** — replaced by `EngineConfigureAsync`
 
+### Colibri Expert Atlas (#771, branch `771-colibri-expert-atlas`)
+| Item | Status | Notes |
+|------|--------|-------|
+| Offline atlas pipeline (`tools/atlas/`) | ✅ Landed | cherry-pick `fa2a4cd67` — trace_io/analyze/emit/validate/export_pinfile/reproduce; draft `experts.json` (2431 experts) + `expert-ranks.json` (48 layers, dual-score heat + `reap_saliency` reserved) + `experts.pin` top-53/layer; `reproduce.py` vs phase0_rank.json PASSES bit-exact (d-bb2f0d3b29) |
+| Fork design doc | ✅ Landed | cherry-pick `038f57e73` → `docs/design-colibri-expert-atlas.md` (stages A–E, REAP §9, never-remove tier-to-RAM) |
+| `atlas-web/` Brain service (Stage D) | ✅ Deployed | host dev `:8619`; **P100 VM production `:8620`** as systemd user services (`atlas-web` + `hydra-atlas-engine`, linger on) — Brain live at `192.168.122.21:8620`, cloudflared target | bun 1.4.2; Colibri @`a8f2ca62` web vendored verbatim except tagged `hydra:` diffs (geometry-driven layer mapping, `?engine=` selection, #175 `weak` spec<0.7 qualifier); mock adapter implements Stage B contract shape from draft artifacts; Playwright visual verification PASS (`:8619`, port in `docs/PORTS_AND_ENV.md`) |
+| Engine telemetry (Stage A) + sweep chain (#783, fork `colibri-atlas` → parent `colibri-atlas-hydra`) | ✅ Live on VM | fork `9ca00f3ae` (pushed `fork/colibri-atlas`): `HYDRA_EXPERT_STATS` decode-only counters + EMAP payload, sweep.sh map-index fix; VM `hydra-atlas-engine` rebuilt sm_60 (host CUDA 12.9 + gcc-14, arch 60) with `HYDRA_EXPERT_STATS=1`: `/experts` seq 7 `telemetry:true`, 1284 nonzero map cells / 829 hits bytes post-prompt; `experts.json` (8387 experts, LOP 29/30=96.7%) served via `@path` file branch → 200; VM `:8620` Playwright PASS (canvas 768×123, hover affinity, Colibri card, zero JS errors); dev `:8619` Playwright PASS earlier; run ingested `expert-metrics` `60fec02`, validator OK |
+
 ### Merged-decode epic fixes (`epic/470-merged-decode`)
 | Item | Status | Notes |
 |------|--------|-------|
@@ -257,6 +265,8 @@ All source code lives under `src/`.
 │   ├── quadlets/                  systemd quadlet units (infra-host pod, services)
 │   ├── prometheus/                scrape configs + alerts
 │   └── promtail/                  log pipeline configs
+├── tools/atlas/                   #771 offline Colibri expert-atlas pipeline (trace_io/analyze/emit/validate/export_pinfile/reproduce + out/ artifacts)
+├── atlas-web/                     #771 separated Brain service (Colibri port, bun 1.4.2): polls engine Stage B /experts, serves Brain UI; mock adapter until Stage B lands
 ├── specs/                       protocol & service specs
 └── docs/                        milestone docs + architecture + diagrams
 ```
@@ -401,3 +411,40 @@ request. See `specs/rpc-protocol.md` for the v3 `0x43` contract.
 - **Head-to-head decision (arm111, 102-shape + `V=q5_1`, vs arm090, the current production pin)** under identical `multiturn-growth-test.sh` (10 turns, ~4000 new prompt tokens/turn, growing to ~33-34K depth): arm111 delivers genuine 2/3-way concurrent decode at 15-20 tok/s/session; arm090 (`parallel=1`) serializes concurrent sessions behind one slot at ~8-12 tok/s/session with 2× longer per-turn walls (same "overlap" flag reported by the harness in both cases, but arm090's is queue time-slicing, not real concurrent decode).
 - **Verdict: choose by workload pattern, not a single winner.** Concurrent-growth workloads (2-3 simultaneous sessions actively growing past 30K context) → use the 102/111 shape. Rotational turn-taking (one session live, others idle, fast-return on resume) → **arm090 stays the pin** — its 18×-faster-idle-return design (validated 2026-08-29, 3-agent/6-turn production test, 0 evictions) is a different mechanism than 111's shape and is not invalidated by this test. `docker-compose.baseline.yml` DEFAULT PIN is unchanged (still arm090); no production cutover made — this is a documented option for a different use case, pending a decision on whether to add the 102/111 shape as a selectable second profile.
 - Detail: `docs/investigations/740-results-report.md` (arms 106-114 + "Arm 111 vs 090" head-to-head section).
+
+## #763 baseline-flash-next base swap onto GenerelSchwerz `qwen4exp-mtp` (addendum 2026-09-12)
+
+- **Decision (user-approved, Option B):** rebase Hydra's fork commits onto `GenerelSchwerz/llama.cpp` branch `qwen4exp-mtp` to adopt its CUDA MoE expert cache + grouped MoE drafting/MTP — the productionized form of our #762 (MoE-cache) and #761 (MTP) work. Its published evidence shows Qwen3.8-Flash-Next at **47 tok/s decode on an RTX 5070 Ti 16 GB (`120a-real`)**, 48/48 grouped layers, 0 fallback. `beellama/main` was rejected (separate BeeLlama/KVarN lineage, not MoE/MTP).
+- **Submodule `src/llama-cpp` pointer:** `1d3c4a8e3` → `efd26f235`, branch `fork/763-qwen4exp-mtp` on `ddvnguyen/llama.cpp`. Base `77b733d5c` (qwen4exp-mtp tip, superset of `moe-cache-drafting`); our 5 Hydra #747 commits cherry-picked on top with **zero conflicts**.
+- **Our patches preserved:** `--parallel-ctx-threshold` admission gate (d06537485/0ed2ac31e/3ab0fdec8/1d3c4a8e3) + `cudaMemAdvise/prefetch` UM (ba2c46f65).
+- **Verified:** host build (CUDA 13.2.2, `CMAKE_CUDA_ARCHITECTURES=86;120`) `llama-server` at `efd26f235`; `--help` exposes both `--parallel-ctx-threshold` and `--moe-expert-cache-size` / `--spec-draft-moe-expert-cache-size` / `--load-mode`.
+- **NOT yet run:** no live-rig test (pending GPU availability). Their expert cache is **device-local** and explicitly does not support row/tensor-split sharding of a cached expert tensor — reconciliation with the separate COMBINED-OT expert-split engine is tracked under #763.
+- **Note:** the uncommitted #762 `tools/moe-trace` port is stashed in the submodule (`stash@{0} 762-moe-trace-port-wip`) against the old base; it must be reapplied on the new branch.
+
+### Fork PR target + lineage conflict (2026-09-12)
+
+- **Fork PR target (per user):** `ddvnguyen/llama.cpp` branch **`baseline-flash-next`** (currently `cdd11021b`) — *not* `master`, *not* `hydra-fork`, *not* `fork/763-qwen4exp-mtp`. All future llama.cpp-side PRs base on `baseline-flash-next`.
+- **No new authored llama.cpp changes** at that point: `efd26f235` is a replay (rebase) of the pre-existing 5 Hydra #747 commits onto the external `gs/qwen4exp-mtp` base; it adds no new diff of its own. (Reconciliation PR opened later — see "Resolution" below.)
+- **Real conflict found (flagged, not resolved):** `cdd11021b` is **not** unrelated to us — its parent is our old Hydra chain (`1d3c4a8e3` → 5 × #747 commits), so our gate/UM patches are already on `baseline-flash-next`. `cdd11021b` adds one hand-rolled qwen4exp **NextN/MTP draft-head graph with shared-tensor borrowing** (329 lines in `qwen4exp.cpp`; 6 commits ahead of `5266f24da`). The `gs/qwen4exp-mtp` lineage my rebase sits on already contains its **own independent** qwen4exp NextN/MTP draft head (`788b21de6` "model: add the qwen4exp NextN/MTP draft head", `90f28fdf5` "llama: let an MTP draft borrow the target's embeddings and lm head"), i.e. two competing implementations of the same feature. Non-destructive `git merge-tree cdd11021b 77b733d5c` → **3 content conflicts**: `src/llama-model.h`, `src/models/models.h`, `src/models/qwen4exp.cpp`.
+- **Divergence:** from merge-base `5266f24da`, `efd26f235` is **485** commits ahead (whole `gs/qwen4exp-mtp` delta + replayed Hydra), `cdd11021b` is **6** ahead. This is a lineage/base decision, not a small PR.
+
+### Resolution: adopt gs lineage, supersede cdd11021b — PR #120 (2026-09-12)
+
+- **Decision (per user: resolve and PR for review):** the two "competing" draft heads are the **same code** (identical `LLM_TENSOR_NEXTN_HC_HEAD_*` enum/names, `llama_layer_nextn.hc_head_*` fields, `graph`/`no_build_t`/`graph_mtp` shape, and draft graph). The only real difference is the embedding/LM-head **borrow mechanism**:
+  - **gs:** model-load time, opt-in `{arch}.nextn_shared_target_tensors` GGUF key + `llama_model_params.model_shared`, resolved by `llama_model_loader::borrow_shared_tensor()`; wired via `--mtp-shared-embd` (convert) + `common/speculative.cpp` setting `mparams.model_shared = model_tgt`.
+  - **cdd11021b:** graph-build time, qwen4exp-only `qwen4exp_shared_model(cparams.ctx_other, ...)`, with `token_embd` marked `TENSOR_NOT_REQUIRED` for `mtp_only`.
+- **Primary basis = gs. Nothing ported from cdd11021b** — every cdd delta is already in gs or superseded. In particular cdd's `common/speculative.cpp` `is_mem_shared` gemma gate is **unnecessary** in gs: gs resets `cparams.ctx_other = nullptr` and only sets it for Gemma4Assistant/EAGLE3/DFlash (`src/llama-context.cpp:791-808`), so `llama_get_ctx_other(ctx_dft)` is null for qwen4exp and `is_mem_shared` is already false. cdd's gate only counteracts cdd's own `ctx_other` use for graph-time borrow.
+- **Merge result:** `b6b34cc0f` (parents `efd26f235` + `cdd11021b`); tree **byte-identical** to `efd26f235` (`df72c2736`) → no unique cdd code lost, no cdd divergence retained.
+- **PR:** **ddvnguyen/llama.cpp#120** (`base=baseline-flash-next`, `head=feat/763-reconcile-qwen4exp-mtp`), state OPEN/MERGEABLE, 486 commits / 406 files as a base adoption. Full rationale + uncertainties in the PR body. Not merged (human review).
+- **Caveats for the reviewer (also in PR):** no end-to-end run (rig occupied); gs's load-time borrow path untested against Hydra GGUFs; a draft-only GGUF without `nextn_shared_target_tensors` is now refused at load rather than auto-borrowed (Hydra's current `Qwen3.8-27B-*-MTP.gguf` are self-contained, so unaffected).
+
+### #763 E2E results — resolved tree (`efd26f235`) on the live rig (2026-09-12)
+
+Production stopped by the human for the test window; both GPUs drained to 1 MiB; stack shut down clean afterwards (GPUs back to 1 MiB).
+
+- **Production-shaped self-contained model — PASS.** `Qwen3.8-27B-UD-Q5_K_S.gguf` + `--spec-type draft-mtp`, dual-GPU RPC (`-dev RPC0,CUDA0 -ts 27,38`), UM on. Loaded clean. 400-token gen: prefill 134.7 tok/s, decode **32.57 tok/s**, **draft_n=533 / accepted=221 → 41.5%** acceptance, 178 verify steps; coherent output. **Finding:** this model is `general.architecture=qwen35`, not `qwen4exp` — production pin 130 uses the generic **same-file** MTP head, so it does **not** exercise the qwen4exp draft head or the borrow path.
+- **qwen4exp shared-draft borrow + MTP — PASS (validates both flagged risks).** Real pairing: target `qwen3.8-flash-next-apex-mini` (qwen4exp, 48 blocks, n_embd 2560, no nextn tensors) + sidecar `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf` (qwen4exp, 49 blocks, `nextn_shared_target_tensors=True`, ships no `token_embd`/`output`/`output_norm`).
+  - **(a) load-time borrow: CONFIRMED.** Sidecar hard-refused standalone (`borrow_shared_tensor: … draft head without its own 'token_embd.weight'`), loads cleanly as `--spec-draft-model` against the target → `borrow_shared_tensor` resolved from `model_shared`. (INFO `"taken from the target model"` line not captured at verbosity 3; contrast is unambiguous.)
+  - **(b) `is_mem_shared` false for qwen4exp / no double-borrow corruption: CONFIRMED.** **draft_n=97 / accepted=62 → 63.9%** acceptance, 33 verify steps (per-position 29+19+14=62), coherent correct output. Decode 5.72 tok/s (74 GB target on UM/28 GB VRAM — memory-bound, not a correctness signal). Load ~3m50s.
+- **Correction:** initial reading of `common/speculative.cpp:3002` suggested `-md` loads the target path; a non-existent-`-md` probe proved the loader honors the draft path (resolves `mparams.path`). Not a bug.
+- **Verdict: no PR-blocking finding.** Full detail: PR #120 comment (`#issuecomment-5646887049`). Production was restarted by the human on pin 130 after this.

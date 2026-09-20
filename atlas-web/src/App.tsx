@@ -1,0 +1,547 @@
+// hydra: atlas shell — Colibri App.tsx (@ a8f2ca62) ported verbatim-in-layout.
+// Adaptation: the endpoint/apiKey connection becomes the atlas engine selector
+// (engines are server-configured; the browser reaches them only through the
+// server-side /engine-proxy/<id>/v1 route, #776). Chat state lives HERE, not
+// in a child component, so Chat/Brain/Profiling tab switches never lose
+// conversations or draft; conversation + composer are direct .chat-panel
+// children so the fixed grid rows (topbar / scroll / composer) apply.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  Activity,
+  ArrowUp,
+  BrainCircuit,
+  CircleStop,
+  Clock,
+  Cpu,
+  Database,
+  Feather,
+  Gauge,
+  Globe,
+  HardDrive,
+  AlertTriangle,
+  Layers,
+  Link2,
+  LoaderCircle,
+  MemoryStick,
+  ImagePlus,
+  MessageSquareText,
+  MonitorDot,
+  Orbit,
+  RefreshCw,
+  SlidersHorizontal,
+  Timer,
+  Trash2,
+  Zap,
+} from "lucide-react"
+
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { getHealth, listModels, streamChat, type ChatMessage, type HealthResponse, type HwinfoHealth, type StreamChatResult, type TiersHealth } from "@/lib/api"
+import { activeRequests, supportsCacheSlots } from "@/lib/runtime"
+import { Brain } from "./Brain"
+import { Galaxy } from "./Galaxy"
+import { Profiling } from "./Profiling"
+import { persistPublicSettings, stored } from "@/lib/storage"
+import { Markdown } from "@/components/Markdown"
+import { cn } from "@/lib/utils"
+import { useLocale } from "./i18n"
+import { REASONING_EFFORT, modelForcesReasoning, reasoningLevelsFor, type ReasoningLevel } from "@/lib/reasoning"
+
+const message = (role: ChatMessage["role"], content: string): ChatMessage => {
+  let id: string
+  try { id = crypto.randomUUID() } catch { id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16) }) }
+  return { id, role, content }
+}
+
+// atlas service /health shape (server/server.ts) — deliberately not the
+// Colibri HealthResponse: the atlas aggregates engines instead of exposing one.
+interface AtlasEngine { id: string; mode: "mock" | "engine"; ok: boolean; seq: number | null; tiers?: TiersHealth; hwinfo?: HwinfoHealth }
+interface AtlasHealth { status: string; engines: AtlasEngine[] }
+
+export default function App() {
+  const { t, locale, setLocale, locales } = useLocale()
+
+  // ---- atlas engine selection (replaces the endpoint/apiKey connection) ----
+  const [atlas, setAtlas] = useState<AtlasHealth | null>(null)
+  const [atlasError, setAtlasError] = useState("")
+  // ?engine=<id> is the initial selection; the sidebar selector overrides it.
+  const [engineId, setEngineId] = useState<string | undefined>(() =>
+    new URLSearchParams(window.location.search).get("engine") ?? undefined)
+
+  const refreshAtlas = useCallback(() => {
+    fetch("/health")
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json() })
+      .then((h: AtlasHealth) => { setAtlas(h); setAtlasError("") })
+      .catch(err => setAtlasError(String(err)))
+  }, [])
+
+  useEffect(() => {
+    refreshAtlas()
+    const iv = window.setInterval(refreshAtlas, 5000)
+    return () => window.clearInterval(iv)
+  }, [refreshAtlas])
+
+  const engines = atlas?.engines ?? []
+  const selected = engines.find(e => e.id === engineId) ?? engines[0]
+  // When the URL didn't pin an engine, follow the first healthy one but keep
+  // the selection stable across health refreshes once the user picked one.
+  const activeId = engineId ?? selected?.id
+  const active = engines.find(e => e.id === activeId)
+  // hydra #785: the aggregate /health row carries the engine's tiers+hwinfo
+  // (server passes engine /health through). Merge into the Colibri
+  // HealthResponse the runtime panel renders, so the tier bar shows real
+  // device/host allocation without a second fetch. Mock/unreachable engines
+  // carry no tiers — the panel honestly omits the bar (unchanged behavior).
+  const aggHealth: HealthResponse | null = active && (active.tiers || active.hwinfo)
+    ? { status: atlas?.status ?? "ok", tiers: active.tiers, hwinfo: active.hwinfo }
+    : null
+  // hydra: chat/profiling speak to the engine through the server-side proxy
+  // (browser cannot reach the localhost-only engine). Mock engines have no
+  // HTTP surface — the chat stays in the honest not-connected state for those.
+  const proxyBase = active && active.mode === "engine" ? `/engine-proxy/${active.id}/v1` : ""
+  const baseUrl = proxyBase
+  const apiKey = ""
+  // ---- chat state (upstream EFFECTs #1-#7, verbatim) ----
+  const [models, setModels] = useState<string[]>([])
+  const [model, setModel] = useState(() => stored(localStorage, "colibri.model", ""))
+  const [temperature, setTemperature] = useState(0.7)
+  const [maxTokens, setMaxTokens] = useState(4096)
+  const [reasoning, setReasoning] = useState<ReasoningLevel>("off")
+  const [cacheSlot, setCacheSlot] = useState(0)
+  const [conversations, setConversations] = useState<Record<number, ChatMessage[]>>({ 0: [] })
+  const [health, setHealth] = useState<HealthResponse | null>(null)
+  const [healthError, setHealthError] = useState("")
+  // hydra #785: sidebar shows the engine row's tiers+hwinfo even before the
+  // chat probe connects (Brain is the landing view; mock rows carry neither
+  // and the panel stays honestly empty). Probe health wins once present.
+  const panelHealth = health ?? aggHealth
+  const [lastRun, setLastRun] = useState<StreamChatResult | null>(null)
+  const [draft, setDraft] = useState("")
+  /* Immagini in attesa di partire col prossimo messaggio. Si tengono come
+     data: URI perche' e' quello che il server accetta e quello che il browser
+     puo' mostrare in anteprima senza inventarsi un percorso su disco. */
+  const [attachments, setAttachments] = useState<{ name: string; url: string }[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const attachFiles = async (files: FileList | File[] | null) => {
+    if (!files) return
+    const images = Array.from(files).filter((file) => file.type.startsWith("image/"))
+    if (!images.length) return
+    const read = await Promise.all(
+      images.map(
+        (file) =>
+          new Promise<{ name: string; url: string }>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve({ name: file.name, url: String(reader.result) })
+            reader.onerror = () => reject(reader.error)
+            reader.readAsDataURL(file)
+          }),
+      ),
+    )
+    setAttachments((current) => [...current, ...read])
+  }
+  const [loading, setLoading] = useState(false)
+  const [streamStart, setStreamStart] = useState<number | null>(null)
+  const [tokenCount, setTokenCount] = useState(0)
+  const [tokPerSec, setTokPerSec] = useState<number | null>(null)
+  const [ttft, setTtft] = useState<number | null>(null)
+  const [totalTokens, setTotalTokens] = useState({ prompt: 0, completion: 0 })
+  const [connecting, setConnecting] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [view, setView] = useState<"chat" | "brain" | "galaxy" | "profiling">("brain")
+  const [error, setError] = useState("")
+  const autoConnected = useRef("")
+  const abortRef = useRef<AbortController | null>(null)
+  const probeRef = useRef<AbortController | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const messages = conversations[cacheSlot] || []
+  const kvSlots = Math.max(1, health?.kv_slots || 1)
+  const activeRequestsCount = activeRequests(health)
+  const capacity = health?.scheduler?.capacity || kvSlots
+  const failures = health?.scheduler ? health.scheduler.rejected + health.scheduler.timed_out + health.scheduler.cancelled : 0
+
+  const updateMessages = (next: ChatMessage[] | ((current: ChatMessage[]) => ChatMessage[])) =>
+    setConversations((current) => ({
+      ...current,
+      [cacheSlot]: typeof next === "function" ? next(current[cacheSlot] || []) : next,
+    }))
+
+  // EFFECT #1
+  useEffect(() => {
+    persistPublicSettings(localStorage, baseUrl, model)
+  }, [baseUrl, model])
+
+  // EFFECT #2
+  useEffect(() => {
+    setConnected(false)
+    setHealth(null)
+    setHealthError("")
+  }, [baseUrl])
+
+  // EFFECT #3
+  useEffect(() => () => {
+    probeRef.current?.abort()
+    abortRef.current?.abort()
+  }, [])
+
+  // EFFECT #4
+  useEffect(() => {
+    if (!connected) return
+    let disposed = false
+    const poll = async () => {
+      if (document.visibilityState === "hidden") return
+      try {
+        const result = await getHealth(baseUrl, apiKey)
+        if (!disposed) { setHealth(result); setHealthError("") }
+      } catch (cause) {
+        if (!disposed) setHealthError(cause instanceof Error ? cause.message : "status.runtimeUnavailable")
+      }
+    }
+    const timer = window.setInterval(() => void poll(), 5000)
+    return () => { disposed = true; window.clearInterval(timer) }
+  }, [apiKey, baseUrl, connected])
+
+  // EFFECT #5
+  useEffect(() => {
+    if (cacheSlot >= kvSlots) setCacheSlot(0)
+  }, [cacheSlot, kvSlots])
+
+  // EFFECT #6
+  useEffect(() => { setLastRun(null) }, [cacheSlot])
+
+  /* GLM 5.3 cannot turn reasoning off and has no distinct "medium" (it collapses
+     onto High). If the user switches to such a model while "off" or "medium" is
+     selected, lift it to a level the model actually honors instead of leaving the
+     control on a value it no longer offers. */
+  useEffect(() => {
+    if (modelForcesReasoning(model))
+      setReasoning((level) => (level === "off" || level === "medium" ? "high" : level))
+  }, [model])
+
+  // EFFECT #7
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages])
+
+  const connect = async () => {
+    if (!baseUrl) return
+    probeRef.current?.abort()
+    const controller = new AbortController()
+    probeRef.current = controller
+    setConnecting(true)
+    setError("")
+    try {
+      const found = await listModels(baseUrl, apiKey, controller.signal)
+      if (controller.signal.aborted) return
+      setModels(found)
+      if (found.length && !found.includes(model)) setModel(found[0])
+      setConnected(true)
+      try {
+        setHealth(await getHealth(baseUrl, apiKey, controller.signal))
+        setHealthError("")
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setHealth(null)
+          setHealthError(cause instanceof Error ? cause.message : "status.runtimeUnavailable")
+        }
+      }
+    } catch (cause) {
+      if (controller.signal.aborted) return
+      setConnected(false)
+      setError(cause instanceof Error ? cause.message : "status.serverError")
+    } finally {
+      if (probeRef.current === controller) { probeRef.current = null; setConnecting(false) }
+    }
+  }
+
+  // Auto-connect when the atlas reports an engine with an HTTP surface.
+  // In an effect, not in the render body: a side effect during render breaks
+  // under StrictMode double-rendering and concurrent re-renders.
+  useEffect(() => {
+    if (atlas?.status && baseUrl && autoConnected.current !== baseUrl) {
+      autoConnected.current = baseUrl
+      void connect()
+    }
+    if (!baseUrl) { autoConnected.current = ""; }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atlas?.status, baseUrl])
+
+  const canSend = useMemo(() => (draft.trim() || attachments.length > 0) && model && !loading, [draft, attachments, model, loading])
+
+  const send = async () => {
+    const content = draft.trim()
+    /* Un'immagine da sola e' una domanda valida: "questa cosa e'?" si puo'
+       chiedere anche senza scrivere niente. */
+    if ((!content && !attachments.length) || loading) return
+    const user = message("user", content)
+    if (attachments.length) user.images = attachments.map((item) => item.url)
+    const assistant = message("assistant", "")
+    const history = [...messages, user]
+    setDraft("")
+    setAttachments([])
+    setError("")
+    updateMessages([...history, assistant])
+    setLoading(true)
+    setStreamStart(null)
+    setTokenCount(0)
+    setTokPerSec(null)
+    setTtft(null)
+    const t0 = performance.now()
+    let firstToken = true
+    let count = 0
+    const controller = new AbortController()
+    abortRef.current = controller
+    try {
+      const result = await streamChat({
+        baseUrl,
+        apiKey,
+        model,
+        messages: history,
+        temperature,
+        maxTokens,
+        enableThinking: reasoning !== "off",
+        reasoningEffort: reasoning === "off" ? undefined : REASONING_EFFORT[reasoning],
+        cacheSlot: supportsCacheSlots(health) ? cacheSlot : undefined,
+        signal: controller.signal,
+        /* Reasoning tokens are tokens: they count toward the rate, and the
+           first one is the real time-to-first-token — the answer's first
+           token arrives much later on a reasoning model. */
+        onReasoning: (delta) => {
+          if (firstToken) { setTtft(performance.now() - t0); setStreamStart(performance.now()); firstToken = false }
+          count++
+          setTokenCount(count)
+          const elapsed = (performance.now() - t0) / 1000
+          if (elapsed > 0.3) setTokPerSec(count / elapsed)
+          updateMessages((current) => current.map((item) =>
+            item.id === assistant.id ? { ...item, reasoning: (item.reasoning ?? "") + delta } : item,
+          ))
+        },
+        onDelta: (delta) => {
+          if (firstToken) { setTtft(performance.now() - t0); setStreamStart(performance.now()); firstToken = false }
+          count++
+          setTokenCount(count)
+          const elapsed = (performance.now() - t0) / 1000
+          if (elapsed > 0.3) setTokPerSec(count / ((performance.now() - t0) / 1000))
+          updateMessages((current) => current.map((item) =>
+            item.id === assistant.id ? { ...item, content: item.content + delta } : item,
+          ))
+        },
+      })
+      const finalElapsed = (performance.now() - t0) / 1000
+      if (count > 0 && finalElapsed > 0) setTokPerSec(count / finalElapsed)
+      if (result.usage) setTotalTokens(prev => ({
+        prompt: prev.prompt + (result.usage?.prompt_tokens || 0),
+        completion: prev.completion + (result.usage?.completion_tokens || 0),
+      }))
+      setLastRun(result)
+      setConnected(true)
+    } catch (cause) {
+      if (controller.signal.aborted) {
+        updateMessages((current) => current.filter((item) => item.id !== assistant.id || item.content || item.reasoning))
+      } else {
+        setError(cause instanceof Error ? cause.message : "status.generationFailed")
+        updateMessages((current) => current.filter((item) => item.id !== assistant.id || item.content || item.reasoning))
+      }
+    } finally {
+      abortRef.current = null
+      setLoading(false)
+    }
+  }
+
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand-row">
+          <div className="brand-mark"><Feather className="size-5" /></div>
+          <div><h1>colibrì</h1><p>{t("brand.tagline")}</p></div>
+        </div>
+
+        <section className="side-section">
+          <div className="section-title"><Link2 className="size-3.5" /> {t("sidebar.connection")}</div>
+          <label>
+            {t("sidebar.atlasEngine")}
+            <select
+              value={activeId ?? ""}
+              onChange={event => { setEngineId(event.target.value); const u = new URL(window.location.href); u.searchParams.set("engine", event.target.value); window.history.replaceState(null, "", u) }}
+              disabled={!engines.length}
+            >
+              {engines.length
+                ? engines.map(e => <option key={e.id} value={e.id}>{e.id} ({e.mode})</option>)
+                : <option>—</option>}
+            </select>
+            <span className="field-help">{t("sidebar.atlasEngineHelp")}</span>
+          </label>
+          <Button type="button" variant="secondary" onClick={() => void connect()} disabled={connecting || !baseUrl}>
+            {connecting ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            {t("sidebar.probe")}
+          </Button>
+          <div className={cn("connection-state", connected && "connected")} aria-live="polite"><span />{connected ? t("status.connected") : t("status.notConnected")}</div>
+        </section>
+
+        <section className="side-section runtime-section" aria-live="polite">
+          <div className="section-title"><Activity className="size-3.5" /> {t("sidebar.runtime")}</div>
+          {panelHealth?.hwinfo ? <div className="hw-panel">
+            {panelHealth.hwinfo.cpu ? <div className="hw-row"><Cpu className="size-3.5" /><span>{panelHealth.hwinfo.cpu}</span></div> : null}
+            {panelHealth.hwinfo.gpus > 0 ? <div className="hw-row"><MonitorDot className="size-3.5" /><span>{panelHealth.hwinfo.gpus}× GPU<small>{panelHealth.hwinfo.vram_total_gb.toFixed(0)} GB VRAM</small></span></div> : null}
+            <div className="hw-row"><MemoryStick className="size-3.5" /><span>{panelHealth.hwinfo.ram_total_gb.toFixed(0)} GB RAM<small>{panelHealth.hwinfo.ram_avail_gb.toFixed(0)} GB free</small></span></div>
+            <div className="hw-row"><HardDrive className="size-3.5" /><span>{panelHealth.hwinfo.cores} cores</span></div>
+          </div> : null}
+          {panelHealth && (panelHealth.scheduler || panelHealth.tiers) ? <>
+            {panelHealth?.scheduler ? (
+            <div className="runtime-grid">
+              <div><span>{t("dashboard.active")}</span><strong>{activeRequestsCount}<small> / {capacity}</small></strong></div>
+              <div><span>{t("dashboard.queued")}</span><strong>{panelHealth.scheduler.queued}<small> / {panelHealth.scheduler.max_queue}</small></strong></div>
+              <div><span>{t("dashboard.completed")}</span><strong>{panelHealth.scheduler.completed}</strong></div>
+              <div><span>{t("dashboard.failures")}</span><strong>{failures}</strong></div>
+            </div>
+            ) : null}
+            {panelHealth.tiers ? (() => {
+              const ti = panelHealth.tiers
+              const total = Math.max(ti.vram + ti.ram + ti.disk, 1)
+              return <div className="tier-panel">
+                <div className="tier-bar" role="img" aria-label={t("tier.ariaLabel", { vram: ti.vram, ram: ti.ram, disk: ti.disk })}>
+                  <span className="tier-vram" style={{ width: `${(100 * ti.vram) / total}%` }} />
+                  <span className="tier-ram" style={{ width: `${(100 * ti.ram) / total}%` }} />
+                  <span className="tier-disk" style={{ width: `${(100 * ti.disk) / total}%` }} />
+                </div>
+                <div className="tier-legend">
+                  <span><i className="tier-vram" />{t("tier.vram")} <strong>{ti.vram.toLocaleString()}</strong><small>{ti.vram_gb.toFixed(1)} GB</small></span>
+                  <span><i className="tier-ram" />{t("tier.ram")} <strong>{ti.ram.toLocaleString()}</strong><small>{ti.ram_gb.toFixed(1)} GB</small></span>
+                  <span><i className="tier-disk" />{t("tier.disk")} <strong>{ti.disk.toLocaleString()}</strong></span>
+                </div>
+              </div>
+            })() : null}
+            {totalTokens.prompt + totalTokens.completion > 0 ? <div className="session-stats">
+              <span><Database className="size-3" /> {t("dashboard.session")} <strong>{totalTokens.prompt.toLocaleString()}</strong> {t("dashboard.prompt")} + <strong>{totalTokens.completion.toLocaleString()}</strong> {t("dashboard.completion")}</span>
+            </div> : null}
+            {panelHealth?.scheduler ? (
+            <div className="runtime-foot"><span className="runtime-dot" /> {t("sidebar.schedulerOnline")} <code>{kvSlots} KV</code></div>
+            ) : null}
+          </> : <p className="runtime-unavailable">{connected ? (healthError ? t(healthError) : t("status.runtimeUnavailable")) : t("sidebar.runtimeProbe")}</p>}
+          {engines.length ? (
+            <div className="side-engines">
+              {engines.map(e => (
+                <div key={e.id} className="runtime-foot">
+                  <span className={e.ok ? "runtime-dot" : "runtime-dot down"} />
+                  <span>{e.id}</span>
+                  <code>{e.mode}</code>
+                </div>
+              ))}
+            </div>
+          ) : (atlasError ? <p className="runtime-unavailable">{atlasError}</p> : null)}
+        </section>
+
+        <section className="side-section">
+          <div className="section-title"><SlidersHorizontal className="size-3.5" /> {t("sidebar.inference")}</div>
+          <label>{t("sidebar.model")}<select value={model} onChange={(event) => setModel(event.target.value)}>{models.length ? models.map((id) => <option key={id}>{id}</option>) : <option>{model || "—"}</option>}</select></label>
+          {health?.kv_slots && health.kv_slots > 1 ? <label>{t("sidebar.kvSession")}<select value={cacheSlot} onChange={(event) => setCacheSlot(Number(event.target.value))} disabled={loading}>
+            {Array.from({ length: kvSlots }, (_, slot) => <option key={slot} value={slot}>{t("sidebar.sessionLabel", { slot: slot + 1 })}</option>)}
+          </select><span className="field-help">{t("sidebar.kvSessionHelp")}</span></label> : null}
+          <label><span className="label-line"><span>{t("sidebar.temperature")}</span><code>{temperature.toFixed(1)}</code></span><input className="range" type="range" min="0" max="2" step="0.1" value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>
+          <label>{t("sidebar.maxTokens")}<Input type="number" min={1} max={32768} value={maxTokens} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value)) setMaxTokens(Math.min(32768, Math.max(1, Math.round(value)))) }} /></label>
+          <label><span className="label-line"><span><BrainCircuit className="size-4" /> {t("sidebar.reasoning")}</span></span>
+            <select value={reasoning} onChange={(event) => setReasoning(event.target.value as ReasoningLevel)} disabled={loading}>
+              {reasoningLevelsFor(model).map((level) => <option key={level} value={level}>{t(`sidebar.reasoning.${level}`)}</option>)}
+            </select>
+          </label>
+        </section>
+
+        <div className="sidebar-foot">
+          <div><Cpu className="size-3.5" /><span>{t("sidebar.transport")}</span></div>
+          <div className="locale-switcher">
+            <Globe className="size-3.5" />
+            <select value={locale} onChange={(e) => setLocale(e.target.value)} aria-label="locale">
+              {locales.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
+            </select>
+          </div>
+        </div>
+      </aside>
+
+      <main className="chat-panel">
+        <header className="topbar">
+          <div><span className="eyebrow">{t("topbar.activeModel")}</span><strong>{model || activeId || "—"}</strong></div>
+          <div className="view-tabs">
+            <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}><MessageSquareText className="size-3.5" /> {t("nav.chat")}</button>
+            <button className={view === "brain" ? "active" : ""} onClick={() => setView("brain")}><BrainCircuit className="size-3.5" /> {t("nav.brain")}</button>
+            <button className={view === "galaxy" ? "active" : ""} onClick={() => setView("galaxy")}><Orbit className="size-3.5" /> {t("nav.galaxy")}</button>
+            <button className={view === "profiling" ? "active" : ""} onClick={() => setView("profiling")}><Gauge className="size-3.5" /> {t("nav.profiling")}</button>
+          </div>
+          <div className="top-actions">
+            {loading && tokenCount > 0 ? <Badge className="badge-live"><Zap className="size-3 flash" /> {t("topbar.tokens", { n: tokenCount })}</Badge> : null}
+            {!loading && tokPerSec != null ? <Badge className="badge-speed"><Gauge className="size-3" /> {t("topbar.tokPerSec", { n: tokPerSec.toFixed(1) })}</Badge> : null}
+            {!loading && ttft != null ? <Badge><Timer className="size-3" /> TTFT {(ttft / 1000).toFixed(1)}s</Badge> : null}
+            {!loading && lastRun?.usage ? <Badge><Layers className="size-3" /> {lastRun.usage.prompt_tokens}→{lastRun.usage.completion_tokens}</Badge> : null}
+            {!loading && lastRun?.finishReason === "length" ? <Badge className="badge-warn" title={t("topbar.truncatedHelp")}><AlertTriangle className="size-3" /> {t("topbar.truncated")}</Badge> : null}
+            {lastRun?.queueWaitMs != null ? <Badge><Clock className="size-3" /> queue {Math.round(lastRun.queueWaitMs)}ms</Badge> : null}
+            <Badge><MonitorDot className="size-3" /> {t("topbar.slot", { n: cacheSlot + 1 })}</Badge>
+            <Button variant="ghost" size="sm" onClick={() => { updateMessages([]); setTokPerSec(null); setTtft(null); setTokenCount(0); setTotalTokens({ prompt: 0, completion: 0 }) }} disabled={!messages.length || loading}><Trash2 className="size-3.5" /> {t("topbar.clear")}</Button>
+            <button className="atlas-refresh" onClick={refreshAtlas} title={t("sidebar.atlasRefresh")}><RefreshCw className="size-3.5" /></button>
+          </div>
+        </header>
+
+        {view === "brain" ? <Brain baseUrl="" apiKey="" connected={!!atlas?.status} engineId={activeId} />
+          : view === "galaxy" ? <Galaxy baseUrl={baseUrl} apiKey={apiKey} connected={connected} engineId={activeId} />
+          : view === "profiling" ? <Profiling baseUrl={baseUrl} apiKey={apiKey} connected={connected} /> : <>
+          <div className="conversation">
+            {!messages.length ? (
+              <div className="empty-state">
+                <div className="orb"><Feather /></div>
+                <span className="eyebrow">{t("hero.title")}</span>
+                <h2>{t("hero.subtitle")}<br /><em>{t("hero.tagline")}</em></h2>
+                <p>{t("hero.description")}</p>
+                <div className="suggestions">
+                  {[t("prompts.routing"), t("prompts.benchmark"), t("prompts.caching")].map((item) => <button key={item} onClick={() => setDraft(item)}>{item}<ArrowUp className="size-3.5 rotate-45" /></button>)}
+                </div>
+              </div>
+            ) : (
+              <div className="message-list">
+                {messages.map((item) => (
+                  <article key={item.id} className={cn("message", item.role)}>
+                    <div className="avatar">{item.role === "user" ? "Y" : <Feather className="size-4" />}</div>
+                    <div><div className="message-meta">{item.role === "user" ? t("chat.you") : t("chat.colibri")}</div><div className="message-body">{item.reasoning
+                      ? <details className="reasoning" open={!item.content}>
+                        <summary>{t("sidebar.reasoning")}</summary>
+                        <div className="reasoning-body">{item.reasoning}</div>
+                      </details>
+                      : null}{item.content
+                        ? (item.role === "assistant"
+                          /* User turns stay literal: the person typed those
+                             characters and expects to see them back. Only the
+                             model's output is markdown. */
+                          ? <Markdown source={item.content} />
+                          : item.content)
+                        : <span className="typing" aria-label="Generating"><i /><i /><i /></span>}</div></div>
+                  </article>
+                ))}
+                <div ref={bottomRef} />
+              </div>
+            )}
+          </div>
+
+          <div className="composer-wrap">
+            {error && <div className="error-banner" role="alert">{t(error)}</div>}
+            <div className="composer">
+              <Textarea value={draft}
+                onPaste={(event) => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void attachFiles(files) } }}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); void attachFiles(event.dataTransfer.files) } }} onChange={(event) => setDraft(event.target.value)} placeholder={t("chat.placeholder")} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
+              {attachments.length > 0 && (
+                <div className="attachments">
+                  {attachments.map((item, index) => (
+                    <span key={item.url + index} className="attachment">
+                      <img src={item.url} alt={item.name} />
+                      <button type="button" aria-label={t("chat.removeImage")}
+                        onClick={() => setAttachments((current) => current.filter((_, at) => at !== index))}>x</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="composer-foot"><span><MessageSquareText className="size-3.5" /> {t("chat.inputHint")}</span><input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { void attachFiles(event.target.files); event.target.value = "" }} /><Button variant="ghost" size="icon" aria-label={t("chat.attachImage")} onClick={() => fileInputRef.current?.click()}><ImagePlus className="size-4" /></Button>{loading ? <Button variant="destructive" size="icon" aria-label={t("chat.stop")} onClick={() => abortRef.current?.abort()}><CircleStop className="size-4" /></Button> : <Button size="icon" aria-label={t("chat.send")} disabled={!canSend} onClick={() => void send()}><ArrowUp className="size-4" /></Button>}</div>
+            </div>
+          </div>
+        </>}
+      </main>
+    </div>
+  )
+}
