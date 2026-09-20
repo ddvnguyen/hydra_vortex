@@ -37,7 +37,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { getHealth, listModels, streamChat, type ChatMessage, type HealthResponse, type StreamChatResult } from "@/lib/api"
+import { getHealth, listModels, streamChat, type ChatMessage, type HealthResponse, type HwinfoHealth, type StreamChatResult, type TiersHealth } from "@/lib/api"
 import { activeRequests, supportsCacheSlots } from "@/lib/runtime"
 import { Brain } from "./Brain"
 import { Profiling } from "./Profiling"
@@ -55,7 +55,7 @@ const message = (role: ChatMessage["role"], content: string): ChatMessage => {
 
 // atlas service /health shape (server/server.ts) — deliberately not the
 // Colibri HealthResponse: the atlas aggregates engines instead of exposing one.
-interface AtlasEngine { id: string; mode: "mock" | "engine"; ok: boolean; seq: number }
+interface AtlasEngine { id: string; mode: "mock" | "engine"; ok: boolean; seq: number | null; tiers?: TiersHealth; hwinfo?: HwinfoHealth }
 interface AtlasHealth { status: string; engines: AtlasEngine[] }
 
 export default function App() {
@@ -87,13 +87,20 @@ export default function App() {
   // the selection stable across health refreshes once the user picked one.
   const activeId = engineId ?? selected?.id
   const active = engines.find(e => e.id === activeId)
+  // hydra #785: the aggregate /health row carries the engine's tiers+hwinfo
+  // (server passes engine /health through). Merge into the Colibri
+  // HealthResponse the runtime panel renders, so the tier bar shows real
+  // device/host allocation without a second fetch. Mock/unreachable engines
+  // carry no tiers — the panel honestly omits the bar (unchanged behavior).
+  const aggHealth: HealthResponse | null = active && (active.tiers || active.hwinfo)
+    ? { status: atlas?.status ?? "ok", tiers: active.tiers, hwinfo: active.hwinfo }
+    : null
   // hydra: chat/profiling speak to the engine through the server-side proxy
   // (browser cannot reach the localhost-only engine). Mock engines have no
   // HTTP surface — the chat stays in the honest not-connected state for those.
   const proxyBase = active && active.mode === "engine" ? `/engine-proxy/${active.id}/v1` : ""
   const baseUrl = proxyBase
   const apiKey = ""
-
   // ---- chat state (upstream EFFECTs #1-#7, verbatim) ----
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState(() => stored(localStorage, "colibri.model", ""))
@@ -104,6 +111,10 @@ export default function App() {
   const [conversations, setConversations] = useState<Record<number, ChatMessage[]>>({ 0: [] })
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [healthError, setHealthError] = useState("")
+  // hydra #785: sidebar shows the engine row's tiers+hwinfo even before the
+  // chat probe connects (Brain is the landing view; mock rows carry neither
+  // and the panel stays honestly empty). Probe health wins once present.
+  const panelHealth = health ?? aggHealth
   const [lastRun, setLastRun] = useState<StreamChatResult | null>(null)
   const [draft, setDraft] = useState("")
   /* Immagini in attesa di partire col prossimo messaggio. Si tengono come
@@ -137,7 +148,7 @@ export default function App() {
   const [totalTokens, setTotalTokens] = useState({ prompt: 0, completion: 0 })
   const [connecting, setConnecting] = useState(false)
   const [connected, setConnected] = useState(false)
-  const [view, setView] = useState<"chat" | "brain" | "profiling">("chat")
+  const [view, setView] = useState<"chat" | "brain" | "profiling">("brain")
   const [error, setError] = useState("")
   const autoConnected = useRef("")
   const abortRef = useRef<AbortController | null>(null)
@@ -368,21 +379,23 @@ export default function App() {
 
         <section className="side-section runtime-section" aria-live="polite">
           <div className="section-title"><Activity className="size-3.5" /> {t("sidebar.runtime")}</div>
-          {health?.hwinfo ? <div className="hw-panel">
-            {health.hwinfo.cpu ? <div className="hw-row"><Cpu className="size-3.5" /><span>{health.hwinfo.cpu}</span></div> : null}
-            {health.hwinfo.gpus > 0 ? <div className="hw-row"><MonitorDot className="size-3.5" /><span>{health.hwinfo.gpus}× GPU<small>{health.hwinfo.vram_total_gb.toFixed(0)} GB VRAM</small></span></div> : null}
-            <div className="hw-row"><MemoryStick className="size-3.5" /><span>{health.hwinfo.ram_total_gb.toFixed(0)} GB RAM<small>{health.hwinfo.ram_avail_gb.toFixed(0)} GB free</small></span></div>
-            <div className="hw-row"><HardDrive className="size-3.5" /><span>{health.hwinfo.cores} cores</span></div>
+          {panelHealth?.hwinfo ? <div className="hw-panel">
+            {panelHealth.hwinfo.cpu ? <div className="hw-row"><Cpu className="size-3.5" /><span>{panelHealth.hwinfo.cpu}</span></div> : null}
+            {panelHealth.hwinfo.gpus > 0 ? <div className="hw-row"><MonitorDot className="size-3.5" /><span>{panelHealth.hwinfo.gpus}× GPU<small>{panelHealth.hwinfo.vram_total_gb.toFixed(0)} GB VRAM</small></span></div> : null}
+            <div className="hw-row"><MemoryStick className="size-3.5" /><span>{panelHealth.hwinfo.ram_total_gb.toFixed(0)} GB RAM<small>{panelHealth.hwinfo.ram_avail_gb.toFixed(0)} GB free</small></span></div>
+            <div className="hw-row"><HardDrive className="size-3.5" /><span>{panelHealth.hwinfo.cores} cores</span></div>
           </div> : null}
-          {health?.scheduler ? <>
+          {panelHealth && (panelHealth.scheduler || panelHealth.tiers) ? <>
+            {panelHealth?.scheduler ? (
             <div className="runtime-grid">
               <div><span>{t("dashboard.active")}</span><strong>{activeRequestsCount}<small> / {capacity}</small></strong></div>
-              <div><span>{t("dashboard.queued")}</span><strong>{health.scheduler.queued}<small> / {health.scheduler.max_queue}</small></strong></div>
-              <div><span>{t("dashboard.completed")}</span><strong>{health.scheduler.completed}</strong></div>
+              <div><span>{t("dashboard.queued")}</span><strong>{panelHealth.scheduler.queued}<small> / {panelHealth.scheduler.max_queue}</small></strong></div>
+              <div><span>{t("dashboard.completed")}</span><strong>{panelHealth.scheduler.completed}</strong></div>
               <div><span>{t("dashboard.failures")}</span><strong>{failures}</strong></div>
             </div>
-            {health.tiers ? (() => {
-              const ti = health.tiers
+            ) : null}
+            {panelHealth.tiers ? (() => {
+              const ti = panelHealth.tiers
               const total = Math.max(ti.vram + ti.ram + ti.disk, 1)
               return <div className="tier-panel">
                 <div className="tier-bar" role="img" aria-label={t("tier.ariaLabel", { vram: ti.vram, ram: ti.ram, disk: ti.disk })}>
@@ -400,7 +413,9 @@ export default function App() {
             {totalTokens.prompt + totalTokens.completion > 0 ? <div className="session-stats">
               <span><Database className="size-3" /> {t("dashboard.session")} <strong>{totalTokens.prompt.toLocaleString()}</strong> {t("dashboard.prompt")} + <strong>{totalTokens.completion.toLocaleString()}</strong> {t("dashboard.completion")}</span>
             </div> : null}
+            {panelHealth?.scheduler ? (
             <div className="runtime-foot"><span className="runtime-dot" /> {t("sidebar.schedulerOnline")} <code>{kvSlots} KV</code></div>
+            ) : null}
           </> : <p className="runtime-unavailable">{connected ? (healthError ? t(healthError) : t("status.runtimeUnavailable")) : t("sidebar.runtimeProbe")}</p>}
           {engines.length ? (
             <div className="side-engines">

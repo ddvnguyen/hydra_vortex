@@ -274,12 +274,32 @@ async function route(req: Request): Promise<Response> {
     const out = await Promise.all(engines.map(async (cfg) => {
       try {
         const c = await pollEngine(cfg, mocks.get(cfg.id))
-        return { id: cfg.id, mode: cfg.mode, ok: c.ok, seq: (c.payload?.seq as number) ?? null }
+        // hydra #785: pass the engine's own /health tiers+hwinfo through so
+        // the App tier bar reflects real device/host allocation. Best effort:
+        // absent when the engine is mock, unreachable, or pre-tier build.
+        const row: Record<string, unknown> = { id: cfg.id, mode: cfg.mode, ok: c.ok, seq: null }
+        if (c.payload && typeof c.payload === "object" && "seq" in c.payload && typeof c.payload.seq === "number") {
+          row.seq = c.payload.seq
+        }
+        if (cfg.mode === "engine" && cfg.url) {
+          try {
+            const hr = await fetch(`${cfg.url}/health`, { signal: AbortSignal.timeout(2000) })
+            if (hr.ok) {
+              const hb: unknown = await hr.json()
+              if (hb && typeof hb === "object") {
+                if ("tiers" in hb && hb.tiers && typeof hb.tiers === "object") row.tiers = hb.tiers
+                if ("hwinfo" in hb && hb.hwinfo && typeof hb.hwinfo === "object") row.hwinfo = hb.hwinfo
+              }
+            }
+          } catch { /* engine /health unreachable — tiers/hwinfo stay absent */ }
+        }
+        return row
       } catch {
         return { id: cfg.id, mode: cfg.mode, ok: false, seq: null }
       }
     }))
-    return Response.json({ status: out.some(e => e.ok) ? "ok" : "down", engines: out }, { headers: cors() })
+    const anyOk = out.some((e) => typeof e === "object" && e !== null && "ok" in e && e.ok === true)
+    return Response.json({ status: anyOk ? "ok" : "down", engines: out }, { headers: cors() })
   }
 
   // static Brain build — GET serves bytes; HEAD serves headers only
