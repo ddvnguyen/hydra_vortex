@@ -75,6 +75,49 @@ export interface ProfileResponse {
   turns: ProfileTurn[]
 }
 
+export interface TurnSummary {
+  turn_seq: number
+  ts: number
+  slot: number
+  wall_s: number
+  prompt_tokens: number
+  completion_tokens: number
+  forwards: number
+}
+
+export interface TurnsResponse {
+  seq: number
+  turns: TurnSummary[]
+}
+
+export interface RoutingEntry {
+  row: number
+  expert: number
+  count: number
+}
+
+export interface TurnDetail extends TurnSummary {
+  routing?: RoutingEntry[]
+  hits?: string
+}
+
+export interface ExpertsAtTurn {
+  seq: number
+  rows: number
+  cols: number
+  map: string
+  hits: string
+  turn_seq: number
+  geometry?: {
+    engine_id: string
+    model_hash: string
+    dense_prefix: number
+    moe_rows: number[]
+    nextn_rows: number[]
+    n_expert_used: number
+  }
+}
+
 export interface TokenUsage {
   prompt_tokens: number
   completion_tokens: number
@@ -130,6 +173,24 @@ export async function getProfile(baseUrl: string, apiKey = "", signal?: AbortSig
   const response = await fetch(serverEndpoint(baseUrl, "profile"), { headers: headers(apiKey), signal })
   if (!response.ok) throw new Error(await responseError(response))
   return (await response.json()) as ProfileResponse
+}
+
+export async function getTurns(baseUrl: string, apiKey = "", signal?: AbortSignal): Promise<TurnsResponse> {
+  const response = await fetch(serverEndpoint(baseUrl, "turns"), { headers: headers(apiKey), signal })
+  if (!response.ok) throw new Error(await responseError(response))
+  return (await response.json()) as TurnsResponse
+}
+
+export async function getTurn(baseUrl: string, seq: number, apiKey = "", signal?: AbortSignal): Promise<TurnDetail> {
+  const response = await fetch(serverEndpoint(baseUrl, `turns/${seq}`), { headers: headers(apiKey), signal })
+  if (!response.ok) throw new Error(await responseError(response))
+  return (await response.json()) as TurnDetail
+}
+
+export async function getExpertsAtTurn(baseUrl: string, turn: number, apiKey = "", signal?: AbortSignal): Promise<ExpertsAtTurn> {
+  const response = await fetch(serverEndpoint(baseUrl, `experts?turn=${turn}`), { headers: headers(apiKey), signal })
+  if (!response.ok) throw new Error(await responseError(response))
+  return (await response.json()) as ExpertsAtTurn
 }
 
 export function extractSSE(buffer: string) {

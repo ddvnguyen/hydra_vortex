@@ -126,6 +126,31 @@ const en: Record<string, string> = {
   "brain.late": "late layers — planning the answer, style, coherence",
   "brain.final": "final layers — output shaping: picks the actual next-token distribution",
 
+  // galaxy
+  "nav.galaxy": "Galaxy",
+  "galaxy.title": "Expert Galaxy",
+  "galaxy.waiting": "waiting for engine",
+  "galaxy.layers": "{{rows}} layers × {{cols}} experts",
+  "galaxy.spin": "Spin",
+  "galaxy.autoRotate": "Toggle auto-rotation",
+  "galaxy.turn": "Turn",
+  "galaxy.live": "Live",
+  "galaxy.dragHint": "drag to rotate · scroll to zoom · click to inspect",
+  "galaxy.connectHint": "Connect to the engine to see the galaxy.",
+  "galaxy.noTelemetry": "Engine telemetry is off — experts shown without routing heat.",
+  "galaxy.neverRouted": "never routed",
+  "galaxy.selections": "~2^{{heat}} selections",
+  "galaxy.specialist": "⭐ Specialist: {{top}}",
+  "galaxy.generalist": "Generalist",
+  "galaxy.unknownExpert": "No atlas data for this expert",
+  "galaxy.tier": "Tier",
+  "galaxy.heat": "Heat",
+  "galaxy.label": "Label",
+  "galaxy.entropy": "Entropy",
+  "galaxy.topCategory": "Top category",
+  "galaxy.specialization": "Specialization",
+  "galaxy.affinityProfile": "Routing affinity profile",
+
   // profiling
   "profile.title": "Profiling — where the engine spends each turn",
   "profile.ioWait": "I/O wait",
@@ -151,6 +176,14 @@ const en: Record<string, string> = {
   "profile.turnsLabel": "{{n}} turns · oldest → newest",
   "profile.oneTurn": "1 turn",
   "profile.diskNote": "Disk service is time spent reading experts on I/O threads; it overlaps with compute, so only the I/O wait the compute thread felt counts inside the wall-time stack. With multiple KV sessions the shares describe the whole engine over the turn's window.",
+  // #787 per-turn profiling — turn selector + EMAP read-only
+  "profile.selectTurn": "Select turn",
+  "profile.emapTitle": "EMAP residency",
+  "profile.emapReadonly": "read-only — tier bytes reflect engine residency invariant",
+  "profile.emapRows": "Routing entries",
+  "profile.emapSlot": "KV slot",
+  "profile.emapTs": "Timestamp",
+  "profile.emapHits": "Expert hits bitmap",
 
   // error boundary
   "error.title": "colibrì UI hit an error",
