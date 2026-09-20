@@ -4097,3 +4097,23 @@ leg FIRST (pre-profiler vs flag-OFF ±1.5% — FAIL ⇒ STOP, profiler perturbin
 Voided link-limiter rows STRUCK from findings doc + PROJECT_STATUS openly as part of this arm (done
 this turn). IMPLEMENT; report gate-leg result before any measurement leg.
 === END §92 ===
+
+=== §93: GATE ACCEPTED; PREFILL CPU-FALLBACK LEAD; SEPARATE PREFILL-STEP PROF LINE ===
+GATE ACCEPTED (+0.31% inside band; zero-cost-when-off demonstrated; profiler-ON numbers admissible
+subject to per-point OFF replicates). Incidents banked as VINDICATIONS: gate caught GGML_CUDA=OFF
+3.2x would-be finding; fp guard fail-closed on stale expectation. Patches approved (NULL-guard,
+ctx=%p draft/target separable, verify bracket :3728).
+LEAD (architect): 3060 vs 5060 Ti DECODE 1.45x but PREFILL 26x — not a hardware curve, a DIFFERENT
+CODE PATH. Hypothesis: on sm_86 a large-batch prefill op falls back to CPU while sm_120 keeps it on
+device; decode batch=1 stays on GPU (why decode barely suffers). Supporting order-of-magnitude: the
+accidental CPU-only binary measured 5.94 tok/s vs 3060 prefill 4.7. Explains why all hardware checks
+came back clean (nothing throttled; work happens elsewhere).
+ADDITION (zero extra legs): emit a SEPARATE PROF line for the first large-batch decode (prompt-eval
+step) — t_dev vs t_cpu_busy for THAT step, 3060 vs CUDA0. READ: 3060 prefill t_dev ~0 while CUDA0
+t_dev dominates => CPU FALLBACK CONFIRMED, §76 closes with a code-path mechanism (issue-worthy; 3060
+recoverable). 3060 t_dev dominates too => not fallback; report, do not reach. Instrument trust:
+CUDA0 gen5/x16 = known-correct calibration; if NVML cannot reproduce it, 3060 readings inadmissible.
+NOTE: gate legs ran flag-OFF by design => no PROF lines to extract; ONE CUDA0 prof-ON calibration
+leg added (C0CAL) to provide the calibration evidence. Leader patched, rebuilt (new fp), phase 1
+restarted with prefill-tagged binary.
+=== END §93 ===
