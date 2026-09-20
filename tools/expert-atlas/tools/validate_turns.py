@@ -28,6 +28,14 @@ LIVE_PROFILE_REQUIRED = [
 # Keys from the rejected schema revision — the fork never emitted these.
 # Reject explicitly so a schema drift of this class fails loudly.
 LIVE_PROFILE_FORBIDDEN = ["cache_hit_rate", "n_prompt_tokens", "n_gen_tokens"]
+# Collector-transform keys that must NEVER appear in the record format.
+# The wire /experts object (server-atlas.cpp experts_json_at) carries
+# map/hits as hex STRINGS; tier_summary, array-form map, and hits_seq/
+# hits_bitmap are collector-side transforms. Reject explicitly so a
+# regression to the rejected shape fails loudly (consult d-1f8fb2b5cf:
+# "$.experts_snapshot.map: expected array, got str" proved the old
+# schema diverged from the wire).
+LIVE_EXPERTS_FORBIDDEN = ["hits_seq", "hits_bitmap", "tier_summary"]
 
 
 def load_schema() -> dict:
@@ -143,6 +151,10 @@ def validate_turn_record(record: dict, schema: dict | None = None) -> list[str]:
                 if "maximum" in subdef and isinstance(subval, (int, float)):
                     if subval > subdef["maximum"]:
                         errors.append(f"{subpath}: {subval} > maximum {subdef['maximum']}")
+                if "pattern" in subdef and isinstance(subval, str):
+                    import re
+                    if not re.match(subdef["pattern"], subval):
+                        errors.append(f"{subpath}: value {subval!r} does not match pattern {subdef['pattern']!r}")
                 if isinstance(subval, dict) and "required" in subdef:
                     for subsubfield in subdef["required"]:
                         if subsubfield not in subval:
@@ -204,6 +216,22 @@ def validate_turn_record(record: dict, schema: dict | None = None) -> list[str]:
             and record["provenance"].get("telemetry_enabled") is False
             and record.get("experts_snapshot") is not None):
         errors.append("$.experts_snapshot: must be null when telemetry_enabled is false")
+    # 4. Wire-verbatim experts_snapshot: collector transforms
+    #    (array-form map, hits_seq/hits_bitmap, tier_summary) are rejected
+    #    explicitly; snapshot.turn_seq must echo the top-level turn_seq.
+    #    (map/hits hex-string type+pattern is enforced by the generic
+    #    schema walk above against the schema doc's pattern.)
+    if isinstance(record.get("experts_snapshot"), dict):
+        snap = record["experts_snapshot"]
+        for key in LIVE_EXPERTS_FORBIDDEN:
+            if key in snap:
+                errors.append(f"$.experts_snapshot: forbidden field '{key}' "
+                              "(collector transform — wire carries map/hits as hex strings, "
+                              "see server-atlas.cpp experts_json_at)")
+        if ("turn_seq" in snap and "turn_seq" in record
+                and snap["turn_seq"] != record["turn_seq"]):
+            errors.append(f"$.experts_snapshot.turn_seq: {snap['turn_seq']!r} != "
+                          f"top-level turn_seq {record['turn_seq']!r} (wire echo)")
 
     return errors
 

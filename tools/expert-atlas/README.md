@@ -50,11 +50,13 @@ turn-record.schema.json
 │   ├── ts: integer ≥ 0 (unix epoch)
 │   ├── expert_disk_s, expert_wait_s, expert_matmul_s: number ≥ 0 (honest 0.0)
 │   └── attention_s, lm_head_s: number ≥ 0 (honest 0.0)
-├── experts_snapshot: object | null
+├── experts_snapshot: object | null (mirrors fork /experts wire verbatim)
 │   ├── rows, cols: integer
-│   ├── map: string[] (hex EMAP rows)
-│   ├── hits_seq, hits_bitmap
-│   └── tier_summary: {vram, ram, disk}
+│   ├── map: hex STRING (hex_of EMAP bytes, rows*cols*2 chars — never an array)
+│   ├── hits: hex STRING (hex_of hit/miss bitmap)
+│   ├── seq: integer (global geometry seq), turn_seq: integer (echoes top-level)
+│   ├── telemetry_enabled: boolean
+│   └── geometry?: {engine_id, model_hash, dense_prefix, moe_rows, nextn_rows, n_expert_used}
 ├── provenance
     ├── engine_id, model_hash, llama_cpp_commit
     ├── atlas_stage, session_id, host

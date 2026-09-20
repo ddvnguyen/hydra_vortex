@@ -85,42 +85,77 @@
     },
     "experts_snapshot": {
       "type": ["object", "null"],
-      "description": "EMAP snapshot from /experts?turn=N for this turn. null when telemetry is disabled or snapshot not captured.",
+      "description": "EMAP snapshot from /experts?turn=N for this turn, mirroring the fork wire object verbatim (src/llama-cpp/tools/server/server-atlas.cpp experts_json_at): map and hits are hex STRINGS (hex_of byte encoding), seq is the global geometry seq, turn_seq echoes the turn. null when telemetry is disabled or snapshot not captured. Tier transforms (tier_summary etc.) belong to the COLLECTOR, not the record format — Colibri lineage is hex strings everywhere.",
+      "required": ["rows", "cols", "map", "hits", "seq", "turn_seq", "telemetry_enabled"],
       "properties": {
         "rows": {
           "type": "integer",
           "minimum": 1,
-          "description": "Number of rows in the EMAP grid."
+          "description": "Number of rows in the EMAP grid, from wire /experts rows."
         },
         "cols": {
           "type": "integer",
           "minimum": 1,
-          "description": "Number of columns (experts per layer) in the EMAP grid."
+          "description": "Number of columns (experts per layer) in the EMAP grid, from wire /experts cols."
         },
         "map": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Hex-encoded EMAP rows (2 chars per expert byte: tier>>6, heat&63)."
-        },
-        "hits_seq": {
-          "type": "integer",
-          "description": "Turn sequence number for the hits bitmap (monotonic, matches turn_seq when captured synchronously)."
-        },
-        "hits_bitmap": {
           "type": "string",
-          "description": "Hex-encoded hit/miss bitmap for this turn."
+          "pattern": "^[0-9a-f]*$",
+          "description": "Hex STRING of per-cell EMAP bytes (encode_cell tiers), from wire /experts map (hex_of). Length is rows*cols*2 chars. NEVER an array."
         },
-        "tier_summary": {
+        "hits": {
+          "type": "string",
+          "pattern": "^[0-9a-f]*$",
+          "description": "Hex STRING hit/miss bitmap for this turn, from wire /experts hits (hex_of). Zero-filled when the turn has no hits yet."
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Global geometry seq (g_seq) at capture time, from wire /experts seq."
+        },
+        "turn_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Turn sequence number this snapshot was captured for, from wire /experts turn_seq. Must equal the top-level turn_seq."
+        },
+        "telemetry_enabled": {
+          "type": "boolean",
+          "description": "Wire /experts telemetry_enabled. Always true when a snapshot object is present (absent-telemetry is represented by null snapshot)."
+        },
+        "geometry": {
           "type": "object",
-          "description": "Aggregated tier distribution from the EMAP (for quick dashboard rendering).",
+          "description": "Model geometry block, from wire /experts geometry. Optional in the record (consumers that already know the model may drop it); when present it mirrors the wire keys.",
           "properties": {
-            "vram": { "type": "integer", "minimum": 0 },
-            "ram": { "type": "integer", "minimum": 0 },
-            "disk": { "type": "integer", "minimum": 0 }
+            "engine_id": {
+              "type": "string",
+              "description": "FNV-1a64 of model path, from wire geometry."
+            },
+            "model_hash": {
+              "type": "string",
+              "description": "GGUF filename or full-weights digest, from wire geometry."
+            },
+            "dense_prefix": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of leading dense layers, from wire geometry."
+            },
+            "moe_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of MoE rows, from wire geometry."
+            },
+            "nextn_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of next-N (MTP) rows, from wire geometry."
+            },
+            "n_expert_used": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Experts used per token, from wire geometry."
+            }
           },
-          "additionalProperties": false
+          "additionalProperties": true
         }
       },
       "additionalProperties": false
