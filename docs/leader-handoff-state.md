@@ -4117,3 +4117,6 @@ NOTE: gate legs ran flag-OFF by design => no PROF lines to extract; ONE CUDA0 pr
 leg added (C0CAL) to provide the calibration evidence. Leader patched, rebuilt (new fp), phase 1
 restarted with prefill-tagged binary.
 === END §93 ===
+
+## BANK §94 — 2026-09-20 (commit c01ec9cef)
+§92 arm COMPLETE. §93 CPU-fallback REFUTED (3060 prefill t_dev 72,674.8/72,681.6 ms = 100% device; CUDA0 2,854.1/2,860.7 — clean calibration). 26x prefill gap = sm_86 shape-dependent device-side kernel slowness; fatbin verified (143x sm_86 SASS); standard gates exonerated; exact kernel pending per-kernel profiling (94 open). PCIe under load exonerated (3060 rx ~200 MB/s = demand, 2.5% of gen4-x4). 3060: C-P0 median 12.9823; M-P0 median 13.4832 (acc-graded 0.42-0.86); M-P4 (P_max=4, ncmoe 44) median 14.2290 (+5.5%, +10% matched-acc, 16.78@.921 best); REPRO M-P0@81920 median 12.3441, best 15.0241. Owner 17-23 NOT reproduced -> per pre-registration PORT decode-overlap + ple-prefetch = CRITICAL PATH. Profiler: gate pass +0.31%, overhead nil, span instrument calibrated both GPUs. PR #156 open (owner-gated). Lessons: never-patch-a-running-leg-script, dose-verify-must-count-cuda-host-expert-layers. Next: architect report + rebuild #9; 94-follow-on = per-kernel profiling on 3060 prefill.
