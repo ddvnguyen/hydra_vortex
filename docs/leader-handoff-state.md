@@ -4033,3 +4033,39 @@ rules minted. PROJECT_STATUS.md Verified Facts updated with 8 new rows (producti
 HOLD: no new arm (acceptance / convexity / overlap port ALL awaiting owner's direction — architect
 has put the question to the owner). Leader idle until owner answers or §91 lands.
 === END §90 ===
+
+=== §91: OWNER CORRECTION — 3060 IS PCIe GEN4 x4; LINK STORY VOIDED; PROFILER ORDERED ===
+OWNER (via architect ruling): "3060 is gen4 x4, gen1 is idle mode only." Gen4 x4 ~= 7.88 GB/s, not
+the ~985 MB/s used throughout. Measured decode demand 2,265-3,950 MB/s = ~30-50% of the link, NOT
+over it. Why our gen readings proved nothing: every sample sat in a low-traffic window (weight load
+/ dual arm where 3060 saw 112-238 MB/s) — a link with nothing to carry does not uptrain. We have
+NEVER observed the 3060 link state under sustained decode traffic.
+VOID — STRUCK FROM THE BANK, DO NOT CITE AGAIN:
+  - "the 3060's gen1 x4 link IS the prefill mechanism"
+  - the §76 closure that rested on it — §76 REOPENS as UNEXPLAINED (config/host question; do NOT
+    restart the commit bisect)
+  - "MTP amortises traffic down to the link ceiling" story
+  - "needs >= 32 of 48 layers placed to escape the link" arithmetic
+  - §82's downgraded PCIe verdict is moot in both directions
+THE 26x PREFILL GAP (4.7 vs 122, same binary, same config) IS UNEXPLAINED AGAIN. That is the honest
+state. Also voided transitively: findings doc + PROJECT_STATUS rows that assert the 3060 link
+limiter must be corrected when §91's work lands (marked, not yet edited — edit under the profiler
+arm, not silently now).
+NEW ORDER (architect, owner-directed): build an IN-SOURCE, PARAM-GATED DECODE PROFILER (default
+OFF, committed to the fork), THEN measure 3060 MTP + PLACEMENT with it (the gap nobody has run).
+DESIGN NOTE FIRST — NOTHING BUILT UNTIL ARCHITECT APPROVES. Requirements: one flag (--profile-decode,
+zero measurable cost when off, verified vs pre-profiler binary); measures (a) NVML link gen/width/
+throughput DURING decode (settles gen4-vs-gen1), (b) host<->device bytes+time per step, (c) per-step
+split GPU-compute / CPU-expert / transfer / sync-wait, (d) per-layer device+time, (e) MTP draft/
+verify/tokens/acceptance per step; non-perturbation (CUDA events, out-of-band readback or every-N
+sampling — no cudaDeviceSynchronize on hot path); structured stderr lines per window + summary, no
+per-token spam; full fork lifecycle (branch, PR, loaded-window build, provenance + contamination +
+rule-5 archive pre-leg).
+THEN THE MEASUREMENT: re-probe H on 3060 with MTP head (P_max expect ~4-5 of 7); ladder 3060
+M-P0 / M-P_max interleaved n=5 (bimodality back with MTP), acceptance per run, medians + min-max,
+acceptance-adjusted per §89; profiler ON per leg + one profiler-OFF replicate per point (overhead
+quantified); report per-step time split + link-state-under-load FIRST — that is the owner's "see
+what happens", above tok/s.
+ARCHITECT PREDICTION ON RECORD (falsifiable): 3060 MTP + 4-5 placed layers lands ~20-21 tok/s
+(inside owner's remembered 17-23) — self-declared poor record, treat as target not guide.
+=== END §91 ===
