@@ -358,6 +358,13 @@ Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.
 | P100 prefill                 | 110 tok/s    |
 | P100 decode                  | 28 tok/s     |
 | Cross-GPU restore            | ✅ confirmed  |
+| Production decode (CUDA0, 81920, dose 9, MTP off) | 22.2541 tok/s (build-g3 fp 895c522343eeaa53) |
+| 3060 chased config (dose 0, ctx 81920, MTP on)    | 14.97 tok/s @ acc .869; ceiling ~16.1-16.5 — recorded 19.85-22.30 DOES NOT reproduce (§107) |
+| Drafting share of decode wall                     | 2.5% (262/10,283 ms) — overlap class Amdahl-capped, permanently |
+| Expert-weight load path (all offload configs)     | two-stage fallback → PAGEABLE CPU_Mapped (mmap cannot pin); GPU-computed via 136 MiB bounce buffer; --load-mode none pins (44.2 GiB) and DOES NOT help (D2) |
+| sm_86 prefill marginal                            | ~4.9× CUDA0 per token (27.7 vs 5.6 ms/tok); fixed ~58 s cost is PER-PREFILL (163,290.2 vs 163,112.0 ms, same process, cache_prompt:false) |
+| Profiler t_dev semantics                          | submit-to-complete WALL time, NOT GPU-busy (util 38% vs t_dev 99.9% worked example) |
+| Quiescence gate limitation                        | load1≤4 cannot see memory-controller contention; record resident inference procs (pid/port/threads/ngl) for host-resident-weight configs |
 | cache_n after restore        | 2964 / 2968  |
 | KV state at 60-80K           | ~800 MB      |
 | n_tokens must be > n_past    | CRITICAL ⚠️ — engine-owned under #470 (see below) |
@@ -368,7 +375,7 @@ Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.
 | **MoE placement: 5060 Ti production config** | **22.2541 tok/s decode, ctx 81920, 9/48 expert layers via `-ot 'blk\.(39|4[0-7])\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU'`, MTP off, n=3 ±0.6%; prefill 141.6** (build-g3 86af0c9af, fp `895c522343eeaa53`) |
 | **MoE placement slope, 5060 Ti** | 0.3187 tok/s/layer at ctx 81920 (0.3158/0.4244 over 0-11 at 16K); no knee through 23% of range |
 | **MoE placement slope, 3060** | 0.2065 tok/s/layer over 0-7 of 48 (physical cap: 8th layer OOMs); 13.15→14.60 tok/s |
-| **3060 gen1 x4 link is the prefill limiter** | CPU-expert configs stream 2.3–4 GB/s sustained (decode-scoped dmon) = 2.3–4× over the ~985 MB/s gen1-x4 ceiling; CUDA0-solo prefill 122 vs 3060 4.7 tok/s (26×, same binary) — §76 prefill collapse was config, not code |
+| **3060 prefill limiter UNEXPLAINED (§91 correction)** | Prior claim "3060 gen1-x4 link is the prefill limiter" VOIDED — owner corrected: 3060 is PCIe **gen4 x4** (~7.88 GB/s); gen1 readings were idle downtrain. Measured demand 2.3–4 GB/s ≈ 30–50% of link. CUDA0-solo prefill 122 vs 3060 4.7 tok/s (26×, same binary) remains real but UNATTRIBUTED; §76 reopened. In-source decode profiler (§92) will measure link state under load |
 | **Decode bimodality = draft acceptance** | ±16% MTP-on vs ±1.5% MTP-off, three binaries; tok/s tracks acceptance run-by-run |
 | **Dual-GPU net-negative for this workload** | −9% at zero dose; per-layer benefit 71% of single-device |
 | **ctx cost is compute-reserve scaling** | ctx 81920 = 1,638 MiB = 1.75 expert layers, card-independent (KV itself only 48 MiB @16K — hybrid attention+recurrent model) |
