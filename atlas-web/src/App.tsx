@@ -26,6 +26,7 @@ import {
   ImagePlus,
   MessageSquareText,
   MonitorDot,
+  Orbit,
   RefreshCw,
   SlidersHorizontal,
   Timer,
@@ -40,6 +41,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { getHealth, listModels, streamChat, type ChatMessage, type HealthResponse, type HwinfoHealth, type StreamChatResult, type TiersHealth } from "@/lib/api"
 import { activeRequests, supportsCacheSlots } from "@/lib/runtime"
 import { Brain } from "./Brain"
+import { Galaxy } from "./Galaxy"
 import { Profiling } from "./Profiling"
 import { persistPublicSettings, stored } from "@/lib/storage"
 import { Markdown } from "@/components/Markdown"
@@ -148,7 +150,7 @@ export default function App() {
   const [totalTokens, setTotalTokens] = useState({ prompt: 0, completion: 0 })
   const [connecting, setConnecting] = useState(false)
   const [connected, setConnected] = useState(false)
-  const [view, setView] = useState<"chat" | "brain" | "profiling">("brain")
+  const [view, setView] = useState<"chat" | "brain" | "galaxy" | "profiling">("brain")
   const [error, setError] = useState("")
   const autoConnected = useRef("")
   const abortRef = useRef<AbortController | null>(null)
@@ -462,6 +464,7 @@ export default function App() {
           <div className="view-tabs">
             <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}><MessageSquareText className="size-3.5" /> {t("nav.chat")}</button>
             <button className={view === "brain" ? "active" : ""} onClick={() => setView("brain")}><BrainCircuit className="size-3.5" /> {t("nav.brain")}</button>
+            <button className={view === "galaxy" ? "active" : ""} onClick={() => setView("galaxy")}><Orbit className="size-3.5" /> {t("nav.galaxy")}</button>
             <button className={view === "profiling" ? "active" : ""} onClick={() => setView("profiling")}><Gauge className="size-3.5" /> {t("nav.profiling")}</button>
           </div>
           <div className="top-actions">
@@ -478,6 +481,7 @@ export default function App() {
         </header>
 
         {view === "brain" ? <Brain baseUrl="" apiKey="" connected={!!atlas?.status} engineId={activeId} />
+          : view === "galaxy" ? <Galaxy baseUrl={baseUrl} apiKey={apiKey} connected={connected} engineId={activeId} />
           : view === "profiling" ? <Profiling baseUrl={baseUrl} apiKey={apiKey} connected={connected} /> : <>
           <div className="conversation">
             {!messages.length ? (

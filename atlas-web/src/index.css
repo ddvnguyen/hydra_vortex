@@ -176,6 +176,48 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .brain-tip-spec small, .brain-tip-aff { color: #8b9aa3; font-weight: 400; }
 .brain-tip-aff { font-size: 10px; }
 
+/* ---- Galaxy page ---- */
+.galaxy-page { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; overflow: auto; }
+.galaxy-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.galaxy-controls { display: flex; align-items: center; gap: 8px; }
+.galaxy-btn { display: flex; align-items: center; gap: 5px; padding: 5px 12px; font-size: 11px; font-weight: 600; color: var(--muted-foreground); background: var(--card); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
+.galaxy-btn.active { background: var(--primary); color: #08110d; border-color: var(--primary); }
+.galaxy-btn:hover:not(.active) { border-color: rgba(78,214,165,.35); color: var(--foreground); }
+.galaxy-turn-select { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted-foreground); }
+.galaxy-turn-select select { height: 28px; padding: 0 20px 0 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--foreground); background: var(--input); font-size: 11px; }
+.galaxy-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11px; color: #839197; align-items: center; }
+.galaxy-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+.galaxy-drag-hint { color: var(--primary); }
+.galaxy-canvas-wrap { flex: 1; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: #07090a; min-height: 400px; position: relative; }
+.galaxy-canvas-wrap canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+.galaxy-canvas-wrap canvas:active { cursor: grabbing; }
+.galaxy-tooltip { position: fixed; z-index: 50; background: #0d1214; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 11px; color: var(--foreground); pointer-events: none; max-width: 280px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: grid; gap: 4px; }
+.galaxy-tooltip-title { display: flex; align-items: center; gap: 5px; font-weight: 700; color: var(--primary); }
+.galaxy-tooltip-label { color: var(--primary); font-weight: 700; }
+.galaxy-tooltip-label small { color: #8b9aa3; font-weight: 400; }
+.galaxy-tooltip-weak { color: #c9a34a; font-style: italic; font-size: 10px; }
+.galaxy-tooltip-aff { color: #8b9aa3; font-size: 10px; }
+.galaxy-tooltip-role { color: #8b9aa3; font-style: italic; border-top: 1px solid var(--border); padding-top: 5px; margin-top: 2px; }
+.galaxy-detail { position: fixed; bottom: 20px; right: 20px; z-index: 40; width: 320px; background: #0d1214; border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: grid; gap: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.6); }
+.galaxy-detail-head { display: flex; align-items: center; justify-content: space-between; }
+.galaxy-detail-title { display: flex; align-items: center; gap: 5px; font-weight: 700; color: var(--primary); font-size: 12px; }
+.galaxy-detail-close { background: none; border: none; color: var(--muted-foreground); font-size: 18px; cursor: pointer; padding: 0 4px; }
+.galaxy-detail-close:hover { color: var(--foreground); }
+.galaxy-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.galaxy-detail-grid span { color: #7f8d92; font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.galaxy-detail-grid strong { font: 600 13px ui-monospace, SFMono-Regular, monospace; color: var(--foreground); }
+.galaxy-detail-affinity { display: grid; gap: 5px; }
+.galaxy-detail-aff-title { color: #7f8d92; font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.galaxy-detail-aff-row { display: grid; grid-template-columns: 80px 1fr 40px; gap: 6px; align-items: center; font-size: 10px; color: #a5b0b4; }
+.galaxy-detail-aff-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.galaxy-detail-aff-bar > div { height: 100%; border-radius: 3px; background: var(--primary); transition: width .3s ease; }
+.galaxy-detail-aff-row code { color: var(--foreground); font-size: 10px; text-align: right; }
+@media (max-width: 900px) {
+  .galaxy-page { padding: 10px; }
+  .galaxy-head { flex-direction: column; align-items: flex-start; }
+  .galaxy-detail { width: calc(100% - 20px); left: 10px; right: 10px; bottom: 10px; }
+}
+
 /* ---- Profiling page ---- */
 .prof-page { flex: 1; display: flex; flex-direction: column; gap: 16px; padding: 18px 22px; overflow: auto; }
 .prof-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
