@@ -123,3 +123,26 @@ that given LFU-with-decay already ships. Only A could, and A's ceiling (~18-19) 
 - Whether the §81 numbers are 3060-solo (line 3076 confirms it only for the MTP proven config).
 - Per-expert CPU cost at lower experts-per-layer; depth transfer of the 25.7 ms fixed term.
 - `pjsgsy` gate numbers are a single unreviewed comment on one card.
+
+## 9. Findings while running section 6 (2026-09-21) - read before trusting any 3060 number
+
+1. **The 3060 link is Gen1 (2.5 GT/s) x4 and delivers 0.39 GB/s H2D** (pinned = pageable = 0.39-0.42, 35 s
+   of sustained load, link never upshifts; 5060 Ti in the same probe: 25.9 pinned / 13.6 pageable, upshifts).
+   Card bus 02:00.0 (the NVMe adapter slot), root port 00:06.0 reports max 16 GT/s x4; no AER errors.
+   Probe: `scripts/moe-controls/h2d_bw.cu`. Retrain needs root (owner action). The on-file 0.3003 ms/miss
+   (= 6.27 GB/s) is from a healthy-link era. `docs/design-prefill-fastpath-DRAFT.md` (foreign draft) found the same.
+2. **Ledger smoke (cache N=42, 64 tokens, ctx 8192, cold cache)** on binary ab8424b1b:
+   `ms/token = 41.2 + 3.109 * misses`, r2 = 0.995, 177 misses/token; 3.11 ms/miss = 1.887 MB / 0.61 GB/s.
+   Slope is the link, not the kernel: 10.4x the on-file slope.
+3. **Half-life unit SETTLED (measured):** 3024 plan calls = 48 groups x 63 tokens; every group's
+   `device_step` runs 0..62. One `device_step` = one decode token per layer, so the shipped half-life 16
+   = 16 tokens (pjsgsy's "window 16"). The earlier "1/3 token" claim stays retracted.
+4. **Cold, short sample only (not representative, redo at depth):** misses by prior sighting count
+   0/1/2/3+ = 9247/1748/81/0 (83.5/15.8/0.7/0 %). Evictions 9060 of 11076 misses, mean evicted freq 1.04.
+5. `--decode-overlap` fails with any host-resident expert ("rebuilt graph requires another backend"), so it is
+   dropped from every control arm. Overlap/no-overlap and gs/demand binaries gave the same 1.7 tok/s on the smoke.
+6. Page-cache residency of the 50 GB model is a covariate (21 GB resident before prewarm); harness now prewarms
+   and records it, plus the H2D probe, per arm.
+
+**Consequence:** cache-vs-static tok/s on the 3060 cannot decide anything until the link is at Gen4. Routing
+statistics (misses/token, bins) are link-independent and are being collected now (run3, flagged degraded).
