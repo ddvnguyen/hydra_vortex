@@ -146,3 +146,25 @@ that given LFU-with-decay already ships. Only A could, and A's ceiling (~18-19) 
 
 **Consequence:** cache-vs-static tok/s on the 3060 cannot decide anything until the link is at Gen4. Routing
 statistics (misses/token, bins) are link-independent and are being collected now (run3, flagged degraded).
+
+## 10. Control arms at depth (run3/run4, 2026-09-21/22) - link 0.39 GB/s (Gen1) for all rows
+
+Depth: prompt_n 13946, ctx 81920, MTP off, 200 out, 1 boot per arm, reps 2-3 warm (cache_n 13942). No `--decode-overlap`
+except `cache42OL`. Binary `ab8424b1b`. Page cache prewarmed (~68 GB) per arm.
+
+| arm | tok/s reps | VRAM after load / peak MiB | note |
+|---|---|---|---|
+| cache N=42 (`cache42L`) | 1.50 / 1.56 / 1.53 | 10461 / 10883 | link-bound, not a valid cache figure |
+| cache N=42 + overlap (`cache42OL`) | 1.64 / 1.57 / 1.57 | 10573 / 11005 | overlap does not change the intercept |
+| static `ncm4` (n-cpu-moe 44) | 12.42 / 12.53 / 12.60 | 10947 / 10983 | equal VRAM with cache (peak within ~100 MiB) |
+| static `ot4` (-ot 4 layers) | 12.28 / 12.57 / 12.67 | 10947 / 10983 | same as ncm4: flag flavours agree |
+| all-host (`--cpu-moe`) | 11.48 / 11.92 / 9.85 | 7205 / 7241 | rep 3 host-contended (load1 3.5, server CPU 219% vs 270%) |
+
+Ledger at depth (link-independent routing): ~181-194 misses/token of 480, hit rate ~60%. Misses by prior sighting
+count 0/1/2/3+ = ~72/25/3/0 %. 95% of misses evict an expert with mean windowed freq 1.13. Fit ms = I + 3.11-3.16*miss,
+**I = 45-57 ms** (overlap off 57/52/57, overlap on 45/54/52), r2 0.99. The on-file I = 25.7 is not reproduced.
+CPU-serve cost per expert (all-host vs ncm4, 40 experts): 0.11-0.19 ms, noisy.
+
+Option A ceiling = 1000/(I + up*0.3003 + cpu*0.105), gate T=1 (up 55, cpu 135 per token): I=52 -> 12.0 tok/s,
+I=41 -> 13.9, I=25.7 -> 17.7. Static = 12.5 (14.03 on file at ctx 16384). With the measured I the ceiling does not
+clearly beat static before split/sync overhead. Caveat: I was measured at Gen1; whether the link changes I is untested.

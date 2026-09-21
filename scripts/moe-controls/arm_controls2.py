@@ -37,7 +37,7 @@ PLE_OT = "per_layer_token_embd=CPU"
 def arm_flags(arm):
     if arm in ("cache42", "cache42L"):   # L = per-plan ledger on (GGML_CUDA_MOE_LEDGER)
         return ["--override-tensor", PLE_OT, "--moe-expert-cache-size", "42"]
-    if arm == "cache42O":                # O = cache42 + --decode-overlap (on-file baseline flavour)
+    if arm in ("cache42O", "cache42OL"):                # O = cache42 + --decode-overlap (on-file baseline flavour)
         return ["--override-tensor", PLE_OT, "--moe-expert-cache-size", "42", "--decode-overlap"]
     if arm == "allhost":
         return ["--override-tensor", PLE_OT, "--cpu-moe", "--moe-expert-cache-size", "0"]
