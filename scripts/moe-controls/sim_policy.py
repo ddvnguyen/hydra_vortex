@@ -6,7 +6,11 @@ own N-slot cache. Policies: kernel(hl) = the shipped plan kernel (validated agai
 gate(hl,T) = kernel victim rule but a miss installs only if its prior windowed sighting count >= T (else it is
 "bypassed", i.e. served by another path), belady (mandatory install) and belady_bypass (optimal with bypass).
 
-Usage: sim_policy.py <ledger.csv> [N=42] [--c-up 0.3003] [--c-cpu 0.105,0.19] [--warm 60]
+Usage: sim_policy.py <ledger.csv> [N=42] [--c-up 0.3003] [--c-cpu 0.105,0.19] [--warm 60] [--carry=1]
+--carry=1 replays all requests as one stream per group (cache and frequency state survive request boundaries) instead of
+a cold cache per request, which is what the engine does today. With repeated identical requests it is optimistic.
+Exactness: residency-only policies (kernel, lru, belady mandatory) are exact replays; gate/bypass policies are approximate,
+because a CPU-served expert can change accumulation order and so perturb later routing.
 CSV row: t_ns,step,group,n_routes,n_unique,n_misses,n_evict,evict_freq_sum,mf0,mf1,mf2,mf3,miss_mask,id0,id1,...
 """
 import sys, collections
@@ -160,6 +164,13 @@ def main():
     c_cpus = [float(x) for x in opts.get('--c-cpu', '0.105,0.19').split(',')]
     warm = int(opts.get('--warm', 60))
     reqs = load(path)
+    if opts.get('--carry') == '1':
+        merged = collections.defaultdict(list)
+        for r in reqs:
+            for g, seq in r.items():
+                base = merged[g][-1][0] + 1 if merged[g] else 0
+                merged[g].extend((base + i, ids, m, n) for i, (_st, ids, m, n) in enumerate(seq))
+        reqs = [merged]
     print('requests', len(reqs), 'groups', [len(r) for r in reqs], 'steps', [max(len(v) for v in r.values()) for r in reqs])
     # validation: kernel hl=16 vs recorded misses, per request
     for k, r in enumerate(reqs):

@@ -194,3 +194,34 @@ ledger on, MTP off, `-ot`/`--cpu-moe` off. Repetitive continuation ("banana" x N
    Expected from the Gen1 fit: X ~ 19-22 tok/s, B ~ 11.4-13.9. My rule (leader's choice, not the architect's): B <= 13.75
    (static x1.10, allowance for split/sync overhead) -> shelve; B > 13.75 -> the link fix is worth waiting for.
 4. The leg also settles the I dispute directly: X at 14K vs the Gen1 fit I = 45-57 ms (X = 17.5-22).
+
+## 13. Per-request cache reset: design or incidental? (section 128, source trace only, no rig)
+
+**Finding.** The cold cache at every request start is a consequence of the legacy/grouped authority handoff, not a policy
+choice and not the candidate-table publish path.
+
+- `publish()` / `detach_resources()` are NOT per request. `llama_context::refresh_moe_candidates()` returns early unless
+  `moe_candidate_refresh_pending`, which is set only at context creation and by `set_adapters_lora()` (`llama-context.cpp:2557`).
+- The per-request reset is `cold_reset_grouped_resource()` (`moe-cache.cu:6574`): it memsets `slot_for_expert`/`expert_for_slot`
+  to -1, `last_used`, `expert_frequency`, `expert_frequency_epoch`, `device_step`, `device_clock` and the plan to 0. It is called
+  from the group-authority transition (`moe-cache.cu:11593`, `11628`) when `resource->legacy_dirty`.
+- `legacy_dirty` is set whenever the LEGACY per-tensor cache takes a lease on the shared backing (`moe-cache.cu:8366`, `8481`,
+  `8613`). The legacy path serves prefill and any non-grouped-decode graph, so every request that runs a prefill dirties the
+  backing and the next grouped decode starts cold. Commit `a3f252c9e` ("retain MoE cache backing across phases") keeps the
+  allocation across phases, not the contents. The dirty flag is a conservative correctness guard: the legacy path moves slots
+  behind the grouped metadata's back, so the grouped metadata cannot be trusted afterwards.
+- Consequence for agent workloads: a warm multi-turn request (`cache_n` 13942, `prompt_n` 4) still takes the legacy path for
+  its 4-token prefill and therefore throws away the decode working set of the previous turn, even though it would be the case
+  where carry-over is worth most. Conversely, a real long prefill overwrites the legacy slots with prefill-recency, so
+  carry-over would only be meaningful together with a reconcile step (rebuild grouped metadata from the legacy slot map),
+  not by simply skipping the memset.
+
+**Simulator.** `sim_policy.py --carry=1` replays all traced requests as one stream per group (residency and frequency survive
+request boundaries). It bounds the gain from removing the reset. Caveat: the three traced requests are the same prompt, so
+request k+1 re-touches request k's experts and the result is optimistic; a distinct-prompt trace is needed before this number
+is used for a decision.
+
+**Exactness of replays (architect section 128).** Residency-only replays (kernel at any half-life, LRU, Belady mandatory
+install) are exact: routing is policy-independent at temperature 0 and each group's cache is independent. Bypass replays
+(gate T, Belady + bypass) are APPROXIMATE: a bypassed expert would be computed on the CPU, and a different accumulation order
+can perturb later logits and so later routing. Read them as bounds, not predictions.
