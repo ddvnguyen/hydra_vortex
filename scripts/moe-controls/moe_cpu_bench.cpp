@@ -5,7 +5,10 @@
 // layers with random expert ids so every iteration reads cold weights, like a decode token does.
 //
 // build: see run_f1f2.sh.   usage: moe_cpu_bench --gguf a.gguf[,b.gguf] [--threads 6] [--layers 8] [--iters 600]
-//        [--js 1,2,4,6,10] [--gap-us 1500] [--label idle]
+//        [--js 1,2,4,6,10] [--gap-us 850] [--gap-mode spin|sleep] [--hog-gbps 0] [--poll 50] [--label idle]
+// --gap-us is the time between calls: split execution calls the CPU once per layer, so the real gap is I/48 = 0.81-0.90 ms.
+// --gap-mode spin keeps the calling thread hot like the engine decode thread; sleep lets it fall into a C-state (bench artifact).
+// --hog-gbps N adds a thread reading N GB/s of host memory, standing in for pinned-staging DMA reads of a Gen4 upload stream.
 // prints one line per j:  BENCH label j=<j> n=<iters> median_ms=.. mean_ms=.. p90_ms=.. c_per_expert_ms=.. (median/j)
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -13,6 +16,7 @@
 #include "gguf.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -50,7 +54,9 @@ int main(int argc, char ** argv) {
     std::string gguf_arg;
     std::string js_arg = "1,2,4,6,10";
     std::string label = "run";
-    int n_threads = 6, n_layers = 8, iters = 600, gap_us = 1500;
+    int n_threads = 6, n_layers = 8, iters = 600, gap_us = 850, poll = 50;
+    double hog_gbps = 0;
+    bool gap_spin = true;
     for (int i = 1; i + 1 < argc; i += 2) {
         std::string k = argv[i], v = argv[i + 1];
         if (k == "--gguf") gguf_arg = v;
@@ -60,6 +66,9 @@ int main(int argc, char ** argv) {
         else if (k == "--js") js_arg = v;
         else if (k == "--gap-us") gap_us = atoi(v.c_str());
         else if (k == "--label") label = v;
+        else if (k == "--gap-mode") gap_spin = (v == "spin");
+        else if (k == "--hog-gbps") hog_gbps = atof(v.c_str());
+        else if (k == "--poll") poll = atoi(v.c_str());
         else { fprintf(stderr, "unknown arg %s\n", k.c_str()); return 2; }
     }
     if (gguf_arg.empty()) { fprintf(stderr, "--gguf required\n"); return 2; }
@@ -133,7 +142,28 @@ int main(int argc, char ** argv) {
     }
 
     ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
+    tpp.poll = poll;
     ggml_threadpool * tp = ggml_threadpool_new(&tpp);
+    fprintf(stderr, "threadpool: n_threads=%d poll=%u gap=%dus mode=%s hog=%.1fGB/s\n", n_threads, tpp.poll, gap_us,
+            gap_spin ? "spin" : "sleep", hog_gbps);
+
+    std::atomic<bool> hog_stop{false};
+    std::thread hog;
+    if (hog_gbps > 0) {
+        hog = std::thread([&]() {
+            const size_t region_bytes = 2ull << 30, chunk = 2ull << 20;
+            std::vector<char> region(region_bytes, 1), dst(chunk);
+            std::mt19937_64 hr(7);
+            const auto period = std::chrono::duration<double>(chunk / (hog_gbps * 1e9));
+            auto next = std::chrono::steady_clock::now();
+            while (!hog_stop.load()) {
+                size_t off = (hr() % ((region_bytes - chunk) / 4096)) * 4096;
+                memcpy(dst.data(), region.data() + off, chunk);
+                next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
+                while (std::chrono::steady_clock::now() < next && !hog_stop.load()) {}
+            }
+        });
+    }
 
     std::mt19937 rng(12345);
     std::vector<int> perm(n_expert);
@@ -184,7 +214,14 @@ int main(int argc, char ** argv) {
             auto b = std::chrono::steady_clock::now();
             if (s != GGML_STATUS_SUCCESS) { fprintf(stderr, "compute failed %d\n", (int) s); return 1; }
             if (it >= warmup) ms.push_back(std::chrono::duration<double, std::milli>(b - a).count());
-            if (gap_us > 0) std::this_thread::sleep_for(std::chrono::microseconds(gap_us));
+            if (gap_us > 0) {
+                if (gap_spin) {
+                    const auto until = b + std::chrono::microseconds(gap_us);
+                    while (std::chrono::steady_clock::now() < until) {}
+                } else {
+                    std::this_thread::sleep_for(std::chrono::microseconds(gap_us));
+                }
+            }
         }
         std::sort(ms.begin(), ms.end());
         const double med = ms[ms.size() / 2], p90 = ms[ms.size() * 9 / 10];
@@ -194,6 +231,8 @@ int main(int argc, char ** argv) {
         fflush(stdout);
         for (auto & gs : graphs) ggml_free(gs.ctx);
     }
+    hog_stop = true;
+    if (hog.joinable()) hog.join();
     (void) sink;
     return 0;
 }

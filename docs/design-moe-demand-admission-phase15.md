@@ -411,3 +411,65 @@ continuation, link 0.39 GB/s, VRAM peak 10807 MiB, decode 2.90 / 2.96 / 2.88 tok
    a raw Gen4/Gen1 bandwidth ratio of 7.9x, consistent with Gen1 running at lower efficiency (62% vs 80%).
 8. **Owner blocker downgraded.** The 3060 link retrain is no longer blocking the decision. It is confirmatory: it validates
    c_up for any design that still uploads, and the `cache42` / `cache42O` rerun.
+
+## 19. F1/F2 at the design's real call spacing (sections 131-132) - result: rule cell PASSES by 3%, upper bound FAILS
+
+Bench `scripts/moe-controls/moe_cpu_bench.cpp` (real expert tensors of 12 layers spread over all four shards: IQ2_XXS/XS/S, IQ3_XXS/S
+gate/up, IQ4_NL down; mmap, no repack; random expert ids, cold weights), `-t 6`, threadpool **poll = 50** (`ggml.c:8296`), identical
+to the engine (`common/common.h:74`; the static arms passed no `--poll`). Call spacing **0.85 ms spin** (= I/48). Raw output
+`scripts/moe-controls/f1f2-results-0.85ms.txt`, composition `f1f2-fit-0.85ms.txt` (`fit_f1.py`). Four idle runs, three busy
+runs (cache42 decoding on the 3060, GPU 100%, link Gen1), two busy+hog runs.
+
+1. **C-state artifact (leader's catch).** The first bench slept between calls (`sleep_for`), letting the CALLING thread's core drop
+   into a C-state; the engine's decode thread never does. Spinning the gap removed it. Poll 50 keeps the workers spinning for
+   ~n_rounds = 1024*128*50 = 6.6M iterations, so they do not sleep across 0.85 ms either.
+2. **F1 as a multiplier is dropped (architect).** The CPU is called once per layer, 48x/token, serving j = M/48 experts, so j and M
+   are one parameter and `CPU ms/token = 48 * T(M/48)`; with T = K + w*j this is `48K + M*w`, and
+   **B = 1000 / (I + 48K + M*w)**. 48K is M-invariant; lower M amortises K over fewer experts, so cheaper-looking cells are
+   worse than a fixed ratio says: measured c(j)/c(10) = **1.17 at M=190 (j=3.96), 1.28 at M=137 (j=2.85), 1.75 at j=1**, so the
+   killed M = 54-57 cells (j~1.15) were ~1.7x, not 1.2x. That is the honest direction.
+3. **Pooled per-call T(j), ms** (idle / busy / busy+hog): j=1 0.147/0.148/0.147, j=2 0.238/0.240/0.252, j=3 0.317/0.329/0.343,
+   j=4 0.391/0.414/0.439, j=5 0.475/0.498/0.526, j=6 0.522/0.597/0.615, j=8 0.719/0.765/0.797, j=10 0.837/0.920/0.973.
+4. **K and w (idle, pooled fit): K = 0.081 ms, w = 0.0769 ms.** F1_fit = 1.142, F1_raw (c(4)/c(10)) = **1.170**; the raw ratio is the
+   more conservative and governs. Per-run K ranges 0.059-0.100 and w 0.072-0.082: the K/w split is poorly identified run to run
+   (they trade off), while c(4) is stable at 0.092-0.103. That is why the rule uses T(j) interpolated at j = M/48, not K and w
+   individually. Residuals of the pooled fit: j=1 -6.9%, j=2..5 +0.8..+2.0%, j=6 -3.8%, j=8 +3.3%, j=10 -1.6%. The +12% at j=6
+   from the 1.5 ms-sleep run does NOT persist (it flips sign between runs: -14.6% .. +5%), so it is run-to-run noise, most likely
+   thread placement on the 12700K's P/E cores; I cannot name a mechanism and did not pin threads. The j=1 dip (-7%) does recur
+   (concave at small j); it does not touch the j ~ 3-4 operating point.
+5. **Controls.** poll = 0 (workers sleep at once): K 0.068, c(4) 0.0995 vs idle K 0.081, c(4) 0.0979: **no penalty, so the pool
+   wake-up is NOT what K is made of and "keep the pool hot" is worth ~0.** K is per-call dispatch, activation quantisation and
+   graph-node barriers. A 1.5 ms spin gap raises K to 0.120 and a sleeping caller to 0.095, so K does depend on call spacing
+   by some mechanism other than pool sleep (unidentified). The lever that survives is fewer, larger calls (batch CPU-served
+   experts across layers where the dependency graph allows): 48K = 3.9 ms of bench time, 5.4 ms scaled in situ, about 10% of a token.
+6. **F2.** F2_pure = c(4, GPU decode)/c(4, idle) = **1.057** (per-j 1.01-1.14, no j below 1.0). F2_hybrid, with a 6 GB/s host-memory
+   reader added, = **1.122**. The reader models Gen4 upload staging and is only valid for a hybrid design that still uploads;
+   under pure bypass there is no such stream and the CPU's own weight reads are already inside c_cpu, so the RULE CONSUMES F2_pure
+   (architect s132.2). The busy workload was real (GPU 100%, llama-server 100% of a core, link Gen1 ~0.6 GB/s), so F2_pure is
+   also a lower bound on contention at Gen4 uploads.
+7. **Scaling to in situ.** Bench c(10) = 0.0837 ms vs engine 0.099-0.116 (static arms), so s = 1.18-1.39. Two ways to apply it,
+   because I cannot tell from here whether the engine-minus-bench gap is proportional or a fixed per-call cost:
+   **uniform** (T_e = s*T, the method the architect specified) and **K-absorbing** (T_e = T + (10*c_meas - T(10)), all of the gap
+   is a fixed per-call cost = upper bound). B = 1000/(I + 48*T_e(M/48)*F2_pure), the lower of {fit, raw} governs:
+
+   | c_meas | scaling | M=190 (j=3.96) cpu ms | B at I=43.2 / 38.9 | M=137 (j=2.85) cpu ms | B at I=43.2 / 38.9 |
+   |--------|---------|-----------------------|--------------------|-----------------------|--------------------|
+   | 0.099 | uniform | 23.3 | 15.0 / 16.1 | 18.3 | 16.2 / 17.5 |
+   | 0.099 | K-absorbing | 27.5 | 14.1 / 15.1 | 23.3 | 15.0 / 16.1 |
+   | 0.116 | **uniform** | 27.3 | **14.18** / 15.1 | 21.5 | 15.5 / 16.6 |
+   | 0.116 | **K-absorbing** | 36.1 | **12.61** / 13.3 | 31.9 | 13.3 / 14.1 |
+
+   Shelve line 13.75.
+8. **Verdict under the pre-registered stage-2 rule (worst cell I=43.2, M=190, c_meas at its upper bound 0.116, F2_pure, more
+   conservative of fit/raw):** with the architect's uniform scaling **B = 14.18, PASS by 3.1%**; with the K-absorbing upper bound
+   **B = 12.61, FAIL**. The range across the worst cell is 12.6-15.0. **The result is BETWEEN, so per section 130 it is escalated
+   to the owner and NOT decided here.** Bench noise is the same size as the margin: idle c(4) ranged 0.092-0.103 across four
+   runs (+-6%), which moves the rule cell by ~+-0.5 in B, so a 3% pass is not statistically resolved.
+9. **Indicative only, not the rule:** a hybrid design (90% CPU-served, 10% uploaded at c_up 0.3003, F2_hybrid) at the worst cell
+   gives B = 13.21 (FAIL). It needs the `c_up * uploaded_fraction` term the pure-bypass formula lacks; the 10% split is taken from
+   the gate T=2 replay on the (easier) forced trace, so treat it as a sign, not a number.
+10. **What would resolve it (proposal, not run):** whether the engine-minus-bench gap is fixed or proportional needs a SECOND
+    in-situ point. Running the static arms `ncm2` and `allhost` at a reduced routed-expert count
+    (`--override-kv qwen4exp.expert_used_count=int:4`, timing only, output meaningless) gives the engine's per-layer CPU-vs-GPU
+    delta at j=4 next to the measured j=10 (0.99-1.16 ms), i.e. K_engine and w_engine directly, without building split execution.
+    Four short shallow arms (~20 min of rig). It can move the rule cell to either side of 13.75, so it passes the section 123 test.

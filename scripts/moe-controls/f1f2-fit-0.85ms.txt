@@ -1,0 +1,47 @@
+per-run fits (K, w scatter shows how well the split is identified; c(4) is the stable quantity)
+  busy1        K=0.075 w=0.0844  c4_meas=0.1038 c10_meas=0.0906
+  busy2        K=0.068 w=0.0865  c4_meas=0.1045 c10_meas=0.0928
+  busy3        K=0.061 w=0.0881  c4_meas=0.1022 c10_meas=0.0926
+  busyhog1     K=0.068 w=0.0911  c4_meas=0.1102 c10_meas=0.0972
+  busyhog2     K=0.066 w=0.0911  c4_meas=0.1093 c10_meas=0.0973
+  ctl-gap1500  K=0.120 w=0.0671  c4_meas=0.1015 c10_meas=0.0793
+  ctl-poll0    K=0.068 w=0.0785  c4_meas=0.0995 c10_meas=0.0851
+  ctl-sleepgap K=0.095 w=0.0785  c4_meas=0.1103 c10_meas=0.0876
+  idle1        K=0.093 w=0.0733  c4_meas=0.0970 c10_meas=0.0788
+  idle2        K=0.059 w=0.0821  c4_meas=0.0991 c10_meas=0.0923
+  idle3        K=0.100 w=0.0719  c4_meas=0.1030 c10_meas=0.0773
+  idle4        K=0.070 w=0.0804  c4_meas=0.0924 c10_meas=0.0862
+
+pooled per-call T(j) ms (mean of run medians) and pooled-fit residual %
+  j    idle    busy    hog    | F2_pure  F2_hybrid | idle fit resid%
+  1   0.1466  0.1480  0.1469 |  1.010    1.002   |  -6.9
+  2   0.2380  0.2395  0.2518 |  1.006    1.058   |  +1.5
+  3   0.3170  0.3288  0.3433 |  1.037    1.083   |  +1.8
+  4   0.3914  0.4138  0.4391 |  1.057    1.122   |  +0.8
+  5   0.4747  0.4980  0.5262 |  1.049    1.109   |  +2.0
+  6   0.5215  0.5969  0.6149 |  1.144    1.179   |  -3.8
+  8   0.7190  0.7653  0.7969 |  1.064    1.108   |  +3.3
+  10  0.8365  0.9198  0.9726 |  1.100    1.163   |  -1.6
+
+idle: K=0.081 ms  w=0.0769 ms   F1_fit=1.142  F1_raw(c4/c10)=1.170
+busy: K=0.068 ms  w=0.0863 ms
+busy+hog: K=0.067 ms  w=0.0911 ms
+control poll=0 (workers sleep): K=0.068 w=0.0785 c4=0.0995  -> vs idle K=0.081 c4=0.0979
+control ctl-sleepgap K=0.095 w=0.0785 c4=0.1103 c10=0.0876
+control ctl-gap1500  K=0.120 w=0.0671 c4=0.1015 c10=0.0793
+
+F2_pure = 1.057 (c(4) busy/idle)   F2_hybrid = 1.122   K share of a token: 48*K = 3.9 ms (idle bench)
+
+B = 1000/(I + 48*T_e(M/48)*F2_pure); rule cell = I=43.2, M=190, c_meas=0.116, more conservative of fit/raw
+ c_meas=0.099 uniform     M=190 j=3.96 (s=1.18 dK=0.153): fit cpu=23.1 ms B(43.2)=15.1 B(38.9)=16.1 | raw cpu=23.3 ms B(43.2)=15.0 B(38.9)=16.1  => governs: raw PASS
+ c_meas=0.099 uniform     M=137 j=2.85 (s=1.18 dK=0.153): fit cpu=18.0 ms B(43.2)=16.3 B(38.9)=17.6 | raw cpu=18.3 ms B(43.2)=16.2 B(38.9)=17.5  => governs: raw PASS
+ c_meas=0.099 K-absorbing M=190 j=3.96 (s=1.18 dK=0.153): fit cpu=27.3 ms B(43.2)=14.2 B(38.9)=15.1 | raw cpu=27.5 ms B(43.2)=14.1 B(38.9)=15.1  => governs: raw PASS
+ c_meas=0.099 K-absorbing M=137 j=2.85 (s=1.18 dK=0.153): fit cpu=23.0 ms B(43.2)=15.1 B(38.9)=16.2 | raw cpu=23.3 ms B(43.2)=15.0 B(38.9)=16.1  => governs: raw PASS
+ c_meas=0.116 uniform     M=190 j=3.96 (s=1.39 dK=0.323): fit cpu=27.1 ms B(43.2)=14.2 B(38.9)=15.2 | raw cpu=27.3 ms B(43.2)=14.2 B(38.9)=15.1  => governs: raw PASS
+ c_meas=0.116 uniform     M=137 j=2.85 (s=1.39 dK=0.323): fit cpu=21.1 ms B(43.2)=15.5 B(38.9)=16.7 | raw cpu=21.5 ms B(43.2)=15.5 B(38.9)=16.6  => governs: raw PASS
+ c_meas=0.116 K-absorbing M=190 j=3.96 (s=1.39 dK=0.323): fit cpu=36.0 ms B(43.2)=12.6 B(38.9)=13.4 | raw cpu=36.1 ms B(43.2)=12.6 B(38.9)=13.3  => governs: raw FAIL
+ c_meas=0.116 K-absorbing M=137 j=2.85 (s=1.39 dK=0.323): fit cpu=31.6 ms B(43.2)=13.4 B(38.9)=14.2 | raw cpu=31.9 ms B(43.2)=13.3 B(38.9)=14.1  => governs: raw FAIL
+
+RULE CELL (uniform, c_meas 0.116, I=43.2, M=190, F2_pure): governing raw, cpu 27.3 ms, B = 14.18 -> PASS (line 13.75)
+UPPER-BOUND cell (K-absorbing, c_meas 0.116): governing raw, cpu 36.1 ms, B = 12.61 -> FAIL
+INDICATIVE hybrid (90% CPU-served, 10% uploaded at c_up 0.3003, F2_hybrid 1.122, uniform c_meas 0.116, I=43.2): cpu 26.8 + upload 5.7 ms -> B = 13.21
