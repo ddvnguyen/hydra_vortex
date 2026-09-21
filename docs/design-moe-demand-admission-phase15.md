@@ -235,3 +235,34 @@ reconcile step that rebuilds the grouped metadata from the legacy slot map, not 
 
 **Reporting rule for B.** If B rests on a bypass number (gate or Belady + bypass), it is reported as needing split-execution
 confirmation and does not decide alone. Residency-only replays are exact; gate and Belady-with-bypass replays are approximate.
+
+## 14. c_cpu from the static arms (run3/run4, 14K depth, warm reps 2-3) - written BEFORE X
+
+Arms `ncmK` keep the expert tensors of the last K layers on the GPU and serve the rest from the CPU (K = 4, 2, 0 = `allhost`).
+Warm decode (`cache_n` 13942), `allhost` rep 3 excluded (contended):
+
+| arm | tok/s (reps 2,3) | ms/token |
+|-----|------------------|----------|
+| ncm4 | 12.53, 12.60 | 79.59 |
+| ncm2 | 12.31, 12.21 | 81.57 |
+| allhost | 11.92 (rep 3 9.85 contended) | 83.89 |
+
+Cost of moving one layer's experts from GPU to CPU: 0.990 ms (4 -> 2) and 1.163 ms (2 -> 0). At top-10 that is
+**c_cpu = 0.099-0.116 ms per expert per token**, which brackets the architect's assumed 0.105 and tightens the earlier
+0.11-0.19. Rep 1 (cold prompt, `cache_n` 0) is 0.3-0.5 tok/s lower on every arm and is not used.
+Caveat: these arms serve all 10 experts of a layer on the CPU in one batch. Option A serves only the non-admitted subset
+(~4 of 10 per layer), so any per-call fixed cost is amortised over fewer experts and c_cpu is a lower bound on the split
+case. Report B over c in {0.105, 0.116}, and flag a bypass-based B as needing split-execution confirmation (section 129).
+
+**Provisional B grid (I unmeasured, X pending):** B = 1000 / (I + M * c), shelve threshold B <= 13.75.
+
+| I (ms) | M=190, c=0.105-0.116 | M=137, c=0.105-0.116 |
+|--------|----------------------|----------------------|
+| 25.7 (on file) | 20.9-21.9 | 24.0-24.9 |
+| 41 (shallow Gen1 fit) | 15.9-16.4 | 17.6-18.1 |
+| 52 (14K Gen1 fit mid) | 13.5-13.9 | 14.7-15.1 |
+| 57 (14K Gen1 fit high) | 12.7-13.0 | 13.7-14.0 |
+
+Break-even I for B = 13.75: about 52 ms at M = 190 and about 58 ms at M = 137. So the shelve call turns on whether the
+measured I is above roughly 52-58 ms, i.e. whether X = 1000/I is below roughly 17-19 tok/s. The Gen1 fit range (45-57)
+straddles it, which is why the X legs decide and this table does not.
