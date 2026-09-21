@@ -225,3 +225,13 @@ is used for a decision.
 install) are exact: routing is policy-independent at temperature 0 and each group's cache is independent. Bypass replays
 (gate T, Belady + bypass) are APPROXIMATE: a bypassed expert would be computed on the CPU, and a different accumulation order
 can perturb later logits and so later routing. Read them as bounds, not predictions.
+
+**Architect ruling (section 129): carry-over is parked as a quantified known defect, about 1%.** Cold fill costs ~480 misses at
+step 0 against ~190/token steady state, so the excess is ~290 misses per request. On the 128-token turns the multi-turn
+harness serves that is 290 / (480 + 127 x 190) = ~1.2% (200-token turns: ~0.75%). It becomes material only for 10-30 token
+tool-calling turns. It is not a larger lever than the admission gate, and the distinct-prompt carry-over trace is NOT run for
+the decision (only if free alongside a leg already running). Filed future work: make the reset prefix-reuse-aware, which needs a
+reconcile step that rebuilds the grouped metadata from the legacy slot map, not just skipping the memset.
+
+**Reporting rule for B.** If B rests on a bypass number (gate or Belady + bypass), it is reported as needing split-execution
+confirmation and does not decide alone. Residency-only replays are exact; gate and Belady-with-bypass replays are approximate.
