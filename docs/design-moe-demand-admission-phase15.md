@@ -412,7 +412,24 @@ continuation, link 0.39 GB/s, VRAM peak 10807 MiB, decode 2.90 / 2.96 / 2.88 tok
 8. **Owner blocker downgraded.** The 3060 link retrain is no longer blocking the decision. It is confirmatory: it validates
    c_up for any design that still uploads, and the `cache42` / `cache42O` rerun.
 
-## 19. F1/F2 at the design's real call spacing (sections 131-132) - result: rule cell PASSES by 3%, upper bound FAILS
+## 19. F1/F2 at the design's real call spacing (sections 131-133) - READ THIS BLOCK FIRST
+
+**Status: BETWEEN, escalated to the owner; the confirming run is BLOCKED on an owner constraint (item 11).**
+
+- **The shippable design already fails; only an unachievable bound straddles the line.** The indicative hybrid (admit some, upload
+  those, CPU-serve the rest) at the worst cell is **B = 13.21, below the 13.75 shelve line.** It carries a "sign, not a number"
+  caveat (its 10% upload share comes from the easier forced-trace T=2 replay and it needs a `c_up * uploaded_fraction` term).
+  The 14.18 PASS below belongs to pure bypass at M = 190, which is not a design but a bound.
+- **Why pure-bypass-at-M=190 is only a bound (architect s133.3).** M = 190 is the steady state of a cache that INSTALLS on miss. A
+  design that never uploads never installs, so its real M is 480 (every expert of every layer is a miss). `B = 1000/(I + M*c_cpu)`
+  therefore takes the hit rate of an admitting cache and the traffic of a non-admitting one, i.e. it prices installs at zero.
+  B is an OPTIMISTIC UPPER BOUND, so the s130 rule is a NECESSARY, not sufficient, condition: failing it shelves the lever,
+  passing it only keeps the lever open. That is the concrete reason "do not shelve" is not build authorization.
+- **What the pending run is worth.** It cannot authorise a build. It can SHELVE decisively: if the K-absorbing scaling is right the
+  worst cell is 12.61, the optimistic bound itself fails, and the whole lever closes with no further work.
+- Sections below are the measurement record; the pass/fail numbers in them are for the bound, not for the hybrid.
+
+### 19 detail (F1/F2 at 0.85 ms spin gap, 4 idle / 3 busy / 2 busy+hog runs)
 
 Bench `scripts/moe-controls/moe_cpu_bench.cpp` (real expert tensors of 12 layers spread over all four shards: IQ2_XXS/XS/S, IQ3_XXS/S
 gate/up, IQ4_NL down; mmap, no repack; random expert ids, cold weights), `-t 6`, threadpool **poll = 50** (`ggml.c:8296`), identical
@@ -438,15 +455,19 @@ runs (cache42 decoding on the 3060, GPU 100%, link Gen1), two busy+hog runs.
    thread placement on the 12700K's P/E cores; I cannot name a mechanism and did not pin threads. The j=1 dip (-7%) does recur
    (concave at small j); it does not touch the j ~ 3-4 operating point.
 5. **Controls.** poll = 0 (workers sleep at once): K 0.068, c(4) 0.0995 vs idle K 0.081, c(4) 0.0979: **no penalty, so the pool
-   wake-up is NOT what K is made of and "keep the pool hot" is worth ~0.** K is per-call dispatch, activation quantisation and
+   wake-up is NOT what K is made of. The mitigation "keep the pool hot (`--poll`)" proposed in section 131.4 is FALSIFIED and
+   STRUCK (architect s133.1).** K is per-call dispatch, activation quantisation and
    graph-node barriers. A 1.5 ms spin gap raises K to 0.120 and a sleeping caller to 0.095, so K does depend on call spacing
-   by some mechanism other than pool sleep (unidentified). The lever that survives is fewer, larger calls (batch CPU-served
+   by some mechanism other than pool sleep (unidentified; LOGGED AS UNEXPLAINED, not chased: it cannot move the rule cell, section 123). The lever that survives is fewer, larger calls (batch CPU-served
    experts across layers where the dependency graph allows): 48K = 3.9 ms of bench time, 5.4 ms scaled in situ, about 10% of a token.
 6. **F2.** F2_pure = c(4, GPU decode)/c(4, idle) = **1.057** (per-j 1.01-1.14, no j below 1.0). F2_hybrid, with a 6 GB/s host-memory
    reader added, = **1.122**. The reader models Gen4 upload staging and is only valid for a hybrid design that still uploads;
    under pure bypass there is no such stream and the CPU's own weight reads are already inside c_cpu, so the RULE CONSUMES F2_pure
-   (architect s132.2). The busy workload was real (GPU 100%, llama-server 100% of a core, link Gen1 ~0.6 GB/s), so F2_pure is
-   also a lower bound on contention at Gen4 uploads.
+   (architect s132.2). **Sign correction (architect s133.2):** the busy workload was cache42, which UPLOADS ~190 experts/token over
+   the Gen1 link, while pure bypass uploads nothing. So the measured F2_pure = 1.057 contains PCIe and host-memory contention the
+   priced design does not generate: for pure bypass it is an OVERestimate (conservative), and the true pure-bypass B is HIGHER
+   than every pure-bypass number in this section. An earlier draft of this note called it a lower bound at Gen4; that holds only
+   for a hybrid design that still uploads (where F2_hybrid = 1.122 is the relevant figure).
 7. **Scaling to in situ.** Bench c(10) = 0.0837 ms vs engine 0.099-0.116 (static arms), so s = 1.18-1.39. Two ways to apply it,
    because I cannot tell from here whether the engine-minus-bench gap is proportional or a fixed per-call cost:
    **uniform** (T_e = s*T, the method the architect specified) and **K-absorbing** (T_e = T + (10*c_meas - T(10)), all of the gap
@@ -468,8 +489,15 @@ runs (cache42 decoding on the 3060, GPU 100%, link Gen1), two busy+hog runs.
 9. **Indicative only, not the rule:** a hybrid design (90% CPU-served, 10% uploaded at c_up 0.3003, F2_hybrid) at the worst cell
    gives B = 13.21 (FAIL). It needs the `c_up * uploaded_fraction` term the pure-bypass formula lacks; the 10% split is taken from
    the gate T=2 replay on the (easier) forced trace, so treat it as a sign, not a number.
-10. **What would resolve it (proposal, not run):** whether the engine-minus-bench gap is fixed or proportional needs a SECOND
-    in-situ point. Running the static arms `ncm2` and `allhost` at a reduced routed-expert count
-    (`--override-kv qwen4exp.expert_used_count=int:4`, timing only, output meaningless) gives the engine's per-layer CPU-vs-GPU
-    delta at j=4 next to the measured j=10 (0.99-1.16 ms), i.e. K_engine and w_engine directly, without building split execution.
-    Four short shallow arms (~20 min of rig). It can move the rule cell to either side of 13.75, so it passes the section 123 test.
+10. **What would resolve it (proposal, NOT run, BLOCKED - item 11):** a SECOND in-situ point. Static arms `ncm2` and `allhost` at a
+    reduced routed-expert count (`--override-kv qwen4exp.expert_used_count=int:4`, timing only, output meaningless), next to the
+    measured j=10 arms (0.99-1.16 ms per layer). Taking the engine's CPU-vs-GPU delta between arms at the same k cancels I and
+    gives K_engine and w_engine directly, which removes the bench from the critical path: it closes BOTH the 1.18-1.39 scaling
+    ambiguity and the +-6% bench noise at once, because the static arms replicate at +-0.6%. Four short shallow arms, ~20 min of rig.
+    It cannot authorise a build; it can SHELVE decisively (K-absorbing scaling gives 12.61 at the worst cell, so the optimistic
+    bound itself fails and the lever closes). Do not pin threads: the engine is unpinned, so pinning would trade comparability for
+    precision the two-point method makes moot.
+11. **BLOCKED (architect s133.6).** `--override-kv qwen4exp.expert_used_count` collides with a standing owner constraint: k is not
+    overridden, the model config value of 10 is used, no `--override-kv`. The timing-only rationale is a good argument that the
+    constraint's purpose is not engaged, but it is the owner's rule; the architect routed the request to the owner. HOLD the run
+    until the owner rules. The 3.1% pass being inside +-6% bench noise is carried to the owner verbatim.
