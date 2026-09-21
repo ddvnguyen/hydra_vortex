@@ -312,7 +312,7 @@ Rebuilt binary `a2c46384b` (ids in the ledger), shallow leg (ctx 8192, prompt "b
 
    So **shallow I = 31 +- 1 ms** (the earlier between-run "41" was a confounded fit) and **14K I = 36-48 ms** (req 1 is the
    cold-prompt request; 2-3 agree at 36-37). The slope 3.06-3.26 ms/miss is consistent with 1.887 MB / 0.39 GB/s = 4.8 ms
-   only if ~65% of the upload overlaps compute; whatever the reason, it is measured, not assumed. Read the 14K rows as
+   only if ~37% of the upload is hidden behind compute (or the probe is pessimistic); see section 18 item 7. It is measured, not assumed. Read the 14K rows as
    provisional: that ledger is from the failed leg (model reasoning, no ids) and the grammar-forced 14K leg is still running.
 4. **Provisional B with the identified I** (B = 1000 / (I + M * c), c in {0.105, 0.116} from section 14, static x1.10 = 13.75):
 
@@ -362,3 +362,52 @@ continuation, link 0.39 GB/s, VRAM peak 10807 MiB, decode 2.90 / 2.96 / 2.88 tok
   Half-life 16 -> 64 is worth only ~6%; the policy knob is not the lever, the bypass is.
 - **Open:** a natural-prompt 14K trace with ids would replace M = 54-57 (forced) by a real floor. It refines B inside the
   range above; it cannot flip the rule, because B > 13.75 already holds at the M = 190 observed natural rate.
+
+## 18. Architect rulings (section 130, 2026-09-22) - read this before section 17's "do not shelve"
+
+1. **The section 12 gate is RETIRED AS UNREACHABLE, not failed.** At N=42 with position/recurrent routing drift there is no
+   near-zero-miss steady state (79 misses/token shallow, 89-93 at 14K even with the token stream forced constant), so the gate
+   was specified against a state that does not exist. It is replaced by the within-run regression of section 16, and the
+   replacement is justified there. **I is link-independent by construction** (the intercept at zero misses contains no
+   upload), so it is a Gen4-valid number extracted from a Gen1-broken rig. That is why this decision did not wait on the
+   3060 link retrain (which needs root).
+2. **What "do not shelve" means.** B > 13.75 in every cell of section 17, but the ungated cache at a healthy link is
+   14.2 / 11.9 / 10.0 tok/s at M = 90.6 / 137 / 190, i.e. NOT better than static. So `--moe-expert-cache-size` as shipped is
+   dead on its own merits, Gen4 or not. What survives the rule is **a bypass / split-execution design that does not exist
+   yet**. "Do not shelve" is NOT build authorization; it keeps the lever open pending item 3.
+3. **c_cpu is the entire remaining decision.** Shelve line B <= 13.75 means I + M*c >= 72.73, so the c that flips a cell is
+   c* = (72.73 - I) / M:
+
+   | | M=190 | M=137 | M=57 |
+   |---|-------|-------|------|
+   | I=43.2 | 0.155 | 0.216 | 0.518 |
+   | I=38.9 | 0.178 | 0.247 | 0.593 |
+
+   Measured c_cpu is 0.099-0.116 with whole layers on CPU (10 GEMMs on `-t 6`). The worst cell flips at a **1.34x** penalty
+   (1.53x at I=38.9), and serving ~4 experts instead of 10 on 6 threads is expected to cost MORE per expert, not less.
+4. **Do not build split-execution in order to measure it.** Stage 1 is a standalone microbenchmark
+   (`scripts/moe-controls/moe_cpu_bench.cpp`, driver `run_f1f2.sh`) on the real tensors and quant types of the live model:
+   F1 = c(4)/c(10) (pool utilisation at `-t 6`), F2 = c(4, GPU decode running)/c(4, idle). Corrected c_cpu =
+   (0.099-0.116) x F1 x F2. Even that is a LOWER bound: the harness lacks the cache pressure from the rest of the model's CPU
+   work and the `per_layer_token_embd=CPU` offload.
+   **Stage-2 rule, pre-registered before F1/F2 were seen:** authorise a split-execution build ONLY if B > 13.75 at the WORST
+   cell (I = 43.2, M = 190, corrected c at its UPPER bound). If the result falls between, escalate to the owner with the
+   range; do not decide alone and do not pick a friendlier cell.
+5. **The natural-prompt Belady trace is KILLED** (it cannot flip the rule). **M = 190 is the planning number.** Belady is
+   unachievable and policy knobs buy ~6%, so M = 54-57 (from the easier forced trace) must not appear in any planning number.
+   Run a Belady trace only as a zero-cost rider on a leg that runs anyway.
+6. **Eviction / half-life workstream is CLOSED, including the orphaned `1ea22696f` knobs.** Gate T=2 (12.0 ms/token)
+   beats Belady with mandatory install (17.1): perfect replacement loses to imperfect bypass. Do not reopen it.
+7. **Provenance of c_up = 0.3003 ms/miss.** It is NOT a probe and NOT derived from a Gen1 number. It is the slope of the
+   on-file cost model `ms/token = 25.7 + 0.3003 * misses` (`b950f4cc2`, r2 0.990, 196 steps, 1.881 MB/miss, card not
+   stated), which the note reads as 6.27 GB/s: a healthy-link-era FITTED slope, i.e. an independent Gen4 anchor. The gap the
+   architect asked me to name: 1.887 MB / 0.39 GB/s (the loaded Gen1 probe) predicts 4.84 ms/miss, but the measured Gen1
+   slope is 3.05 ms/miss = 0.62 GB/s effective (62% of the 1.0 GB/s Gen1 x4 ceiling, vs 6.27/7.88 = 80% at Gen4). Two readings:
+   (a) the probe is pessimistic, or (b) ~37% of each upload is hidden behind compute. The data cannot separate a constant
+   hidden fraction from a pessimistic probe, but it does exclude a SATURATING overlap: the slope is the same in the low-miss and
+   high-miss halves of every ledger (shallow 3.04-3.13 vs 3.02-3.06; 14K 3.10-3.22 vs 2.92-3.04), so there is no knee.
+   Consequence for the Gen4 projection: c_up = 0.3003 is anchored to a Gen4 fit, not scaled from the Gen1 slope, so the
+   1.6x unexplained factor does not propagate into it. Ratio check: 3.05 / 0.3003 = 10.2x between the two links, against
+   a raw Gen4/Gen1 bandwidth ratio of 7.9x, consistent with Gen1 running at lower efficiency (62% vs 80%).
+8. **Owner blocker downgraded.** The 3060 link retrain is no longer blocking the decision. It is confirmatory: it validates
+   c_up for any design that still uploads, and the `cache42` / `cache42O` rerun.
