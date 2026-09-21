@@ -331,3 +331,34 @@ Rebuilt binary `a2c46384b` (ids in the ledger), shallow leg (ctx 8192, prompt "b
 
 **Not yet decided.** Open before B is final: (a) the grammar-forced 14K leg for depth I under controlled conditions, and
 (b) a natural-prompt trace WITH ids for the Belady M floor at depth, since the forced trace is easier than real text.
+
+## 17. 14K grammar-forced leg: I at depth, B, and the pre-registered rule applied (2026-09-22)
+
+Leg: ctx 81920, prompt_n 13933 (`cache_n` 0 then 13929 for reps 2-3), N=42, MTP off, no `-ot`/`--cpu-moe`, grammar-forced
+continuation, link 0.39 GB/s, VRAM peak 10807 MiB, decode 2.90 / 2.96 / 2.88 tok/s. Ledger has ids.
+
+- **Validity gate:** NOT met as a ceiling (steady state 89-93 misses/token; steps 1-3 231, 4-19 110, 20-59 104). Same
+  conclusion as section 16: near-zero misses are unreachable at N=42, so X is replaced by the within-run fit.
+- **Simulator:** `kernel(hl=16)` reproduces the recorded miss sets on 28,656 / 28,656 records again (depth 14K).
+- **Within-run fit at depth** (`fit_step_time.py`, misses/step 25-283): I = **43.2 / 38.9 / 39.8 ms**, slope 3.02-3.06
+  ms/miss, R2 0.995-0.996. Together with the natural 14K ledger of section 16 (36-48 ms) depth I is **39-43 ms**, i.e. 1000/I
+  = 23-26 tok/s. The on-file 25.7 ms was a healthy-link, shallower-context value.
+- **B = 1000 / (I + M * c)**, c in {0.105, 0.116}; shelve line 13.75 (static 12.5-12.6 x 1.10). M = 54-57 is the Belady floor on
+  this (easier, forced) trace, 137 is the architect's natural floor, 190 the observed natural steady state:
+
+  | I | M=54-57 | M=137 | M=190 |
+  |---|---------|-------|-------|
+  | 38.9 | 22.0-22.4 | 18.3-18.8 | 16.4-17.0 |
+  | 43.2 | 20.1-20.5 | 16.9-17.4 | 15.3-15.8 |
+
+- **Rule (section 12, item 3): B > 13.75 in every cell, so do NOT shelve.** Lowest B = 15.3, i.e. +22% over static, highest
+  22.4, +79%. Consequence: the fixed cost is not what caps the design; the miss/serve path is.
+- **What B is NOT.** It is an upper bound for a design that serves every non-hit expert at c_min. At a healthy link the
+  ungated cache is 14.2 / 11.9 / 10.0 tok/s at M = 90.6 / 137 / 190 (I=43.2, 0.3003 ms/upload), so plain admission tuning
+  does not beat static; only removing the upload from the critical path (CPU serve of non-admitted experts) does. That
+  is a bypass design, so per section 129 B **needs a split-execution confirmation before it decides a build**.
+- **Replays (approximate for bypass rows), forced 14K trace, ms/token at c_up 0.3003, c_cpu 0.105:** kernel hl=16 27.2,
+  hl=64 25.5, lru 31.8, gate T=1 15.5 (installs 29.8 + bypass 62.7), gate T=2 12.0, Belady mandatory 17.1, Belady + bypass 11.2.
+  Half-life 16 -> 64 is worth only ~6%; the policy knob is not the lever, the bypass is.
+- **Open:** a natural-prompt 14K trace with ids would replace M = 54-57 (forced) by a real floor. It refines B inside the
+  range above; it cannot flip the rule, because B > 13.75 already holds at the M = 190 observed natural rate.
