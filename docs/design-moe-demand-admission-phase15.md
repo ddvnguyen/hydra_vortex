@@ -168,3 +168,14 @@ CPU-serve cost per expert (all-host vs ncm4, 40 experts): 0.11-0.19 ms, noisy.
 Option A ceiling = 1000/(I + up*0.3003 + cpu*0.105), gate T=1 (up 55, cpu 135 per token): I=52 -> 12.0 tok/s,
 I=41 -> 13.9, I=25.7 -> 17.7. Static = 12.5 (14.03 on file at ctx 16384). With the measured I the ceiling does not
 clearly beat static before split/sync overhead. Caveat: I was measured at Gen1; whether the link changes I is untested.
+
+## 11. Architect rulings (section 125, 2026-09-22)
+
+1. Link defect confirmed. Idle sysfs proves nothing (both cards read Gen1 idle); the loaded 35 s probe is the instrument.
+   The accepted constraint is x4 width; Gen1 speed was never accepted (~6% of the Gen4 x4 rate).
+2. **Do not accept the Gen1 fixed cost I=45-57 as the break-even input. Neither build Option A nor shelve.** At Gen1 the slope
+   term is ~587 ms/token against I~52, so the intercept is barely identified. The ceiling is an undefined input, not a range.
+3. Prefill collapse reopened only as a free rider: re-measure prefill in the post-fix rerun.
+4. Record drift: `PROJECT_STATUS.md:378` (idle only) and `:408` (card now on 02:00.0, not 07:00.0) annotated 2026-09-22.
+
+Leader follow-up: identify I at Gen1 with a near-zero-miss decode (repetitive continuation) so the slope term is small.
