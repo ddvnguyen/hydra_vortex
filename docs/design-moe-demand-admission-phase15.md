@@ -179,3 +179,18 @@ clearly beat static before split/sync overhead. Caveat: I was measured at Gen1; 
 4. Record drift: `PROJECT_STATUS.md:378` (idle only) and `:408` (card now on 02:00.0, not 07:00.0) annotated 2026-09-22.
 
 Leader follow-up: identify I at Gen1 with a near-zero-miss decode (repetitive continuation) so the slope term is small.
+
+## 12. Pre-registered reading of the near-zero-miss legs (section 126), written BEFORE the data
+
+Legs: `scripts`-style `smoke_rep.sh` (shallow, ctx 8192) and `smoke_rep14k.sh` (prompt_n ~13946, ctx 81920), both cache N=42,
+ledger on, MTP off, `-ot`/`--cpu-moe` off. Repetitive continuation ("banana" x N). X = decode tok/s at ~0 misses.
+
+1. **Validity gate:** read steady-state misses/token from the ledger (tokens after warm-up). If it is not near 0 (say > 20),
+   X is not a ceiling and the leg is reported as such. X0 = 1000 / (ms/token - 3.14 * misses/token) is reported next to X.
+2. **X < 12.5 (static)** -> shelve the cache on the 3060; decisive at Gen1 (a ceiling does not improve with the link).
+3. **X >= 12.5 does NOT by itself justify a gate.** X = 1000/I is only the no-miss bound: a real gate still has to serve the
+   ~190 misses/token, by upload (0.3003 ms at a healthy link) or CPU (~0.105 assumed, 0.11-0.19 measured delta).
+   Tighter bound: B = 1000 / (I + M * c_min), M ~ 190, c_min = min(0.3003, measured CPU-serve cost from ncm2), I = 1000/X0.
+   Expected from the Gen1 fit: X ~ 19-22 tok/s, B ~ 11.4-13.9. My rule (leader's choice, not the architect's): B <= 13.75
+   (static x1.10, allowance for split/sync overhead) -> shelve; B > 13.75 -> the link fix is worth waiting for.
+4. The leg also settles the I dispute directly: X at 14K vs the Gen1 fit I = 45-57 ms (X = 17.5-22).
