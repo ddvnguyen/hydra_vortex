@@ -289,3 +289,45 @@ architect's M ~ 137 floor, and hl=16 LRU-frequency never gets below it without a
 **Fix:** the continuation is forced with a GBNF grammar `root ::= (" banana")+` (temperature 0, tokens/unit 1.001), so the
 routed token stream is constant and misses should collapse; the validity gate is re-applied to the new ledgers. Legs rerun on
 the rebuilt binary (`a2c46384b`, ids in the ledger): shallow (ctx 8192) then 14K. The failed run is kept as `rep14k-think/`.
+
+## 16. Shallow forced-repetition leg + within-run fit identify I (2026-09-22) - supersedes the I dispute of section 125
+
+Rebuilt binary `a2c46384b` (ids in the ledger), shallow leg (ctx 8192, prompt "banana " x 60, grammar-forced
+`root ::= (" banana")+`, N=42, MTP off, 3 requests, link 0.39 GB/s).
+
+1. **Simulator validated against the real kernel.** `sim_policy.py` `kernel(hl=16)` reproduces the recorded miss set on
+   **28,656 / 28,656 records (100.00%)** over the 3 requests x 48 groups x 199 steps. Residency-only replays are exact.
+2. **The near-zero-miss leg is not reachable at N=42.** Even with the token stream forced constant, steady state is
+   **79 misses/token** (step 0 = 480, steps 1-3 = 175, 4-19 = 107, 20-59 = 73, 60+ = 79): position and recurrent state keep
+   moving the routing. The section 12 gate (< 20) fails again, so X = tok/s at ~0 misses is never observed directly; the three
+   requests are identical (deterministic) so they are timing replicates, not independent samples.
+3. **What replaces X: a within-run regression** (`scripts/moe-controls/fit_step_time.py`, step time from the gap between
+   consecutive last-group plan records vs misses summed over the step, steps >= 4). Misses vary 18-207 inside one run, so I is
+   an extrapolation of only 18 misses to 0 and does not depend on link state, page cache or thermals between runs:
+
+   | ledger | misses/step | I (ms) | slope (ms/miss) | R2 | 1000/I |
+   |--------|-------------|--------|-----------------|----|--------|
+   | shallow forced, req 1-3 | 18-207 | 30.9 / 31.2 / 32.4 | 3.084 / 3.068 / 3.057 (+-0.011) | 0.997-0.998 | 30.9-32.4 |
+   | 14K natural (section 15, old binary), req 1-3 | 19-344 | 48.4 / 36.9 / 36.4 | 3.154 / 3.257 / 3.209 (+-0.02) | 0.989-0.995 | 20.7-27.5 |
+
+   So **shallow I = 31 +- 1 ms** (the earlier between-run "41" was a confounded fit) and **14K I = 36-48 ms** (req 1 is the
+   cold-prompt request; 2-3 agree at 36-37). The slope 3.06-3.26 ms/miss is consistent with 1.887 MB / 0.39 GB/s = 4.8 ms
+   only if ~65% of the upload overlaps compute; whatever the reason, it is measured, not assumed. Read the 14K rows as
+   provisional: that ledger is from the failed leg (model reasoning, no ids) and the grammar-forced 14K leg is still running.
+4. **Provisional B with the identified I** (B = 1000 / (I + M * c), c in {0.105, 0.116} from section 14, static x1.10 = 13.75):
+
+   | I | M=190 | M=137 |
+   |---|-------|-------|
+   | 31 (shallow) | 18.9-19.6 | 21.5-22.0 |
+   | 36 (14K, low) | 17.0-17.5 | 19.3-19.8 |
+   | 48 (14K, high) | 14.0-14.5 | 15.8-16.2 |
+
+   Every cell clears 13.75, but the high-I / high-M corner (14.0-14.5) has only ~10-15% margin over the shelve line. At a
+   healthy link the ungated cache costs 1000 / (I + M * 0.3003) = 13.0 at I=36, M=137, i.e. no better than static; the gain
+   comes from serving non-admitted experts on the CPU, which is a bypass design.
+5. **Replays on the (repetitive, so optimistic) shallow trace**, cost per token in ms at c_up 0.3003 and c_cpu 0.105:
+   kernel hl=16 23.7, lru 28.4, gate T=1 hl=16 11.7 (installs 18.9 + bypass 57.0), gate T=2 hl=16 9.5,
+   Belady mandatory 15.3, Belady + bypass 9.3. Bypass rows are APPROXIMATE (section 129).
+
+**Not yet decided.** Open before B is final: (a) the grammar-forced 14K leg for depth I under controlled conditions, and
+(b) a natural-prompt trace WITH ids for the Belady M floor at depth, since the forced trace is easier than real text.
