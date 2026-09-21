@@ -266,3 +266,26 @@ case. Report B over c in {0.105, 0.116}, and flag a bypass-based B as needing sp
 Break-even I for B = 13.75: about 52 ms at M = 190 and about 58 ms at M = 137. So the shelve call turns on whether the
 measured I is above roughly 52-58 ms, i.e. whether X = 1000/I is below roughly 17-19 tok/s. The Gen1 fit range (45-57)
 straddles it, which is why the X legs decide and this table does not.
+
+## 15. First 14K "repetitive" leg FAILED the validity gate (2026-09-22) - not a ceiling, do not read as X
+
+`smoke_rep14k.sh` (old binary, no ids; raw `/completion`, prompt "banana " x 13932, N=42, MTP off, `-ot`/`--cpu-moe` off) did
+not stay repetitive: the model broke out into reasoning text (`<think>`), so routing kept changing. The section 12 gate (misses
+near 0, say < 20/token) caught it. Ledger, misses/token by request step (3 requests; each starts cold, step 0 = 480):
+
+| steps | req 1 | req 2 | req 3 |
+|-------|-------|-------|-------|
+| 1-3 | 247 | 255 | 253 |
+| 4-19 | 171 | 206 | 210 |
+| 20-59 | 185 | 189 | 194 |
+| 60-198 | 142 | 138 | 123 |
+
+Decode was 1.85 / 1.82 / 1.95 tok/s (541 / 548 / 512 ms/token) at ~146-154 mean misses/token, VRAM peak 10819 MiB.
+Backing out I = ms - 3.14 x misses gives 54-64 ms, but that is exactly the unidentified quantity of section 125: the
+slope term (~470 ms) is 8x the intercept, so a 0.5 ms/miss slope error moves I by ~75 ms. It is NOT accepted as I.
+Useful by-product: the natural-continuation steady state here is 123-142 misses/token, i.e. in the region of the
+architect's M ~ 137 floor, and hl=16 LRU-frequency never gets below it without an oracle.
+
+**Fix:** the continuation is forced with a GBNF grammar `root ::= (" banana")+` (temperature 0, tokens/unit 1.001), so the
+routed token stream is constant and misses should collapse; the validity gate is re-applied to the new ledgers. Legs rerun on
+the rebuilt binary (`a2c46384b`, ids in the ledger): shallow (ctx 8192) then 14K. The failed run is kept as `rep14k-think/`.
