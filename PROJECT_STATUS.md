@@ -797,3 +797,23 @@ Other worker's dirt (`CMakeLists.txt`, `src/CMakeLists.txt`,
   best-effort GPU fallback into silent corruption (no resupply path exists). The only
   hybrid that beats P0 skips GPU GEMM rows entirely (compaction + MIX renormalization)
   — scoped as a separate future epic, not this track. Track CLOSED.
+
+## MoE demand-admission / split-execution track (addendum 2026-09-22)
+
+Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-19. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
+**Status: lever OPEN but not authorised; confirming run BLOCKED on an owner ruling (`--override-kv expert_used_count`, standing k=10 rule).**
+
+| Verified fact (3060, N=42, MTP off, qwen4exp, link Gen1 during measurement) | Value | Where |
+|---|---|---|
+| Per-plan ledger (`GGML_CUDA_MOE_LEDGER`, fork `a2c46384b`) records misses, evictions, prior-sighting bins, routed ids | works | sec 9, 16 |
+| Offline simulator `scripts/moe-controls/sim_policy.py`: `kernel(hl=16)` reproduces recorded miss sets | **28,656/28,656 records, shallow and 14K** | sec 16-17 |
+| Fixed non-miss cost I (within-run regression `fit_step_time.py`, link-independent) | **31 ms shallow, 39-43 ms at 14K** (R2 .995-.998, slope 3.02-3.26 ms/miss); Gen1-fitted 45-57 rejected | sec 16-17 |
+| Near-zero-miss ceiling X | unreachable at N=42 (79-93 misses/token even with forced repetition); gate retired, replaced by the regression | sec 12, 16, 18 |
+| c_cpu, whole layers on CPU (static arms `ncm4/ncm2/allhost`, 14K) | 0.099-0.116 ms/expert/token | sec 14 |
+| Ungated cache at a healthy link (I=43.2, c_up 0.3003) | 14.2 / 11.9 / 10.0 tok/s at M = 91 / 137 / 190 - NOT better than static 12.5-12.6; `--moe-expert-cache-size` as shipped is dead | sec 17-18 |
+| CPU-serve microbenchmark (`moe_cpu_bench.cpp`, real tensors, poll 50, 0.85 ms spin gap): K, w | K 0.081 ms/call, w 0.0769 ms/expert; F1 1.14-1.17; F2_pure 1.057, F2_hybrid 1.122; poll-0 no penalty | sec 19 |
+| Pure-bypass bound B at worst cell (I=43.2, M=190) | 14.18 (uniform scaling) / 12.61 (K-absorbing); shelve line 13.75; 3% margin inside +-6% noise | sec 19 |
+| Indicative hybrid at the worst cell | 13.21, below the line (a sign, not a number) | sec 19 |
+| Per-request cache reset | incidental (`legacy_dirty` handoff in `moe-cache.cu`), ~1% at 128-token turns, parked | sec 13, 129 |
+| Eviction / half-life policy work | CLOSED: gate T=2 (12.0 ms/token) beats Belady residency (17.1) | sec 18 |
+| 3060 PCIe link retrain | confirmatory only (I is link-independent); needs root | sec 9, 18 |
