@@ -18,7 +18,7 @@ Author: leader claude-sonnet5-lead-20260921, 2026-09-21.
 | Step | Lines | What it does |
 |---|---|---|
 | commit prior plan | 3005-3041 | writes `slot_for_expert`/`expert_for_slot` for last plan's misses; `frequency++` for every unique expert (hit or miss) |
-| step counter | 3049, 3053 | `device_step` += 1 **per plan call = per layer**; `frequency_epoch = step / halflife` |
+| step counter | 3049, 3053 | `device_step` += 1 per plan call **on this group's own counter**; `frequency_epoch = step / halflife` |
 | route validation | 3078-3082 | fails if `n_routes > n_slots` or `plan_capacity != n_slots` |
 | unique + hit/miss | 3102-3213 | miss = unique expert with `slot_for_expert < 0` |
 | victim pick | 3233-3290 | per miss: min (effective frequency, last_used) over slots not routed this step |
@@ -31,17 +31,25 @@ Consequences:
   (MTP n=3 at N=36 gives 30, n=4 gives 40 > 36). Relaxing it alone changes nothing for the gate.
 - The real hard invariant is 3292-3295 plus the fact that the op is a single `mul_mat_id` node.
 
-## 2. Can `expert_frequency` be the admit counter unchanged? Yes, with one unit trap
+## 2. Can `expert_frequency` be the admit counter unchanged? Yes (window unit: see retraction)
 
 `expert_frequency[expert]` (u32) + `expert_frequency_epoch[expert]` already implement "windowed use
 counter, halved per epoch" (lazy right shift, 2868-2877). It is incremented for **every** sighting,
 so it is a sightings count. Admit rule = `effective_frequency(expert) >= T` at miss time. No new state.
 
-**Unit trap:** the shipped half-life is 16 *plan steps*. A plan step is one layer, so one decode token
-is 48 steps (`899d8ec7a` message). Shipped window = 1/3 token. pjsgsy's "window 16" is 16 decode steps
-per layer = **768 plan steps here**. Copying "window 16 / admit 3" verbatim would test a different
-policy. Env knob `GGML_CUDA_MOE_FREQUENCY_HALFLIFE` (ported from `899d8ec7a`, this branch) covers it.
-Note `899d8ec7a` measured half-life 256/2048 at -6% with LFU *eviction*; that does not test admission.
+**RETRACTED 2026-09-21 (was: "unit trap, shipped window = 1/3 token, use 768"). Do not use 768.**
+The claim came from the `899d8ec7a` commit message ("a decode token is 48 planning steps"). Source
+contradicts it: `device_step` lives in `grouped_device_resource`, and one such resource is created per
+*group* (`resources[group_index]`, `make_device_resource` at `moe-cache.cu:6614`). A group carries the
+gate/up/down tensors of one layer (`group_index` + `role` in `ggml-backend.h:359-366`). So the counter
+advances once per plan launch *on that group*, i.e. probably once per decode token per layer, and the
+shipped half-life of 16 is then **already 16 decode tokens = pjsgsy's "window 16"**.
+**Status: source-derived, not yet measured.** It is settled by the ledger: each record carries the
+group id and the `device_step` value read by the kernel, so calls per group per token can be read off
+directly. Until then the port default (16) stays and no window is asserted either way.
+Env knob `GGML_CUDA_MOE_FREQUENCY_HALFLIFE` (ported from `899d8ec7a`, this branch) sets it.
+`899d8ec7a` measured half-life 256/2048 at -6% with LFU *eviction*; under this reading that is 256/2048
+*tokens*, consistent with pjsgsy's "short window wins". It still does not test admission.
 
 ## 3. Options for serving a non-admitted expert
 
@@ -93,7 +101,7 @@ that given LFU-with-decay already ships. Only A could, and A's ceiling (~18-19) 
    HEAD has only a cumulative hit/miss/evict line (`moe-cache.cu:14616`). It conflicts hard (749 lines)
    because it sits on look-ahead staging; needs a re-derivation, not a cherry-pick.
 3. Decision rule after (1): cache >= static -> proceed to a residency-gate spike (option 0) with
-   halflife 768. Cache < static by >15% -> the choice is A (large, +30% ceiling) vs shelving the cache
+   the shipped half-life (see section 2 retraction). Cache < static by >15% -> the choice is A (large, +30% ceiling) vs shelving the cache
    on the 3060. That is an architect/owner call, made on measured numbers.
 
 ## 7. Phase 1 status and asset notes
