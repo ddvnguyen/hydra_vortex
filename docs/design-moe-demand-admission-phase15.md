@@ -535,3 +535,11 @@ gives 48 K_e for the batching lever).
 **Known bias, stated now.** D = T_cpu - T_gpu (the layer's GPU expert cost is saved when it moves to the CPU), so D understates the CPU cost of a
 design that ALSO keeps the GPU experts, which makes B_worst optimistic. This is the same convention as the k=10 c_cpu of section 14, so it does not
 change the comparison, but a pass is weaker evidence than a fail.
+
+**Serial-cost assumption, recorded before the branch is known (architect s135; record only, not acted on).** D(4) is a SERIAL cost: in the static arms
+every expert of a layer is CPU-served, so the delta is the whole addition to the critical path. `B = 1000/(I + 48*D(4)*F2)` therefore charges the CPU work
+as if none of it overlaps GPU work. A real split design runs CPU-4 alongside GPU-6 inside a layer, so its effective cost could be lower than D(4) by the
+overlapped fraction, minus sync. This is a PESSIMISTIC term, and it partly offsets the OPTIMISTIC term above (installs priced at zero, D = T_cpu - T_gpu).
+The two run in opposite directions; nothing here claims they cancel, and neither was measured. This is not an escape hatch: section 134 stands, and
+B_worst <= 13.75 shelves and stops. It is written into the rationale so that a shelve is durable, i.e. so a later reader sees what the number assumed
+(serial CPU cost, zero-install bound, F2_pure from a run that uploaded, I = 43.2 the max of three fits) instead of inheriting it as settled.
