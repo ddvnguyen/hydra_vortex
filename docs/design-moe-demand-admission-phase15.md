@@ -627,3 +627,46 @@ routes more diversely, more experts cross the admission threshold, f should rise
 achievable (installs priced at zero). The one shippable design (hybrid) fails on measured ground: f = 0.1023 > 0.0846 threshold, B = 13.64 <
 13.75. Recommendation to the owner: **shelve.** A genuinely natural-prompt trace with ids (a new, cheap, shallow rig leg) could only refine f
 upward per the argument above; it is not expected to reverse this and is not proposed.
+
+## 23. Correction to section 22: the f-direction claim was backwards; re-based shelve rationale (architect s139)
+
+**Section 22's directional claim is WITHDRAWN: "a genuinely natural trace would push f up, not down" is wrong, and the conclusion it supported
+("decisive against") is not established.** Struck here, not silently edited out, so the error is visible to a later reader.
+
+**Why it was backwards.** Under gate T=2, per expert per window: used once -> 1 bypass, no install. Used n>=2 times -> 1 bypass + 1 install
+(second sighting reaches T=2), then hits. So with A = experts used >=2 times and B = experts used exactly once in the window:
+`installs = A`, `bypass = A + B`, `M = 2A + B`, **f = A/(2A+B)**. Diverse routing raises B/A (more experts seen once, fewer seen repeatedly
+per window), which drives **f down**, not up. Measured f = 0.1023 on the forced (repetitive) trace implies B/A = 7.78. Natural routing
+touches ~54% of experts/layer/turn (`moe-expert-coverage-by-subject` memory), so B/A should rise there, not fall.
+
+Lower f raises B_hybrid, because `c_up = 0.3003` exceeds `w_e * F2_pure = 0.1209`: shifting an expert from upload to CPU-serve is cheaper per
+expert, at this session's measured K_e/w_e. The break-even f <= 0.0846 needs B/A >= 9.82, a 26% increase over the forced trace's 7.78 -
+plausible, not ruled out, for a natural trace. **So the sign favours PASS on a natural trace, the opposite of section 22's claim.**
+
+**Why the natural-trace leg is still not run - for the right reason this time.** `B(f) = 1000/(69.843 + 34.082*f)` over the full range of f:
+
+| f | B (tok/s) | vs static 12.55 |
+|---|---|---|
+| 0.1023 (measured, forced trace) | 13.64 | +8.7% |
+| 0.0846 (break-even) | 13.75 | +9.6% |
+| 0.05 | 13.98 | +11.4% |
+| 0.0 (= pure bypass) | 14.32 | +14.1% |
+
+**f cannot move the answer outside +8.7% to +14.1%**, a 0.7 tok/s span. Which side of 13.75 it lands on changes only the pre-registered branch
+label, not the business answer ("about +10% for a large new subsystem" at every f). A measurement that cannot move a decision does not get rig
+time (section 123 standard); this one cannot, regardless of which way f moves on a natural trace.
+
+**Re-based shelve rationale.** The recommendation to shelve is UNCHANGED, but no longer rests on "hybrid fails a threshold" (section 22's
+claim was unsound and is withdrawn). It rests on section 19/21's headline, which nothing here touches: **ceiling +13.7% (unachievable bound,
+installs priced at zero); shippable hybrid +8.7% to +14.1% across every possible f** - against the cost of split execution (companion
+tensors, expert->slot tables, a second `mul_mat_id` chain, CPU-side zeroing, summed down-projections) on the slower card. Shelve because the
+return is thin for the subsystem size, not because a threshold is provably failed: a shelve resting on the wrong technical claim gets reopened
+the moment someone recomputes f and finds it lower (which section 23 itself shows is the more likely direction), and would wrongly read that
+as overturning the shelve when the real reason (thin return) still holds.
+
+**M/M' splice, made explicit.** `M' = 95.65` (section 22) is the forced trace's OWN gated miss count, not half of the real M=190 - the gate is
+about +5.6% on top of that same trace's ungated kernel miss count (90.6), not a reduction. Only `f` (the *fraction* split of misses into
+install/bypass) is transferred from the forced trace onto the real M=190; the assumption is that the gate leaves the real trace's total miss
+count roughly unchanged, which the forced trace's own +5.6% (not -50%) supports as a reasonable approximation, not a proof. Carrying that same
++5.6% forward (M_gate_natural = 190 * 1.056 = 200) at f = 0.1023 gives B = 13.38, slightly worse than the M=190 calculation above - so the
+splice as run is mildly OPTIMISTIC, the right direction for a shelve recommendation to be conservative against.
