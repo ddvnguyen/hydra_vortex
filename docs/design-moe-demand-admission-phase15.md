@@ -543,3 +543,50 @@ overlapped fraction, minus sync. This is a PESSIMISTIC term, and it partly offse
 The two run in opposite directions; nothing here claims they cancel, and neither was measured. This is not an escape hatch: section 134 stands, and
 B_worst <= 13.75 shelves and stops. It is written into the rationale so that a shelve is durable, i.e. so a later reader sees what the number assumed
 (serial CPU cost, zero-install bound, F2_pure from a run that uploaded, I = 43.2 the max of three fits) instead of inheriting it as settled.
+
+## 21. T_engine(4) in-situ result: bound survives, does not shelve (2026-09-22)
+
+Campaign `scripts/moe-controls/run_k4.sh` -> `arm_k4_timing.py`, two order-counterbalanced passes, n=6 warm reps per arm x k (rep 1 of every
+boot discarded). No void records, no host-contention outliers (cpu_busy_pct 15-18%, `foreign` PID idle throughout; the one elevated-sd cell,
+`ncm2` k=10 at 2.25%, is a monotonic pass2 drift of 13.4 -> 12.7 tok/s, not a step change, so it is reported as-is, not excluded).
+Results `scripts/moe-controls/results/k4-pass{1,2}.jsonl`. Fit `fit_k4.py`.
+
+**Decode ms/token, n=6 each (sd, %sd):**
+
+| arm | k=10 | k=4 |
+|---|---|---|
+| ncm4  | 72.641 (0.236, 0.32%) | 45.894 (0.229, 0.50%) |
+| ncm2  | 75.623 (1.705, 2.25%) | 46.968 (0.193, 0.41%) |
+| allhost | 77.506 (1.053, 1.36%) | 48.014 (0.222, 0.46%) |
+
+**T_engine(4) := D(4)**, pooled OLS slope of ms/token against layers-on-CPU (44/46/48), all 18 k=4 points: **D(4) = 0.5299 +/- 0.0301 ms/layer
+(1 SE)**. Per-pass: pass1 0.4807 +/- 0.0361, pass2 0.5790 +/- 0.0463 (passes bracket the pooled value, no order drift large enough to flip the
+branch). Pairwise deltas agree: ncm4->ncm2 0.5371, ncm2->allhost 0.5226, ncm4->allhost 0.5299.
+
+D(10) = 1.2163 +/- 0.1676 ms/layer (noisier, `ncm2` k=10 drift above is most of it).
+
+**K_e/w_e** (secondary, from D(4) and D(10) of this session): K_e = 0.0723 ms/call, w_e = 0.1144 ms/expert, 48*K_e = 3.47 ms/token. Compare
+bench (section 19): K = 0.081, w = 0.0769. K_e is close to the idle bench K (0.072 vs 0.081); w_e is 49% above the idle bench w (0.114 vs
+0.0769) -- the in-situ per-expert cost, measured on the real serving path (sampling, metrics, whole-layer batch of 10 or 4 experts on `-t 6`
+alongside everything else the server thread does), is higher than the standalone microbench predicted. This is evidence the bench under-priced
+the real call, not that the fit is unstable: D(4) itself has the tightest relative spread of any number in this track (0.50% sd).
+
+**B_worst = 1000/(I + 48*D(4)*F2_pure)**, I = 43.2, F2_pure = 1.057, threshold D(4) >= 0.582 ms/layer to shelve:
+
+| estimator | D (ms/layer) | B_worst (tok/s) |
+|---|---|---|
+| point | 0.5299 | **14.27** |
+| D - 1 SE (cheaper) | 0.4998 | 14.59 |
+| D + 1 SE (pricier) | 0.5600 | 13.96 |
+
+**The full +/-1 SE interval clears 13.75** (13.96-14.59); this is not a "between" case like section 19's bench-derived 12.61/14.18 split, it is
+a direct in-situ measurement whose noise does not reach the line.
+
+**BRANCH (pre-registered, section 20 / architect s134): B_worst > 13.75 at every estimator -> the bound survives, and that is all it does.**
+Not build authorisation (the bound still prices installs at zero, section 19). Per s134, the next question is the hybrid's
+`c_up * uploaded_fraction` term on a NATURAL trace (the 10% share behind the hybrid B = 13.21 came from the easier forced trace) -- that
+escalates to the owner with the hybrid number as the headline, not a build proposal off this bound.
+
+**What resolved and what didn't.** This retires the section 19 bench-vs-K-absorbing ambiguity (12.61 vs 14.18) with a direct measurement
+(14.27, tight interval) instead of a scaled one -- but it answers only the pure-bypass bound, per its own pre-registration. The hybrid number
+(13.21) and its natural-trace uploaded-fraction refinement remain the open, escalated question.
