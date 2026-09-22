@@ -775,6 +775,36 @@ Secondary signal, unplanned but consistent: `gpu0_util_pct` during decode is ~86
 ~7-9% for Arm B vs ~20-21% for Arm A - Arm A's `-ot` config is spending a large share of decode time off-GPU (9 fixed CPU-resident layers),
 exactly the mechanism the cache is expected to shrink by keeping hot experts resident in the GPU LRU instead of a fixed layer split.
 
-**Depth conditional (section 24 addendum #1) still open.** This 14K point is not production depth (ctx 81920, ~53K in an 8-turn session).
-Per pre-registration, proceeding to run `multiturn-growth-test.sh` once per arm before this result is treated as final - if the deep point
-disagrees in sign with this 14K result, the deep point governs, not this one.
+**Depth conditional (section 24 addendum #1) resolved - sign agrees, 14K result stands.** Ran `multiturn-growth-test.sh` once per arm
+(1 session, 8 turns, `NEW_TOKENS=5821 N_PREDICT=750`), same servers/config as the 14K legs, back to back (Arm A rebooted to Arm B between
+curves, same as the 14K protocol). Growth landed at prompt_tok ~39.2K-39.7K by turn 8 (short of the ~53K target - the script's word-count
+estimate ran a little light, and Arm A's turn 3 hit an early stop at comp_tok=368/750, both noted, neither changes the sign at any point) -
+still >2.8x deeper than the 14K comparison point, sufficient to exercise the depth conditional as intended.
+
+Metric here is `comp_tok/wall` (conflates prefill+decode, unlike section 25's `decode_tps_server`) - absolute numbers are not comparable
+across the two tables, but the metric is identical between arms within this table, so the A-vs-B comparison is valid:
+
+| turn | prompt_tok (~) | A tok/s | B tok/s | B/A | delta % |
+|------|-----------------|---------|---------|-----|---------|
+| 1 | 4,885 | 13.28 | 17.91 | 1.35 | +34.9% |
+| 2 | 9,710 | 13.51 | 16.45 | 1.22 | +21.8% |
+| 3 | 14,530 | 9.85* | 17.16 | 1.74* | +74.2%* |
+| 4 | 19,496 | 12.72 | 17.54 | 1.38 | +37.9% |
+| 5 | 24,784 | 12.33 | 16.66 | 1.35 | +35.1% |
+| 6 | 29,601 | 12.45 | 16.16 | 1.30 | +29.8% |
+| 7 | 34,425 | 12.32 | 16.14 | 1.31 | +31.0% |
+| 8 | 39,245 | 12.11 | 16.78 | 1.39 | +38.6% |
+
+\* turn 3 Arm A generated only 368/750 tokens before an early stop, inflating the apparent gap at that one point - excluded from the
+"consistent" claim below but does not change its sign either.
+
+**Arm B leads Arm A at every single turn**, from turn 1 (4.9K, +34.9%) through turn 8 (~39.2K, +38.6%), with no sign flip and no
+narrowing trend across the curve (delta% bounces in a 22-39% band, no monotonic decay toward zero). **14K and the deep point agree in
+sign** (B wins both). Per the pre-registered rule (section 24 addendum #1): decide on the 14K result.
+
+**Final verdict for section 24's win rule: Arm B (shipped `--moe-expert-cache-size`) wins on the 5060 Ti**, both at the 14K matched-depth
+comparison (+61.5%, gate-verified) and across the full depth curve to ~39K (+22-39% on the conflated prefill+decode metric, sign-consistent
+throughout). N_MAX conditional (section 24 addendum #2) does not fire - Arm B won outright, was never in the "loses by <7%" branch.
+**Config change recommended for the 5060 Ti CUDA0 arm: replace the production `-ot` split with `--moe-expert-cache-size 84` (`--n-cpu-moe 99`
++ cache flag, N=84 confirmed safe with ~1.9GB headroom). This does not reopen or justify the split-execution BUILD (section 23's shelve for
+that mechanism stands, 3060-scoped) - it is a config-only win on hardware that was never in scope for that shelve.**

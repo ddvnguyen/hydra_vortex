@@ -800,14 +800,26 @@ Other worker's dirt (`CMakeLists.txt`, `src/CMakeLists.txt`,
 
 ## MoE demand-admission / split-execution track (addendum 2026-09-22)
 
-Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-23. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
-**Status: RECOMMENDATION TO OWNER IS SHELVE, on headline return, not on a threshold failure.** Owner-waived in-situ run resolved the
-pure-bypass bound to 14.27 tok/s = +13.7% vs static 12.55 (survives the 13.75 line, but unachievable - it prices installs at zero). The one
-shippable shape (hybrid: admit some, CPU-serve the rest) spans **+8.7% to +14.1% across every possible uploaded-fraction f** (measured f on the
-only ids-bearing trace gives +8.7%; f cannot move the answer outside that span, so it was not worth further rig time to pin down - see sec 23,
-which also withdraws an earlier, incorrect claim that a natural trace would push f toward failure). Shelve because ~+10% is thin return for a
-new CPU-serve subsystem (companion tensors, expert->slot tables, a second `mul_mat_id` chain, CPU-side zeroing, summed down-projections) on the
-slower card - not because the hybrid provably fails a number. Holding for the owner's shelve decision.
+Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-25. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
+
+**Status: two separate findings, do not conflate them.**
+
+1. **Split-execution BUILD (CPU-served non-admitted experts): SHELVE, 3060-scoped only, on headline return, not on a threshold failure.**
+   Owner-waived in-situ run resolved the pure-bypass bound to 14.27 tok/s = +13.7% vs static 12.55 (survives the 13.75 line, but
+   unachievable - it prices installs at zero). The one shippable shape (hybrid: admit some, CPU-serve the rest) spans **+8.7% to +14.1%
+   across every possible uploaded-fraction f** (measured f on the only ids-bearing trace gives +8.7%; f cannot move the answer outside that
+   span - see sec 23, which also withdraws an earlier, incorrect claim that a natural trace would push f toward failure). Shelve because
+   ~+10% is thin return for a new CPU-serve subsystem (companion tensors, expert->slot tables, a second `mul_mat_id` chain, CPU-side
+   zeroing, summed down-projections) on the slower card - not because the hybrid provably fails a number. **Every input to this analysis
+   (I, M, link) was measured on the 3060; owner ruling (sec 24) confirms this does NOT transfer to the 5060 Ti.**
+
+2. **Already-shipped `--moe-expert-cache-size` vs production `-ot` config, 5060 Ti (CUDA0): WINS, config change recommended.** Zero new
+   engineering - a config A/B of two mechanisms that already exist. Owner-authorised separately (sec 24, "1. Go"). Result: Arm B
+   (`--moe-expert-cache-size 84`) beats Arm A (production `-ot` split) by **+61.5% at 14K matched depth** (gate-verified: override-precedence
+   checked, N=84 loads with ~1.9GB headroom) and by **+22% to +39% across a full depth curve to ~39K tokens, sign-consistent at every
+   turn** (sec 25). Pre-registered win rule cleared by 9.5x the combined noise margin. **Recommendation: replace the production `-ot` split
+   with `--moe-expert-cache-size 84` on the 5060 Ti CUDA0 arm.** This is independent of finding 1 - it does not reopen or justify the
+   split-execution build.
 
 | Verified fact (3060, N=42, MTP off, qwen4exp, link Gen1 during measurement) | Value | Where |
 |---|---|---|
@@ -828,3 +840,5 @@ slower card - not because the hybrid provably fails a number. Holding for the ow
 | K_e/w_e in-situ (secondary) | K_e 0.0723 ms/call, w_e 0.1144 ms/expert (w_e 49% above idle bench w=0.0769: real serving path costs more per expert than the standalone bench) | sec 21 |
 | Hybrid uploaded-fraction f, gate T=2, 14K trace (only ids-bearing trace available) | f = 0.1023 -> B=13.64 (+8.7%); break-even f<=0.0846; f cannot move B outside +8.7%/+14.1% span, so not worth pinning down further. Sec 22's "natural trace pushes f up" claim was WRONG (withdrawn sec 23): diverse routing pushes f DOWN, which favours pass | sec 22-23 |
 | Headline return vs static (12.55) | bound (unachievable) +13.7%; hybrid (shippable) +8.7% to +14.1% across all f | sec 21-23 |
+| **5060 Ti (CUDA0) `--moe-expert-cache-size 84` vs production `-ot`, 14K matched depth, n=3 warm** | **Arm B 31.99 vs Arm A 19.81 tok/s, +61.5%; gap 12.18 vs combined n=3 range 1.28 (9.5x); gate-verified (override-precedence + N=84 clean load)** | sec 24-25 |
+| Same A/B, depth curve to ~39.2K (`comp_tok/wall`, 8-turn growth test) | Arm B leads at every turn, +22% to +39%, no sign flip, no narrowing trend; agrees with 14K sign -> 14K result stands | sec 25 |
