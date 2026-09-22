@@ -855,14 +855,118 @@ host-bounce overhead touching the prefill path too, not just decode), but an ord
 does not come close to erasing the win. The historical "272 vs 142 tok/s" prefill gap the architect cited (different binary, different run)
 does **not** reproduce here - on this binary, at matched depth, prefill is close between arms with A slightly ahead throughout.
 
-**Literal per-turn wall-time result: B wins 7 of 8 turns; turn 3 is a confound, not a genuine loss.** Raw wall time (prefill+decode) favours
-B at every turn except turn 3, where Arm A's early stop (368/750 tokens, same artifact flagged in section 25) cut its own wall time short by
-generating 51% fewer output tokens - not a prefill or decode speed effect. Normalizing by actual tokens processed
-(`(prefill_tok+eval_tok)/wall_s`, removes the token-count confound): B leads 7/8 turns by 25-46%, and turn 3 narrows to A leading by a
-small 2.7% (139.1 vs 135.3 normalized tok/s) - close to noise, not a directional prefill-driven loss.
+**Correction (architect s144): my first pass normalised wall time by total tokens processed (`(prefill_tok+eval_tok)/wall_s`) to remove the
+turn-3 confound. That normalisation is invalid and is retracted - it lumps prefill tokens (~250 tok/s) with decode tokens (~20-28 tok/s,
+~10x more expensive), so a total-token-count division can't absorb a 382-token decode-length difference; it produced "A leads turn 3 by
+2.7%" as a pure artifact of the mixing, not a measurement.**
 
-**Reading against the architect's pre-registered rule ("B recommended only if lower at every turn"): literally 7/8, with the one exception
-fully attributable to a known, already-documented artifact rather than a new prefill regression.** Not unilaterally overriding the
-pre-registered rule - flagging this exact result to the architect for a call on whether the turn-3 artifact satisfies "every turn" as
-written, or whether a clean re-run of that one turn (isolate output-token count, no rig cost beyond ~1 min) is wanted before authorising
-the two remaining checks (KL-divergence output-equivalence, 75K-token survival probe).
+**Correct fix: rebuild each turn's wall time from the phase rates, at a common (P, D) for both arms, per the architect's formula
+`wall(P, D) = P/p + D/d`.** A's decode rate over its truncated 368 tokens is still a valid *rate* - the early stop shortens the amount of
+work, not the rate - so `p_A, p_B, d_A, d_B` are taken directly from each turn's measured `prompt eval time` / `eval time` lines (section
+26's first table), then applied to a common reference `P_ref` (mean of the two arms' actual prompt token counts that turn) and `D_ref =
+750` (the nominal target every turn was supposed to produce, removing both arms' early-stop artifacts, not just Arm A's):
+
+| turn | p_A tok/s | p_B tok/s | d_A tok/s | d_B tok/s | P_ref | wall_A (rebuilt) | wall_B (rebuilt) | B faster by |
+|------|-----------|-----------|-----------|-----------|-------|-------------------|-------------------|-------------|
+| 1 | 260.3 | 248.7 | 19.90 | 33.77 | 4,885 | 56.45s | 41.85s | +25.9% |
+| 2 | 272.7 | 260.8 | 19.84 | 32.99 | 4,829 | 55.51s | 41.25s | +25.7% |
+| 3 | 266.5 | 252.9 | 19.15 | 32.22 | 4,992 | 57.90s | 43.02s | **+25.7%** |
+| 4 | 258.1 | 244.1 | 18.90 | 33.78 | 4,990 | 59.02s | 42.65s | +27.7% |
+| 5 | 262.2 | 244.1 | 18.48 | 29.78 | 5,061 | 59.88s | 45.92s | +23.3% |
+| 6 | 250.1 | 237.7 | 18.34 | 30.01 | 4,948 | 60.68s | 45.81s | +24.5% |
+| 7 | 246.9 | 236.1 | 18.17 | 28.90 | 4,828 | 60.82s | 46.40s | +23.7% |
+| 8 | 243.4 | 231.6 | 17.85 | 33.13 | 4,956 | 62.38s | 44.04s | +29.4% |
+
+**Turn 3 was the artifact, confirmed: rebuilt at the same (P, D), B wins turn 3 by +25.7%, right in line with every other turn (23-29%
+band, tight).** With the confound correctly removed, **B wins all 8 of 8 turns** - the architect's prediction was right, and the "every
+turn" rule does not fail; it was being asked the wrong question at turn 3 by an invalid measurement, not a real exception.
+
+**The finding that actually matters: per-turn wall time is workload-shape-dependent, not just arm-dependent.** A prefills faster (~5%), B
+decodes faster (~1.6-1.9x) - which arm wins a given turn depends on the ratio of output tokens D to new-prompt tokens P for that turn. Break-even
+`D* = P_ref * (1/p_B - 1/p_A) / (1/d_A - 1/d_B)`, computed per turn from the measured rates above:
+
+| turn | D* (tokens) | D*/P_ref |
+|------|-------------|----------|
+| 1 | 42.2 | 0.86% |
+| 2 | 40.0 | 0.83% |
+| 3 | 47.4 | 0.95% |
+| 4 | 47.7 | 0.96% |
+| 5 | 69.8 | 1.38% |
+| 6 | 48.5 | 0.98% |
+| 7 | 43.8 | 0.91% |
+| 8 | 40.3 | 0.81% |
+
+**D*/P band: 0.81% to 1.38%** (tighter than the architect's rough estimate of 1.3-2.1%, computed here from actual per-turn rates rather
+than one aggregate figure). This harness ran D/P ≈ 15% (750 output / ~4.9K new prompt) - far above break-even, which is why decode
+dominated and B won every turn at this ratio. **The honest framing is an asymmetry, not a single number:**
+- **Prompt-heavy turns (D/P below ~0.8-1.4%): B loses, worst case ~4-6% (pure-prefill limit).**
+- **Output-heavy turns (D/P above ~1.4%): B wins, up to +22-39% at this harness's D/P≈15%.**
+- **Crossover band: D/P ≈ 0.81%-1.38%.**
+
+Whether this matters for real usage depends entirely on where actual serving turns fall on that axis - checked next.
+
+## 27. Production D/P, output-equivalence, and the 75K survival probe (architect s144 items 4-5, 2026-09-22)
+
+**Production D/P: not available this session, not a rig-cost question.** Checked for a running Hydra pod / monitoring stack before assuming
+the data exists: `podman ps` (and `podman ps -a`) shows no Hydra containers and no Prometheus/Loki/Grafana containers, running or stopped -
+the monitoring stack described in `docs/monitoring-observability.md` (`bash scripts/start-env.sh`) is not currently up, so there is no live
+or historical `prompt_n`/`predicted_n` series to query for this check. Per the architect's framing (s144 item 4): **this call goes to the
+owner** - the D*/P crossover band (0.81%-1.38%, section 26) is computed and ready, but where real Hydra/Qwopus serving turns actually fall
+on that axis is not something this session can measure without starting the pod, which is out of scope for a config-comparison check.
+
+**Output-equivalence (architect s144 item 5a): teacher-forced KL-divergence, Arm A vs Arm B, PASS.** Built `llama-perplexity` from the
+existing `build-demand` tree (target not previously built in this build dir, `cmake --build build-demand --target llama-perplexity`, ~40s,
+links against the same compiled objects the server uses - same binary lineage). Base run: Arm A config
+(`-ot 'blk\.(39|4[0-7])\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU' --moe-expert-cache-size 0`), `--save-all-logits`, `-c 4096` (3 non-overlapping
+chunks over the 14K prompt file). Compare run: Arm B config (`--n-cpu-moe 99 --moe-expert-cache-size 84`), `--kl-divergence
+--kl-divergence-base` against Arm A's saved logits, same prompt, same chunking.
+
+| Metric | Value |
+|---|---|
+| Mean KLD | 0.000131 ± 0.000015 |
+| Median KLD | 0.000013 |
+| Max KLD (single token, 3 chunks) | 0.079593 |
+| 99.9th pct KLD | 0.009994 |
+| Mean PPL(Q)/PPL(base) | 0.999993 ± 0.000014 |
+| Same top-1 token | **100.000 ± 0.000% (all 3 chunks)** |
+| RMS Δp | 0.109 ± 0.010% |
+
+Both arms pick the same top-1 token at every position across all 3 chunks; mean KLD is five orders of magnitude below anything that would
+indicate a routing or numerics defect. **Confirms the architect's expectation: ordinary quantisation/kernel-path drift from moving 39 layers
+of experts CPU->GPU, not a defect.** Arm A's turn-3 early stop (section 25/26) was therefore very likely ordinary sampling-boundary
+sensitivity at `temperature=0` on a near-tied logit, not evidence of a correctness problem - consistent with this KL result.
+
+**75K-token survival probe (architect s144 item 5b): PASS, clean headroom.** Built a 75,400-75,551-token prompt (6x-repeated 14K corpus,
+trimmed to fit under ctx 81920 with margin) via `/tokenize` verification. Sent one `/v1/chat/completions` request (max_tokens=100,
+temperature=0) to a fresh Arm B boot (`--moe-expert-cache-size 84`, ctx 81920, same binary/flags as sections 24-26), polling
+`nvidia-smi` every 2s throughout.
+
+| Metric | Value |
+|---|---|
+| Prompt tokens processed | 75,452 |
+| Total resident (`n_tokens` at release) | 75,551 |
+| Truncated | 0 (no) |
+| Wall time | 259.1s |
+| Peak VRAM (CUDA0) | 14,436 MiB / 16,311 MiB (~1,875 MiB / ~11.5% headroom) |
+| Server errors | none (`grep -i error/oom/fail` clean; the one `common_fit_params: failed to fit params` line is the same benign warning present in every successful boot this campaign, not a new failure) |
+
+No OOM, no truncation, comparable headroom to the 14K campaign's ~1.9GB margin (section 25) even at 5.4x the depth. The 3060's "loaded
+fine, OOM'd on first long request" precedent that motivated this check does **not** reproduce on the 5060 Ti at N=84.
+
+## 28. Where this leaves the recommendation (2026-09-22)
+
+Both gating checks (item 5) pass cleanly - nothing here blocks a deploy on correctness or VRAM grounds. The open item is entirely
+workload-shape, not a rig question: **the recommendation is genuinely conditional on D/P (output tokens / new-prompt tokens per turn)**,
+crossover at 0.81%-1.38%, and this session cannot measure where real Hydra traffic falls on that axis (section 27). Framing for the owner,
+per the architect's requested headline:
+
+- **This harness's D/P (~15%, decode-heavy agent-style turns): B wins, +22% to +39% per turn** (section 25-26), correctness and VRAM both
+  clear (section 27).
+- **Prompt-heavy turns (large tool-result context, short completion), D/P below ~1%: B loses, worst case ~4-6%** (pure-prefill limit,
+  section 26).
+- **The owner's call:** if Hydra/agent workloads on this arm are mostly decode-heavy (multi-turn conversation, long completions), the
+  config change is a clean win. If they're mostly prompt-heavy (large context stuffing, short completions - e.g. big tool results with
+  short replies), it is workload-dependent and may not be worth the change. This track has no way to measure the real distribution without
+  the monitoring stack running; the owner is better positioned to judge Hydra's actual traffic shape than a rig-side inference.
+- **Scope, restated (section 26): this is the track's own CUDA0-solo Qwen3.8-Flash-Next config, not any current Hydra deploy profile.
+  Never combine `--moe-expert-cache-size` with a COMBINED-OT launch (silent expert-split collapse, first-match-wins, untested).**

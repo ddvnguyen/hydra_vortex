@@ -800,9 +800,10 @@ Other worker's dirt (`CMakeLists.txt`, `src/CMakeLists.txt`,
 
 ## MoE demand-admission / split-execution track (addendum 2026-09-22)
 
-Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-26. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
+Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-28. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
 
-**Status: two separate findings, do not conflate them. Finding 2 is architect-reviewed, NOT YET CLOSEABLE - one measurement call pending.**
+**Status: two separate findings, do not conflate them. Finding 2 is fully measured and gate-clean; it needs an OWNER judgement call
+(workload shape), not further rig work, before it's actionable.**
 
 1. **Split-execution BUILD (CPU-served non-admitted experts): SHELVE, 3060-scoped only, on headline return, not on a threshold failure.**
    Owner-waived in-situ run resolved the pure-bypass bound to 14.27 tok/s = +13.7% vs static 12.55 (survives the 13.75 line, but
@@ -813,17 +814,20 @@ Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-26. Branch
    zeroing, summed down-projections) on the slower card - not because the hybrid provably fails a number. **Every input to this analysis
    (I, M, link) was measured on the 3060; owner ruling (sec 24) confirms this does NOT transfer to the 5060 Ti.**
 
-2. **Already-shipped `--moe-expert-cache-size` vs this track's own CUDA0-solo `-ot` config, 5060 Ti: WINS on decode, prefill check now run,
-   ONE turn under literal review before this is closeable.** Zero new engineering - a config A/B of two mechanisms that already exist.
-   Owner-authorised separately (sec 24, "1. Go"). Decode result: Arm B (`--moe-expert-cache-size 84`) beats Arm A (`-ot` split) by
-   **+61.5% at 14K matched depth** (gate-verified: override-precedence checked, N=84 loads with ~1.9GB headroom, Arm A's 9-layer dose
-   confirmed via `-lv 5` load-log capture) - **but architect (sec 143) flags +61.5% as a single-prompt outlier; the planning number is the
-   multi-turn band, +22% to +39%, sign-consistent at every turn of a depth curve to ~39K tokens** (sec 25-26). Prefill check (sec 26, zero
-   rig cost): B's prefill runs ~4-6% *below* A's at every turn (small, consistent, not the feared collapse) but decode's 1.3-1.7x gap
-   dominates - net per-turn wall time favours B at 7/8 turns; the 1 exception (turn 3) is fully attributable to Arm A's already-documented
-   early-stop artifact (368/750 tokens), not a genuine prefill loss, and narrows to a 2.7% (noise-level) A lead once normalized for actual
-   tokens processed. **Literal reading of the architect's pre-registered "every turn" rule: 7/8, flagged to architect for a call before
-   proceeding to the two remaining rig checks (KL-divergence output-equivalence, 75K-token survival probe).**
+2. **Already-shipped `--moe-expert-cache-size` vs this track's own CUDA0-solo `-ot` config, 5060 Ti: WORKLOAD-DEPENDENT WIN, both gates
+   clear, owner call needed on production D/P.** Zero new engineering - a config A/B of two mechanisms that already exist.
+   Owner-authorised separately (sec 24, "1. Go"). **The recommendation is conditional on D/P (output tokens per new-prompt tokens per
+   turn), not unconditional** (architect correction, sec 144): A prefills ~5% faster, B decodes ~1.6-1.9x faster; break-even
+   **D* / P ≈ 0.81%-1.38%** (computed from measured per-turn rates, sec 26). This harness's own agent-style multi-turn curve ran
+   D/P ≈ 15% (far above break-even) and showed **B winning all 8/8 turns by +22% to +39%** once a per-turn measurement artifact (turn 3's
+   early stop) was correctly rebuilt via rate-based `wall = P/p + D/d` (sec 26 - an earlier draft's naive per-token normalisation was
+   invalid and is retracted). The 14K single-prompt point (+61.5%) is a decode-only outlier, not the planning number.
+   **Prompt-heavy turns (D/P below ~1%, e.g. large tool-result context + short reply) would favour A by up to ~4-6%.** This track cannot
+   measure where real Hydra/agent traffic falls on that axis - no monitoring stack is currently running (`podman ps` empty, sec 27) - so
+   **the owner supplies the workload judgement.**
+   **Both gating checks pass clean (sec 27):** teacher-forced KL-divergence (Arm A vs Arm B, same prompt) - mean KLD 0.000131, 100% top-1
+   token agreement across all 3 chunks, ordinary numeric drift not a defect. 75K-token survival probe on Arm B - 75,551 tokens resident,
+   no truncation, no OOM, peak VRAM 14,436/16,311 MiB (~1.9GB headroom, matches the 14K campaign's margin at 5.4x the depth).
    **Scope correction (architect sec 143): this is NOT a Hydra-deployed config.** `scripts/set-profile.sh` deploys a different model
    (Qwopus3.6-MoE-A3B-v1-APEX-I-Mini) under COMBINED-OT (two-GPU split); "Arm A / production" here means only this track's own
    CUDA0-solo Qwen3.8-Flash-Next config. Taking a win into an actual Hydra profile is a separate CI/CD change, owner-gated at merge - not
