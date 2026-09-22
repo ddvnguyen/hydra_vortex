@@ -670,3 +670,52 @@ install/bypass) is transferred from the forced trace onto the real M=190; the as
 count roughly unchanged, which the forced trace's own +5.6% (not -50%) supports as a reasonable approximation, not a proof. Carrying that same
 +5.6% forward (M_gate_natural = 190 * 1.056 = 200) at f = 0.1023 gives B = 13.38, slightly worse than the M=190 calculation above - so the
 splice as run is mildly OPTIMISTIC, the right direction for a shelve recommendation to be conservative against.
+
+## 24. 5060 Ti config A/B: shipped cache vs production `-ot` (owner ruling s141) - PRE-REGISTRATION
+
+**Scope correction (owner s141): the section 19-23 shelve is a 3060 FINDING, not a verdict on the mechanism generally.** Every input to B was
+measured on the 3060: I = 39-43 ms, M = 190 at N=42 (the 3060's VRAM-forced cap), c_up on a defective Gen1 x4 link. `PROJECT_STATUS.md` and
+this note are re-scoped: the split-execution BUILD stays shelved (thin return, 3060), but that does not transfer to the 5060 Ti.
+
+**A different question, authorised separately.** On the 3060 the shipped cache loses to static and only an unbuilt bypass design helps. On
+the 5060 Ti the question is whether the ALREADY-SHIPPED `--moe-expert-cache-size` beats the current production `-ot` config - a config
+comparison, zero engineering. Every term should move favourably: far more VRAM for cache slabs, ~3x faster GPU (I is 43.2 of a ~70 ms budget
+on the 3060; lower on a faster card), no Gen1 link defect.
+
+**Spec, fixed before any data.** Same binary (`build-demand/bin`, fork `a2c46384b`, this track's binary throughout - NOT the production
+`build-g3` binary, since Arm B needs `--moe-expert-cache-size` and the comparison must hold the binary constant per arm), same model, CUDA0
+(5060 Ti), ctx 81920, `--split-mode layer -ngl 99 -fit off --parallel 1 --flash-attn on --jinja -t 6 --load-mode none --spec-type none
+--experimental-logs` (MTP off in both arms - draft-acceptance nondeterminism is a measured ~190x variance amplifier, memory
+`mtp-decode-slowdown-nondeterminism`). Prompt: `/tmp/opencode/mtp14k/prompt-14k.txt` (the track's standard 14K natural-text prompt, ~13946
+tokens), 4 reps per boot, rep 1 (cold) discarded, reps 2-4 = **n=3 warm** at matched depth (cache_n reused, same as every other campaign in
+this track - this IS the matched-depth protocol, simpler than a multi-turn growth curve and already validated).
+
+- **Arm A (production config):** `-ot 'blk\.(39|4[0-7])\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU' --moe-expert-cache-size 0` (the `0` is
+  MANDATORY per the override-precedence trap below - production's own verbatim command from `docs/findings-moe-placement-campaign.md` does not
+  set it, but on this binary any N > 0 elsewhere in the session or a nonzero default would silently override `-ot`).
+- **Arm B (shipped cache):** `--n-cpu-moe 99 --moe-expert-cache-size <N_max>`.
+
+**Pitfall 1 gate (override-precedence trap, memory `moe-expert-cache-size-is-N`): checked before the campaign is trusted, not after.** With
+`--moe-expert-cache-size` N > 0 anywhere, the cache buft override is pushed ahead of user `-ot`/`--n-cpu-moe` and the loader is first-match-
+wins, so Arm A's `-ot` would be silently ignored if N leaked into that arm. Gate: grep Arm A's server log for the `LLAMA_LOG_WARN` that fires
+when a request is routed through the LRU cache path - **its ABSENCE in Arm A's log is the pass condition**, its presence would mean Arm A
+silently became Arm B. Checked immediately after Arm A completes, before Arm B runs or numbers are compared.
+
+**Pitfall 2, N_max: determined empirically, not assumed.** Estimate from this track's own per-expert size and the 3060's own cache42 VRAM
+(10461 MiB at N=42, ctx 81920, `per_layer_token_embd=CPU` offloaded - Arm B here does NOT offload that tensor, so the 5060 Ti number will run
+higher for the same N): cache VRAM approx N*48*1.887 MiB. At N=84: ~7608 MiB of cache alone; GPU0 has 15509 MiB free before boot (342 MiB
+already held by the constant foreign CUDA context). Empirical gate: N=84 must (a) load without OOM and (b) complete all 4 reps of the full
+14K-depth prompt (the actual OOM risk is mid-generation KV growth, not load) with headroom logged. If it does, N_max = 84 is used AS-IS; this
+campaign does not grid-search upward for the absolute ceiling (marginal tok/s from a few more slabs is not expected to change which side of
+the win rule below the result falls, and pushing closer to the card's ceiling raises OOM risk for a question this pre-registration does not
+need answered precisely). If N=84 fails, back off (66, then 42) and report which N was used.
+
+**Pitfall 3: Arm A is re-measured in this session, not compared to the historical 22.2541** (`docs/findings-moe-placement-campaign.md`,
+unstated depth, different binary `build-g3`) - this track has drawn a wrong conclusion from exactly that mismatch twice already (sections 15,
+19). Both arms run back to back in this campaign at the same matched depth.
+
+**Pre-registered win rule, threshold filled in only after both arms' spreads are known (stated as a rule now, not a number):** Arm B wins only
+if `mean(B) - mean(A) > range(A) + range(B)` (range = max-min of the 3 warm reps), i.e. the gap exceeds the two arms' combined n=3 noise. A
+point estimate inside that combined spread is not a win. If Arm B wins: config change, report as such, the lever reopens on the 5060 Ti only,
+no split-execution build is implied. If it does not win: the shelve goes global, the 3060 analysis stands as the reason, and PROJECT_STATUS
+closes the track.
