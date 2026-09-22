@@ -800,13 +800,14 @@ Other worker's dirt (`CMakeLists.txt`, `src/CMakeLists.txt`,
 
 ## MoE demand-admission / split-execution track (addendum 2026-09-22)
 
-Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-22. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
-**Status: RECOMMENDATION TO OWNER IS SHELVE.** Owner-waived in-situ run resolved the pure-bypass bound to 14.27 tok/s (survives the 13.75 line,
-but that bound is unachievable - it prices installs at zero). The one shippable shape (hybrid: admit some, CPU-serve the rest) fails on
-measured ground at zero further rig cost: uploaded-fraction f = 0.1023 on the existing 14K trace exceeds the f <= 0.0846 break-even, giving
-B_hybrid = 13.64 < 13.75. Against static (12.5-12.6): bound +13.7%, hybrid (shippable) +5.3% - the entire return for a new CPU-serve subsystem
-on the slower card. A genuinely natural (non-grammar-forced) trace would push f higher, not lower, so this is not expected to reverse. Holding
-for the owner's shelve decision.
+Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-23. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
+**Status: RECOMMENDATION TO OWNER IS SHELVE, on headline return, not on a threshold failure.** Owner-waived in-situ run resolved the
+pure-bypass bound to 14.27 tok/s = +13.7% vs static 12.55 (survives the 13.75 line, but unachievable - it prices installs at zero). The one
+shippable shape (hybrid: admit some, CPU-serve the rest) spans **+8.7% to +14.1% across every possible uploaded-fraction f** (measured f on the
+only ids-bearing trace gives +8.7%; f cannot move the answer outside that span, so it was not worth further rig time to pin down - see sec 23,
+which also withdraws an earlier, incorrect claim that a natural trace would push f toward failure). Shelve because ~+10% is thin return for a
+new CPU-serve subsystem (companion tensors, expert->slot tables, a second `mul_mat_id` chain, CPU-side zeroing, summed down-projections) on the
+slower card - not because the hybrid provably fails a number. Holding for the owner's shelve decision.
 
 | Verified fact (3060, N=42, MTP off, qwen4exp, link Gen1 during measurement) | Value | Where |
 |---|---|---|
@@ -825,5 +826,5 @@ for the owner's shelve decision.
 | In-situ T_engine(4), owner-waived k=4 timing arms (n=6/arm, 2 passes) | D(4) = 0.5299 +-0.0301 ms/layer (tightest number in the track, 0.5% sd) | sec 20-21 |
 | B_worst from T_engine(4) (I=43.2, F2_pure=1.057) | **14.27 tok/s, +-1 SE range 13.96-14.59, all above the 13.75 line -> bound survives** (not build authorisation) | sec 21 |
 | K_e/w_e in-situ (secondary) | K_e 0.0723 ms/call, w_e 0.1144 ms/expert (w_e 49% above idle bench w=0.0769: real serving path costs more per expert than the standalone bench) | sec 21 |
-| Hybrid uploaded-fraction f, gate T=2, 14K trace (only ids-bearing trace available) | **f = 0.1023, exceeds break-even f <= 0.0846 -> hybrid B = 13.64 < 13.75, FAILS** | sec 22 |
-| Headline return vs static (12.5-12.6) | bound (unachievable) +13.7%; hybrid (shippable) +5.3% | sec 22 |
+| Hybrid uploaded-fraction f, gate T=2, 14K trace (only ids-bearing trace available) | f = 0.1023 -> B=13.64 (+8.7%); break-even f<=0.0846; f cannot move B outside +8.7%/+14.1% span, so not worth pinning down further. Sec 22's "natural trace pushes f up" claim was WRONG (withdrawn sec 23): diverse routing pushes f DOWN, which favours pass | sec 22-23 |
+| Headline return vs static (12.55) | bound (unachievable) +13.7%; hybrid (shippable) +8.7% to +14.1% across all f | sec 21-23 |
