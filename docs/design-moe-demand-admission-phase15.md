@@ -501,3 +501,37 @@ runs (cache42 decoding on the 3060, GPU 100%, link Gen1), two busy+hog runs.
     overridden, the model config value of 10 is used, no `--override-kv`. The timing-only rationale is a good argument that the
     constraint's purpose is not engaged, but it is the owner's rule; the architect routed the request to the owner. HOLD the run
     until the owner rules. The 3.1% pass being inside +-6% bench noise is carried to the owner verbatim.
+
+## 20. In-situ T_engine(4) from k=4 static timing arms (architect s134, owner waiver) - PRE-REGISTRATION, written BEFORE any k=4 number
+
+**Owner waiver (2026-09-22, relayed s134):** `--override-kv qwen4exp.expert_used_count=int:4` is allowed for these timing arms ONLY. k stays
+10 everywhere else (memory: `owner-constraint-no-override-kv-expert-count`). Every k=4 record carries `TIMING_ONLY_K_OVERRIDE=true` and the
+tag suffix `-k4`; no throughput figure from these arms may enter any table other than the K_engine/w_engine fit below.
+
+**Why the k=4 arm is the operating point.** j = M/48 = 3.96 at M=190, so a static arm at top-4 serves j=4 experts per CPU layer call, exactly the
+worst cell. No extrapolation, no K/w split needed for the rule.
+
+**Protocol (fixed now).** Runner `scripts/moe-controls/arm_k4_timing.py`, driver `/tmp/opencode/controls/k4timing/run_k4.sh`. Shallow prompt (167 bytes,
+open-ended story), ctx 81920, `-t 6`, MTP off, no decode-overlap, `--moe-expert-cache-size 0`, `per_layer_token_embd=CPU`, 3060 (CUDA1), binary
+`a2c46384b` (libllama 7710842c as run3; libggml-cuda differs only by the ledger commit, irrelevant at cache size 0). Arms `ncm4`, `ncm2`, `allhost`
+(= 44/46/48 layers' experts on CPU) each at k=10 (no override) and k=4, 4 reps per boot (rep 1 cold, DISCARDED; reps 2-4 = n=3 per boot). Two
+passes over the six arms, pass 2 in reversed order, i.e. n=6 warm reps per arm x k. Depth-independence: the CPU-vs-GPU delta per layer cancels
+attention, so shallow is valid; the k=10 shallow delta is also a depth check against section 14 (0.990 / 1.163 at 14K).
+
+**Estimator (single, fixed).** D(k) = OLS slope of decode ms/token against layers-on-CPU (44, 46, 48), all warm reps of both passes pooled, in ms per
+layer moved GPU -> CPU. **T_engine(4) := D(4).** Secondary, reported but not governing: pairwise slopes ncm4->ncm2 and ncm2->allhost, per-pass slopes.
+Spread: per-boot slope range and the OLS standard error.
+
+**Rule (architect s134, fixed before data).** `B_worst = 1000 / (I + 48 * D(4) * F2_pure)`, I = 43.2, F2_pure = 1.057. Threshold: B_worst <= 13.75 iff
+D(4) >= 0.582 ms/layer.
+- **B_worst <= 13.75 -> SHELVE, decisively.** Report and stop; no rescue measurements, no other cells.
+- **B_worst > 13.75 -> the bound survives and nothing more.** Not build authorisation (the bound prices installs at zero). Next question is the hybrid's
+  `c_up * uploaded_fraction` on a NATURAL trace, escalated to the owner with the hybrid B = 13.21 as the headline.
+The rule is applied to the point estimate. If the +-1 SE interval straddles 0.582 that is disclosed, not resolved by choosing a friendlier estimator.
+
+**Secondary:** K_e / w_e from D(j) = K_e + w_e * j using D(4) and D(10) of the same session (the in-situ analogue of the bench K=0.081 / w=0.0769;
+gives 48 K_e for the batching lever).
+
+**Known bias, stated now.** D = T_cpu - T_gpu (the layer's GPU expert cost is saved when it moves to the CPU), so D understates the CPU cost of a
+design that ALSO keeps the GPU experts, which makes B_worst optimistic. This is the same convention as the k=10 c_cpu of section 14, so it does not
+change the comparison, but a pass is weaker evidence than a fail.
