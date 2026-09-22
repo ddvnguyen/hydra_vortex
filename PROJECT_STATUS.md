@@ -800,9 +800,9 @@ Other worker's dirt (`CMakeLists.txt`, `src/CMakeLists.txt`,
 
 ## MoE demand-admission / split-execution track (addendum 2026-09-22)
 
-Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-25. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
+Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-26. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
 
-**Status: two separate findings, do not conflate them.**
+**Status: two separate findings, do not conflate them. Finding 2 is architect-reviewed, NOT YET CLOSEABLE - one measurement call pending.**
 
 1. **Split-execution BUILD (CPU-served non-admitted experts): SHELVE, 3060-scoped only, on headline return, not on a threshold failure.**
    Owner-waived in-situ run resolved the pure-bypass bound to 14.27 tok/s = +13.7% vs static 12.55 (survives the 13.75 line, but
@@ -813,13 +813,23 @@ Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-25. Branch
    zeroing, summed down-projections) on the slower card - not because the hybrid provably fails a number. **Every input to this analysis
    (I, M, link) was measured on the 3060; owner ruling (sec 24) confirms this does NOT transfer to the 5060 Ti.**
 
-2. **Already-shipped `--moe-expert-cache-size` vs production `-ot` config, 5060 Ti (CUDA0): WINS, config change recommended.** Zero new
-   engineering - a config A/B of two mechanisms that already exist. Owner-authorised separately (sec 24, "1. Go"). Result: Arm B
-   (`--moe-expert-cache-size 84`) beats Arm A (production `-ot` split) by **+61.5% at 14K matched depth** (gate-verified: override-precedence
-   checked, N=84 loads with ~1.9GB headroom) and by **+22% to +39% across a full depth curve to ~39K tokens, sign-consistent at every
-   turn** (sec 25). Pre-registered win rule cleared by 9.5x the combined noise margin. **Recommendation: replace the production `-ot` split
-   with `--moe-expert-cache-size 84` on the 5060 Ti CUDA0 arm.** This is independent of finding 1 - it does not reopen or justify the
-   split-execution build.
+2. **Already-shipped `--moe-expert-cache-size` vs this track's own CUDA0-solo `-ot` config, 5060 Ti: WINS on decode, prefill check now run,
+   ONE turn under literal review before this is closeable.** Zero new engineering - a config A/B of two mechanisms that already exist.
+   Owner-authorised separately (sec 24, "1. Go"). Decode result: Arm B (`--moe-expert-cache-size 84`) beats Arm A (`-ot` split) by
+   **+61.5% at 14K matched depth** (gate-verified: override-precedence checked, N=84 loads with ~1.9GB headroom, Arm A's 9-layer dose
+   confirmed via `-lv 5` load-log capture) - **but architect (sec 143) flags +61.5% as a single-prompt outlier; the planning number is the
+   multi-turn band, +22% to +39%, sign-consistent at every turn of a depth curve to ~39K tokens** (sec 25-26). Prefill check (sec 26, zero
+   rig cost): B's prefill runs ~4-6% *below* A's at every turn (small, consistent, not the feared collapse) but decode's 1.3-1.7x gap
+   dominates - net per-turn wall time favours B at 7/8 turns; the 1 exception (turn 3) is fully attributable to Arm A's already-documented
+   early-stop artifact (368/750 tokens), not a genuine prefill loss, and narrows to a 2.7% (noise-level) A lead once normalized for actual
+   tokens processed. **Literal reading of the architect's pre-registered "every turn" rule: 7/8, flagged to architect for a call before
+   proceeding to the two remaining rig checks (KL-divergence output-equivalence, 75K-token survival probe).**
+   **Scope correction (architect sec 143): this is NOT a Hydra-deployed config.** `scripts/set-profile.sh` deploys a different model
+   (Qwopus3.6-MoE-A3B-v1-APEX-I-Mini) under COMBINED-OT (two-GPU split); "Arm A / production" here means only this track's own
+   CUDA0-solo Qwen3.8-Flash-Next config. Taking a win into an actual Hydra profile is a separate CI/CD change, owner-gated at merge - not
+   implied by this result. **Hard constraint for the record: `--moe-expert-cache-size` must NEVER be added to a COMBINED-OT launch** -
+   first-match-wins override precedence would silently collapse the two-GPU expert split with no error (untested combination).
+   This finding is independent of finding 1 either way - does not reopen or justify the split-execution build.
 
 | Verified fact (3060, N=42, MTP off, qwen4exp, link Gen1 during measurement) | Value | Where |
 |---|---|---|

@@ -808,3 +808,61 @@ throughout). N_MAX conditional (section 24 addendum #2) does not fire - Arm B wo
 **Config change recommended for the 5060 Ti CUDA0 arm: replace the production `-ot` split with `--moe-expert-cache-size 84` (`--n-cpu-moe 99`
 + cache flag, N=84 confirmed safe with ~1.9GB headroom). This does not reopen or justify the split-execution BUILD (section 23's shelve for
 that mechanism stands, 3060-scoped) - it is a config-only win on hardware that was never in scope for that shelve.**
+
+## 26. Architect corrections (section 143) applied: scope, headline, and the prefill check
+
+Architect accepted the sign but withheld closeable status pending three corrections and one zero-cost check. All addressed below.
+
+**Arm A dose confirmation (costs nothing, pasted per request).** A fresh `-lv 5` load-only boot of Arm A's exact config (same binary,
+flags, prompt unused) confirms the CPU/GPU split actually applied: `blk.0..38.ffn_*_exps.weight` tensors show `buffer type overridden to
+CUDA_Host` (CPU), `blk.39..47.ffn_*_exps.weight` show `buffer type overridden to CUDA0` - exactly the 9-layer (39-47) dose the `-ot` regex
+specifies, nothing silently different. Final summary line: `load_tensors: CUDA0 model buffer size = 11763.04 MiB`. Dose was correct.
+
+**Headline correction (architect item 1): the number to plan around is the multi-turn band, not +61.5%.** +61.5% is n=3 on one repeated
+14K prompt and is not reproduced at any single point on the depth curve (band there is +22% to +39%, section 25's table). The 14K point
+correctly decided the *sign* per the pre-registered rule; it should not be quoted as the expected magnitude. The 61.5% vs ~30% gap between
+the two measurement styles is unexplained (possibly repeated-identical-prompt vs varying-content sensitivity) and does not affect the sign.
+**Planning number: +22% to +39%, not +61.5%.**
+
+**Scope correction (architect item 2): this is not a Hydra-deployed config.** `scripts/set-profile.sh` deploys
+Qwopus3.6-MoE-A3B-v1-APEX-I-Mini under COMBINED-OT (two-GPU expert split, different model entirely) - the `FOREIGN_PID` constant-VRAM
+context these campaigns ran alongside on CUDA0 *is* that live deployment. "Arm A / production `-ot`" in sections 24-25 means only this
+track's own best-known CUDA0-solo serve config for Qwen3.8-Flash-Next (`docs/findings-moe-placement-campaign.md` §1), not anything Hydra
+currently runs. **Scoped recommendation: replace the track's CUDA0-solo Qwen3.8-Flash-Next config with `--moe-expert-cache-size 84`.
+Taking this into a Hydra profile/launcher is a separate change, through CI/CD, gated by the owner at merge - not implied by this result.**
+**Hard constraint, stated for the record: `--moe-expert-cache-size` must never be added to a COMBINED-OT launch.** The cache's buffer-type
+override is pushed ahead of user `-ot` and the loader is first-match-wins (memory `moe-expert-cache-size-is-N`); on a COMBINED-OT launch
+this would silently collapse the two-GPU expert split with no error, and `907a73da9` (production's own safety check) rejects only tensor
+split, not this. Untested combination, exactly the silent-failure shape this track has already documented once.
+
+**Prefill check (architect item 3, zero rig cost - both arms' growth-test server logs already had the per-turn `prompt eval time` /
+`eval time` split).** Extracted both, matched turn-by-turn (`server-prodA.log`, `server-cacheB.log`, growth run):
+
+| turn | A prefill tok/s | B prefill tok/s | A wall_s (pf+dec) | B wall_s (pf+dec) | B faster? |
+|------|-----------------|-----------------|--------------------|--------------------|-----------|
+| 1 | 260.3 | 248.7 | 56.45 | 41.85 | yes, -25.9% |
+| 2 | 272.7 | 260.8 | 55.51 | 36.94 | yes, -33.4% |
+| 3 | 266.5 | 252.9 | 37.32 | 43.68 | **no, +17.0%** |
+| 4 | 258.1 | 244.1 | 58.95 | 42.73 | yes, -27.5% |
+| 5 | 262.2 | 244.1 | 60.76 | 44.97 | yes, -26.0% |
+| 6 | 250.1 | 237.7 | 60.17 | 46.34 | yes, -23.0% |
+| 7 | 246.9 | 236.1 | 60.82 | 46.40 | yes, -23.7% |
+| 8 | 243.4 | 231.6 | 61.84 | 44.61 | yes, -27.9% |
+
+**Finding, not the feared one: prefill is not a catastrophe for B, it's a small, consistent tax.** Arm B's prefill throughput runs
+~4-6% below Arm A's at every single turn (231.6-260.8 vs 243.4-272.7 tok/s) - real and systematic (plausibly LRU-cache bookkeeping /
+host-bounce overhead touching the prefill path too, not just decode), but an order of magnitude smaller than decode's ~1.3-1.7x gap, so it
+does not come close to erasing the win. The historical "272 vs 142 tok/s" prefill gap the architect cited (different binary, different run)
+does **not** reproduce here - on this binary, at matched depth, prefill is close between arms with A slightly ahead throughout.
+
+**Literal per-turn wall-time result: B wins 7 of 8 turns; turn 3 is a confound, not a genuine loss.** Raw wall time (prefill+decode) favours
+B at every turn except turn 3, where Arm A's early stop (368/750 tokens, same artifact flagged in section 25) cut its own wall time short by
+generating 51% fewer output tokens - not a prefill or decode speed effect. Normalizing by actual tokens processed
+(`(prefill_tok+eval_tok)/wall_s`, removes the token-count confound): B leads 7/8 turns by 25-46%, and turn 3 narrows to A leading by a
+small 2.7% (139.1 vs 135.3 normalized tok/s) - close to noise, not a directional prefill-driven loss.
+
+**Reading against the architect's pre-registered rule ("B recommended only if lower at every turn"): literally 7/8, with the one exception
+fully attributable to a known, already-documented artifact rather than a new prefill regression.** Not unilaterally overriding the
+pre-registered rule - flagging this exact result to the architect for a call on whether the turn-3 artifact satisfies "every turn" as
+written, or whether a clean re-run of that one turn (isolate output-token count, no rig cost beyond ~1 min) is wanted before authorising
+the two remaining checks (KL-divergence output-equivalence, 75K-token survival probe).
