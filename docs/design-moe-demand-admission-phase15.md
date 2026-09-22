@@ -739,3 +739,13 @@ between N=84 and the ceiling.
 N=96 and N=104 at ctx 81920 (short probe, not a new campaign) before declaring the shelve, since the ceiling could cover the gap.
 
 Nothing else about section 24 changes. Report the 14K legs first, per section 141's own ordering.
+
+## 24 correction: Arm A OOM'd on the first campaign attempt, methodology bug, fixed before any data
+
+First attempt crashed Arm A (`prodA`) on the very first decode step: `CUDA error: out of memory` allocating the cublas workspace
+(`ggml-cuda.cu:117`, `cublas_handle`/`common.cuh:1583`), ~4 s after the first request began, not at load. Root cause: the runner script
+(`arm_5060_ab.py`, adapted from the 3060 scripts) inherited `-fit off` in `COMMON`, which is NOT in the architect's literal production
+command. `--fit` defaults to "on" and reserves headroom for lazily-allocated buffers (the cublas workspace is allocated at first matmul, not
+at load, so `nvidia-smi` at boot showed no problem); `-fit off` removes that reservation. This was a copy-paste methodology error on my part,
+caught immediately (no data was produced or reported), not a finding about the production config. Fixed: `-fit off` removed, `arm_5060_ab.py`
+now matches the architect's spec exactly. Re-running from a clean rig-lock state.
