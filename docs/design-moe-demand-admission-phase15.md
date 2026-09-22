@@ -590,3 +590,40 @@ escalates to the owner with the hybrid number as the headline, not a build propo
 **What resolved and what didn't.** This retires the section 19 bench-vs-K-absorbing ambiguity (12.61 vs 14.18) with a direct measurement
 (14.27, tight interval) instead of a scaled one -- but it answers only the pure-bypass bound, per its own pre-registration. The hybrid number
 (13.21) and its natural-trace uploaded-fraction refinement remain the open, escalated question.
+
+## 22. Corrections to section 19/21 and the hybrid f check (architect s137) - zero-rig, existing data only
+
+**Correction 1 (architect, to their own s130/131 scaling hypotheses).** Neither bracketed the measured section 21 numbers: w_e = 0.1144 is
+above even the uniform method's upper bound (0.091-0.107), K_e = 0.0723 is below bench K = 0.081. The per-expert term scales up harder than
+either hypothesis, the per-call term scales slightly down. This is the strongest evidence in the track for measuring in situ over scaling a
+bench: both branches would have mispredicted, in opposite directions.
+
+**Correction 2 (batching lever, section 132).** 48*K_e = 3.47 ms of a ~70 ms token is **~5%, not ~10%** as earlier quoted. Fixed here.
+
+**Correction 3 (statistical caveat on section 21, does not move the branch).** The pooled SE treats between-pass variance as zero; with only
+two passes that variance is unidentifiable, not zero. Pass1 D=0.4807, pass2 D=0.5790, differ by 1.67 SE of the difference (no evidence of an
+order effect, but not proof of none). On pass2 alone, B=13.78; pass2 +1 SE, B=13.35 (would fail). The branch stands (point estimate and every
+pooled estimator clear 13.75), but "clean result" overstated the margin; recorded as thin under a conservative between-pass treatment.
+
+**The headline (against static 12.5-12.6):**
+- **Bound (installs priced at zero, unachievable): 14.27 = +13.7%**
+- **Hybrid (the only shippable shape): 13.21 = +5.3%**
+That is the entire return on split execution (companion tensors, expert->slot tables, a second `mul_mat_id` chain, CPU-side zeroing, summed
+down-projections) on the slower card.
+
+**f check, existing data, no rig.** No ids-bearing trace with real (non-grammar-forced) text exists; the only traces with routed-expert ids
+are the grammar-forced repetitions (`rep14k` 14K, `smoke-rep` shallow), the same ones behind the section 17-19 numbers. Replaying `rep14k`
+(14K, the depth matched to the M=190 worst-cell regime) through `sim_policy.py` gate T=2 hl=16 gives the exact split behind the earlier
+"~10%" figure: hits 384.3, installs 9.78, bypass 85.87, **M' = 95.65, f = installs/M' = 0.1023**.
+
+Solving `B_hybrid(f) = 1000/(I + 48*K_e*F2_pure + w_e*M*F2_pure*(1-f) + c_up*M*f)` at I=43.2, K_e=0.0723, w_e=0.1144, F2_pure=1.057,
+c_up=0.3003, M=190 (the fixed real-steady-state total, independent of which trace supplies f): **exact break-even f <= 0.0846** (architect's
+quoted 0.085, confirmed to 3 sig figs). At the measured f = 0.1023: **denominator 73.33 ms, B_hybrid = 13.64 tok/s < 13.75.**
+
+**f exceeds the break-even on the easier (forced-repetition) trace itself.** Per the pre-registered reading (architect s137.4): a natural trace
+routes more diversely, more experts cross the admission threshold, f should rise, not fall. This is decisive against, at zero rig cost.
+
+**Conclusion:** both the bound (section 21) and the hybrid f check now point the same way. The bound survives (14.27 > 13.75) but is not
+achievable (installs priced at zero). The one shippable design (hybrid) fails on measured ground: f = 0.1023 > 0.0846 threshold, B = 13.64 <
+13.75. Recommendation to the owner: **shelve.** A genuinely natural-prompt trace with ids (a new, cheap, shallow rig leg) could only refine f
+upward per the argument above; it is not expected to reverse this and is not proposed.
