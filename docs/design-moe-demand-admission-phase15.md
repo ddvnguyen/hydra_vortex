@@ -749,3 +749,32 @@ command. `--fit` defaults to "on" and reserves headroom for lazily-allocated buf
 at load, so `nvidia-smi` at boot showed no problem); `-fit off` removes that reservation. This was a copy-paste methodology error on my part,
 caught immediately (no data was produced or reported), not a finding about the production config. Fixed: `-fit off` removed, `arm_5060_ab.py`
 now matches the architect's spec exactly. Re-running from a clean rig-lock state.
+
+## 25. 5060 Ti config A/B: 14K result - Arm B wins decisively (2026-09-22)
+
+**Gate checked first, per section 24's own ordering.** Arm A's server log (`server-prodA.log`) has no `LLAMA_LOG_WARN` line for the
+cache-routing path anywhere in it - grep for the LRU-cache warning returns zero hits. Arm B's log has exactly the expected line at boot:
+`--moe-expert-cache-size is set; expert tensors route through the GPU LRU cache regardless of --cpu-moe / --n-cpu-moe.` **Pitfall 1 gate
+PASSED**: Arm A genuinely ran on `-ot`, Arm B genuinely ran on the cache, no silent override.
+
+**N_max=84 loaded and completed cleanly** (Pitfall 2): `vram_after_load_mib=13926`, `vram_peak_mib_this_request=14404` across all 4 reps,
+against a 16311 MiB card - `~1907 MiB` headroom, no OOM, no backoff needed. N_max conditional (section 24 addendum #2) does not need to fire.
+
+**14K result, n=3 warm reps (2-4), `decode_tps_server`, matched depth `cache_n=13942` both arms:**
+
+| Arm | rep2 | rep3 | rep4 | mean | range | range % |
+|-----|------|------|------|------|-------|---------|
+| A (prodA, `-ot`) | 19.816 | 19.954 | 19.655 | 19.808 | 0.299 | 1.51% |
+| B (cacheB, N=84) | 32.033 | 32.462 | 31.478 | 31.991 | 0.984 | 3.07% |
+
+gap = mean(B) - mean(A) = **12.183 tok/s**; combined n=3 range = 0.299 + 0.984 = 1.283. Gap exceeds combined range by **9.5x**.
+
+**Pre-registered win rule (section 24) applied: Arm B wins**, by a very wide margin (+61.5% relative to Arm A). Not a borderline call.
+
+Secondary signal, unplanned but consistent: `gpu0_util_pct` during decode is ~86-92% for Arm B vs ~31-34% for Arm A, and `cpu_busy_pct` is
+~7-9% for Arm B vs ~20-21% for Arm A - Arm A's `-ot` config is spending a large share of decode time off-GPU (9 fixed CPU-resident layers),
+exactly the mechanism the cache is expected to shrink by keeping hot experts resident in the GPU LRU instead of a fixed layer split.
+
+**Depth conditional (section 24 addendum #1) still open.** This 14K point is not production depth (ctx 81920, ~53K in an 8-turn session).
+Per pre-registration, proceeding to run `multiturn-growth-test.sh` once per arm before this result is treated as final - if the deep point
+disagrees in sign with this 14K result, the deep point governs, not this one.
