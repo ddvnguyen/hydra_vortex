@@ -800,11 +800,13 @@ Other worker's dirt (`CMakeLists.txt`, `src/CMakeLists.txt`,
 
 ## MoE demand-admission / split-execution track (addendum 2026-09-22)
 
-Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-21. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
-**Status: lever OPEN but not authorised. Owner waived the k=10 rule for a timing-only in-situ run (`--override-kv qwen4exp.expert_used_count=int:4`,
-scoped to these arms only, k=10 unchanged elsewhere); the run resolved the pure-bypass bound to 14.27 tok/s (tight, +-1 SE 13.96-14.59, all above the
-13.75 shelve line). Bound survives, but per pre-registration that is not build authorisation. Escalated open question: the hybrid's
-`c_up * uploaded_fraction` term on a natural (not forced) trace, with the hybrid B = 13.21 (below the line) as the headline.**
+Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-22. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
+**Status: RECOMMENDATION TO OWNER IS SHELVE.** Owner-waived in-situ run resolved the pure-bypass bound to 14.27 tok/s (survives the 13.75 line,
+but that bound is unachievable - it prices installs at zero). The one shippable shape (hybrid: admit some, CPU-serve the rest) fails on
+measured ground at zero further rig cost: uploaded-fraction f = 0.1023 on the existing 14K trace exceeds the f <= 0.0846 break-even, giving
+B_hybrid = 13.64 < 13.75. Against static (12.5-12.6): bound +13.7%, hybrid (shippable) +5.3% - the entire return for a new CPU-serve subsystem
+on the slower card. A genuinely natural (non-grammar-forced) trace would push f higher, not lower, so this is not expected to reverse. Holding
+for the owner's shelve decision.
 
 | Verified fact (3060, N=42, MTP off, qwen4exp, link Gen1 during measurement) | Value | Where |
 |---|---|---|
@@ -823,3 +825,5 @@ scoped to these arms only, k=10 unchanged elsewhere); the run resolved the pure-
 | In-situ T_engine(4), owner-waived k=4 timing arms (n=6/arm, 2 passes) | D(4) = 0.5299 +-0.0301 ms/layer (tightest number in the track, 0.5% sd) | sec 20-21 |
 | B_worst from T_engine(4) (I=43.2, F2_pure=1.057) | **14.27 tok/s, +-1 SE range 13.96-14.59, all above the 13.75 line -> bound survives** (not build authorisation) | sec 21 |
 | K_e/w_e in-situ (secondary) | K_e 0.0723 ms/call, w_e 0.1144 ms/expert (w_e 49% above idle bench w=0.0769: real serving path costs more per expert than the standalone bench) | sec 21 |
+| Hybrid uploaded-fraction f, gate T=2, 14K trace (only ids-bearing trace available) | **f = 0.1023, exceeds break-even f <= 0.0846 -> hybrid B = 13.64 < 13.75, FAILS** | sec 22 |
+| Headline return vs static (12.5-12.6) | bound (unachievable) +13.7%; hybrid (shippable) +5.3% | sec 22 |
