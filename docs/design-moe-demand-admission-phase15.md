@@ -719,3 +719,23 @@ if `mean(B) - mean(A) > range(A) + range(B)` (range = max-min of the 3 warm reps
 point estimate inside that combined spread is not a win. If Arm B wins: config change, report as such, the lever reopens on the 5060 Ti only,
 no split-execution build is implied. If it does not win: the shelve goes global, the 3060 analysis stands as the reason, and PROJECT_STATUS
 closes the track.
+
+## 24 addendum: two conditionals pre-registered before the 14K result is seen (architect s142)
+
+**1. Depth conditional.** The 14K comparison point is valid but production runs at ctx 81920, and the recorded 8-turn session reaches ~53K
+where the 5060 Ti already shows a 22% depth tax (36.47 tok/s at 6.6K -> 28.26 at 53K, N=84). `-ot` holds a fixed 9 layers on CUDA0 regardless
+of depth; the cache's hit rate interacts with the routing drift measured throughout this track. **The A/B ratio is itself depth-dependent** and
+could shrink or invert between 14K and 53K. Fix: after the 14K legs land, run each arm ONCE through `multiturn-growth-test.sh` (8 turns,
+~6.6K -> 53K, already exercised on both cards at ctx 81920) to get the ratio across the whole curve from one run per arm.
+
+**Pre-registered:** if 14K and the deep (53K) point agree in sign, decide on 14K. **If they disagree, the deep point governs** (production runs
+deep). A 14K win does not authorise the config change if it loses at 53K.
+
+**2. N_MAX conditional.** N_MAX = 84 is asserted (known-good), not determined maximal - Arm B may be running below its own ceiling. Only
+matters if Arm B loses. Calibration from the `-c 8192` sweep: N=84 -> 46.71, N=112 -> 49.18, N=126 -> 50.13, i.e. roughly **7%** of headroom
+between N=84 and the ceiling.
+
+**Pre-registered:** Arm B loses by more than ~7% -> N cannot rescue it, declare the global shelve. Arm B loses by less than ~7% -> probe
+N=96 and N=104 at ctx 81920 (short probe, not a new campaign) before declaring the shelve, since the ceiling could cover the gap.
+
+Nothing else about section 24 changes. Report the 14K legs first, per section 141's own ordering.
