@@ -800,8 +800,11 @@ Other worker's dirt (`CMakeLists.txt`, `src/CMakeLists.txt`,
 
 ## MoE demand-admission / split-execution track (addendum 2026-09-22)
 
-Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-19. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
-**Status: lever OPEN but not authorised; confirming run BLOCKED on an owner ruling (`--override-kv expert_used_count`, standing k=10 rule).**
+Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-21. Branch `feat/moe-demand-admission` (fork), parent `baseline-flash-next`.
+**Status: lever OPEN but not authorised. Owner waived the k=10 rule for a timing-only in-situ run (`--override-kv qwen4exp.expert_used_count=int:4`,
+scoped to these arms only, k=10 unchanged elsewhere); the run resolved the pure-bypass bound to 14.27 tok/s (tight, +-1 SE 13.96-14.59, all above the
+13.75 shelve line). Bound survives, but per pre-registration that is not build authorisation. Escalated open question: the hybrid's
+`c_up * uploaded_fraction` term on a natural (not forced) trace, with the hybrid B = 13.21 (below the line) as the headline.**
 
 | Verified fact (3060, N=42, MTP off, qwen4exp, link Gen1 during measurement) | Value | Where |
 |---|---|---|
@@ -817,3 +820,6 @@ Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-19. Branch
 | Per-request cache reset | incidental (`legacy_dirty` handoff in `moe-cache.cu`), ~1% at 128-token turns, parked | sec 13, 129 |
 | Eviction / half-life policy work | CLOSED: gate T=2 (12.0 ms/token) beats Belady residency (17.1) | sec 18 |
 | 3060 PCIe link retrain | confirmatory only (I is link-independent); needs root | sec 9, 18 |
+| In-situ T_engine(4), owner-waived k=4 timing arms (n=6/arm, 2 passes) | D(4) = 0.5299 +-0.0301 ms/layer (tightest number in the track, 0.5% sd) | sec 20-21 |
+| B_worst from T_engine(4) (I=43.2, F2_pure=1.057) | **14.27 tok/s, +-1 SE range 13.96-14.59, all above the 13.75 line -> bound survives** (not build authorisation) | sec 21 |
+| K_e/w_e in-situ (secondary) | K_e 0.0723 ms/call, w_e 0.1144 ms/expert (w_e 49% above idle bench w=0.0769: real serving path costs more per expert than the standalone bench) | sec 21 |
