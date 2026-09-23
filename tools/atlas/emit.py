@@ -13,8 +13,10 @@
      {"version", "engine_id", "model_hash", "provenance",
       "layers": {"<il>": {"experts": [{"id", "heat", "p": {cat: score}, ...}
                                      ordered hot-first]}}}
-   `reap_saliency` is present as null: reserved (design doc §9 — REAP needs
-   gate x output-norm telemetry that the route-trace surface does not capture).
+   `reap_saliency` is null until a REAP overlay is merged (--reap-overlay):
+   live EAN snapshots (fork HYDRA_EAN_STATS, prong A) or the offline observer
+   (tools/atlas/reap_observer.py, prong B) both feed the same slot —
+   gate x output-norm means over selected decode tokens (design doc §9).
 
 Both files carry the mandatory provenance block (#1078 lesson: the shipped
 GLM atlas had undocumented corpus provenance).
@@ -75,7 +77,32 @@ def emit_experts(full, prov):
     return doc
 
 
-def emit_ranks(full, prov, top_n=None):
+def load_overlay(path):
+    """REAP overlay from either prong (live EAN via reap_observer from-ean,
+    or offline observer output): {"saliency": {"L:E": s}, "provenance": {...}}
+    with mandatory model/engine_id/commit/probe_set provenance."""
+    with open(path) as fh:
+        doc = json.load(fh)
+    sal = doc.get("saliency")
+    if not isinstance(sal, dict):
+        raise ValueError(f"{path}: overlay needs a 'saliency' object")
+    parsed = {}
+    for key, val in sal.items():
+        try:
+            layer_text, expert_text = key.split(":")
+            parsed[(int(layer_text), int(expert_text))] = float(val)
+        except (ValueError, AttributeError) as error:
+            raise ValueError(f"{path}: bad saliency key {key!r}") from error
+    prov = doc.get("provenance") or {}
+    for field in ("model", "engine_id", "commit", "probe_set"):
+        if field not in prov:
+            raise ValueError(f"{path}: overlay provenance lacks {field!r}")
+    if not isinstance(prov["probe_set"], list):
+        raise ValueError(f"{path}: overlay provenance probe_set must be a list")
+    return parsed, prov
+
+
+def emit_ranks(full, prov, top_n=None, reap=None):
     """Per-layer ordered hot-first lists for the placement-prior consumer.
 
     Population: ALL specialists that fired at that layer in the decode
@@ -86,17 +113,32 @@ def emit_ranks(full, prov, top_n=None):
     Ordering hot-first with the most_common tie semantics of
     phase0_rank.py, so the exported pin order agrees with the phase0
     full-decode top-N lists.
+    reap = (saliency, overlay_provenance) from load_overlay(), or None
+    (reap_saliency stays null — never fabricated).
     """
     cats, atlas = full["categories"], full["atlas"]
     p_by_key = {(r["layer"], r["expert"]): r["p"] for r in atlas}
+    sal, reap_prov = reap if reap else ({}, None)
     out_layers = {}
     for il, pairs in sorted(full["rank_heat"].items(), key=lambda kv: int(kv[0])):
         rows = pairs if top_n is None else pairs[:top_n]
         out_layers[il] = {"experts": [
             {"id": eid, "heat": heat,
              "p": p_by_key.get((int(il), eid), {}),
-             "reap_saliency": None}
+             "reap_saliency": sal.get((int(il), eid))}
             for eid, heat in rows]}
+    if reap_prov is not None:
+        prov = dict(prov)
+        prov["reap"] = {
+            "method": reap_prov.get("method", "unknown"),
+            "model": reap_prov["model"],
+            "engine_id": reap_prov["engine_id"],
+            "commit": reap_prov["commit"],
+            "probe_set": reap_prov["probe_set"],
+            "decode_only": reap_prov.get("decode_only", True),
+            "mtp_excluded": reap_prov.get("mtp_excluded", True),
+            "cells": sum(1 for v in sal.values() if v is not None),
+        }
     return {"version": 1, "engine_id": ENGINE_ID,
             "model_hash": prov["model"], "provenance": prov,
             "layers": out_layers}
@@ -115,12 +157,16 @@ def main(argv=None):
     ap.add_argument("--ranks-out", default="expert-ranks.json")
     ap.add_argument("--top-n", type=int, default=None,
                     help="cap experts per layer in expert-ranks.json (default all)")
+    ap.add_argument("--reap-overlay", default=None,
+                    help="REAP overlay JSON (reap_observer output): fills "
+                         "reap_saliency where present, null elsewhere")
     args = ap.parse_args(argv)
 
     full = load_full(args.full)
     prov = provenance(full)
+    reap = load_overlay(args.reap_overlay) if args.reap_overlay else None
     experts_doc = emit_experts(full, prov)
-    ranks_doc = emit_ranks(full, prov, top_n=args.top_n)
+    ranks_doc = emit_ranks(full, prov, top_n=args.top_n, reap=reap)
     with open(args.experts_out, "w") as fh:
         json.dump(experts_doc, fh, indent=1)
     with open(args.ranks_out, "w") as fh:
