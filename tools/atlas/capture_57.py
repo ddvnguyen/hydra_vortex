@@ -103,7 +103,8 @@ def main(argv=None) -> int:
     # (counters size lazily on accumulate); per-probe data comes from /turns.
     g = meta["geometry"]
     print(f"capture: engine {g['engine_id']} model={g['model_hash']} "
-          f"moe_rows={len(g['moe_rows'])} cols={g['cols']} k={g['n_expert_used']}")
+          f"moe_rows={len(g['moe_rows'])} cols={meta['cols']} "
+          f"k={g['n_expert_used']} rows={meta['rows']}")
 
     for i, name in enumerate(names):
         safe = name.replace("/", "_")
