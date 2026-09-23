@@ -953,20 +953,671 @@ temperature=0) to a fresh Arm B boot (`--moe-expert-cache-size 84`, ctx 81920, s
 No OOM, no truncation, comparable headroom to the 14K campaign's ~1.9GB margin (section 25) even at 5.4x the depth. The 3060's "loaded
 fine, OOM'd on first long request" precedent that motivated this check does **not** reproduce on the 5060 Ti at N=84.
 
-## 28. Where this leaves the recommendation (2026-09-22)
+## 28. Where this leaves the recommendation (2026-09-22, superseded by section 29 - see correction below)
 
-Both gating checks (item 5) pass cleanly - nothing here blocks a deploy on correctness or VRAM grounds. The open item is entirely
-workload-shape, not a rig question: **the recommendation is genuinely conditional on D/P (output tokens / new-prompt tokens per turn)**,
-crossover at 0.81%-1.38%, and this session cannot measure where real Hydra traffic falls on that axis (section 27). Framing for the owner,
-per the architect's requested headline:
+~~Both gating checks (item 5) pass cleanly - nothing here blocks a deploy on correctness or VRAM grounds.~~ **Correction (section 29): the
+section 27 output-equivalence check only exercised the prefill/legacy path. It does not, by itself, validate the specific decode kernel
+that produces the 22-39% win.** VRAM (75K survival) remains clear on its own terms. Read section 29 before treating the correctness gate as
+closed. The workload-shape framing below stands, with the threshold language corrected per architect s145 item 2:
 
-- **This harness's D/P (~15%, decode-heavy agent-style turns): B wins, +22% to +39% per turn** (section 25-26), correctness and VRAM both
-  clear (section 27).
+- **This harness's D/P (~15%, decode-heavy agent-style turns): B wins, +22% to +39% per turn** (section 25-26).
 - **Prompt-heavy turns (large tool-result context, short completion), D/P below ~1%: B loses, worst case ~4-6%** (pure-prefill limit,
   section 26).
-- **The owner's call:** if Hydra/agent workloads on this arm are mostly decode-heavy (multi-turn conversation, long completions), the
-  config change is a clean win. If they're mostly prompt-heavy (large context stuffing, short completions - e.g. big tool results with
-  short replies), it is workload-dependent and may not be worth the change. This track has no way to measure the real distribution without
-  the monitoring stack running; the owner is better positioned to judge Hydra's actual traffic shape than a rig-side inference.
+- **Concrete thresholds (architect s145): a 5K-token tool result favours B if the reply exceeds ~40-70 tokens. A 20K-token file read needs
+  a reply longer than ~160-280 tokens. With reasoning/thinking output enabled, almost every turn clears this. Downside is capped at 4-6% of
+  prefill time; upside is 22-39% of decode time.** Not "agent-style vs prompt-stuffing" - that framing overstated the safety margin now that
+  D* is measured at ~1% of prompt tokens, not a large fraction.
+- **The owner's call:** where real Hydra traffic falls against this D/P threshold. This track has no way to measure the real distribution
+  without the monitoring stack running (section 27); the owner is better positioned to judge Hydra's actual traffic shape than a rig-side
+  inference.
 - **Scope, restated (section 26): this is the track's own CUDA0-solo Qwen3.8-Flash-Next config, not any current Hydra deploy profile.
   Never combine `--moe-expert-cache-size` with a COMBINED-OT launch (silent expert-split collapse, first-match-wins, untested).**
+- **Owner escalation is held per architect s145, pending architect review of section 29.**
+
+## 29. Decode-path KL-divergence: attempted, and why it could not reach the grouped kernel (architect s145 item 1, 2026-09-22)
+
+**Goal (architect s145):** the section 27 KL check used `-c 4096` (multi-token batches), which the certificate logic always classifies as
+`PREFILL_LEGACY` (see below) - it says nothing about the single-token grouped-decode kernel that produces the measured win. Fix requested:
+re-run with `-ub 1` and confirm from the cache's own grouped/legacy transition logs that the grouped path actually engaged.
+
+**What was done:** rebuilt `llama-perplexity`. Ran Arm B (`--moe-expert-cache-size 84`) with `-ub 1 -b 1 -lv 5` (verbosity raised - by
+default `llama-perplexity`, unlike `llama-server`, filters the `GGML_LOG_INFO`/`GGML_LOG_DEBUG` lines the moe-cache diagnostics use) against
+a 700-word (~1026-token) prompt, base run at Arm A for comparison. A temporary one-line `fprintf` canary (uncommitted, reverted after use)
+confirmed the stats-dump function was reached even before `-lv 5` was added, isolating the earlier silence to log-level filtering, not a
+missed call.
+
+**Finding: `-ub 1` does not reach `GGML_CUDA_MOE_GRAPH_OUTCOME_DECODE_GROUPED` either.** Read the certificate logic directly
+(`ggml/src/ggml-cuda/moe-cache.cu:10310-10357`, HEAD unchanged from section 1's `5226b502d`):
+
+- Multi-token batches (section 27's `-c 4096` run): every call has `call_prefill=true` -> outcome is always `PREFILL_LEGACY`. Confirms the
+  architect's read - that check validated the prefill path only.
+- `-ub 1`: every call has `call_decode && !call_prefill`, which is eligible for `DECODE_GROUPED` - **but only if all 48 layer-groups
+  independently earn `GROUP_REASON_ELIGIBLE`.** `decode_certificate` is AND-reduced across every group in the plan; a single non-eligible
+  group anywhere (reason `MATERIALIZATION`, `EXECUTION`, `CONSUMER_EQUIVALENCE`, or `ROUTE`) forces the whole plan to `DECODE_LEGACY`. One
+  source comment on the `ROUTE` case is explicit: "layer-split decode graphs often keep argsort on one device; fail closed to cached mmid" -
+  both arms run layer-split, so this fail-closed path is an expected property of the config, not an artifact of this test.
+
+**Measured:** the classifier only re-fires on plan recompile, not per token (consistent with `graphs reused = 2038` out of 1022 eval steps
+in the run's own perf summary). It recompiled 11 times over the run. **All 11 times, 47 or 48 of 48 groups landed on a legacy reason -
+never once all-`ELIGIBLE`.**
+
+**This contradicts the section 27 75K survival probe's own server log**, which showed grouped decode fully engaged under the *same*
+layer-split config, same model, real server traffic: `plan_calls=99 plan_compiles=2 plan_reuses=97 fallback=0`. So `DECODE_GROUPED`
+demonstrably works reliably in actual serving. The divergence is specific to `llama-perplexity`'s call pattern - chunked teacher-forced
+scoring has no genuine prefill-then-autoregressive-decode transition with slot continuity to seed the plan the way a real server request's
+prompt does, so the plan appears to never stabilize to all-`ELIGIBLE` within this harness, in any ubatch configuration tried.
+
+**Conclusion: `llama-perplexity` cannot exercise `DECODE_GROUPED` in this fork's design, in any flag combination found.** This is a
+structural mismatch between how the tool issues calls and what the certificate requires, not a missing flag. Confirming grouped-path
+numerics directly would need a teacher-forced harness driving real prefill-then-decode through server/slot infrastructure - real
+engineering, not the "~2 minutes of rig" this was scoped as.
+
+**What the evidence actually covers, as of this section:**
+
+| Path | Check | Result |
+|---|---|---|
+| `PREFILL_LEGACY` (multi-token) | KL, section 27 | Mean KLD 0.000131±0.000015, 100% top-1 |
+| `DECODE_LEGACY` (single-token, this section) | KL | Mean KLD 0.001456±0.000092, 100% top-1 - clean, ~11x higher than prefill but still five orders of magnitude below a defect signature |
+| `DECODE_GROUPED` (single-token, all-groups-eligible) | not exercised | No direct numerics evidence. Structural argument only: grouped and legacy dispatch read from the same per-expert cache slabs and weight banks (shared candidate/record/bank-role machinery upstream of the certificate split, `moe-cache.cu:10280-10309`) - the `ELIGIBLE`-vs-legacy branch selects kernel-launch/dispatch strategy (batched graph vs individual cached `mul_mat_id`), not a different weight source. Not traced far enough downstream to confirm the actual GEMM call is byte-identical between the two dispatch strategies. |
+
+**Reported to the architect (agent `2731baf3-2a8b-4b79-b237-111d0f1d4591`) for a ruling on: (a) accept prefill + decode-legacy as sufficient
+bounding evidence with `DECODE_GROUPED` numerics as an open item, vs (b) hold for a real harness.** Diagnostic source edits (the `fprintf`
+canary, the `perplexity.cpp` stats-dump call, the `#include "ggml-cuda.h"`) were reverted; the `src/llama-cpp` working tree is clean, nothing
+uncommitted. **Owner escalation remains held per architect s145 pending this ruling.**
+
+## 30. c1: the fork's own grouped-vs-reference unit suite FAILS on this model's live quant format (architect s146, 2026-09-22)
+
+**Architect's counter to the (a)/(b) choice above (s146): neither. A structural "same slabs, different dispatch" argument cannot rule out a
+slot-table/expert-lookup bug, which is exactly the class of defect this gate exists to catch, and the fork already ships a unit suite
+(`tests/test-moe-cache.cpp`) that could show this directly with zero rig cost.** Requested: build it, run the default (non-`--grouped-multigpu-only`)
+mode, identify any case that compares grouped-plan output against a reference `mul_mat_id` implementation.
+
+**Result: FAIL, deterministic (reproduced twice, byte-identical failure), and on this model's own quant format.**
+
+```
+FAIL tests/test-moe-cache.cpp:8348  memcmp(current_first.data(), expected.data(), expected.size() * sizeof(float)) == 0
+```
+
+Inside `test_active_grouped_dispatch_types_case`, reached from `test_active_grouped_dispatch_generic()` (`tests/test-moe-cache.cpp:9657-9671`)
+in the **default** test run - no special flag needed, this is not an opt-in diagnostic. `expected` is computed by a `reference_backend`
+(direct/uncached dispatch); `current_first`/`current_second` come from two independently-constructed grouped/cached-context backends. Zero
+tolerance - exact float32 `memcmp`. This is precisely the "grouped-plan output vs reference" comparison requested.
+
+**Localized** (temporary case-print markers added to the test file, reverted after use - `git status --short` on `src/llama-cpp` confirmed
+clean before and after): first failure is `type=IQ3_S (ggml enum 21), layout=SEPARATE (enum 1), n_slots=12` - the very first IQ3_S case in
+the loop. All 12 preceding combinations (Q3_K and IQ3_XXS, both layouts, both slot counts) pass cleanly. `test_active_grouped_dispatch_case`
+uses the same type for gate/up/down uniformly, so this is IQ3_S in all three weight roles at once, not an isolated role.
+
+**Why this is not a generic/irrelevant unit-test fail: it is this model's live format.** The deployed GGUF's own model-load trace
+(`armB_run_lv5.log`) shows:
+
+| Tensor | Type |
+|---|---|
+| `blk.0.ffn_gate_exps.weight` | `iq3_xxs` |
+| `blk.0.ffn_up_exps.weight` | `iq3_s` |
+| `blk.0.ffn_down_exps.weight` | `iq4_nl` |
+
+No `ffn_gate_up_exps` tensor loads (the loader probes for it, finds nothing) - gate and up are genuinely separate tensors, confirming
+**SEPARATE layout**, matching the failing case exactly. **`IQ3_S` is the live quant type for `ffn_up_exps` in Qwen3.8-Flash-Next-APEX-I-Mini**,
+in the layout the model actually uses. `n_slots=12` in the test is not production's `N=84`; slot-count-dependence is unconfirmed, but the
+mismatch appears on the first dispatch call (pass 0 of 4), not after cache pressure/eviction, so a slot-count gate looks unlikely though not
+ruled out.
+
+**Open question, not yet answered:** whether `ffn_up_exps` (the IQ3_S tensor) ever actually gets routed through `DECODE_GROUPED` in real
+serving. The section 27 75K survival probe's server log showed grouped decode engaged with `fallback=0`, but that doesn't establish which
+specific layer-groups were `GROUP_REASON_ELIGIBLE` - gate/down groups could be eligible while the up-tensor group silently falls back
+(consistent with the `ROUTE`/layer-split fail-closed comment found in section 29), which would mean the defect exists in the dispatch code
+but never fires in practice. This needs checking before treating the defect as proven-live rather than proven-in-suite.
+
+**Status:** reported to the architect. c2 (server logprob comparison) not yet run - holding per architect's direction pending their read of
+this result, since it may be more useful to first determine whether c1's defect is reachable in real serving at all. **Owner escalation
+remains held.** This is now a candidate fork defect independent of the Arm A/B config question - not yet filed as a GitHub issue pending
+architect direction, to avoid duplicating or cutting across their review.
+
+## 31. c1 magnitude/pattern, upstream attribution, and n_slots=84: confirmed P1, not numerics (architect s147, 2026-09-22)
+
+**Architect's read of section 30 (s147): a zero-tolerance `memcmp` fires for a real routing/slot bug and for ordinary kernel-selection
+drift alike, and proposed a specific innocent mechanism (IQ3_S has its own `get_mmvq_mmid_max_batch()` threshold, different from Q3_K/IQ3_XXS,
+so the grouped plan and the reference could cross it differently and land on different kernels) - a hypothesis, not a finding, with a
+concrete measurement to confirm or kill it. Requested: magnitude/pattern of the mismatch, which kernel each side ran, a free upstream check,
+and a rerun at `n_slots=84`.
+
+**Step 1 - magnitude and pattern.** Temporary env-gated report at the `memcmp` site (`tests/test-moe-cache.cpp`, reverted after,
+`git status --short` clean throughout). IQ3_S/SEPARATE/n_slots=12, pass 0:
+
+| Metric | Value |
+|---|---|
+| Elements mismatched | **512 / 512** |
+| Max abs diff | 262.765289 |
+| Max rel diff | 7.7402451 (774%) |
+| Example | idx=1: expected -135.669, actual +4.192 - **sign flip** |
+| `current_first == current_second` | byte-identical (deterministic across two independent grouped contexts) |
+
+Whole-output, large-magnitude, deterministic - the "materially different" signature the architect said means a real defect, not the
+"scattered low-bit" signature of accumulation-order drift. Contrast with the actual decode-legacy KL check (section 29): 0.0015 mean KLD,
+100% top-1 agreement - that is what benign numeric drift looks like on this same rig. This mismatch looks nothing like that.
+
+**Step 2 - kernel selection, both sides: identical.** `reference.selection=1` vs `first(gate).selection=1` - same kernel on both paths.
+This refutes the mmvq/mmid-threshold hypothesis by direct measurement, and by source: `get_mmvq_mmid_max_batch()`
+(`ggml-cuda/mmvq.cu:285`) - "Volta, Ada Lovelace, and Blackwell always use MMVQ for MUL_MAT_ID" unconditionally, type-independent. CUDA0 in
+this track is the 5060 Ti (Blackwell, sm_120); the per-type threshold table the hypothesis relied on is never consulted on this hardware.
+The mechanism would have been a real risk on the 3060 (Ampere, hits the turing-plus table) - just not on the card this reproduces on.
+
+**Step 3 - upstream attribution.**
+- Same assertion, same IQ3_S case, byte-identical, still exists at `gs/moe-cache` tip - relocated to `tests/test-moe-cache-dispatch.cpp`
+  after an upstream test-suite split (`test-moe-cache.cpp` shrank from 13,420 to 192 lines). Not fixed or relaxed by removing the test.
+- `ggml-cuda/mmvq.cu`: zero diff between merge-base (`77b733d5c`) and `gs/moe-cache` tip.
+- Our own commits ahead of merge-base touching `moe-cache.cu`: exactly 3 (`a2c46384b`, `ab8424b1b`, `042f0a5f5` - ledger/telemetry, frequency
+  half-life tuning). Grepped their diffs directly for `decode_certificate`/`mixed_certificate`/`GROUP_REASON_*`/`get_mmvq_mmid_max_batch`:
+  zero hits. **This fork's own changes did not introduce the defect.**
+- `moe-cache.cu` has a large upstream rewrite since merge-base (one hunk alone +1274/-136 lines) that could plausibly contain a fix, but
+  confirming that needs an actual `gs` tip build and test run - a full 176-commit port evaluation, not a free check. Left open.
+
+**Step 4 - production slot count.** Isolated `IQ3_S/SEPARATE/n_slots=84` as the first test run (bypassing the 12/48 cases that abort the
+process first on failure). **Fails identically**: 512/512 mismatched, same `max_abs_diff=262.765289`, same index, same expected/actual
+values, byte-for-byte the same as `n_slots=12`. Not slot-count-gated. Reproduces at the exact configuration Arm B ships.
+
+**CI #120, checked and ruled out as related.** The failing `cuda`/"Build with CMake" job (`gh api .../jobs/103587504496/logs`) is a
+`-Werror` build failure: `moe-cache.cu:1724` enum/non-enum conditional, `:7229` unused parameter, `:8906` missing field initializer - the
+same three warnings this session's own build prints non-fatally under a less strict flag set. Real, ~9-day-old, untriaged, and unrelated -
+three one-line fixes, not a numerics defect. Separate maintenance item.
+
+**Free sanity check (read B's live multi-turn text): not possible from existing artifacts.** The section 25-26 campaign log
+(`results-5060-ab.jsonl`) only recorded an output SHA hash per turn, not the text. Would need a fresh boot to check directly; held off as
+not actually free.
+
+**Verdict: meets the architect's own pre-registered P1 bar.** Whole-output, large-magnitude, deterministic, reproduces at production
+`n_slots=84`, identical kernel selection on both sides (rules out the benign explanation), not introduced by this fork's own commits.
+**The config recommendation is treated as dead pending a fix, independent of the speed result - this is now a correctness blocker, not a
+D/P workload-shape question.** c2 (server logprob comparison) not run - reported to the architect for direction on whether it's still
+useful (e.g. to check whether IQ3_S groups ever reach `GROUP_REASON_ELIGIBLE` in real serving, which would make this latent-but-unreachable
+rather than live). **Owner escalation remains held**, now blocked on correctness grounds regardless of D/P. All diagnostic edits reverted;
+`src/llama-cpp` tree clean.
+
+## 32. c2: live server liveness test - VERDICT LIVE (architect s148, 2026-09-22)
+
+**Reachability, established two ways before running any live request.**
+
+1. **Existing production evidence, already in hand.** `server-cacheB.log` from the section 24-25 campaign itself (the exact 14K-depth
+   run behind the "Arm B wins" measurement) already shows `moe-grouped-decode: registered=48 covered=48 plan_calls=199 plan_compiles=2
+   plan_reuses=197 calls=9552 ... fallback=0 rollback=0`. All 48 layer groups reached the grouped/cached path with zero fallback to legacy,
+   across the entire campaign. This alone answers "was the grouped path reached in the literal run under review" - yes, unconditionally.
+2. **Direct dispatch-variant instrumentation, both offline and live.** Traced the real dispatch chain: `ggml_cuda_mul_mat_id`
+   (`ggml-cuda.cu:3728`, the `GGML_CUDA_MOE_GRAPH_GROUP_GROUPED_ACTIVE` branch) and the GLU-fusion path in `ggml_cuda_try_fuse`
+   (`ggml-cuda.cu:~5916`) both bottom out in the same low-level kernel launcher, `ggml_cuda_mul_mat_vec_q` (`mmvq.cu:1408`) - this is the
+   one place real GPU work happens for a `MUL_MAT_ID` node, used identically by llama-server's decode step and by
+   `run_active_grouped_dispatch()` in the unit test (both go through the standard `ggml_backend_graph_compute` API, not a test-only
+   shortcut). Added a temporary diagnostic (`DIAG-C2-MMVQ`, gated on `src0->type == GGML_TYPE_IQ3_S`) at the top of
+   `ggml_cuda_mul_mat_vec_q`, rebuilt `build-demand` (`llama-server` + `test-moe-cache`, same binary for both).
+   - Re-ran `test-moe-cache`: 7 hits right before the known FAIL at `test-moe-cache.cpp:8348`. Confirms `test_active_grouped_dispatch_case`
+     exercises this exact function for the failing case, cache-backed pointers, `GLU-fused` dispatch (`fusion=1`) for the up bank.
+   - Booted **Arm B live** (`--n-cpu-moe 99 --moe-expert-cache-size 84`, same flags as the section 24 campaign, `-lv 5` for visibility) and
+     sent a real completion request. **15 live hits**, e.g. `DIAG-C2-MMVQ: tensor=blk.0.ffn_up_exps.weight data=0x71acf2000000 ne2=84
+     dst=ffn_moe_up-0 fusion=0`. This is the real model's actual `ffn_up_exps` tensor (confirmed `iq3_s` per the section 30 load trace),
+     dispatched through the cache-backed grouped path (`ne2=84` = `N_MAX`, non-model-mmap pointer), for real generated tokens. The
+     production call used the **unfused** variant (`fusion=0`, `ggml_cuda_mul_mat_id`'s single-bank branch) rather than the test's fused
+     one - a partial, not exact, dispatch-variant match. Both variants construct the `bank_view` via the identical
+     `ggml_cuda_moe_group_views()` call reading the same cache-pool memory with the same IQ3_S layout before handing off to the same
+     `ggml_cuda_mul_mat_vec_q`; fusion state only changes whether the gate multiply happens inside the same kernel call, not how the up
+     bank's bytes are read or dequantized. Treated as sufficient for "reachable by construction" - noted as a residual, smaller gap rather
+     than a clean miss.
+
+**c2 live comparison.** Booted Arm A (`prodA`, production `-ot`, no cache) and Arm B (`cacheB`, `N=84`) fresh, same `COMMON` flags as the
+section 24 campaign, `/completion` with `temperature=0`, `n_probs=20`, `post_sampling_probs=false` (pre-sampling), `cache_prompt=false`.
+Two prompts: a short mechanical one (`prompt-short.txt`) and the 14K-deep prompt from `/tmp/opencode/mtp14k/prompt-14k.txt` - the same
+depth as the section 24-25 campaign, per the architect's requirement 3.
+
+- **Short prompt:** byte-identical output across 200 tokens on both arms. Mean truncated top-20 KL over the full shared sequence:
+  -7.1e-5 (noise floor). No divergence.
+- **14K-deep prompt:** first top-1 divergence at **token index 2** (of 200), a genuine near-tie on both arms (`"\n\n"` 0.514 vs `"\n"`
+  0.486 on A; 0.595 vs 0.405 on B - margins 0.028 and 0.190, neither a confident single-token lock). Taken alone this token would read as
+  ordinary drift. **But the two shared-prefix tokens before it (indices 0-1) do not.** Token 0: both arms agree on top-1 (`"\n\n"`) but
+  with very different confidence - A 0.62 (with real alternative mass on `" Verify"`/`" Exactly"`/`" Confirm"`, 0.03-0.08 each), B 0.94
+  (sharply peaked, next alternative <0.011). **KL(A||B) at token 0 alone: 1.905 nats.** Token 1 (`<think>` vs `<think>`, both ~0.96-0.99):
+  KL 0.059. **Mean truncated top-20 KL over the shared prefix: 0.982 nats** - roughly 650x the architect's ~1.5e-3 LIVE threshold, driven
+  almost entirely by token 0's confidence collapse rather than the token-2 coin flip. Compare to the section 29/31 KL-divergence run via
+  `llama-perplexity` (structurally confirmed unable to reach `DECODE_GROUPED`): mean KLD 1.3e-4 to 1.5e-3 depending on batch config, 3-4
+  orders of magnitude smaller. The gap between "can't reach the defect" (perplexity, tiny KL) and "does reach the defect, confirmed live"
+  (server, huge KL from token 0 onward) is the cleanest possible signal.
+  - **Read both arms' full generated text** (not just hashed). Neither is garbled or incoherent - both are fluent, on-topic, and both
+    correctly compute the answer (3000 items, `w0`..`w2999`). A goes straight to the arithmetic (`Count = 2999 - 0 + 1 = 3000`). B opens
+    with a longer, more hedging chain-of-thought ("Let me count them carefully... Actually, looking at this more carefully...") before
+    presumably converging (truncated at 200 tokens, still mid-reasoning). **Not visibly degraded** - this is the kind of corruption that
+    a quality skim would miss, which is exactly why the KL check (not just eyeballing text) was the point of c2.
+
+**Verdict: LIVE**, per the architect's own pre-registered bar (`shared-prefix KL far above ~1.5e-3` - met by a wide margin; text-degradation
+was not observed, but the KL criterion alone is sufficient per the "or" framing in s148). Reachability is established both from existing
+production logs (the section 24 campaign's own `fallback=0`/`covered=48`) and from fresh live instrumentation (real `blk.N.ffn_up_exps`
+IQ3_S tensor, cache-backed, dispatched through the grouped path, during an actual generation request on Arm B). The defect is not confined
+to the unit test's synthetic construction.
+
+**Consequence per s148 verdict rules:** the section 24-27 5060 Ti A/B measurement (Arm B "wins decisively"), the N sweeps, and the 3060
+ledger traces/M=190 numbers that feed the shelve arithmetic are **VOID** - any of them that exercised the grouped/cached path with IQ3_S
+banks (which, per the section 24 campaign's own `covered=48`/`fallback=0`, means all of them) may be comparing a corrupted computation
+against a clean one, not "cache vs `-ot`" as advertised. The **3060 shelve decision itself still stands** - shelving was already the
+conservative/safe direction independent of this magnitude question, so voiding the measurements that fed it does not flip that call, it
+just removes the numeric justification underneath it.
+
+All diagnostic edits (two in `ggml-cuda.cu`, one in `mmvq.cu`) reverted after use; `build-demand` rebuilt clean; `src/llama-cpp` tree
+verified clean via `git status --short`. Two internal tracking issues opened on `ddvnguyen/hydra_vortex` (`review-finding` label, `--repo`
+explicit, both from outside `src/llama-cpp`): **#791** (this defect, full section 30-32 evidence trail), **#792** (CI #120, unrelated
+`-Werror` breaks, ruled out as a sibling of this defect). No upstream filing (not authorized). Report sent to the architect.
+
+## 33. Section 32's LIVE verdict withdrawn: c1' isolates this model's own triple as clean, c2' clears the token-0 anomaly as noise (architect s150-s154, 2026-09-22/23)
+
+**Architect rebuttal (s150), three points, all source-verified before any rig work:**
+1. `ggml-cuda.cu:1790` requires `ffn_up->src[0]->type == ffn_gate->src[0]->type` for GLU gate/up fusion to fire. This model's real
+   weights are gate=IQ3_XXS, up=IQ3_S - different types - so the failing unit case's fused path (all three banks same-type IQ3_S) is
+   **structurally unreachable** for this model. My section 31 "shouldn't matter" reasoning (both paths call the same
+   `ggml_cuda_moe_group_views()`) was an inference, not evidence.
+2. The short prompt's byte-identical output through the grouped path directly contradicts LIVE - if every up-projection element were
+   wrong on every layer, byte-identical decode would be impossible.
+3. **Token 0 of a completion is sampled from the prompt's last-position logits (prefill/legacy pass), not `DECODE_GROUPED`.** The
+   1.905-nats headline number in section 32 was measuring the wrong code path. The only genuine shared-prefix decode-path evidence was
+   token 1 (KL=0.059, small) and a token-2 near-tie - not a statistic. Also: KL(A||B) measures difference, not error; A is not ground
+   truth.
+
+**c1' part 1 - this model's own triple, isolated, stock build: PASSES.** Built a `--c1prime-only` early-exit into `test-moe-cache`'s
+`main()` that calls `test_active_grouped_dispatch_types_case({IQ3_XXS, IQ3_S, IQ4_NL}, SEPARATE, 84u)` directly, skipping every unrelated
+test in the default chain. Ran on a completely stock build (no env vars, no source patches) with `mmvq.cu` launcher instrumentation
+active: every `ggml_cuda_mul_mat_vec_q` call for this case traced `fusion=0`, no `FAIL`. Confirms the architect's point 1 by direct
+measurement, not just source reading.
+
+**c1' part 2 - is the same-type failure caused by fusion specifically? Attempted, inconclusive, abandoned deliberately.** Two independent
+attempts to force-disable only the GLU fusion decision both corrupted the passing model-triple control case:
+- Global `GGML_CUDA_DISABLE_FUSION=1` also silently disables an unrelated fusion (MoE weighted-reduction `add_alloc_dep` registration at
+  `ggml-cuda.cu:7199`, a different pattern from GLU gate/up) - confounded.
+- A scoped bypass of just the two `ggml_cuda_can_fuse(..., GGML_OP_GLU)` call sites (`ggml-cuda.cu:5947`, `:6063`) still broke the
+  model-triple control, even though `ggml_cuda_can_fuse` already naturally evaluates false for this model's mismatched types under
+  default settings. This suggests `ggml_cuda_can_fuse`'s GLU branch may perform dispatch/cache-group-view setup as a side effect of the
+  pattern match, not purely return a yes/no decision - **a predicate with side effects is a plausible mechanism for the original defect**,
+  filed as an observation on #791 rather than tested further by patching. Two independent toggles corrupting a stock-passing case is
+  itself the finding: the toggles are invalid instruments, not evidence that fusion is exonerated. Per architect s152: **part 2 does not
+  gate the verdict** - part 1 alone answers "does this model's shipping config compute correctly on the grouped path", and it does.
+  Whether the same-type failure is fusion-caused changes the scope of #791, not this track's numbers.
+
+**c2' - the token-0 anomaly, resolved as a noise-floor artifact.** No-cache (`--moe-expert-cache-size 0` on every arm), same 14K prompt,
+`cache_prompt=false` (full reprocess, `prompt_n=13894` on every arm - same as section 25's Arm B), `n_predict=1` (only token 0 matters),
+`temperature=0`, `n_probs=20`. Three arms: **A** (prodA's `-ot`, 9 expert layers on CUDA0), **A_repeat** (identical config, second boot),
+**A0** (0 expert layers on CUDA0, all `ffn_*_exps` on CPU). Token 0 top-1 (`"\n\n"`, id 271) agreed across all three. Truncated top-20 KL:
+
+- **KL(A||A_repeat) - determinism floor between two boots of the identical config: 0.826 nats.**
+- KL(A||A0) - depth-sensitivity signal: 1.896 nats.
+
+Two boots of the *same* config disagree by 0.83 nats at this token - nearly as large as the A-vs-A0 signal, and comparable to section 32's
+original 1.905-nats B-vs-A number. Top candidates in Arm A: `"\n\n"` 0.274 vs `" I"` 0.131 vs `"Confirm"` 0.089 - a near-tied decision at
+this exact position, not a confident single-token lock. Per the architect's pre-registered branch, KL(A||A0) clears the ~0.5-nats bar for
+"inherent depth sensitivity, not defect evidence" once the 0.83-nat floor is accounted for.
+
+**Instrument-mismatch correction (architect s154, owed from s146):** the `~1.5e-3` LIVE threshold quoted in sections 29-32 came from
+`llama-perplexity`'s **full-vocab** KL. Section 32's c2 numbers are **truncated top-20** KL from the server - tail mass falls outside the
+window and inflates the value. The two are not comparable; the "650x over threshold" framing in section 32 was an artifact of that
+mismatch, not evidence on its own. The valid comparison is within-instrument: c2' vs c2, both truncated top-20 KL from the same server
+setup, which is what the verdict above actually rests on.
+
+**Verdict: LATENT for this model.** Suspension lifted. The section 24-27 5060 Ti A/B measurement, the N sweeps, and the 3060 shelve
+arithmetic all **stand** - none of them exercised the fused, defective sub-path, because this model's gate/up types never take it. #791
+stays open as a genuine P1 code defect (unit-level, confirmed, unfixed at `gs/moe-cache` tip) with **unknown trigger** and **unknown
+affected configurations** - it constrains future model/quant choices, not this measurement.
+
+**Determinism floor, generalized (owner-visible, per architect s154 - recorded in `PROJECT_STATUS.md` Verified Facts, not just here):**
+at near-tied token positions at ~14K depth, two boots of an identical config can differ by ~0.83 nats truncated top-20 KL even though
+top-1 is unchanged. This is **position-specific, not general** - `arm_correctness.sh`'s `la0` vs `la0b` pairing produced byte-identical
+200-token output, so run-to-run determinism holds wherever the top-1 decision is not near-tied. Practical consequence: exact-match and
+tight-KL correctness gates are invalid at depth unless a same-config noise floor is measured first with the same instrument. This
+insight - establishing the floor before judging the signal - is what overturned the section 32 LIVE verdict; it is the second time on
+this track a noise floor overturned a scary-looking number (see section 22-23 for the first).
+
+**Follow-up filed, not implemented (architect s154 item 5):** #791 is latent because of this specific GGUF's tensor types, not because of
+anything under this track's control. A future quant of this model, or a different model, with gate and up both IQ3_S would make the
+defect live, silently - our own text-quality skim did not catch section 32's corrupted output, only the unit test and the KL check did.
+Proposed a startup tripwire (log a loud warning, or refuse to start, when `--moe-expert-cache-size > 0` and a layer's gate/up expert
+tensors share a type #791 covers) as issue #793, linked to #791, not implemented.
+
+Records updated: `PROJECT_STATUS.md` finding 2 restored to RECOMMENDATION STANDS; determinism floor added to Verified Facts; 3060
+SUSPENDED-PRECAUTIONARY block lifted (the model's gate/up types are a GGUF property, not GPU-architecture-dependent, so the 3060 numbers
+were never actually at risk). #791 comment posted with the part-1/part-2 findings and the side-effect hypothesis. All diagnostic edits
+reverted a second time (`--c1prime-only` flag, `mmvq.cu` instrumentation, the two `ggml-cuda.cu` scoped fusion-disable edits);
+`src/llama-cpp` tree verified clean by both this session and the architect independently.
+
+**Recommendation returns to the owner as the workload question it always was:** break-even D/P ≈ 0.81-1.38%; B (cache) wins above that
+line, A (`-ot`) wins by up to 4-6% below it; the change is a single launcher flag (reversible). Architect's recommendation: take it -
+typical turns clear the break-even line comfortably, and no production D/P data exists to refine it further without a monitoring stack
+that is not currently running. Scope: this is the track's CUDA0-solo config for Qwen3.8-Flash-Next only - must never go on a COMBINED-OT
+launch (first-match-wins override precedence would silently collapse the two-GPU expert split); moving it into an actual Hydra profile
+is a separate CI/CD change, owner-gated at merge.
+
+## 34. Owner direction (s155, 2026-09-23): two solo servers, 3060 optimisation phase, cache decision adopted
+
+**Target architecture, stated by the owner:** the final Hydra form is two separate llama-servers, one per GPU, each maximising its own
+throughput; a P/D mixed-quant split is deferred, not abandoned. 5060 Ti is the main device, but the owner wants the 3060 optimised first
+("when 3060 good then 5060 Ti will be super").
+
+**Adopted, effective immediately:** `--n-cpu-moe 99 --moe-expert-cache-size 84` is now this track's 5060 Ti solo serving config,
+replacing the `-ot` config used as the reference arm in sections 24-33. This closes finding 2's outstanding D/P workload-shape question
+- the owner's two-solo-servers direction settles it. Still not a Hydra profile (separate CI/CD, owner-gated at merge); the COMBINED-OT
+prohibition is unchanged.
+
+**Physical fact (owner-supplied):** the 3060 sits behind an NVMe/M.2-to-PCIe x16 adapter, so x4 link *width* is by design, not a defect.
+The Gen1 link *speed* is unexplained by that - root port `00:06.0` is Gen4 x4 capable, and adapters commonly force a Gen1 downtrain
+independent of width. Owner is setting the M.2 slot to Gen3 in BIOS; this is a physical action outside agent reach.
+
+**New work, in order (owner spec, condensed):**
+- **0.** (this section) - done.
+- **P1 - 3060 matched-depth A/B, run twice** (before the BIOS fix = now, after = once relayed): reuse `arm_5060_ab.py` pattern with
+  `CUDA_VISIBLE_DEVICES=1`. Arm A = best static `-ot` dose at ctx 81920, determined empirically (largest layer count that both loads and
+  survives a full 200-token request - 7 layers was the 16K-context cap, expected lower at 81920). Arm B = `--moe-expert-cache-size 42`
+  (N=56 OOMs on first long request, per prior 3060 work). n=3, MTP off, `--moe-expert-cache-size 0` explicit on Arm A (override-precedence
+  gate), matched depth, pre-registered before running. Include multi-turn growth curve + per-turn prefill as on the 5060 Ti.
+- **P2** - concurrent aggregate throughput: both servers decoding simultaneously (5060 Ti at N=84, 3060 on P1's winner). Report each
+  server's tok/s concurrent-vs-solo and the sum. Risk: this rig has been CPU-bound before (97% busy); favourable prior: the cache cut
+  5060-Ti-side `cpu_busy` from ~20% to ~8%. Test disjoint `taskset` core split (12700K = 8P+4E) vs unpinned, pre-registered. If the
+  concurrent sum falls well below the solo sum, name the contended resource (cores vs memory bandwidth) before proposing a fix. Can run
+  on Gen1 as a first read but must be labelled Gen1 and must not drive a thread-layout recommendation alone.
+  - **P3** - 3060 prefill collapse (4.7 tok/s vs 122 on 5060 Ti): re-measure after the BIOS fix, before investigating further. Gen1 is the
+  prime suspect; do not spend effort on root cause until the link is fixed. **Depth-control note (architect, mid-P1):** N=3 dose-probe
+  prefill readings fell steadily with depth (9.6 -> 9.1 -> 8.7 tok/s over ~2048/4096/6144 tokens) - likely ordinary attention-cost growth
+  with context depth, not a rig artifact, but it means Gen1-vs-Gen3 must be compared **at matched prompt depth**, not just as a single
+  average tok/s number, or the link-speed gain will be confounded with the depth slowdown. Record per-`print_timing`-line depth alongside
+  tok/s in both P3-before and P3-after.
+
+Sequencing: 0 and P1-before now; P2 Gen1-labelled first read allowed now; P1-after and P3 wait on the owner's BIOS change.
+
+**Dose-search result + P_max decision rule (architect, mid-P1, 2026-09-23):** measured VRAM-at-load on the 3060 at ctx 81920 scales
+linearly with tail-expert-layer count: N=3 -> 9,903 MiB, N=5 -> 11,805 MiB, i.e. **~951 MiB/layer** (not the ~2-layer capacity the
+architect had estimated earlier from the 16K-context figure - correcting that estimate here). Linear extrapolation puts N=6 at
+~12,756 MiB, over the card's 12,288 MiB total; N=6 was **not run** (recorded as infeasible by extrapolation, saving the probe time).
+With the measured 0.2065 tok/s/layer rate, the static arm's edge over the cache arm is now expected around **+1.0 tok/s**, not the
++0.4 tok/s the architect's earlier under-estimate implied - the A/B is closer than first thought.
+
+P_max (Arm A's static dose) is decided by **peak VRAM during the full run, not the at-load figure**: sample `nvidia-smi` at ~1 Hz for
+the whole request (prefill + decode) and take the max. A dose is "serving-safe" only if peak headroom (12,288 - peak) is >= 256 MiB.
+If N=5's peak headroom comes in under 256 MiB, Arm A drops to N=4 (~10,854 MiB by the same linear rate) and N=5 is logged as
+"fits but not serving-safe" rather than discarded outright.
+
+**P_max result: N=5.** Full run measured via 1 Hz `nvidia-smi` sampling across the whole 14K-token request (prefill + 200-token decode):
+peak VRAM 11,807 MiB / 12,288 MiB, peak headroom **481 MiB >= 256 MiB -> SERVING_SAFE**. N=6 was not run (infeasible by extrapolation,
+above). N=5's request also produced the first valid decode reading for this campaign (prior N=3 result's decode fields are the known
+raw-`/completion` bug): prefill 8.84 tok/s (13,946 real prompt tokens, matches the ~9.6->8.1 depth-falloff curve), decode **12.44 tok/s**
+(200/200 predicted). **Arm A for the P1 A/B is therefore N=5** (`--override-tensor 'blk\.(43|44|45|46|47)\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU' --moe-expert-cache-size 0`).
+
+**P1 A/B pre-registration (before running, per spec requirement):**
+- Script: `scripts/moe-controls/arm_3060_ab.py`, structurally mirrors `arm_5060_ab.py` (same Monitor/void/reps logic), generalised
+  from GPU index 0 to index 1, no foreign-co-resident-process filter (none known on the 3060, unlike the 5060 Ti's Qwopus ctx).
+- Arm A = `static3060`: `-ot` tail-N=5 (`blk.(43|44|45|46|47)`), `--moe-expert-cache-size 0` explicit (override-precedence gate).
+- Arm B = `cache3060`: `--n-cpu-moe 99 --moe-expert-cache-size 42` (N=56 known to OOM on first long request per prior 3060 work).
+- Both: ctx 81920, `--spec-type none` (MTP off), same fixed 14K-token prompt (`PFILE`), `cache_prompt: true`, n=3 reps/boot (rep 1 = cold
+  boot, reps 2-3 = warm/prefix-reused - the multi-turn growth-curve proxy used on the 5060 Ti campaign).
+- Primary metric: `decode_tps_server` (server-reported `predicted_per_second`) per rep, plus `prefill_tps` at matched depth (same prompt,
+  so depth is identical between arms by construction - no confound here, unlike the P3 Gen1-vs-Gen3 comparison).
+- Gates checked post-hoc, not cherry-picked: (1) override-precedence - `lru_cache_warn_lines` must be empty for `static3060`; (2)
+  `vram_peak_mib` peak headroom >= 256 MiB for both arms (Arm A already known-safe from the dose search; Arm B TBD); (3) `log_errors`
+  empty (no OOM/CUDA error) for both.
+- Decision rule: higher mean `decode_tps_server` across the 3 reps wins, reported alongside prefill numbers - not a single-rep pick.
+
+**Amendment (architect, 2026-09-23T~13:35Z, before Arm B starts):** the same fixed 14K prompt is sent every rep with `temperature: 0`
+(greedy, confirmed in `arm_3060_ab.py`, no seed since sampling is deterministic). For `cache3060`, rep 1's decode leaves the expert
+cache pre-loaded with exactly the experts reps 2-3 will route to again (identical prompt -> identical greedy output -> identical expert
+sequence) - an unrealistic best-case hit rate no real multi-turn traffic gets, the same class of artifact as #743. `static3060` has no
+cache, so it is unaffected. **Decision rule replaced:** the primary metric is now **rep 1 (cold) `decode_tps_server` per arm**, not the
+3-rep mean. Reps 2-3 are kept (cheap, already collected/collectable) but reported as a **"replay upper bound"**, not averaged into the
+A/B decision - option (b) from the architect's amendment, chosen because it needs no change to `static3060`'s already-running boot and
+no re-run of Arm A. Headroom and LRU-warning gates are unchanged.
+
+**Tie-break threshold (architect, pre-registered before Arm B's rep-1 result lands):** Arm A's own 3-rep spread (12.18-12.71 tok/s,
+~+-4% around the mean) is the only noise estimate available for an n=1 primary metric, so a +-5% band around Arm A's cold value
+(12.18 tok/s) is the tie zone:
+- Arm B rep-1 decode >= 12.79 tok/s (+5%) -> **cache wins**.
+- Arm B rep-1 decode <= 11.57 tok/s (-5%) -> **static wins**.
+- Between 11.57 and 12.79 tok/s -> **tie, static wins by default** (simpler, keeps explicit `-ot` control since the cache silently
+  overrides `-ot`/`--n-cpu-moe` first-match-wins, and avoids the cache's known 4-6% prefill penalty measured on the 5060 Ti campaign).
+
+Arm B's peak VRAM will be checked against the same 256 MiB headroom gate used for the dose search.
+
+**P1 A/B result: static wins decisively, outside the tie zone.** Arm A (static3060, N=5) rep-1 cold: decode **12.18 tok/s**, prefill
+8.98 tok/s, peak VRAM 11,807 MiB (headroom 481 MiB, gate passed). Arm B (cache3060, N=42) rep-1 cold: decode **1.51 tok/s** (~8x
+slower, far below the 11.57 tok/s lower tie-break bound), prefill 8.56 tok/s (close to Arm A - prefill is not where the collapse is),
+peak VRAM 10,769 MiB (headroom 1,519 MiB, gate passed - Arm B is VRAM-safe, the collapse is a throughput defect not a capacity one).
+Arm B's own server log shows heavy prefill-phase cache churn (`moe-cache-phase: phase=prefill ... l1_hit_rate=49.62% h2d_mib=76287.68`
+- 76 GB host-to-device during prefill) but the decode-phase block itself shows only `h2d_mib=51.27` with `l1_hit_rate=68.89%`, so the
+mechanism for the decode-side collapse is not yet clear from this log alone (small decode-phase H2D volume, yet 8x slower decode) -
+flagged to the architect as a new finding, not diagnosed further here. **Verdict: static3060 (N=5, `-ot` tail-5) is the 3060's P1
+serving config**, matching the tie-break default's stated preference (simpler, explicit `-ot` control, avoids the cache's known
+prefill penalty) but by a much larger margin than a default-tiebreak would suggest.
+
+**Full campaign closed:** `cache3060` reps 2-3 (warm, replay upper bound) confirm the collapse persists: 1.61 and 1.55 tok/s, both
+consistent with rep 1's 1.51 - this is not a cold-start artifact, the cache arm is slow throughout. `ARM_DONE` clean for both arms
+(no voids, no log errors).
+
+**Decode-collapse diagnostic (architect, time-boxed, before P2):** the same cache runs on the 5060 Ti (P2, dual-GPU final form), so
+the mechanism matters beyond P1's scope even though the P1 verdict itself doesn't change. Three hypotheses: H1 link-bound (the cache
+path moves more data than its own `h2d_mib` counter records, and Gen1 makes that ~60x more expensive than the 5060 Ti's link), H2
+per-layer GPU<->CPU sync stalls (not bandwidth) when a layer's experts split between cache-hit-GPU and CPU, H3 a slow kernel path
+specific to sm_86 (same area as #791). Diagnostic: `scripts/moe-controls/pcie_decode_diag.py`, short prompt (~512 tok, `prompt-512.txt`,
+truncated from the 14K prompt) + 200 decode tokens, one cold boot per arm, time-boxed to <=3 boots / ~30 min: (a) `cache3060` (N=42,
+3060) (b) `cache5060_n42` (N=42 on the 5060 Ti - matched N, only GPU/link differs from (a), NOT the adopted N=84) (c) `static3060`
+(N=5, baseline). Measures decode-window PCIe RX MB/s (`nvidia-smi dmon -s t`, aligned to the server's own `prompt_ms`/`predicted_ms`
+timings) and link-gen samples, computes bytes/token against the cache's own decode-phase `h2d_mib` counter. Read: both GPUs move
+similar bytes/token but 5060 Ti stays fast -> H1 (predicts P1-after should recover roughly in proportion to link speed); 3060's
+bytes/token stay small but it's still slow -> H2 or H3 (one more boot of (a) with `GGML_CUDA_DISABLE_FUSION=1` separates them, #791
+area); neither fits -> record "unlocalized" and stop, no fix work belongs in P1.
+
+**Diagnostic result: H1 confirmed, cleanly, all three boots.**
+
+| Arm | GPU / link | decode tok/s | decode RX avg | decode total RX | RX MiB/token | MiB/(layer x k=10) |
+|---|---|---|---|---|---|---|
+| `cache3060` (N=42) | 3060 / Gen1 x4 (constant, 108 samples) | 1.69 | 1,009.9 MB/s | 119,105 MiB | 595.52 | 1.241 |
+| `cache5060_n42` (N=42) | 5060 Ti / Gen5 (constant, 6 samples) | 29.87 | 12,155.3 MB/s | 80,993 MiB | 404.96 | 0.844 |
+| `static3060` (N=5, baseline) | 3060 / Gen1 x4 | 13.52 | 73.2 MB/s | 1,077 MiB | 5.39 | 0.011 |
+
+`static3060`'s own decode-phase PCIe traffic (5.39 MiB/token) is ~110x smaller than either cache arm's - confirming the huge RX volume
+is specifically the cache mechanism, not general decode/KV traffic, and not something Gen1 alone would expose (`static3060` is also
+Gen1 and is unaffected). The two cache arms move a similar order of magnitude of data per token (0.84-1.24 MiB per layer x expert-slot,
+~1.5x apart - plausibly cache-size/eviction-dynamics noise, not the dominant effect) but at vastly different link speeds (Gen5 vs
+Gen1, ~12x raw MB/s ratio), which alone predicts most of the ~17.7x decode-speed gap (29.87 vs 1.69 tok/s) between the two cache arms.
+The cache's own instrumentation (`ids_mib=0.00` at the phase level, tens-of-MiB at the per-tensor level) undercounts this by 3-4
+orders of magnitude on both GPUs - a real instrumentation gap, not 3060-specific, so **H3 (sm_86-specific kernel path) and #791 are
+not indicated**; no `GGML_CUDA_DISABLE_FUSION=1` follow-up boot is needed. **Verdict: H1, link-bound.** Prediction for P1-after (BIOS
+Gen3 fix): the cache arm's decode should recover roughly in proportion to link speed (Gen1->Gen3 is a further ~4x jump on the same
+x4 width), though `static3060` remains the safer P1 pick regardless since it isn't link-sensitive.
+
+**P2 implication - two-config plan, corrected (architect):** the two GPUs sit on separate CPU root ports (`00:01.0`, `00:06.0`) and
+`static3060` itself uses only 5.4 MiB/token of PCIe, so **the shared resource is not the PCIe root complex** - it's **host RAM
+bandwidth**. The 5060 Ti cache arm pulls ~405 MiB/token x ~30 tok/s = **~12 GB/s out of host RAM**; the 3060 server's 43 CPU-offloaded
+layers are themselves RAM-bandwidth-limited, and dual-channel DDR4 on this host tops out around ~50 GB/s total. P2 runs **two configs**,
+3060 fixed at `static3060` (P1's winner) in both: **Config 1** = 5060 Ti `cache` (N=84, adopted) + 3060 `static` (N=5) - the real target
+architecture. **Config 2** = 5060 Ti `static` (matched `-ot` tail dose, cache off) + 3060 `static` (N=5) - the RAM-bandwidth-contention
+control (removes the cache's ~12 GB/s RAM draw). For each config, also run **each server alone** (same prompt, same thread pinning) so
+**interference = concurrent tok/s / solo tok/s** per server; decision metric is **combined tok/s**. Pin threads so the two servers get
+disjoint P-core sets (12700K = 8P+4E) - CPU-thread contention must not be conflated with RAM-bandwidth contention in the result.
+
+**What the diagnostic table says about the cache mechanism itself:** 0.84-1.24 MiB per layer-slot is roughly the size of one routed
+expert tensor - the cache is moving **close to a full routed expert per slot on every token**, i.e. it is effectively streaming
+weights, not caching them (consistent with the low L1 hit rates seen throughout this track). The 5060 Ti's "win" in the diagnostic is
+Gen5 raw streaming bandwidth, not cache-hit reuse.
+
+**Follow-up filed: issue #794** (not implemented, per track workflow) - the cache's `h2d_mib`/phase-level counters undercount real
+PCIe traffic by 3-4 orders of magnitude on both GPUs - an instrumentation defect, not 3060-specific. Counter fix is dev-agent work,
+deferred.
+
+**Pre-registered prediction for P1-after (post-BIOS-fix):** `cache3060` decode tok/s should scale as roughly link-bandwidth / 595
+MiB/token. Gen3 x4 (~3.5 GB/s) predicts **<= ~6 tok/s for the cache arm - `static3060` (~12.2 tok/s cold) should still win P1-after**.
+P1-after is therefore scoped down to a single short-prompt boot per arm (confirm-the-prediction, not a full re-run).
+
+**Reboot readiness note:** the BIOS Gen3 reboot takes down the whole host (P100 VM, podman, Paseo daemon, this leader session, the
+architect's session). P2 had not started at the time of this note, so no measurement is at risk. Design doc state is current as of
+this entry. First post-reboot check: confirm `pcie.link.gen.current` reads 3 under load, before resuming P1-after/P3/P2 in that order.
+
+**P2 pre-registration (before running):** owner did not respond to a timing check on whether to hold for the reboot; proceeding now
+under standing auto-drive authorization for routine/reversible decisions ([[703-auto-drive-authorization]]) - if the host reboots
+mid-run, the detached process just dies and is rerun after, no real cost.
+- Script: `scripts/moe-controls/p2_concurrent.py`. 5060 Ti = dev0/port18441, 3060 = dev1/port18442 (no port clash, true concurrency).
+- Prompt: same ~512-tok short prompt as the PCIe diagnostic (`prompt-512.txt`), 200 decode tokens - chosen for speed (P2 is a
+  first-read on concurrent *decode* throughput/contention, not a full prefill re-test; P1 already characterised prefill separately).
+- CPU pinning: 12700K P-cores split disjoint via `taskset` - 5060 Ti server on logical cpus 0-7 (P-cores 0-3), 3060 server on logical
+  cpus 8-15 (P-cores 4-7), confirmed via `/sys/.../topology/core_id` (cpu0-15 = 8 P-cores x2 HT, cpu16-19 = 4 E-cores, left idle for
+  host OS overhead). Both servers keep `-t 6` (unchanged from all prior arms).
+- Per config: SOLO 5060 (own boot+request, 3060 not running), SOLO 3060 (own boot+request, 5060 not running), then CONCURRENT (both
+  booted together, both requests fired via parallel threads at the same wall-clock start). One rep per condition - time-boxed first
+  read, not a multi-rep campaign (matches the original P2 spec's "first read" framing, sec 34 above).
+- Decision metric: **combined concurrent tok/s** (`r5060.decode_tps + r3060.decode_tps` in the concurrent condition), plus
+  **interference per server** = concurrent tok/s / solo tok/s. Config 1 (cache_n84 + static_n5) vs Config 2 (static_tail9 +
+  static_n5) comparison isolates whether the cache's ~12 GB/s RAM draw (sec 34 above) causes measurably worse interference than the
+  RAM-bandwidth-neutral static-vs-static control.
+
+**Config 1 concurrent phase crashed - real finding, different from the RAM-*bandwidth* hypothesis P2 set out to test.** Solo legs
+succeeded (5060 Ti `cache_n84` 34.5 tok/s decode / 181.0 tok/s prefill; 3060 `static_n5` 12.27 tok/s decode, both no-void). The
+concurrent phase (both booted, 5060 Ti already fully loaded and idle, 3060 mid-load) was killed by **`systemd-oomd`** (userspace OOM
+daemon, not the kernel OOM killer directly) - `journalctl -k`: `oom-kill:constraint=CONSTRAINT_NONE,...,global_oom,task=llama-server,
+pid=1849478` `total-vm:190552340kB` `shmem-rss:45185384kB`. Root cause: this host's swap was **already at ~83% (19/23 GiB) at rest**
+(`systemctl status systemd-oomd`: default `SwapUsedLimit=90%`), from unrelated long-idle desktop-session processes (`baobab`, `gdu`,
+`plasmashell`, `kscreenlocker_g` - checked via per-PID `/proc/*/status VmSwap`, confirmed not GPU/track-related). Booting the 5060
+Ti's `--n-cpu-moe 99 --moe-expert-cache-size 84` config alone already carries a very large host RSS/mmap footprint (same pattern as
+the `cache3060` diagnostic's ~46 GB RSS, sec 34 above); loading the second (3060) server on top of that pushed swap over the 90%
+oomd trigger before the concurrent-decode phase this experiment was designed to measure ever ran. **This is a real capacity finding
+for the two-solo-servers target architecture** (owner s155): running the 5060 Ti's adopted cache config concurrently with a second
+full model load is not reliably stable on this host's current memory profile, independent of the RAM-*bandwidth* contention P2 was
+designed to test - a swap-*capacity* risk, not a bandwidth one. No sudo on this box (`swapoff`/raising the oomd limit are root-only),
+so this can't be fixed by the leader; flagged to the architect as a genuine blocker, with the safe next step (Config 2, both arms
+static, far smaller host RSS) run first to get a clean P2 data point while a retry strategy for Config 1 is decided.
+
+**Architect correction: this is a harness setting, not an architecture limit.** `--load-mode none` gives each server its own
+**private** copy of the 47 GB GGUF (5060 Ti cache_n84 solo measured `Shmem`=43.1 GB, `RssFile`=0.17 GB - i.e. almost entirely
+private anonymous memory, not shared page cache). Two servers under `none` therefore need ~86 GB private + ~13 GB RAM-backed
+`/tmp` (other agents' build trees) + desktop - the swap gate was always going to reject Config 1 under `none`, by arithmetic, not
+bad luck. `--load-mode mmap` should let both processes share **one** ~47 GB page-cache-backed mapping instead. Declined the
+architect's option (a) (treat the swap-abort itself as Config 1's finding) since that would record a harness flag as an
+architecture limit, and declined (b) (touch other sessions'/desktop's swap) since that state isn't ours to touch. Killed the
+`none`-mode retry (predicted by the architect's own math to hit the same swap gate; verifying it would only have cost ~10 more
+minutes for a foregone conclusion) and moved directly to plan (c):
+1. **Solo-verify `--load-mode mmap`** on each arm alone (no concurrent load), one discarded warm-up request (pays the SATA-NTFS
+   page-in cost) then one measured request. Pass = decode tok/s within +/-5% of the `none`-mode baselines (5060 Ti cache_n84 34.5
+   tok/s decode / 181.0 tok/s prefill; 3060 static_n5 12.27 tok/s decode), plus `RssFile` high / `Shmem` low confirming a real
+   shared file-backed mapping. Script: `scripts/moe-controls/p2_mmap_solo_check.py <cache5060|static3060> <out_dir>`, running
+   detached now (`/tmp/opencode/controls/p2/mmap-solo/`).
+2. **If both pass:** rerun Config 1 and Config 2 concurrently with `mmap` on both servers, keeping the swap gate (sec 34 above) as
+   a safety backstop, not the primary defense.
+3. **If cache_n84 is slower under `mmap`** (e.g. the cache needs its own private pinned pool and can't tolerate a shared mapping):
+   that becomes the real P2 finding - the cache config costs a second full private weight copy in the dual-server form, so the
+   5060 Ti should run `-ot` (static, matching Config 2) in production, not the cache config, when serving concurrently with the
+   3060.
+- Deferred, not blocking this run: if (2) holds, Hydra node configs for both engines need `load-mode: mmap` in the dual-server
+  production form (architect will spec once P2 settles); the 13 GB RAM-backed `/tmp/opencode` build-tree cleanup is an owner call,
+  not touched.
+
+**mmap solo-verify result: 5060 Ti `cache_n84`.** `RssFile`=48.4 GB / `RssShmem`=151 MB confirms the mapping mechanically IS a
+real shared, file-backed page-cache mapping (not a second private copy) - the OOM-avoidance half of the fix works. Decode
+26.92 tok/s vs the 34.5 tok/s `none`-mode baseline (-22.0%), outside the +/-5% gate.
+
+**Architect correction (self-flagged scoping error on my part): this does NOT disqualify Config 1.** The +/-5% gate tested
+whether `mmap` preserves `none`-mode speed; it doesn't, but that's not the P2 decision variable. What decides P2 is the cache arm
+against its *static alternative*, both under the same load mode: cache_n84/`mmap` (26.92 tok/s) vs 5060 Ti `static_tail9` solo
+(~22.25 tok/s, previously measured under `none`) - the cache arm is still ~21% faster even after the mmap penalty. Also flagged:
+the mmap penalty may be general (private allocations may get transparent huge pages that `mmap`'s 4 KB page-cache pages don't), in
+which case `static_tail9` slows proportionally too and the ranking is unaffected either way - needs its own `mmap` solo number to
+know. **Revised P2 matrix (all arms under `mmap`, swap gate kept as backstop):**
+1. Four solo baselines under `mmap`: cache_n84 (have: 26.92), static_tail9 (running now, was skipped earlier since it wasn't
+   needed for the swap-capacity fix - now needed for the apples-to-apples cache-vs-static comparison), static_n5/3060 (running).
+2. Concurrent: **both** Config 1 (cache_n84 + static_n5) and Config 2 (static_tail9 + static_n5) - Config 1 is back in scope.
+3. Report per server: concurrent/solo (interference), plus combined tok/s.
+4. **Decision rule, pre-registered before running:** higher combined tok/s wins; within +/-5% is a tie and **Config 2 wins ties**
+   (avoids the cache's under-counted PCIe traffic [issue #794] and the RAM-streaming behavior, sec 34 above).
+- Held for later, needs owner+sudo: if the mmap penalty turns out to hit both configs, mounting the GGUF on a hugepage-backed
+  tmpfs (root-only) could recover it for both - architect will only spec this if the `static_tail9`/mmap data calls for it.
+
+**All 4 solo `mmap` baselines complete:**
+
+| arm | GPU | decode tok/s (mmap) | vs `none` baseline | gate |
+|---|---|---|---|---|
+| cache_n84 | 5060 Ti | 26.92 | 34.5 (-22.0%) | outside +/-5% |
+| static_tail9 | 5060 Ti | 18.86 | ~22.25 (-15.2%) | outside +/-5% |
+| static_n5 | 3060 | 12.75 | 12.27 (+3.9%) | **within +/-5%** |
+
+Confirms the architect's general-mmap-penalty hypothesis, but asymmetrically: both 5060 Ti CPU-offload configs lose real
+throughput under `mmap` (cache -22.0%, static_tail9 -15.2%), while the 3060's own CPU-offload config (`static_n5`, also offloads
+`ffn_*_exps` to CPU) is essentially unaffected (+3.9%, within gate) - the penalty doesn't track "does this arm offload to CPU" in
+general, so its mechanism is still open (possibly scale-dependent: the 5060 Ti's much higher decode rate multiplies the same
+per-fetch page-fault overhead into a bigger relative hit). Solo cache-vs-static ranking on the 5060 Ti holds under `mmap`
+(26.92 > 18.86, cache still wins), matching the architect's prediction. Launched Config 1 and Config 2 concurrent runs under
+`mmap` (sequenced, `/tmp/opencode/controls/p2/mmap-concurrent/`), swap gate kept as backstop (expected not to trigger, since
+`mmap` shares one ~40-48 GB page-cache copy per GPU instead of two ~43-49 GB private copies).
+
+**Config 1 (cache_n84 + static_n5) concurrent result, mmap - swap gate did NOT trigger** (`pre3060_swap_pct`=84.3%, under the
+85% abort line - confirms the mmap fix works mechanically, no oomd risk).
+
+| leg | 5060 Ti decode tok/s | 3060 decode tok/s | combined |
+|---|---|---|---|
+| solo | 28.53 | 12.74 | 41.27 |
+| concurrent | 27.91 | 12.74 | **40.65** |
+| interference (concurrent/solo) | 0.978 (-2.2%) | 1.000 (~0%) | - |
+
+Interference is small on both servers - the RAM-bandwidth hypothesis (sec 34 above) predicts more drag than this shows; either
+the cache's RAM draw is smaller than estimated, or the two P-core-pinned processes + disjoint GPU DMA paths keep it mostly out of
+each other's way. Config 2 (static_tail9 + static_n5) now running (solo 5060: 19.23 tok/s decode / 176.1 prefill - close to the
+`static5060_tail9`/mmap solo-check number 18.86 above, small run-to-run noise; solo 3060 + concurrent in progress).
+
+**Config 2 (static_tail9 + static_n5) concurrent result, mmap - swap gate did NOT trigger** (`pre3060_swap_pct`=84.5%).
+
+| leg | 5060 Ti decode tok/s | 3060 decode tok/s | combined |
+|---|---|---|---|
+| solo | 19.23 | 12.74 | 31.97 |
+| concurrent | 18.78 | 12.74 | **31.52** |
+| interference | 0.977 (-2.3%) | 1.000 (~0%) | - |
+
+**P2 VERDICT: Config 1 wins decisively.** Combined concurrent tok/s: Config 1 = **40.65**, Config 2 = **31.52** - a **+29.0%**
+gap, far outside the pre-registered +/-5% tie band (which would have defaulted to Config 2). Both configs show the same small,
+near-identical interference pattern (5060 Ti server ~-2.2 to -2.3% under concurrent load, 3060 ~0%) - concurrent load barely
+perturbs either server once `mmap` removes the swap-capacity risk, so the RAM-bandwidth-contention hypothesis that motivated P2
+(sec 34 above) does not show up as a material effect at this prompt length/depth (~590 tok prompt, 200 decode tok, single rep) -
+the combined-throughput ranking is set almost entirely by each config's own solo speed, not by how much they interfere with each
+other. **Production recommendation: two solo servers, 5060 Ti on `cache_n84` (`--n-cpu-moe 99 --moe-expert-cache-size 84`), 3060
+on `static_n5` (`-ot` blk 43-47), both under `--load-mode mmap`** (required for OOM-safety per the systemd-oomd finding above -
+`--load-mode none` is not viable in the dual-server concurrent form on this host regardless of which 5060 Ti config is chosen).
+P2 closed. Reported to architect; next: P1-after / P3 pending the owner's physical Gen3 BIOS reboot (still outstanding), plus the
+two previously-queued tasks (`task-207401ba40` Colibri merge/build/correctness gates, `task-6becca4365` atlas expert-usage
+sweeps) per sec 35, now unblocked by P1+P2 closing.
+
+**Architect confirmed P2 closure, no re-run at depth now.** Ranking is a 29-point gap; flipping it via depth-driven interference
+growth would need interference to grow ~13x (from ~2% to ~29%) which has no obvious mechanism (KV cache lives on GPU; the
+host-RAM/CPU-side work that actually competes is roughly depth-independent per token). Folded the depth check into the
+post-Gen3-reboot P1-after/P3 window instead: **one concurrent Config 1 rep at the 14K P1 prompt**, checking interference at depth
+(incl. both servers prefilling simultaneously - affects TTFT, the short-prompt run couldn't show this), swap margin with a full
+KV cache, and the new link speed, all on final (post-reboot) hardware in one boot.
+
+**Noted for later (not gating now):** `mmap` cost the 5060 Ti ~14-17% on both its configs (cache 34.5->28.53, static 22.25->19.23)
+but the 3060 got slightly *faster* (12.27->12.74) - consistent with a 4KB-page-fault mechanism the 5060 Ti is fast enough to be
+sensitive to and the 3060 isn't. Potential fix (owner-gated, needs sudo): GGUF on a hugepage-backed tmpfs, both servers mapping
+it - potential +4-6 tok/s combined on the 5060 Ti side. Architect will write this up as an owner decision after Gen3 results.
+
+**Gate updates for `task-207401ba40` (Colibri merge/build/correctness), since production is now `mmap`:**
+- Gate 1 (tok/s comparison): compare against the **`mmap` solo baselines (28.53 / 12.74)**, not the `none`-mode numbers. The
+  byte-identical output check against `correct-la0.txt` is unaffected (load mode doesn't change the math).
+- Gate 2 (telemetry smoke test): run on **both servers concurrently** - the new production shape - not solo.
+`task-6becca4365` (atlas sweeps) unchanged: 3060 first, pass threshold set before running.
+
+Production spec (pending Gen3 results): Hydra node configs - 5060 Ti `cache_n84`, 3060 `static_n5`, both `--load-mode mmap`.
+Architect will write the full spec for a Haiku dev hand-off once Gen3 measurements land; merging stays with the owner.
+
+## 35. Colibri track folded in (s156, 2026-09-23) - queued behind P1/P2, no build while measurement in flight
+
+Owner decision `d-556c6cc692`: track `t-d94162d3f0` (Colibri) archived, folded into this track. Consult-side prep (fork merge +
+telemetry hooks, no build) already done: `hydra-fork/feat/flash-next-colibri` @ `ee13fdaa6` fast-forwards this track's
+`feat/moe-demand-admission` @ `a2c46384b` with 16 env-gated commits (`HYDRA_EXPERT_STATS`/`HYDRA_EAN_STATS`/`HYDRA_EXPERT_CAPTURE`/
+`HYDRA_EXPERT_META`, HTTP `GET /experts`, no new RPC opcode - this lineage has no Hydra RPC listener so the earlier 0x33 plan was
+dropped). Parent `origin/feat/flash-next-colibri` @ `4a6614cc8` merges `origin/epic/787-per-turn-telemetry` (atlas-web/tools/atlas),
+`reproduce.py` passes, submodule pinned to `ee13fdaa6`.
+
+**Queued tasks (orchestration `task_add`):**
+- `task-207401ba40` (after this section's P1/P2 close): `git merge --ff-only feat/flash-next-colibri`, merge parent into
+  `baseline-flash-next`, build sm_120+sm_86. **Gate 1 (OFF-parity):** atlas envs unset, 5060 Ti N=84 config, greedy 200-tok
+  byte-identical to `correct-la0.txt`, tok/s within this section's noise band. **Gate 2 (ON smoke):** `META+STATS=1`, `/experts` returns
+  200 with `telemetry:true` and nonzero cells post-decode on the cache-ON config; record ON-mode decode cost. Gate 1 failure stops the
+  task - no patching around it.
+- `task-6becca4365`: atlas sweeps on APEX-I-Mini, 3060 first - does REAP saliency or Edge0 prerouter predictability beat global heat
+  h@38~0.39 (see `moe-expert-coverage-by-subject`) by enough to move the 3060's small P_max under a per-expert GPU/CPU backend-selection
+  budget of 36.3 us/invocation (see `moe-ranking-mechanism-budget`)? Threshold pre-registers before the run, per #790.
+
+**Slotting decision:** task-207401ba40 runs strictly after P1 and P2 close - the rig is single-GPU-task-at-a-time by design, and a build
+while a measurement is mid-flight would invalidate both binary provenance and the measurement's binary hash. P1 (3060 dose probe + A/B)
+is in progress as of this section; P2 (concurrent) follows. task-6becca4365 (atlas sweeps) queues behind the merge+build since it needs
+the Colibri telemetry hooks to exist in the binary it measures against.

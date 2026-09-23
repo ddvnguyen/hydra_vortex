@@ -372,7 +372,8 @@ Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.
 | Restored logits are per-slot | ⚠️ `llama_get_logits()` is context-wide; a concurrent slot clobbers it |
 | Only P/D cross-node has restored logits | COMBINED / warm / cold have none → 1-token trick still required |
 | Core cannot compute a token delta | No tokenizer — engine runs `get_common_prefix` |
-| **MoE placement: 5060 Ti production config** | **22.2541 tok/s decode, ctx 81920, 9/48 expert layers via `-ot 'blk\.(39|4[0-7])\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU'`, MTP off, n=3 ±0.6%; prefill 141.6** (build-g3 86af0c9af, fp `895c522343eeaa53`) |
+| **MoE placement: 5060 Ti, former production config (superseded, see below)** | **22.2541 tok/s decode, ctx 81920, 9/48 expert layers via `-ot 'blk\.(39|4[0-7])\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU'`, MTP off, n=3 ±0.6%; prefill 141.6** (build-g3 86af0c9af, fp `895c522343eeaa53`) |
+| **5060 Ti solo serving config (owner-adopted 2026-09-23, sec 34)** | `--n-cpu-moe 99 --moe-expert-cache-size 84` replaces the `-ot` row above as this track's reference config — +22-39% decode across an 8-turn agent-style curve, D/P break-even ≈0.81-1.38%, correctness clear for this model (#791 latent, not reachable). Not a Hydra profile yet; never on COMBINED-OT |
 | **MoE placement slope, 5060 Ti** | 0.3187 tok/s/layer at ctx 81920 (0.3158/0.4244 over 0-11 at 16K); no knee through 23% of range |
 | **MoE placement slope, 3060** | 0.2065 tok/s/layer over 0-7 of 48 (physical cap: 8th layer OOMs); 13.15→14.60 tok/s |
 | **3060 prefill limiter UNEXPLAINED (§91 correction)** | Prior claim "3060 gen1-x4 link is the prefill limiter" VOIDED — owner corrected: 3060 is PCIe **gen4 x4** (~7.88 GB/s); gen1 readings were idle downtrain. Measured demand 2.3–4 GB/s ≈ 30–50% of link. CUDA0-solo prefill 122 vs 3060 4.7 tok/s (26×, same binary) remains real but UNATTRIBUTED; §76 reopened. In-source decode profiler (§92) will measure link state under load **[2026-09-22 UPDATE: the idle-downshift reading holds at idle only. Under 35 s sustained load the 3060 link stays Gen1 x4 = 0.39 GB/s H2D (5060 Ti upshifts, 25.9 GB/s); ~6% of the accepted gen4-x4 ceiling. Owner action (root) pending; prefill collapse reopened as a free rider on the post-fix rerun. See docs/design-moe-demand-admission-phase15.md sec 9.]** |
@@ -380,6 +381,7 @@ Support scripts: `scripts/hydra-engagement-gate.sh`, `scripts/hydra-build-stamp.
 | **Dual-GPU net-negative for this workload** | −9% at zero dose; per-layer benefit 71% of single-device |
 | **ctx cost is compute-reserve scaling** | ctx 81920 = 1,638 MiB = 1.75 expert layers, card-independent (KV itself only 48 MiB @16K — hybrid attention+recurrent model) |
 | **MTP verdict (no-overlap floor)** | Median gain +2.9% does not pay the 2,180 MiB head cost (3 placement layers); at acc≈0.92 MTP hits 24.8–24.9 and beats 23.09 — acceptance pinning is the lever |
+| **Determinism floor at depth (c2', sec 33)** | At near-tied positions at ~14K depth, two boots of an identical config differ by ~0.83 nats (truncated top-20 KL), while top-1 is unchanged. Exact-match and tight-KL correctness gates are therefore invalid at depth unless a same-config noise floor is measured first with the same instrument. Position-specific, not general: `arm_correctness.sh`'s la0 vs la0b pairing produced byte-identical 200-token output, so determinism holds wherever top-1 isn't near-tied |
 | AutoRouter routing           | ✅ 4-step algorithm |
 | EngineConfig via 0x40        | ✅ Config push works |
 | COMBINED mode (MoE)          | ✅ Expert-split verified |
@@ -503,6 +505,9 @@ Method: byte-for-byte replication of the 3060 run (`single3060-warm.sh`), changi
 - **Throughput saturates:** 84 -> 112 is +5.3%, 112 -> 126 is +1.9%, so the plateau is ~50.5 t/s and N=126 already delivers ~99% of it. Larger N mostly buys H2D traffic reduction (31.7 -> 22.7 GB per 256-token warm run, i.e. fewer cache misses).
 - **5060 Ti vs 3060 at the 3060's N=84:** 46.71 vs 20.83 warm t/s = **2.24x**. Grouped decode is fully exercised on both (`covered=48`, `plan_compiles=2`, `calls=12240`, `fallback=0`, `prepare_error=0`).
 - **Reporting trap:** the `moe-grouped-decode:` line appears 3x per run - the last one is an all-zeros **teardown** summary printed after `kill -TERM`. Use the first/second (real cumulative) line; `tail -1` yields zeros.
+- **Caveat added 2026-09-22 (sec 32 fallout):** these are throughput numbers, not correctness numbers - the GPU did run this fast, but with
+  the IQ3_S grouped-dispatch defect (sec 30-32) confirmed live and unaccounted for. Speed alone is not evidence the cache config is a safe
+  choice at these N values; do not cite this table as supporting a cache-vs-`-ot` recommendation until the defect is fixed and re-measured.
 
 ## MoE look-ahead PR-P1 (producer) — implemented, review-gated, NOT landable (addendum 2026-09-14)
 
@@ -814,8 +819,44 @@ Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-28. Branch
    zeroing, summed down-projections) on the slower card - not because the hybrid provably fails a number. **Every input to this analysis
    (I, M, link) was measured on the 3060; owner ruling (sec 24) confirms this does NOT transfer to the 5060 Ti.**
 
-2. **Already-shipped `--moe-expert-cache-size` vs this track's own CUDA0-solo `-ot` config, 5060 Ti: WORKLOAD-DEPENDENT WIN, both gates
-   clear, owner call needed on production D/P.** Zero new engineering - a config A/B of two mechanisms that already exist.
+2. **Already-shipped `--moe-expert-cache-size` vs this track's own CUDA0-solo `-ot` config, 5060 Ti: RECOMMENDATION STANDS
+   (suspension lifted 2026-09-23, sec 30-33).** The fork's own unit suite (`tests/test-moe-cache.cpp`,
+   `test_active_grouped_dispatch_generic`) FAILS, deterministically, for `GGML_TYPE_IQ3_S` **same-type** (all three banks IQ3_S, fused
+   GLU path) SEPARATE layout - **not** this model's actual triple. Grouped-dispatch output vs reference on that same-type case:
+   **512/512 elements wrong**, max abs diff 262.8, max rel diff 774%, sign flips present, byte-identical across two independent runs
+   (deterministic, not a race). Both sides select the identical CUDA kernel (rules out a benign mmvq/mmid-threshold explanation); not
+   introduced by this fork's own 3 commits touching `moe-cache.cu` (ledger/telemetry only, verified by diff); same assertion still unfixed
+   at `gs/moe-cache` tip. **Sec 33 correction: this model's own exact triple (gate IQ3_XXS / up IQ3_S / down IQ4_NL, SEPARATE, n_slots=84)
+   was isolated and run on a stock build - it PASSES, with every dispatch call traced `fusion=0`.** `ggml-cuda.cu:1790` requires gate and up
+   to share the same tensor type for GLU fusion to fire; this model's gate/up types differ, so the fused path the failing unit case exercises
+   is structurally unreachable for this model. Two independent attempts to force-disable only the GLU fusion path (global
+   `GGML_CUDA_DISABLE_FUSION=1`, and a scoped bypass of just the two `ggml_cuda_can_fuse(..., GGML_OP_GLU)` call sites) both corrupted the
+   otherwise-passing model-triple control case - meaning the toggles are confounded/invalid instruments, not that fusion is exonerated;
+   `ggml_cuda_can_fuse`'s GLU branch may be doing dispatch/group-view setup as a side effect, not just returning a decision. This is now a
+   scope/trigger question for **#791** (P1, code defect, reproduces on gs tip, affected configurations still unknown), not something that
+   changes this track's verdict on its own - **filed as an observation on #791, not tested further here.**
+   **c2 (sec 32) confirmed the grouped/cached path is reachable in real serving, not just the synthetic unit test:** the section 24 campaign's own
+   `server-cacheB.log` already showed `covered=48 fallback=0` for the literal 14K run under review; live diagnostic instrumentation then
+   directly caught `blk.N.ffn_up_exps.weight` (real model tensor, IQ3_S, cache-backed) dispatched through the grouped path during an actual
+   generation request; the same-request short-prompt grouped-decode counters (`c2_server_cacheB.log` task 0) confirm `registered=48
+   covered=48 fallback=0` - that request ran fully through the grouped/cached path, not a legacy fallback. A fresh Arm A vs Arm B logprob
+   comparison on the same 14K-depth prompt showed shared-prefix top-20 KL of **0.98 nats (token 0 alone: 1.9 nats)**. **Correction (sec 33,
+   architect review): token 0 of a completion is sampled from the prompt's last-position logits, computed by the prefill/legacy pass, not
+   `DECODE_GROUPED` - the 1.9-nats headline number is not valid decode-path evidence.** The only genuine shared-prefix decode-path data
+   points from that run are token 1 (KL=0.059) and a token-2 near-tie - too few to be a statistic on their own, and KL(A||B) measures
+   difference, not error (A is not ground truth). **c2' resolved the token-0 question (sec 33, 2026-09-23):** a no-cache, `n_predict=1`,
+   same 14K prompt, same `-ot` flags, `--moe-expert-cache-size 0`-on-both-sides control ran three arms - A (9 expert layers CUDA0), A_repeat
+   (identical config, second boot), A0 (0 expert layers CUDA0, all CPU). **KL(A\|\|A_repeat), the determinism floor between two boots of the
+   *same* config, is 0.83 nats - itself nearly as large as the original 1.9-nats anomaly.** KL(A\|\|A0) is 1.90 nats, clearing the ~0.5-nats
+   bar for "inherent depth sensitivity, not defect evidence" with room to spare once the 0.83-nat floor is accounted for: token 0 at this
+   depth sits on a near-tied decision (top candidates "\n\n" 0.27 vs " I" 0.13 in Arm A) that is simply unstable run-to-run, independent of
+   cache config. **Verdict: suspension LIFTED, LATENT-for-this-model stands, 5060 Ti A/B result stands as measured.** Owner escalation not
+   warranted - #791 remains an open P1 code defect (unit-level, unknown trigger, not reachable by this model's config) but does not touch
+   this track's numbers. Full writeup: sec 30-33.
+   The paragraph below (originally written before this defect was found, and briefly suspended pending sec 33) documents the D/P analysis;
+   it is the currently-valid recommendation again.
+
+   Zero new engineering - a config A/B of two mechanisms that already exist.
    Owner-authorised separately (sec 24, "1. Go"). **The recommendation is conditional on D/P (output tokens per new-prompt tokens per
    turn), not unconditional** (architect correction, sec 144): A prefills ~5% faster, B decodes ~1.6-1.9x faster; break-even
    **D* / P ≈ 0.81%-1.38%** (computed from measured per-turn rates, sec 26). This harness's own agent-style multi-turn curve ran
@@ -825,15 +866,26 @@ Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-28. Branch
    **Prompt-heavy turns (D/P below ~1%, e.g. large tool-result context + short reply) would favour A by up to ~4-6%.** This track cannot
    measure where real Hydra/agent traffic falls on that axis - no monitoring stack is currently running (`podman ps` empty, sec 27) - so
    **the owner supplies the workload judgement.**
-   **Both gating checks pass clean (sec 27):** teacher-forced KL-divergence (Arm A vs Arm B, same prompt) - mean KLD 0.000131, 100% top-1
-   token agreement across all 3 chunks, ordinary numeric drift not a defect. 75K-token survival probe on Arm B - 75,551 tokens resident,
-   no truncation, no OOM, peak VRAM 14,436/16,311 MiB (~1.9GB headroom, matches the 14K campaign's margin at 5.4x the depth).
+   **Gating checks from sec 27, superseded by sec 32-33 - not a clean correctness gate, but resolved: no defect for this model.** The
+   teacher-forced KL-divergence check (mean KLD 0.000131, 100% top-1 agreement) used `llama-perplexity`, which sec 29/31 confirmed
+   structurally cannot reach `DECODE_GROUPED` in any batch configuration - it never touched the grouped code path at all, so it cannot
+   validate correctness of the grouped path either way (this remains true regardless of the outcome below). The real, server-based
+   comparison (sec 32) showed shared-prefix KL ~650x higher once the grouped path engages, headlined by a 1.9-nats token-0 number that sec
+   33 found came from the prefill/legacy pass, not decode. **c2' (sec 33) resolved this:** a no-cache, `n_predict=1` A-vs-A0 control at the
+   same depth found the token-0 determinism floor itself (two boots of the identical config) is 0.83 nats - the 1.9-nats A-vs-A0 divergence
+   is ordinary depth-sensitivity noise, not defect evidence. The 75K survival probe (no truncation/OOM, ~1.9GB headroom) is a memory-safety
+   result, not a correctness one - it stands, but says nothing about the defect either way.
    **Scope correction (architect sec 143): this is NOT a Hydra-deployed config.** `scripts/set-profile.sh` deploys a different model
    (Qwopus3.6-MoE-A3B-v1-APEX-I-Mini) under COMBINED-OT (two-GPU split); "Arm A / production" here means only this track's own
    CUDA0-solo Qwen3.8-Flash-Next config. Taking a win into an actual Hydra profile is a separate CI/CD change, owner-gated at merge - not
    implied by this result. **Hard constraint for the record: `--moe-expert-cache-size` must NEVER be added to a COMBINED-OT launch** -
    first-match-wins override precedence would silently collapse the two-GPU expert split with no error (untested combination).
    This finding is independent of finding 1 either way - does not reopen or justify the split-execution build.
+   **ADOPTED (owner s155, 2026-09-23): the recommendation is taken.** Owner direction: final Hydra form is two separate llama-servers
+   (one per GPU, maximising total throughput each), P/D mixed-quant split deferred. That resolves the D/P workload-shape judgement call
+   this finding was waiting on - `--n-cpu-moe 99 --moe-expert-cache-size 84` is now **this track's 5060 Ti solo serving config**,
+   replacing the `-ot` config as the reference/"production" arm in all future measurements on this GPU. Still not a Hydra profile change
+   (separate CI/CD, owner-gated at merge) and the COMBINED-OT prohibition above is unchanged and still binding.
 
 | Verified fact (3060, N=42, MTP off, qwen4exp, link Gen1 during measurement) | Value | Where |
 |---|---|---|
@@ -842,6 +894,7 @@ Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-28. Branch
 | Fixed non-miss cost I (within-run regression `fit_step_time.py`, link-independent) | **31 ms shallow, 39-43 ms at 14K** (R2 .995-.998, slope 3.02-3.26 ms/miss); Gen1-fitted 45-57 rejected | sec 16-17 |
 | Near-zero-miss ceiling X | unreachable at N=42 (79-93 misses/token even with forced repetition); gate retired, replaced by the regression | sec 12, 16, 18 |
 | c_cpu, whole layers on CPU (static arms `ncm4/ncm2/allhost`, 14K) | 0.099-0.116 ms/expert/token | sec 14 |
+| **Precaution lifted (sec 33, 2026-09-23):** the rows below (M=190 ledger through "Headline return vs static") depend on `--moe-expert-cache-size` timing/behavior measured on the **3060 (Ampere, sm_86)**, for the same Qwen3.8-Flash-Next-APEX-I-Mini model. #791's IQ3_S grouped-dispatch unit-test failure (sec 30-32) requires same-type gate/up (fused GLU) and does NOT reproduce for this model's actual gate/up types (IQ3_XXS/IQ3_S, confirmed sec 33, isolated and passing on a stock build) - this is a GGUF tensor-type property of the model file, not GPU-architecture-dependent, so it applies equally on the 3060. #791 stays open as an unrelated P1 code defect (unknown trigger, not known to be reachable by any model in use here). **The shelve decision itself still stands regardless** - shelving was the conservative direction independent of this arithmetic. | sec 32-33 |
 | Ungated cache at a healthy link (I=43.2, c_up 0.3003) | 14.2 / 11.9 / 10.0 tok/s at M = 91 / 137 / 190 - NOT better than static 12.5-12.6; `--moe-expert-cache-size` as shipped is dead | sec 17-18 |
 | CPU-serve microbenchmark (`moe_cpu_bench.cpp`, real tensors, poll 50, 0.85 ms spin gap): K, w | K 0.081 ms/call, w 0.0769 ms/expert; F1 1.14-1.17; F2_pure 1.057, F2_hybrid 1.122; poll-0 no penalty | sec 19 |
 | Pure-bypass bound B at worst cell (I=43.2, M=190) | 14.18 (uniform scaling) / 12.61 (K-absorbing); shelve line 13.75; 3% margin inside +-6% noise | sec 19 |
@@ -854,5 +907,6 @@ Full record: `docs/design-moe-demand-admission-phase15.md` sections 9-28. Branch
 | K_e/w_e in-situ (secondary) | K_e 0.0723 ms/call, w_e 0.1144 ms/expert (w_e 49% above idle bench w=0.0769: real serving path costs more per expert than the standalone bench) | sec 21 |
 | Hybrid uploaded-fraction f, gate T=2, 14K trace (only ids-bearing trace available) | f = 0.1023 -> B=13.64 (+8.7%); break-even f<=0.0846; f cannot move B outside +8.7%/+14.1% span, so not worth pinning down further. Sec 22's "natural trace pushes f up" claim was WRONG (withdrawn sec 23): diverse routing pushes f DOWN, which favours pass | sec 22-23 |
 | Headline return vs static (12.55) | bound (unachievable) +13.7%; hybrid (shippable) +8.7% to +14.1% across all f | sec 21-23 |
-| **5060 Ti (CUDA0) `--moe-expert-cache-size 84` vs production `-ot`, 14K matched depth, n=3 warm** | **Arm B 31.99 vs Arm A 19.81 tok/s, +61.5%; gap 12.18 vs combined n=3 range 1.28 (9.5x); gate-verified (override-precedence + N=84 clean load)** | sec 24-25 |
-| Same A/B, depth curve to ~39.2K (`comp_tok/wall`, 8-turn growth test) | Arm B leads at every turn, +22% to +39%, no sign flip, no narrowing trend; agrees with 14K sign -> 14K result stands | sec 25 |
+| 5060 Ti (CUDA0) `--moe-expert-cache-size 84` vs production `-ot`, 14K matched depth, n=3 warm | **STANDS (sec 33, suspension lifted 2026-09-23): Arm B 31.99 vs Arm A 19.81 tok/s, +61.5%.** c2' (no-cache, n_predict=1, same 14K prompt): KL(A\|\|A0) at token 0 = 1.90 nats, but the determinism floor itself (A vs A_repeat, identical config, two boots) is 0.83 nats - two runs of the *same* config disagree substantially at this token (top candidates near-tied, e.g. "\n\n" 0.27 vs " I" 0.13). Clears the architect's ~0.5-nats bar for "inherent depth sensitivity, not defect evidence" (sec 33). The original B-vs-A 1.9-nats token-0 divergence (sec 32) is unremarkable next to this floor. | sec 24-25, 33 |
+| Same A/B, depth curve to ~39.2K (`comp_tok/wall`, 8-turn growth test) | **STANDS (sec 33): Arm B leads every turn +22% to +39%** - same c2' clearance as above | sec 25, 33 |
+| **`test-moe-cache` grouped-dispatch defect, IQ3_S same-type/SEPARATE (NOT this model's triple - see sec 33)** | **512/512 output elements wrong vs reference on the fused same-type case, max rel diff 774%, deterministic, reproduces at n_slots=84; identical kernel both sides; not our commits; unfixed at gs tip. Sec 33: this model's own triple (gate IQ3_XXS/up IQ3_S/down IQ4_NL) passes clean on a stock build, fusion=0 confirmed by trace - GLU fusion is structurally blocked for mismatched gate/up types (`ggml-cuda.cu:1790`). Open P1 in #791, trigger unknown, does not touch this track's measurements** | sec 30-33, #791 |
