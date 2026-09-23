@@ -508,7 +508,10 @@ deploy_p100() {
   # Create directories (user-level, no sudo needed)
   ssh hydra-p100 "mkdir -p /home/vm1/hydra/bin /home/vm1/hydra/config /home/vm1/.config/hydra-head"
 
-  # Copy binary
+  # Copy binary. A P100-only CI deploy runs this target on its own — the
+  # `setup` target (which calls build_go) is gated to RTX deploys — so the
+  # binary may not exist yet; build it here rather than rsync a missing path.
+  [ -x "$REPO_ROOT/bin/hydra-head" ] || build_go
   rsync -avz bin/hydra-head hydra-p100:/home/vm1/hydra/bin/hydra-head
   ok "Copied hydra-head binary"
 
