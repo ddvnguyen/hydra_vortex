@@ -95,9 +95,12 @@ def main(argv=None) -> int:
 
     # engine reachability + geometry
     _, meta = http(args.server, "GET", "/experts", timeout=15)
-    if not meta.get("telemetry_enabled"):
-        print("capture: telemetry OFF on engine — refusing (honest OFF state)", file=sys.stderr)
+    if "geometry" not in meta:
+        print("capture: no atlas geometry on engine (HYDRA_EXPERT_META unset "
+              "or geometry unavailable) — refusing", file=sys.stderr)
         return 2
+    # NOTE: telemetry_enabled is False until the first decode routes
+    # (counters size lazily on accumulate); per-probe data comes from /turns.
     g = meta["geometry"]
     print(f"capture: engine {g['engine_id']} model={g['model_hash']} "
           f"moe_rows={len(g['moe_rows'])} cols={g['cols']} k={g['n_expert_used']}")
@@ -138,7 +141,8 @@ def main(argv=None) -> int:
         rec = {
             "name": name, "tag": args.tag, "prompt_sha16": sha,
             "prefill_tokens": comp.get("tokens_evaluated"),
-            "n_gen": n_dec, "turn_seq": seq, "routing": routing,
+            "n_gen": n_dec, "forwards": turn.get("forwards"),
+            "turn_seq": seq, "routing": routing,
             "ean_cells": ean.get("cells"), "sidecar": sidecar_path,
             "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"),

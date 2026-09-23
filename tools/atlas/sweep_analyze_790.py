@@ -86,10 +86,12 @@ def totals_of(probes):
 
 
 def check_decode_only(probes):
-    """Stage-A counters are decode-only by design; verify totals match n_gen*48*10."""
+    """Stage-A counters are decode-only by design. The prompt-eval batch also
+    yields the first emitted token, so routed decode calls per turn equal
+    forwards*48*10 with forwards == n_gen - 1 (verified on smoke turn)."""
     bad = []
     for p in probes:
-        expect = p["n_gen"] * N_LAYERS * 10
+        expect = p["forwards"] * N_LAYERS * 10
         if sum(p["routing"].values()) != expect:
             bad.append((p["name"], sum(p["routing"].values()), expect))
     return bad
@@ -184,7 +186,7 @@ def main(argv=None) -> int:
         print(f"STOP: decode-only check failed for {len(bad)} probes "
               f"(total != n_gen*48*10), e.g. {bad[:3]}", file=sys.stderr)
         return 3
-    print("decode-only check: all probe totals == n_gen*48*10")
+    print("decode-only check: all probe totals == forwards*48*10")
 
     heat = heat_of(probes)
     with open(args.ean) as fh:
