@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ddvnguyen/expert-metrics/schema/turn-record.schema.json",
+  "title": "Per-turn telemetry record",
+  "description": "One turn-record captures the telemetry snapshot for a single turn, sourced from the fork's /profile, /turns, and /experts?turn=N endpoints. Schema_version 1 — bumped from run-record v1 to distinguish turn-level vs probe-level records.",
+  "type": "object",
+  "required": ["schema_version", "turn_seq", "turn_id", "profile", "provenance"],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Turn-record schema version. Distinguishes from run-record v1 (probe-level)."
+    },
+    "turn_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic turn sequence number, sourced from /turns seq. Reset on session restart."
+    },
+    "turn_id": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of turn start (UTC). Unique per turn within a session."
+    },
+    "profile": {
+      "type": "object",
+      "description": "Per-turn timing + token counts, mirroring the fork's /profile ProfileTurn object verbatim (server-atlas.cpp profile_json). Phase timings are honest 0.0 until phase capture lands in the fork.",
+      "required": ["wall_s", "forwards", "prompt_tokens", "completion_tokens", "slot", "ts", "expert_disk_s", "expert_wait_s", "expert_matmul_s", "attention_s", "lm_head_s"],
+      "properties": {
+        "wall_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Wall-clock time for the turn in seconds, from /profile."
+        },
+        "forwards": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of forward passes (decode steps) in this turn, from /profile."
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of prompt tokens processed in this turn, from /profile."
+        },
+        "completion_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of tokens generated (decode output) in this turn, from /profile."
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Slot id that served this turn, from /profile."
+        },
+        "ts": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unix epoch seconds when the turn was recorded, from /profile."
+        },
+        "expert_disk_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: expert weights disk-load seconds. Live fork emits honest 0.0 until phase capture lands."
+        },
+        "expert_wait_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: expert prefetch wait seconds. Live fork emits honest 0.0 until phase capture lands."
+        },
+        "expert_matmul_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: expert matmul seconds. Live fork emits honest 0.0 until phase capture lands."
+        },
+        "attention_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: attention seconds. Live fork emits honest 0.0 until phase capture lands."
+        },
+        "lm_head_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Phase timing: lm-head seconds. Live fork emits honest 0.0 until phase capture lands."
+        }
+      },
+      "additionalProperties": false
+    },
+    "experts_snapshot": {
+      "type": ["object", "null"],
+      "description": "EMAP snapshot from /experts?turn=N for this turn, mirroring the fork wire object verbatim (src/llama-cpp/tools/server/server-atlas.cpp experts_json_at): map and hits are hex STRINGS (hex_of byte encoding), seq is the global geometry seq, turn_seq echoes the turn. null when telemetry is disabled or snapshot not captured. Tier transforms (tier_summary etc.) belong to the COLLECTOR, not the record format — Colibri lineage is hex strings everywhere.",
+      "required": ["rows", "cols", "map", "hits", "seq", "turn_seq", "telemetry_enabled"],
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of rows in the EMAP grid, from wire /experts rows."
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of columns (experts per layer) in the EMAP grid, from wire /experts cols."
+        },
+        "map": {
+          "type": "string",
+          "pattern": "^[0-9a-f]*$",
+          "description": "Hex STRING of per-cell EMAP bytes (encode_cell tiers), from wire /experts map (hex_of). Length is rows*cols*2 chars. NEVER an array."
+        },
+        "hits": {
+          "type": "string",
+          "pattern": "^[0-9a-f]*$",
+          "description": "Hex STRING hit/miss bitmap for this turn, from wire /experts hits (hex_of). Zero-filled when the turn has no hits yet."
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Global geometry seq (g_seq) at capture time, from wire /experts seq."
+        },
+        "turn_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Turn sequence number this snapshot was captured for, from wire /experts turn_seq. Must equal the top-level turn_seq."
+        },
+        "telemetry_enabled": {
+          "type": "boolean",
+          "description": "Wire /experts telemetry_enabled. Always true when a snapshot object is present (absent-telemetry is represented by null snapshot)."
+        },
+        "geometry": {
+          "type": "object",
+          "description": "Model geometry block, from wire /experts geometry. Optional in the record (consumers that already know the model may drop it); when present it mirrors the wire keys.",
+          "properties": {
+            "engine_id": {
+              "type": "string",
+              "description": "FNV-1a64 of model path, from wire geometry."
+            },
+            "model_hash": {
+              "type": "string",
+              "description": "GGUF filename or full-weights digest, from wire geometry."
+            },
+            "dense_prefix": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of leading dense layers, from wire geometry."
+            },
+            "moe_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of MoE rows, from wire geometry."
+            },
+            "nextn_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of next-N (MTP) rows, from wire geometry."
+            },
+            "n_expert_used": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Experts used per token, from wire geometry."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "engine_id": {
+          "type": "string",
+          "description": "FNV-1a64 of model path, per route_trace.h discipline."
+        },
+        "model_hash": {
+          "type": "string",
+          "description": "GGUF filename or full-weights digest."
+        },
+        "llama_cpp_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{9,40}$",
+          "description": "Fork commit hash at turn capture time."
+        },
+        "atlas_stage": {
+          "enum": ["A", "B", "C1", "C2", "C3"],
+          "description": "Atlas pipeline stage that produced this record."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Logical session identifier (turn_seq resets on session restart)."
+        },
+        "host": {
+          "type": "string",
+          "description": "Hostname or node identifier (e.g. 'rtx5060ti', 'p100-vm')."
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of record creation (UTC)."
+        },
+        "telemetry_enabled": {
+          "type": "boolean",
+          "enum": [true, false],
+          "description": "Whether engine telemetry (HYDRA_EXPERT_STATS) was active for this turn. REQUIRED on every record — the telemetry-off example carries telemetry_enabled:false explicitly."
+        }
+      },
+      "required": ["engine_id", "model_hash", "llama_cpp_commit", "telemetry_enabled"]
+    }
+  }
+}

@@ -84,6 +84,8 @@ Core's `workers.json` reflects this.
 | Paseo daemon | `6767` | MCP server |
 | opencode | `4096` | coding-agent runtime |
 | coder (ide) | `2112`, `2113` | |
+| atlas-web (Colibri Brain, #771) — host dev instance | `8619` | bun; separated UI service polling engine Stage B `/experts`; `ATLAS_WEB_PORT`/`ATLAS_ENGINES` override — see `atlas-web/README.md` |
+| atlas-web — P100 VM production instance (systemd user `atlas-web.service`) | `8620` on 192.168.122.21 | cloudflared target; proxies engine `127.0.0.1:8086` on-VM; engine itself = systemd user `hydra-atlas-engine.service` (`:8086` HTTP / `:9502` RPC, `HYDRA_EXPERT_META=1`) |
 
 ---
 
