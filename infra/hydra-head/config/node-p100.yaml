@@ -43,12 +43,19 @@ llama:
     OTEL_SERVICE_NAME: llama-engine
     OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://192.168.122.1:4318
+    # Expert atlas telemetry (#786/#787). Env-gated default-off:
+    # HYDRA_EXPERT_STATS enables per-(layer,expert) decode counters + profile.
+    # HYDRA_EXPERT_META enables /experts HTTP + RPC 0x33 surface.
+    # HYDRA_EXPERT_CAPTURE enables Edge0 hidden-state sidecar (sweep only).
+    HYDRA_EXPERT_STATS: "1"
+    HYDRA_EXPERT_META: "1"
+    # HYDRA_EXPERT_CAPTURE: "1"  # enable for sweep/E2E only, not production
   params:
     # Boot-resident model (Q5_K-Balanced — the P/D decode side). Core
     # skips inline PREFILL reload on p100 (workers.json), so this is the
     # only model p100 hosts; models-preset is kept for alias resolution
     # and the same-quant Mini path if inline reload is re-enabled.
-    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf
+    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf
     models-preset: /home/vm1/hydra/config/preset-p100.ini
     chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
 
