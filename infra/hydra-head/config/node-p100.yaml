@@ -27,9 +27,9 @@ binaries:
     # dir has no digest sidecar yet, so the image_digest pin forces a real
     # pull (registry/skip.go); the previous engine hydra-sm60/bin/
     # llama-engine (sm60-llama-engine-1d227f7) stays untouched as rollback.
-    # NOTE #577: the old engine provided the Hydra RPC listener (-rpc-port
-    # 9502) in router mode; flash-next installs llama-server instead —
-    # confirm RPC behavior before relying on cross-node KV restore.
+    # NOTE #577: Hydra RPC listener (--rpc-port) + 0x33 EXPERT_META opcode
+    # deferred to design doc sec 35 (standalone P100, no P/D, no cross-KV
+    # restore; re-add when P/D resumes).
     source: ghcr.io/ddvnguyen/llama-server:sm60-llama-server-6b7dc6a
     image_digest: sha256:c5f990e1b982a65936c65a1c777752d07a139cc8b3671282642fbce55a6068dd
     binary: llama-server
@@ -39,7 +39,13 @@ llama:
   binary: /opt/software/llama-cpp-hydra-sm60/flash-next-sm60/bin/llama-server
   working_dir: /opt/software/llama-cpp-hydra-sm60/flash-next-sm60/bin
   port: 8086
-  rpc_port: 9502
+  # flash-next llama-server lineage has no Hydra RPC listener (#577):
+  # explicit per-node opt-out — head skips --rpc-port emission and warns
+  # at boot instead of failing validation.
+  rpc_disabled: true
+  # OTEL_SERVICE_NAME left as-is per architect (llama-server likely has no
+  # exporter; host collector :4318 down; rename would break dashboards) —
+  # track in design doc.
   env:
     # Per-service OTel log push (#363). llama-engine on P100
     # is supervised by hydra-head and its stdout is captured
@@ -57,16 +63,17 @@ llama:
     HYDRA_EXPERT_META: "1"
     # HYDRA_EXPERT_CAPTURE: "1"  # enable for sweep/E2E only, not production
   params:
-    # Boot-resident model (Q5_K-Balanced — the P/D decode side). Core
-    # skips inline PREFILL reload on p100 (workers.json), so this is the
-    # only model p100 hosts; models-preset is kept for alias resolution
-    # and the same-quant Mini path if inline reload is re-enabled.
-    model: /mnt/readonly_data/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Balanced.gguf
-    models-preset: /home/vm1/hydra/config/preset-p100.ini
-    chat-template-file: /mnt/readonly_data/qwen3.6_merged_template.jinja
+    # Ornith-1.5-35B-A3B (P2 migration, ruling-verified on-VM size
+    # 17,437,861,408 B = 16.240 GiB, GGUF magic OK). Embedded chat
+    # template (no Ornith .jinja exists on the VM — /chat probe = P2
+    # gate). models-preset REMOVED: both preset-p100.ini targets are
+    # absent from the VM and a request model field could switch the
+    # server mid-flight (alias hazard).
+    model: /mnt/readonly_data/Ornith-1.5-35B-A3B-APEX-MTP-I-Compact.gguf
 
-    # Context and parallelism
-    ctx-size: 128000
+    # Context and parallelism. 65536 (ruling): KV = 51% of 128000,
+    # fits the 16 GiB P100 alongside dense weights.
+    ctx-size: 65536
     parallel: 1
 
     # P0 CPU affinity (folded into this commit per P0 ruling): 4 decode
@@ -76,22 +83,29 @@ llama:
     cpu-range: 0-3
     cpu-strict: 1
 
-    # GPU layers
+    # GPU layers. Dose walk starts at 14 (14->12->10->8): lowest value
+    # that boots AND survives a near-64K prefill with >=300 MiB VRAM free.
     n-gpu-layers: all
-    n-cpu-moe: 26
+    n-cpu-moe: 14
 
-    # Eager (non-mmap) expert load — cold-expert page-fault fix (epic #470).
-    # With --mmap (default) the 26 CPU-resident MoE experts are lazily
-    # faulted in from the slow virtio disk on first touch: the first
-    # cross-node KV restore + prefill after a cold engine start paid a
-    # one-shot tax of +7446 major faults / +4.15 GB RSS / ~11 s (turn-3
-    # decode prefill 15.0 s cold vs 4.1 s warm, total 29.6 s vs 6.2 s;
-    # instrumented 2026-08-12). no-mmap reads all CPU expert weights
-    # eagerly during model load, inside the existing 235-300 s load
-    # window (readiness budget 480 s), so the first decode prefill never
-    # page-faults. RAM: VM has 16 GB total / ~8 GB CPU-resident expert
-    # set (measured via Mapped/RSS deltas) + 27 GB swap backstop — fits.
-    no-mmap: true
+    # Model load: none = LLAMA_LOAD_MODE_NONE (#470 no-mmap equivalent —
+    # tensors read into allocated buffers, no virtio re-read). NEVER use
+    # mmap on P100 (slow virtio disk; cold-expert page-fault tax, epic #470).
+    load-mode: none
+
+    # MTP (ruling): draft/main ubatch must not drift; other MTP settings
+    # stay fork defaults.
+    spec-type: draft-mtp
+    ubatch-size: 512
+    spec-draft-ubatch-size: 512
+
+    # RoPE: suppress the inherited global yarn/4/32768 trio — YaRN
+    # orig-ctx 32768 corrupts RoPE frequencies for Ornith (native
+    # 262144). Null keys block global inheritance (mergeConfigs
+    # node-wins-if-exists) and are skipped at flag emission.
+    rope-scaling:
+    rope-scale:
+    yarn-orig-ctx:
 
     # Sampling
     temp: 0.86
@@ -99,7 +113,9 @@ llama:
     top-k: 20
     top-p: 0.95
 
-    # Chat template
+    # Chat template: preserve_thinking kept (global provides jinja too);
+    # Qwopus chat-template-file removed — Ornith uses its embedded
+    # template.
     chat-template-kwargs: '{"preserve_thinking": true}'
 
 services:
@@ -118,11 +134,11 @@ services:
       - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
 
 # P100 lives in a KVM VM with a slow virtio disk. Model load
-# (eager-read of the ~25 GB GGUF since no-mmap: true, above) takes
-# 235-300s+ on this hardware, so the readiness miss-deadline must be
-# generous: the old health.max_fails=30 (≈30 min budget) was tuned for
-# that. With sentinel-based readiness the default 180s timeout is fine
-# for router mode (no boot model), but keep the slower budget explicit
-# in case a boot-resident model is configured.
+# (load-mode: none, above) takes 235-300s+ on this hardware, so the
+# readiness miss-deadline must be generous: the old health.max_fails=30
+# (≈30 min budget) was tuned for that. With sentinel-based readiness
+# the default 180s timeout is fine for router mode (no boot model), but
+# keep the slower budget explicit in case a boot-resident model is
+# configured.
 readiness:
   timeout_sec: 480
