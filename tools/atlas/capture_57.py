@@ -141,11 +141,20 @@ def main(argv=None) -> int:
         _, experts = http(args.server, "GET", "/experts", timeout=30)
         ean = (experts.get("ean") or {})
         sidecar_path = None
-        cat, idx = (name.split("/", 1) + ["0"])[:2] if "/" in name else (name, "0")
+        # 2026-09-24 defect fix: the endpoint takes (string cat, INT idx) and
+        # names the file {cat}_{idx}_sidecar.json. The old code passed the
+        # string probe id as idx (parsed as 0 server-side), so every probe of
+        # a category overwrote {cat}_0 — the 57-probe sidecar corpus was lost
+        # (only the last probe per category survived). Pass the global probe
+        # ordinal as idx; filenames are then unique per probe.
+        cat = name.split("/", 1)[0] if "/" in name else name
         try:
             _, flush = http(args.server, "POST",
-                            f"/capture/flush?cat={cat}&idx={idx}", {}, timeout=120)
+                            f"/capture/flush?cat={cat}&idx={i}", {}, timeout=120)
             sidecar_path = (flush or {}).get("path")
+            if sidecar_path and not sidecar_path.endswith(f"{cat}_{i}_sidecar.json"):
+                print(f"  [{i + 1}/{len(names)}] {name} WARNING: unexpected "
+                      f"sidecar path {sidecar_path}")
         except Exception as exc:  # capture disabled -> delta-only mode
             print(f"  [{i + 1}/{len(names)}] {name} flush unavailable: {exc}")
         rec = {
