@@ -60,7 +60,8 @@ llama:
     # HYDRA_EXPERT_META enables /experts HTTP + RPC 0x33 surface.
     # HYDRA_EXPERT_CAPTURE enables Edge0 hidden-state sidecar (sweep only).
     HYDRA_EXPERT_STATS: "1"
-    HYDRA_EXPERT_META: "1"
+    # P2 atlas OFF leg: temporarily disabled for the ON/OFF decode pair.
+    # HYDRA_EXPERT_META: "1"
     # HYDRA_EXPERT_CAPTURE: "1"  # enable for sweep/E2E only, not production
   params:
     # Ornith-1.5-35B-A3B (P2 migration, ruling-verified on-VM size
