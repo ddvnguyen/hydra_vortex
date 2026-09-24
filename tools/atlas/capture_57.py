@@ -114,6 +114,15 @@ def main(argv=None) -> int:
             continue
         prompt = prompt_bytes(name).decode("utf-8")
         sha = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+        # Per-probe isolation: /capture/flush does NOT clear the hidden-state
+        # buffer (verified 2026-09-23: sidecars accumulate 255/510/765 rows
+        # across probes). Reset BEFORE generating so the flushed sidecar holds
+        # exactly this probe's decode tokens.
+        cat0 = name.split("/", 1)[0] if "/" in name else name
+        try:
+            http(args.server, "POST", "/capture/reset", {}, timeout=30)
+        except Exception as exc:
+            print(f"  [{i + 1}/{len(names)}] {name} reset unavailable: {exc}")
         _, comp = http(args.server, "POST", "/completion", {
             "prompt": prompt, "n_predict": args.n_gen,
             "temperature": 0.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0,
