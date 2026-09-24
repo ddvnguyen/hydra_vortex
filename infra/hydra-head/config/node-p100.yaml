@@ -60,8 +60,7 @@ llama:
     # HYDRA_EXPERT_META enables /experts HTTP + RPC 0x33 surface.
     # HYDRA_EXPERT_CAPTURE enables Edge0 hidden-state sidecar (sweep only).
     HYDRA_EXPERT_STATS: "1"
-    # P2 atlas OFF leg: temporarily disabled for the ON/OFF decode pair.
-    # HYDRA_EXPERT_META: "1"
+    HYDRA_EXPERT_META: "1"
     # HYDRA_EXPERT_CAPTURE: "1"  # enable for sweep/E2E only, not production
   params:
     # Ornith-1.5-35B-A3B (P2 migration, ruling-verified on-VM size
@@ -87,7 +86,7 @@ llama:
     # GPU layers. Dose walk starts at 14 (14->12->10->8): lowest value
     # that boots AND survives a near-64K prefill with >=300 MiB VRAM free.
     n-gpu-layers: all
-    n-cpu-moe: 14
+    n-cpu-moe: 12
 
     # Model load: none = LLAMA_LOAD_MODE_NONE (#470 no-mmap equivalent —
     # tensors read into allocated buffers, no virtio re-read). NEVER use
