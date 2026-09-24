@@ -43,6 +43,8 @@ Thumbs.db
 
 # Hydra-specific
 deploy.log
+# Generated expert-atlas artifacts (reproducible via tools/atlas/emit.py)
+tools/atlas/out/
 
 # ─────────────────────────────────────────────────────────────
 # Secrets & credentials — NEVER commit these

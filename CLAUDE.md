@@ -34,7 +34,7 @@ Details: `docs/combined-engine-mode.md`.
 ## Hardware
 - RTX 5060 Ti 16 GB sm_120, CUDA 13.2 — host (CUDA0, primary)
 - RTX 3060 12 GB sm_86, CUDA 13.2 — host (CUDA1, peer-only for COMBINED mode, ggml-RPC :9504)
-- Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM (192.168.122.21:8086, Q5_K-balanced)
+- Tesla P100 16 GB sm_60, CUDA 12.9 — KVM VM (192.168.122.21:8086, Ornith-1.5-35B-A3B)
 - tmpfs 30 GB at /mnt/llm-ram. Live model: Qwen3.8-Flash-Next-APEX-I-Mini, 6-shard GGUF at /mnt/SSD/qwen3.8-flash-next-apex-mini/ (host decode target). Note: P100 Q5_K-balanced assignment is historical — verify per-arm.
 
 ### Model Storage

@@ -613,14 +613,6 @@ func TestRealConfigP100Amended(t *testing.T) {
 			t.Errorf("argv must NOT contain %s", absent)
 		}
 	}
-	for i := 0; i+1 < len(args); i++ {
-		switch args[i] {
-		case "--load-mode", "--spec-type", "--ubatch-size", "--spec-draft-ubatch-size":
-			if i+1 >= len(args) {
-				t.Errorf("%s missing value", args[i])
-			}
-		}
-	}
 	for flag, want := range map[string]string{
 		"--load-mode":              "none",
 		"--ctx-size":               "65536",

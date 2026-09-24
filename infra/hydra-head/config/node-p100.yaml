@@ -27,9 +27,11 @@ binaries:
     # dir has no digest sidecar yet, so the image_digest pin forces a real
     # pull (registry/skip.go); the previous engine hydra-sm60/bin/
     # llama-engine (sm60-llama-engine-1d227f7) stays untouched as rollback.
-    # NOTE #577: Hydra RPC listener (--rpc-port) + 0x33 EXPERT_META opcode
-    # deferred to design doc sec 35 (standalone P100, no P/D, no cross-KV
-    # restore; re-add when P/D resumes).
+    # NOTE #577: Hydra RPC listener (--rpc-port) re-port deferred with P/D
+    # (standalone P100, no cross-KV restore; re-add when P/D resumes).
+    # N3: no full-40-char sha tag is published on ghcr (registry lists only
+    # short/semver tags), so the short tag below is cosmetic — the
+    # image_digest pin is the authority (pulls resolve by immutable digest).
     source: ghcr.io/ddvnguyen/llama-server:sm60-llama-server-6b7dc6a
     image_digest: sha256:c5f990e1b982a65936c65a1c777752d07a139cc8b3671282642fbce55a6068dd
     binary: llama-server
@@ -134,11 +136,12 @@ services:
       - "--query-field-names=name,driver_version,gpu_uuid,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.sm,clocks.mem"
 
 # P100 lives in a KVM VM with a slow virtio disk. Model load
-# (load-mode: none, above) takes 235-300s+ on this hardware, so the
-# readiness miss-deadline must be generous: the old health.max_fails=30
-# (≈30 min budget) was tuned for that. With sentinel-based readiness
-# the default 180s timeout is fine for router mode (no boot model), but
-# keep the slower budget explicit in case a boot-resident model is
-# configured.
+# (load-mode: none, above) for the 16.2 GiB Ornith-1.5-35B-A3B GGUF was
+# MEASURED at 17.9-44.1s in P2 (replaces the stale 25GB / 235-300s
+# figure from the old assignment). Keep an explicit generous
+# miss-deadline as headroom for slow-virtio regressions or a larger
+# boot-resident model; sentinel-based readiness's default 180s already
+# covers router mode (no boot model), and a timeout only marks
+# StateSuspect (never restarts).
 readiness:
   timeout_sec: 480
