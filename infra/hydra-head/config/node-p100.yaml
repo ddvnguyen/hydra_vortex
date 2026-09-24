@@ -86,7 +86,7 @@ llama:
     # GPU layers. Dose walk starts at 14 (14->12->10->8): lowest value
     # that boots AND survives a near-64K prefill with >=300 MiB VRAM free.
     n-gpu-layers: all
-    n-cpu-moe: 10
+    n-cpu-moe: 8
 
     # Model load: none = LLAMA_LOAD_MODE_NONE (#470 no-mmap equivalent —
     # tensors read into allocated buffers, no virtio re-read). NEVER use
