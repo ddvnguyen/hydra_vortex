@@ -50,16 +50,25 @@ def ovr_matrix(Ks, n_exp):
     Y = []
     for K in Ks:
         m = np.zeros((len(K), n_exp), dtype=np.int8)
-        for t, row in enumerate(K):
-            m[t, row] = 1
+        for t in range(len(K)):
+            m[t, K[t]] = 1
         Y.append(m)
     return Y
 
 
+WARM_TOL = 1e-9  # warm fits must truly converge to the fold optimum
+
+
 def fit_binary(Xt, yt, seed, C, init=None):
+    # Leak hazard (measured 2026-09-24: warm runs stopped at the full-data
+    # point with default tol, acc delta up to 0.078): sklearn's convergence
+    # test fires immediately when starting near-optimal, returning the
+    # full-data solution instead of the fold optimum. Tight tol forces real
+    # convergence to the fold optimum (same unique solution as cold start).
     clf = LogisticRegression(C=C, max_iter=1000, solver="lbfgs",
                              random_state=seed,
-                             warm_start=init is not None)
+                             warm_start=init is not None,
+                             tol=WARM_TOL if init is not None else 1e-4)
     if init is not None:
         clf.coef_ = init[0].copy()
         clf.intercept_ = init[1].copy()
@@ -85,7 +94,7 @@ def main(argv=None) -> int:
     K = np.vstack(Ks)
     pids = np.concatenate([np.full(len(x), i) for i, x in enumerate(Xs)])
     n_exp = int(K.max()) + 1
-    Y = ovr_matrix(Xs, n_exp)
+    Y = ovr_matrix(Ks, n_exp)
     Yall = np.vstack(Y)
     folds = sorted(set(pids.tolist()))
     print(f"meter: layer={args.layer} tokens={len(X)} dim={X.shape[1]} "
@@ -151,7 +160,11 @@ def main(argv=None) -> int:
     print(f"cold loop total: {cold_t:.1f}s | warm joint total: {warm_t:.1f}s "
           f"| speedup: {cold_t / max(warm_t, 1e-9):.2f}x")
     print(f"accuracy identity: max abs acc delta (warm-cold) = "
-          f"{max_acc_delta:.2e} (expect ~0: same optima)")
+          f"{max_acc_delta:.2e} (bar < 1e-4: same optima)")
+    if max_acc_delta >= 1e-4:
+        print("IDENTITY CHECK FAILED: warm solutions did not converge to "
+              "the fold optima — do not trust the projection")
+        return 2
     per_lf = (t_ref / max(1, len(folds)) + warm_t / max(1, len(folds)))
     proj_cpu_h = per_lf * 48 * len(folds) / 3600
     proj_wall_h = proj_cpu_h / max(1, args.cores)
