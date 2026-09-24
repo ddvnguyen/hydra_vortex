@@ -15,6 +15,10 @@ Ported from upstream **JustVugg/colibri @ `a8f2ca62`** (`web/src/Brain.tsx`,
 cd atlas-web
 bun install
 bun run build          # vite build → dist/
+# tools/atlas/out/*.{json,pin} are gitignored — generate them first (mock needs
+# expert-ranks.json to populate the EMAP; without it the server still starts,
+# degraded to an empty EMAP — see S2 graceful-degraded note in server/server.ts):
+python3 ../tools/atlas/emit.py --help >/dev/null && echo "see tools/atlas/README.md for inputs"
 bun run serve          # bun server/server.ts → http://localhost:8619
 ```
 
@@ -28,8 +32,8 @@ or just run `bun run serve` and load the built page.
 |---|---|---|
 | `ATLAS_WEB_PORT` | `8619` | HTTP port |
 | `ATLAS_ENGINES` | one mock engine | `id=name=url[@experts.json],…`; url `-` = mock |
-| `ATLAS_RANKS_JSON` | `../tools/atlas/out/expert-ranks.json` | ranks input for the mock EMAP |
-| `ATLAS_EXPERTS_JSON` | `../tools/atlas/out/experts.json` | default atlas artifact (observability tier) |
+| `ATLAS_RANKS_JSON` | `../tools/atlas/out/expert-ranks.json` | ranks input for the mock EMAP — **run `tools/atlas/emit.py` first to generate it** (gitignored; server degrades to empty EMAP if absent) |
+| `ATLAS_EXPERTS_JSON` | `../tools/atlas/out/experts.json` | default atlas artifact (observability tier) — **run `tools/atlas/emit.py` first** (gitignored) |
 
 ## Stage B HTTP contract (the seam between llama.cpp and Colibri)
 

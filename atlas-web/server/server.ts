@@ -89,7 +89,18 @@ class MockEngine {
   private seq = 0
 
   constructor(public cfg: EngineCfg, ranksPath: string) {
-    this.ranks = JSON.parse(readFileSync(ranksPath, "utf8")) as RankFile
+    // S2: a missing/unreadable ranks file must not crash startup — the mock
+    // degrades to an empty EMAP with a clear logged error instead of throwing.
+    let parsed: RankFile | null = null
+    try {
+      parsed = JSON.parse(readFileSync(ranksPath, "utf8")) as RankFile
+    } catch (err) {
+      console.error(
+        `atlas-web: mock "${cfg.id}" — cannot read ranks at ${ranksPath}: ${String(err)}\n` +
+        `  degraded start: EMAP will be empty (0 layers). Run tools/atlas/emit.py first to generate ranks (see tools/atlas/README.md).`
+      )
+    }
+    this.ranks = parsed ?? { version: 0, engine_id: cfg.id, model_hash: "", layers: {} }
     const layerKeys = Object.keys(this.ranks.layers).map(Number).sort((a, b) => a - b)
     this.rows = layerKeys
     for (const il of layerKeys) {
@@ -192,6 +203,34 @@ function cors(): Record<string, string> {
   return { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" }
 }
 
+// B4 allowlist: the only (method, path) pairs the Brain client actually calls
+// through the proxy (src/lib/api.ts). Paths are the parsed segments AFTER
+// /engine-proxy/<id>/:
+//   GET  v1/models | health | profile | turns | turns/<int> | experts
+//   POST v1/chat/completions
+const PROXY_GET: Record<string, true> = {
+  "v1/models": true,
+  health: true,
+  profile: true,
+  turns: true,
+  experts: true,
+}
+
+function proxyAllowed(method: string, rest: string[]): boolean {
+  const p = rest.join("/")
+  if (method === "GET") {
+    if (PROXY_GET[p]) return true
+    return rest.length === 2 && rest[0] === "turns" && /^\d+$/.test(rest[1])
+  }
+  if (method === "POST") return p === "v1/chat/completions"
+  return false
+}
+
+function proxyForbidden(): Response {
+  return new Response(JSON.stringify({ error: "forbidden" }),
+    { status: 403, headers: { ...cors(), "Content-Type": "application/json" } })
+}
+
 async function route(req: Request): Promise<Response> {
   const url = new URL(req.url)
   const path = url.pathname
@@ -200,14 +239,36 @@ async function route(req: Request): Promise<Response> {
   // to the configured engine's <url>/<path...>, streaming the body through
   // untouched (SSE included). Engines are server-configured and resolved by
   // id only — never an open proxy. Mock engines have no HTTP surface: 404.
+  //
+  // B4: explicit (method, path) ALLOWLIST. The engine runs with NO --api-key,
+  // so an open passthrough would expose POST /slots?action=erase, /completion,
+  // /props, … to anything that can reach this service. Only the routes
+  // src/lib/api.ts calls are permitted; everything else -> 403 JSON.
+  // CORS is intentionally left unchanged (Access-Control-Allow-Origin: *).
   if (path === "/engine-proxy" || path.startsWith("/engine-proxy/")) {
-    const segs = path.split("/").filter(Boolean)
-    const cfg = engines.find(e => e.id === decodeURIComponent(segs[1] ?? ""))
-    if (!cfg) return new Response(`unknown engine ${segs[1] ?? ""}`, { status: 404, headers: cors() })
+    // Parse + normalize FIRST: split on "/", drop empty segments (// collapses),
+    // percent-decode each segment, then reject traversal and separator-injection.
+    // The allowlist matches these PARSED segments — never a raw substring.
+    let segs: string[]
+    try {
+      segs = path.split("/").filter(Boolean).map(decodeURIComponent)
+    } catch {
+      return proxyForbidden()
+    }
+    if (segs.some(s => s === "." || s === ".." || s.includes("/") || s.includes("\\"))) {
+      return proxyForbidden()
+    }
+    // segs = ["engine-proxy", "<engineId>", ...restAfterId]
+    const engineId = segs[1] ?? ""
+    const rest = segs.slice(2)
+    if (!proxyAllowed(req.method, rest)) return proxyForbidden()
+
+    const cfg = engines.find(e => e.id === engineId)
+    if (!cfg) return new Response(`unknown engine ${engineId}`, { status: 404, headers: cors() })
     if (cfg.mode !== "engine" || !cfg.url) {
       return new Response(`engine ${cfg.id} has no HTTP surface (mock)`, { status: 404, headers: cors() })
     }
-    const target = `${cfg.url}/${segs.slice(2).join("/")}${url.search}`
+    const target = `${cfg.url}/${rest.join("/")}${url.search}`
     const fwdHeaders = new Headers(req.headers)
     fwdHeaders.delete("host")
     fwdHeaders.delete("content-length")
@@ -225,7 +286,7 @@ async function route(req: Request): Promise<Response> {
       outHeaders.set("Cache-Control", "no-store")
       return new Response(upstream.body, { status: upstream.status, headers: outHeaders })
     } catch (err) {
-      return new Response(JSON.stringify({ error: `engine ${cfg.id} unreachable for ${segs.slice(2).join("/")}` }),
+      return new Response(JSON.stringify({ error: `engine ${cfg.id} unreachable for ${rest.join("/")}` }),
         { status: 504, headers: { ...cors(), "Content-Type": "application/json" } })
     }
   }

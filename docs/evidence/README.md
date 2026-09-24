@@ -14,8 +14,10 @@ re-derived or edited.
   input paths; run them against the rescued copies by symlinking or editing
   paths — the in-repo copies are archival.
 - `prefill/` — `prefill_poc_results.json` (57 rows: prefill/loso/subj/oracle
-  recall), `prefill_poc_index.json` (57-entry corpus index), plus the two
-  11 MB measurement blobs `prefill_poc_{dec,pre}.npy` with `NPY.sha256`.
+  recall), `prefill_poc_index.json` (57-entry corpus index), with `NPY.sha256`.
+  The two 11 MB measurement blobs `prefill_poc_{dec,pre}.npy` were moved
+  off-repo to `/mnt/WorkDisk/hydra-dogfood/prefill-npy/` (sha256 in
+  `NPY.sha256`); only the checksum + metadata stay tracked here.
 - `traces/MANIFEST.tsv` — the 57-trace corpus: index name → on-disk blob(s)
   under `/tmp/opencode/trace-collect/traces/` (root for `c01/c02/g01`,
   `v2/` and `v4/` subdirs) with per-file bytes + sha256. **Blobs stay in
