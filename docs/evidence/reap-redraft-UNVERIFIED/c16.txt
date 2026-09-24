@@ -1,0 +1,228 @@
+Agent turn: `cargo fuzz` crashed `ffi_decode` with `panicked at 'unsafe precondition violated: out of bounds'`, input prefix `ff ff 00`, core at `/var/crash/fuzz-8814`. The `unsafe` block at `ffi/src/decode.rs:112` builds `slice::from_raw_parts(ptr, len)` where `len` comes straight from a u16 network field with no check against the available bytes. Reconstruct the most likely fault chain from packet bytes to panic, give the 3 commands that confirm it (`bt`, `x/16bx $rsi`, `p len` vs `p avail`), then write the bounds-check wrapper (`checked_slice(ptr, len, avail) -> Result`), wire it into the decode path keeping the hot path branch-free, add the `cargo-fuzz` seed regression test with that exact prefix, and state which CI line would prove the fix on the next nightly.
+
+Full context pasted below — use it, do not ask for it again:
+`cat ffi/src/decode.rs` (current, abridged):
+```rust
+// decode.rs — packet field decoder (abridged)
+use std::slice;
+
+pub struct Ctx<'a> {
+    pub buf: &'a [u8],
+    pub off: usize,
+}
+
+#[inline]
+pub fn field_len(hdr: &[u8]) -> usize {
+    // network order u16 at hdr[2..4]; NO range check against the packet
+    u16::from_be_bytes([hdr[2], hdr[3]]) as usize
+}
+
+// line 112 — the crash site:
+pub unsafe fn read_field(ptr: *const u8, len: usize) -> &'static [u8] {
+    // SAFETY: caller guarantees len bytes are mapped (it does not)
+    slice::from_raw_parts(ptr, len)
+}
+
+pub fn decode(ctx: &mut Ctx) -> Result<Frame, Error> {
+    let hdr = &ctx.buf[ctx.off..ctx.off + 8];
+    let len = field_len(hdr);
+    let ptr = unsafe { ctx.buf.as_ptr().add(ctx.off + 8) };
+    let body = unsafe { read_field(ptr, len) }; // panics when len > avail
+    ctx.off += 8 + len;
+    Frame::parse(body)
+}
+```
+`fuzz/crash-8814.txt` (libFuzzer artifact, `ff ff 00 ...` prefix):
+```
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 8814
+INFO: Loaded 1 modules (188774 inline 8-bit counters)
+ffi/src/decode.rs:112: unsafe precondition violated: out of bounds
+    len = 65535 (0xffff from the u16 field), avail = 41 bytes past ptr
+    note: run with RUST_BACKTRACE=1 for a backtrace
+SUMMARY: libFuzzer: deadly signal (SIGABRT)
+artifact_prefix='./fuzz/artifacts/'; input written to ./fuzz/artifacts/crash-8814
+```
+`bt` (debug build, symbols on):
+```
+#0 ffi::decode::read_field (ptr=0x7f2b..., len=65535)
+#1 ffi::decode::decode (ctx=0x7ffe...)
+#2 ffi::fuzz_target (data=0x6030... len=44)
+#3 libfuzzer_sys::fuzz_target_impl::run
+#4 LLVMFuzzerTestOneInput
+avail check: ptr..ptr+41 mapped (page tail), bytes 41..65535 unmapped -> SIGABRT
+hot path: decode() runs ~2.1 M calls/s on the ingest worker; any branch on the
+common path costs ~3% throughput (criterion bench, 2026-08-19)
+```
+`triage/notes-112.md` (on-call thread):
+```
+- input `ff ff 00` = u16 len 0xffff, then a 41-byte tail. minimal repro confirmed
+  with `xxd -r` + 3-byte file; panics in 0.02 s, no device needed.
+- `field_len` is called from 3 sites: decode(), peek(), readahead(). peek() and
+  readahead() ALSO pass unchecked len into pointer math (audit them too).
+- header itself can be short: `&ctx.buf[ctx.off..ctx.off+8]` panics on a <8-byte
+  tail BEFORE len is even read. guard the header slice first.
+- fix must keep `decode()` at >= 2.0 M calls/s: hoist the check so the common
+  path is one predictable branch, or check once per packet and use unchecked
+  math below with a debug_assert. benchmark gate: `cargo bench -- decode_hot`.
+- regression test: seed file `fuzz/seeds/crash-8814` with the exact prefix;
+  `cargo fuzz run ffi_decode -- -runs=5000` must stay green on nightly.
+```
+`review/safety-policy.md` (repo rule, quoted by reviewer):
+```
+Every `unsafe` block needs a `// SAFETY:` comment naming the invariant AND the
+code that upholds it. "caller guarantees" without a named caller is a violation
+by itself. The fix must add the SAFETY comment at line 112 AND convert at least
+one caller-side guarantee into a checked constructor (parse, don't validate).
+```
+`cargo-fuzz` inventory (must keep passing):
+```
+fuzz_target_heartbeat (1-byte inputs, no unsafe) — ok
+fuzz_target_header_short (0..7-byte inputs, must NOT panic, must return Err) — NEW, fails now
+fuzz_target_crash_8814 (exact `ff ff 00` prefix seed, must return Err, never abort) — NEW, aborts now
+bench decode_hot (throughput gate >= 2.0 M calls/s) — must stay green after fix
+```
+Neighboring code (do not break):
+```
+peek(): reads field_len for routing WITHOUT consuming; must return Err on short
+readahead(): prefetches len bytes into the ring; must clamp, never over-read
+Frame::parse(): assumes body slice is fully mapped; unchanged, its invariant now
+  actually holds because checked_slice is the only constructor of body slices
+```
+Second paste — peek()/readahead() audit, header-short corpus, bench detail:
+`audit/peek-readahead.txt` (the other two callers of `field_len`):
+```
+peek() ffi/src/decode.rs:201: reads field_len for routing WITHOUT consuming.
+  passes len into `ptr.add(len)` for a lookahead compare -> same OOB shape as
+  decode() when len > avail. MUST return Err on short, same constructor.
+readahead() ffi/src/decode.rs:244: prefetches len bytes into the ring buffer.
+  ring capacity 4096; a u16 len of 65535 -> attempted 64 KB copy from a 41-byte
+  tail -> over-read. MUST clamp to avail, never over-read, report truncated.
+both sites currently duplicate the raw `field_len` call; route BOTH through the
+  same checked constructor you add for decode() (one choke point, three callers).
+```
+`fuzz/corpus-short.txt` (header-short inputs, 0..7 bytes):
+```
+len=0: &buf[off..off+8] panics BEFORE len is read (index OOB, not unsafe OOB)
+len=3: [aa bb cc] -> same header panic
+len=7: [00 01 02 03 04 05 06] -> same header panic
+len=8: header ok, len field read, body check applies (Err, no panic)
+rule: guard the 8-byte header slice FIRST (question-mark operator), then the body.
+  the fuzz_target_header_short test covers len=0..8 exhaustively (9 seeds).
+```
+`bench/decode_hot.txt` (criterion, current code, for the gate comparison):
+```
+decode_hot/valid-1500B      2.14 M calls/s (baseline, keep >= 2.0 M)
+decode_hot/short-header     9.80 M calls/s (early Err, must stay fast)
+decode_hot/maxlen-valid     1.02 M calls/s (64 KB body, memcpy-dominated)
+branch cost reference: one predictable-not-taken branch on decode() = -0.4%;
+  one unpredictable branch = -3.1%. design the check for the first number.
+```
+`ci/nightly-fuzz.log` (what green looks like after the fix):
+```
+job: nightly-fuzz (ffi_decode, 5000 runs + seed corpus)
+seed crash-8814: Err(ShortField { len: 65535, avail: 41 }) in 0.02 s, no abort
+seed header-short 0..8: all Err(ShortHeader), no panic
+runs=5000: 0 aborts, 0 hangs, corpus +2 seeds (minimized)
+bench decode_hot: 2.11 M calls/s >= 2.0 M gate -> PASS
+```
+Third paste — full seed corpus, perf comparison, sign-off checklist:
+`fuzz/seeds.txt` (complete corpus after the fix, every seed must stay green):
+```
+seed,bytes,path,expected
+crash-8814,44,decode,Err(ShortField{len:65535,avail:41})
+header-0,0,header-guard,Err(ShortHeader)
+header-1,1,header-guard,Err(ShortHeader)
+header-2,2,header-guard,Err(ShortHeader)
+header-3,3,header-guard,Err(ShortHeader)
+header-4,4,header-guard,Err(ShortHeader)
+header-5,5,header-guard,Err(ShortHeader)
+header-6,6,header-guard,Err(ShortHeader)
+header-7,7,header-guard,Err(ShortHeader)
+valid-1500,1500,decode,Ok(Frame{fields:3})
+valid-64k,65544,decode,Ok(Frame{fields:12})
+maxlen-edge,65543,decode,Ok (len == avail exactly, boundary)
+overshoot-1,65544+1,decode,Err(ShortField{len:65544,avail:65543})
+peek-route-9,9,peek,Err(ShortHeader) (peek shares the guard)
+readahead-clamp,5000,readahead,Ok(truncated flag set, no over-read)
+```
+`bench/compare.txt` (old vs fixed, same machine, criterion):
+```
+case,old_Mcalls,new_Mcalls,delta,gate
+decode_hot/valid-1500B,2.14,2.11,-1.4%,>= 2.0 PASS
+decode_hot/short-header,9.80,9.77,-0.3%,fast-path kept
+decode_hot/maxlen-valid,1.02,1.01,-1.0%,memcpy-dominated, fine
+peek_hot,3.40,3.38,-0.6%,shared constructor, fine
+fuzz throughput: 41 exec/s -> 40 exec/s (checks are on the cold path)
+```
+`audit/signoff.md` (reviewer checklist, all must be true to merge):
+```
+[ ] checked_slice is the ONLY constructor of body slices (grep from_raw_parts: 1 hit)
+[ ] peek() and readahead() route through it (no duplicated raw checks)
+[ ] SAFETY comment at line 112 names invariant + upholding code
+[ ] hot path: single predictable branch (criterion delta < 2%)
+[ ] seed corpus green 5000 runs + nightly job named in the answer
+[ ] bench gate >= 2.0 M calls/s on the merge commit, not just the branch
+```
+Fourth paste — advisory template, differential log, perf sign-off:
+`advisory/DRAFT-ffi-001.md` (write it as part of the answer, template below):
+```
+Title: OOB read in ffi decode path via unchecked u16 length (crash-8814)
+Severity: high (remote-reachable panic; availability only, no write primitive —
+  from_raw_parts READ past the mapping aborts, it does not corrupt).
+Affected: decode(), peek(), readahead() — all three field_len callers.
+Fixed by: checked_slice constructor + header guard + seed regression tests.
+Detection: cargo-fuzz nightly, seed crash-8814, 0.02 s to repro.
+State the severity reasoning explicitly: why availability-only (read past tail
+  aborts on unmapped page; no attacker-controlled write address involved).
+```
+`tests/differential.txt` (old vs new on the SAME corpus, the proof table):
+```
+seed,old,new
+crash-8814,ABORT,Err(ShortField)
+header-0..7,PANIC (index OOB),Err(ShortHeader)
+valid-1500,Ok,Ok (byte-identical Frame)
+valid-64k,Ok,Ok (byte-identical Frame)
+maxlen-edge,Ok,Ok (boundary holds both sides)
+overshoot-1,ABORT,Err(ShortField)
+rule: every row that was Ok stays Ok with IDENTICAL bytes (differential gate);
+  every row that aborted becomes a typed Err. no behavior change on valid input.
+```
+`perf/signoff-mail.txt` (what the perf reviewer needs to see):
+```
+subject: decode_hot gate after bounds-check landing
+valid-1500B: 2.14 -> 2.11 M calls/s (-1.4%, inside the 2% budget)
+mechanism: one predictable-not-taken branch per packet (cold path does the work)
+peek/readahead share the constructor: no duplicated checks, no new branches there
+fuzz exec/s: 41 -> 40 (cold-path checks only)
+recommendation: MERGE (gate >= 2.0 M holds with margin 0.11 M)
+```
+Fifth paste — reviewer sign-off thread (the merge gate in prose):
+`review/signoff-thread.txt`:
+```
+reviewer (perf): "branch cost -1.4% is inside budget. APPROVE on perf."
+reviewer (safety): "SAFETY comment names the constructor, peek/readahead share
+  it, grep shows 1 from_raw_parts hit. APPROVE on safety."
+reviewer (fuzz): "seed corpus 15/15 green at 5000 runs. APPROVE on fuzz."
+maintainer: "three approves + bench gate on the MERGE commit (rebase and rerun,
+  numbers move). merge queue: after the nightly, not before."
+author: "rebased, rerun: decode_hot 2.10 M (>= 2.0), fuzz 0 aborts. ready."
+maintainer: "MERGED as 9f31ab. advisory DRAFT-ffi-001 filed. close the issue
+  with the advisory link, not the commit link (process rule)."
+Sixth paste — merge-queue ticket (the last artifact before close):
+`queue/ticket-441.txt`:
+```
+merge queue position: 3 (behind 439 libc bump, 440 docs-only).
+gates on ticket: fuzz-5000 green, bench gate green, 3 approves (all present).
+rebase policy: rebase + rerun (numbers move across rebases; the 2.10 M figure
+  in the thread is POST-rebase, pre-merge).
+post-merge automation: advisory published, issue closed with advisory link,
+  seed corpus pinned to the merge commit (reproducible forever). on-call
+  ack: "fuzzer silent for 30 days post-merge — closing the watch." Case closed for good. FIN. End of thread. Over and out. Bye bye now.
+Decisions to record in your answer (all four):
+```
+1. where the single bounds check lives (decode vs checked_slice vs both) and why
+2. how the hot path stays branch-free (or one predictable branch) with the bench number
+3. the exact SAFETY comment text at the (new) line 112
+4. the CI log line that proves the fix (seed name + nightly job name)
+```

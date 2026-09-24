@@ -1,0 +1,108 @@
+loadavg_before idle1 0.62 1.11 1.42
+BENCH idle1 j=1 n=600 threads=6 gap_us=850 median_ms=0.1468 mean_ms=0.1514 p90_ms=0.1795 c_per_expert_ms=0.1468
+BENCH idle1 j=2 n=600 threads=6 gap_us=850 median_ms=0.2380 mean_ms=0.2372 p90_ms=0.2913 c_per_expert_ms=0.1190
+BENCH idle1 j=3 n=600 threads=6 gap_us=850 median_ms=0.3179 mean_ms=0.3105 p90_ms=0.3786 c_per_expert_ms=0.1060
+BENCH idle1 j=4 n=600 threads=6 gap_us=850 median_ms=0.3881 mean_ms=0.3774 p90_ms=0.4650 c_per_expert_ms=0.0970
+BENCH idle1 j=5 n=600 threads=6 gap_us=850 median_ms=0.4932 mean_ms=0.4841 p90_ms=0.5942 c_per_expert_ms=0.0986
+BENCH idle1 j=6 n=600 threads=6 gap_us=850 median_ms=0.4999 mean_ms=0.5099 p90_ms=0.6416 c_per_expert_ms=0.0833
+BENCH idle1 j=8 n=600 threads=6 gap_us=850 median_ms=0.7297 mean_ms=0.6924 p90_ms=0.8402 c_per_expert_ms=0.0912
+BENCH idle1 j=10 n=600 threads=6 gap_us=850 median_ms=0.7881 mean_ms=0.8060 p90_ms=0.9874 c_per_expert_ms=0.0788
+loadavg_before idle2 0.73 1.13 1.43
+BENCH idle2 j=1 n=600 threads=6 gap_us=850 median_ms=0.1450 mean_ms=0.1496 p90_ms=0.1776 c_per_expert_ms=0.1450
+BENCH idle2 j=2 n=600 threads=6 gap_us=850 median_ms=0.2444 mean_ms=0.2476 p90_ms=0.2936 c_per_expert_ms=0.1222
+BENCH idle2 j=3 n=600 threads=6 gap_us=850 median_ms=0.3205 mean_ms=0.3150 p90_ms=0.3834 c_per_expert_ms=0.1068
+BENCH idle2 j=4 n=600 threads=6 gap_us=850 median_ms=0.3963 mean_ms=0.3844 p90_ms=0.4695 c_per_expert_ms=0.0991
+BENCH idle2 j=5 n=600 threads=6 gap_us=850 median_ms=0.4616 mean_ms=0.4434 p90_ms=0.5455 c_per_expert_ms=0.0923
+BENCH idle2 j=6 n=600 threads=6 gap_us=850 median_ms=0.4710 mean_ms=0.5076 p90_ms=0.6323 c_per_expert_ms=0.0785
+BENCH idle2 j=8 n=600 threads=6 gap_us=850 median_ms=0.7115 mean_ms=0.6727 p90_ms=0.8083 c_per_expert_ms=0.0889
+BENCH idle2 j=10 n=600 threads=6 gap_us=850 median_ms=0.9226 mean_ms=0.8800 p90_ms=1.0286 c_per_expert_ms=0.0923
+loadavg_before idle3 1.21 1.22 1.46
+BENCH idle3 j=1 n=600 threads=6 gap_us=850 median_ms=0.1483 mean_ms=0.1552 p90_ms=0.1849 c_per_expert_ms=0.1483
+BENCH idle3 j=2 n=600 threads=6 gap_us=850 median_ms=0.2365 mean_ms=0.2346 p90_ms=0.2881 c_per_expert_ms=0.1182
+BENCH idle3 j=3 n=600 threads=6 gap_us=850 median_ms=0.3050 mean_ms=0.2960 p90_ms=0.3623 c_per_expert_ms=0.1017
+BENCH idle3 j=4 n=600 threads=6 gap_us=850 median_ms=0.4119 mean_ms=0.4056 p90_ms=0.4879 c_per_expert_ms=0.1030
+BENCH idle3 j=5 n=600 threads=6 gap_us=850 median_ms=0.4817 mean_ms=0.4629 p90_ms=0.5610 c_per_expert_ms=0.0963
+BENCH idle3 j=6 n=600 threads=6 gap_us=850 median_ms=0.5383 mean_ms=0.5205 p90_ms=0.6503 c_per_expert_ms=0.0897
+BENCH idle3 j=8 n=600 threads=6 gap_us=850 median_ms=0.7112 mean_ms=0.6732 p90_ms=0.8270 c_per_expert_ms=0.0889
+BENCH idle3 j=10 n=600 threads=6 gap_us=850 median_ms=0.7733 mean_ms=0.7982 p90_ms=0.9802 c_per_expert_ms=0.0773
+loadavg_before ctl-sleepgap 1.20 1.22 1.45
+BENCH ctl-sleepgap j=1 n=600 threads=6 gap_us=850 median_ms=0.1620 mean_ms=0.1701 p90_ms=0.2248 c_per_expert_ms=0.1620
+BENCH ctl-sleepgap j=2 n=600 threads=6 gap_us=850 median_ms=0.2533 mean_ms=0.2608 p90_ms=0.3315 c_per_expert_ms=0.1266
+BENCH ctl-sleepgap j=3 n=600 threads=6 gap_us=850 median_ms=0.3447 mean_ms=0.3499 p90_ms=0.4207 c_per_expert_ms=0.1149
+BENCH ctl-sleepgap j=4 n=600 threads=6 gap_us=850 median_ms=0.4410 mean_ms=0.4629 p90_ms=0.5638 c_per_expert_ms=0.1102
+BENCH ctl-sleepgap j=5 n=600 threads=6 gap_us=850 median_ms=0.4596 mean_ms=0.4584 p90_ms=0.5761 c_per_expert_ms=0.0919
+BENCH ctl-sleepgap j=6 n=600 threads=6 gap_us=850 median_ms=0.5451 mean_ms=0.5376 p90_ms=0.6654 c_per_expert_ms=0.0909
+BENCH ctl-sleepgap j=8 n=600 threads=6 gap_us=850 median_ms=0.7438 mean_ms=0.7079 p90_ms=0.8488 c_per_expert_ms=0.0930
+BENCH ctl-sleepgap j=10 n=600 threads=6 gap_us=850 median_ms=0.8756 mean_ms=0.8443 p90_ms=1.0348 c_per_expert_ms=0.0876
+loadavg_before ctl-gap1500 1.16 1.21 1.45
+BENCH ctl-gap1500 j=1 n=600 threads=6 gap_us=1500 median_ms=0.1609 mean_ms=0.1665 p90_ms=0.1982 c_per_expert_ms=0.1609
+BENCH ctl-gap1500 j=2 n=600 threads=6 gap_us=1500 median_ms=0.2316 mean_ms=0.2274 p90_ms=0.2725 c_per_expert_ms=0.1158
+BENCH ctl-gap1500 j=3 n=600 threads=6 gap_us=1500 median_ms=0.3281 mean_ms=0.3238 p90_ms=0.3916 c_per_expert_ms=0.1094
+BENCH ctl-gap1500 j=4 n=600 threads=6 gap_us=1500 median_ms=0.4059 mean_ms=0.3956 p90_ms=0.4831 c_per_expert_ms=0.1015
+BENCH ctl-gap1500 j=5 n=600 threads=6 gap_us=1500 median_ms=0.5010 mean_ms=0.5024 p90_ms=0.6093 c_per_expert_ms=0.1002
+BENCH ctl-gap1500 j=6 n=600 threads=6 gap_us=1500 median_ms=0.5659 mean_ms=0.5396 p90_ms=0.6358 c_per_expert_ms=0.0943
+BENCH ctl-gap1500 j=8 n=600 threads=6 gap_us=1500 median_ms=0.5934 mean_ms=0.6459 p90_ms=0.8033 c_per_expert_ms=0.0742
+BENCH ctl-gap1500 j=10 n=600 threads=6 gap_us=1500 median_ms=0.7925 mean_ms=0.8061 p90_ms=0.9832 c_per_expert_ms=0.0793
+loadavg_before ctl-poll0 1.21 1.22 1.45
+BENCH ctl-poll0 j=1 n=600 threads=6 gap_us=850 median_ms=0.1476 mean_ms=0.1580 p90_ms=0.1865 c_per_expert_ms=0.1476
+BENCH ctl-poll0 j=2 n=600 threads=6 gap_us=850 median_ms=0.2350 mean_ms=0.2318 p90_ms=0.2912 c_per_expert_ms=0.1175
+BENCH ctl-poll0 j=3 n=600 threads=6 gap_us=850 median_ms=0.3214 mean_ms=0.3135 p90_ms=0.3689 c_per_expert_ms=0.1071
+BENCH ctl-poll0 j=4 n=600 threads=6 gap_us=850 median_ms=0.3979 mean_ms=0.3880 p90_ms=0.4709 c_per_expert_ms=0.0995
+BENCH ctl-poll0 j=5 n=600 threads=6 gap_us=850 median_ms=0.4144 mean_ms=0.4316 p90_ms=0.5319 c_per_expert_ms=0.0829
+BENCH ctl-poll0 j=6 n=600 threads=6 gap_us=850 median_ms=0.5013 mean_ms=0.5039 p90_ms=0.6132 c_per_expert_ms=0.0836
+BENCH ctl-poll0 j=8 n=600 threads=6 gap_us=850 median_ms=0.7405 mean_ms=0.7058 p90_ms=0.8613 c_per_expert_ms=0.0926
+BENCH ctl-poll0 j=10 n=600 threads=6 gap_us=850 median_ms=0.8508 mean_ms=0.8139 p90_ms=0.9923 c_per_expert_ms=0.0851
+loadavg_before busy1 1.75 1.38 1.47
+BENCH busy1 j=1 n=600 threads=6 gap_us=850 median_ms=0.1495 mean_ms=0.1580 p90_ms=0.1824 c_per_expert_ms=0.1495
+BENCH busy1 j=2 n=600 threads=6 gap_us=850 median_ms=0.2435 mean_ms=0.2483 p90_ms=0.2973 c_per_expert_ms=0.1218
+BENCH busy1 j=3 n=600 threads=6 gap_us=850 median_ms=0.3277 mean_ms=0.3246 p90_ms=0.3852 c_per_expert_ms=0.1092
+BENCH busy1 j=4 n=600 threads=6 gap_us=850 median_ms=0.4151 mean_ms=0.4108 p90_ms=0.4899 c_per_expert_ms=0.1038
+BENCH busy1 j=5 n=600 threads=6 gap_us=850 median_ms=0.5085 mean_ms=0.5075 p90_ms=0.6026 c_per_expert_ms=0.1017
+BENCH busy1 j=6 n=600 threads=6 gap_us=850 median_ms=0.5877 mean_ms=0.5794 p90_ms=0.6643 c_per_expert_ms=0.0979
+BENCH busy1 j=8 n=600 threads=6 gap_us=850 median_ms=0.7556 mean_ms=0.7389 p90_ms=0.8634 c_per_expert_ms=0.0944
+BENCH busy1 j=10 n=600 threads=6 gap_us=850 median_ms=0.9061 mean_ms=0.8527 p90_ms=1.0145 c_per_expert_ms=0.0906
+loadavg_before busy2 1.86 1.42 1.48
+BENCH busy2 j=1 n=600 threads=6 gap_us=850 median_ms=0.1476 mean_ms=0.1530 p90_ms=0.1829 c_per_expert_ms=0.1476
+BENCH busy2 j=2 n=600 threads=6 gap_us=850 median_ms=0.2452 mean_ms=0.2502 p90_ms=0.2982 c_per_expert_ms=0.1226
+BENCH busy2 j=3 n=600 threads=6 gap_us=850 median_ms=0.3262 mean_ms=0.3299 p90_ms=0.4070 c_per_expert_ms=0.1087
+BENCH busy2 j=4 n=600 threads=6 gap_us=850 median_ms=0.4178 mean_ms=0.4095 p90_ms=0.4920 c_per_expert_ms=0.1044
+BENCH busy2 j=5 n=600 threads=6 gap_us=850 median_ms=0.4927 mean_ms=0.4790 p90_ms=0.5604 c_per_expert_ms=0.0985
+BENCH busy2 j=6 n=600 threads=6 gap_us=850 median_ms=0.5946 mean_ms=0.6214 p90_ms=0.7388 c_per_expert_ms=0.0991
+BENCH busy2 j=8 n=600 threads=6 gap_us=850 median_ms=0.7614 mean_ms=0.7537 p90_ms=0.8599 c_per_expert_ms=0.0952
+BENCH busy2 j=10 n=600 threads=6 gap_us=850 median_ms=0.9276 mean_ms=0.9302 p90_ms=1.1460 c_per_expert_ms=0.0928
+loadavg_before busy3 1.88 1.43 1.48
+BENCH busy3 j=1 n=600 threads=6 gap_us=850 median_ms=0.1469 mean_ms=0.1530 p90_ms=0.1762 c_per_expert_ms=0.1469
+BENCH busy3 j=2 n=600 threads=6 gap_us=850 median_ms=0.2299 mean_ms=0.2346 p90_ms=0.2842 c_per_expert_ms=0.1149
+BENCH busy3 j=3 n=600 threads=6 gap_us=850 median_ms=0.3324 mean_ms=0.3363 p90_ms=0.4013 c_per_expert_ms=0.1108
+BENCH busy3 j=4 n=600 threads=6 gap_us=850 median_ms=0.4086 mean_ms=0.4007 p90_ms=0.4729 c_per_expert_ms=0.1021
+BENCH busy3 j=5 n=600 threads=6 gap_us=850 median_ms=0.4927 mean_ms=0.4755 p90_ms=0.5634 c_per_expert_ms=0.0985
+BENCH busy3 j=6 n=600 threads=6 gap_us=850 median_ms=0.6084 mean_ms=0.6274 p90_ms=0.7288 c_per_expert_ms=0.1014
+BENCH busy3 j=8 n=600 threads=6 gap_us=850 median_ms=0.7790 mean_ms=0.7852 p90_ms=0.9135 c_per_expert_ms=0.0974
+BENCH busy3 j=10 n=600 threads=6 gap_us=850 median_ms=0.9258 mean_ms=0.8972 p90_ms=1.0156 c_per_expert_ms=0.0926
+loadavg_before busyhog1 2.26 1.53 1.52
+BENCH busyhog1 j=1 n=600 threads=6 gap_us=850 median_ms=0.1489 mean_ms=0.1581 p90_ms=0.1822 c_per_expert_ms=0.1489
+BENCH busyhog1 j=2 n=600 threads=6 gap_us=850 median_ms=0.2511 mean_ms=0.2595 p90_ms=0.3103 c_per_expert_ms=0.1256
+BENCH busyhog1 j=3 n=600 threads=6 gap_us=850 median_ms=0.3428 mean_ms=0.3562 p90_ms=0.4314 c_per_expert_ms=0.1143
+BENCH busyhog1 j=4 n=600 threads=6 gap_us=850 median_ms=0.4409 mean_ms=0.4589 p90_ms=0.5513 c_per_expert_ms=0.1102
+BENCH busyhog1 j=5 n=600 threads=6 gap_us=850 median_ms=0.5279 mean_ms=0.5327 p90_ms=0.6398 c_per_expert_ms=0.1056
+BENCH busyhog1 j=6 n=600 threads=6 gap_us=850 median_ms=0.6149 mean_ms=0.6294 p90_ms=0.7426 c_per_expert_ms=0.1025
+BENCH busyhog1 j=8 n=600 threads=6 gap_us=850 median_ms=0.8001 mean_ms=0.8060 p90_ms=0.9173 c_per_expert_ms=0.1000
+BENCH busyhog1 j=10 n=600 threads=6 gap_us=850 median_ms=0.9721 mean_ms=0.9732 p90_ms=1.1076 c_per_expert_ms=0.0972
+loadavg_before busyhog2 2.72 1.64 1.55
+BENCH busyhog2 j=1 n=600 threads=6 gap_us=850 median_ms=0.1449 mean_ms=0.1548 p90_ms=0.1789 c_per_expert_ms=0.1449
+BENCH busyhog2 j=2 n=600 threads=6 gap_us=850 median_ms=0.2525 mean_ms=0.2704 p90_ms=0.3137 c_per_expert_ms=0.1262
+BENCH busyhog2 j=3 n=600 threads=6 gap_us=850 median_ms=0.3438 mean_ms=0.3563 p90_ms=0.4252 c_per_expert_ms=0.1146
+BENCH busyhog2 j=4 n=600 threads=6 gap_us=850 median_ms=0.4373 mean_ms=0.4513 p90_ms=0.5319 c_per_expert_ms=0.1093
+BENCH busyhog2 j=5 n=600 threads=6 gap_us=850 median_ms=0.5246 mean_ms=0.5332 p90_ms=0.6313 c_per_expert_ms=0.1049
+BENCH busyhog2 j=6 n=600 threads=6 gap_us=850 median_ms=0.6149 mean_ms=0.6328 p90_ms=0.7590 c_per_expert_ms=0.1025
+BENCH busyhog2 j=8 n=600 threads=6 gap_us=850 median_ms=0.7937 mean_ms=0.7920 p90_ms=0.9547 c_per_expert_ms=0.0992
+BENCH busyhog2 j=10 n=600 threads=6 gap_us=850 median_ms=0.9731 mean_ms=0.9857 p90_ms=1.1515 c_per_expert_ms=0.0973
+loadavg_before idle4 3.06 1.75 1.59
+BENCH idle4 j=1 n=600 threads=6 gap_us=850 median_ms=0.1461 mean_ms=0.1498 p90_ms=0.1783 c_per_expert_ms=0.1461
+BENCH idle4 j=2 n=600 threads=6 gap_us=850 median_ms=0.2332 mean_ms=0.2282 p90_ms=0.2815 c_per_expert_ms=0.1166
+BENCH idle4 j=3 n=600 threads=6 gap_us=850 median_ms=0.3244 mean_ms=0.3215 p90_ms=0.3938 c_per_expert_ms=0.1081
+BENCH idle4 j=4 n=600 threads=6 gap_us=850 median_ms=0.3694 mean_ms=0.3719 p90_ms=0.4456 c_per_expert_ms=0.0923
+BENCH idle4 j=5 n=600 threads=6 gap_us=850 median_ms=0.4621 mean_ms=0.4428 p90_ms=0.5407 c_per_expert_ms=0.0924
+BENCH idle4 j=6 n=600 threads=6 gap_us=850 median_ms=0.5770 mean_ms=0.5593 p90_ms=0.6712 c_per_expert_ms=0.0962
+BENCH idle4 j=8 n=600 threads=6 gap_us=850 median_ms=0.7238 mean_ms=0.6779 p90_ms=0.8099 c_per_expert_ms=0.0905
+BENCH idle4 j=10 n=600 threads=6 gap_us=850 median_ms=0.8621 mean_ms=0.8234 p90_ms=1.0067 c_per_expert_ms=0.0862

@@ -1,0 +1,4 @@
+# False positives — exact fingerprints from CI, one per line.
+# c13.txt:83 is a JSON doc example: S3 object key "snap-2026-08-30.raw"
+# (19 chars, starts "snap") inside a .partmap snippet — not an API key.
+b3db9b1c12383d86dde94906c3dae25a283b8502:docs/evidence/reap-redraft/c13.txt:generic-api-key:83

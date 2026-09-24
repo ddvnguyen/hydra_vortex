@@ -122,6 +122,31 @@ pkill -f "ggml-rpc-server.*${P_RPC_PORT}" 2>/dev/null || true
 pkill -f "llama-server.*${P_SERVER_PORT}" 2>/dev/null || true
 sleep 1
 
+# ── Device assertion (11a: binding is enforcement, not convention) ───────────
+# TARGET lane = physical 3060 (nvidia-smi index 1; leader-verified 2026-09-17:
+# index 0 = 5060 Ti, 1 = 3060). CUDA_VISIBLE_DEVICES remaps inside the process,
+# so assert the PHYSICAL device at the requested index BEFORE launching
+# anything. Fail-closed: missing nvidia-smi, failed query, or non-3060 all
+# exit 1. Provenance lands in device-assert.log so every binding-leg artifact
+# carries "device asserted" evidence. Query only — no GPU workload.
+P_SERVER_CUDA_DEVICE="${P_SERVER_CUDA_DEVICE:-1}"
+DEVICE_ASSERT_LOG="$RESULTS_DIR/device-assert.log"
+: > "$DEVICE_ASSERT_LOG"
+device_assert_fail() {
+  echo "device_assert: FATAL — $1" | tee -a "$DEVICE_ASSERT_LOG" "$TEST_LOG" >&2
+  exit 1
+}
+echo "device_assert: P_SERVER_CUDA_DEVICE=${P_SERVER_CUDA_DEVICE}" | tee -a "$DEVICE_ASSERT_LOG" "$TEST_LOG"
+command -v nvidia-smi >/dev/null 2>&1 || device_assert_fail "nvidia-smi not found, cannot prove device (fail-closed)"
+_dev_info=$(nvidia-smi --query-gpu=name,pci.bus_id --format=csv,noheader -i "${P_SERVER_CUDA_DEVICE}" 2>&1) \
+  || device_assert_fail "nvidia-smi query failed for index ${P_SERVER_CUDA_DEVICE}: ${_dev_info}"
+echo "device_assert: physical device @ nvidia-smi index ${P_SERVER_CUDA_DEVICE}: ${_dev_info}" | tee -a "$DEVICE_ASSERT_LOG" "$TEST_LOG"
+case "${_dev_info}" in
+  *3060*) ;;
+  *) device_assert_fail "expected physical 3060, got: ${_dev_info}" ;;
+esac
+echo "device_assert: PASS — physical device is 3060 (binding enforced)" | tee -a "$DEVICE_ASSERT_LOG" "$TEST_LOG"
+
 # ── Start RPC server ─────────────────────────────────────────────────────────
 if [[ "${P_RPC_PORT}" != "0" && -n "$RPC_BIN" ]]; then
   echo "[2/7] Starting rpc-server on :${P_RPC_PORT} (CUDA=${P_RPC_CUDA_DEVICE})..." | tee -a "$TEST_LOG"

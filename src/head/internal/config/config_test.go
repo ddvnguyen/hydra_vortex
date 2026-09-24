@@ -199,7 +199,7 @@ func TestBuildLlamaArgs_PeerOnly27B(t *testing.T) {
 				"ggml-rpc-port": 9506,
 			},
 			Env: map[string]string{
-				"NVIDIA_VISIBLE_DEVICES":    "1",
+				"NVIDIA_VISIBLE_DEVICES":     "1",
 				"NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
 			},
 		},
@@ -233,21 +233,21 @@ func TestBuildLlamaArgs_DenseProfile(t *testing.T) {
 			Port:    8080,
 			RPCPort: 9503,
 			Params: map[string]any{
-				"cache-type-k":        "q8_0",
-				"cache-type-v":        "q8_0",
-				"combined-split-mode": "layer",
+				"cache-type-k":          "q8_0",
+				"cache-type-v":          "q8_0",
+				"combined-split-mode":   "layer",
 				"combined-tensor-split": "21/44",
-				"cont-batching":       true,
-				"ctx-size":            8192,
-				"flash-attn":          "on",
-				"metrics":             true,
-				"model":               "/models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
-				"n-gpu-layers":        66,
-				"parallel":            1,
-				"perf":                true,
-				"rpc-engine":          "localhost:9506",
-				"slots":               true,
-				"ubatch-size":         384,
+				"cont-batching":         true,
+				"ctx-size":              8192,
+				"flash-attn":            "on",
+				"metrics":               true,
+				"model":                 "/models/Qwopus3.6-27B-Coder-Compat-MTP-Q5_K_M.gguf",
+				"n-gpu-layers":          66,
+				"parallel":              1,
+				"perf":                  true,
+				"rpc-engine":            "localhost:9506",
+				"slots":                 true,
+				"ubatch-size":           384,
 			},
 		},
 	}
@@ -436,8 +436,8 @@ func TestValidate(t *testing.T) {
 					Port:    8080,
 					RPCPort: 9503,
 					Params: map[string]any{
-						"combined-split-mode":  "layer",
-						"combined-ot-pattern":  "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU",
+						"combined-split-mode":   "layer",
+						"combined-ot-pattern":   "blk\\.([0-9]+)\\.ffn_.*_exps\\.weight=CPU",
 						"combined-tensor-split": "21/44",
 					},
 				},
@@ -516,6 +516,122 @@ func TestGeneratePromtailConfig(t *testing.T) {
 	if !contains(content, "node: p100") {
 		t.Error("expected node name in promtail config")
 	}
+}
+
+// --- flash-next server-lineage rpc opt-out (Option A, Hydra #577) ---
+
+// rpc_disabled without rpc_port: validates (with boot warning) and the
+// argv must contain no --rpc-port at all.
+func TestValidateRPCDisabledWithoutPort(t *testing.T) {
+	cfg := &Config{
+		Node: NodeConfig{Name: "p100"},
+		Llama: LlamaConfig{
+			Binary:      "/opt/llama/bin/llama-server",
+			Port:        8086,
+			RPCDisabled: true,
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("rpc_disabled without rpc_port must validate, got: %v", err)
+	}
+	for _, a := range cfg.BuildLlamaArgs() {
+		if a == "--rpc-port" {
+			t.Errorf("rpc_disabled must omit --rpc-port from argv")
+			break
+		}
+	}
+}
+
+// Engine lineage (no opt-out): rpc_port stays loud-required.
+func TestValidateRPCPortStillRequired(t *testing.T) {
+	cfg := &Config{
+		Node:  NodeConfig{Name: "p100"},
+		Llama: LlamaConfig{Binary: "/opt/bin/llama-engine", Port: 8086},
+	}
+	err := cfg.Validate()
+	if err == nil || err.Error() != "llama.rpc_port is required" {
+		t.Errorf("want llama.rpc_port is required, got: %v", err)
+	}
+}
+
+// rpc_disabled and rpc_port together is ambiguous — must be rejected.
+func TestValidateRPCDisabledMutuallyExclusive(t *testing.T) {
+	cfg := &Config{
+		Node: NodeConfig{Name: "p100"},
+		Llama: LlamaConfig{
+			Binary:      "/opt/bin/llama-engine",
+			Port:        8086,
+			RPCPort:     9502,
+			RPCDisabled: true,
+		},
+	}
+	err := cfg.Validate()
+	if err == nil || err.Error() != "llama.rpc_disabled and llama.rpc_port are mutually exclusive" {
+		t.Errorf("want mutual-exclusion error, got: %v", err)
+	}
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFlagValue(args []string, flag, val string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == val {
+			return true
+		}
+	}
+	return false
+}
+
+// REAL-CONFIG test: production merge of global.yaml + the amended
+// node-p100.yaml (flash-next migration commit). On success it logs the
+// exact final argv — that output is the deploy step-4 prediction.
+func TestRealConfigP100Amended(t *testing.T) {
+	root := "../../../../" // src/head/internal/config -> repo root
+	cfg, err := Load(root+"infra/hydra-head/config/global.yaml",
+		root+"infra/hydra-head/config/node-p100.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate amended p100 config: %v", err)
+	}
+
+	args := cfg.BuildLlamaArgs()
+
+	for _, absent := range []string{
+		"--rpc-port", "--no-mmap", "--models-preset", "--chat-template-file",
+		"--rope-scaling", "--rope-scale", "--yarn-orig-ctx",
+	} {
+		if hasFlag(args, absent) {
+			t.Errorf("argv must NOT contain %s", absent)
+		}
+	}
+	for flag, want := range map[string]string{
+		"--load-mode":              "none",
+		"--ctx-size":               "65536",
+		"--spec-type":              "draft-mtp",
+		"--ubatch-size":            "512",
+		"--spec-draft-ubatch-size": "512",
+		"--parallel":               "1",
+		"--model":                  "/mnt/readonly_data/Ornith-1.5-35B-A3B-APEX-MTP-I-Compact.gguf",
+	} {
+		if !hasFlagValue(args, flag, want) {
+			t.Errorf("argv must contain pair %q %q", flag, want)
+		}
+	}
+
+	s := ""
+	for _, a := range args {
+		s += a + " "
+	}
+	t.Logf("AMENDED P100 ARGV (%d tokens): %s", len(args), s)
 }
 
 func contains(s, substr string) bool {

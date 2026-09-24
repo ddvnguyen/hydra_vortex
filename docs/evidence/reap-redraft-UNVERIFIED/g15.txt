@@ -1,0 +1,198 @@
+Fix this pasted project proposal (412 words, rambling, buries the ask, three throat-clearing openers, budget table with no totals, no deadline above the fold). Rewrite as a tight 200-word brief: first line names the decision + amount + date, then problem + plan + budget total in one line each, keep one sincere line about the funder's pilot program, end with the exact ask + contact. Then 6 bullets on what you changed and why. Keep the scope, lose the fog.
+
+Full context pasted below — use it, do not ask for it again:
+The proposal (full text, 412 words):
+I am writing to submit this proposal for your consideration regarding a potential community tool library that we have been thinking about for some time now. I am writing to share our vision and I am writing to request funding. Our neighborhood has many people who own tools that sit unused. It would be good if there were a way to share them. We think a library could work. The details are as follows in no particular order. We would need shelves, a checkout system, and someone to staff it on Saturdays. Money would be spent on various things. We hope you will consider this at your earliest convenience. There are many benefits. People would save money. The environment would benefit. Community bonds would strengthen. We have volunteers. We need $8,400. We could open in spring. Thank you for your time and consideration of this important matter.
+Budget fragments (reconcile into one total):
+shelving units x6: $2,100 (quote Q-118, valid 30 days)
+checkout software annual: $1,440 ($120/mo x 12)
+Saturday staffing stipend: $3,600 ($150 x 24 Saturdays)
+insurance rider: $860/yr (agent email 08-22)
+contingency: "a bit extra" (quantify at 10% of subtotal, show the math)
+Reviewer margin notes (address every one):
+```
+note 1: "no deadline — when do you need the money?" -> put the date in line 1
+note 2: "three 'I am writing' openers — cut all three" -> zero throat-clearing
+note 3: "$8,400 appears once with no breakdown — show the table" -> totals must reconcile
+note 4: "spring is not a date — opening day?" -> exact date in the brief
+note 5: "why YOU — one line on the pilot program" -> keep exactly one sincere line
+note 6: "no contact — who replies?" -> name + phone in the last line
+```
+Style guide excerpt (funder, hard rules):
+```
+briefs <= 200 words (auto-reject above; word count stated at the end as "N words")
+first line format: "Decision: $AMOUNT by DATE — PROJECT in PLACE."
+one budget table, exactly 5 rows + total row; contingency shown as its own row
+no exclamation marks, no "very/really", no passive-voice mission statements
+end with: "Contact: NAME, PHONE." and nothing after
+```
+Prior funded brief (the bar, 186 words, different project):
+```
+Decision: $5,200 by 2026-03-01 — Garden beds at Elm Court.
+Problem: 40 households on the waitlist, zero vacant plots within 1 km.
+Plan: 12 raised beds, water hookup, Saturday build with 15 volunteers.
+Budget: lumber $2,900 | soil $1,100 | hookup $700 | contingency $500 | TOTAL $5,200.
+Fit: your pilot program funded 3/5 community builds on this block since 2024.
+Ask: approve $5,200 by 2026-03-01. Contact: Mara Ivers, 555-0142. (186 words)
+```
+Word-count ledger (show your arithmetic):
+```
+draft v1: 244 words -> cut 44 (list what went: 3 openers + mission paragraph + "earliest convenience")
+draft v2: 207 words -> cut 7 (list what went)
+final: 200 words exactly, count stated as "(200 words)"
+```
+Funder pilot program (for the one sincere line):
+```
+2024-2026 pilot: 14 tool libraries funded, median open 41 days after decision,
+repayment rate 100%, site visits welcome. reference: pilot report p.7.
+```
+Second paste — funder FAQ, scoring rubric, rejected draft (learn from it):
+`funder/faq.txt` (hard constraints, quote in the ledger if you use them):
+```
+Q: Can the brief exceed 200 words if the table is tight? A: No. Auto-reject.
+Q: Does the word count include the table? A: Yes. Everything counts.
+Q: Can contingency be folded into line items? A: No. Own row, math shown.
+Q: Opening date as a season? A: Exact date. "Spring" is a rejection reason.
+Q: Contact — email ok? A: Name + phone. Email optional extra, phone required.
+```
+`funder/rubric.txt` (how the 6 bullets will be scored):
+```
+decision-line format: 2 pts (exact "Decision: $AMOUNT by DATE — PROJECT in PLACE.")
+budget reconciles: 3 pts (rows sum to total AND total equals ask, to the dollar)
+reviewer notes addressed: 3 pts (all 6, one bullet each, change + why)
+word ledger: 1 pt (v1 -> v2 -> final, cuts named)
+sincere line: 1 pt (exactly one, pilot-program specific, no flattery)
+```
+`rejected/draft-006.txt` (last cycle's rejection — do NOT repeat):
+```
+"Decision: $8,400 soon — Tool library." (no date, no place: -2 pts)
+budget rows summed to $8,000 but ask said $8,400 (-3 pts, "reconcile!")
+3 bullets for 6 notes (-3 pts, "address every one")
+201 words, count unstated (-1 pt)
+verdict: 1/10. the program officer's comment: "close, but the rubric is the rubric."
+```
+Third paste — volunteer roster, site plan, funder history:
+`org/roster.txt` (staffing line the brief must compress to one clause):
+```
+Sat staffing: R. Okafor (lead, 24 Sats), J. Mbeki (backup, 12 Sats),
+  T. Alvarez (intake, 24 Sats). stipend $150/Sat each -> $3,600 total
+  (lead+intake full season, backup half). quote: volunteer agreement VA-31.
+weekday cover: none (library open Saturdays 9-15 only, per insurance rider).
+```
+`site/plan.txt` (place + date lines the brief must carry):
+```
+location: 44 Mercer St community room (donated, $0, letter attached)
+opening day: 2026-04-11 (Saturday, 9:00). decision needed by 2026-02-01
+  (shelving lead time 6 weeks + 2 weeks setup + 1 week inspection).
+layout: 6 shelving units (Q-118), checkout desk, 40-tool starter set (donated).
+```
+`funder/history.txt` (pilot-program line, exactly one sincere line allowed):
+```
+pilot 2024-2026: 14 tool libraries funded; median open 41 days post-decision;
+repayment 100%; this funder's officer visited 3 sites (report p.7).
+your line may reference exactly one of: the 41-day median, the 100% repayment,
+or the site visits. more than one = flattery, zero = missed fit point.
+```
+`budget/reconcile.txt` (the math the table must show):
+```
+shelving 2100 + software 1440 + staffing 3600 + insurance 860 = 8000 subtotal
+contingency 10% x 8000 = 800
+TOTAL = 8800. ask = $8,800 (NOT $8,400: the old proposal under-asked by $400;
+  state the correction in a bullet — honesty about the old number scores).
+```
+Fourth paste — donor letter, inspection checklist, Saturday schedule:
+`attach/donor-letter.txt` (the attachment the brief compresses to one clause):
+```
+"Mercer Community Room available Saturdays 9-15 for nonprofit use, no charge,
+insurance certificate on file. — D. Whitfield, facilities, 08-19."
+(the brief may cite this as "(room donated)" — five words, no more.)
+```
+`inspect/checklist.txt` (the 1-week inspection the date math depends on):
+```
+fire: extinguisher within 15 m of checkout desk (have it: hall cabinet 3).
+egress: rear door unblocked during open hours (Saturday monitor initials).
+electrical: checkout laptop on GFCI outlet (room has 2, both tested 08-19).
+sign-off needed 7 days before opening -> opening 04-11 needs sign-off by 04-04
+-> setup must complete by 04-03 -> shelving order by 02-20 (6-week lead).
+decision needed by 02-01 (funder's own 8-week cycle: 02-01 -> funds 04-01).
+```
+`ops/saturdays.txt` (the 24-Saturday season the stipend covers):
+```
+season: 04-11 through 09-19 (24 Saturdays, 9:00-15:00).
+lead (Okafor, 24x$150 = $3,600... wait: 24 x 150 = 3,600 covers LEAD ONLY.
+intake (Alvarez, 24 Sats) + backup (Mbeki, 12 Sats) are VOLUNTEER (unpaid).
+restate the stipend line honestly: "$3,600 lead stipend (24 x $150); intake and
+backup volunteer." the old "$3,600 Saturday staffing" hid the volunteer part.
+```
+`ledger/v3.txt` (final word-count arithmetic, show it):
+```
+v1 244 -> cut 3 openers (31 words) + mission paragraph (9) + "earliest
+  convenience" closer (4) = -44 -> v2 200? recount: 244-44 = 200. already at
+  target? then v2 cuts the donor letter to "(room donated)" (-9) and the
+  season table to one line (-6)... that gives 185. restore: keep the inspection
+  date line (+8) and the stipend honesty clause (+7) -> final 200 exactly.
+show YOUR OWN ledger in the answer (these numbers are scaffolding, not gospel).
+```
+Fifth paste — the actual v1 244-word draft (your ledger's starting point) + scoring:
+`drafts/v1-244.txt` (verbatim, count it yourself in the answer):
+```
+I am writing to submit this proposal for your consideration regarding a
+potential community tool library that we have been thinking about for some
+time now. I am writing to share our vision and I am writing to request
+funding of $8,400. Our neighborhood has many people who own tools that sit
+unused in garages and closets. It would be good if there were a way to share
+them with neighbors who need them occasionally. We think a tool library could
+work very well here. The details are as follows in no particular order. We
+would need shelves, a checkout system, and someone to staff it on Saturdays.
+Money would be spent on various things including shelving and software. We hope
+you will consider this at your earliest convenience. There are many benefits
+to this project. People would save money on tools they rarely use. The
+environment would benefit from fewer manufactured goods. Community bonds would
+strengthen through sharing. We have volunteers ready to help. We need $8,400
+and we could open in spring at the community room. Thank you for your time and
+consideration of this important matter. Contact: T. Alvarez.
+(244 words: 3 openers + mission fog + no date + no phone + no table)
+```
+`scoring/v1-rubric.txt` (grade the v1 so the ledger means something):
+```
+decision-line: 0/2 (no date, no place, "soon" implied)
+budget: 0/3 ($8,400 asserted, rows sum to nothing shown)
+notes: 1/3 (scope present, contact name-only, rest missed)
+ledger: 0/1 (no ledger at all)
+sincere: 0/1 (no pilot line)
+total 1/10 — matches the rejected draft-006 pattern (different words, same sins).
+your v2 must score >= 9/10 by construction: show the scored v2 beside the v1.
+```
+Sixth paste — phone script + email cover (the last line has teeth):
+`contact/phone-script.txt` (the officer WILL call; be ready in 30 seconds):
+```
+"This is <name> following up on the $8,800 tool-library brief, decision needed
+by February 1st for an April 11th opening. Room donated, budget reconciled,
+pilot fit on page 2. What do you need from me to decide?"
+(30 seconds. the brief does the rest. do not re-pitch on the call.)
+```
+`contact/cover-email.txt` (verbatim wrapper for the brief attachment):
+```
+Subject: Tool library brief ($8,800) — decision by Feb 1
+Body: "Officer — brief attached (200 words, budget reconciled, pilot fit
+included). Opening day April 11 depends on a February 1 decision (shelving
+lead time). Available for a site walk any Saturday. <name>, <phone>."
+(4 lines. the brief is the argument; the email is the envelope.)
+```
+`contact/site-walk.txt` (when the officer says yes to Saturday):
+```
+walk route (20 min): checkout desk -> shelving wall (Q-118 layout taped on the
+floor) -> starter set (40 tools, tagged) -> rear door (egress demo) -> desk.
+bring: insurance certificate, volunteer agreement VA-31, Q-118 quote (30-day
+validity circled), pilot report p.7 (folded open). leave behind: one-page brief.
+say the opening date three times (arrival, mid-walk, goodbye): April 11th.
+after the walk: email the one-page brief within 2 hours ("as walked through
+today"), restate the February 1st decision date in the first line. no new asks at all, ever. End of plan. Done deal. Finito. Over and out now yes ok bye.
+```
+Deliver in this order (all four, numbered):
+```
+1. the 200-word brief (exact format, word count stated)
+2. the budget table (5 rows + total, contingency math shown, reconciles to the ask)
+3. the 6 bullets (one per reviewer note, what changed + why)
+4. the word-count ledger (v1 -> v2 -> final with cuts named)
+```

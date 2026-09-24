@@ -1,0 +1,972 @@
+# Phase 1.5 design note - demand-gated admission (§121/§122)
+
+Status: DRAFT for architect design gate. No Phase 2 code written.
+Branch: submodule `feat/moe-demand-admission` (off `5226b502d`).
+Author: leader claude-sonnet5-lead-20260921, 2026-09-21.
+
+## 0. Verdict
+
+1. A counter-only gate is not the lever (architect §122 agrees). Source confirms it.
+2. The lever is a compute path for non-admitted experts. Three shapes exist; **none is cheap**.
+3. **The 3060 cache arm appears to lose to zero-code controls at equal VRAM** (section 5).
+   That must be measured before any of the three shapes is built. Recommendation: run controls first.
+4. Relaxing `n_routes <= n_slots` is the *small* part. The CPU chain, graph surgery and
+   certificate proofs are the expensive part.
+
+## 1. Miss path, traced (`ggml/src/ggml-cuda/moe-cache.cu`, HEAD `5226b502d`)
+
+| Step | Lines | What it does |
+|---|---|---|
+| commit prior plan | 3005-3041 | writes `slot_for_expert`/`expert_for_slot` for last plan's misses; `frequency++` for every unique expert (hit or miss) |
+| step counter | 3049, 3053 | `device_step` += 1 per plan call **on this group's own counter**; `frequency_epoch = step / halflife` |
+| route validation | 3078-3082 | fails if `n_routes > n_slots` or `plan_capacity != n_slots` |
+| unique + hit/miss | 3102-3213 | miss = unique expert with `slot_for_expert < 0` |
+| victim pick | 3233-3290 | per miss: min (effective frequency, last_used) over slots not routed this step |
+| completeness | 3292-3295 | any unique with `slot < 0` after this -> `INVALID_STATE` |
+
+Consequences:
+- **Every miss is installed.** There is no "serve without installing" branch. `miss_slots[]` feeds the
+  H2D gather; `remapped_ids[]` feeds `mul_mat_id` with slot ids only.
+- `n_routes <= n_slots` does **not** bind decode-1 (10 <= 42). It binds multi-token verify at small N
+  (MTP n=3 at N=36 gives 30, n=4 gives 40 > 36). Relaxing it alone changes nothing for the gate.
+- The real hard invariant is 3292-3295 plus the fact that the op is a single `mul_mat_id` node.
+
+## 2. Can `expert_frequency` be the admit counter unchanged? Yes (window unit: see retraction)
+
+`expert_frequency[expert]` (u32) + `expert_frequency_epoch[expert]` already implement "windowed use
+counter, halved per epoch" (lazy right shift, 2868-2877). It is incremented for **every** sighting,
+so it is a sightings count. Admit rule = `effective_frequency(expert) >= T` at miss time. No new state.
+
+**RETRACTED 2026-09-21 (was: "unit trap, shipped window = 1/3 token, use 768"). Do not use 768.**
+The claim came from the `899d8ec7a` commit message ("a decode token is 48 planning steps"). Source
+contradicts it: `device_step` lives in `grouped_device_resource`, and one such resource is created per
+*group* (`resources[group_index]`, `make_device_resource` at `moe-cache.cu:6614`). A group carries the
+gate/up/down tensors of one layer (`group_index` + `role` in `ggml-backend.h:359-366`). So the counter
+advances once per plan launch *on that group*, i.e. probably once per decode token per layer, and the
+shipped half-life of 16 is then **already 16 decode tokens = pjsgsy's "window 16"**.
+**Status: source-derived, not yet measured.** It is settled by the ledger: each record carries the
+group id and the `device_step` value read by the kernel, so calls per group per token can be read off
+directly. Until then the port default (16) stays and no window is asserted either way.
+Env knob `GGML_CUDA_MOE_FREQUENCY_HALFLIFE` (ported from `899d8ec7a`, this branch) sets it.
+`899d8ec7a` measured half-life 256/2048 at -6% with LFU *eviction*; under this reading that is 256/2048
+*tokens*, consistent with pjsgsy's "short window wins". It still does not test admission.
+
+## 3. Options for serving a non-admitted expert
+
+| | Shape | Reuses | Cost / risk |
+|---|---|---|---|
+| **A** | #27861 split: zero-slot GPU chain + CPU `mul_mat_id` with skip table + sum | design proven upstream on this model | New CPU op semantics (`src[3]` skip/zero), second graph chain in `qwen4exp.cpp`, sum node. Extra reader of router tensors trips the grouped certificate (#127 blocker 1: logits changed, `graph=unproven`). Every layer becomes a CPU split boundary (ids D2H + sync): CUDA graphs lost for those layers. Plan kernel must emit a zero-slot sentinel and relax 3292-3295. Large. |
+| **B** | Layer-granular hybrid: fix `-ot`/cache precedence so `-ot` layers stay CPU, cache the rest | `-ot` placement (linear, 0.203-0.213 tok/s/layer) | Small. But it is static placement plus cache on fewer layers. Static skew is dead, so the cache adds little over pure placement. |
+| **C** | #132 hot/cold slab (two tensors, two nodes, scheduler places them) | E1 post-mortem chose it: no intercept, capture-native | Static hot set. Ranking arm dead (0.82x). Not a dynamic admission path. |
+
+E1 (`docs/analysis/e1-postmortem.md`) already built a GPU-hit + CPU-miss + combine kernel at one site.
+It died on **reachability** (host-resident site is scheduled to the CPU backend, so the CUDA intercept
+never runs) and **capture infeasibility** (sync join). Option A inside the CUDA backend inherits both
+problems unless the CPU chain is a real graph node as in A. Reachability precheck rule applies:
+prove the site executes with one counter before designing anything.
+
+## 4. Break-even (primary sources; arithmetic mine)
+
+- Cache arm cost model (`b950f4cc2`, r2=0.990, 196 steps, N=42): `ms/token = 25.7 + 0.3003 * misses`,
+  mean 261 misses/token of 480 demands, 1.881 MB/miss = 6.27 GB/s. Card not stated in the message;
+  the link rate and N=42 point to the 3060 x4 (inferred, not confirmed).
+- All-host control (`leader-handoff-state.md` §81): 13.1536 tok/s median, n=6, MTP off, ctx 16384
+  = 76.0 ms/token. If fixed cost is the same 25.7 ms: CPU cost per expert ~ (76.0-25.7)/480 = 0.105 ms.
+- So serving a miss on CPU (~0.105 ms) vs uploading it (0.3003 ms): **~2.9x cheaper per miss**, if that
+  per-expert cost holds at 5.4 experts/layer instead of 10 and the fixed term transfers across depth.
+- Back-of-envelope for A: 25.7 + 261*0.105 = 53 ms = ~18.8 tok/s **before** split/sync overhead.
+  Treat as an upper bound with wide error, not a prediction. Split boundaries add tens of us each.
+
+## 5. The finding that should gate everything: equal-VRAM controls
+
+Cache N=42 pool = 48 layers x 42 slots x 1.881 MB = 3.79 GB. Static placement of 4 layers =
+4 x 937.5 MiB = 3.93 GB (`§81`: P_mid = ncmoe 44). Numbers on file, **different depth/ctx, so not
+comparable yet**:
+
+| arm | tok/s | ctx / note |
+|---|---|---|
+| all-host `--cpu-moe`, no cache | 13.15 | 16384, MTP off (§81) |
+| static 4 layers `-ot` (~ equal VRAM) | 14.03 | 16384, MTP off (§81) |
+| cache N=42, gate OFF | 9.66-10.83 | 81920, real prompt (`b950f4cc2`, `1ea22696f`); #127 probe 10.43 |
+
+If these hold at matched depth, the cache **loses ~25% to static placement and ~20% to no cache** on
+this card, so the gate has to first climb out of a hole. Residency-only gating (option 0) cannot do
+that given LFU-with-decay already ships. Only A could, and A's ceiling (~18-19) is +30% over static.
+
+## 6. Recommendation
+
+1. **Do not build A yet.** Run three zero-code arms on the 3060, same ctx 81920, MTP off, n>=3:
+   all-host; `-ot` static 4 layers; cache N=42 gate-OFF. Cost: rig time only (granted).
+2. Port the per-step miss ledger (`b950f4cc2`) first. Phase 3's yield table needs uploads/bytes and
+   HEAD has only a cumulative hit/miss/evict line (`moe-cache.cu:14616`). It conflicts hard (749 lines)
+   because it sits on look-ahead staging; needs a re-derivation, not a cherry-pick.
+3. Decision rule after (1): cache >= static -> proceed to a residency-gate spike (option 0) with
+   the shipped half-life (see section 2 retraction). Cache < static by >15% -> the choice is A (large, +30% ceiling) vs shelving the cache
+   on the 3060. That is an architect/owner call, made on measured numbers.
+
+## 7. Phase 1 status and asset notes
+
+- **Not in HEAD and not in gs:** `1ea22696f` and 9 look-ahead commits under it, incl. `899d8ec7a`
+  (half-life knob), `b950f4cc2` (per-step ledger), `ca8ee3d6d` (demand trace for a Belady bound).
+  All live only on `feat/moe-lookahead-p1` (local + `hydra-fork`). A rebase to gs/moe-cache would not
+  carry them.
+- **Deviation from handoff:** the named counters (`admitted_experts`, `admit_evictions`,
+  `admit_skipped`, `staged_mib_total`) belong to predicted admission and staging. They read 0 without
+  `04e85a745` (1005 lines + ggml-cuda.cu). Harvesting them alone is dead weight. I took the demand-side
+  instruments instead. `GGML_MOE_EVICT_POLICY` is not ported: `1ea22696f` measured recent1 vs LFU
+  at 10.8316 vs 10.8320 tok/s, so it is not a lever.
+- Ported so far: `899d8ec7a` (manual, 1 hunk). Build check pending.
+
+## 8. Unverified / open
+
+- Card behind the `b950f4cc2` fit (3060 inferred).
+- Whether the §81 numbers are 3060-solo (line 3076 confirms it only for the MTP proven config).
+- Per-expert CPU cost at lower experts-per-layer; depth transfer of the 25.7 ms fixed term.
+- `pjsgsy` gate numbers are a single unreviewed comment on one card.
+
+## 9. Findings while running section 6 (2026-09-21) - read before trusting any 3060 number
+
+1. **The 3060 link is Gen1 (2.5 GT/s) x4 and delivers 0.39 GB/s H2D** (pinned = pageable = 0.39-0.42, 35 s
+   of sustained load, link never upshifts; 5060 Ti in the same probe: 25.9 pinned / 13.6 pageable, upshifts).
+   Card bus 02:00.0 (the NVMe adapter slot), root port 00:06.0 reports max 16 GT/s x4; no AER errors.
+   Probe: `scripts/moe-controls/h2d_bw.cu`. Retrain needs root (owner action). The on-file 0.3003 ms/miss
+   (= 6.27 GB/s) is from a healthy-link era. `docs/design-prefill-fastpath-DRAFT.md` (foreign draft) found the same.
+2. **Ledger smoke (cache N=42, 64 tokens, ctx 8192, cold cache)** on binary ab8424b1b:
+   `ms/token = 41.2 + 3.109 * misses`, r2 = 0.995, 177 misses/token; 3.11 ms/miss = 1.887 MB / 0.61 GB/s.
+   Slope is the link, not the kernel: 10.4x the on-file slope.
+3. **Half-life unit SETTLED (measured):** 3024 plan calls = 48 groups x 63 tokens; every group's
+   `device_step` runs 0..62. One `device_step` = one decode token per layer, so the shipped half-life 16
+   = 16 tokens (pjsgsy's "window 16"). The earlier "1/3 token" claim stays retracted.
+4. **Cold, short sample only (not representative, redo at depth):** misses by prior sighting count
+   0/1/2/3+ = 9247/1748/81/0 (83.5/15.8/0.7/0 %). Evictions 9060 of 11076 misses, mean evicted freq 1.04.
+5. `--decode-overlap` fails with any host-resident expert ("rebuilt graph requires another backend"), so it is
+   dropped from every control arm. Overlap/no-overlap and gs/demand binaries gave the same 1.7 tok/s on the smoke.
+6. Page-cache residency of the 50 GB model is a covariate (21 GB resident before prewarm); harness now prewarms
+   and records it, plus the H2D probe, per arm.
+
+**Consequence:** cache-vs-static tok/s on the 3060 cannot decide anything until the link is at Gen4. Routing
+statistics (misses/token, bins) are link-independent and are being collected now (run3, flagged degraded).
+
+## 10. Control arms at depth (run3/run4, 2026-09-21/22) - link 0.39 GB/s (Gen1) for all rows
+
+Depth: prompt_n 13946, ctx 81920, MTP off, 200 out, 1 boot per arm, reps 2-3 warm (cache_n 13942). No `--decode-overlap`
+except `cache42OL`. Binary `ab8424b1b`. Page cache prewarmed (~68 GB) per arm.
+
+| arm | tok/s reps | VRAM after load / peak MiB | note |
+|---|---|---|---|
+| cache N=42 (`cache42L`) | 1.50 / 1.56 / 1.53 | 10461 / 10883 | link-bound, not a valid cache figure |
+| cache N=42 + overlap (`cache42OL`) | 1.64 / 1.57 / 1.57 | 10573 / 11005 | overlap does not change the intercept |
+| static `ncm4` (n-cpu-moe 44) | 12.42 / 12.53 / 12.60 | 10947 / 10983 | equal VRAM with cache (peak within ~100 MiB) |
+| static `ot4` (-ot 4 layers) | 12.28 / 12.57 / 12.67 | 10947 / 10983 | same as ncm4: flag flavours agree |
+| all-host (`--cpu-moe`) | 11.48 / 11.92 / 9.85 | 7205 / 7241 | rep 3 host-contended (load1 3.5, server CPU 219% vs 270%) |
+
+Ledger at depth (link-independent routing): ~181-194 misses/token of 480, hit rate ~60%. Misses by prior sighting
+count 0/1/2/3+ = ~72/25/3/0 %. 95% of misses evict an expert with mean windowed freq 1.13. Fit ms = I + 3.11-3.16*miss,
+**I = 45-57 ms** (overlap off 57/52/57, overlap on 45/54/52), r2 0.99. The on-file I = 25.7 is not reproduced.
+CPU-serve cost per expert (all-host vs ncm4, 40 experts): 0.11-0.19 ms, noisy.
+
+Option A ceiling = 1000/(I + up*0.3003 + cpu*0.105), gate T=1 (up 55, cpu 135 per token): I=52 -> 12.0 tok/s,
+I=41 -> 13.9, I=25.7 -> 17.7. Static = 12.5 (14.03 on file at ctx 16384). With the measured I the ceiling does not
+clearly beat static before split/sync overhead. Caveat: I was measured at Gen1; whether the link changes I is untested.
+
+## 11. Architect rulings (section 125, 2026-09-22)
+
+1. Link defect confirmed. Idle sysfs proves nothing (both cards read Gen1 idle); the loaded 35 s probe is the instrument.
+   The accepted constraint is x4 width; Gen1 speed was never accepted (~6% of the Gen4 x4 rate).
+2. **Do not accept the Gen1 fixed cost I=45-57 as the break-even input. Neither build Option A nor shelve.** At Gen1 the slope
+   term is ~587 ms/token against I~52, so the intercept is barely identified. The ceiling is an undefined input, not a range.
+3. Prefill collapse reopened only as a free rider: re-measure prefill in the post-fix rerun.
+4. Record drift: `PROJECT_STATUS.md:378` (idle only) and `:408` (card now on 02:00.0, not 07:00.0) annotated 2026-09-22.
+
+Leader follow-up: identify I at Gen1 with a near-zero-miss decode (repetitive continuation) so the slope term is small.
+
+## 12. Pre-registered reading of the near-zero-miss legs (section 126), written BEFORE the data
+
+Legs: `scripts`-style `smoke_rep.sh` (shallow, ctx 8192) and `smoke_rep14k.sh` (prompt_n ~13946, ctx 81920), both cache N=42,
+ledger on, MTP off, `-ot`/`--cpu-moe` off. Repetitive continuation ("banana" x N). X = decode tok/s at ~0 misses.
+
+1. **Validity gate:** read steady-state misses/token from the ledger (tokens after warm-up). If it is not near 0 (say > 20),
+   X is not a ceiling and the leg is reported as such. X0 = 1000 / (ms/token - 3.14 * misses/token) is reported next to X.
+2. **X < 12.5 (static)** -> shelve the cache on the 3060; decisive at Gen1 (a ceiling does not improve with the link).
+3. **X >= 12.5 does NOT by itself justify a gate.** X = 1000/I is only the no-miss bound: a real gate still has to serve the
+   ~190 misses/token, by upload (0.3003 ms at a healthy link) or CPU (~0.105 assumed, 0.11-0.19 measured delta).
+   Tighter bound: B = 1000 / (I + M * c_min), M ~ 190, c_min = min(0.3003, measured CPU-serve cost from ncm2), I = 1000/X0.
+   Expected from the Gen1 fit: X ~ 19-22 tok/s, B ~ 11.4-13.9. My rule (leader's choice, not the architect's): B <= 13.75
+   (static x1.10, allowance for split/sync overhead) -> shelve; B > 13.75 -> the link fix is worth waiting for.
+4. The leg also settles the I dispute directly: X at 14K vs the Gen1 fit I = 45-57 ms (X = 17.5-22).
+
+## 13. Per-request cache reset: design or incidental? (section 128, source trace only, no rig)
+
+**Finding.** The cold cache at every request start is a consequence of the legacy/grouped authority handoff, not a policy
+choice and not the candidate-table publish path.
+
+- `publish()` / `detach_resources()` are NOT per request. `llama_context::refresh_moe_candidates()` returns early unless
+  `moe_candidate_refresh_pending`, which is set only at context creation and by `set_adapters_lora()` (`llama-context.cpp:2557`).
+- The per-request reset is `cold_reset_grouped_resource()` (`moe-cache.cu:6574`): it memsets `slot_for_expert`/`expert_for_slot`
+  to -1, `last_used`, `expert_frequency`, `expert_frequency_epoch`, `device_step`, `device_clock` and the plan to 0. It is called
+  from the group-authority transition (`moe-cache.cu:11593`, `11628`) when `resource->legacy_dirty`.
+- `legacy_dirty` is set whenever the LEGACY per-tensor cache takes a lease on the shared backing (`moe-cache.cu:8366`, `8481`,
+  `8613`). The legacy path serves prefill and any non-grouped-decode graph, so every request that runs a prefill dirties the
+  backing and the next grouped decode starts cold. Commit `a3f252c9e` ("retain MoE cache backing across phases") keeps the
+  allocation across phases, not the contents. The dirty flag is a conservative correctness guard: the legacy path moves slots
+  behind the grouped metadata's back, so the grouped metadata cannot be trusted afterwards.
+- Consequence for agent workloads: a warm multi-turn request (`cache_n` 13942, `prompt_n` 4) still takes the legacy path for
+  its 4-token prefill and therefore throws away the decode working set of the previous turn, even though it would be the case
+  where carry-over is worth most. Conversely, a real long prefill overwrites the legacy slots with prefill-recency, so
+  carry-over would only be meaningful together with a reconcile step (rebuild grouped metadata from the legacy slot map),
+  not by simply skipping the memset.
+
+**Simulator.** `sim_policy.py --carry=1` replays all traced requests as one stream per group (residency and frequency survive
+request boundaries). It bounds the gain from removing the reset. Caveat: the three traced requests are the same prompt, so
+request k+1 re-touches request k's experts and the result is optimistic; a distinct-prompt trace is needed before this number
+is used for a decision.
+
+**Exactness of replays (architect section 128).** Residency-only replays (kernel at any half-life, LRU, Belady mandatory
+install) are exact: routing is policy-independent at temperature 0 and each group's cache is independent. Bypass replays
+(gate T, Belady + bypass) are APPROXIMATE: a bypassed expert would be computed on the CPU, and a different accumulation order
+can perturb later logits and so later routing. Read them as bounds, not predictions.
+
+**Architect ruling (section 129): carry-over is parked as a quantified known defect, about 1%.** Cold fill costs ~480 misses at
+step 0 against ~190/token steady state, so the excess is ~290 misses per request. On the 128-token turns the multi-turn
+harness serves that is 290 / (480 + 127 x 190) = ~1.2% (200-token turns: ~0.75%). It becomes material only for 10-30 token
+tool-calling turns. It is not a larger lever than the admission gate, and the distinct-prompt carry-over trace is NOT run for
+the decision (only if free alongside a leg already running). Filed future work: make the reset prefix-reuse-aware, which needs a
+reconcile step that rebuilds the grouped metadata from the legacy slot map, not just skipping the memset.
+
+**Reporting rule for B.** If B rests on a bypass number (gate or Belady + bypass), it is reported as needing split-execution
+confirmation and does not decide alone. Residency-only replays are exact; gate and Belady-with-bypass replays are approximate.
+
+## 14. c_cpu from the static arms (run3/run4, 14K depth, warm reps 2-3) - written BEFORE X
+
+Arms `ncmK` keep the expert tensors of the last K layers on the GPU and serve the rest from the CPU (K = 4, 2, 0 = `allhost`).
+Warm decode (`cache_n` 13942), `allhost` rep 3 excluded (contended):
+
+| arm | tok/s (reps 2,3) | ms/token |
+|-----|------------------|----------|
+| ncm4 | 12.53, 12.60 | 79.59 |
+| ncm2 | 12.31, 12.21 | 81.57 |
+| allhost | 11.92 (rep 3 9.85 contended) | 83.89 |
+
+Cost of moving one layer's experts from GPU to CPU: 0.990 ms (4 -> 2) and 1.163 ms (2 -> 0). At top-10 that is
+**c_cpu = 0.099-0.116 ms per expert per token**, which brackets the architect's assumed 0.105 and tightens the earlier
+0.11-0.19. Rep 1 (cold prompt, `cache_n` 0) is 0.3-0.5 tok/s lower on every arm and is not used.
+Caveat: these arms serve all 10 experts of a layer on the CPU in one batch. Option A serves only the non-admitted subset
+(~4 of 10 per layer), so any per-call fixed cost is amortised over fewer experts and c_cpu is a lower bound on the split
+case. Report B over c in {0.105, 0.116}, and flag a bypass-based B as needing split-execution confirmation (section 129).
+
+**Provisional B grid (I unmeasured, X pending):** B = 1000 / (I + M * c), shelve threshold B <= 13.75.
+
+| I (ms) | M=190, c=0.105-0.116 | M=137, c=0.105-0.116 |
+|--------|----------------------|----------------------|
+| 25.7 (on file) | 20.9-21.9 | 24.0-24.9 |
+| 41 (shallow Gen1 fit) | 15.9-16.4 | 17.6-18.1 |
+| 52 (14K Gen1 fit mid) | 13.5-13.9 | 14.7-15.1 |
+| 57 (14K Gen1 fit high) | 12.7-13.0 | 13.7-14.0 |
+
+Break-even I for B = 13.75: about 52 ms at M = 190 and about 58 ms at M = 137. So the shelve call turns on whether the
+measured I is above roughly 52-58 ms, i.e. whether X = 1000/I is below roughly 17-19 tok/s. The Gen1 fit range (45-57)
+straddles it, which is why the X legs decide and this table does not.
+
+## 15. First 14K "repetitive" leg FAILED the validity gate (2026-09-22) - not a ceiling, do not read as X
+
+`smoke_rep14k.sh` (old binary, no ids; raw `/completion`, prompt "banana " x 13932, N=42, MTP off, `-ot`/`--cpu-moe` off) did
+not stay repetitive: the model broke out into reasoning text (`<think>`), so routing kept changing. The section 12 gate (misses
+near 0, say < 20/token) caught it. Ledger, misses/token by request step (3 requests; each starts cold, step 0 = 480):
+
+| steps | req 1 | req 2 | req 3 |
+|-------|-------|-------|-------|
+| 1-3 | 247 | 255 | 253 |
+| 4-19 | 171 | 206 | 210 |
+| 20-59 | 185 | 189 | 194 |
+| 60-198 | 142 | 138 | 123 |
+
+Decode was 1.85 / 1.82 / 1.95 tok/s (541 / 548 / 512 ms/token) at ~146-154 mean misses/token, VRAM peak 10819 MiB.
+Backing out I = ms - 3.14 x misses gives 54-64 ms, but that is exactly the unidentified quantity of section 125: the
+slope term (~470 ms) is 8x the intercept, so a 0.5 ms/miss slope error moves I by ~75 ms. It is NOT accepted as I.
+Useful by-product: the natural-continuation steady state here is 123-142 misses/token, i.e. in the region of the
+architect's M ~ 137 floor, and hl=16 LRU-frequency never gets below it without an oracle.
+
+**Fix:** the continuation is forced with a GBNF grammar `root ::= (" banana")+` (temperature 0, tokens/unit 1.001), so the
+routed token stream is constant and misses should collapse; the validity gate is re-applied to the new ledgers. Legs rerun on
+the rebuilt binary (`a2c46384b`, ids in the ledger): shallow (ctx 8192) then 14K. The failed run is kept as `rep14k-think/`.
+
+## 16. Shallow forced-repetition leg + within-run fit identify I (2026-09-22) - supersedes the I dispute of section 125
+
+Rebuilt binary `a2c46384b` (ids in the ledger), shallow leg (ctx 8192, prompt "banana " x 60, grammar-forced
+`root ::= (" banana")+`, N=42, MTP off, 3 requests, link 0.39 GB/s).
+
+1. **Simulator validated against the real kernel.** `sim_policy.py` `kernel(hl=16)` reproduces the recorded miss set on
+   **28,656 / 28,656 records (100.00%)** over the 3 requests x 48 groups x 199 steps. Residency-only replays are exact.
+2. **The near-zero-miss leg is not reachable at N=42.** Even with the token stream forced constant, steady state is
+   **79 misses/token** (step 0 = 480, steps 1-3 = 175, 4-19 = 107, 20-59 = 73, 60+ = 79): position and recurrent state keep
+   moving the routing. The section 12 gate (< 20) fails again, so X = tok/s at ~0 misses is never observed directly; the three
+   requests are identical (deterministic) so they are timing replicates, not independent samples.
+3. **What replaces X: a within-run regression** (`scripts/moe-controls/fit_step_time.py`, step time from the gap between
+   consecutive last-group plan records vs misses summed over the step, steps >= 4). Misses vary 18-207 inside one run, so I is
+   an extrapolation of only 18 misses to 0 and does not depend on link state, page cache or thermals between runs:
+
+   | ledger | misses/step | I (ms) | slope (ms/miss) | R2 | 1000/I |
+   |--------|-------------|--------|-----------------|----|--------|
+   | shallow forced, req 1-3 | 18-207 | 30.9 / 31.2 / 32.4 | 3.084 / 3.068 / 3.057 (+-0.011) | 0.997-0.998 | 30.9-32.4 |
+   | 14K natural (section 15, old binary), req 1-3 | 19-344 | 48.4 / 36.9 / 36.4 | 3.154 / 3.257 / 3.209 (+-0.02) | 0.989-0.995 | 20.7-27.5 |
+
+   So **shallow I = 31 +- 1 ms** (the earlier between-run "41" was a confounded fit) and **14K I = 36-48 ms** (req 1 is the
+   cold-prompt request; 2-3 agree at 36-37). The slope 3.06-3.26 ms/miss is consistent with 1.887 MB / 0.39 GB/s = 4.8 ms
+   only if ~37% of the upload is hidden behind compute (or the probe is pessimistic); see section 18 item 7. It is measured, not assumed. Read the 14K rows as
+   provisional: that ledger is from the failed leg (model reasoning, no ids) and the grammar-forced 14K leg is still running.
+4. **Provisional B with the identified I** (B = 1000 / (I + M * c), c in {0.105, 0.116} from section 14, static x1.10 = 13.75):
+
+   | I | M=190 | M=137 |
+   |---|-------|-------|
+   | 31 (shallow) | 18.9-19.6 | 21.5-22.0 |
+   | 36 (14K, low) | 17.0-17.5 | 19.3-19.8 |
+   | 48 (14K, high) | 14.0-14.5 | 15.8-16.2 |
+
+   Every cell clears 13.75, but the high-I / high-M corner (14.0-14.5) has only ~10-15% margin over the shelve line. At a
+   healthy link the ungated cache costs 1000 / (I + M * 0.3003) = 13.0 at I=36, M=137, i.e. no better than static; the gain
+   comes from serving non-admitted experts on the CPU, which is a bypass design.
+5. **Replays on the (repetitive, so optimistic) shallow trace**, cost per token in ms at c_up 0.3003 and c_cpu 0.105:
+   kernel hl=16 23.7, lru 28.4, gate T=1 hl=16 11.7 (installs 18.9 + bypass 57.0), gate T=2 hl=16 9.5,
+   Belady mandatory 15.3, Belady + bypass 9.3. Bypass rows are APPROXIMATE (section 129).
+
+**Not yet decided.** Open before B is final: (a) the grammar-forced 14K leg for depth I under controlled conditions, and
+(b) a natural-prompt trace WITH ids for the Belady M floor at depth, since the forced trace is easier than real text.
+
+## 17. 14K grammar-forced leg: I at depth, B, and the pre-registered rule applied (2026-09-22)
+
+Leg: ctx 81920, prompt_n 13933 (`cache_n` 0 then 13929 for reps 2-3), N=42, MTP off, no `-ot`/`--cpu-moe`, grammar-forced
+continuation, link 0.39 GB/s, VRAM peak 10807 MiB, decode 2.90 / 2.96 / 2.88 tok/s. Ledger has ids.
+
+- **Validity gate:** NOT met as a ceiling (steady state 89-93 misses/token; steps 1-3 231, 4-19 110, 20-59 104). Same
+  conclusion as section 16: near-zero misses are unreachable at N=42, so X is replaced by the within-run fit.
+- **Simulator:** `kernel(hl=16)` reproduces the recorded miss sets on 28,656 / 28,656 records again (depth 14K).
+- **Within-run fit at depth** (`fit_step_time.py`, misses/step 25-283): I = **43.2 / 38.9 / 39.8 ms**, slope 3.02-3.06
+  ms/miss, R2 0.995-0.996. Together with the natural 14K ledger of section 16 (36-48 ms) depth I is **39-43 ms**, i.e. 1000/I
+  = 23-26 tok/s. The on-file 25.7 ms was a healthy-link, shallower-context value.
+- **B = 1000 / (I + M * c)**, c in {0.105, 0.116}; shelve line 13.75 (static 12.5-12.6 x 1.10). M = 54-57 is the Belady floor on
+  this (easier, forced) trace, 137 is the architect's natural floor, 190 the observed natural steady state:
+
+  | I | M=54-57 | M=137 | M=190 |
+  |---|---------|-------|-------|
+  | 38.9 | 22.0-22.4 | 18.3-18.8 | 16.4-17.0 |
+  | 43.2 | 20.1-20.5 | 16.9-17.4 | 15.3-15.8 |
+
+- **Rule (section 12, item 3): B > 13.75 in every cell, so do NOT shelve.** Lowest B = 15.3, i.e. +22% over static, highest
+  22.4, +79%. Consequence: the fixed cost is not what caps the design; the miss/serve path is.
+- **What B is NOT.** It is an upper bound for a design that serves every non-hit expert at c_min. At a healthy link the
+  ungated cache is 14.2 / 11.9 / 10.0 tok/s at M = 90.6 / 137 / 190 (I=43.2, 0.3003 ms/upload), so plain admission tuning
+  does not beat static; only removing the upload from the critical path (CPU serve of non-admitted experts) does. That
+  is a bypass design, so per section 129 B **needs a split-execution confirmation before it decides a build**.
+- **Replays (approximate for bypass rows), forced 14K trace, ms/token at c_up 0.3003, c_cpu 0.105:** kernel hl=16 27.2,
+  hl=64 25.5, lru 31.8, gate T=1 15.5 (installs 29.8 + bypass 62.7), gate T=2 12.0, Belady mandatory 17.1, Belady + bypass 11.2.
+  Half-life 16 -> 64 is worth only ~6%; the policy knob is not the lever, the bypass is.
+- **Open:** a natural-prompt 14K trace with ids would replace M = 54-57 (forced) by a real floor. It refines B inside the
+  range above; it cannot flip the rule, because B > 13.75 already holds at the M = 190 observed natural rate.
+
+## 18. Architect rulings (section 130, 2026-09-22) - read this before section 17's "do not shelve"
+
+1. **The section 12 gate is RETIRED AS UNREACHABLE, not failed.** At N=42 with position/recurrent routing drift there is no
+   near-zero-miss steady state (79 misses/token shallow, 89-93 at 14K even with the token stream forced constant), so the gate
+   was specified against a state that does not exist. It is replaced by the within-run regression of section 16, and the
+   replacement is justified there. **I is link-independent by construction** (the intercept at zero misses contains no
+   upload), so it is a Gen4-valid number extracted from a Gen1-broken rig. That is why this decision did not wait on the
+   3060 link retrain (which needs root).
+2. **What "do not shelve" means.** B > 13.75 in every cell of section 17, but the ungated cache at a healthy link is
+   14.2 / 11.9 / 10.0 tok/s at M = 90.6 / 137 / 190, i.e. NOT better than static. So `--moe-expert-cache-size` as shipped is
+   dead on its own merits, Gen4 or not. What survives the rule is **a bypass / split-execution design that does not exist
+   yet**. "Do not shelve" is NOT build authorization; it keeps the lever open pending item 3.
+3. **c_cpu is the entire remaining decision.** Shelve line B <= 13.75 means I + M*c >= 72.73, so the c that flips a cell is
+   c* = (72.73 - I) / M:
+
+   | | M=190 | M=137 | M=57 |
+   |---|-------|-------|------|
+   | I=43.2 | 0.155 | 0.216 | 0.518 |
+   | I=38.9 | 0.178 | 0.247 | 0.593 |
+
+   Measured c_cpu is 0.099-0.116 with whole layers on CPU (10 GEMMs on `-t 6`). The worst cell flips at a **1.34x** penalty
+   (1.53x at I=38.9), and serving ~4 experts instead of 10 on 6 threads is expected to cost MORE per expert, not less.
+4. **Do not build split-execution in order to measure it.** Stage 1 is a standalone microbenchmark
+   (`scripts/moe-controls/moe_cpu_bench.cpp`, driver `run_f1f2.sh`) on the real tensors and quant types of the live model:
+   F1 = c(4)/c(10) (pool utilisation at `-t 6`), F2 = c(4, GPU decode running)/c(4, idle). Corrected c_cpu =
+   (0.099-0.116) x F1 x F2. Even that is a LOWER bound: the harness lacks the cache pressure from the rest of the model's CPU
+   work and the `per_layer_token_embd=CPU` offload.
+   **Stage-2 rule, pre-registered before F1/F2 were seen:** authorise a split-execution build ONLY if B > 13.75 at the WORST
+   cell (I = 43.2, M = 190, corrected c at its UPPER bound). If the result falls between, escalate to the owner with the
+   range; do not decide alone and do not pick a friendlier cell.
+5. **The natural-prompt Belady trace is KILLED** (it cannot flip the rule). **M = 190 is the planning number.** Belady is
+   unachievable and policy knobs buy ~6%, so M = 54-57 (from the easier forced trace) must not appear in any planning number.
+   Run a Belady trace only as a zero-cost rider on a leg that runs anyway.
+6. **Eviction / half-life workstream is CLOSED, including the orphaned `1ea22696f` knobs.** Gate T=2 (12.0 ms/token)
+   beats Belady with mandatory install (17.1): perfect replacement loses to imperfect bypass. Do not reopen it.
+7. **Provenance of c_up = 0.3003 ms/miss.** It is NOT a probe and NOT derived from a Gen1 number. It is the slope of the
+   on-file cost model `ms/token = 25.7 + 0.3003 * misses` (`b950f4cc2`, r2 0.990, 196 steps, 1.881 MB/miss, card not
+   stated), which the note reads as 6.27 GB/s: a healthy-link-era FITTED slope, i.e. an independent Gen4 anchor. The gap the
+   architect asked me to name: 1.887 MB / 0.39 GB/s (the loaded Gen1 probe) predicts 4.84 ms/miss, but the measured Gen1
+   slope is 3.05 ms/miss = 0.62 GB/s effective (62% of the 1.0 GB/s Gen1 x4 ceiling, vs 6.27/7.88 = 80% at Gen4). Two readings:
+   (a) the probe is pessimistic, or (b) ~37% of each upload is hidden behind compute. The data cannot separate a constant
+   hidden fraction from a pessimistic probe, but it does exclude a SATURATING overlap: the slope is the same in the low-miss and
+   high-miss halves of every ledger (shallow 3.04-3.13 vs 3.02-3.06; 14K 3.10-3.22 vs 2.92-3.04), so there is no knee.
+   Consequence for the Gen4 projection: c_up = 0.3003 is anchored to a Gen4 fit, not scaled from the Gen1 slope, so the
+   1.6x unexplained factor does not propagate into it. Ratio check: 3.05 / 0.3003 = 10.2x between the two links, against
+   a raw Gen4/Gen1 bandwidth ratio of 7.9x, consistent with Gen1 running at lower efficiency (62% vs 80%).
+8. **Owner blocker downgraded.** The 3060 link retrain is no longer blocking the decision. It is confirmatory: it validates
+   c_up for any design that still uploads, and the `cache42` / `cache42O` rerun.
+
+## 19. F1/F2 at the design's real call spacing (sections 131-133) - READ THIS BLOCK FIRST
+
+**Status: BETWEEN, escalated to the owner; the confirming run is BLOCKED on an owner constraint (item 11).**
+
+- **The shippable design already fails; only an unachievable bound straddles the line.** The indicative hybrid (admit some, upload
+  those, CPU-serve the rest) at the worst cell is **B = 13.21, below the 13.75 shelve line.** It carries a "sign, not a number"
+  caveat (its 10% upload share comes from the easier forced-trace T=2 replay and it needs a `c_up * uploaded_fraction` term).
+  The 14.18 PASS below belongs to pure bypass at M = 190, which is not a design but a bound.
+- **Why pure-bypass-at-M=190 is only a bound (architect s133.3).** M = 190 is the steady state of a cache that INSTALLS on miss. A
+  design that never uploads never installs, so its real M is 480 (every expert of every layer is a miss). `B = 1000/(I + M*c_cpu)`
+  therefore takes the hit rate of an admitting cache and the traffic of a non-admitting one, i.e. it prices installs at zero.
+  B is an OPTIMISTIC UPPER BOUND, so the s130 rule is a NECESSARY, not sufficient, condition: failing it shelves the lever,
+  passing it only keeps the lever open. That is the concrete reason "do not shelve" is not build authorization.
+- **What the pending run is worth.** It cannot authorise a build. It can SHELVE decisively: if the K-absorbing scaling is right the
+  worst cell is 12.61, the optimistic bound itself fails, and the whole lever closes with no further work.
+- Sections below are the measurement record; the pass/fail numbers in them are for the bound, not for the hybrid.
+
+### 19 detail (F1/F2 at 0.85 ms spin gap, 4 idle / 3 busy / 2 busy+hog runs)
+
+Bench `scripts/moe-controls/moe_cpu_bench.cpp` (real expert tensors of 12 layers spread over all four shards: IQ2_XXS/XS/S, IQ3_XXS/S
+gate/up, IQ4_NL down; mmap, no repack; random expert ids, cold weights), `-t 6`, threadpool **poll = 50** (`ggml.c:8296`), identical
+to the engine (`common/common.h:74`; the static arms passed no `--poll`). Call spacing **0.85 ms spin** (= I/48). Raw output
+`scripts/moe-controls/f1f2-results-0.85ms.txt`, composition `f1f2-fit-0.85ms.txt` (`fit_f1.py`). Four idle runs, three busy
+runs (cache42 decoding on the 3060, GPU 100%, link Gen1), two busy+hog runs.
+
+1. **C-state artifact (leader's catch).** The first bench slept between calls (`sleep_for`), letting the CALLING thread's core drop
+   into a C-state; the engine's decode thread never does. Spinning the gap removed it. Poll 50 keeps the workers spinning for
+   ~n_rounds = 1024*128*50 = 6.6M iterations, so they do not sleep across 0.85 ms either.
+2. **F1 as a multiplier is dropped (architect).** The CPU is called once per layer, 48x/token, serving j = M/48 experts, so j and M
+   are one parameter and `CPU ms/token = 48 * T(M/48)`; with T = K + w*j this is `48K + M*w`, and
+   **B = 1000 / (I + 48K + M*w)**. 48K is M-invariant; lower M amortises K over fewer experts, so cheaper-looking cells are
+   worse than a fixed ratio says: measured c(j)/c(10) = **1.17 at M=190 (j=3.96), 1.28 at M=137 (j=2.85), 1.75 at j=1**, so the
+   killed M = 54-57 cells (j~1.15) were ~1.7x, not 1.2x. That is the honest direction.
+3. **Pooled per-call T(j), ms** (idle / busy / busy+hog): j=1 0.147/0.148/0.147, j=2 0.238/0.240/0.252, j=3 0.317/0.329/0.343,
+   j=4 0.391/0.414/0.439, j=5 0.475/0.498/0.526, j=6 0.522/0.597/0.615, j=8 0.719/0.765/0.797, j=10 0.837/0.920/0.973.
+4. **K and w (idle, pooled fit): K = 0.081 ms, w = 0.0769 ms.** F1_fit = 1.142, F1_raw (c(4)/c(10)) = **1.170**; the raw ratio is the
+   more conservative and governs. Per-run K ranges 0.059-0.100 and w 0.072-0.082: the K/w split is poorly identified run to run
+   (they trade off), while c(4) is stable at 0.092-0.103. That is why the rule uses T(j) interpolated at j = M/48, not K and w
+   individually. Residuals of the pooled fit: j=1 -6.9%, j=2..5 +0.8..+2.0%, j=6 -3.8%, j=8 +3.3%, j=10 -1.6%. The +12% at j=6
+   from the 1.5 ms-sleep run does NOT persist (it flips sign between runs: -14.6% .. +5%), so it is run-to-run noise, most likely
+   thread placement on the 12700K's P/E cores; I cannot name a mechanism and did not pin threads. The j=1 dip (-7%) does recur
+   (concave at small j); it does not touch the j ~ 3-4 operating point.
+5. **Controls.** poll = 0 (workers sleep at once): K 0.068, c(4) 0.0995 vs idle K 0.081, c(4) 0.0979: **no penalty, so the pool
+   wake-up is NOT what K is made of. The mitigation "keep the pool hot (`--poll`)" proposed in section 131.4 is FALSIFIED and
+   STRUCK (architect s133.1).** K is per-call dispatch, activation quantisation and
+   graph-node barriers. A 1.5 ms spin gap raises K to 0.120 and a sleeping caller to 0.095, so K does depend on call spacing
+   by some mechanism other than pool sleep (unidentified; LOGGED AS UNEXPLAINED, not chased: it cannot move the rule cell, section 123). The lever that survives is fewer, larger calls (batch CPU-served
+   experts across layers where the dependency graph allows): 48K = 3.9 ms of bench time, 5.4 ms scaled in situ, about 10% of a token.
+6. **F2.** F2_pure = c(4, GPU decode)/c(4, idle) = **1.057** (per-j 1.01-1.14, no j below 1.0). F2_hybrid, with a 6 GB/s host-memory
+   reader added, = **1.122**. The reader models Gen4 upload staging and is only valid for a hybrid design that still uploads;
+   under pure bypass there is no such stream and the CPU's own weight reads are already inside c_cpu, so the RULE CONSUMES F2_pure
+   (architect s132.2). **Sign correction (architect s133.2):** the busy workload was cache42, which UPLOADS ~190 experts/token over
+   the Gen1 link, while pure bypass uploads nothing. So the measured F2_pure = 1.057 contains PCIe and host-memory contention the
+   priced design does not generate: for pure bypass it is an OVERestimate (conservative), and the true pure-bypass B is HIGHER
+   than every pure-bypass number in this section. An earlier draft of this note called it a lower bound at Gen4; that holds only
+   for a hybrid design that still uploads (where F2_hybrid = 1.122 is the relevant figure).
+7. **Scaling to in situ.** Bench c(10) = 0.0837 ms vs engine 0.099-0.116 (static arms), so s = 1.18-1.39. Two ways to apply it,
+   because I cannot tell from here whether the engine-minus-bench gap is proportional or a fixed per-call cost:
+   **uniform** (T_e = s*T, the method the architect specified) and **K-absorbing** (T_e = T + (10*c_meas - T(10)), all of the gap
+   is a fixed per-call cost = upper bound). B = 1000/(I + 48*T_e(M/48)*F2_pure), the lower of {fit, raw} governs:
+
+   | c_meas | scaling | M=190 (j=3.96) cpu ms | B at I=43.2 / 38.9 | M=137 (j=2.85) cpu ms | B at I=43.2 / 38.9 |
+   |--------|---------|-----------------------|--------------------|-----------------------|--------------------|
+   | 0.099 | uniform | 23.3 | 15.0 / 16.1 | 18.3 | 16.2 / 17.5 |
+   | 0.099 | K-absorbing | 27.5 | 14.1 / 15.1 | 23.3 | 15.0 / 16.1 |
+   | 0.116 | **uniform** | 27.3 | **14.18** / 15.1 | 21.5 | 15.5 / 16.6 |
+   | 0.116 | **K-absorbing** | 36.1 | **12.61** / 13.3 | 31.9 | 13.3 / 14.1 |
+
+   Shelve line 13.75.
+8. **Verdict under the pre-registered stage-2 rule (worst cell I=43.2, M=190, c_meas at its upper bound 0.116, F2_pure, more
+   conservative of fit/raw):** with the architect's uniform scaling **B = 14.18, PASS by 3.1%**; with the K-absorbing upper bound
+   **B = 12.61, FAIL**. The range across the worst cell is 12.6-15.0. **The result is BETWEEN, so per section 130 it is escalated
+   to the owner and NOT decided here.** Bench noise is the same size as the margin: idle c(4) ranged 0.092-0.103 across four
+   runs (+-6%), which moves the rule cell by ~+-0.5 in B, so a 3% pass is not statistically resolved.
+9. **Indicative only, not the rule:** a hybrid design (90% CPU-served, 10% uploaded at c_up 0.3003, F2_hybrid) at the worst cell
+   gives B = 13.21 (FAIL). It needs the `c_up * uploaded_fraction` term the pure-bypass formula lacks; the 10% split is taken from
+   the gate T=2 replay on the (easier) forced trace, so treat it as a sign, not a number.
+10. **What would resolve it (proposal, NOT run, BLOCKED - item 11):** a SECOND in-situ point. Static arms `ncm2` and `allhost` at a
+    reduced routed-expert count (`--override-kv qwen4exp.expert_used_count=int:4`, timing only, output meaningless), next to the
+    measured j=10 arms (0.99-1.16 ms per layer). Taking the engine's CPU-vs-GPU delta between arms at the same k cancels I and
+    gives K_engine and w_engine directly, which removes the bench from the critical path: it closes BOTH the 1.18-1.39 scaling
+    ambiguity and the +-6% bench noise at once, because the static arms replicate at +-0.6%. Four short shallow arms, ~20 min of rig.
+    It cannot authorise a build; it can SHELVE decisively (K-absorbing scaling gives 12.61 at the worst cell, so the optimistic
+    bound itself fails and the lever closes). Do not pin threads: the engine is unpinned, so pinning would trade comparability for
+    precision the two-point method makes moot.
+11. **BLOCKED (architect s133.6).** `--override-kv qwen4exp.expert_used_count` collides with a standing owner constraint: k is not
+    overridden, the model config value of 10 is used, no `--override-kv`. The timing-only rationale is a good argument that the
+    constraint's purpose is not engaged, but it is the owner's rule; the architect routed the request to the owner. HOLD the run
+    until the owner rules. The 3.1% pass being inside +-6% bench noise is carried to the owner verbatim.
+
+## 20. In-situ T_engine(4) from k=4 static timing arms (architect s134, owner waiver) - PRE-REGISTRATION, written BEFORE any k=4 number
+
+**Owner waiver (2026-09-22, relayed s134):** `--override-kv qwen4exp.expert_used_count=int:4` is allowed for these timing arms ONLY. k stays
+10 everywhere else (memory: `owner-constraint-no-override-kv-expert-count`). Every k=4 record carries `TIMING_ONLY_K_OVERRIDE=true` and the
+tag suffix `-k4`; no throughput figure from these arms may enter any table other than the K_engine/w_engine fit below.
+
+**Why the k=4 arm is the operating point.** j = M/48 = 3.96 at M=190, so a static arm at top-4 serves j=4 experts per CPU layer call, exactly the
+worst cell. No extrapolation, no K/w split needed for the rule.
+
+**Protocol (fixed now).** Runner `scripts/moe-controls/arm_k4_timing.py`, driver `/tmp/opencode/controls/k4timing/run_k4.sh`. Shallow prompt (167 bytes,
+open-ended story), ctx 81920, `-t 6`, MTP off, no decode-overlap, `--moe-expert-cache-size 0`, `per_layer_token_embd=CPU`, 3060 (CUDA1), binary
+`a2c46384b` (libllama 7710842c as run3; libggml-cuda differs only by the ledger commit, irrelevant at cache size 0). Arms `ncm4`, `ncm2`, `allhost`
+(= 44/46/48 layers' experts on CPU) each at k=10 (no override) and k=4, 4 reps per boot (rep 1 cold, DISCARDED; reps 2-4 = n=3 per boot). Two
+passes over the six arms, pass 2 in reversed order, i.e. n=6 warm reps per arm x k. Depth-independence: the CPU-vs-GPU delta per layer cancels
+attention, so shallow is valid; the k=10 shallow delta is also a depth check against section 14 (0.990 / 1.163 at 14K).
+
+**Estimator (single, fixed).** D(k) = OLS slope of decode ms/token against layers-on-CPU (44, 46, 48), all warm reps of both passes pooled, in ms per
+layer moved GPU -> CPU. **T_engine(4) := D(4).** Secondary, reported but not governing: pairwise slopes ncm4->ncm2 and ncm2->allhost, per-pass slopes.
+Spread: per-boot slope range and the OLS standard error.
+
+**Rule (architect s134, fixed before data).** `B_worst = 1000 / (I + 48 * D(4) * F2_pure)`, I = 43.2, F2_pure = 1.057. Threshold: B_worst <= 13.75 iff
+D(4) >= 0.582 ms/layer.
+- **B_worst <= 13.75 -> SHELVE, decisively.** Report and stop; no rescue measurements, no other cells.
+- **B_worst > 13.75 -> the bound survives and nothing more.** Not build authorisation (the bound prices installs at zero). Next question is the hybrid's
+  `c_up * uploaded_fraction` on a NATURAL trace, escalated to the owner with the hybrid B = 13.21 as the headline.
+The rule is applied to the point estimate. If the +-1 SE interval straddles 0.582 that is disclosed, not resolved by choosing a friendlier estimator.
+
+**Secondary:** K_e / w_e from D(j) = K_e + w_e * j using D(4) and D(10) of the same session (the in-situ analogue of the bench K=0.081 / w=0.0769;
+gives 48 K_e for the batching lever).
+
+**Known bias, stated now.** D = T_cpu - T_gpu (the layer's GPU expert cost is saved when it moves to the CPU), so D understates the CPU cost of a
+design that ALSO keeps the GPU experts, which makes B_worst optimistic. This is the same convention as the k=10 c_cpu of section 14, so it does not
+change the comparison, but a pass is weaker evidence than a fail.
+
+**Serial-cost assumption, recorded before the branch is known (architect s135; record only, not acted on).** D(4) is a SERIAL cost: in the static arms
+every expert of a layer is CPU-served, so the delta is the whole addition to the critical path. `B = 1000/(I + 48*D(4)*F2)` therefore charges the CPU work
+as if none of it overlaps GPU work. A real split design runs CPU-4 alongside GPU-6 inside a layer, so its effective cost could be lower than D(4) by the
+overlapped fraction, minus sync. This is a PESSIMISTIC term, and it partly offsets the OPTIMISTIC term above (installs priced at zero, D = T_cpu - T_gpu).
+The two run in opposite directions; nothing here claims they cancel, and neither was measured. This is not an escape hatch: section 134 stands, and
+B_worst <= 13.75 shelves and stops. It is written into the rationale so that a shelve is durable, i.e. so a later reader sees what the number assumed
+(serial CPU cost, zero-install bound, F2_pure from a run that uploaded, I = 43.2 the max of three fits) instead of inheriting it as settled.
+
+## 21. T_engine(4) in-situ result: bound survives, does not shelve (2026-09-22)
+
+Campaign `scripts/moe-controls/run_k4.sh` -> `arm_k4_timing.py`, two order-counterbalanced passes, n=6 warm reps per arm x k (rep 1 of every
+boot discarded). No void records, no host-contention outliers (cpu_busy_pct 15-18%, `foreign` PID idle throughout; the one elevated-sd cell,
+`ncm2` k=10 at 2.25%, is a monotonic pass2 drift of 13.4 -> 12.7 tok/s, not a step change, so it is reported as-is, not excluded).
+Results `scripts/moe-controls/results/k4-pass{1,2}.jsonl`. Fit `fit_k4.py`.
+
+**Decode ms/token, n=6 each (sd, %sd):**
+
+| arm | k=10 | k=4 |
+|---|---|---|
+| ncm4  | 72.641 (0.236, 0.32%) | 45.894 (0.229, 0.50%) |
+| ncm2  | 75.623 (1.705, 2.25%) | 46.968 (0.193, 0.41%) |
+| allhost | 77.506 (1.053, 1.36%) | 48.014 (0.222, 0.46%) |
+
+**T_engine(4) := D(4)**, pooled OLS slope of ms/token against layers-on-CPU (44/46/48), all 18 k=4 points: **D(4) = 0.5299 +/- 0.0301 ms/layer
+(1 SE)**. Per-pass: pass1 0.4807 +/- 0.0361, pass2 0.5790 +/- 0.0463 (passes bracket the pooled value, no order drift large enough to flip the
+branch). Pairwise deltas agree: ncm4->ncm2 0.5371, ncm2->allhost 0.5226, ncm4->allhost 0.5299.
+
+D(10) = 1.2163 +/- 0.1676 ms/layer (noisier, `ncm2` k=10 drift above is most of it).
+
+**K_e/w_e** (secondary, from D(4) and D(10) of this session): K_e = 0.0723 ms/call, w_e = 0.1144 ms/expert, 48*K_e = 3.47 ms/token. Compare
+bench (section 19): K = 0.081, w = 0.0769. K_e is close to the idle bench K (0.072 vs 0.081); w_e is 49% above the idle bench w (0.114 vs
+0.0769) -- the in-situ per-expert cost, measured on the real serving path (sampling, metrics, whole-layer batch of 10 or 4 experts on `-t 6`
+alongside everything else the server thread does), is higher than the standalone microbench predicted. This is evidence the bench under-priced
+the real call, not that the fit is unstable: D(4) itself has the tightest relative spread of any number in this track (0.50% sd).
+
+**B_worst = 1000/(I + 48*D(4)*F2_pure)**, I = 43.2, F2_pure = 1.057, threshold D(4) >= 0.582 ms/layer to shelve:
+
+| estimator | D (ms/layer) | B_worst (tok/s) |
+|---|---|---|
+| point | 0.5299 | **14.27** |
+| D - 1 SE (cheaper) | 0.4998 | 14.59 |
+| D + 1 SE (pricier) | 0.5600 | 13.96 |
+
+**The full +/-1 SE interval clears 13.75** (13.96-14.59); this is not a "between" case like section 19's bench-derived 12.61/14.18 split, it is
+a direct in-situ measurement whose noise does not reach the line.
+
+**BRANCH (pre-registered, section 20 / architect s134): B_worst > 13.75 at every estimator -> the bound survives, and that is all it does.**
+Not build authorisation (the bound still prices installs at zero, section 19). Per s134, the next question is the hybrid's
+`c_up * uploaded_fraction` term on a NATURAL trace (the 10% share behind the hybrid B = 13.21 came from the easier forced trace) -- that
+escalates to the owner with the hybrid number as the headline, not a build proposal off this bound.
+
+**What resolved and what didn't.** This retires the section 19 bench-vs-K-absorbing ambiguity (12.61 vs 14.18) with a direct measurement
+(14.27, tight interval) instead of a scaled one -- but it answers only the pure-bypass bound, per its own pre-registration. The hybrid number
+(13.21) and its natural-trace uploaded-fraction refinement remain the open, escalated question.
+
+## 22. Corrections to section 19/21 and the hybrid f check (architect s137) - zero-rig, existing data only
+
+**Correction 1 (architect, to their own s130/131 scaling hypotheses).** Neither bracketed the measured section 21 numbers: w_e = 0.1144 is
+above even the uniform method's upper bound (0.091-0.107), K_e = 0.0723 is below bench K = 0.081. The per-expert term scales up harder than
+either hypothesis, the per-call term scales slightly down. This is the strongest evidence in the track for measuring in situ over scaling a
+bench: both branches would have mispredicted, in opposite directions.
+
+**Correction 2 (batching lever, section 132).** 48*K_e = 3.47 ms of a ~70 ms token is **~5%, not ~10%** as earlier quoted. Fixed here.
+
+**Correction 3 (statistical caveat on section 21, does not move the branch).** The pooled SE treats between-pass variance as zero; with only
+two passes that variance is unidentifiable, not zero. Pass1 D=0.4807, pass2 D=0.5790, differ by 1.67 SE of the difference (no evidence of an
+order effect, but not proof of none). On pass2 alone, B=13.78; pass2 +1 SE, B=13.35 (would fail). The branch stands (point estimate and every
+pooled estimator clear 13.75), but "clean result" overstated the margin; recorded as thin under a conservative between-pass treatment.
+
+**The headline (against static 12.5-12.6):**
+- **Bound (installs priced at zero, unachievable): 14.27 = +13.7%**
+- **Hybrid (the only shippable shape): 13.21 = +5.3%**
+That is the entire return on split execution (companion tensors, expert->slot tables, a second `mul_mat_id` chain, CPU-side zeroing, summed
+down-projections) on the slower card.
+
+**f check, existing data, no rig.** No ids-bearing trace with real (non-grammar-forced) text exists; the only traces with routed-expert ids
+are the grammar-forced repetitions (`rep14k` 14K, `smoke-rep` shallow), the same ones behind the section 17-19 numbers. Replaying `rep14k`
+(14K, the depth matched to the M=190 worst-cell regime) through `sim_policy.py` gate T=2 hl=16 gives the exact split behind the earlier
+"~10%" figure: hits 384.3, installs 9.78, bypass 85.87, **M' = 95.65, f = installs/M' = 0.1023**.
+
+Solving `B_hybrid(f) = 1000/(I + 48*K_e*F2_pure + w_e*M*F2_pure*(1-f) + c_up*M*f)` at I=43.2, K_e=0.0723, w_e=0.1144, F2_pure=1.057,
+c_up=0.3003, M=190 (the fixed real-steady-state total, independent of which trace supplies f): **exact break-even f <= 0.0846** (architect's
+quoted 0.085, confirmed to 3 sig figs). At the measured f = 0.1023: **denominator 73.33 ms, B_hybrid = 13.64 tok/s < 13.75.**
+
+**f exceeds the break-even on the easier (forced-repetition) trace itself.** Per the pre-registered reading (architect s137.4): a natural trace
+routes more diversely, more experts cross the admission threshold, f should rise, not fall. This is decisive against, at zero rig cost.
+
+**Conclusion:** both the bound (section 21) and the hybrid f check now point the same way. The bound survives (14.27 > 13.75) but is not
+achievable (installs priced at zero). The one shippable design (hybrid) fails on measured ground: f = 0.1023 > 0.0846 threshold, B = 13.64 <
+13.75. Recommendation to the owner: **shelve.** A genuinely natural-prompt trace with ids (a new, cheap, shallow rig leg) could only refine f
+upward per the argument above; it is not expected to reverse this and is not proposed.
+
+## 23. Correction to section 22: the f-direction claim was backwards; re-based shelve rationale (architect s139)
+
+**Section 22's directional claim is WITHDRAWN: "a genuinely natural trace would push f up, not down" is wrong, and the conclusion it supported
+("decisive against") is not established.** Struck here, not silently edited out, so the error is visible to a later reader.
+
+**Why it was backwards.** Under gate T=2, per expert per window: used once -> 1 bypass, no install. Used n>=2 times -> 1 bypass + 1 install
+(second sighting reaches T=2), then hits. So with A = experts used >=2 times and B = experts used exactly once in the window:
+`installs = A`, `bypass = A + B`, `M = 2A + B`, **f = A/(2A+B)**. Diverse routing raises B/A (more experts seen once, fewer seen repeatedly
+per window), which drives **f down**, not up. Measured f = 0.1023 on the forced (repetitive) trace implies B/A = 7.78. Natural routing
+touches ~54% of experts/layer/turn (`moe-expert-coverage-by-subject` memory), so B/A should rise there, not fall.
+
+Lower f raises B_hybrid, because `c_up = 0.3003` exceeds `w_e * F2_pure = 0.1209`: shifting an expert from upload to CPU-serve is cheaper per
+expert, at this session's measured K_e/w_e. The break-even f <= 0.0846 needs B/A >= 9.82, a 26% increase over the forced trace's 7.78 -
+plausible, not ruled out, for a natural trace. **So the sign favours PASS on a natural trace, the opposite of section 22's claim.**
+
+**Why the natural-trace leg is still not run - for the right reason this time.** `B(f) = 1000/(69.843 + 34.082*f)` over the full range of f:
+
+| f | B (tok/s) | vs static 12.55 |
+|---|---|---|
+| 0.1023 (measured, forced trace) | 13.64 | +8.7% |
+| 0.0846 (break-even) | 13.75 | +9.6% |
+| 0.05 | 13.98 | +11.4% |
+| 0.0 (= pure bypass) | 14.32 | +14.1% |
+
+**f cannot move the answer outside +8.7% to +14.1%**, a 0.7 tok/s span. Which side of 13.75 it lands on changes only the pre-registered branch
+label, not the business answer ("about +10% for a large new subsystem" at every f). A measurement that cannot move a decision does not get rig
+time (section 123 standard); this one cannot, regardless of which way f moves on a natural trace.
+
+**Re-based shelve rationale.** The recommendation to shelve is UNCHANGED, but no longer rests on "hybrid fails a threshold" (section 22's
+claim was unsound and is withdrawn). It rests on section 19/21's headline, which nothing here touches: **ceiling +13.7% (unachievable bound,
+installs priced at zero); shippable hybrid +8.7% to +14.1% across every possible f** - against the cost of split execution (companion
+tensors, expert->slot tables, a second `mul_mat_id` chain, CPU-side zeroing, summed down-projections) on the slower card. Shelve because the
+return is thin for the subsystem size, not because a threshold is provably failed: a shelve resting on the wrong technical claim gets reopened
+the moment someone recomputes f and finds it lower (which section 23 itself shows is the more likely direction), and would wrongly read that
+as overturning the shelve when the real reason (thin return) still holds.
+
+**M/M' splice, made explicit.** `M' = 95.65` (section 22) is the forced trace's OWN gated miss count, not half of the real M=190 - the gate is
+about +5.6% on top of that same trace's ungated kernel miss count (90.6), not a reduction. Only `f` (the *fraction* split of misses into
+install/bypass) is transferred from the forced trace onto the real M=190; the assumption is that the gate leaves the real trace's total miss
+count roughly unchanged, which the forced trace's own +5.6% (not -50%) supports as a reasonable approximation, not a proof. Carrying that same
++5.6% forward (M_gate_natural = 190 * 1.056 = 200) at f = 0.1023 gives B = 13.38, slightly worse than the M=190 calculation above - so the
+splice as run is mildly OPTIMISTIC, the right direction for a shelve recommendation to be conservative against.
+
+## 24. 5060 Ti config A/B: shipped cache vs production `-ot` (owner ruling s141) - PRE-REGISTRATION
+
+**Scope correction (owner s141): the section 19-23 shelve is a 3060 FINDING, not a verdict on the mechanism generally.** Every input to B was
+measured on the 3060: I = 39-43 ms, M = 190 at N=42 (the 3060's VRAM-forced cap), c_up on a defective Gen1 x4 link. `PROJECT_STATUS.md` and
+this note are re-scoped: the split-execution BUILD stays shelved (thin return, 3060), but that does not transfer to the 5060 Ti.
+
+**A different question, authorised separately.** On the 3060 the shipped cache loses to static and only an unbuilt bypass design helps. On
+the 5060 Ti the question is whether the ALREADY-SHIPPED `--moe-expert-cache-size` beats the current production `-ot` config - a config
+comparison, zero engineering. Every term should move favourably: far more VRAM for cache slabs, ~3x faster GPU (I is 43.2 of a ~70 ms budget
+on the 3060; lower on a faster card), no Gen1 link defect.
+
+**Spec, fixed before any data.** Same binary (`build-demand/bin`, fork `a2c46384b`, this track's binary throughout - NOT the production
+`build-g3` binary, since Arm B needs `--moe-expert-cache-size` and the comparison must hold the binary constant per arm), same model, CUDA0
+(5060 Ti), ctx 81920, `--split-mode layer -ngl 99 -fit off --parallel 1 --flash-attn on --jinja -t 6 --load-mode none --spec-type none
+--experimental-logs` (MTP off in both arms - draft-acceptance nondeterminism is a measured ~190x variance amplifier, memory
+`mtp-decode-slowdown-nondeterminism`). Prompt: `/tmp/opencode/mtp14k/prompt-14k.txt` (the track's standard 14K natural-text prompt, ~13946
+tokens), 4 reps per boot, rep 1 (cold) discarded, reps 2-4 = **n=3 warm** at matched depth (cache_n reused, same as every other campaign in
+this track - this IS the matched-depth protocol, simpler than a multi-turn growth curve and already validated).
+
+- **Arm A (production config):** `-ot 'blk\.(39|4[0-7])\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU' --moe-expert-cache-size 0` (the `0` is
+  MANDATORY per the override-precedence trap below - production's own verbatim command from `docs/findings-moe-placement-campaign.md` does not
+  set it, but on this binary any N > 0 elsewhere in the session or a nonzero default would silently override `-ot`).
+- **Arm B (shipped cache):** `--n-cpu-moe 99 --moe-expert-cache-size <N_max>`.
+
+**Pitfall 1 gate (override-precedence trap, memory `moe-expert-cache-size-is-N`): checked before the campaign is trusted, not after.** With
+`--moe-expert-cache-size` N > 0 anywhere, the cache buft override is pushed ahead of user `-ot`/`--n-cpu-moe` and the loader is first-match-
+wins, so Arm A's `-ot` would be silently ignored if N leaked into that arm. Gate: grep Arm A's server log for the `LLAMA_LOG_WARN` that fires
+when a request is routed through the LRU cache path - **its ABSENCE in Arm A's log is the pass condition**, its presence would mean Arm A
+silently became Arm B. Checked immediately after Arm A completes, before Arm B runs or numbers are compared.
+
+**Pitfall 2, N_max: determined empirically, not assumed.** Estimate from this track's own per-expert size and the 3060's own cache42 VRAM
+(10461 MiB at N=42, ctx 81920, `per_layer_token_embd=CPU` offloaded - Arm B here does NOT offload that tensor, so the 5060 Ti number will run
+higher for the same N): cache VRAM approx N*48*1.887 MiB. At N=84: ~7608 MiB of cache alone; GPU0 has 15509 MiB free before boot (342 MiB
+already held by the constant foreign CUDA context). Empirical gate: N=84 must (a) load without OOM and (b) complete all 4 reps of the full
+14K-depth prompt (the actual OOM risk is mid-generation KV growth, not load) with headroom logged. If it does, N_max = 84 is used AS-IS; this
+campaign does not grid-search upward for the absolute ceiling (marginal tok/s from a few more slabs is not expected to change which side of
+the win rule below the result falls, and pushing closer to the card's ceiling raises OOM risk for a question this pre-registration does not
+need answered precisely). If N=84 fails, back off (66, then 42) and report which N was used.
+
+**Pitfall 3: Arm A is re-measured in this session, not compared to the historical 22.2541** (`docs/findings-moe-placement-campaign.md`,
+unstated depth, different binary `build-g3`) - this track has drawn a wrong conclusion from exactly that mismatch twice already (sections 15,
+19). Both arms run back to back in this campaign at the same matched depth.
+
+**Pre-registered win rule, threshold filled in only after both arms' spreads are known (stated as a rule now, not a number):** Arm B wins only
+if `mean(B) - mean(A) > range(A) + range(B)` (range = max-min of the 3 warm reps), i.e. the gap exceeds the two arms' combined n=3 noise. A
+point estimate inside that combined spread is not a win. If Arm B wins: config change, report as such, the lever reopens on the 5060 Ti only,
+no split-execution build is implied. If it does not win: the shelve goes global, the 3060 analysis stands as the reason, and PROJECT_STATUS
+closes the track.
+
+## 24 addendum: two conditionals pre-registered before the 14K result is seen (architect s142)
+
+**1. Depth conditional.** The 14K comparison point is valid but production runs at ctx 81920, and the recorded 8-turn session reaches ~53K
+where the 5060 Ti already shows a 22% depth tax (36.47 tok/s at 6.6K -> 28.26 at 53K, N=84). `-ot` holds a fixed 9 layers on CUDA0 regardless
+of depth; the cache's hit rate interacts with the routing drift measured throughout this track. **The A/B ratio is itself depth-dependent** and
+could shrink or invert between 14K and 53K. Fix: after the 14K legs land, run each arm ONCE through `multiturn-growth-test.sh` (8 turns,
+~6.6K -> 53K, already exercised on both cards at ctx 81920) to get the ratio across the whole curve from one run per arm.
+
+**Pre-registered:** if 14K and the deep (53K) point agree in sign, decide on 14K. **If they disagree, the deep point governs** (production runs
+deep). A 14K win does not authorise the config change if it loses at 53K.
+
+**2. N_MAX conditional.** N_MAX = 84 is asserted (known-good), not determined maximal - Arm B may be running below its own ceiling. Only
+matters if Arm B loses. Calibration from the `-c 8192` sweep: N=84 -> 46.71, N=112 -> 49.18, N=126 -> 50.13, i.e. roughly **7%** of headroom
+between N=84 and the ceiling.
+
+**Pre-registered:** Arm B loses by more than ~7% -> N cannot rescue it, declare the global shelve. Arm B loses by less than ~7% -> probe
+N=96 and N=104 at ctx 81920 (short probe, not a new campaign) before declaring the shelve, since the ceiling could cover the gap.
+
+Nothing else about section 24 changes. Report the 14K legs first, per section 141's own ordering.
+
+## 24 correction: Arm A OOM'd on the first campaign attempt, methodology bug, fixed before any data
+
+First attempt crashed Arm A (`prodA`) on the very first decode step: `CUDA error: out of memory` allocating the cublas workspace
+(`ggml-cuda.cu:117`, `cublas_handle`/`common.cuh:1583`), ~4 s after the first request began, not at load. Root cause: the runner script
+(`arm_5060_ab.py`, adapted from the 3060 scripts) inherited `-fit off` in `COMMON`, which is NOT in the architect's literal production
+command. `--fit` defaults to "on" and reserves headroom for lazily-allocated buffers (the cublas workspace is allocated at first matmul, not
+at load, so `nvidia-smi` at boot showed no problem); `-fit off` removes that reservation. This was a copy-paste methodology error on my part,
+caught immediately (no data was produced or reported), not a finding about the production config. Fixed: `-fit off` removed, `arm_5060_ab.py`
+now matches the architect's spec exactly. Re-running from a clean rig-lock state.
+
+## 25. 5060 Ti config A/B: 14K result - Arm B wins decisively (2026-09-22)
+
+**Gate checked first, per section 24's own ordering.** Arm A's server log (`server-prodA.log`) has no `LLAMA_LOG_WARN` line for the
+cache-routing path anywhere in it - grep for the LRU-cache warning returns zero hits. Arm B's log has exactly the expected line at boot:
+`--moe-expert-cache-size is set; expert tensors route through the GPU LRU cache regardless of --cpu-moe / --n-cpu-moe.` **Pitfall 1 gate
+PASSED**: Arm A genuinely ran on `-ot`, Arm B genuinely ran on the cache, no silent override.
+
+**N_max=84 loaded and completed cleanly** (Pitfall 2): `vram_after_load_mib=13926`, `vram_peak_mib_this_request=14404` across all 4 reps,
+against a 16311 MiB card - `~1907 MiB` headroom, no OOM, no backoff needed. N_max conditional (section 24 addendum #2) does not need to fire.
+
+**14K result, n=3 warm reps (2-4), `decode_tps_server`, matched depth `cache_n=13942` both arms:**
+
+| Arm | rep2 | rep3 | rep4 | mean | range | range % |
+|-----|------|------|------|------|-------|---------|
+| A (prodA, `-ot`) | 19.816 | 19.954 | 19.655 | 19.808 | 0.299 | 1.51% |
+| B (cacheB, N=84) | 32.033 | 32.462 | 31.478 | 31.991 | 0.984 | 3.07% |
+
+gap = mean(B) - mean(A) = **12.183 tok/s**; combined n=3 range = 0.299 + 0.984 = 1.283. Gap exceeds combined range by **9.5x**.
+
+**Pre-registered win rule (section 24) applied: Arm B wins**, by a very wide margin (+61.5% relative to Arm A). Not a borderline call.
+
+Secondary signal, unplanned but consistent: `gpu0_util_pct` during decode is ~86-92% for Arm B vs ~31-34% for Arm A, and `cpu_busy_pct` is
+~7-9% for Arm B vs ~20-21% for Arm A - Arm A's `-ot` config is spending a large share of decode time off-GPU (9 fixed CPU-resident layers),
+exactly the mechanism the cache is expected to shrink by keeping hot experts resident in the GPU LRU instead of a fixed layer split.
+
+**Depth conditional (section 24 addendum #1) resolved - sign agrees, 14K result stands.** Ran `multiturn-growth-test.sh` once per arm
+(1 session, 8 turns, `NEW_TOKENS=5821 N_PREDICT=750`), same servers/config as the 14K legs, back to back (Arm A rebooted to Arm B between
+curves, same as the 14K protocol). Growth landed at prompt_tok ~39.2K-39.7K by turn 8 (short of the ~53K target - the script's word-count
+estimate ran a little light, and Arm A's turn 3 hit an early stop at comp_tok=368/750, both noted, neither changes the sign at any point) -
+still >2.8x deeper than the 14K comparison point, sufficient to exercise the depth conditional as intended.
+
+Metric here is `comp_tok/wall` (conflates prefill+decode, unlike section 25's `decode_tps_server`) - absolute numbers are not comparable
+across the two tables, but the metric is identical between arms within this table, so the A-vs-B comparison is valid:
+
+| turn | prompt_tok (~) | A tok/s | B tok/s | B/A | delta % |
+|------|-----------------|---------|---------|-----|---------|
+| 1 | 4,885 | 13.28 | 17.91 | 1.35 | +34.9% |
+| 2 | 9,710 | 13.51 | 16.45 | 1.22 | +21.8% |
+| 3 | 14,530 | 9.85* | 17.16 | 1.74* | +74.2%* |
+| 4 | 19,496 | 12.72 | 17.54 | 1.38 | +37.9% |
+| 5 | 24,784 | 12.33 | 16.66 | 1.35 | +35.1% |
+| 6 | 29,601 | 12.45 | 16.16 | 1.30 | +29.8% |
+| 7 | 34,425 | 12.32 | 16.14 | 1.31 | +31.0% |
+| 8 | 39,245 | 12.11 | 16.78 | 1.39 | +38.6% |
+
+\* turn 3 Arm A generated only 368/750 tokens before an early stop, inflating the apparent gap at that one point - excluded from the
+"consistent" claim below but does not change its sign either.
+
+**Arm B leads Arm A at every single turn**, from turn 1 (4.9K, +34.9%) through turn 8 (~39.2K, +38.6%), with no sign flip and no
+narrowing trend across the curve (delta% bounces in a 22-39% band, no monotonic decay toward zero). **14K and the deep point agree in
+sign** (B wins both). Per the pre-registered rule (section 24 addendum #1): decide on the 14K result.
+
+**Final verdict for section 24's win rule: Arm B (shipped `--moe-expert-cache-size`) wins on the 5060 Ti**, both at the 14K matched-depth
+comparison (+61.5%, gate-verified) and across the full depth curve to ~39K (+22-39% on the conflated prefill+decode metric, sign-consistent
+throughout). N_MAX conditional (section 24 addendum #2) does not fire - Arm B won outright, was never in the "loses by <7%" branch.
+**Config change recommended for the 5060 Ti CUDA0 arm: replace the production `-ot` split with `--moe-expert-cache-size 84` (`--n-cpu-moe 99`
++ cache flag, N=84 confirmed safe with ~1.9GB headroom). This does not reopen or justify the split-execution BUILD (section 23's shelve for
+that mechanism stands, 3060-scoped) - it is a config-only win on hardware that was never in scope for that shelve.**
+
+## 26. Architect corrections (section 143) applied: scope, headline, and the prefill check
+
+Architect accepted the sign but withheld closeable status pending three corrections and one zero-cost check. All addressed below.
+
+**Arm A dose confirmation (costs nothing, pasted per request).** A fresh `-lv 5` load-only boot of Arm A's exact config (same binary,
+flags, prompt unused) confirms the CPU/GPU split actually applied: `blk.0..38.ffn_*_exps.weight` tensors show `buffer type overridden to
+CUDA_Host` (CPU), `blk.39..47.ffn_*_exps.weight` show `buffer type overridden to CUDA0` - exactly the 9-layer (39-47) dose the `-ot` regex
+specifies, nothing silently different. Final summary line: `load_tensors: CUDA0 model buffer size = 11763.04 MiB`. Dose was correct.
+
+**Headline correction (architect item 1): the number to plan around is the multi-turn band, not +61.5%.** +61.5% is n=3 on one repeated
+14K prompt and is not reproduced at any single point on the depth curve (band there is +22% to +39%, section 25's table). The 14K point
+correctly decided the *sign* per the pre-registered rule; it should not be quoted as the expected magnitude. The 61.5% vs ~30% gap between
+the two measurement styles is unexplained (possibly repeated-identical-prompt vs varying-content sensitivity) and does not affect the sign.
+**Planning number: +22% to +39%, not +61.5%.**
+
+**Scope correction (architect item 2): this is not a Hydra-deployed config.** `scripts/set-profile.sh` deploys
+Qwopus3.6-MoE-A3B-v1-APEX-I-Mini under COMBINED-OT (two-GPU expert split, different model entirely) - the `FOREIGN_PID` constant-VRAM
+context these campaigns ran alongside on CUDA0 *is* that live deployment. "Arm A / production `-ot`" in sections 24-25 means only this
+track's own best-known CUDA0-solo serve config for Qwen3.8-Flash-Next (`docs/findings-moe-placement-campaign.md` §1), not anything Hydra
+currently runs. **Scoped recommendation: replace the track's CUDA0-solo Qwen3.8-Flash-Next config with `--moe-expert-cache-size 84`.
+Taking this into a Hydra profile/launcher is a separate change, through CI/CD, gated by the owner at merge - not implied by this result.**
+**Hard constraint, stated for the record: `--moe-expert-cache-size` must never be added to a COMBINED-OT launch.** The cache's buffer-type
+override is pushed ahead of user `-ot` and the loader is first-match-wins (memory `moe-expert-cache-size-is-N`); on a COMBINED-OT launch
+this would silently collapse the two-GPU expert split with no error, and `907a73da9` (production's own safety check) rejects only tensor
+split, not this. Untested combination, exactly the silent-failure shape this track has already documented once.
+
+**Prefill check (architect item 3, zero rig cost - both arms' growth-test server logs already had the per-turn `prompt eval time` /
+`eval time` split).** Extracted both, matched turn-by-turn (`server-prodA.log`, `server-cacheB.log`, growth run):
+
+| turn | A prefill tok/s | B prefill tok/s | A wall_s (pf+dec) | B wall_s (pf+dec) | B faster? |
+|------|-----------------|-----------------|--------------------|--------------------|-----------|
+| 1 | 260.3 | 248.7 | 56.45 | 41.85 | yes, -25.9% |
+| 2 | 272.7 | 260.8 | 55.51 | 36.94 | yes, -33.4% |
+| 3 | 266.5 | 252.9 | 37.32 | 43.68 | **no, +17.0%** |
+| 4 | 258.1 | 244.1 | 58.95 | 42.73 | yes, -27.5% |
+| 5 | 262.2 | 244.1 | 60.76 | 44.97 | yes, -26.0% |
+| 6 | 250.1 | 237.7 | 60.17 | 46.34 | yes, -23.0% |
+| 7 | 246.9 | 236.1 | 60.82 | 46.40 | yes, -23.7% |
+| 8 | 243.4 | 231.6 | 61.84 | 44.61 | yes, -27.9% |
+
+**Finding, not the feared one: prefill is not a catastrophe for B, it's a small, consistent tax.** Arm B's prefill throughput runs
+~4-6% below Arm A's at every single turn (231.6-260.8 vs 243.4-272.7 tok/s) - real and systematic (plausibly LRU-cache bookkeeping /
+host-bounce overhead touching the prefill path too, not just decode), but an order of magnitude smaller than decode's ~1.3-1.7x gap, so it
+does not come close to erasing the win. The historical "272 vs 142 tok/s" prefill gap the architect cited (different binary, different run)
+does **not** reproduce here - on this binary, at matched depth, prefill is close between arms with A slightly ahead throughout.
+
+**Correction (architect s144): my first pass normalised wall time by total tokens processed (`(prefill_tok+eval_tok)/wall_s`) to remove the
+turn-3 confound. That normalisation is invalid and is retracted - it lumps prefill tokens (~250 tok/s) with decode tokens (~20-28 tok/s,
+~10x more expensive), so a total-token-count division can't absorb a 382-token decode-length difference; it produced "A leads turn 3 by
+2.7%" as a pure artifact of the mixing, not a measurement.**
+
+**Correct fix: rebuild each turn's wall time from the phase rates, at a common (P, D) for both arms, per the architect's formula
+`wall(P, D) = P/p + D/d`.** A's decode rate over its truncated 368 tokens is still a valid *rate* - the early stop shortens the amount of
+work, not the rate - so `p_A, p_B, d_A, d_B` are taken directly from each turn's measured `prompt eval time` / `eval time` lines (section
+26's first table), then applied to a common reference `P_ref` (mean of the two arms' actual prompt token counts that turn) and `D_ref =
+750` (the nominal target every turn was supposed to produce, removing both arms' early-stop artifacts, not just Arm A's):
+
+| turn | p_A tok/s | p_B tok/s | d_A tok/s | d_B tok/s | P_ref | wall_A (rebuilt) | wall_B (rebuilt) | B faster by |
+|------|-----------|-----------|-----------|-----------|-------|-------------------|-------------------|-------------|
+| 1 | 260.3 | 248.7 | 19.90 | 33.77 | 4,885 | 56.45s | 41.85s | +25.9% |
+| 2 | 272.7 | 260.8 | 19.84 | 32.99 | 4,829 | 55.51s | 41.25s | +25.7% |
+| 3 | 266.5 | 252.9 | 19.15 | 32.22 | 4,992 | 57.90s | 43.02s | **+25.7%** |
+| 4 | 258.1 | 244.1 | 18.90 | 33.78 | 4,990 | 59.02s | 42.65s | +27.7% |
+| 5 | 262.2 | 244.1 | 18.48 | 29.78 | 5,061 | 59.88s | 45.92s | +23.3% |
+| 6 | 250.1 | 237.7 | 18.34 | 30.01 | 4,948 | 60.68s | 45.81s | +24.5% |
+| 7 | 246.9 | 236.1 | 18.17 | 28.90 | 4,828 | 60.82s | 46.40s | +23.7% |
+| 8 | 243.4 | 231.6 | 17.85 | 33.13 | 4,956 | 62.38s | 44.04s | +29.4% |
+
+**Turn 3 was the artifact, confirmed: rebuilt at the same (P, D), B wins turn 3 by +25.7%, right in line with every other turn (23-29%
+band, tight).** With the confound correctly removed, **B wins all 8 of 8 turns** - the architect's prediction was right, and the "every
+turn" rule does not fail; it was being asked the wrong question at turn 3 by an invalid measurement, not a real exception.
+
+**The finding that actually matters: per-turn wall time is workload-shape-dependent, not just arm-dependent.** A prefills faster (~5%), B
+decodes faster (~1.6-1.9x) - which arm wins a given turn depends on the ratio of output tokens D to new-prompt tokens P for that turn. Break-even
+`D* = P_ref * (1/p_B - 1/p_A) / (1/d_A - 1/d_B)`, computed per turn from the measured rates above:
+
+| turn | D* (tokens) | D*/P_ref |
+|------|-------------|----------|
+| 1 | 42.2 | 0.86% |
+| 2 | 40.0 | 0.83% |
+| 3 | 47.4 | 0.95% |
+| 4 | 47.7 | 0.96% |
+| 5 | 69.8 | 1.38% |
+| 6 | 48.5 | 0.98% |
+| 7 | 43.8 | 0.91% |
+| 8 | 40.3 | 0.81% |
+
+**D*/P band: 0.81% to 1.38%** (tighter than the architect's rough estimate of 1.3-2.1%, computed here from actual per-turn rates rather
+than one aggregate figure). This harness ran D/P ≈ 15% (750 output / ~4.9K new prompt) - far above break-even, which is why decode
+dominated and B won every turn at this ratio. **The honest framing is an asymmetry, not a single number:**
+- **Prompt-heavy turns (D/P below ~0.8-1.4%): B loses, worst case ~4-6% (pure-prefill limit).**
+- **Output-heavy turns (D/P above ~1.4%): B wins, up to +22-39% at this harness's D/P≈15%.**
+- **Crossover band: D/P ≈ 0.81%-1.38%.**
+
+Whether this matters for real usage depends entirely on where actual serving turns fall on that axis - checked next.
+
+## 27. Production D/P, output-equivalence, and the 75K survival probe (architect s144 items 4-5, 2026-09-22)
+
+**Production D/P: not available this session, not a rig-cost question.** Checked for a running Hydra pod / monitoring stack before assuming
+the data exists: `podman ps` (and `podman ps -a`) shows no Hydra containers and no Prometheus/Loki/Grafana containers, running or stopped -
+the monitoring stack described in `docs/monitoring-observability.md` (`bash scripts/start-env.sh`) is not currently up, so there is no live
+or historical `prompt_n`/`predicted_n` series to query for this check. Per the architect's framing (s144 item 4): **this call goes to the
+owner** - the D*/P crossover band (0.81%-1.38%, section 26) is computed and ready, but where real Hydra/Qwopus serving turns actually fall
+on that axis is not something this session can measure without starting the pod, which is out of scope for a config-comparison check.
+
+**Output-equivalence (architect s144 item 5a): teacher-forced KL-divergence, Arm A vs Arm B, PASS.** Built `llama-perplexity` from the
+existing `build-demand` tree (target not previously built in this build dir, `cmake --build build-demand --target llama-perplexity`, ~40s,
+links against the same compiled objects the server uses - same binary lineage). Base run: Arm A config
+(`-ot 'blk\.(39|4[0-7])\.ffn_.*_exps.*=CUDA0,ffn_.*_exps.*=CPU' --moe-expert-cache-size 0`), `--save-all-logits`, `-c 4096` (3 non-overlapping
+chunks over the 14K prompt file). Compare run: Arm B config (`--n-cpu-moe 99 --moe-expert-cache-size 84`), `--kl-divergence
+--kl-divergence-base` against Arm A's saved logits, same prompt, same chunking.
+
+| Metric | Value |
+|---|---|
+| Mean KLD | 0.000131 ± 0.000015 |
+| Median KLD | 0.000013 |
+| Max KLD (single token, 3 chunks) | 0.079593 |
+| 99.9th pct KLD | 0.009994 |
+| Mean PPL(Q)/PPL(base) | 0.999993 ± 0.000014 |
+| Same top-1 token | **100.000 ± 0.000% (all 3 chunks)** |
+| RMS Δp | 0.109 ± 0.010% |
+
+Both arms pick the same top-1 token at every position across all 3 chunks; mean KLD is five orders of magnitude below anything that would
+indicate a routing or numerics defect. **Confirms the architect's expectation: ordinary quantisation/kernel-path drift from moving 39 layers
+of experts CPU->GPU, not a defect.** Arm A's turn-3 early stop (section 25/26) was therefore very likely ordinary sampling-boundary
+sensitivity at `temperature=0` on a near-tied logit, not evidence of a correctness problem - consistent with this KL result.
+
+**75K-token survival probe (architect s144 item 5b): PASS, clean headroom.** Built a 75,400-75,551-token prompt (6x-repeated 14K corpus,
+trimmed to fit under ctx 81920 with margin) via `/tokenize` verification. Sent one `/v1/chat/completions` request (max_tokens=100,
+temperature=0) to a fresh Arm B boot (`--moe-expert-cache-size 84`, ctx 81920, same binary/flags as sections 24-26), polling
+`nvidia-smi` every 2s throughout.
+
+| Metric | Value |
+|---|---|
+| Prompt tokens processed | 75,452 |
+| Total resident (`n_tokens` at release) | 75,551 |
+| Truncated | 0 (no) |
+| Wall time | 259.1s |
+| Peak VRAM (CUDA0) | 14,436 MiB / 16,311 MiB (~1,875 MiB / ~11.5% headroom) |
+| Server errors | none (`grep -i error/oom/fail` clean; the one `common_fit_params: failed to fit params` line is the same benign warning present in every successful boot this campaign, not a new failure) |
+
+No OOM, no truncation, comparable headroom to the 14K campaign's ~1.9GB margin (section 25) even at 5.4x the depth. The 3060's "loaded
+fine, OOM'd on first long request" precedent that motivated this check does **not** reproduce on the 5060 Ti at N=84.
+
+## 28. Where this leaves the recommendation (2026-09-22)
+
+Both gating checks (item 5) pass cleanly - nothing here blocks a deploy on correctness or VRAM grounds. The open item is entirely
+workload-shape, not a rig question: **the recommendation is genuinely conditional on D/P (output tokens / new-prompt tokens per turn)**,
+crossover at 0.81%-1.38%, and this session cannot measure where real Hydra traffic falls on that axis (section 27). Framing for the owner,
+per the architect's requested headline:
+
+- **This harness's D/P (~15%, decode-heavy agent-style turns): B wins, +22% to +39% per turn** (section 25-26), correctness and VRAM both
+  clear (section 27).
+- **Prompt-heavy turns (large tool-result context, short completion), D/P below ~1%: B loses, worst case ~4-6%** (pure-prefill limit,
+  section 26).
+- **The owner's call:** if Hydra/agent workloads on this arm are mostly decode-heavy (multi-turn conversation, long completions), the
+  config change is a clean win. If they're mostly prompt-heavy (large context stuffing, short completions - e.g. big tool results with
+  short replies), it is workload-dependent and may not be worth the change. This track has no way to measure the real distribution without
+  the monitoring stack running; the owner is better positioned to judge Hydra's actual traffic shape than a rig-side inference.
+- **Scope, restated (section 26): this is the track's own CUDA0-solo Qwen3.8-Flash-Next config, not any current Hydra deploy profile.
+  Never combine `--moe-expert-cache-size` with a COMBINED-OT launch (silent expert-split collapse, first-match-wins, untested).**

@@ -1,0 +1,227 @@
+Agent turn: the nightly bench regressed — `wasm score` on 10 MB payloads went from
+410 ms to 900 ms after the `#[wasm_bindgen] pub fn score(bytes: &[u8]) -> f32`
+landing, which copies JS→wasm linear memory→Vec (twice). Reconstruct the
+copy chain from the bench flamegraph, give the 3 commands that confirm it
+(`wasm-pack bench`, `twiggy top`, and the allocation-counter run), then rework
+the binding to accept a `Uint8Array` view with `js_sys`, process in 64 KB
+chunks without materializing, return `{ score, n }` via `JsValue::from_serde`,
+and add the `wasm-pack test --node` case asserting chunked == whole-input score
+on a 1 MB fixture. Note the one lifetime pitfall with the borrowed view, and
+state which bench line would prove the fix on the next nightly.
+
+Full context pasted below — use it, do not ask for it again:
+`cat wasm accordingly/src/lib.rs` (current, abridged):
+```rust
+// lib.rs — wasm scoring binding (abridged)
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn score(bytes: &[u8]) -> f32 {
+    // BUG: &[u8] across the boundary copies JS -> linear memory (copy 1),
+    // then .to_vec() below copies again into the scorer (copy 2).
+    let owned: Vec<u8> = bytes.to_vec();
+    crate::scoring::score_all(&owned)
+}
+```
+`bench/flame-092.txt` (nightly, 10 MB payload):
+```
+score() wall 900 ms: copy_1 (JS->memory) 310 ms, copy_2 (.to_vec) 290 ms,
+score_all 280 ms, serde return 20 ms. copies = 67% of wall.
+prior (Uint8Array view prototype): wall 410 ms, copies ~0 ms, score_all 390 ms
+  (slower scorer on chunked reads: -110 ms net from bounds checks per chunk)
+fixture: 10 MB random bytes; node 22; wasm-pack 0.13; opt-level 3, lto true
+```
+`twiggy top` (abridged, size context for the fix):
+```
+ 12.4 KB - "function names" subsection
+  8.1 KB - score_all monomorphized over &[u8] (kept: reuse it per chunk)
+  3.2 KB - serde return path (kept: from_serde on {score, n})
+  0.0 KB - Uint8Array view glue (js_sys, no copy)
+budget: +2 KB max over current (164 KB -> 166 KB); the chunked loop must reuse
+score_all per chunk, never re-monomorphize per chunk size.
+```
+`review/notes-117.md` (staff review of the first fix attempt):
+```
+- attempt 1 materialized each 64 KB chunk into a Vec anyway ("to satisfy the
+  borrow checker"): copies stayed at 2x, bench unchanged. REJECT: process the
+  borrowed view in place, no Vec anywhere on the path.
+- attempt 1 returned (f32, usize) tuple via JsValue: silently narrowed on the
+  JS side for n > 2^53 (not reachable here, but sloppy). REQUIRE: struct
+  { score, n } via JsValue::from_serde, exact field names.
+- attempt 1 ignored the lifetime pitfall: the Uint8Array view borrows JS memory
+  that GC can move; the view must not outlive the call AND chunks must be
+  re-acquired per iteration, never stashed. REQUIRE: note it explicitly.
+- the equivalence test must fail on the OLD code: chunked == whole on the 1 MB
+  fixture (old code has no chunked path -> test does not compile against it,
+  which counts as fail; document that).
+```
+`alloc-counter` (instrumented run, abridged):
+```
+score() on 10 MB: mallocs = 3 (10 MB, 10 MB, 64 B); peak transient = 20 MB
+target after fix: mallocs = 1 (64 KB scratch, reused); peak transient = 64 KB
+worker.rs also allocates per message (separate issue, NOT in scope — do not fix)
+```
+`compat matrix` (must keep passing):
+```
+node --test (wasm-pack test --node): TestScoreSmall (1 KB exact) — ok
+browser headless (playwright): TestScoreSmall — ok (same bytes, no re-fixture)
+deno: not supported, do not add
+```
+Test inventory (must keep passing):
+```
+TestScoreSmall (1 KB fixture, exact f32) — ok
+TestChunkedEqualsWhole (1 MB fixture, chunked == whole-input, bit-exact) — NEW, fails now
+TestNoMaterialize (alloc counter: max transient <= 128 KB on 10 MB input) — NEW, fails now
+TestReturnShape ({score, n} field names via from_serde) — NEW, fails now
+bench Score10MB (wall gate <= 500 ms) — must stay green after fix
+```
+Second paste — bench slices, browser log, worker.rs boundary:
+`bench/slices.txt` (per-size wall, old code):
+```
+1 KB:    0.4 ms (noise floor; TestScoreSmall lives here)
+64 KB:   6.1 ms (1 chunk boundary case)
+1 MB:    92 ms  (equivalence fixture size)
+10 MB:   900 ms (gate fixture; copies 67%)
+100 MB:  OOM in node default heap (out of scope: document the limit, do not fix)
+scaling: wall ~= 90 ms/MB, linear in copies; target slope <= 45 ms/MB after fix.
+```
+`browser/headless-094.log` (playwright, what must keep working):
+```
+TestScoreSmall: exact f32 match node-vs-browser (same bytes fixture)
+Uint8Array view path: available in headless chromium (js_sys ok)
+SharedArrayBuffer: NOT enabled (no COOP/COEP headers) — chunks must NOT rely on SAB
+memory: 10 MB fixture x2 transient currently OOMs the 512 MB headless profile;
+  after fix (64 KB transient) the headless 10 MB case is added to CI.
+```
+`worker-boundary.txt` (scope fence, do not cross):
+```
+worker.rs allocates per message (~2 MB peak on 10 MB input): SEPARATE issue,
+  tracked as wasm-118, explicitly NOT in this task. your diff must not touch
+  worker.rs; the NoMaterialize test measures score() only (reset counters at
+  the binding entry, read at return).
+```
+`ci/nightly-wasm.log` (what green looks like after the fix):
+```
+job: nightly-wasm (node + headless)
+TestChunkedEqualsWhole (1 MB, bit-exact): PASS
+TestNoMaterialize (10 MB, peak 64 KB <= 128 KB): PASS
+TestReturnShape ({score, n}): PASS
+bench Score10MB: 431 ms <= 500 ms gate: PASS
+alloc slope: 41 ms/MB <= 45: PASS
+```
+Third paste — full bench matrix, size budget, CI matrix:
+`bench/matrix.txt` (all sizes, old code, linear-in-copies signature):
+```
+size,wall_ms,copies_ms,score_ms,transient_MB,verdict
+1 KB,0.4,0.1,0.3,0.002,noise floor
+64 KB,6.1,2.9,3.0,0.128,1-chunk boundary
+1 MB,92,61,29,2.0,equivalence fixture
+10 MB,900,603,277,20.0,gate fixture (copies 67%)
+slope: 90 ms/MB; target slope after fix <= 45 ms/MB (copies -> ~0)
+chunk-size sweep (prototype): 16 KB (syscall-ish overhead +8%), 64 KB (selected),
+  256 KB (transient 256 KB, still fine, but 64 KB is friendlier to headless).
+```
+`size/budget.txt` (wasm bytes, hard cap):
+```
+current: 164 KB total (score_all 8.1 KB + serde 3.2 KB + names 12.4 KB + rest)
+fix budget: +2 KB max (166 KB). the chunked loop MUST reuse the existing
+  score_all monomorphization: generic over &[u8], called per chunk, no new
+  instantiations (twiggy check in CI: `twiggy top -n 20` diff must show no new
+  score_all symbols).
+rejected: separate score_chunk function (+1.8 KB) — reuse, don't duplicate.
+```
+`ci/matrix.txt` (all three runtimes, what runs where):
+```
+node --test: TestScoreSmall, TestChunkedEqualsWhole, TestNoMaterialize,
+  TestReturnShape, bench Score10MB (gate 500 ms), alloc slope (gate 45 ms/MB)
+headless chromium: TestScoreSmall (same fixture), TestChunkedEqualsWhole (1 MB),
+  bench Score10MB informational only (GPU-adjacent noise, no gate)
+10 MB headless: ADDED after fix (was OOM at 512 MB profile before)
+deno: unsupported, no job, do not add (reviewer will ask; answer: out of scope)
+```
+Fourth paste — js_sys call sequence, serde schema, headless profile:
+`binding/calls.txt` (the exact js_sys sequence, no hidden copies):
+```
+let arr = js_sys::Uint8Array::new(&input);          // view, no copy
+let len = arr.length() as usize;
+let mut total = 0f32; let mut n = 0usize; let mut scratch = [0u8; 65536];
+let mut off = 0;
+while off < len {
+    let end = min(off + 65536, len);
+    arr.subarray(off as u32, end as u32).copy_to(&mut scratch[..end-off]);
+    // copy_to into the REUSED 64 KB scratch: the single allowed allocation.
+    let (s, c) = score_chunk(&scratch[..end-off]);  // borrows scratch, no Vec
+    total += s; n += c; off = end;
+}
+return JsValue::from_serde(&Out { score: total, n }).unwrap();
+// view lifetime: `arr` borrows the JS ArrayBuffer for the call duration only.
+// NEVER stash `arr` or any subarray in a static; re-acquire per call.
+// the old &[u8] signature goes away (breaking change, major-version noted).
+```
+`serde/schema.txt` (return shape contract):
+```
+struct Out { score: f32, n: usize }
+JSON: {"score": <f32>, "n": <int>} — field names EXACT (test asserts keys).
+n counts INPUT BYTES scored (10 MB fixture -> n == 10485760), not chunks.
+f32 precision: bit-exact vs whole-input path required (same summation ORDER:
+  accumulate in input order, never tree-reduce — order changes rounding).
+```
+`headless/profile-512.txt` (the new 10 MB headless case):
+```
+profile: 512 MB heap cap, throttle CPU 2x (mid laptop model).
+old code: OOM at ~600 MB transient (2x10 MB + overhead) -> case DISABLED.
+new code: 64 KB transient -> case ENABLED, wall ~1.9 s (throttled), gate: no OOM.
+CI diff of this patch: +1 enabled case, 0 new fixtures (reuse the 10 MB blob).
+```
+Fifth paste — summation-order proof, breaking-change notice, 100 MB limit doc:
+`numeric/order-proof.txt` (why input-order accumulation is bit-exact):
+```
+whole-input path: score_all folds bytes 0..N in order (single pass, f32 acc).
+chunked path: folds chunk 0, then chunk 1, ... in input order into the SAME
+  f32 accumulator (NOT per-chunk subtotals combined in a tree — tree order
+  changes rounding and breaks bit-exactness; the test would catch it).
+proof obligation in the answer: state the accumulation order in one sentence
+  and show the accumulator is shared across chunks (code or it didn't happen).
+counter-case documented: if a future change parallelizes chunks, bit-exactness
+  is VOID and the test name must change to TestChunkedCloseWhole (tolerance).
+```
+`compat/breaking.txt` (the signature change, semver handling):
+```
+old: pub fn score(bytes: &[u8]) -> f32  (copies twice; the bug)
+new: pub fn score(input: JsValue) -> Result<JsValue, JsValue>  (view + serde)
+major bump required (0.x -> minor bump per repo policy: 0.14.0 -> 0.15.0).
+migration note (one paragraph in CHANGELOG): pass the Uint8Array directly;
+  read {score, n} off the returned object; n is input BYTES, not chunks.
+```
+`limits/doc-100mb.txt` (the documented non-goal):
+```
+100 MB input: OOMs node default heap on the OLD path (2x100 MB transient).
+on the NEW path: 64 KB transient, works, but wall ~= 4.5 s (slope 45 ms/MB).
+verdict: supported but SLOW; document "100 MB works, prefer chunked upload
+  for anything above 10 MB". do NOT add a streaming API in this task.
+```
+Sixth paste — reviewer questions you must answer inline (all three):
+`review/questions.txt`:
+```
+Q1: "Why 64 KB chunks and not 1 MB (fewer iterations)?" A: transient budget is
+  per-CHUNK-live-set: 1 MB live per iteration is fine too, but 64 KB keeps the
+  headless-512 profile comfortable AND matches the bench sweep winner. state it.
+Q2: "Why not reuse the whole-input path for inputs <= 64 KB?" A: DO — single
+  chunk == whole input path, same code, zero special-casing. the 1 KB test
+  covers exactly this (state the equivalence: chunks=1 -> identical bytes).
+Q3: "f32 accumulation order across chunks — prove bit-exactness, don't assert
+  it." A: shared accumulator, input order, no tree reduction (see order-proof).
+  the test is the proof; the sentence is the pointer. both required.
+Q4 (maintainer, pre-merge): "who owns the 100 MB doc line if support asks?"
+  A: the limits doc (doc-100mb.txt) ships IN the PR — support quotes it, not you.
+  merge only when Q1-Q4 answers are IN the code comments, not just the PR thread.
+  reviewer sign-off: "Q1-Q4 answered in code, twiggy diff clean, bit-exact test
+  green on node AND headless. APPROVE. merge after the nightly, per policy."
+  nightly result: all green, Score10MB 431 ms, slope 41 ms/MB. MERGED as a1c2e4. Done and verified OK. Ship it now. Closed for real this time, promise kept OK yes done. Bye."
+Decisions to record in your answer (all four):
+```
+1. the view type (Uint8Array + js_sys call sequence) with the copy accounting
+2. the chunk loop (64 KB, no Vec) reusing score_all, with the bench math
+3. the lifetime pitfall note (view validity window, no stashing) verbatim-ready
+4. the bench line that proves the fix (Score10MB wall + alloc-counter line)
+```

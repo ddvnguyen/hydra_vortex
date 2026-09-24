@@ -1,0 +1,230 @@
+[
+ {
+  "name": "c01",
+  "P": 79
+ },
+ {
+  "name": "c02",
+  "P": 122
+ },
+ {
+  "name": "g01",
+  "P": 8
+ },
+ {
+  "name": "v2/c02",
+  "P": 876
+ },
+ {
+  "name": "v2/c03",
+  "P": 872
+ },
+ {
+  "name": "v2/c04",
+  "P": 1124
+ },
+ {
+  "name": "v2/c05",
+  "P": 1143
+ },
+ {
+  "name": "v2/c06",
+  "P": 1112
+ },
+ {
+  "name": "v2/c07",
+  "P": 840
+ },
+ {
+  "name": "v2/c08",
+  "P": 825
+ },
+ {
+  "name": "v2/c09",
+  "P": 877
+ },
+ {
+  "name": "v2/c10",
+  "P": 772
+ },
+ {
+  "name": "v2/c11",
+  "P": 762
+ },
+ {
+  "name": "v2/c12",
+  "P": 1412
+ },
+ {
+  "name": "v2/c14",
+  "P": 5249
+ },
+ {
+  "name": "v2/c15",
+  "P": 5244
+ },
+ {
+  "name": "v2/c18",
+  "P": 3993
+ },
+ {
+  "name": "v2/g02",
+  "P": 988
+ },
+ {
+  "name": "v2/g03",
+  "P": 1129
+ },
+ {
+  "name": "v2/g04",
+  "P": 1134
+ },
+ {
+  "name": "v2/g05",
+  "P": 689
+ },
+ {
+  "name": "v2/g06",
+  "P": 1348
+ },
+ {
+  "name": "v2/g07",
+  "P": 995
+ },
+ {
+  "name": "v2/g08",
+  "P": 875
+ },
+ {
+  "name": "v2/g09",
+  "P": 997
+ },
+ {
+  "name": "v2/g11",
+  "P": 987
+ },
+ {
+  "name": "v2/g12",
+  "P": 872
+ },
+ {
+  "name": "v4/coding_S1_T1",
+  "P": 1943
+ },
+ {
+  "name": "v4/coding_S1_T2",
+  "P": 2992
+ },
+ {
+  "name": "v4/coding_S1_T3",
+  "P": 4025
+ },
+ {
+  "name": "v4/coding_S2_T1",
+  "P": 3926
+ },
+ {
+  "name": "v4/coding_S2_T2",
+  "P": 5010
+ },
+ {
+  "name": "v4/coding_S3_T1",
+  "P": 3814
+ },
+ {
+  "name": "v4/coding_S3_T2",
+  "P": 4875
+ },
+ {
+  "name": "v4/coding_S3_T3",
+  "P": 5929
+ },
+ {
+  "name": "v4/coding_S4_T1",
+  "P": 6007
+ },
+ {
+  "name": "v4/coding_S4_T2",
+  "P": 7299
+ },
+ {
+  "name": "v4/essay_S1_T1",
+  "P": 2379
+ },
+ {
+  "name": "v4/essay_S1_T2",
+  "P": 3490
+ },
+ {
+  "name": "v4/essay_S1_T3",
+  "P": 4610
+ },
+ {
+  "name": "v4/essay_S2_T1",
+  "P": 2536
+ },
+ {
+  "name": "v4/essay_S2_T2",
+  "P": 3540
+ },
+ {
+  "name": "v4/essay_S3_T1",
+  "P": 2516
+ },
+ {
+  "name": "v4/essay_S3_T2",
+  "P": 3467
+ },
+ {
+  "name": "v4/essay_S3_T3",
+  "P": 4405
+ },
+ {
+  "name": "v4/essay_S4_T1",
+  "P": 2541
+ },
+ {
+  "name": "v4/essay_S4_T2",
+  "P": 3473
+ },
+ {
+  "name": "v4/reasoning_S1_T1",
+  "P": 4430
+ },
+ {
+  "name": "v4/reasoning_S1_T2",
+  "P": 5626
+ },
+ {
+  "name": "v4/reasoning_S1_T3",
+  "P": 6824
+ },
+ {
+  "name": "v4/reasoning_S2_T1",
+  "P": 2588
+ },
+ {
+  "name": "v4/reasoning_S2_T2",
+  "P": 3789
+ },
+ {
+  "name": "v4/reasoning_S3_T1",
+  "P": 4902
+ },
+ {
+  "name": "v4/reasoning_S3_T2",
+  "P": 6239
+ },
+ {
+  "name": "v4/reasoning_S3_T3",
+  "P": 7546
+ },
+ {
+  "name": "v4/reasoning_S4_T1",
+  "P": 4857
+ },
+ {
+  "name": "v4/reasoning_S4_T2",
+  "P": 6013
+ }
+]

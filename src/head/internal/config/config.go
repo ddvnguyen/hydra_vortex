@@ -12,11 +12,11 @@ import (
 )
 
 type Config struct {
-	Node     NodeConfig       `yaml:"node"`
-	Llama    LlamaConfig      `yaml:"llama"`
-	Services ServicesConfig   `yaml:"services"`
-	Infra    InfraConfig      `yaml:"infra"`
-	Binaries BinariesConfig   `yaml:"binaries"`
+	Node      NodeConfig      `yaml:"node"`
+	Llama     LlamaConfig     `yaml:"llama"`
+	Services  ServicesConfig  `yaml:"services"`
+	Infra     InfraConfig     `yaml:"infra"`
+	Binaries  BinariesConfig  `yaml:"binaries"`
 	Readiness ReadinessConfig `yaml:"readiness"`
 }
 
@@ -26,13 +26,17 @@ type NodeConfig struct {
 }
 
 type LlamaConfig struct {
-	Binary     string            `yaml:"binary"`
-	WorkingDir string            `yaml:"working_dir"`
-	Host       string            `yaml:"host"`
-	Port       int               `yaml:"port"`
-	RPCPort    int               `yaml:"rpc_port"`
-	Params     map[string]any    `yaml:"params"`
-	Env        map[string]string `yaml:"env"`
+	Binary     string `yaml:"binary"`
+	WorkingDir string `yaml:"working_dir"`
+	Host       string `yaml:"host"`
+	Port       int    `yaml:"port"`
+	RPCPort    int    `yaml:"rpc_port"`
+	// RPCDisabled is the per-node opt-out for llama-server-lineage nodes
+	// that have no Hydra RPC listener (#577). Not merged from global —
+	// disabling RPC is always a node-level decision.
+	RPCDisabled bool              `yaml:"rpc_disabled"`
+	Params      map[string]any    `yaml:"params"`
+	Env         map[string]string `yaml:"env"`
 }
 
 type ServicesConfig struct {
@@ -266,7 +270,9 @@ func (c *Config) BuildLlamaArgs() []string {
 
 	args = append(args, "--host", c.Llama.Host)
 	args = append(args, "--port", fmt.Sprintf("%d", c.Llama.Port))
-	args = append(args, "--rpc-port", fmt.Sprintf("%d", c.Llama.RPCPort))
+	if !c.Llama.RPCDisabled {
+		args = append(args, "--rpc-port", fmt.Sprintf("%d", c.Llama.RPCPort))
+	}
 
 	args = append(args, c.buildParamsArgs()...)
 
@@ -457,12 +463,19 @@ func (c *Config) Validate() error {
 	if c.Llama.Port == 0 {
 		return fmt.Errorf("llama.port is required")
 	}
-	if c.Llama.RPCPort == 0 {
+	if c.Llama.RPCDisabled {
+		if c.Llama.RPCPort != 0 {
+			return fmt.Errorf("llama.rpc_disabled and llama.rpc_port are mutually exclusive")
+		}
+		fmt.Fprintf(os.Stderr, "rpc disabled: no Hydra RPC listener (P/D and KV migration unavailable on this node)\n")
+	} else if c.Llama.RPCPort == 0 {
 		// Since the v4 merged-RPC-server migration there is a single unified
 		// port for every process (head or peer, model-loaded or compute-only)
 		// — it serves both the Hydra state-streaming protocol and ggml-RPC
 		// compute dispatch. Peer-only nodes need it just as much as heads do
-		// (it's the port the head's --rpc-engine dials), so it's always required.
+		// (it's the port the head's --rpc-engine dials), so it's always
+		// required — rpc_disabled is the only exception, for
+		// llama-server-lineage nodes which have no Hydra RPC listener (#577).
 		return fmt.Errorf("llama.rpc_port is required")
 	}
 	if c.Readiness.TimeoutSec < 0 {

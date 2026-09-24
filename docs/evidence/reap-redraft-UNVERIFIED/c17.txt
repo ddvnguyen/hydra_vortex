@@ -1,0 +1,247 @@
+Agent turn: a user filed this bug report against the repo checked out at `/testbed`. Reproduce it, find the root cause in the path-resolution code, fix it for BOTH OpenAPI 2.0 and 3.0.0, and prove the fix with tests. Reason step by step from the repro to the patch: show the failing output first, then the faulty lines, then the diff, then the green test run.
+
+Bug report (verbatim):
+```
+# Summary field not being set when using path() method
+
+## Description
+
+When using the `path()` method in APISpec to define a path with a summary,
+the summary field is not being set in the resulting OpenAPI specification.
+This issue affects both OpenAPI 2.0 and 3.0.0 specifications.
+
+The `description` field works correctly, but the `summary` field is completely
+ignored.
+
+## How to Reproduce
+
+from apispec import APISpec
+
+spec = APISpec(title="Pets API", version="1.0.0", openapi_version="3.0.0")
+spec.path(path="/pet/{petId}", summary="Operations on a Pet",
+           description="Operations on a Pet identified by its ID")
+# resulting spec has 'description' but no 'summary' under /pet/{petId}
+```
+
+Full context pasted below — use it, do not ask for it again:
+`repro/out-001.txt` (your repro script output, both versions):
+```
+--- openapi 3.0.0 ---
+paths./pet/{petId}.get.description = 'Operations on a Pet identified by its ID'  OK
+paths./pet/{petId}.get.summary = MISSING  (expected 'Operations on a Pet')  FAIL
+--- openapi 2.0 ---
+paths./pet/{petId}.get.description = 'Operations on a Pet identified by its ID'  OK
+paths./pet/{petId}.get.summary = MISSING  (expected 'Operations on a Pet')  FAIL
+```
+`src/apispec/core.py` (resolve path, abridged):
+```python
+def path(self, path=None, *, operations=None, summary=None,
+         description=None, parameters=None, **kwargs):
+    ...
+    if operations is not None:
+        for method in operations:
+            self._paths[path][method] = operations[method]
+        return self
+    # highlight: summary/description fallthrough for 2.0 vs 3.0.0
+    data = {}
+    if description is not None:
+        data["description"] = description
+    # BUG: `summary` is accepted by the signature and then dropped here.
+    # The 2.0 plugin writes data into the path item; the 3.0.0 plugin
+    # merges `data` into each operation — both lose `summary` the same way.
+    if parameters is not None:
+        data["parameters"] = parameters
+    for method in ("get", "put", "post", "delete", "options", "head", "patch"):
+        if method in kwargs.get("operations", {}):
+            self._paths[path][method].update(data)
+    ...
+```
+`tests/test_core.py::test_path_summary` (failing, abridged):
+```
+def test_path_summary(spec_3):
+    spec_3.path("/pet/{petId}", summary="Operations on a Pet",
+                description="Operations on a Pet identified by its ID")
+    op = spec_3.to_dict()["paths"]["/pet/{petId}"]["get"]
+    assert op["summary"] == "Operations on a Pet"        # KeyError: 'summary'
+    assert op["description"] == "Operations on a Pet identified by its ID"
+```
+`plugins/openapi2.py vs openapi3.py` (resolve-path comparison):
+```
+openapi2 resolve: path_item.update(data); then per-method defaults fill
+  description from data, summary NOT in data -> absent in both places
+openapi3 resolve: for method, op in ops: op.update(data); same gap
+verdict: single fix point in core.path() covers both versions; no plugin change
+```
+`git log --oneline -6` (suspect window):
+```
+9d2e11 bump test matrix (py3.9-3.12)
+77aa01 fix flaky seed in test_dance
+c02f9d collected-trace probe (ignore)
+a3f1c2 absorb retries into batch helper
+e55b10 refactor path() signature (summary param ADDED here, never wired)
+410c22 vendor openapi schema fixtures
+```
+`edge cases` (must all hold after the fix):
+```
+1. summary + description together -> both present (2.0 and 3.0.0)
+2. summary only (no description) -> summary present, no empty description key
+3. operations= dict passed explicitly -> summary inside operations wins, no clobber
+4. path() called twice on the same path (summary first, then description) -> merged
+5. unicode summary ("Opérations sur un animal") -> exact round-trip, no normalization
+6. 2.0 output validates against the vendored openapi-2.0 schema fixture
+```
+`maintainer thread` (issue comments, abridged):
+```
+- reporter: "description works, summary ignored — is summary even supported?"
+- maintainer: "supported since e55b10, looks like the wiring was missed. PR welcome."
+- reviewer: "fix in core, not in plugins; add the test for both versions in the
+  same test (parametrize openapi_version), and keep the diff under 10 lines."
+- reviewer: "also check path() called with operations= AND summary= — must not
+  silently drop; either merge or raise, document the choice in the test name."
+```
+Second paste — plugin matrix, schema fixture, second issue thread:
+`tests/matrix-2.0-3.0.0.txt` (parametrized run, before state):
+```
+test_path_summary[2.0]   KeyError: 'summary'  FAIL
+test_path_summary[3.0.0] KeyError: 'summary'  FAIL
+test_path_desc[2.0]      ok
+test_path_desc[3.0.0]    ok
+test_path_ops_explicit[2.0]   ok (summary never passed here)
+test_path_ops_explicit[3.0.0] ok
+```
+`fixtures/openapi-2.0-pathitem.json` (vendored schema excerpt, edge case 6):
+```
+{"type": "object", "properties": {
+  "get": {"$ref": "#/definitions/operation"},
+  "summary": {"type": "string"},
+  "description": {"type": "string"},
+  "parameters": {"type": "array", "items": {"$ref": "#/definitions/parameter"}}},
+ "additionalProperties": false}
+note: path-ITEM level summary is legal 2.0; the fix puts summary on the
+  OPERATION (matching description's placement), which also validates.
+```
+`issues/884-thread.txt` (second reporter, operations= interaction):
+```
+- reporter2: "I pass operations={...} AND summary= — summary vanishes silently."
+- maintainer: "documented choice needed: explicit operations win (no clobber),
+  OR merge summary in. pick one, pin it in a test name."
+- reviewer: "merge is friendlier but surprising; explicit-wins is predictable.
+  either is acceptable IF the test name states the rule."
+- decision (yours to make): state it as test_path_summary_with_explicit_ops_<wins|merges>
+```
+`blame/e55b10.txt` (the commit that added the param without wiring):
+```
+commit e55b10 refactor path() signature
++def path(self, path=None, *, operations=None, summary=None,
++         description=None, parameters=None, **kwargs):
+     ...
+     data = {}
+     if description is not None:
+         data["description"] = description
++    # summary accepted but never added to data (missed hunk)
+ coverage: test_path_summary did not exist at e55b10 (added later, failing).
+```
+Third paste — version-diff matrix, full test file, changelog entry:
+`tests/versions-matrix.txt` (2.0 vs 3.0.0 placement, both must hold):
+```
+version,summary placement,description placement,validates against
+2.0,operation object (NOT path item),operation object,vendored 2.0 fixture
+3.0.0,operation object,operation object,vendored 3.0.0 fixture
+2.0 path-item summary: legal but NOT where description goes; keep them together.
+3.0.0 path-item summary: legal but same rule. consistency wins: operation level.
+```
+`tests/test_core.py` (the parametrized test, target state after your fix):
+```python
+import pytest
+
+@pytest.mark.parametrize("version", ["2.0", "3.0.0"])
+def test_path_summary(spec_factory, version):
+    spec = spec_factory(openapi_version=version)
+    spec.path("/pet/{petId}", summary="Operations on a Pet",
+              description="Operations on a Pet identified by its ID")
+    op = spec.to_dict()["paths"]["/pet/{petId}"]["get"]
+    assert op["summary"] == "Operations on a Pet"
+    assert op["description"] == "Operations on a Pet identified by its ID"
+
+@pytest.mark.parametrize("version", ["2.0", "3.0.0"])
+def test_path_summary_only_no_empty_description(spec_factory, version):
+    spec = spec_factory(openapi_version=version)
+    spec.path("/pet/{petId}", summary="Operations on a Pet")
+    op = spec.to_dict()["paths"]["/pet/{petId}"]["get"]
+    assert op["summary"] == "Operations on a Pet"
+    assert "description" not in op
+
+def test_path_summary_with_explicit_ops_wins(spec_factory):
+    # DOCUMENTED CHOICE: explicit operations= wins over the summary= kwarg.
+    spec = spec_factory(openapi_version="3.0.0")
+    spec.path("/pet/{petId}", summary="kwarg summary",
+              operations={"get": {"summary": "explicit summary"}})
+    op = spec.to_dict()["paths"]["/pet/{petId}"]["get"]
+    assert op["summary"] == "explicit summary"
+```
+`CHANGELOG.md` entry (write it as part of the patch):
+```
+## Unreleased
+### Fixed
+- `APISpec.path()` now wires the `summary` kwarg into the operation object
+  for both OpenAPI 2.0 and 3.0.0 (was accepted by the signature since e55b10
+  but silently dropped). Explicit `operations=` entries win over the kwarg.
+```
+Third-and-a-half paste — operations= merge matrix, release checklist:
+`matrix/ops-vs-kwarg.txt` (every combination, your documented choice marked):
+```
+call shape,summary source,description source,verdict
+summary=+desc, no ops,kwarg,kwarg,FIX (the bug)
+summary only, no ops,kwarg,absent,FIX + no empty key
+ops only (summary inside),explicit,explicit,unchanged (already worked)
+ops only (no summary anywhere),absent,explicit,unchanged
+ops + kwarg summary,EXPLICIT WINS (your choice),kwarg,pinned by test name
+ops + kwarg summary,kwarg merges,kwarg,REJECTED alternative (state why)
+double path() call (summary, then desc),merged,merged,dict-update semantics
+unicode summary,exact round-trip,—,no normalization anywhere on the path
+```
+`release/checklist.txt` (what "done" means for this 10-line fix):
+```
+[ ] diff touches core.py ONLY (no plugin changes; both versions by construction)
+[ ] diff <= 10 lines (reviewer rule; the wiring hunk + nothing else)
+[ ] parametrized test green on 2.0 AND 3.0.0 (same test, both versions)
+[ ] all 6 edge cases green (list them in the test run output)
+[ ] explicit-ops interaction test green, name states the rule
+[ ] CHANGELOG entry added (Unreleased/Fixed, mentions e55b10 + both versions)
+[ ] 2.0 output validates against the vendored schema fixture (edge case 6)
+```
+`compat/shim-note.txt` (downstream callers, no action, record awareness):
+```
+callers passing summary= today get it SILENTLY DROPPED (current behavior).
+after the fix they get it HONORED: output bytes change for those callers.
+this is the intended fix (the param was documented since e55b10), not a break:
+  call the CHANGELOG entry the migration note. no deprecation shim needed.
+grep downstream: 3 internal callers pass summary= (all currently broken-skipped
+  tests); un-skip them in the same PR (list their names in the answer).
+```
+Fourth paste — reviewer approval + merge commit message (the landing record):
+`review/approval.txt`:
+```
+reviewer: "core-only, 8 lines, both versions by construction. APPROVE."
+reviewer: "explicit-ops-wins pinned in the test name. APPROVE."
+maintainer: "squash-merge with message below. un-skip the 3 downstream
+  summary tests in the same PR (list them: test_pets_summary,
+  test_store_description_and_summary, test_legacy_ops_summary)."
+merge commit message:
+  "fix(core): wire summary kwarg in path() for 2.0 and 3.0.0
+   The param existed since e55b10 but never reached the operation
+   object. Explicit operations= entries win over the kwarg (pinned).
+   Fixes #883. CHANGELOG: Unreleased/Fixed."
+post-merge: downstream un-skipped tests green on both versions (CI link in
+  the answer as the final proof line, after the parametrized run).
+```
+Final paste — the one-line proof (quote it as your closing line):
+`ci/final-proof.txt`: `test_path_summary[2.0] PASSED, test_path_summary[3.0.0] PASSED, 6 edge cases PASSED, explicit-ops rule PINNED — 8 lines changed, both versions fixed.`
+Deliver in this order (all five, numbered):
+```
+1. the repro output (both versions, before state)
+2. the root-cause lines (file + line numbers, why description survives and summary does not)
+3. the diff (core only, both versions fixed by construction)
+4. the green test run (the parametrized test on 2.0 AND 3.0.0, plus the 6 edge cases)
+5. the one behavior decision (operations= + summary= interaction) with the test that pins it
+```
