@@ -361,7 +361,7 @@ public sealed class CoordinatorConfigTests
             Environment.SetEnvironmentVariable("HYDRA_COORD_WORKERS", null);
 
             var workers = CoordinatorConfig.LoadWorkers();
-            Assert.Equal(3, workers.Count);
+            Assert.Equal(2, workers.Count);
 
             var rtx = workers.Single(w => w.Name == "rtx");
             Assert.Equal(3, rtx.WorkerType);
@@ -376,13 +376,6 @@ public sealed class CoordinatorConfigTests
             Assert.Null(rtx3060.PrefillModelName);
             Assert.Null(rtx3060.DecodeModelName);
             Assert.Equal("RTX 3060", rtx3060.DisplayName);
-
-            var p100 = workers.Single(w => w.Name == "p100");
-            Assert.Equal(2, p100.WorkerType);
-            Assert.Null(p100.RouterModelName);
-            Assert.Null(p100.PrefillModelName);
-            Assert.Null(p100.DecodeModelName);
-            Assert.Equal("P100", p100.DisplayName);
         }
         finally
         {

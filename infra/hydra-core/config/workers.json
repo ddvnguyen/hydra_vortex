@@ -34,20 +34,5 @@
     "combined_capable": true,
     "gpu": { "vram_mb": 12288, "compute_tflops": 17.0, "bandwidth_gbps": 360.0, "cuda_arch": "sm_86", "capabilities": 7 },
     "_comment_rtx3060": "RTX 3060 (sm_86, 12 GB) on host. Model-agnostic peer-only (#481 Phase 2c). slots=0 means MultiEngineRouter treats it as implicitly available for COMBINED — no solo work, no model load from Core. The 5060 Ti (rtx) is the only Core-facing head; rtx3060 is driven by the head engine over its own RPC (localhost:9504). Resident model is whatever the 5060 Ti pushed via the layer-split plan in PREFILL hydra_config — see preset-rtx3060.ini for the per-quant preset the engine advertises. Two-mode: (a) idle — no resident model. (b) COMBINED 27B peer — reserved exclusively by the 5060 Ti."
-  },
-  {
-    "name": "p100",
-    "display_name": "P100",
-    "host": "localhost",
-    "rpc_port": 9602,
-    "llama_rpc_port": 9502,
-    "llama_url": "http://192.168.122.21:8086",
-    "worker_type": 2,
-    "slots": 1,
-    "prefill_priority": 2,
-    "decode_priority": 1,
-    "decode_speed_tps": 28,
-    "gpu": { "vram_mb": 16384, "compute_tflops": 19.0, "bandwidth_gbps": 732.0, "cuda_arch": "sm_60", "capabilities": 1 },
-    "_comment_p100": "Tesla P100 (sm_60, 16 GB) KVM VM at 192.168.122.21. P/D decode fallback for moe-35b-pd / moe-35b-pd-mix / moe-35b-pd-mini. Single-model mode (--model /mnt/readonly_data/...gguf), not router mode. The 5060 Ti head reaches the P100 via rpc_servers: ['p100:9502'] in models.json engine_config (Phase 2b). Leave prefill_model_name / decode_model_name / router_model_name UNSET so the inline-reload path is skipped on this worker."
   }
 ]
