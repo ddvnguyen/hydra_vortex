@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
-import { Layers, Orbit, RotateCcw } from "lucide-react"
+import { Layers, Orbit, RotateCcw, TriangleAlert } from "lucide-react"
 
 import { endpoint } from "@/lib/api"
 import { useLocale } from "./i18n"
@@ -146,6 +146,8 @@ export function Galaxy({
 
   const [data, setData] = useState<ExpertMap | null>(null)
   const [atlas, setAtlas] = useState<Record<string, AtlasEntry> | null>(null)
+  const [atlasFailed, setAtlasFailed] = useState(false)
+  const [atlasRetry, setAtlasRetry] = useState(0)
   const [probeErr, setProbeErr] = useState(false)
   const [selectedNode, setSelectedNode] = useState<GalaxyNode | null>(null)
   const [hoverNode, setHoverNode] = useState<GalaxyNode | null>(null)
@@ -163,18 +165,36 @@ export function Galaxy({
   const nodesRef = useRef<GalaxyNode[]>([])
   const frameRef = useRef(0)
 
-  // Load atlas metadata (expert labels, affinity, etc.)
+  // Load atlas metadata (expert labels, affinity, etc.).
+  // Step 3: never silent-degrade on 404 — surface atlasFailed + badge + retry.
   useEffect(() => {
     const base = baseUrl.replace(/\/v1\/?$/, "")
+    const controller = new AbortController()
+    setAtlasFailed(false)
     fetch(endpoint(base, "/experts.json" + engQ), {
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      signal: controller.signal,
     })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (d?.experts) setAtlas(d.experts)
+      .then((r) => {
+        if (!r.ok) throw new Error(`/experts.json ${r.status}`)
+        return r.json()
       })
-      .catch(() => {})
-  }, [baseUrl, apiKey, engQ])
+      .then((d) => {
+        if (controller.signal.aborted) return
+        if (d?.experts && typeof d.experts === "object") {
+          setAtlas(d.experts)
+          setAtlasFailed(false)
+        } else {
+          throw new Error("Atlas unavailable: bad payload")
+        }
+      })
+      .catch((err) => {
+        if (controller.signal.aborted || err?.name === "AbortError") return
+        setAtlas(null)
+        setAtlasFailed(true)
+      })
+    return () => controller.abort()
+  }, [baseUrl, apiKey, engQ, atlasRetry])
 
   // Poll /experts for live data
   useEffect(() => {
@@ -507,6 +527,15 @@ export function Galaxy({
       </div>
 
       <div className="galaxy-canvas-wrap" ref={containerRef}>
+        {atlasFailed && (
+          <div className="galaxy-atlas-badge" role="alert">
+            <TriangleAlert className="size-3.5" />
+            <span>{t("galaxy.atlasMissing")}</span>
+            <button type="button" onClick={() => setAtlasRetry((n) => n + 1)}>
+              {t("galaxy.atlasRetry")}
+            </button>
+          </div>
+        )}
         <canvas
           ref={canvasRef}
           onPointerMove={onPointerMove}
