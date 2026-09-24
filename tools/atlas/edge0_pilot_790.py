@@ -124,6 +124,11 @@ def main(argv=None) -> int:
             ye = np.array([e in row for row in Ke], dtype=int)
             if yt.sum() == 0 and ye.sum() == 0:
                 continue
+            if len(np.unique(yt)) < 2:
+                # single-class train: no fit possible; majority vote.
+                # (analyze_edge0.py lacks this guard and would raise here.)
+                accs.append(float(np.mean(ye == yt[0])))
+                continue
             clf = LogisticRegression(C=1.0, max_iter=1000, solver="lbfgs",
                                      random_state=args.seed)
             clf.fit(Xts, yt)
