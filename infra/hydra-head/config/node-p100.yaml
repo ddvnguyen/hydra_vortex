@@ -16,22 +16,28 @@ infra:
 
 binaries:
   llama-server:
-    # Built + pushed by hydra-build.yml (ddvnguyen/llama.cpp),
-    # arch_sm60 checkbox. P100 runs llama-engine (not llama-server) so
-    # the Hydra RPC listener (--rpc-port 9502) is available for
-    # cross-node KV restore + P/D decode: llama-server only starts the
-    # RPC server in non-router mode, and P100 boots with a resident
-    # model (router mode), so the RPC never came up on llama-server
-    # (issue #577). The map key stays `llama-server` to match the OCI
-    # repo name — the on-disk binary is llama-engine (same convention
-    # as node-rtx.yaml). Tag is <arch>-<binary>-<fork-version>-<sha>.
-    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-engine-1d227f7
-    binary: llama-engine
-    dest: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine
+    # Flash-next lineage (ddvnguyen/llama.cpp feat/flash-next-colibri, H3
+    # 6b7dc6a98): CUDA 12.9 sm_60 shared build from hydra-build.yml.
+    # Map key stays `llama-server` = OCI repo name (deploy-heads check_pin
+    # sed range llama-server:→binary: reads source/+image_digest/). CI tag
+    # short = rev-parse --short (7 chars): alias sm60-llama-server-6b7dc6a,
+    # canonical sm60-llama-server-0.2.0-6b7dc6a, plus -latest (never pin).
+    # image_digest = architect verification step 1: skopeo digest identical
+    # across all three tags (sha256:c5f990e1…6068dd). New flash-next-sm60/
+    # dir has no digest sidecar yet, so the image_digest pin forces a real
+    # pull (registry/skip.go); the previous engine hydra-sm60/bin/
+    # llama-engine (sm60-llama-engine-1d227f7) stays untouched as rollback.
+    # NOTE #577: the old engine provided the Hydra RPC listener (-rpc-port
+    # 9502) in router mode; flash-next installs llama-server instead —
+    # confirm RPC behavior before relying on cross-node KV restore.
+    source: ghcr.io/ddvnguyen/llama-server:sm60-llama-server-6b7dc6a
+    image_digest: sha256:c5f990e1b982a65936c65a1c777752d07a139cc8b3671282642fbce55a6068dd
+    binary: llama-server
+    dest: /opt/software/llama-cpp-hydra-sm60/flash-next-sm60/bin/llama-server
 
 llama:
-  binary: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin/llama-engine
-  working_dir: /opt/software/llama-cpp-hydra-sm60/hydra-sm60/bin
+  binary: /opt/software/llama-cpp-hydra-sm60/flash-next-sm60/bin/llama-server
+  working_dir: /opt/software/llama-cpp-hydra-sm60/flash-next-sm60/bin
   port: 8086
   rpc_port: 9502
   env:
@@ -62,6 +68,13 @@ llama:
     # Context and parallelism
     ctx-size: 128000
     parallel: 1
+
+    # P0 CPU affinity (folded into this commit per P0 ruling): 4 decode
+    # threads pinned to VM cores 0-3 (host cores 12-15 after the vcpupin
+    # re-pin v0-5→12-17), strict placement.
+    threads: 4
+    cpu-range: 0-3
+    cpu-strict: 1
 
     # GPU layers
     n-gpu-layers: all
