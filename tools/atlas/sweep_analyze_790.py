@@ -15,6 +15,10 @@ Design (binding #790, verbatim thresholds):
     so C1 uses the corpus-global EAN ranking in every fold (held-out prompt
     contributes ~1/57 of EAN mass). Bias is pro-C1 and negligible vs the
     +0.05 bar; a C1 PASS under this leak would need a leak-ablation follow-up.
+    DEFERRED per owner ruling 2026-09-24 (EAN fork defect: HYDRA_EAN_STATS
+    aborts the server; diagnosis delivered, fix with fork owner): run with
+    --skip-c1; C1 scoring resumes on a post-EAN-fix run against the routing
+    captured here. B0/C2/warm thresholds below are UNCHANGED by the skip.
   - C2: global heat water-filled across layers — top TOTAL_SLABS (layer, expert)
     cells by training heat (greedy marginal-h allocation), variable N_l/layer.
   - PASS for C1/C2 (ALL THREE required):
@@ -171,10 +175,14 @@ def judge(tag, deltas):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="pre-registered #790 sweep analysis")
     ap.add_argument("--capture", required=True)
-    ap.add_argument("--ean", required=True, help="live-EAN overlay JSON")
+    ap.add_argument("--ean", default=None, help="live-EAN overlay JSON")
+    ap.add_argument("--skip-c1", action="store_true",
+                    help="defer C1 (owner ruling 2026-09-24, EAN defect)")
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--model", default="")
     args = ap.parse_args(argv)
+    if not args.skip_c1 and not args.ean:
+        ap.error("--ean is required unless --skip-c1 is given")
 
     os.makedirs(args.outdir, exist_ok=True)
     probes = load_capture(args.capture)
@@ -189,17 +197,21 @@ def main(argv=None) -> int:
     print("decode-only check: all probe totals == forwards*48*10")
 
     heat = heat_of(probes)
-    with open(args.ean) as fh:
-        overlay = json.load(fh)
-    saliency = {}
-    for key, val in overlay.get("saliency", {}).items():
-        l_s, e_s = key.split(":")
-        saliency[(int(l_s), int(e_s))] = float(val)
-    print(f"EAN overlay: {len(saliency)} cells "
-          f"(method={overlay.get('provenance', {}).get('method')})")
-
-    c1_pins = ean_flat_pins(saliency, N_PER_LAYER)
-    c1_38 = ean_flat_pins(saliency, N_CONT)
+    saliency: dict = {}
+    c1_pins = c1_38 = None
+    if args.skip_c1:
+        print("C1 DEFERRED (owner ruling 2026-09-24, EAN defect); "
+              "scoring B0/C2/warm only")
+    else:
+        with open(args.ean) as fh:
+            overlay = json.load(fh)
+        for key, val in overlay.get("saliency", {}).items():
+            l_s, e_s = key.split(":")
+            saliency[(int(l_s), int(e_s))] = float(val)
+        print(f"EAN overlay: {len(saliency)} cells "
+              f"(method={overlay.get('provenance', {}).get('method')})")
+        c1_pins = ean_flat_pins(saliency, N_PER_LAYER)
+        c1_38 = ean_flat_pins(saliency, N_CONT)
 
     rows = []
     for i, held in enumerate(names):
@@ -209,12 +221,16 @@ def main(argv=None) -> int:
         c2 = waterfill_pins(heat, train, TOTAL_SLABS)
         h_b0 = hit_rate(heat[held], b0)
         h_b0_38 = hit_rate(heat[held], b0_38)
-        h_c1 = hit_rate(heat[held], c1_pins)
-        h_c1_38 = hit_rate(heat[held], c1_38)
         h_c2 = hit_rate(heat[held], c2)
-        rows.append({"held": held, "h_b0": h_b0, "h_b0_38": h_b0_38,
-                     "h_c1": h_c1, "h_c1_38": h_c1_38, "h_c2": h_c2,
-                     "d_c1": h_c1 - h_b0, "d_c2": h_c2 - h_b0})
+        row = {"held": held, "h_b0": h_b0, "h_b0_38": h_b0_38,
+               "h_c2": h_c2, "d_c2": h_c2 - h_b0}
+        if not args.skip_c1:
+            assert c1_pins is not None and c1_38 is not None
+            h_c1 = hit_rate(heat[held], c1_pins)
+            h_c1_38 = hit_rate(heat[held], c1_38)
+            row.update({"h_c1": h_c1, "h_c1_38": h_c1_38,
+                        "d_c1": h_c1 - h_b0})
+        rows.append(row)
 
     med_b0_38 = statistics.median(r["h_b0_38"] for r in rows)
     print(f"B0 h@38 median = {med_b0_38:.4f} (gate band "
@@ -224,7 +240,11 @@ def main(argv=None) -> int:
               "candidates do not get scored.", file=sys.stderr)
         return 3
 
-    res_c1 = judge("C1 REAP", [r["d_c1"] for r in rows])
+    res_c1 = None
+    if not args.skip_c1:
+        res_c1 = judge("C1 REAP", [r["d_c1"] for r in rows])
+    else:
+        print("C1 REAP: DEFERRED (no scoring)")
     res_c2 = judge("C2 waterfill", [r["d_c2"] for r in rows])
 
     # ---- secondary: warm ranking on v4 turns 2+ (reported, not gating) ----
@@ -244,12 +264,17 @@ def main(argv=None) -> int:
             h_w = hit_rate(heat[cur], warm)
             train = [n for n in names if n != cur]
             h_b = hit_rate(heat[cur], flat_pins(heat, train, N_PER_LAYER, "heat"))
-            h_1 = hit_rate(heat[cur], c1_pins)
             h_2 = hit_rate(heat[cur], waterfill_pins(heat, train, TOTAL_SLABS))
-            warm_rows.append({"turn": cur, "h_warm": h_w, "h_b0": h_b,
-                              "h_c1": h_1, "h_c2": h_2})
+            wrow = {"turn": cur, "h_warm": h_w, "h_b0": h_b, "h_c2": h_2}
+            if not args.skip_c1:
+                assert c1_pins is not None
+                wrow["h_c1"] = hit_rate(heat[cur], c1_pins)
+            warm_rows.append(wrow)
     if warm_rows:
-        for tag, key in (("B0", "h_b0"), ("C1", "h_c1"), ("C2", "h_c2")):
+        pairs = [("B0", "h_b0"), ("C2", "h_c2")]
+        if not args.skip_c1:
+            pairs.append(("C1", "h_c1"))
+        for tag, key in pairs:
             ds = [r[key] - r["h_warm"] for r in warm_rows]
             print(f"warm-2+ {tag}-warm: median Dh={statistics.median(ds):+.4f} "
                   f"n={len(ds)} (secondary, not gating)")
@@ -308,7 +333,8 @@ def main(argv=None) -> int:
                    "b0_h38_median": med_b0_38}, fh, indent=1)
     print(f"wrote experts.json ({len(experts)} experts), expert-ranks.json, "
           f"tables.json -> {args.outdir}")
-    print(f"VERDICT-790: C1 {'PASS' if res_c1['pass'] else 'FAIL'} / "
+    c1v = "DEFERRED" if res_c1 is None else ("PASS" if res_c1["pass"] else "FAIL")
+    print(f"VERDICT-790: C1 {c1v} / "
           f"C2 {'PASS' if res_c2['pass'] else 'FAIL'}")
     return 0
 
