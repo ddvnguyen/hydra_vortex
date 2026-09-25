@@ -82,6 +82,10 @@ def main(argv=None) -> int:
     ap.add_argument("--sidecars", default=None, help="expected HYDRA_CAPTURE_OUTDIR (for flush validation)")
     ap.add_argument("--n-gen", type=int, default=N_GEN_DEFAULT)
     ap.add_argument("--probes", default=None, help="comma-separated subset of names (default: all 57)")
+    ap.add_argument("--timeout", type=int, default=1200,
+                    help="per-request timeout for /completion (s). 3060 needs "
+                    "3600 for ~7.5k-token prefills at ~6 tok/s (2026-09-25: "
+                    "1200s timed out mid-run, server cancelled the task).")
     ap.add_argument("--recheck", default=None, help="re-run named probes and diff counts (determinism spot-check)")
     ap.add_argument("--tag", default="", help="run tag recorded in each probe file")
     args = ap.parse_args(argv)
@@ -129,11 +133,26 @@ def main(argv=None) -> int:
             http(args.server, "POST", "/capture/reset", {}, timeout=30)
         except Exception as exc:
             print(f"  [{i + 1}/{len(names)}] {name} reset unavailable: {exc}")
-        _, comp = http(args.server, "POST", "/completion", {
-            "prompt": prompt, "n_predict": args.n_gen,
-            "temperature": 0.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0,
-            "cache_prompt": False,
-        }, timeout=1200)
+        # 2026-09-25: one slow prefill must not kill the run. Retry once
+        # on timeout, then record the failure and CONTINUE (a missing probe
+        # degrades Edge0 to fewer folds; aborting loses the whole run).
+        comp = None
+        for attempt in (1, 2):
+            try:
+                _, comp = http(args.server, "POST", "/completion", {
+                    "prompt": prompt, "n_predict": args.n_gen,
+                    "temperature": 0.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0,
+                    "cache_prompt": False,
+                }, timeout=args.timeout)
+                break
+            except Exception as exc:
+                print(f"  [{i + 1}/{len(names)}] {name} completion attempt "
+                      f"{attempt} failed: {exc}")
+                if attempt == 2:
+                    with open(dst + ".error", "w") as fh:
+                        json.dump({"name": name, "error": str(exc)}, fh)
+        if comp is None:
+            continue
         n_dec = comp.get("tokens_predicted", args.n_gen)
         _, turns = http(args.server, "GET", "/turns", timeout=15)
         turn_list = turns.get("turns", [])
