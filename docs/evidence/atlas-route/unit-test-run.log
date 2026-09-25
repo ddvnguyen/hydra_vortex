@@ -1,0 +1,23 @@
+  ok: geometry init (synthetic MoE gguf)
+  ok: case 1: exact FNV id serves the artifact (st=0)
+  ok: case 1: resolved path is the artifact path
+  ok: case 1: body served byte-identical
+  ok: case 1: served body is the artifact, not an error object
+  ok: case 2: short arch:basename id serves ranks (st=0)
+  ok: case 2: ranks body served byte-identical
+  ok: case 3: missing artifact → 404
+  ok: case 3: 404 body names the missing artifact
+  ok: case 3: no artifact bytes leak on 404
+  ok: case 4: wrong engine_id → 404 (refused)
+  ok: case 4: refusal body says 'refused'
+  ok: case 4: refusal names the offending id
+  ok: case 4: foreign artifact bytes never served
+  ok: case 5: missing provenance → 404 (refused)
+  ok: case 5: refusal body explains the missing id
+  ok: case 6: corrupt artifact → 500
+  ok: case 6: 500 body says 'not valid JSON'
+  ok: case 7a: ranks missing → 404 while experts ok
+  ok: case 7b: experts missing → 404 while ranks ok
+  ok: case 8: unknown kind → 404 (no artifact location)
+
+all ok

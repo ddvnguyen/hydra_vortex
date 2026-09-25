@@ -1,0 +1,28 @@
+== A: absent artifact (live->empty) ==
+GET /experts.json     -> 404
+GET /v1/experts.json  -> 404
+head: cannot open 'out/A1-experts-404.body' for reading: No such file or directory
+  body: 
+== B: patched ids (live->patched): FNV on experts, arch:basename on ranks ==
+GET /experts.json        -> 200
+GET /expert-ranks.json   -> 200
+GET /v1/expert-ranks.json-> 200
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json;d=json.load(open('out/B1-experts-200.body'));print('  experts: provenance.engine_id =',d['provenance']['engine_id'],'| schema_version =',d.get('schema_version'),'| expert entries =',len(d.get('experts',{})))
+                            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'out/B1-experts-200.body'
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json;d=json.load(open('out/B2-ranks-200.body'));print('  ranks:   provenance.engine_id =',d['provenance']['engine_id'],'| layers =',len(d.get('layers',{})))
+                            ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'out/B2-ranks-200.body'
+== C: shipped qwen38 artifact (live->shipped tools/atlas/out) ==
+GET /experts.json       -> 404
+GET /expert-ranks.json  -> 404
+head: cannot open 'out/C1-experts-refused.body' for reading: No such file or directory
+  body: 
+== D: corrupt artifact (live->corrupt) ==
+GET /experts.json -> 500
+head: cannot open 'out/D1-experts-corrupt.body' for reading: No such file or directory
+  body: 
