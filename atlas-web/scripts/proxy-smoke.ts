@@ -7,7 +7,7 @@
 //   2. GET  /engine-proxy/<id>/props   -> 403 {"error":"forbidden"} (architect repro)
 //   3. GET  /engine-proxy/<id>/health  -> 200 (allowlisted route proxies to engine)
 //   4. POST /engine-proxy/<id>/v1/chat/completions -> forwarded (allowlisted)
-//   5. traversal / encoded-dot paths   -> 403 (never proxied)
+//   5. non-allowlisted method/path + traversal never reach the engine
 //
 // Run: bun run scripts/proxy-smoke.ts   (exit 0 = pass, 1 = fail)
 import { spawn } from "node:child_process"
@@ -93,14 +93,39 @@ try {
   if (r.status !== 200) fail(`POST /v1/chat/completions -> ${r.status}, expected 200`)
   ok(`POST /engine-proxy/smoke/v1/chat/completions -> 200`)
 
+  // 4b. colibri-1120 rebuild additions (read-only surface, allowlisted):
+  //     GET experts.json (engine-hosted atlas artifact) + POST v1/brio (1.12.0)
+  r = await fetch(`${base}/engine-proxy/smoke/experts.json`)
+  if (r.status !== 200) fail(`GET /experts.json -> ${r.status}, expected 200 (allowlisted for the 1.12.0 port)`)
+  ok(`GET  /engine-proxy/smoke/experts.json -> 200`)
+  r = await fetch(`${base}/engine-proxy/smoke/v1/brio`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  })
+  if (r.status !== 200) fail(`POST /v1/brio -> ${r.status}, expected 200 (allowlisted for the 1.12.0 port)`)
+  ok(`POST /engine-proxy/smoke/v1/brio -> 200`)
+
   // 5. non-allowlisted method/path + traversal never reach the engine
   r = await fetch(`${base}/engine-proxy/smoke/completion`, { method: "POST", body: "{}" })
   if (r.status !== 403) fail(`POST /completion -> ${r.status}, expected 403`)
   ok(`POST /engine-proxy/smoke/completion -> 403`)
 
-  r = await fetch(`${base}/engine-proxy/smoke/%2e%2e/%2e%2e/etc/passwd`)
-  if (r.status === 200) fail(`traversal %2e%2e -> 200, must be blocked`)
-  ok(`GET  /engine-proxy/smoke/%2e%2e/%2e%2e/etc/passwd -> ${r.status} (blocked)`)
+  // Traversal probes. Bun normalizes dot-segments (and decodes %2e) BEFORE the
+  // handler sees Request.url, so a traversal request either 403s (guard) or
+  // normalizes to a path outside /engine-proxy (SPA fallback / 404). The
+  // security property we assert: the stub engine must NEVER answer a traversal
+  // request — if a regression ever forwards raw dots, the stub echo appears.
+  const traversalUrls = [
+    `${base}/engine-proxy/smoke/%2e%2e/%2e%2e/etc/passwd`,
+    `${base}/engine-proxy/smoke/health/%2e%2e/%2e%2e/%2e%2e/etc/passwd`,
+  ]
+  for (const u of traversalUrls) {
+    r = await fetch(u)
+    const text = await r.text()
+    if (text.includes('"ok":true') || text.includes('"path":')) {
+      fail(`traversal ${u} was PROXIED to the engine (stub echo in response)`)
+    }
+    ok(`GET  ${u.replace(`${base}/`, "")} -> ${r.status} (not proxied: no stub echo)`)
+  }
 
   // unknown engine on an allowlisted path is still not open (404, not proxy)
   r = await fetch(`${base}/engine-proxy/nope/health`)
