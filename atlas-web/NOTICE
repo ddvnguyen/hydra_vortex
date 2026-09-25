@@ -1,0 +1,48 @@
+atlas-web — Colibri 1.12.0 web port
+===================================
+
+This directory contains code ported from the Colibri project:
+
+  upstream:   https://github.com/JustVugg/colibri
+  revision:   9d5d05de7f4ccf39840224ed295f292ab8aeb598 (v1.12.0)
+  license:    Apache License 2.0 — see LICENSE-colibri in this directory
+  copyright:  Copyright 2026 Vincenzo Fornaro (per upstream NOTICE)
+
+MODIFIED
+--------
+The files listed below are derived from the upstream sources and have been
+modified for integration into the hydra_vortex atlas-web service: wiring to
+the hydra engine-proxy (/engine-proxy/<id>/...), the mock EMAP adapter,
+i18n additions, and surfacing of /experts.json atlas failures instead of
+silent degradation. They are NOT verbatim copies.
+
+PORTED FILES (from upstream 9d5d05de7f)
+---------------------------------------
+  index.html
+  public/colibri-icon.svg
+  public/fonts/bytesized.ttf          (SIL Open Font License 1.1 — see public/fonts/OFL.txt)
+  src/App.tsx
+  src/BrainWorkspace.tsx
+  src/Brio.tsx
+  src/Galaxy.tsx
+  src/brain-design.css
+  src/chat-design.css
+  src/components/Brand.tsx
+  src/components/Markdown.tsx
+  src/components/NavigationDock.tsx
+  src/components/ui/textarea.tsx
+  src/i18n/de.ts
+  src/i18n/en.ts
+  src/i18n/it.ts
+  src/i18n/zh-CN.ts
+  src/i18n/zh-TW.ts
+  src/index.css
+  src/lib/api.ts
+  src/lib/brain-topics.ts
+  src/lib/cortex.ts
+  src/lib/markdown.ts                 (upstream file; removed in this port)
+  src/main.tsx
+
+Third-party components bundled by upstream and their licenses are listed in
+upstream's THIRD_PARTY_NOTICES.md; the fonts carried into public/fonts/
+remain under their own licenses (OFL.txt for bytesized).
