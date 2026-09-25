@@ -86,10 +86,16 @@ def main(argv=None) -> int:
     ap.add_argument("--tag", default="", help="run tag recorded in each probe file")
     args = ap.parse_args(argv)
 
-    names = [e["name"] for e in json.load(open(INDEX_PATH))]
+    all_names = [e["name"] for e in json.load(open(INDEX_PATH))]
     if args.probes:
         want = set(args.probes.split(","))
-        names = [n for n in names if n in want]
+        names = [n for n in all_names if n in want]
+    else:
+        names = all_names
+    # Global ordinal (position in the full 57-list) fsck: the flush endpoint
+    # takes INT idx and names files {cat}_{idx}; subset position would
+    # collide across subset runs. 2026-09-25: subset runs reused idx 0.
+    ordinal = {n: k for k, n in enumerate(all_names)}
     os.makedirs(args.out, exist_ok=True)
     recheck = set(args.recheck.split(",")) if args.recheck else set()
 
@@ -148,11 +154,12 @@ def main(argv=None) -> int:
         # (only the last probe per category survived). Pass the global probe
         # ordinal as idx; filenames are then unique per probe.
         cat = name.split("/", 1)[0] if "/" in name else name
+        idx = ordinal[name]
         try:
             _, flush = http(args.server, "POST",
-                            f"/capture/flush?cat={cat}&idx={i}", {}, timeout=120)
+                            f"/capture/flush?cat={cat}&idx={idx}", {}, timeout=120)
             sidecar_path = (flush or {}).get("path")
-            if sidecar_path and not sidecar_path.endswith(f"{cat}_{i}_sidecar.json"):
+            if sidecar_path and not sidecar_path.endswith(f"{cat}_{idx}_sidecar.json"):
                 print(f"  [{i + 1}/{len(names)}] {name} WARNING: unexpected "
                       f"sidecar path {sidecar_path}")
         except Exception as exc:  # capture disabled -> delta-only mode
@@ -161,7 +168,7 @@ def main(argv=None) -> int:
             "name": name, "tag": args.tag, "prompt_sha16": sha,
             "prefill_tokens": comp.get("tokens_evaluated"),
             "n_gen": n_dec, "forwards": turn.get("forwards"),
-            "turn_seq": seq, "routing": routing,
+            "turn_seq": seq, "sidecar_idx": idx, "routing": routing,
             "ean_cells": ean.get("cells"), "sidecar": sidecar_path,
             "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"),
