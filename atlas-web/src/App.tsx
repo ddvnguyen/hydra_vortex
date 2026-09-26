@@ -1,10 +1,3 @@
-// hydra: atlas shell — Colibri App.tsx (@ a8f2ca62) ported verbatim-in-layout.
-// Adaptation: the endpoint/apiKey connection becomes the atlas engine selector
-// (engines are server-configured; the browser reaches them only through the
-// server-side /engine-proxy/<id>/v1 route, #776). Chat state lives HERE, not
-// in a child component, so Chat/Brain/Profiling tab switches never lose
-// conversations or draft; conversation + composer are direct .chat-panel
-// children so the fixed grid rows (topbar / scroll / composer) apply.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Activity,
@@ -12,26 +5,37 @@ import {
   BrainCircuit,
   CircleStop,
   Clock,
+  Copy,
   Cpu,
   Database,
+  Download,
   Feather,
   Gauge,
   Globe,
   HardDrive,
   AlertTriangle,
+  History,
+  ImagePlus,
+  KeyRound,
   Layers,
   Link2,
   LoaderCircle,
   MemoryStick,
-  ImagePlus,
   MessageSquareText,
   MonitorDot,
+  Moon,
   Orbit,
   RefreshCw,
+  Search,
+  Settings2,
   SlidersHorizontal,
+  SquarePen,
+  Sun,
   Timer,
   Trash2,
+  X,
   Zap,
+  ChevronDown,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -40,19 +44,23 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { getHealth, listModels, streamChat, type ChatMessage, type HealthResponse, type HwinfoHealth, type StreamChatResult, type TiersHealth } from "@/lib/api"
 import { activeRequests, supportsCacheSlots } from "@/lib/runtime"
+import Brio from "./Brio"
 import { Brain } from "./Brain"
+import { BrainWorkspace } from "./BrainWorkspace"
+import { Brand } from "./components/Brand"
 import { Galaxy } from "./Galaxy"
+import { Markdown } from "./components/Markdown"
+import { NavigationDock, type View } from "./components/NavigationDock"
 import { Profiling } from "./Profiling"
 import { persistPublicSettings, stored } from "@/lib/storage"
-import { Markdown } from "@/components/Markdown"
 import { cn } from "@/lib/utils"
 import { useLocale } from "./i18n"
 import { REASONING_EFFORT, modelForcesReasoning, reasoningLevelsFor, type ReasoningLevel } from "@/lib/reasoning"
 
-const message = (role: ChatMessage["role"], content: string): ChatMessage => {
+const message = (role: ChatMessage["role"], content: string, images?: string[]): ChatMessage => {
   let id: string
   try { id = crypto.randomUUID() } catch { id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16) }) }
-  return { id, role, content }
+  return images?.length ? { id, role, content, images } : { id, role, content }
 }
 
 // atlas service /health shape (server/server.ts) — deliberately not the
@@ -60,13 +68,15 @@ const message = (role: ChatMessage["role"], content: string): ChatMessage => {
 interface AtlasEngine { id: string; mode: "mock" | "engine"; ok: boolean; seq: number | null; tiers?: TiersHealth; hwinfo?: HwinfoHealth }
 interface AtlasHealth { status: string; engines: AtlasEngine[] }
 
+// hydra: atlas shell on the 1.12.0 workspace redesign — engine selector +
+// server-side proxy replace the free-form endpoint/apiKey connection; Galaxy
+// stays as our extra tab; Brain defaults to the landing view (design §D).
 export default function App() {
   const { t, locale, setLocale, locales } = useLocale()
 
   // ---- atlas engine selection (replaces the endpoint/apiKey connection) ----
   const [atlas, setAtlas] = useState<AtlasHealth | null>(null)
   const [atlasError, setAtlasError] = useState("")
-  // ?engine=<id> is the initial selection; the sidebar selector overrides it.
   const [engineId, setEngineId] = useState<string | undefined>(() =>
     new URLSearchParams(window.location.search).get("engine") ?? undefined)
 
@@ -85,25 +95,17 @@ export default function App() {
 
   const engines = atlas?.engines ?? []
   const selected = engines.find(e => e.id === engineId) ?? engines[0]
-  // When the URL didn't pin an engine, follow the first healthy one but keep
-  // the selection stable across health refreshes once the user picked one.
   const activeId = engineId ?? selected?.id
   const active = engines.find(e => e.id === activeId)
-  // hydra #785: the aggregate /health row carries the engine's tiers+hwinfo
-  // (server passes engine /health through). Merge into the Colibri
-  // HealthResponse the runtime panel renders, so the tier bar shows real
-  // device/host allocation without a second fetch. Mock/unreachable engines
-  // carry no tiers — the panel honestly omits the bar (unchanged behavior).
+  // hydra #785: aggregate /health carries tiers+hwinfo for the runtime panel
   const aggHealth: HealthResponse | null = active && (active.tiers || active.hwinfo)
     ? { status: atlas?.status ?? "ok", tiers: active.tiers, hwinfo: active.hwinfo }
     : null
-  // hydra: chat/profiling speak to the engine through the server-side proxy
-  // (browser cannot reach the localhost-only engine). Mock engines have no
-  // HTTP surface — the chat stays in the honest not-connected state for those.
+  // hydra: chat/profiling/brio speak through the server-side engine proxy
   const proxyBase = active && active.mode === "engine" ? `/engine-proxy/${active.id}/v1` : ""
   const baseUrl = proxyBase
   const apiKey = ""
-  // ---- chat state (upstream EFFECTs #1-#7, verbatim) ----
+
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState(() => stored(localStorage, "colibri.model", ""))
   const [temperature, setTemperature] = useState(0.7)
@@ -113,35 +115,9 @@ export default function App() {
   const [conversations, setConversations] = useState<Record<number, ChatMessage[]>>({ 0: [] })
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [healthError, setHealthError] = useState("")
-  // hydra #785: sidebar shows the engine row's tiers+hwinfo even before the
-  // chat probe connects (Brain is the landing view; mock rows carry neither
-  // and the panel stays honestly empty). Probe health wins once present.
   const panelHealth = health ?? aggHealth
   const [lastRun, setLastRun] = useState<StreamChatResult | null>(null)
   const [draft, setDraft] = useState("")
-  /* Immagini in attesa di partire col prossimo messaggio. Si tengono come
-     data: URI perche' e' quello che il server accetta e quello che il browser
-     puo' mostrare in anteprima senza inventarsi un percorso su disco. */
-  const [attachments, setAttachments] = useState<{ name: string; url: string }[]>([])
-  const fileInputRef = useRef<HTMLInputElement>(null)
-
-  const attachFiles = async (files: FileList | File[] | null) => {
-    if (!files) return
-    const images = Array.from(files).filter((file) => file.type.startsWith("image/"))
-    if (!images.length) return
-    const read = await Promise.all(
-      images.map(
-        (file) =>
-          new Promise<{ name: string; url: string }>((resolve, reject) => {
-            const reader = new FileReader()
-            reader.onload = () => resolve({ name: file.name, url: String(reader.result) })
-            reader.onerror = () => reject(reader.error)
-            reader.readAsDataURL(file)
-          }),
-      ),
-    )
-    setAttachments((current) => [...current, ...read])
-  }
   const [loading, setLoading] = useState(false)
   const [streamStart, setStreamStart] = useState<number | null>(null)
   const [tokenCount, setTokenCount] = useState(0)
@@ -150,7 +126,19 @@ export default function App() {
   const [totalTokens, setTotalTokens] = useState({ prompt: 0, completion: 0 })
   const [connecting, setConnecting] = useState(false)
   const [connected, setConnected] = useState(false)
-  const [view, setView] = useState<"chat" | "brain" | "galaxy" | "profiling">("brain")
+  const [view, setView] = useState<View>("brain")
+  const [settingsPage, setSettingsPage] = useState("general")
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [archives, setArchives] = useState<Array<{ id: string; slot: number; messages: ChatMessage[] }>>([])
+  const [theme, setTheme] = useState(() => stored(localStorage, "colibri.theme", "dark"))
+  const [copied, setCopied] = useState<string | null>(null)
+  const draftRef = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [pending, setPending] = useState<string[]>([])
+  const historyDialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => { document.documentElement.dataset.theme = theme; try { localStorage.setItem("colibri.theme", theme) } catch { /* private mode */ } }, [theme])
+  useEffect(() => { if (historyOpen) historyDialog.current?.showModal(); else historyDialog.current?.close() }, [historyOpen])
   const [error, setError] = useState("")
   const autoConnected = useRef("")
   const abortRef = useRef<AbortController | null>(null)
@@ -158,7 +146,7 @@ export default function App() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const messages = conversations[cacheSlot] || []
   const kvSlots = Math.max(1, health?.kv_slots || 1)
-  const activeRequestsCount = activeRequests(health)
+  const activeCount = activeRequests(health)
   const capacity = health?.scheduler?.capacity || kvSlots
   const failures = health?.scheduler ? health.scheduler.rejected + health.scheduler.timed_out + health.scheduler.cancelled : 0
 
@@ -168,25 +156,19 @@ export default function App() {
       [cacheSlot]: typeof next === "function" ? next(current[cacheSlot] || []) : next,
     }))
 
-  // EFFECT #1
-  useEffect(() => {
-    persistPublicSettings(localStorage, baseUrl, model)
-  }, [baseUrl, model])
+  useEffect(() => { persistPublicSettings(localStorage, baseUrl, model) }, [baseUrl, model])
 
-  // EFFECT #2
   useEffect(() => {
     setConnected(false)
     setHealth(null)
     setHealthError("")
   }, [baseUrl])
 
-  // EFFECT #3
   useEffect(() => () => {
     probeRef.current?.abort()
     abortRef.current?.abort()
   }, [])
 
-  // EFFECT #4
   useEffect(() => {
     if (!connected) return
     let disposed = false
@@ -203,24 +185,17 @@ export default function App() {
     return () => { disposed = true; window.clearInterval(timer) }
   }, [apiKey, baseUrl, connected])
 
-  // EFFECT #5
   useEffect(() => {
     if (cacheSlot >= kvSlots) setCacheSlot(0)
   }, [cacheSlot, kvSlots])
 
-  // EFFECT #6
   useEffect(() => { setLastRun(null) }, [cacheSlot])
 
-  /* GLM 5.3 cannot turn reasoning off and has no distinct "medium" (it collapses
-     onto High). If the user switches to such a model while "off" or "medium" is
-     selected, lift it to a level the model actually honors instead of leaving the
-     control on a value it no longer offers. */
   useEffect(() => {
     if (modelForcesReasoning(model))
       setReasoning((level) => (level === "off" || level === "medium" ? "high" : level))
   }, [model])
 
-  // EFFECT #7
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages])
 
   const connect = async () => {
@@ -254,36 +229,31 @@ export default function App() {
     }
   }
 
-  // Auto-connect when the atlas reports an engine with an HTTP surface.
-  // In an effect, not in the render body: a side effect during render breaks
-  // under StrictMode double-rendering and concurrent re-renders.
   useEffect(() => {
     if (atlas?.status && baseUrl && autoConnected.current !== baseUrl) {
       autoConnected.current = baseUrl
       void connect()
     }
-    if (!baseUrl) { autoConnected.current = ""; }
+    if (!baseUrl) { autoConnected.current = "" }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [atlas?.status, baseUrl])
 
-  const canSend = useMemo(() => (draft.trim() || attachments.length > 0) && model && !loading, [draft, attachments, model, loading])
+  const canSend = useMemo(() => (draft.trim() || pending.length) && model && !loading, [draft, pending, model, loading])
 
-  const send = async () => {
-    const content = draft.trim()
-    /* Un'immagine da sola e' una domanda valida: "questa cosa e'?" si puo'
-       chiedere anche senza scrivere niente. */
-    if ((!content && !attachments.length) || loading) return
-    const user = message("user", content)
-    if (attachments.length) user.images = attachments.map((item) => item.url)
+  const send = async (text = draft, previous = messages, pictures = pending) => {
+    const content = text.trim()
+    if ((!content && !pictures.length) || loading) return
+    const user = message("user", content, pictures)
     const assistant = message("assistant", "")
-    const history = [...messages, user]
+    const history = [...previous, user]
     setDraft("")
-    setAttachments([])
+    setPending([])
     setError("")
     updateMessages([...history, assistant])
     setLoading(true)
     setStreamStart(null)
     setTokenCount(0)
+    let decodeStart = 0
     setTokPerSec(null)
     setTtft(null)
     const t0 = performance.now()
@@ -303,32 +273,29 @@ export default function App() {
         reasoningEffort: reasoning === "off" ? undefined : REASONING_EFFORT[reasoning],
         cacheSlot: supportsCacheSlots(health) ? cacheSlot : undefined,
         signal: controller.signal,
-        /* Reasoning tokens are tokens: they count toward the rate, and the
-           first one is the real time-to-first-token — the answer's first
-           token arrives much later on a reasoning model. */
         onReasoning: (delta) => {
-          if (firstToken) { setTtft(performance.now() - t0); setStreamStart(performance.now()); firstToken = false }
+          if (firstToken) { setTtft(performance.now() - t0); setStreamStart(performance.now()); decodeStart = performance.now(); firstToken = false }
           count++
           setTokenCount(count)
-          const elapsed = (performance.now() - t0) / 1000
-          if (elapsed > 0.3) setTokPerSec(count / elapsed)
+          const since = (performance.now() - decodeStart) / 1000
+          if (count > 1 && since > 0.2) setTokPerSec((count - 1) / since)
           updateMessages((current) => current.map((item) =>
             item.id === assistant.id ? { ...item, reasoning: (item.reasoning ?? "") + delta } : item,
           ))
         },
         onDelta: (delta) => {
-          if (firstToken) { setTtft(performance.now() - t0); setStreamStart(performance.now()); firstToken = false }
+          if (firstToken) { setTtft(performance.now() - t0); setStreamStart(performance.now()); decodeStart = performance.now(); firstToken = false }
           count++
           setTokenCount(count)
-          const elapsed = (performance.now() - t0) / 1000
-          if (elapsed > 0.3) setTokPerSec(count / ((performance.now() - t0) / 1000))
+          const since = (performance.now() - decodeStart) / 1000
+          if (count > 1 && since > 0.2) setTokPerSec((count - 1) / since)
           updateMessages((current) => current.map((item) =>
             item.id === assistant.id ? { ...item, content: item.content + delta } : item,
           ))
         },
       })
-      const finalElapsed = (performance.now() - t0) / 1000
-      if (count > 0 && finalElapsed > 0) setTokPerSec(count / finalElapsed)
+      const decodeElapsed = (performance.now() - (decodeStart || t0)) / 1000
+      if (count > 1 && decodeElapsed > 0) setTokPerSec((count - 1) / decodeElapsed)
       if (result.usage) setTotalTokens(prev => ({
         prompt: prev.prompt + (result.usage?.prompt_tokens || 0),
         completion: prev.completion + (result.usage?.completion_tokens || 0),
@@ -348,200 +315,236 @@ export default function App() {
     }
   }
 
+  const attach = async (files: FileList | File[] | null) => {
+    const pictures = Array.from(files || []).filter(file => file.type.startsWith("image/"))
+    if (!pictures.length) return
+    const read = (file: File) => new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(file)
+    })
+    try {
+      const urls = await Promise.all(pictures.map(read))
+      setPending(current => [...current, ...urls])
+    } catch { setError("status.serverError") }
+  }
 
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-row">
-          <div className="brand-mark"><Feather className="size-5" /></div>
-          <div><h1>colibrì</h1><p>{t("brand.tagline")}</p></div>
+  const openSettings = (page = "general") => { setSettingsPage(page); setView("settings") }
+  const clearChat = () => { updateMessages([]); setLastRun(null); setTokPerSec(null); setTtft(null); setTokenCount(0); setTotalTokens({ prompt: 0, completion: 0 }); setError("") }
+  const newChat = () => {
+    if (loading) return
+    if (messages.length) setArchives(items => [{ id: message("system", "").id, slot: cacheSlot, messages: [...messages] }, ...items])
+    clearChat(); setDraft(""); setView("chat"); requestAnimationFrame(() => draftRef.current?.focus())
+  }
+  const exportChat = () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ model, messages }, null, 2)], { type: "application/json" }))
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = "colibri-chat.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  const copyMessage = async (item: ChatMessage) => {
+    try { await navigator.clipboard.writeText(item.content); setCopied(item.id) } catch { setError(t("ui.copyError")) }
+  }
+  const restoreArchive = (entry: { id: string; slot: number; messages: ChatMessage[] }) => {
+    if (loading) return
+    const slot = entry.slot < kvSlots ? entry.slot : cacheSlot
+    const currentMessages = conversations[slot] || []
+    setArchives(items => [...(currentMessages.length ? [{ id: message("system", "").id, slot, messages: currentMessages }] : []), ...items.filter(item => item.id !== entry.id)])
+    setConversations(items => ({ ...items, [slot]: entry.messages })); setCacheSlot(slot); setView("chat"); setHistoryOpen(false); setLastRun(null); setError(""); setDraft("")
+  }
+  const empty = messages.length === 0
+
+  // hydra: connection settings = engine selector + probe (not free-form endpoint)
+  const connectionControls = (<fieldset disabled={loading}><section className="side-section">
+    <div className="section-title"><Link2 className="size-3.5" /> {t("sidebar.connection")}</div>
+    <label>
+      {t("sidebar.atlasEngine")}
+      <select
+        value={activeId ?? ""}
+        onChange={event => { setEngineId(event.target.value); const u = new URL(window.location.href); u.searchParams.set("engine", event.target.value); window.history.replaceState(null, "", u) }}
+        disabled={!engines.length}
+      >
+        {engines.length
+          ? engines.map(e => <option key={e.id} value={e.id}>{e.id} ({e.mode})</option>)
+          : <option>—</option>}
+      </select>
+      <span className="field-help">{t("sidebar.atlasEngineHelp")}</span>
+    </label>
+    <Button type="button" variant="secondary" onClick={() => void connect()} disabled={connecting || !baseUrl}>
+      {connecting ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+      {t("sidebar.probe")}
+    </Button>
+    <div className={cn("connection-state", connected && "connected")} aria-live="polite"><span />{connected ? t("status.connected") : t("status.notConnected")}</div>
+  </section></fieldset>)
+
+  const inferenceControls = (<fieldset disabled={loading}><section className="side-section">
+    <div className="section-title"><SlidersHorizontal className="size-3.5" /> {t("sidebar.inference")}</div>
+    <label>{t("sidebar.model")}<select id="model-select" value={model} onChange={(event) => setModel(event.target.value)}>{models.length ? models.map((id) => <option key={id} value={id}>{id}</option>) : <option>{model || "—"}</option>}</select></label>
+    {health?.kv_slots && health.kv_slots > 1 ? <label>{t("sidebar.kvSession")}<select id="kv-slot" value={cacheSlot} onChange={(event) => setCacheSlot(Number(event.target.value))} disabled={loading}>
+      {Array.from({ length: kvSlots }, (_, slot) => <option key={slot} value={slot}>{t("sidebar.sessionLabel", { slot: slot + 1 })}</option>)}
+    </select><span className="field-help">{t("sidebar.kvSessionHelp")}</span></label> : null}
+    <label><span className="label-line"><span>{t("sidebar.temperature")}</span><code>{temperature.toFixed(1)}</code></span><input id="temperature" className="range" type="range" min="0" max="2" step="0.1" value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>
+    <label>{t("sidebar.maxTokens")}<Input id="max-tokens" type="number" min={1} max={32768} value={maxTokens} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value)) setMaxTokens(Math.min(32768, Math.max(1, Math.round(value)))) }} /></label>
+    <label><span className="label-line"><span><BrainCircuit className="size-4" /> {t("sidebar.reasoning")}</span></span>
+      <select value={reasoning} onChange={(event) => setReasoning(event.target.value as ReasoningLevel)} disabled={loading}>
+        {reasoningLevelsFor(model).map((level) => <option key={level} value={level}>{t(`sidebar.reasoning.${level}`)}</option>)}
+      </select>
+    </label>
+  </section></fieldset>)
+
+  const runtimeControls = (<><section className="side-section runtime-section" aria-live="polite">
+    <div className="section-title"><Activity className="size-3.5" /> {t("sidebar.runtime")}</div>
+    {panelHealth?.hwinfo ? <div className="hw-panel">
+      {panelHealth.hwinfo.cpu ? <div className="hw-row"><Cpu className="size-3.5" /><span>{panelHealth.hwinfo.cpu}</span></div> : null}
+      {panelHealth.hwinfo.gpus > 0 ? <div className="hw-row"><MonitorDot className="size-3.5" /><span>{panelHealth.hwinfo.gpus}× GPU<small>{panelHealth.hwinfo.vram_total_gb.toFixed(0)} GB VRAM</small></span></div> : null}
+      <div className="hw-row"><MemoryStick className="size-3.5" /><span>{panelHealth.hwinfo.ram_total_gb.toFixed(0)} GB RAM<small>{panelHealth.hwinfo.ram_avail_gb.toFixed(0)} GB free</small></span></div>
+      <div className="hw-row"><HardDrive className="size-3.5" /><span>{panelHealth.hwinfo.cores} cores</span></div>
+    </div> : null}
+    {panelHealth && (panelHealth.scheduler || panelHealth.tiers) ? <>
+      {panelHealth.scheduler ? (
+        <div className="runtime-grid">
+          <div><span>{t("dashboard.active")}</span><strong>{activeCount}<small> / {capacity}</small></strong></div>
+          <div><span>{t("dashboard.queued")}</span><strong>{panelHealth.scheduler.queued}<small> / {panelHealth.scheduler.max_queue}</small></strong></div>
+          <div><span>{t("dashboard.completed")}</span><strong>{panelHealth.scheduler.completed}</strong></div>
+          <div><span>{t("dashboard.failures")}</span><strong>{failures}</strong></div>
         </div>
-
-        <section className="side-section">
-          <div className="section-title"><Link2 className="size-3.5" /> {t("sidebar.connection")}</div>
-          <label>
-            {t("sidebar.atlasEngine")}
-            <select
-              value={activeId ?? ""}
-              onChange={event => { setEngineId(event.target.value); const u = new URL(window.location.href); u.searchParams.set("engine", event.target.value); window.history.replaceState(null, "", u) }}
-              disabled={!engines.length}
-            >
-              {engines.length
-                ? engines.map(e => <option key={e.id} value={e.id}>{e.id} ({e.mode})</option>)
-                : <option>—</option>}
-            </select>
-            <span className="field-help">{t("sidebar.atlasEngineHelp")}</span>
-          </label>
-          <Button type="button" variant="secondary" onClick={() => void connect()} disabled={connecting || !baseUrl}>
-            {connecting ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-            {t("sidebar.probe")}
-          </Button>
-          <div className={cn("connection-state", connected && "connected")} aria-live="polite"><span />{connected ? t("status.connected") : t("status.notConnected")}</div>
-        </section>
-
-        <section className="side-section runtime-section" aria-live="polite">
-          <div className="section-title"><Activity className="size-3.5" /> {t("sidebar.runtime")}</div>
-          {panelHealth?.hwinfo ? <div className="hw-panel">
-            {panelHealth.hwinfo.cpu ? <div className="hw-row"><Cpu className="size-3.5" /><span>{panelHealth.hwinfo.cpu}</span></div> : null}
-            {panelHealth.hwinfo.gpus > 0 ? <div className="hw-row"><MonitorDot className="size-3.5" /><span>{panelHealth.hwinfo.gpus}× GPU<small>{panelHealth.hwinfo.vram_total_gb.toFixed(0)} GB VRAM</small></span></div> : null}
-            <div className="hw-row"><MemoryStick className="size-3.5" /><span>{panelHealth.hwinfo.ram_total_gb.toFixed(0)} GB RAM<small>{panelHealth.hwinfo.ram_avail_gb.toFixed(0)} GB free</small></span></div>
-            <div className="hw-row"><HardDrive className="size-3.5" /><span>{panelHealth.hwinfo.cores} cores</span></div>
-          </div> : null}
-          {panelHealth && (panelHealth.scheduler || panelHealth.tiers) ? <>
-            {panelHealth?.scheduler ? (
-            <div className="runtime-grid">
-              <div><span>{t("dashboard.active")}</span><strong>{activeRequestsCount}<small> / {capacity}</small></strong></div>
-              <div><span>{t("dashboard.queued")}</span><strong>{panelHealth.scheduler.queued}<small> / {panelHealth.scheduler.max_queue}</small></strong></div>
-              <div><span>{t("dashboard.completed")}</span><strong>{panelHealth.scheduler.completed}</strong></div>
-              <div><span>{t("dashboard.failures")}</span><strong>{failures}</strong></div>
-            </div>
-            ) : null}
-            {panelHealth.tiers ? (() => {
-              const ti = panelHealth.tiers
-              const total = Math.max(ti.vram + ti.ram + ti.disk, 1)
-              return <div className="tier-panel">
-                <div className="tier-bar" role="img" aria-label={t("tier.ariaLabel", { vram: ti.vram, ram: ti.ram, disk: ti.disk })}>
-                  <span className="tier-vram" style={{ width: `${(100 * ti.vram) / total}%` }} />
-                  <span className="tier-ram" style={{ width: `${(100 * ti.ram) / total}%` }} />
-                  <span className="tier-disk" style={{ width: `${(100 * ti.disk) / total}%` }} />
-                </div>
-                <div className="tier-legend">
-                  <span><i className="tier-vram" />{t("tier.vram")} <strong>{ti.vram.toLocaleString()}</strong><small>{ti.vram_gb.toFixed(1)} GB</small></span>
-                  <span><i className="tier-ram" />{t("tier.ram")} <strong>{ti.ram.toLocaleString()}</strong><small>{ti.ram_gb.toFixed(1)} GB</small></span>
-                  <span><i className="tier-disk" />{t("tier.disk")} <strong>{ti.disk.toLocaleString()}</strong></span>
-                </div>
-              </div>
-            })() : null}
-            {totalTokens.prompt + totalTokens.completion > 0 ? <div className="session-stats">
-              <span><Database className="size-3" /> {t("dashboard.session")} <strong>{totalTokens.prompt.toLocaleString()}</strong> {t("dashboard.prompt")} + <strong>{totalTokens.completion.toLocaleString()}</strong> {t("dashboard.completion")}</span>
-            </div> : null}
-            {panelHealth?.scheduler ? (
-            <div className="runtime-foot"><span className="runtime-dot" /> {t("sidebar.schedulerOnline")} <code>{kvSlots} KV</code></div>
-            ) : null}
-          </> : <p className="runtime-unavailable">{connected ? (healthError ? t(healthError) : t("status.runtimeUnavailable")) : t("sidebar.runtimeProbe")}</p>}
-          {engines.length ? (
-            <div className="side-engines">
-              {engines.map(e => (
-                <div key={e.id} className="runtime-foot">
-                  <span className={e.ok ? "runtime-dot" : "runtime-dot down"} />
-                  <span>{e.id}</span>
-                  <code>{e.mode}</code>
-                </div>
-              ))}
-            </div>
-          ) : (atlasError ? <p className="runtime-unavailable">{atlasError}</p> : null)}
-        </section>
-
-        <section className="side-section">
-          <div className="section-title"><SlidersHorizontal className="size-3.5" /> {t("sidebar.inference")}</div>
-          <label>{t("sidebar.model")}<select value={model} onChange={(event) => setModel(event.target.value)}>{models.length ? models.map((id) => <option key={id}>{id}</option>) : <option>{model || "—"}</option>}</select></label>
-          {health?.kv_slots && health.kv_slots > 1 ? <label>{t("sidebar.kvSession")}<select value={cacheSlot} onChange={(event) => setCacheSlot(Number(event.target.value))} disabled={loading}>
-            {Array.from({ length: kvSlots }, (_, slot) => <option key={slot} value={slot}>{t("sidebar.sessionLabel", { slot: slot + 1 })}</option>)}
-          </select><span className="field-help">{t("sidebar.kvSessionHelp")}</span></label> : null}
-          <label><span className="label-line"><span>{t("sidebar.temperature")}</span><code>{temperature.toFixed(1)}</code></span><input className="range" type="range" min="0" max="2" step="0.1" value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>
-          <label>{t("sidebar.maxTokens")}<Input type="number" min={1} max={32768} value={maxTokens} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value)) setMaxTokens(Math.min(32768, Math.max(1, Math.round(value)))) }} /></label>
-          <label><span className="label-line"><span><BrainCircuit className="size-4" /> {t("sidebar.reasoning")}</span></span>
-            <select value={reasoning} onChange={(event) => setReasoning(event.target.value as ReasoningLevel)} disabled={loading}>
-              {reasoningLevelsFor(model).map((level) => <option key={level} value={level}>{t(`sidebar.reasoning.${level}`)}</option>)}
-            </select>
-          </label>
-        </section>
-
-        <div className="sidebar-foot">
-          <div><Cpu className="size-3.5" /><span>{t("sidebar.transport")}</span></div>
-          <div className="locale-switcher">
-            <Globe className="size-3.5" />
-            <select value={locale} onChange={(e) => setLocale(e.target.value)} aria-label="locale">
-              {locales.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
-            </select>
+      ) : null}
+      {panelHealth.tiers ? (() => {
+        const ti = panelHealth.tiers!
+        const total = Math.max(ti.vram + ti.ram + ti.disk, 1)
+        return <div className="tier-panel">
+          <div className="tier-bar" role="img" aria-label={t("tier.ariaLabel", { vram: ti.vram, ram: ti.ram, disk: ti.disk })}>
+            <span className="tier-vram" style={{ width: `${(100 * ti.vram) / total}%` }} />
+            <span className="tier-ram" style={{ width: `${(100 * ti.ram) / total}%` }} />
+            <span className="tier-disk" style={{ width: `${(100 * ti.disk) / total}%` }} />
+          </div>
+          <div className="tier-legend">
+            <span><i className="tier-vram" />{t("tier.vram")} <strong>{ti.vram.toLocaleString()}</strong><small>{ti.vram_gb.toFixed(1)} GB</small></span>
+            <span><i className="tier-ram" />{t("tier.ram")} <strong>{ti.ram.toLocaleString()}</strong><small>{ti.ram_gb.toFixed(1)} GB</small></span>
+            <span><i className="tier-disk" />{t("tier.disk")} <strong>{ti.disk.toLocaleString()}</strong></span>
           </div>
         </div>
-      </aside>
-
-      <main className="chat-panel">
-        <header className="topbar">
-          <div><span className="eyebrow">{t("topbar.activeModel")}</span><strong>{model || activeId || "—"}</strong></div>
-          <div className="view-tabs">
-            <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}><MessageSquareText className="size-3.5" /> {t("nav.chat")}</button>
-            <button className={view === "brain" ? "active" : ""} onClick={() => setView("brain")}><BrainCircuit className="size-3.5" /> {t("nav.brain")}</button>
-            <button className={view === "galaxy" ? "active" : ""} onClick={() => setView("galaxy")}><Orbit className="size-3.5" /> {t("nav.galaxy")}</button>
-            <button className={view === "profiling" ? "active" : ""} onClick={() => setView("profiling")}><Gauge className="size-3.5" /> {t("nav.profiling")}</button>
+      })() : null}
+      {totalTokens.prompt + totalTokens.completion > 0 ? <div className="session-stats">
+        <span><Database className="size-3" /> {t("dashboard.session")} <strong>{totalTokens.prompt.toLocaleString()}</strong> {t("dashboard.prompt")} + <strong>{totalTokens.completion.toLocaleString()}</strong> {t("dashboard.completion")}</span>
+      </div> : null}
+      {panelHealth.scheduler ? (
+        <div className="runtime-foot"><span className="runtime-dot" /> {t("sidebar.schedulerOnline")} <code>{kvSlots} KV</code></div>
+      ) : null}
+    </> : <p className="runtime-unavailable">{connected ? (healthError ? t(healthError) : t("status.runtimeUnavailable")) : t("sidebar.runtimeProbe")}</p>}
+    {engines.length ? (
+      <div className="side-engines">
+        {engines.map(e => (
+          <div key={e.id} className="runtime-foot">
+            <span className={e.ok ? "runtime-dot" : "runtime-dot down"} />
+            <span>{e.id}</span>
+            <code>{e.mode}</code>
           </div>
-          <div className="top-actions">
-            {loading && tokenCount > 0 ? <Badge className="badge-live"><Zap className="size-3 flash" /> {t("topbar.tokens", { n: tokenCount })}</Badge> : null}
-            {!loading && tokPerSec != null ? <Badge className="badge-speed"><Gauge className="size-3" /> {t("topbar.tokPerSec", { n: tokPerSec.toFixed(1) })}</Badge> : null}
-            {!loading && ttft != null ? <Badge><Timer className="size-3" /> TTFT {(ttft / 1000).toFixed(1)}s</Badge> : null}
-            {!loading && lastRun?.usage ? <Badge><Layers className="size-3" /> {lastRun.usage.prompt_tokens}→{lastRun.usage.completion_tokens}</Badge> : null}
-            {!loading && lastRun?.finishReason === "length" ? <Badge className="badge-warn" title={t("topbar.truncatedHelp")}><AlertTriangle className="size-3" /> {t("topbar.truncated")}</Badge> : null}
-            {lastRun?.queueWaitMs != null ? <Badge><Clock className="size-3" /> queue {Math.round(lastRun.queueWaitMs)}ms</Badge> : null}
-            <Badge><MonitorDot className="size-3" /> {t("topbar.slot", { n: cacheSlot + 1 })}</Badge>
-            <Button variant="ghost" size="sm" onClick={() => { updateMessages([]); setTokPerSec(null); setTtft(null); setTokenCount(0); setTotalTokens({ prompt: 0, completion: 0 }) }} disabled={!messages.length || loading}><Trash2 className="size-3.5" /> {t("topbar.clear")}</Button>
-            <button className="atlas-refresh" onClick={refreshAtlas} title={t("sidebar.atlasRefresh")}><RefreshCw className="size-3.5" /></button>
-          </div>
-        </header>
+        ))}
+      </div>
+    ) : (atlasError ? <p className="runtime-unavailable">{atlasError}</p> : null)}
+  </section></>)
 
-        {view === "brain" ? <Brain baseUrl="" apiKey="" connected={!!atlas?.status} engineId={activeId} />
-          : view === "galaxy" ? <Galaxy baseUrl={baseUrl} apiKey={apiKey} connected={connected} engineId={activeId} />
-          : view === "profiling" ? <Profiling baseUrl={baseUrl} apiKey={apiKey} connected={connected} /> : <>
-          <div className="conversation">
-            {!messages.length ? (
-              <div className="empty-state">
-                <div className="orb"><Feather /></div>
-                <span className="eyebrow">{t("hero.title")}</span>
-                <h2>{t("hero.subtitle")}<br /><em>{t("hero.tagline")}</em></h2>
-                <p>{t("hero.description")}</p>
-                <div className="suggestions">
-                  {[t("prompts.routing"), t("prompts.benchmark"), t("prompts.caching")].map((item) => <button key={item} onClick={() => setDraft(item)}>{item}<ArrowUp className="size-3.5 rotate-45" /></button>)}
-                </div>
+  const metrics = (<div className="live-metrics" aria-live="polite">
+    {loading && tokenCount > 0 ? <Badge className="badge-live"><Zap className="size-3 flash" /> {t("topbar.tokens", { n: tokenCount })}</Badge> : null}
+    {tokPerSec != null ? <Badge className={cn("badge-speed", loading && "badge-live")}><Gauge className="size-3" /> {t("topbar.tokPerSec", { n: tokPerSec.toFixed(1) })}</Badge> : null}
+    {!loading && ttft != null ? <Badge><Timer className="size-3" /> TTFT {(ttft / 1000).toFixed(1)}s</Badge> : null}
+    {!loading && lastRun?.usage ? <Badge><Layers className="size-3" /> {lastRun.usage.prompt_tokens}→{lastRun.usage.completion_tokens}</Badge> : null}
+    {!loading && lastRun?.finishReason === "length" ? <Badge className="badge-warn" title={t("topbar.truncatedHelp")}><AlertTriangle className="size-3" /> {t("topbar.truncated")}</Badge> : null}
+    {lastRun?.queueWaitMs != null ? <Badge><Clock className="size-3" /> queue {Math.round(lastRun.queueWaitMs)}ms</Badge> : null}
+    <Badge><MonitorDot className="size-3" /> {t("topbar.slot", { n: cacheSlot + 1 })}</Badge>
+  </div>)
+
+  return <div className="app-shell redesigned">
+    <aside className="rail" aria-label={t("ui.sidebar")}>
+      <button className="rail-brand" title="colibrì" onClick={() => setView("chat")}><Brand /></button>
+      <button className="rail-button" aria-label={t("ui.newChat")} title={t("ui.newChat")} onClick={newChat} disabled={loading}><SquarePen /></button>
+      <button className="rail-button" aria-label={t("ui.search")} title={t("ui.search")} onClick={() => { setQuery(""); setHistoryOpen(true) }}><Search /></button>
+      <button className="rail-button" aria-label={t("ui.history")} title={t("ui.history")} onClick={() => { setQuery(""); setHistoryOpen(true) }}><History /></button>
+      <div className="rail-bottom">
+        <button className={cn("rail-button", view === "settings" && "active")} aria-label={t("ui.settings")} title={t("ui.settings")} onClick={() => openSettings()}><Settings2 /></button>
+        <button className="rail-button" aria-label={t("ui.theme")} title={t("ui.theme")} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun /> : <Moon />}</button>
+      </div>
+    </aside>
+    <main className={cn("workspace", view === "brain" && "brain-workspace")}>
+      {view !== "brain" && <header className="workspace-topbar">
+        <button className="model-button" onClick={() => openSettings("model")}><span>{model || activeId || "—"}</span><ChevronDown /></button>
+        <div className="workspace-actions">
+          <button className={cn("connection-state", connected && "connected")} onClick={() => openSettings("connection")}><span />{connected ? t("status.connected") : t("status.notConnected")}</button>
+          <button className="atlas-refresh" onClick={refreshAtlas} title={t("sidebar.atlasRefresh")}><RefreshCw className="size-3.5" /></button>
+          {view === "chat" && <><button className="icon-action" aria-label={t("ui.export")} title={t("ui.export")} disabled={empty} onClick={exportChat}><Download /></button><button className="icon-action" aria-label={t("topbar.clear")} title={t("topbar.clear")} disabled={empty || loading} onClick={clearChat}><Trash2 /></button></>}
+        </div>
+      </header>}
+      {view === "settings" ? <section className="settings-page">
+        <header className="page-heading"><span>COLIBRÌ</span><h1>{t("ui.settings")}</h1><p>{t("ui.settingsIntro")}</p></header>
+        <nav className="settings-tabs" aria-label={t("ui.settings")}>
+          {["general", "model", "connection", "system"].map(id => <button key={id} aria-current={settingsPage === id ? "page" : undefined} onClick={() => setSettingsPage(id)}>{t(`ui.${id}`)}</button>)}
+        </nav>
+        {error && <div className="error-banner" role="alert">{t(error)}</div>}
+        <div className="settings-content">
+          {settingsPage === "general" && <section className="settings-card"><h2>{t("ui.appearance")}</h2><div className="theme-choices">{["dark", "light"].map(value => <button key={value} className={`theme-choice ${value}`} aria-pressed={theme === value} onClick={() => setTheme(value)}><span /><b>{t(`ui.${value}`)}</b></button>)}</div><label className="language-field"><Globe />{t("ui.language")}<select value={locale} onChange={e => setLocale(e.target.value)}>{locales.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}</select></label><p className="settings-help">{t("chat.inputHint")}</p></section>}
+          {settingsPage === "connection" && <section className="settings-card">{connectionControls}</section>}
+          {settingsPage === "model" && <section className="settings-card">{inferenceControls}</section>}
+          {settingsPage === "system" && <section className="settings-card">{runtimeControls}{metrics}</section>}
+        </div>
+      </section> : view === "brain" ? <BrainWorkspace baseUrl={baseUrl} apiKey={apiKey} connected={connected} engineId={activeId} />
+        : view === "galaxy" ? <section className="galaxy-workspace"><Galaxy baseUrl={baseUrl} apiKey={apiKey} connected={connected} engineId={activeId} /></section>
+        : view === "profiling" ? <section className="profiling-workspace"><header className="page-heading"><span>COLIBRì / ENGINE</span><h1>Profiling</h1></header>{metrics}<Profiling baseUrl={baseUrl} apiKey={apiKey} connected={connected} /></section>
+        : <section className={cn("chat-view", empty && "empty")} hidden={view === "brio"}>
+          {empty ? <div className="welcome-brand"><Brand word /></div> : <div className="conversation" role="log" aria-label={t("nav.chat")}>
+            <div className="message-list">{messages.map((item, index) => <article key={item.id} className={cn("message", item.role)}>
+              {item.role !== "user" && <div className="assistant-brand"><Brand /><span>colibrì</span></div>}
+              {item.images?.length ? <div className="message-images">{item.images.map((url, at) =>
+                <img key={at} src={url} alt={t("ui.attachedImage", { n: at + 1 })} />)}</div> : null}
+              <div className="message-body">{item.content ? (item.role === "assistant" ? <Markdown text={item.content} /> : item.content) : <span className="typing" aria-label={t("ui.generating")}><i /><i /><i /></span>}
+                {item.reasoning ? <details className="reasoning" open={!item.content}>
+                  <summary>{t("sidebar.reasoning")}</summary>
+                  <div className="reasoning-body">{item.reasoning}</div>
+                </details> : null}
               </div>
-            ) : (
-              <div className="message-list">
-                {messages.map((item) => (
-                  <article key={item.id} className={cn("message", item.role)}>
-                    <div className="avatar">{item.role === "user" ? "Y" : <Feather className="size-4" />}</div>
-                    <div><div className="message-meta">{item.role === "user" ? t("chat.you") : t("chat.colibri")}</div><div className="message-body">{item.reasoning
-                      ? <details className="reasoning" open={!item.content}>
-                        <summary>{t("sidebar.reasoning")}</summary>
-                        <div className="reasoning-body">{item.reasoning}</div>
-                      </details>
-                      : null}{item.content
-                        ? (item.role === "assistant"
-                          /* User turns stay literal: the person typed those
-                             characters and expects to see them back. Only the
-                             model's output is markdown. */
-                          ? <Markdown source={item.content} />
-                          : item.content)
-                        : <span className="typing" aria-label="Generating"><i /><i /><i /></span>}</div></div>
-                  </article>
-                ))}
-                <div ref={bottomRef} />
-              </div>
-            )}
-          </div>
-
+              {item.role === "assistant" && item.content && <div className="message-actions"><button className="icon-action" aria-label={t("ui.copy")} title={t("ui.copy")} onClick={() => void copyMessage(item)}><Copy /></button>{copied === item.id && <span role="status">{t("ui.copied")}</span>}{index === messages.length - 1 && !loading && <button className="icon-action" aria-label={t("ui.regenerate")} title={t("ui.regenerate")} onClick={() => { const userIndex = messages.map((m, i) => m.role === "user" && i < index ? i : -1).reduce((a, b) => Math.max(a, b), -1); if (userIndex >= 0) void send(messages[userIndex].content, messages.slice(0, userIndex)) }}><RefreshCw /></button>}</div>}
+            </article>)}<div ref={bottomRef} /></div>
+          </div>}
           <div className="composer-wrap">
             {error && <div className="error-banner" role="alert">{t(error)}</div>}
-            <div className="composer">
-              <Textarea value={draft}
-                onPaste={(event) => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void attachFiles(files) } }}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); void attachFiles(event.dataTransfer.files) } }} onChange={(event) => setDraft(event.target.value)} placeholder={t("chat.placeholder")} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
-              {attachments.length > 0 && (
-                <div className="attachments">
-                  {attachments.map((item, index) => (
-                    <span key={item.url + index} className="attachment">
-                      <img src={item.url} alt={item.name} />
-                      <button type="button" aria-label={t("chat.removeImage")}
-                        onClick={() => setAttachments((current) => current.filter((_, at) => at !== index))}>x</button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="composer-foot"><span><MessageSquareText className="size-3.5" /> {t("chat.inputHint")}</span><input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { void attachFiles(event.target.files); event.target.value = "" }} /><Button variant="ghost" size="icon" aria-label={t("chat.attachImage")} onClick={() => fileInputRef.current?.click()}><ImagePlus className="size-4" /></Button>{loading ? <Button variant="destructive" size="icon" aria-label={t("chat.stop")} onClick={() => abortRef.current?.abort()}><CircleStop className="size-4" /></Button> : <Button size="icon" aria-label={t("chat.send")} disabled={!canSend} onClick={() => void send()}><ArrowUp className="size-4" /></Button>}</div>
-            </div>
+            <form className="composer" onSubmit={e => { e.preventDefault(); void send() }}
+              onDragOver={e => { if (e.dataTransfer.types.includes("Files")) e.preventDefault() }}
+              onDrop={e => { if (e.dataTransfer.files.length) { e.preventDefault(); void attach(e.dataTransfer.files) } }}>
+              {pending.length > 0 && <div className="composer-attachments">
+                {pending.map((url, at) => <span key={at} className="attachment">
+                  <img src={url} alt={t("ui.attachedImage", { n: at + 1 })} />
+                  <button type="button" aria-label={t("ui.removeImage")} title={t("ui.removeImage")}
+                    onClick={() => setPending(list => list.filter((_, index) => index !== at))}><X /></button>
+                </span>)}
+              </div>}
+              <Textarea ref={draftRef} id="draft" aria-label={t("chat.placeholder")} value={draft} onChange={e => setDraft(e.target.value)} placeholder={t("chat.placeholder")} onPaste={event => { const files = Array.from(event.clipboardData.files || []); if (files.length) { event.preventDefault(); void attach(files) } }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
+              <div className="composer-foot">
+                <input ref={fileRef} type="file" accept="image/*" multiple hidden
+                  onChange={e => { void attach(e.target.files); e.target.value = "" }} />
+                <button type="button" className="attach-chip" aria-label={t("ui.attachImage")} title={t("ui.attachImage")}
+                  onClick={() => fileRef.current?.click()}><ImagePlus /></button>
+                <button type="button" className="reasoning-chip" aria-pressed={reasoning !== "off"} onClick={() => setReasoning(value => value === "off" ? "high" : "off")}><BrainCircuit />{t("sidebar.reasoning")}</button>
+                <button type="button" className="slot-chip" onClick={() => openSettings("model")}><Database />{t("topbar.slot", { n: cacheSlot + 1 })}</button>
+                {loading ? <button type="button" className="send-button" aria-label={t("chat.stop")} onClick={() => abortRef.current?.abort()}><CircleStop /></button> : <button type="submit" className="send-button" aria-label={t("chat.send")} disabled={!canSend}><ArrowUp /></button>}
+              </div>
+            </form>
+            {empty && <div className="suggestions">{[{ key: "routing", Icon: BrainCircuit, label: "idea" }, { key: "benchmark", Icon: Gauge, label: "code" }, { key: "caching", Icon: Database, label: "analyze" }].map(({ key, Icon, label }) => <button key={key} onClick={() => { setDraft(t(`prompts.${key}`)); draftRef.current?.focus() }}><Icon />{t(`ui.${label}`)}</button>)}</div>}
+            {!empty && lastRun?.finishReason === "length" && <p className="truncation-note">{t("topbar.truncatedHelp")}</p>}
           </div>
-        </>}
-      </main>
-    </div>
-  )
+        </section>}
+      <section className="brio-workspace" hidden={view !== "brio"}>
+        <header className="page-heading"><span>COLIBRÌ / BRIO</span><h1>{t("nav.brio")}</h1></header>
+        <Brio baseUrl={baseUrl} apiKey={apiKey} model={model} connected={connected} />
+      </section>
+    </main>
+    <NavigationDock view={view} onNavigate={setView} loading={loading} />
+    <dialog ref={historyDialog} className="history-dialog" onCancel={() => setHistoryOpen(false)} onClose={() => setHistoryOpen(false)} onClick={e => { if (e.target === e.currentTarget) { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) setHistoryOpen(false) } }}>
+      <header><h2>{t("ui.history")}</h2><button className="icon-action" aria-label={t("ui.close")} onClick={() => setHistoryOpen(false)}><X /></button></header>
+      <label className="history-search"><Search /><input aria-label={t("ui.search")} placeholder={t("ui.search")} value={query} onChange={e => setQuery(e.target.value)} /></label>
+      <div className="history-results">
+        {Object.entries(conversations).filter(([slot, items]) => Number(slot) < kvSlots && items.some(m => m.content.toLocaleLowerCase().includes(query.toLocaleLowerCase()))).map(([slot, items]) => <button key={slot} disabled={loading} onClick={() => { setCacheSlot(Number(slot)); setView("chat"); setHistoryOpen(false); setDraft(""); setError("") }}><MessageSquareText /><span>{items.find(m => m.role === "user")?.content.slice(0, 85)}<small>{t("topbar.slot", { n: Number(slot) + 1 })}</small></span></button>)}
+        {archives.filter(entry => entry.messages.some(m => m.content.toLocaleLowerCase().includes(query.toLocaleLowerCase()))).map(entry => <button key={entry.id} disabled={loading} onClick={() => restoreArchive(entry)}><History /><span>{entry.messages.find(m => m.role === "user")?.content.slice(0, 85)}<small>{t("ui.archived")}</small></span></button>)}
+        <p>{t("ui.historyMemory")}</p>
+      </div>
+    </dialog>
+  </div>
 }

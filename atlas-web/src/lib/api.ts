@@ -295,3 +295,43 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
     queueWaitMs: parsedQueueWait !== null && Number.isFinite(parsedQueueWait) ? parsedQueueWait : null,
   }
 }
+
+/* Modalita brio (upstream 1.12.0): the model does not generate — it assigns a
+ * probability to each allowed option. The prefix-photo / per-option read /
+ * length-normalisation loop lives in the gateway; here we send one request and
+ * receive a distribution. Reaches the engine through /engine-proxy when the
+ * atlas service fronts a hydra engine. */
+export interface BrioChoice {
+  option: string
+  p: number
+  logprob: number
+  mean_logprob: number
+  tokens: number
+}
+
+export interface BrioResponse {
+  answer: string
+  entropy: number
+  normalize: "mean" | "sum"
+  choices: BrioChoice[]
+  usage: { prompt_tokens: number; completion_tokens: number; read_tokens: number; total_tokens: number }
+}
+
+export async function askBrio(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  state: string,
+  question: string,
+  options: string[],
+  signal?: AbortSignal,
+): Promise<BrioResponse> {
+  const response = await fetch(endpoint(baseUrl, "brio"), {
+    method: "POST",
+    headers: headers(apiKey),
+    body: JSON.stringify({ model, state, question, options }),
+    signal,
+  })
+  if (!response.ok) throw new Error(await responseError(response))
+  return (await response.json()) as BrioResponse
+}

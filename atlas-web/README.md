@@ -6,8 +6,10 @@ this service polls one or **many** engines (5060 Ti / 3060 / P100 VM) through
 the Stage B read contract and serves the Brain page — one cortex view for the
 whole rig.
 
-Ported from upstream **JustVugg/colibri @ `a8f2ca62`** (`web/src/Brain.tsx`,
-`web/src/lib/api.ts`, i18n, styles). JS runtime: **bun 1.4.2**.
+Ported from upstream **JustVugg/colibri @ `9d5d05de7f`** (v1.12.0), previously
+pinned at `a8f2ca62`. Provenance: baseline `f4ea418cd` + provenance-only
+merge `5542d1d7a` (`--allow-unrelated-histories`, tree unchanged) + port
+commits under `atlas-web/`. JS runtime: **bun 1.4.2**.
 
 ## Run
 
@@ -76,18 +78,43 @@ design §B):
 
 ## Deviations from upstream (kept minimal, tagged `hydra:` in source)
 
-1. `src/main.tsx` — Brain-only entry (chats/profiling tabs out of scope,
-   design §D); health poll every 5s via vendored `lib/api.ts`.
-2. `Brain.tsx` — layer mapping from the geometry payload (upstream GLM
-   fallback kept for direct-Colibri mode); optional `engineId` prop →
-   `?engine=` query; tooltip appends the #175 `weak` qualifier when
-   `spec < 0.7` with `reliability`.
-3. Everything else (Brain render loop, i18n, api, styles) is vendored
-   verbatim from upstream.
+1. **Separated-service shell (design §D).** Default view is **Brain**; Chat /
+   Brio / Galaxy / Profiling / Settings are reachable via `NavigationDock`.
+   Atlas engine selector + `/health` poll feed `engineId` into Brain/Galaxy/
+   BrainWorkspace (`?engine=`). `lib/reasoning.ts` kept (upstream deleted it);
+   Markdown uses `text=` prop (upstream 1.12.0 rename).
+2. `Brain.tsx` / `BrainWorkspace.tsx` — layer mapping from the geometry payload
+   (upstream GLM fallback kept for direct-Colibri mode); optional `engineId`
+   → `?engine=`; explorer fetches `/experts.json?engine=` (never BASE_URL).
+   Tooltip appends the #175 `weak` qualifier when `spec < 0.7` with
+   `reliability`; Metrics panel reads expert-metrics schema v2.
+3. `Galaxy.tsx` — hydra multi-engine + **explicit atlas-failure badge** on
+   `/experts.json` 404/network error (retry button; no silent degrade).
+4. `server/server.ts` — ours (Stage B contract); engine-id refusal discipline
+   retained. Extend only if a new atlas endpoint is required.
+5. CSS: shared upstream base + `chat-design.css` + `brain-design.css` + hydra
+   metrics/Galaxy/engine-row/reasoning styles in `index.css`.
+
+### Not ported (out of scope — do not touch engine/site)
+
+Upstream `main` → `9d5d05de7f` includes non-web work that this port deliberately
+skips (no `c/`, `site/`, `docs/` changes):
+
+| Upstream area | Examples | Why skipped |
+|---|---|---|
+| `c/` engine | emap after every turn (`4baf7716d`), flush-on-SIGTERM (`becab2b58`), brio API (`37c54e11c`, `07b8d0653`) | owner: do not touch `src/llama-cpp` / rig |
+| `site/` | searchable models, brio section, theme switch (`1f879b05a`) | not atlas-web |
+| `docs/` | brio mode / Brain+Profiling readme notes | not atlas-web |
+
+Web-only upstream deltas a8f2ca62…9d5d05de7f **are** ported: redesigned shell
+(`chat-design`, `brain-design`, `NavigationDock`, `Brand`), `Brio.tsx`,
+`lib/cortex.ts`, `lib/brain-topics.ts`, `askBrio` in `lib/api.ts`, fonts/icon,
+i18n `ui.*` / `brio.*` / `topic.*` keys.
 
 ## Status
 
 - Scaffold (S-D1, hydra_vortex#771): mock adapter + Brain port, visual
   verification against the draft qwen4exp atlas (2431 experts, 48 layers).
+- Upstream v1.12.0 web redesign + Brio ported onto the hydra shell (this track).
 - Next: swap mock for the real Stage B endpoint when the fork lands it
   (Gate 0: Stage-1 dual-op store on `baseline-qwen4exp-mtp`).

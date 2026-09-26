@@ -1,0 +1,62 @@
+atlas-web — Colibri attribution
+===============================
+
+Upstream project: colibri — https://github.com/JustVugg/colibri
+Derived from revision: 9d5d05de7f4ccf39840224ed295f292ab8aeb598 (v1.12.0)
+License: Apache License 2.0 — see LICENSE-colibri in this directory.
+
+Upstream NOTICE text, verbatim:
+
+    colibri
+    Copyright 2026 Vincenzo Fornaro
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+    Third-party components bundled with this software and their licenses
+    are listed in THIRD_PARTY_NOTICES.md.
+
+SCOPE OF DERIVATION
+-------------------
+All of atlas-web is derived from Colibri `web/` (upstream 9d5d05de7f, v1.12.0)
+EXCEPT the hydra-original files listed below. This includes files that match
+upstream byte-for-byte (e.g. src/Brio.tsx, src/ErrorBoundary.tsx,
+src/components/ui/{badge,button,input,textarea}.tsx, src/lib/{cortex,runtime,
+storage,utils,brain-topics}.ts, src/brain-design.css, src/chat-design.css,
+public/colibri-icon.svg, public/fonts/*) and files adapted from upstream
+(everything under src/ not listed as hydra-original, plus vite.config.ts,
+tsconfig*.json). src/lib/reasoning.ts matches upstream's pre-1.12.0
+web/src/lib/reasoning.ts byte-for-byte (upstream deleted the file in the
+1.12.0 redesign); it remains Colibri-derived.
+
+HYDRA-ORIGINAL FILES (not derived from Colibri)
+-----------------------------------------------
+  server/server.ts          hydra atlas aggregation service + engine proxy
+  scripts/proxy-smoke.ts    B4 allowlist smoke test
+  src/Galaxy.tsx            3-D expert galaxy (hydra #787.4)
+  public/favicon.svg
+  README.md                 hydra deployment/ops documentation
+  package.json              hydra scripts + dependency pinning
+  LICENSE-colibri           verbatim copy of upstream LICENSE (this attribution)
+  NOTICE                    this file
+
+MODIFIED
+--------
+The derived files listed above are modified for integration into the
+hydra_vortex atlas-web service: wiring to the hydra engine proxy
+(/engine-proxy/<id>/...), the mock EMAP adapter, i18n additions, hydra
+health/tier surfaces, and surfacing of /experts.json atlas failures instead
+of silent degradation. They are NOT verbatim copies.
+
+Third-party components bundled by upstream are listed in upstream's
+THIRD_PARTY_NOTICES.md; the fonts carried into public/fonts/ remain under
+their own licenses (OFL.txt for bytesized, SIL Open Font License 1.1).

@@ -204,16 +204,25 @@ function cors(): Record<string, string> {
 }
 
 // B4 allowlist: the only (method, path) pairs the Brain client actually calls
-// through the proxy (src/lib/api.ts). Paths are the parsed segments AFTER
-// /engine-proxy/<id>/:
-//   GET  v1/models | health | profile | turns | turns/<int> | experts
-//   POST v1/chat/completions
+// through the proxy (src/lib/api.ts + Galaxy.tsx). Paths are the parsed
+// segments AFTER /engine-proxy/<id>/:
+//   GET  v1/models | health | profile | turns | turns/<int> | experts | experts.json
+//   POST v1/chat/completions | v1/brio
+// hydra colibri-1120 rebuild: two additions for the 1.12.0 port, both
+// read-only surface —
+//   GET  experts.json   engine-hosted atlas artifact (Galaxy.tsx/Brain.tsx
+//                       fetch it through the proxy base; static file, no
+//                       engine state touched)
+//   POST v1/brio        1.12.0 brio option-scoring (src/lib/api.ts askBrio,
+//                       called from Brio.tsx); scores fixed options, mutates
+//                       nothing
 const PROXY_GET: Record<string, true> = {
   "v1/models": true,
   health: true,
   profile: true,
   turns: true,
   experts: true,
+  "experts.json": true,
 }
 
 function proxyAllowed(method: string, rest: string[]): boolean {
@@ -222,7 +231,7 @@ function proxyAllowed(method: string, rest: string[]): boolean {
     if (PROXY_GET[p]) return true
     return rest.length === 2 && rest[0] === "turns" && /^\d+$/.test(rest[1])
   }
-  if (method === "POST") return p === "v1/chat/completions"
+  if (method === "POST") return p === "v1/chat/completions" || p === "v1/brio"
   return false
 }
 

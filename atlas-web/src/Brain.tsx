@@ -34,6 +34,33 @@ interface AtlasProvenance {
   categories_missing?: string[]
 }
 
+// hydra (F4c): foreign/older experts.json shapes can carry entries without
+// the fields the UI surfaces (label/affinity). Previously that crashed the
+// Brain tab ("Cannot read properties of undefined (reading 'startsWith')").
+// Drop unsurfable entries once at fetch time so every downstream consumer
+// (metrics panel, tooltip) only ever sees safe entries.
+function atlasEntryIsSafe(entry: unknown): entry is AtlasEntry {
+  if (!entry || typeof entry !== "object") return false
+  const e = entry as AtlasEntry
+  return (
+    typeof e.label === "string" &&
+    e.label.length > 0 &&
+    !!e.affinity &&
+    typeof e.affinity === "object"
+  )
+}
+
+function safeAtlas(d: unknown): Record<string, AtlasEntry> | null {
+  if (!d || typeof d !== "object") return null
+  const experts = (d as { experts?: unknown }).experts
+  if (!experts || typeof experts !== "object") return null
+  const out: Record<string, AtlasEntry> = {}
+  for (const [key, entry] of Object.entries(experts as Record<string, unknown>)) {
+    if (atlasEntryIsSafe(entry)) out[key] = entry
+  }
+  return out
+}
+
 const TIER_KEYS = ["tier.disk", "tier.ram", "tier.vram"] as const
 const TIER_RGB: [number, number, number][] = [[58, 71, 80], [90, 155, 216], [78, 214, 165]]
 
@@ -59,6 +86,9 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
   const [atlas, setAtlas] = useState<Record<string, AtlasEntry> | null>(null)
   // hydra: Metrics panel state (expert-metrics schema v2 provenance + summary)
   const [metrics, setMetrics] = useState<{ prov: AtlasProvenance; fams: { specialists: number; generalists: number; weak: number; meanSpec: number; reap: number; edge0: number } } | null>(null)
+  // hydra (N2): honest notice when the atlas exists but entries were dropped
+  // by the F4c safety rule — same rule as Galaxy (treat as no atlas + say so).
+  const [atlasNotice, setAtlasNotice] = useState<string | null>(null)
   // hydra: active telemetry-family tab in the Recorded metrics panel
   const [metricsTab, setMetricsTab] = useState<"colibri" | "reap" | "edge0">("colibri")
   const [tip, setTip] = useState<{ x: number; y: number; row: number; col: number; tier: number; heat: number } | null>(null)
@@ -75,14 +105,29 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
     const base = baseUrl.replace(/\/v1\/?$/, "")
     fetch(endpoint(base, "/experts.json" + engQ), { headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} })
       .then(r => r.ok ? r.json() : null).then(d => {
-        if (d?.experts) setAtlas(d.experts)
+        // hydra (F4c+N2): sanitize foreign atlas entries (skip entries lacking
+        // label/affinity). When ANY entry is dropped — or nothing is
+        // displayable (e.g. a ranking file served as experts.json) — treat it
+        // as no atlas and say so honestly; same rule as Galaxy.
+        const total = d && typeof d === "object" && d.experts && typeof d.experts === "object"
+          ? Object.keys(d.experts as object).length : 0
+        const experts = safeAtlas(d)
+        const kept = experts ? Object.keys(experts).length : 0
+        if (total > 0 && kept === total && experts) {
+          setAtlas(experts)
+          setAtlasNotice(null)
+        } else {
+          setAtlas(null)
+          setAtlasNotice(total > 0 ? `atlas not displayable (${total - kept} entries dropped)` : null)
+        }
         // hydra: schema v2 — derive the Metrics-panel family summary. Families
         // whose observers are not wired stay null in the artifact; count them
         // and show an honest not-wired badge rather than a zero.
-        if (d?.experts && d?.provenance) {
-          const es = Object.values(d.experts) as AtlasEntry[]
+        if (total > 0 && kept === total && experts && d?.provenance) {
+          const es = Object.values(experts) as AtlasEntry[]
           const specs = es.filter(e => e.label.startsWith("specialist"))
-          const weak = es.filter(e => e.weak)
+          // hydra (F4c): weak is an optional flag — guard the property access too
+          const weak = es.filter(e => e.weak === true)
           const meanSpec = es.reduce((a, e) => a + (e.spec ?? 0), 0) / Math.max(es.length, 1)
           const reap = es.filter(e => e.reap).length
           const edge0 = es.filter(e => e.edge0).length
@@ -211,6 +256,7 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
           <p className="runtime-unavailable">{t("brain.noTelemetry")}</p>
         )}
       </div>
+      {atlasNotice && <p className="runtime-unavailable" role="status">{atlasNotice}</p>}
       {/* hydra: Metrics panel — what expert-metrics (ddvnguyen/expert-metrics)
           has recorded for this model. Colibri numbers come from measured
           spectra; REAP/Edge0 show honest not-wired badges until their
@@ -291,7 +337,10 @@ export function Brain({ baseUrl, apiKey, connected, engineId }: { baseUrl: strin
           <div className="brain-tip-title"><Layers className="size-3" /> Layer {realLayer}{isMtp ? " (MTP)" : ""} · Expert {tip.col}</div>
           <div>Tier: <strong style={{ color: ["#8b9aa3", "#5a9bd8", "#4ed6a5"][tip.tier] }}>{t(TIER_KEYS[tip.tier])}</strong></div>
           <div>Heat: <strong>{tip.heat === 0 ? t("brain.neverRouted") : t("brain.selections", { heat: tip.heat })}</strong></div>
-          {entry ? <>
+          {/* hydra (F4c): entries were sanitized at fetch; belt-and-braces
+              guard keeps the tooltip path crash-free if state ever changes
+              between fetch and render */}
+          {entry && atlasEntryIsSafe(entry) ? <>
             <div className={entry.label.startsWith("specialist") ? "brain-tip-spec" : undefined}>
               {entry.label.startsWith("specialist") ? t("brain.specialist", { top: entry.top }) : t("brain.generalist")}
               <small> (entropy {entry.entropy})</small>
