@@ -118,7 +118,9 @@ def main(argv=None):
     ap.add_argument("--include-prefill", action="store_true",
                     help="include prefill positions (default decode-only)")
     ap.add_argument("--out", default="experts.json")
-    ap.add_argument("--ranks", default="expert-ranks.json")
+    ap.add_argument("--ranks", default="",
+                    help="(unused, kept for compat) ranking artifacts are "
+                         "emitted by emit.py as expert-ranks-<engine_id>.json")
     ap.add_argument("--report", default="")
     args = ap.parse_args(argv)
 

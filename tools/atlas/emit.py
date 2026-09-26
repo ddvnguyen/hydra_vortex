@@ -9,7 +9,10 @@
                   "spec": s, "reliability": "f/R"}}}
    plus provenance block {model, engine_id, commit, probe_set, generated_at}.
 
-2. expert-ranks.json — ranking tier for the future placement-prior consumer:
+2. expert-ranks-<engine_id>.json — ranking tier for the future
+     placement-prior consumer (F4b: engine-suffixed name — a bare
+     expert-ranks.json collides with the engine-hosted
+     GET /expert-ranks.json artifact route and across engines):
      {"version", "engine_id", "model_hash", "provenance",
       "layers": {"<il>": {"experts": [{"id", "heat", "p": {cat: score}, ...}
                                      ordered hot-first]}}}
@@ -30,6 +33,12 @@ import json
 import trace_io
 
 ENGINE_ID = "qwen38"  # owner-designated engine id for this qwen4exp model
+# F4a (architect package d-9981fa1092): engine_id is now a CLI arg. The
+# accepted forms match the fork's artifact-route refusal discipline
+# (test-hydra-atlas-file cases 1+2): the exact 16-hex FNV geometry id
+# AND the "$arch:$basename" short form. Ornith pipelines pass e.g.
+# --engine-id qwen35moe:Ornith-1.5-35B-A3B-APEX-MTP-I-Compact-00001-of-....gguf
+# or --engine-id <fnv-16-hex>.
 
 
 def load_full(path):
@@ -37,11 +46,11 @@ def load_full(path):
         return json.load(fh)
 
 
-def provenance(full):
+def provenance(full, engine_id=ENGINE_ID):
     runs = full["runs"]
     return {
         "model": runs[0]["sidecar"].get("model_shard1", "unknown"),
-        "engine_id": ENGINE_ID,
+        "engine_id": engine_id,
         "commit": runs[0]["sidecar"].get("fork_commit", "unknown"),
         "probe_set": [r["name"] for r in runs],
         "generated_at": datetime.datetime.now(datetime.timezone.utc)
@@ -102,7 +111,7 @@ def load_overlay(path):
     return parsed, prov
 
 
-def emit_ranks(full, prov, top_n=None, reap=None):
+def emit_ranks(full, prov, top_n=None, reap=None, engine_id=ENGINE_ID):
     """Per-layer ordered hot-first lists for the placement-prior consumer.
 
     Population: ALL specialists that fired at that layer in the decode
@@ -139,7 +148,7 @@ def emit_ranks(full, prov, top_n=None, reap=None):
             "mtp_excluded": reap_prov.get("mtp_excluded", True),
             "cells": sum(1 for v in sal.values() if v is not None),
         }
-    return {"version": 1, "engine_id": ENGINE_ID,
+    return {"version": 1, "engine_id": engine_id,
             "model_hash": prov["model"], "provenance": prov,
             "layers": out_layers}
 
@@ -153,8 +162,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="emit atlas artifacts")
     ap.add_argument("--full", default="experts.json.atlas-full.json",
                     help="intermediate from analyze.py")
+    ap.add_argument("--engine-id", default=ENGINE_ID,
+                    help="engine id in an accepted form (16-hex FNV geometry "
+                         "id or '$arch:$basename' short form); default " + ENGINE_ID)
     ap.add_argument("--experts-out", default="experts.json")
-    ap.add_argument("--ranks-out", default="expert-ranks.json")
+    ap.add_argument("--ranks-out", default=None,
+                    help="ranking artifact path (default: "
+                         "expert-ranks-<engine_id>.json)")
     ap.add_argument("--top-n", type=int, default=None,
                     help="cap experts per layer in expert-ranks.json (default all)")
     ap.add_argument("--reap-overlay", default=None,
@@ -163,18 +177,28 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     full = load_full(args.full)
-    prov = provenance(full)
+    engine_id = args.engine_id
+    # Filename-safe suffix: for "$arch:$basename" ids use the basename part
+    # (same FNV short-id rule as the fork's artifact routes); ':' is invalid
+    # in POSIX filenames. FNV ids are already hex-safe.
+    suffix = engine_id.rsplit(":", 1)[-1]
+    if ".gguf" in suffix:
+        suffix = suffix.removesuffix(".gguf")
+    ranks_out = args.ranks_out or f"expert-ranks-{suffix}.json"
+    prov = provenance(full, engine_id=engine_id)
     reap = load_overlay(args.reap_overlay) if args.reap_overlay else None
     experts_doc = emit_experts(full, prov)
-    ranks_doc = emit_ranks(full, prov, top_n=args.top_n, reap=reap)
+    ranks_doc = emit_ranks(full, prov, top_n=args.top_n, reap=reap,
+                           engine_id=engine_id)
     with open(args.experts_out, "w") as fh:
         json.dump(experts_doc, fh, indent=1)
-    with open(args.ranks_out, "w") as fh:
+    with open(ranks_out, "w") as fh:
         json.dump(ranks_doc, fh, indent=1)
     n = len(experts_doc["experts"])
     nl = len(ranks_doc["layers"])
     print(f"wrote {args.experts_out} ({n} experts, {len(experts_doc['categories'])} categories)")
-    print(f"wrote {args.ranks_out} ({nl} layers)")
+    print(f"wrote {ranks_out} ({nl} layers, engine_id={engine_id}, "
+          f"file suffix={suffix})")
     print(f"corpus quality: {prov['corpus']['quality']} "
           f"(categories: {', '.join(prov['probe_set'])})")
 

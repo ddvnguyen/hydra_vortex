@@ -30,8 +30,12 @@ def layer_ids(ranks, il):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="expert-ranks.json -> pin file")
-    ap.add_argument("--ranks", default="expert-ranks.json")
+    ap = argparse.ArgumentParser(description="expert-ranks-<engine_id>.json -> pin file")
+    ap.add_argument("--ranks", required=True,
+                    help="ranking artifact (expert-ranks-<engine_id>.json from "
+                         "emit.py --engine-id ...; bare expert-ranks.json is "
+                         "the engine artifact-route name and no longer the "
+                         "pipeline default)")
     ap.add_argument("--out", default="experts.pin")
     ap.add_argument("--top-n", type=int, default=None,
                     help="export only the top-N hottest per layer (default all)")
