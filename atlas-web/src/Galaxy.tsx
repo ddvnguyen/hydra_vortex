@@ -164,6 +164,9 @@ export function Galaxy({
   const [atlas, setAtlas] = useState<Record<string, AtlasEntry> | null>(null)
   const [atlasFailed, setAtlasFailed] = useState(false)
   const [atlasRetry, setAtlasRetry] = useState(0)
+  // hydra (N2): honest notice when the atlas exists but nothing in it is
+  // displayable (entries dropped by the F4c safety rule) — same rule as Brain.
+  const [atlasNotice, setAtlasNotice] = useState<string | null>(null)
   const [probeErr, setProbeErr] = useState(false)
   const [selectedNode, setSelectedNode] = useState<GalaxyNode | null>(null)
   const [hoverNode, setHoverNode] = useState<GalaxyNode | null>(null)
@@ -173,7 +176,6 @@ export function Galaxy({
   // be hardcoded 0..19 while the engine ring actually holds a different,
   // moving window of turns (e.g. 16..271).
   const [turnsList, setTurnsList] = useState<TurnSummary[]>([])
-  const [turnsMissing, setTurnsMissing] = useState(false)
 
   // Three.js refs (not state to avoid re-renders)
   const sceneRef = useRef<THREE.Scene | null>(null)
@@ -192,6 +194,7 @@ export function Galaxy({
     const base = baseUrl.replace(/\/v1\/?$/, "")
     const controller = new AbortController()
     setAtlasFailed(false)
+    setAtlasNotice(null)
     fetch(endpoint(base, "/experts.json" + engQ), {
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
       signal: controller.signal,
@@ -202,12 +205,26 @@ export function Galaxy({
       })
       .then((d) => {
         if (controller.signal.aborted) return
-        if (d?.experts && typeof d.experts === "object") {
-          setAtlas(d.experts)
-          setAtlasFailed(false)
-        } else {
+        // hydra (F4c+N2): sanitize at fetch, same rule as Brain — an entry
+        // without label/affinity is dropped, and ANY dropped entry (or an
+        // empty map) makes the atlas not displayable: honest notice instead
+        // of a misleading partial galaxy.
+        if (!(d?.experts && typeof d.experts === "object")) {
           throw new Error("Atlas unavailable: bad payload")
         }
+        const kept: Record<string, AtlasEntry> = {}
+        let dropped = 0
+        for (const [key, value] of Object.entries(d.experts as Record<string, AtlasEntry>)) {
+          if (entryIsSafe(value)) kept[key] = value
+          else dropped++
+        }
+        if (Object.keys(kept).length === 0 || dropped > 0) {
+          setAtlas(null)
+          setAtlasNotice(`atlas not displayable (${dropped} entries dropped)`)
+          return
+        }
+        setAtlas(kept)
+        setAtlasFailed(false)
       })
       .catch((err) => {
         if (controller.signal.aborted || err?.name === "AbortError") return
@@ -218,22 +235,20 @@ export function Galaxy({
   }, [baseUrl, apiKey, engQ, atlasRetry])
 
   // hydra (F5): poll /turns for the live ring inventory (2s while connected).
-  // Degraded gracefully: picker falls back to live-only on 404/503 (no
-  // per-turn endpoint on the engine).
+  // hydra (N1): when /turns is unavailable the picker shows "Live" only —
+  // no legacy 0..19 list (the fork's 404 body is opaque, so availability is
+  // signalled by the list simply staying empty).
   useEffect(() => {
     if (!connected) return
     let disposed = false
-    const base = baseUrl.replace(/\/v1\/?$/, "")
     const poll = async () => {
       if (document.visibilityState === "hidden") return
       try {
         const result = await getTurns(baseUrl, apiKey)
         if (disposed) return
         setTurnsList(result.turns)
-        setTurnsMissing(false)
-      } catch (err) {
-        if (disposed) return
-        if (/404|503/.test(String(err))) setTurnsMissing(true)
+      } catch {
+        if (!disposed) setTurnsList([])
       }
     }
     void poll()
@@ -243,6 +258,16 @@ export function Galaxy({
       window.clearInterval(t)
     }
   }, [baseUrl, apiKey, connected])
+
+  // hydra (B2): an evicted turn must fall back to live — the /experts
+  // poller keeps the last frame on failure, and the picker would otherwise
+  // show "Live" while stale per-turn data renders.
+  useEffect(() => {
+    if (turn === null) return
+    if (turnsList.length > 0 && !turnsList.some((t) => t.turn_seq === turn)) {
+      setTurn(null)
+    }
+  }, [turn, turnsList])
 
   // Poll /experts for live data
   useEffect(() => {
@@ -260,8 +285,14 @@ export function Galaxy({
         if (disposed || !next.rows) return
         setData(next)
         setProbeErr(false)
-      } catch {
-        if (!disposed) setProbeErr(true)
+      } catch (err) {
+        if (!disposed) {
+          setProbeErr(true)
+          // hydra (B2): 404 on /experts?turn=N = the selected turn was
+          // evicted from the ring — drop back to live instead of freezing
+          // on the last frame.
+          if (turn !== null && /\/experts 404/.test(String(err))) setTurn(null)
+        }
       }
     }
     void poll()
@@ -547,23 +578,15 @@ export function Galaxy({
             >
               <option value="">{t("galaxy.live")}</option>
               {/* hydra (F5): real ring inventory from GET /turns, newest
-                  first. Out-of-ring selections self-correct: when the chosen
-                  turn is evicted, /experts?turn=N fails and the poller falls
-                  back to live. */}
-              {turnsMissing && turnsList.length === 0
-                ? Array.from({ length: 20 }, (_, i) => i).map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))
-                : turnsList
-                    .slice()
-                    .reverse()
-                    .map((t) => (
-                      <option key={t.turn_seq} value={t.turn_seq}>
-                        #{t.turn_seq} — {t.completion_tokens} tok
-                      </option>
-                    ))}
+                  first. Eviction falls back to live via the B2 effect. */}
+              {turnsList
+                .slice()
+                .reverse()
+                .map((t) => (
+                  <option key={t.turn_seq} value={t.turn_seq}>
+                    #{t.turn_seq} — {t.completion_tokens} tok
+                  </option>
+                ))}
             </select>
           </label>
         </div>
@@ -597,6 +620,11 @@ export function Galaxy({
               {t("galaxy.atlasRetry")}
             </button>
           </div>
+        )}
+        {atlasNotice && (
+          <p className="runtime-unavailable" role="status">
+            {atlasNotice}
+          </p>
         )}
         <canvas
           ref={canvasRef}
@@ -724,7 +752,6 @@ export function Galaxy({
             )}
           </div>
           {entryIsSafe(selectedNode.entry) && (
-            <div className="galaxy-detail-affinity">
             <div className="galaxy-detail-affinity">
               <div className="galaxy-detail-aff-title">
                 {t("galaxy.affinityProfile")}
