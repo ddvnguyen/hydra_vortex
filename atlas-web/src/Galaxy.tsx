@@ -3,7 +3,7 @@ import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
 import { Layers, Orbit, RotateCcw, TriangleAlert } from "lucide-react"
 
-import { endpoint } from "@/lib/api"
+import { endpoint, getTurns, type TurnSummary } from "@/lib/api"
 import { useLocale } from "./i18n"
 
 /* ---- Types (self-contained, mirrors Brain.tsx types for /experts) ---- */
@@ -53,6 +53,20 @@ const TIER_COLOR = [0x3a4750, 0x5a9bd8, 0x4ed6a5] // disk, ram, vram
 const TIER_CSS = ["#3a4750", "#5a9bd8", "#4ed6a5"]
 const TIER_KEYS = ["tier.disk", "tier.ram", "tier.vram"] as const
 
+/** hydra (F4c): true only when the atlas entry carries the fields the Galaxy
+ *  surfaces — label + non-empty affinity. Foreign-model atlases (older or
+ *  differently-shaped experts.json) previously crashed the tab with
+ *  "Cannot read properties of undefined (reading 'startsWith')". */
+function entryIsSafe(entry: AtlasEntry | undefined | null): entry is AtlasEntry {
+  return (
+    !!entry &&
+    typeof entry.label === "string" &&
+    entry.label.length > 0 &&
+    !!entry.affinity &&
+    typeof entry.affinity === "object"
+  )
+}
+
 function resolveLayer(
   row: number,
   rows: number,
@@ -94,9 +108,11 @@ function layoutGalaxy(
       const tier = byte >> 6
       const heat = byte & 63
 
+      // hydra (F4c): skip atlas entries lacking label/affinity instead of crashing
       const entry = atlas?.[`${realLayer}:${c}`]
-      const isSpecialist = entry?.label.startsWith("specialist") ?? false
-      const entropy = entry?.entropy ?? 0.5
+      const safeEntry = entryIsSafe(entry) ? entry : undefined
+      const isSpecialist = safeEntry?.label.startsWith("specialist") ?? false
+      const entropy = safeEntry?.entropy ?? 0.5
 
       // Angle around the cylinder for this expert column
       const angle = (c / cols) * Math.PI * 2
@@ -117,7 +133,7 @@ function layoutGalaxy(
         heat,
         realLayer,
         isMtp,
-        entry,
+        entry: safeEntry,
         position: new THREE.Vector3(x, y, z),
       })
     }
@@ -153,6 +169,11 @@ export function Galaxy({
   const [hoverNode, setHoverNode] = useState<GalaxyNode | null>(null)
   const [turn, setTurn] = useState<number | null>(null)
   const [autoRotate, setAutoRotate] = useState(true)
+  // hydra (F5): live ring turn inventory from GET /turns — the picker used to
+  // be hardcoded 0..19 while the engine ring actually holds a different,
+  // moving window of turns (e.g. 16..271).
+  const [turnsList, setTurnsList] = useState<TurnSummary[]>([])
+  const [turnsMissing, setTurnsMissing] = useState(false)
 
   // Three.js refs (not state to avoid re-renders)
   const sceneRef = useRef<THREE.Scene | null>(null)
@@ -195,6 +216,33 @@ export function Galaxy({
       })
     return () => controller.abort()
   }, [baseUrl, apiKey, engQ, atlasRetry])
+
+  // hydra (F5): poll /turns for the live ring inventory (2s while connected).
+  // Degraded gracefully: picker falls back to live-only on 404/503 (no
+  // per-turn endpoint on the engine).
+  useEffect(() => {
+    if (!connected) return
+    let disposed = false
+    const base = baseUrl.replace(/\/v1\/?$/, "")
+    const poll = async () => {
+      if (document.visibilityState === "hidden") return
+      try {
+        const result = await getTurns(baseUrl, apiKey)
+        if (disposed) return
+        setTurnsList(result.turns)
+        setTurnsMissing(false)
+      } catch (err) {
+        if (disposed) return
+        if (/404|503/.test(String(err))) setTurnsMissing(true)
+      }
+    }
+    void poll()
+    const t = window.setInterval(() => void poll(), 2000)
+    return () => {
+      disposed = true
+      window.clearInterval(t)
+    }
+  }, [baseUrl, apiKey, connected])
 
   // Poll /experts for live data
   useEffect(() => {
@@ -334,7 +382,8 @@ export function Galaxy({
       colors[i * 3 + 1] = color.g * heatFactor
       colors[i * 3 + 2] = color.b * heatFactor
 
-      // Size: specialists are slightly larger, heat adds size
+      // Size: specialists are slightly larger, heat adds size (F4c: entry
+      // is pre-guarded in layoutGalaxy, so label access is safe here)
       const base = n.entry?.label.startsWith("specialist") ? 0.22 : 0.14
       sizes[i] = base + (n.heat / 63) * 0.12
     }
@@ -497,11 +546,24 @@ export function Galaxy({
               }
             >
               <option value="">{t("galaxy.live")}</option>
-              {Array.from({ length: 20 }, (_, i) => i).map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
+              {/* hydra (F5): real ring inventory from GET /turns, newest
+                  first. Out-of-ring selections self-correct: when the chosen
+                  turn is evicted, /experts?turn=N fails and the poller falls
+                  back to live. */}
+              {turnsMissing && turnsList.length === 0
+                ? Array.from({ length: 20 }, (_, i) => i).map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))
+                : turnsList
+                    .slice()
+                    .reverse()
+                    .map((t) => (
+                      <option key={t.turn_seq} value={t.turn_seq}>
+                        #{t.turn_seq} — {t.completion_tokens} tok
+                      </option>
+                    ))}
             </select>
           </label>
         </div>
@@ -577,7 +639,7 @@ export function Galaxy({
                 : t("galaxy.selections", { heat: hoverNode.heat })}
             </strong>
           </div>
-          {hoverNode.entry ? (
+          {entryIsSafe(hoverNode.entry) ? (
             <>
               <div className="galaxy-tooltip-label">
                 {hoverNode.entry.label.startsWith("specialist")
@@ -638,7 +700,7 @@ export function Galaxy({
               <span>{t("galaxy.heat")}</span>
               <strong>{selectedNode.heat}</strong>
             </div>
-            {selectedNode.entry && (
+            {entryIsSafe(selectedNode.entry) && (
               <>
                 <div>
                   <span>{t("galaxy.label")}</span>
@@ -661,7 +723,8 @@ export function Galaxy({
               </>
             )}
           </div>
-          {selectedNode.entry?.affinity && (
+          {entryIsSafe(selectedNode.entry) && (
+            <div className="galaxy-detail-affinity">
             <div className="galaxy-detail-affinity">
               <div className="galaxy-detail-aff-title">
                 {t("galaxy.affinityProfile")}
