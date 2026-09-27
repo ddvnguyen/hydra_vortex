@@ -78,13 +78,20 @@ Current corpus: **PASS (all values exact)**.
 - `reap_saliency` is **reserved**: null until REAP gate x output-norm
   telemetry exists (design §9; the route-trace surface cannot compute it).
 
-`experts.pin` — pin-file format `"L <il> <ids...>"` consumed by the in-tree
-parsers (llama-context.cpp:2334-2363 `hydra_cpu_init`; identical parser in
-ggml-cuda.cu:1939-1970 — llama-context site verified against source 2026-09-17).
-Parser facts the exporter respects: `#`/blank lines skipped, `il` in
+`experts.pin` — pin-file format `"L <il> <ids...>"` per the format
+contract; the consumer is **not present in this tree**. The old citation
+(llama-context.cpp:2334-2363 `hydra_cpu_init`; identical parser in
+ggml-cuda.cu:1939-1970) is stale — grep-verified absent from this tree;
+`placement_proposal.py:11-13`: "nothing in prod reads a pin file".
+Contract facts the exporter respects: `#`/blank lines skipped, `il` in
 [0, 256), ids whitespace-separated after the second space, 8192-char line
 buffer (`--wrap` caps ids/line; multiple `L <il>` lines concatenate).
 `--top-n 53` matches the profile's `N=53 pins/layer` budget.
+
+**EMAP tier caveat** (engine `/experts` payload, Stage A): tier is a
+per-LAYER load fact (`set_residency`); with `--moe-expert-cache-size`
+enabled, per-expert LRU residency is invisible to the tier bit — never
+read a tier byte as per-expert placement truth.
 
 ## Provenance discipline (#1078)
 
@@ -94,8 +101,12 @@ trace sidecars), `probe_set` (category list), `generated_at`, and a corpus
 block recording decode-only windowing, the gate value used, and the
 corpus-quality label. `expert-ranks.json` additionally keys `model_hash`
 as the checkpoint-identity string (shard-1 filename; a full-weights digest
-is not computable from traces — flagged, not faked). Exporters refuse
-files whose `engine_id` is not `qwen38` (route_trace.h refusal discipline).
+is not computable from traces — flagged, not faked). `emit.py` stamps the
+CLI `--engine-id` (default `qwen38`); `export_pinfile.py` refuses files
+whose `engine_id` differs from the expected id (default `qwen38` — pass
+`--engine-id <id>` explicitly, e.g. `db4eab0cbde667d5` for
+Ornith-1.5-35B, to export that engine's artifact), the route_trace.h
+refusal discipline.
 
 ## Draft-grade vs final (owner ruling d-dfb6707bc7)
 

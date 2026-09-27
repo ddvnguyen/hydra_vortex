@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """export_pinfile.py — expert-ranks.json -> in-tree pin-file format.
 
-Format (llama-context.cpp:2334-2363 hydra_cpu_init; identical parser in
-ggml-cuda.cu:1939-1970):
+Format contract. (The old citation — llama-context.cpp:2334-2363
+hydra_cpu_init / ggml-cuda.cu:1939-1970 — is STALE: absent from this tree;
+there is no in-tree consumer either: placement_proposal.py:11-13 "nothing
+in prod reads a pin file". These are contract rules, not observed parser
+code.):
   - '#' lines and blank lines are skipped
   - each pin line: "L <il> <ids...>" — sscanf "L %d", il must be in [0, 256)
   - ids are ints after the second space, whitespace-separated
   - ORDER IS SIGNIFICANT: consumers treat the ids hot-first (the design doc
     §4 contract), so export preserves expert-ranks.json's hot-first order
-  - line buffer is 8192 chars in hydra_cpu_init: 512 ids of <=4 chars + "L il"
+  - line buffer is 8192 chars (contract): 512 ids of <=4 chars + "L il"
     fits, but the exporter still wraps long layers into continuation lines
     "L <il> ..." is NOT re-readable mid-line; instead we emit one line per
     layer capped at --wrap ids per line, repeating the header (the parser
@@ -33,6 +36,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="expert-ranks.json -> pin file")
     ap.add_argument("--ranks", default="expert-ranks.json")
     ap.add_argument("--out", default="experts.pin")
+    ap.add_argument("--engine-id", default="qwen38",
+                    help="engine_id the ranks must carry (refusal discipline: "
+                         "never mix engines); default qwen38 = existing "
+                         "pipeline behavior. Pass the other engine's id "
+                         "explicitly (16-hex FNV geometry id or "
+                         "'$arch:$basename') to export its artifact, e.g. "
+                         "--engine-id db4eab0cbde667d5 for Ornith-1.5-35B")
     ap.add_argument("--top-n", type=int, default=None,
                     help="export only the top-N hottest per layer (default all)")
     ap.add_argument("--wrap", type=int, default=500,
@@ -41,10 +51,10 @@ def main(argv=None):
 
     with open(args.ranks) as fh:
         ranks = json.load(fh)
-    if ranks.get("engine_id") != "qwen38":
+    if ranks.get("engine_id") != args.engine_id:
         # engine-id refusal discipline (route_trace.h): never mix engines
         raise SystemExit(f"refusing: ranks engine_id={ranks.get('engine_id')!r} "
-                         f"is not qwen38")
+                         f"is not {args.engine_id}")
 
     lines = [f"# expert-ranks pin export  engine_id={ranks['engine_id']}  "
              f"model={ranks.get('model_hash')}  version={ranks.get('version')}"]
