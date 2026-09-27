@@ -25,6 +25,19 @@ interface ExpertMap {
   telemetry_enabled?: boolean
   geometry?: AtlasGeometry
 }
+/** GET /turns/:seq routing slice — exact {row, expert, count} entries. The
+ *  only per-turn heat source; never reconstructed from EMAP heat bytes
+ *  (log-encoded, cumulative — byte deltas invert hot/cold, fork B1 defect). */
+interface TurnRouting {
+  routing?: { row: number; expert: number; count: number }[]
+}
+/** Turn-scoped heat lookup built from TurnRouting, tagged with its turn so a
+ *  stale record can never render under a different selection. */
+interface TurnHeat {
+  seq: number
+  counts: Map<string, number> // "row:col" → exact routing count this turn
+  max: number // max count this turn (normalization basis)
+}
 interface AtlasEntry {
   affinity: Record<string, number>
   entropy: number
@@ -150,6 +163,8 @@ export function Galaxy({
   const [selectedNode, setSelectedNode] = useState<GalaxyNode | null>(null)
   const [hoverNode, setHoverNode] = useState<GalaxyNode | null>(null)
   const [turn, setTurn] = useState<number | null>(null)
+  const [turnHeat, setTurnHeat] = useState<TurnHeat | null>(null)
+  const [turnErr, setTurnErr] = useState(false)
   const [autoRotate, setAutoRotate] = useState(true)
 
   // Three.js refs (not state to avoid re-renders)
@@ -201,6 +216,39 @@ export function Galaxy({
     return () => {
       disposed = true
       window.clearInterval(t)
+    }
+  }, [baseUrl, apiKey, connected, engQ, turn])
+
+  // Per-turn heat: exact routing counts from GET /turns/:seq (sparse
+  // {row, expert, count} slice keyed row:col). A recorded turn is immutable,
+  // so fetch once per selection — never subtract EMAP byte maps.
+  useEffect(() => {
+    if (!connected || turn === null) return
+    let disposed = false
+    const base = baseUrl.replace(/\/v1\/?$/, "")
+    const pull = async () => {
+      try {
+        const res = await fetch(endpoint(base, `/turns/${turn}` + engQ), {
+          headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        })
+        if (!res.ok) throw new Error(`/turns ${res.status}`)
+        const detail = (await res.json()) as TurnRouting
+        if (disposed) return
+        const counts = new Map<string, number>()
+        let max = 0
+        for (const c of detail.routing ?? []) {
+          counts.set(`${c.row}:${c.expert}`, c.count)
+          if (c.count > max) max = c.count
+        }
+        setTurnHeat({ seq: turn, counts, max })
+        setTurnErr(false)
+      } catch {
+        if (!disposed) setTurnErr(true)
+      }
+    }
+    void pull()
+    return () => {
+      disposed = true
     }
   }, [baseUrl, apiKey, connected, engQ, turn])
 
@@ -296,6 +344,13 @@ export function Galaxy({
     }
     if (nodes.length === 0) return
 
+    // Per-turn scope: a selected turn renders ONLY from the exact /turns/:seq
+    // routing counts — normalized count/max_count (linear; 0 when the expert
+    // never routed this turn). While the record loads or is unavailable,
+    // experts render without routing heat — never a byte fallback.
+    // turn == null keeps the lifetime byte heat below, byte-for-byte unchanged.
+    const scoped = turn !== null && turnHeat?.seq === turn ? turnHeat : null
+
     const geometry = new THREE.BufferGeometry()
     const positions = new Float32Array(nodes.length * 3)
     const colors = new Float32Array(nodes.length * 3)
@@ -307,16 +362,29 @@ export function Galaxy({
       positions[i * 3 + 1] = n.position.y
       positions[i * 3 + 2] = n.position.z
 
+      // 0..1 this-turn factor from the exact routing count, null only in the
+      // lifetime view (byte-driven formulas below); a selected turn with no
+      // valid record stays at the 0 floor instead of falling back to bytes
+      const turn01 =
+        turn === null
+          ? null
+          : scoped && scoped.max > 0
+            ? (scoped.counts.get(`${n.row}:${n.col}`) ?? 0) / scoped.max
+            : 0
+
       const color = new THREE.Color(TIER_COLOR[n.tier] ?? TIER_COLOR[0])
       // Heat brightens the color
-      const heatFactor = 0.4 + 0.6 * Math.min(n.heat / 24, 1)
+      const heatFactor =
+        turn01 !== null
+          ? 0.4 + 0.6 * turn01
+          : 0.4 + 0.6 * Math.min(n.heat / 24, 1)
       colors[i * 3] = color.r * heatFactor
       colors[i * 3 + 1] = color.g * heatFactor
       colors[i * 3 + 2] = color.b * heatFactor
 
       // Size: specialists are slightly larger, heat adds size
       const base = n.entry?.label.startsWith("specialist") ? 0.22 : 0.14
-      sizes[i] = base + (n.heat / 63) * 0.12
+      sizes[i] = base + (turn01 !== null ? turn01 : n.heat / 63) * 0.12
     }
 
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3))
@@ -335,7 +403,7 @@ export function Galaxy({
     const points = new THREE.Points(geometry, material)
     scene.add(points)
     pointsRef.current = points
-  }, [nodes])
+  }, [nodes, turn, turnHeat])
 
   // Animation loop
   useEffect(() => {
@@ -518,6 +586,15 @@ export function Galaxy({
         )}
         {connected && data && data.telemetry_enabled === false && (
           <p className="runtime-unavailable">{t("galaxy.noTelemetry")}</p>
+        )}
+        {connected && turn !== null && turnErr && (
+          <p
+            className="runtime-unavailable"
+            // absolute: the full-height canvas would otherwise clip this line
+            style={{ position: "absolute", left: 14, right: 14, bottom: 10 }}
+          >
+            {t("galaxy.noTelemetry")}
+          </p>
         )}
       </div>
 

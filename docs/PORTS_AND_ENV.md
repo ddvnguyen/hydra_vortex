@@ -6,7 +6,8 @@
 > doc and the affected scripts. Referenced from `CLAUDE.md` "Read These
 > First" and `docs/hydra-system-pod.md`.
 
-Last verified: 2026-07-15 against the live system.
+Last verified: 2026-07-15 against the live system; P100 rows (§1.3,
+§1.4) re-verified 2026-09-27.
 
 ---
 
@@ -69,12 +70,30 @@ is wrong.
 
 | Service | Port | URL | Notes |
 |---|---|---|---|
-| llama-server (decode-only) | `8086` (HTTP) | http://192.168.122.21:8086 | OpenAI-compat |
-| | `9502` (hydra RPC) | `hydra://192.168.122.21:9502` | StateGet/Put |
+| llama-server (decode-only) | `8086` (HTTP) | http://192.168.122.21:8086 | OpenAI-compat; **pid child of `hydra-head.service`** (systemd, active; build `b11331-6b7dc6a98f`) |
+| (no RPC listener) | `9502` — unused | — | nothing listens here: live engine flags carry no `--rpc-port`, so the old `hydra://…:9502` StateGet/Put row does not apply on this lineage |
 
 Reached over the NAT bridge into the VM. **Note: the P100 uses a
 different port (`8086`) than the host GPUs (`8080`/`8081`)** — the
 Core's `workers.json` reflects this.
+
+**Live supervision (verified 2026-09-27):** `hydra-head.service`
+systemd unit supervises the llama-server pid child on `:8086`; the
+atlas-web production instance is systemd user `atlas-web.service` (bun)
+on `:8620`. The former engine unit `hydra-atlas-engine.service` is
+**dead/orphaned** (inactive, superseded) — do not start or cite it;
+`:9502` is unused on this lineage. Engine env: `HYDRA_EXPERT_META=1`,
+`HYDRA_EXPERT_STATS=1` (no `HYDRA_EAN_STATS`).
+
+**Manifest vs live (verified 2026-09-27; restart window pending):**
+the boot intent in `infra/hydra-head/config/node-p100.yaml` is
+`Qwopus3.6-35B-A3B-v1-APEX-I-Balanced.gguf` (`n-cpu-moe 26`,
+`ctx-size 128000`, `no-mmap true`); the **live** engine instead runs
+`/mnt/readonly_data/Ornith-1.5-35B-A3B-APEX-MTP-I-Compact.gguf` with
+`--n-cpu-moe 8 --ctx-size 65536 --load-mode none --spec-type draft-mtp`
+(the Compact MTP variant, loaded ahead of the next restart window).
+Treat the manifest as restart intent, not live truth (the YAML is
+intentionally left unedited until that restart).
 
 ### 1.4 Host processes
 
@@ -85,7 +104,7 @@ Core's `workers.json` reflects this.
 | opencode | `4096` | coding-agent runtime |
 | coder (ide) | `2112`, `2113` | |
 | atlas-web (Colibri Brain, #771) — host dev instance | `8619` | bun; separated UI service polling engine Stage B `/experts`; `ATLAS_WEB_PORT`/`ATLAS_ENGINES` override — see `atlas-web/README.md` |
-| atlas-web — P100 VM production instance (systemd user `atlas-web.service`) | `8620` on 192.168.122.21 | cloudflared target; proxies engine `127.0.0.1:8086` on-VM; engine itself = systemd user `hydra-atlas-engine.service` (`:8086` HTTP / `:9502` RPC, `HYDRA_EXPERT_META=1`) |
+| atlas-web — P100 VM production instance (systemd user `atlas-web.service`, bun) | `8620` on 192.168.122.21 | cloudflared target; proxies engine `127.0.0.1:8086` on-VM; engine = llama-server supervised by `hydra-head.service` (build `b11331-6b7dc6a98f`, env `HYDRA_EXPERT_META=1 HYDRA_EXPERT_STATS=1`) — NOT `hydra-atlas-engine.service`, which is dead/orphaned (inactive, superseded); `:9502` unused on this lineage (no `--rpc-port`) — see §1.3 |
 
 ---
 
@@ -291,6 +310,7 @@ systemctl --user status infra-renderer infra-grafana infra-prometheus infra-loki
 
 | Date | Change | PR / commit |
 |---|---|---|
+| 2026-09-27 | P100 rows re-verified: `hydra-head.service` supervises llama-server `:8086`, `hydra-atlas-engine.service` dead/orphaned, `:9502` unused; added manifest-vs-live note (Qwopus Balanced boot intent vs live Ornith Compact MTP) | (doc sync, no PR) |
 | 2026-07-15 | Created; first comprehensive ports+env doc | this commit |
 | 2026-07-15 | Moved `infra-renderer` from `:8081` → `:28081` (env var `HTTP_PORT` → `SERVER_ADDR`) | #440 |
 | 2026-07-14 | Added `hydra_warm_slot_evicted_for_short_prompt_total` metric, n_past guard synthetic test, routing decision tree docs | #436 |
