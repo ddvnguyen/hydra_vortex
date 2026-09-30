@@ -35,25 +35,32 @@ import os
 import sys
 import urllib.request
 
-TRACE_COLLECT = "/tmp/opencode/trace-collect"
-INDEX_PATH = "/tmp/opencode/prefill_poc_index.json"
+TRACE_COLLECT = "/mnt/WorkDisk/trace-collect-backup"
+INDEX_PATH = "/mnt/WorkDisk/trace-collect-backup/prefill_poc_index.json"
 N_GEN_DEFAULT = 256
+# AMENDMENT 2026-09-30: the /tmp/opencode corpus is gone (tmpfs wiped).
+# /mnt/WorkDisk/trace-collect-backup holds the byte-identical 57-prompt
+# corpus (verified complete 2026-09-30). Override via --index-path/--trace-dir.
 
 FR_PRE = b"<|im_start|>user\n"
 FR_SUF = b"<|im_end|>\n<|im_start|>assistant\n<think>\n"
 
 
-def prompt_bytes(name: str) -> bytes:
+TRACE_DIR = TRACE_COLLECT  # module-level, rebindable via --trace-dir
+
+
+def prompt_bytes(name: str, trace_dir: str | None = None) -> bytes:
+    base = trace_dir or TRACE_DIR
     if name.startswith("v4/"):
         rest = name.split("/", 1)[1]
-        path = os.path.join(TRACE_COLLECT, "traces", "v4", rest + ".pref")
+        path = os.path.join(base, "traces", "v4", rest + ".pref")
         with open(path, "rb") as fh:
             return fh.read()
     if "/" in name:  # v2/c02 style
         sub, pid = name.split("/", 1)
-        path = os.path.join(TRACE_COLLECT, "prompts", sub, pid + ".txt")
+        path = os.path.join(base, "prompts", sub, pid + ".txt")
     else:  # anchors c01 c02 g01
-        path = os.path.join(TRACE_COLLECT, "prompts", name + ".txt")
+        path = os.path.join(base, "prompts", name + ".txt")
     with open(path, "rb") as fh:
         text = fh.read()
     return FR_PRE + text + FR_SUF
@@ -88,6 +95,8 @@ def main(argv=None) -> int:
                     "1200s timed out mid-run, server cancelled the task).")
     ap.add_argument("--recheck", default=None, help="re-run named probes and diff counts (determinism spot-check)")
     ap.add_argument("--tag", default="", help="run tag recorded in each probe file")
+    ap.add_argument("--index-path", default=INDEX_PATH)
+    ap.add_argument("--trace-dir", default=TRACE_COLLECT)
     ap.add_argument("--expect-layers", type=int, default=None,
                     help="assert live geometry moe_rows count (fail loudly)")
     ap.add_argument("--expect-cols", type=int, default=None,
@@ -96,7 +105,7 @@ def main(argv=None) -> int:
                     help="assert live geometry n_expert_used (fail loudly)")
     args = ap.parse_args(argv)
 
-    all_names = [e["name"] for e in json.load(open(INDEX_PATH))]
+    all_names = [e["name"] for e in json.load(open(args.index_path))]
     if args.probes:
         want = set(args.probes.split(","))
         names = [n for n in all_names if n in want]
@@ -139,7 +148,7 @@ def main(argv=None) -> int:
         if os.path.exists(dst) and name not in recheck:
             print(f"  [{i + 1}/{len(names)}] {name} (cached)")
             continue
-        prompt = prompt_bytes(name).decode("utf-8")
+        prompt = prompt_bytes(name, args.trace_dir).decode("utf-8")
         sha = hashlib.sha256(prompt.encode()).hexdigest()[:16]
         # Per-probe isolation: /capture/flush does NOT clear the hidden-state
         # buffer (verified 2026-09-23: sidecars accumulate 255/510/765 rows
