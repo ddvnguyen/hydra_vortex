@@ -88,6 +88,12 @@ def main(argv=None) -> int:
                     "1200s timed out mid-run, server cancelled the task).")
     ap.add_argument("--recheck", default=None, help="re-run named probes and diff counts (determinism spot-check)")
     ap.add_argument("--tag", default="", help="run tag recorded in each probe file")
+    ap.add_argument("--expect-layers", type=int, default=None,
+                    help="assert live geometry moe_rows count (fail loudly)")
+    ap.add_argument("--expect-cols", type=int, default=None,
+                    help="assert live geometry expert cols (fail loudly)")
+    ap.add_argument("--expect-k", type=int, default=None,
+                    help="assert live geometry n_expert_used (fail loudly)")
     args = ap.parse_args(argv)
 
     all_names = [e["name"] for e in json.load(open(INDEX_PATH))]
@@ -115,6 +121,17 @@ def main(argv=None) -> int:
     print(f"capture: engine {g['engine_id']} model={g['model_hash']} "
           f"moe_rows={len(g['moe_rows'])} cols={meta['cols']} "
           f"k={g['n_expert_used']} rows={meta['rows']}")
+    # Geometry assertion: no silent model/config mismatch. Fails loudly.
+    grid = {"moe_rows": list(g.get("moe_rows", [])),
+            "nextn_rows": list(g.get("nextn_rows", [])),
+            "cols": meta.get("cols"), "k": g.get("n_expert_used")}
+    for label, got, want in (("moe_rows", len(grid["moe_rows"]), args.expect_layers),
+                             ("cols", grid["cols"], args.expect_cols),
+                             ("k", grid["k"], args.expect_k)):
+        if want is not None and got != want:
+            print(f"capture: GEOMETRY MISMATCH: {label}={got} != "
+                  f"expected {want} — refusing", file=sys.stderr)
+            return 2
 
     for i, name in enumerate(names):
         safe = name.replace("/", "_")
@@ -187,7 +204,8 @@ def main(argv=None) -> int:
             "name": name, "tag": args.tag, "prompt_sha16": sha,
             "prefill_tokens": comp.get("tokens_evaluated"),
             "n_gen": n_dec, "forwards": turn.get("forwards"),
-            "turn_seq": seq, "sidecar_idx": idx, "routing": routing,
+            "turn_seq": seq, "sidecar_idx": idx, "grid": grid,
+            "routing": routing,
             "ean_cells": ean.get("cells"), "sidecar": sidecar_path,
             "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"),
