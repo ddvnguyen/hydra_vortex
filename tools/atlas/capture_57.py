@@ -66,6 +66,31 @@ def prompt_bytes(name: str, trace_dir: str | None = None) -> bytes:
     return FR_PRE + text + FR_SUF
 
 
+def atomic_write_json(path, obj, retries=(30, 60, 120)):
+    """Write via tmp+rename (never a truncated visible file). On ENOSPC,
+    retry with backoff (transient disk pressure), then FAIL LOUDLY leaving
+    prior state resumable (existing files untouched, no partial dst)."""
+    import errno
+    import time
+    tmp = path + ".tmp"
+    last = None
+    for wait in list(retries) + [None]:
+        try:
+            with open(tmp, "w") as fh:
+                json.dump(obj, fh)
+            os.replace(tmp, path)
+            return
+        except OSError as exc:
+            last = exc
+            if exc.errno != errno.ENOSPC or wait is None:
+                raise
+            print(f"  ENOSPC writing {path}; retry in {wait}s "
+                  f"(state resumable)", flush=True)
+            time.sleep(wait)
+    assert last is not None
+    raise last
+
+
 def http(base: str, method: str, path: str, payload=None, timeout=600):
     """HTTP helper; always returns (status, dict) — raises on empty body."""
     data = json.dumps(payload).encode() if payload is not None else None
@@ -209,9 +234,19 @@ def main(argv=None) -> int:
                       f"sidecar path {sidecar_path}")
         except Exception as exc:  # capture disabled -> delta-only mode
             print(f"  [{i + 1}/{len(names)}] {name} flush unavailable: {exc}")
+        # Architect ruling 2731baf3 (2026-09-30): h alone is not a pass —
+        # report tok/s alongside h. Timings are observational (routing-phase
+        # engine); whether hits convert to throughput needs the mechanism.
+        tim = comp.get("timings", {}) or {}
+        t_pred = (tim.get("predicted_n", n_dec), tim.get("predicted_ms", 0))
+        t_prom = (tim.get("prompt_n", 0), tim.get("prompt_ms", 0))
         rec = {
             "name": name, "tag": args.tag, "prompt_sha16": sha,
             "prefill_tokens": comp.get("tokens_evaluated"),
+            "tps_decode": (1000.0 * t_pred[0] / t_pred[1]
+                           if t_pred[1] else None),
+            "tps_prefill": (1000.0 * t_prom[0] / t_prom[1]
+                            if t_prom[1] else None),
             "n_gen": n_dec, "forwards": turn.get("forwards"),
             "turn_seq": seq, "sidecar_idx": idx, "grid": grid,
             "routing": routing,
@@ -227,8 +262,7 @@ def main(argv=None) -> int:
                   f"(old_turn={old.get('turn_seq')} new_turn={seq})")
             rec["recheck_identical"] = same
             rec["recheck_against_turn"] = old.get("turn_seq")
-        with open(dst, "w") as fh:
-            json.dump(rec, fh)
+        atomic_write_json(dst, rec)
         total = sum(routing.values())
         print(f"  [{i + 1}/{len(names)}] {name} done "
               f"prefill={rec['prefill_tokens']} dec={n_dec} "
@@ -236,8 +270,7 @@ def main(argv=None) -> int:
               f"sidecar={'yes' if sidecar_path else 'no'}")
     # final corpus-global EAN snapshot (the C1 signal)
     _, experts = http(args.server, "GET", "/experts", timeout=30)
-    with open(os.path.join(args.out, "experts_final.json"), "w") as fh:
-        json.dump(experts, fh)
+    atomic_write_json(os.path.join(args.out, "experts_final.json"), experts)
     print("capture: wrote experts_final.json "
           f"(ean_cells={(experts.get('ean') or {}).get('cells')})")
     return 0

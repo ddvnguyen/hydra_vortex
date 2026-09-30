@@ -145,16 +145,30 @@ def totals_of(probes):
     return {p["name"]: sum(p["routing"].values()) for p in probes}
 
 
-def check_decode_only(probes, n_trunk, top_k):
+def check_decode_only(probes, moe_rows, top_k):
     """Stage-A counters are decode-only by design. The prompt-eval batch also
-    yields the first emitted token, so routed decode calls per turn equal
-    forwards*n_trunk*k with forwards == n_gen - 1 (verified on smoke turn)."""
+    yields the first emitted token, so each PRESENT trunk layer must total
+    exactly forwards*k. Layers absent in ALL probes are a systematic engine
+    gap (reported by the SCOPE note); a layer present in SOME probes only,
+    or a present layer with a wrong total, is a STOP. Returns absent layers.
+    """
+    from collections import Counter as _C
+    absent_sets = []
     bad = []
     for p in probes:
-        expect = p["forwards"] * n_trunk * top_k
-        if sum(p["routing"].values()) != expect:
-            bad.append((p["name"], sum(p["routing"].values()), expect))
-    return bad
+        per = _C()
+        for key, n in p["routing"].items():
+            r_s, e_s = key.split(":")
+            per[int(r_s)] += n
+        expect = p["forwards"] * top_k
+        for r, tot in per.items():
+            if tot != expect:
+                bad.append((p["name"], r, tot, expect))
+        present = {moe_rows[r] for r in per if r < len(moe_rows)}
+        absent_sets.append(frozenset(moe_rows) - present)
+    if len(set(absent_sets)) != 1:
+        bad.append(("MIXED-ABSENT-LAYERS", sorted(map(sorted, set(absent_sets)))[:3], "", ""))
+    return bad, sorted(absent_sets[0]) if absent_sets else []
 
 
 def flat_pins(train_heat, names, n, n_layers):
@@ -276,15 +290,24 @@ def main(argv=None) -> int:
           f"(uniform baseline {uniform:.4f}): {names[0]} .. {names[-1]}")
 
     moe_rows = grid_of(probes, n_layers, n_exp, top_k)
-    bad = check_decode_only(probes, len(moe_rows), top_k)
+    bad, absent = check_decode_only(probes, moe_rows, top_k)
     if bad:
-        print(f"STOP: decode-only check failed for {len(bad)} probes "
-              f"(total != forwards*n_trunk*k), e.g. {bad[:3]}",
+        print(f"STOP: decode-only check failed: e.g. {bad[:3]}",
               file=sys.stderr)
         return 3
-    print("decode-only check: all probe totals == forwards*n_trunk*k")
+    print(f"decode-only check: every present trunk layer == forwards*k "
+          f"(absent in all probes: {absent if absent else 'none'})")
 
     heat = heat_of(probes, moe_rows)
+    # Scope note: trunk layers with zero corpus-wide heat are unscored
+    # (e.g. Ornith layer 40 absent from engine turn-routing: suspected
+    # fork off-by-one, reported; relative B0/C2/warm comparisons stay
+    # fair, emitted ranks cover scored layers only).
+    zero_layers = [l for l in range(n_layers)
+                   if sum(heat[nm][l].total() for nm in names) == 0]
+    if zero_layers:
+        print(f"SCOPE: {len(zero_layers)}/{n_layers} trunk layers have zero "
+              f"corpus heat and are unscored: {zero_layers}")
     saliency: dict = {}
     c1_pins = c1_cont = None
     if args.skip_c1:
@@ -322,6 +345,19 @@ def main(argv=None) -> int:
                         "d_c1": h_c1 - h_b0})
         rows.append(row)
 
+    # Architect ruling 2731baf3 (2026-09-30): report tok/s alongside h@N.
+    # These are routing-phase engine timings (observational). Whether
+    # placement hits convert to throughput is a MECHANISM question this
+    # sweep cannot answer (t0002: N=64->128 raised h 61%->79% with decode
+    # flat ~2.2 tok/s). Stated explicitly: no throughput claim here.
+    tps_d = sorted(p["tps_decode"] for p in probes if p.get("tps_decode"))
+    tps_p = sorted(p["tps_prefill"] for p in probes if p.get("tps_prefill"))
+    med_tps_d = statistics.median(tps_d) if tps_d else None
+    med_tps_p = statistics.median(tps_p) if tps_p else None
+    print(f"engine tok/s (routing phase, n={len(tps_d)}/{len(tps_p)}): "
+          f"decode {med_tps_d if med_tps_d is None else round(med_tps_d, 2)} "
+          f"prefill {med_tps_p if med_tps_p is None else round(med_tps_p, 2)} "
+          f"(observational — hits->throughput NOT measured)")
     med_b0 = statistics.median(r["h_b0"] for r in rows)
     med_b0_cont = statistics.median(r["h_b0_cont"] for r in rows)
     print(f"B0 h@{n_pins} median = {med_b0:.4f} (uniform baseline "
@@ -439,7 +475,9 @@ def main(argv=None) -> int:
         json.dump({"rows": rows, "c1": res_c1, "c2": res_c2,
                    "warm_rows": warm_rows,
                    "b0_hN_median": med_b0, "b0_hcont_median": med_b0_cont,
-                   "uniform_baseline": uniform}, fh, indent=1)
+                   "uniform_baseline": uniform,
+                   "tps_decode_median": med_tps_d,
+                   "tps_prefill_median": med_tps_p}, fh, indent=1)
     print(f"wrote experts-790.json ({len(experts)} experts), "
           f"expert-ranks-790.json, tables.json -> {args.outdir}")
     c1v = "DEFERRED" if res_c1 is None else ("PASS" if res_c1["pass"] else "FAIL")
