@@ -1,0 +1,31 @@
+# t0006 benchmark prompt cell p1k
+
+You are reviewing a concurrent Rust service for production. Explain the failure modes of a bounded MPSC channel under backpressure, then write a small Rust module with a retrying sender (exponential backoff with jitter, max 5 attempts), a graceful shutdown path that drains in-flight messages, and unit tests for the retry and shutdown behavior. Keep the code idiomatic and comment the tricky parts.
+
+---
+
+On-call turn in `svc/ingest`: `cargo test -p ingest` hangs after `worker.rs:142` logs `queue full, parking`. Thread dump shows two workers parked on `Mutex<Batch>` while the flusher holds it across an `.await` on `tx.send()`. Explain the deadlock cycle, then patch `svc/ingest/src/worker.rs` so the lock is never held across `.await`, add a bounded-queue drop counter, and write a regression test that fails on the old code. Show the diff hunk and the test output you expect.
+
+---
+
+`rustc` rejects `store/src/cache.rs:88` — `cannot return value referencing local variable 'buf'` in `fn decode<'a>(&self, raw: &[u8]) -> &'a Frame`. The caller in `net/src/frame.rs:31` needs a borrowed frame but the bytes live in a reused read buffer. Explain the ownership problem, then fix it (zero-copy where the buffer outlives the frame, owned clone otherwise), update the signature, and add a test that decodes two frames from one buffer. Paste the before/after signatures.
+
+---
+
+The nightly ETL in `jobs/etl.py` silently drops rows: `fetch_pages()` yields 10k rows, `transform()` is `async`, but the caller does `map(transform, rows)` without awaiting — log shows `RuntimeWarning: coroutine never awaited` and only 312 rows land in `warehouse.events`. Tool output: `pytest jobs/tests/test_etl.py::test_row_count FAILED (312 != 10000)`. Diagnose the await bug, rewrite the fan-out with `asyncio.gather` + bounded semaphore (limit 32), add backpressure logging, and fix the test to assert exact row counts plus a duplicate-key check.
+
+---
+
+`notebooks/rollup.py` OOMs on a 12 GB CSV on a 16 GB box: `df = pd.read_csv('events.csv')` then three merges blow past RAM (`MemoryError` at `merge orders`). Rewrite it as a chunked pipeline (`chunksize=200_000`, dtype map with `category` for `status`, `Int32` for counts), spill the join keys to `sqlite`, and print peak-RSS per chunk. Include the dtype dict and the chunk loop; note what breaks if a key is missing from the dimension table.
+
+---
+
+`lib/http.py` has a hand-rolled retry loop copy-pasted in 6 call sites, each with a different backoff and none with jitter — deploys thundering-herd the auth service. Write one `@retry(max_attempts=5, base=0.2, jitter=True)` decorator with exponential backoff, `Retry-After` header support, and idempotency-key injection, migrate two call sites (`billing/charge.py:44`, `auth/refresh.py:19`), and add unit tests with a fake clock asserting sleep durations stay within `[base*2^n*(1-j), base*2^n*(1+j)]`.
+
+---
+
+`EXPLAIN ANALYZE` on prod shows the dashboard query seq-scanning `events` (42M rows, 9.2 s): `SELECT day, count(*) FROM events WHERE org_id = $1 AND ts > now() - '30d' GROUP BY 1` — index on `(ts)` exists but is never used. Tool output: `Seq Scan on events (rows=42M, buffers=...)`. Diagnose the selectivity trap, propose the composite index `(org_id, ts)`, rewrite the query to use a generated `day` column or `date_trunc`, and give a migration (`migrations/014_events_org_ts.sql`) plus a verification query against `pg_stat_user_indexes` proving index use.
+
+---
+
+Design `schema.sql` for multi-tenant jobs: `orgs`, `pipelines`, `runs`, `attempts`. Requirements pasted from the ticket: runs belong to one pipeline+org, attempts append-only with monotonic `seq` per run, no two live runs per pipeline (`status IN ('queued','running')`), soft-delete orgs without orphaning audit history. Write the DDL (UUID PKs, FKs, partial unique index for the live-run rule, `CHECK` on status), the `seq` guard (unique `(run_id, seq)` + trigger or app-level insert), and three seed/edge-case inserts that must fail with the expected constraint name.

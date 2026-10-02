@@ -1,0 +1,268 @@
+# t0006 benchmark prompt cell p4k
+
+# Layer split across GPUs (2026-09-29)
+
+**Rig (a community member's PC, "RIBPC"):**
+- Ryzen 9 9950X3D, 62 GB DDR5, Windows 11, CUDA 13.1.
+- RTX 5080 16 GB (x16), RTX 3090 24 GB (x4 gen4, ~6 GB/s), RTX 2080 Ti 22 GB (x4 gen3, Turing sm_75; the
+  experimental `STRATA_EXPERIMENTAL_SM75` build).
+
+**Model:** the Coder (GSQ-RCO IQ1_M, 48 layers x 256 experts = 12,288 expert pairs, ~23 GB of experts), 32K
+context, int8 KV, `--prefill auto`, `--spec 4`. It is the only model that fits the rig's RAM and disk.
+
+**Tools:** `rib_pp.py` (needle prompts at 2.7K/8K/16K/28K tokens with a code word at 50% depth, a 2-turn chat that
+must reuse its checkpoint, greedy decode of a story and a code prompt) and `rib_norepeat.py` (the Phase A
+no-repeat and sanity cases). Raw results are in `data/`.
+
+## Correctness
+
+| Check | Result |
+|---|---|
+| This branch vs the 0.1.20 release, one GPU (5080), fixed cache, all 10 cases | **10/10 byte-identical** |
+| This branch, one GPU vs the split on the same GPU (K=24, `--split-device 0`) | **10/10 byte-identical**: the hand-off is exact |
+| 5080 + 3090 (auto) and 5080 + 2080 Ti + 3090 (auto): no-repeat under presence 100 (greedy and sampled), 144 sanity | all pass, 0 repeats |
+| Needles at 2.7K-28K tokens, every configuration | all found |
+| 2-turn chat (the checkpoint restored on every GPU) | reused 6,631-6,632 of 6,660 tokens, answer right |
+
+Across GPUs the text is not byte-identical to one GPU: experts the CPU computed on one card run on a GPU in the split,
+and they round differently (the same effect as `--expert-cache`, bench/results/2026-09-27-cache-parity).
+
+## Speed
+
+**Prompt tok/s** at 16K / 28K tokens, and **decode tok/s** for story / code (greedy; three repeats averaged
+in the K sweep):
+
+| Configuration | Split | Prompt 16K | Prompt 28K | Decode story | Decode code | Decode hits |
+|---|---|---|---|---|---|---|
+| 0.1.20, 5080 alone | - | 2,045 | 2,005 | 83.2 | 88.2 | 70-84% |
+| this branch, 5080 alone | - | 2,017 | 1,974 | 83.1 | 88.0 | 70-84% |
+| this branch, 5080 alone, 3 repeats (adaptive swaps learn the prompt) | - | 1,726 | 1,970 | 86.7 | 105.2 | 91-92% |
+| 3090 alone | - | 1,253 | 1,211 | 71.7 | 92.9 | 86-93% |
+| 5080 + 3090 | K=18 | 1,547 | 1,694 | 77.2 | 103.8 | 99.9% |
+| 5080 + 3090 | K=22 | 1,840 | 2,074 | 80.2 | 106.4 | 99.8% |
+| 5080 + 3090 | K=24 | 1,978 | 2,258 | 83.5 | 109.5 | 99.5% |
+| **5080 + 3090** | **K=26** | **2,039** | **2,357** | **83.8** | **109.7** | 99.3% |
+| 5080 + 3090 | K=28 | 2,011 | 2,287 | 83.5 | 112.5 | 99.0% |
+| 5080 + 3090 | K=30 | 1,935 | 2,218 | 81.1 | 109.6 | 98% |
+| 5080 + 3090 | K=32 | 1,818 | 2,063 | 83.0 | 108.7 | 98% |
+| 5080 + 3090 | auto (K=22) | 2,037 | 2,073 | 79.5 | 108.9 | 99.7% |
+| 3090 + 5080 | auto (K=30) | 1,672 | 1,876 | 90.3 | 105.1 | 99.4% |
+| 5080 + 2080 Ti + 3090 | auto (22, 23) | 1,687 | 1,847 | 67.6 | 89.6 | 99.7% |
+| 5080 + 3090 + 2080 Ti | first auto (12, 33) | 1,148 | 1,144 | 51.9 | 69.7 | 100% |
+| 5080 + 2080 Ti | first auto | 914 | 906 | 45.5 | 58.0 | 97% |
+
+What decides it:
+
+- **The best two-GPU split for the Coder is K=26-28.** Prompts run +18-20% over the 5080 alone at 16-28K;
+  decode is on par for story and +4-7% for code.
+- **Residency saturates quickly: the per-layer GPU speed decides.** From K=18 up, both caches hold 98-100% of
+  the routed experts. Moving layers to the faster card is what helps: the 3090 costs 0.50 ms per layer per
+  window, the 5080 0.33 (`STRATA_SPLIT_TIMING`, the "wait for the GPU" per stage).
+- **Decode is bounded by that GPU time.** One 5080 with its cache adapted spends 16.3 ms waiting for its GPU and
+  5.5 ms in the CPU pool per window. The split removes the pool (0.8-1.0 ms) but adds the slower card's layers:
+  7.9 + 12.1 ms at K=24. The per-layer GPU half (kernels plus the host round trip that publishes each layer's
+  expert plan) is the next thing to cut, for one GPU as well (perf-review-plan E-6).
+- **A third, slower card costs more than it holds.** The 2080 Ti's one-layer stage took 3.1 ms per window.
+  For a model that already fits two cards, leave it out. It pays only when the two faster cards cannot hold most
+  of the routed experts (a bigger model; not testable on this rig's 62 GB of RAM).
+- **Prompt chunk:** 1024 instead of 2048 frees ~0.7 GB per card, but prompts read 7-12% slower.
+
+## Auto placement
+
+`--layer-split auto` predicts one decode window's time for every placement (every placement up to three GPUs) and
+keeps the fastest:
+
+- **per-layer time** from SMs x clock (0.33 ms for an RTX 5080);
+- **cache contents:** each card's layers' profiled pairs, hottest first, as the fill does;
+- **routed mass** of rank r taken as (r+1)^-1.2 (fits the sweep's hit rates within 0.1-1%);
+- **missed mass** costing 190 ms per unit (fitted to the sweep's best K; `STRATA_SPLIT_MISS_MS` overrides).
+
+It picked K=22 on the 5080 + 3090: within 0-12% of the best fixed split on prompts and on par on decode. It gives
+a slow third card a single layer.
+
+## Reproduce
+
+On a rig: the `strata-remote` tools, then `rib_matrix.bat`, `rib_ksweep.bat`, `rib_validate.bat` (in the dev
+notes, not in this repository).
+
+---
+
+# Layer split: the features that were off across GPUs (2026-09-29)
+
+**Setup:**
+- **Rig:** RIBPC. RTX 5080 16 GB (CUDA0) + RTX 3090 24 GB; RTX 2080 Ti 22 GB as a helper card. Ryzen 9 9950X3D,
+  62 GB RAM, Windows 11.
+- **Model:** the Coder (IQ1_M native pack).
+- **Build:** branch `mg/limits`, sm_75 + sm_86 + sm_120.
+- **Correctness runs:** `rib_norepeat.py`, with a fixed cache, no swaps, no PCIe share and no suffix drafts where two
+  runs are compared byte for byte.
+- **Speed runs:** `rib_pp.py`.
+- Raw results are in `data/`.
+
+## Correctness
+
+| Check | Result |
+|---|---|
+| One GPU, this branch vs the 0.1.21-equivalent run (fixed cache) | 10/10 byte-identical |
+| Speed projection (control vector), one GPU vs the split on the same GPU (K=24) | 10/10 byte-identical |
+| KV streaming (128K context, 32K resident), one GPU vs the split on the same GPU | 10/10 byte-identical |
+| Images, one GPU vs the split on the same GPU (three questions about a test picture) | identical answers |
+| Speed projection / KV streaming / plain, 5080 + 3090 (K=24): no-repeat under presence 100, the 144 sanity case | all pass, 0 repeats |
+| The vector acts across GPUs: 5080 + 3090 with vs without the vector | 8 of 10 answers differ (as on one GPU: 7 of 10) |
+| Images, 5080 + 3090 (K=24): "What color is the circle?" / "What number?" / describe | "Red" / "42" / "A red circle, the number 42, and a blue square are displayed on a white background" |
+| Mid-prompt checkpoint (every 16,384 tokens): a 19.5K prompt, then another sharing its first 18,600 tokens | one GPU and 5080 + 3090: reused 16,384, answer right |
+| 5080 + 3090 (K=30) + a 2080 Ti helper holding 3,000 experts | all pass |
+| `--mmap-experts` with the Coder (a native pack) | a clear start-up error: it needs a canonical pack's `experts.bin` (with or without a split) |
+
+Across GPUs the text is not byte-identical to one GPU: experts that one card leaves to the CPU run on a GPU in the
+split, and the two round differently.
+
+## Speed
+
+| Run | Prompt 16K / 28K / 60K tok/s | Decode story / code tok/s | Hits |
+|---|---|---|---|
+| KV streaming (128K), 5080 alone | 1,487 / 1,801 / 1,837 | 66.6 / 74.0 | 59-71% |
+| KV streaming (128K), 5080 + 3090 auto | 1,685 / 1,957 / 1,968 | 75.8 / 97.0 | 96-97% |
+| Speed projection, 5080 + 3090 auto | 1,813 / 2,053 / - | 77.0 / 103.6 | 96-97% |
+| 5080 + 3090 (K=30), no helper | - | 62.5 / 85.2 | |
+| 5080 + 3090 (K=30) + 2080 Ti helper | - | 43.0 / 63.7 | |
+
+**The helper card makes it slower,** as it did without a split (bench/results/2026-09-29-layer-split). Its per-layer
+round trip costs more than the CPU pool needs for the few experts it would take over. It stays supported: the
+helpers take the visible GPUs no stage runs on and hold only experts no stage's cache holds. But it isn't
+recommended.
+
+## What changed
+
+- **Per-device tables:** the image-position (mrope) table and the control vector's tables are now kept per device;
+  every stage's rope and steering kernels read their own device's copy. `cvec_set_enabled` switches the vector on
+  every device.
+- **KV streaming:** each stage's session streams its own KV host copy (pinned, portable). The split no longer forces
+  it off.
+- **Mid-prompt checkpoints:** `Prefill::on_stage_chunk` lets each stage save its part of a checkpoint when it has
+  read the chunk. The last stage assembles the parts: the earlier ones are a chunk ahead by then.
+- **Helpers (`--expert-cache-remote`) with a split:** they take the visible devices after the stages, skip every
+  pair a stage's cache holds, and preflight and open on those devices.
+- **Explicit `--expert-cache` with a split:** it is capped so CUDA0 keeps room for the prompt path's own buffers.
+  Without the cap, the first prompt failed with "device buffers ... do not fit".
+- **`--mmap-experts`:** refused at start for a native pack, with the reason.
+
+---
+
+# The GSQ-RCO Coder (256 of 512 experts) on Strata
+
+RTX 5070 12 GB, Ryzen 5 7600, 64 GB DDR5-5200, Windows 10. Engine 0.1.15 + PR #54 (the expert count from the model
+file), the settings setup writes (`--prefill auto`, 8-bit KV above 4K, KV streaming from 64K, MTP, greedy, 256 tokens),
+`data/expert-profile-coder.bin`, the same code-agent prompts as `2026-09-28-speed-0114`.
+
+| | 1K | 4K | 32K | 64K | 128K | 262K |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Prompt, tokens/s | 599 | 1,152 | 1,298 | 1,350 | 1,266 | 1,034 |
+| Output, tokens/s | 53.3 | 50.6 | 53.3 | 50.8 | 44.0 | 42.8 |
+| Draft acceptance | 0.720 | 0.707 | 0.785 | 0.696 | 0.619 | 0.684 |
+| Experts in VRAM | 2,570 | 2,615 | 2,418 | 2,382 | 2,326 | 2,208 |
+
+Every run in [`matrix.json`](matrix.json). The 128K and 262K answers were read: coherent (they list and discuss the
+files of the prompt).
+
+## Why it is fast
+
+The kept experts are stored like IQ3_S's (IQ2_S / IQ3_XXS / IQ3_S / IQ4_XS gate and up, IQ4_NL / Q2_0 down; "IQ1_M" is
+the release's name for 1.89 bits per *original* parameter), so a token costs about what IQ3_S costs where the expert is
+on the CPU. But there are half as many experts: the 23 GB of them pin completely (`cudaHostRegister` of the whole
+arena), a 12 GB card holds ~20% of them instead of ~10%, and the prompt path streams half as many.
+
+## The expert profile
+
+`data/expert-profile-coder.bin` (48 x 256, all 12,288 pairs ranked): the shipped 48 x 512 ranking, each pair mapped to
+its kept expert's new index through section 2 of the release's `tensor-allocation/*.rco-allocation.txt` (the kept
+experts in their original order; gate, up and down agree on which were kept), pruned pairs dropped. 5,492 of the
+shipped top 8,000 survive (as PR #54 found). With 2,537 slots on the 12 GB card, 72% of the expert reads of a 4K code
+prompt hit the GPU - a wrong index mapping would give about the slot share, 21%.
+
+## Images
+
+The Coder ships the original's vision encoder (the same file). With `--vision` on the GPU it described a Strata
+Monitor screenshot correctly, windows, labels and the numbers of the dashboard and the requests table (1,079 prompt
+tokens with the image, 2,012 generated at ~50 tokens/s).
+
+## The experimental speed projection
+
+The vector was made from the full model's activations; the Coder has the same residual stream. On the Coder it loads
+(41 layers steered), costs no measurable speed (47.7-55.7 tokens/s with it on or off), and both settings write correct
+answers to three coding prompts. What it is for - fewer refusals - was not measured. (Two runs of the same prompt with
+it off also differ after ~130-200 characters in serve mode, so this check cannot show how far it moves ordinary text;
+the teacher-forced method of `2026-09-27-esp` needs the token-by-token prompt path, which native packs do not run.)
+
+---
+
+# Faster prompt reading (engine 0.1.13)
+
+RTX 5070 12 GB, Ryzen 5 7600, 64 GB DDR5. 32K-token prompt (`bench/prompts/long/32k-01-code-agent.ids`), one-shot
+engine, `--expert-cache auto`, greedy. Numbers are prompt tokens/s.
+
+## What changed, step by step
+
+| Step | What | Result |
+|---|---|---|
+| Buffers | The attention half and the MoE half of a layer share one scratch region (~260 KB less per prompt token) | bit-identical; chunk 4096 borrows 1.78 GiB instead of 2.84 |
+| PLE rows | The next chunk's PLE rows are read from the model file on a thread while the GPU works | bit-identical; 762 -> 790 at chunk 4096 |
+| Chunk size | `--prefill auto`: the largest of 8192 / 6144 / 4096 / ... whose buffers fit in the cache slots it may borrow; a request borrows only what its own prompt needs | Q2_0: 4096 791, 6144 878, 8192 973 |
+| Host copies | Experts the arena could not pin are copied to pinned buffers by helper threads instead of the launching thread | bit-identical; IQ3_S at 4096: 551 -> 652 |
+| PLE block | Computed for the whole chunk (two GEMMs) instead of token by token | Q2_0 981 -> 1053, IQ3_S 831 -> 940 |
+| Experts | llama.cpp's MMQ kernels (weights stay quantized, int8 tensor cores) instead of dequantize-to-FP16 + cuBLAS | Q2_0 1052 -> 1130, IQ3_S (8192) 932 -> 1014 |
+| Streaming | At chunks of 2048+ every non-resident expert streams in a fixed order through a ring, so the next layer's arrive while the current layer's attention runs | bit-identical; Q2_0 1130 -> 1290, IQ3_S -> 1208 |
+
+Tried and dropped: cuBLAS grouped GEMMs for the experts (faster in isolation, slower inside the engine: 770 vs 790).
+
+## Before and after
+
+| | engine 0.1.12 (`--prefill 2048`) | engine 0.1.13 (`--prefill auto`) |
+|---|---:|---:|
+| Q2_0, 32K prompt | 572 | 1,290 |
+| IQ3_S, 32K prompt | 383 | 1,208 |
+| Server, Q2_0, 128K context, 999-token prompt | 353 | 438 |
+| Server, 6,927-token prompt | 529 | 1,077 |
+| Server, 28,584-token prompt | 584 | 1,249 |
+
+Output speed is unchanged (the decode path is the same). Short prompts (a few hundred tokens) go through the verify
+windows as before.
+
+## Quality
+
+- "Bit-identical" steps were checked with the GDN state hash after the 32K prompt (all 36 recurrent layers).
+- The steps that change rounding (the batched PLE block, MMQ's 8-bit activations) were compared teacher-forced: the
+  32K prompt is read by the prompt path up to its last 256 tokens, those go through the token path with their logits
+  dumped. At 32K every rounding change moves the predictions about this much - even a different chunk size of the
+  unchanged engine - so that is the yardstick:
+
+| Against the 8192-chunk FP16 path | Same top-1 | Mean KL | Perplexity (reference 9.21) |
+|---|---:|---:|---:|
+| Chunk 6144, same code (the yardstick) | 89.8% | 0.33 | 9.18 |
+| MMQ experts | 85.9% | 0.38 | 8.63 |
+
+- Needles (the answer hidden at a given depth): 5 of 5 at 1K, 32K, 128K (two depths) and 262K, Q2_0, KV streaming.
+- A rerun of the same configuration is bit-identical.
+
+---
+
+# Speed with engine 0.1.14
+
+RTX 5070 12 GB (PCIe 5.0 x16), Ryzen 5 7600, 64 GB DDR5-5200, Windows 10. The ready-made 0.1.14 engine, one-shot runs
+with what setup writes: `--prefill auto`, the shipped expert profile, `--expert-cache auto`, 8-bit KV above 4K, KV
+streaming (`--kv-resident 32768`) from 64K, MTP (`--spec 4 --spec-min-p 0.5`), greedy, 256 generated tokens. One
+code-agent prompt per length (`bench/prompts/*/…-code-agent.ids`, the same prompts as `2026-09-24-final`).
+
+The tables: [`matrix.md`](matrix.md) (prompt and output speed, draft acceptance, experts in VRAM); every run in
+[`matrix.json`](matrix.json).
+
+- **IQ2_XS** was measured with Swift 1.5's IQ2_XS (the original's file was not on the machine; the two run at the same
+  speed: 4K 465 vs 467 prompt tokens/s in `2026-09-24`).
+- **IQ3_S at 128K** comes from a first pass during which a large download was running (the clean rerun of that row
+  was stopped when Windows ran short of memory); the other rows are from runs on an otherwise idle machine.
+- **IQ3_XXS and IQ3_S at 262K** are not measured: with 43 / 50 GB of experts, a 260K context exceeds 64 GB of RAM.
+
+## Against 0.1.12
+
+Prompts are 1.2x (1K) to 2.4x (32K-128K) faster: the 0.1.13 prompt path (chunks of up to 8,192 tokens, MMQ experts,
+streamed expert copies; see `2026-09-28-prefill-speed`).

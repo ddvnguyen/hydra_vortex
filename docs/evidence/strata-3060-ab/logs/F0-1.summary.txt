@@ -1,0 +1,1 @@
+F0-1 done status=bench_failed N=0 bench_rc=1 parse_rc=2 mem_avail_after=90.4GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.10 GB/s best 6.12 GB/s;dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.13 GB/s best 6.13 GB/s;] link_bad_samples=0 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ab/logs/F0-1.summary.txt

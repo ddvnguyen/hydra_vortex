@@ -1,0 +1,527 @@
+{
+ "arm": "S0-1",
+ "engine": "strata",
+ "log": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ab/logs/S0-1-engine.log",
+ "bench": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ab/arms/S0-1.bench.json",
+ "align": {
+  "requests": 8,
+  "serve_lines": 7,
+  "hit_lines": 7,
+  "suffix_lines": 0,
+  "decode_timing_lines": 7,
+  "prefill_timing_lines": 2,
+  "match": false
+ },
+ "parsed": {
+  "serve": [
+   {
+    "prompt_tokens": 1115,
+    "reused": 0,
+    "read": 1115,
+    "read_ms": 6823.0,
+    "read_tps": 163.4,
+    "generated": 64,
+    "decode_ms": 2060.0,
+    "decode_tps": 31.1,
+    "drafts_accepted": 1,
+    "drafts_offered": 1,
+    "checkpoints": 1
+   },
+   {
+    "prompt_tokens": 1115,
+    "reused": 1110,
+    "read": 5,
+    "read_ms": 134.0,
+    "read_tps": 37.5,
+    "generated": 256,
+    "decode_ms": 7657.0,
+    "decode_tps": 33.4,
+    "drafts_accepted": 4,
+    "drafts_offered": 4,
+    "checkpoints": 1
+   },
+   {
+    "prompt_tokens": 1115,
+    "reused": 1110,
+    "read": 5,
+    "read_ms": 146.0,
+    "read_tps": 34.3,
+    "generated": 256,
+    "decode_ms": 8447.0,
+    "decode_tps": 30.3,
+    "drafts_accepted": 1,
+    "drafts_offered": 1,
+    "checkpoints": 1
+   },
+   {
+    "prompt_tokens": 1115,
+    "reused": 1110,
+    "read": 5,
+    "read_ms": 136.0,
+    "read_tps": 36.9,
+    "generated": 256,
+    "decode_ms": 8134.0,
+    "decode_tps": 31.5,
+    "drafts_accepted": 10,
+    "drafts_offered": 10,
+    "checkpoints": 1
+   },
+   {
+    "prompt_tokens": 6301,
+    "reused": 0,
+    "read": 6301,
+    "read_ms": 10471.0,
+    "read_tps": 601.7,
+    "generated": 256,
+    "decode_ms": 8173.0,
+    "decode_tps": 31.3,
+    "drafts_accepted": 12,
+    "drafts_offered": 12,
+    "checkpoints": 1
+   },
+   {
+    "prompt_tokens": 6301,
+    "reused": 6296,
+    "read": 5,
+    "read_ms": 116.0,
+    "read_tps": 43.0,
+    "generated": 256,
+    "decode_ms": 8056.0,
+    "decode_tps": 31.8,
+    "drafts_accepted": 13,
+    "drafts_offered": 13,
+    "checkpoints": 1
+   },
+   {
+    "prompt_tokens": 6301,
+    "reused": 6296,
+    "read": 5,
+    "read_ms": 121.0,
+    "read_tps": 41.3,
+    "generated": 256,
+    "decode_ms": 8112.0,
+    "decode_tps": 31.6,
+    "drafts_accepted": 3,
+    "drafts_offered": 3,
+    "checkpoints": 1
+   }
+  ],
+  "hit": [
+   {
+    "pct": 55.4,
+    "hits": 16784,
+    "lookups": 30281
+   },
+   {
+    "pct": 64.8,
+    "hits": 79081,
+    "lookups": 122076
+   },
+   {
+    "pct": 57.0,
+    "hits": 69308,
+    "lookups": 121604
+   },
+   {
+    "pct": 55.3,
+    "hits": 66982,
+    "lookups": 121065
+   },
+   {
+    "pct": 54.8,
+    "hits": 66153,
+    "lookups": 120757
+   },
+   {
+    "pct": 58.7,
+    "hits": 71387,
+    "lookups": 121520
+   },
+   {
+    "pct": 60.8,
+    "hits": 73797,
+    "lookups": 121283
+   }
+  ],
+  "suffix": [],
+  "decode_timing": [
+   {
+    "windows": 63,
+    "avg_T": 1.02,
+    "tok_per_window": 1.02,
+    "ms_per_window": 32.7,
+    "commit_emit_ms": 0.8,
+    "draft_ms": 1.4
+   },
+   {
+    "windows": 253,
+    "avg_T": 1.02,
+    "tok_per_window": 1.01,
+    "ms_per_window": 30.27,
+    "commit_emit_ms": 0.8,
+    "draft_ms": 1.39
+   },
+   {
+    "windows": 255,
+    "avg_T": 1.0,
+    "tok_per_window": 1.0,
+    "ms_per_window": 33.13,
+    "commit_emit_ms": 0.81,
+    "draft_ms": 1.39
+   },
+   {
+    "windows": 246,
+    "avg_T": 1.04,
+    "tok_per_window": 1.04,
+    "ms_per_window": 33.07,
+    "commit_emit_ms": 0.81,
+    "draft_ms": 1.39
+   },
+   {
+    "windows": 244,
+    "avg_T": 1.05,
+    "tok_per_window": 1.05,
+    "ms_per_window": 33.49,
+    "commit_emit_ms": 0.81,
+    "draft_ms": 1.48
+   },
+   {
+    "windows": 244,
+    "avg_T": 1.05,
+    "tok_per_window": 1.05,
+    "ms_per_window": 33.02,
+    "commit_emit_ms": 0.81,
+    "draft_ms": 1.48
+   },
+   {
+    "windows": 253,
+    "avg_T": 1.01,
+    "tok_per_window": 1.01,
+    "ms_per_window": 32.07,
+    "commit_emit_ms": 0.81,
+    "draft_ms": 1.48
+   }
+  ],
+  "prefill_timing": [
+   {
+    "tokens": 1110,
+    "gpu_ms": 6480.0,
+    "wall_ms": 6487.0
+   },
+   {
+    "tokens": 6296,
+    "gpu_ms": 9615.0,
+    "wall_ms": 9641.0
+   }
+  ],
+  "fill": {
+   "slots": 2641,
+   "gib": 5.06
+  },
+  "fill_auto_slots": 2043,
+  "fill_reserve_gib": 5.96,
+  "chunk_tokens": 8192,
+  "borrow_slots": 2314,
+  "borrow_gib": 4.43,
+  "joined": [
+   {
+    "tag": "warmup",
+    "harness": {
+     "ttft_s": 6.892,
+     "prefill_tps": 161.78,
+     "decode_tps": 31.36,
+     "prompt_tokens": 1115,
+     "completion_tokens": 64,
+     "cached_tokens": 0
+    },
+    "serve": {
+     "prompt_tokens": 1115,
+     "reused": 0,
+     "read": 1115,
+     "read_ms": 6823.0,
+     "read_tps": 163.4,
+     "generated": 64,
+     "decode_ms": 2060.0,
+     "decode_tps": 31.1,
+     "drafts_accepted": 1,
+     "drafts_offered": 1,
+     "checkpoints": 1
+    },
+    "log_decode_tps": 31.1,
+    "log_read_tps": 163.4,
+    "reused_frac": 0.0,
+    "hit": {
+     "pct": 55.4,
+     "hits": 16784,
+     "lookups": 30281
+    },
+    "decode_timing": {
+     "windows": 63,
+     "avg_T": 1.02,
+     "tok_per_window": 1.02,
+     "ms_per_window": 32.7,
+     "commit_emit_ms": 0.8,
+     "draft_ms": 1.4
+    }
+   },
+   {
+    "tag": "p1k:rep0",
+    "harness": {
+     "ttft_s": 0.173,
+     "prefill_tps": 6445.09,
+     "decode_tps": 33.45,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 1110
+    },
+    "serve": {
+     "prompt_tokens": 1115,
+     "reused": 1110,
+     "read": 5,
+     "read_ms": 134.0,
+     "read_tps": 37.5,
+     "generated": 256,
+     "decode_ms": 7657.0,
+     "decode_tps": 33.4,
+     "drafts_accepted": 4,
+     "drafts_offered": 4,
+     "checkpoints": 1
+    },
+    "log_decode_tps": 33.4,
+    "log_read_tps": 37.5,
+    "reused_frac": 0.9955,
+    "hit": {
+     "pct": 64.8,
+     "hits": 79081,
+     "lookups": 122076
+    },
+    "decode_timing": {
+     "windows": 253,
+     "avg_T": 1.02,
+     "tok_per_window": 1.01,
+     "ms_per_window": 30.27,
+     "commit_emit_ms": 0.8,
+     "draft_ms": 1.39
+    }
+   },
+   {
+    "tag": "p1k:rep1",
+    "harness": {
+     "ttft_s": 0.186,
+     "prefill_tps": 5994.62,
+     "decode_tps": 30.31,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 1110
+    },
+    "serve": {
+     "prompt_tokens": 1115,
+     "reused": 1110,
+     "read": 5,
+     "read_ms": 146.0,
+     "read_tps": 34.3,
+     "generated": 256,
+     "decode_ms": 8447.0,
+     "decode_tps": 30.3,
+     "drafts_accepted": 1,
+     "drafts_offered": 1,
+     "checkpoints": 1
+    },
+    "log_decode_tps": 30.3,
+    "log_read_tps": 34.3,
+    "reused_frac": 0.9955,
+    "hit": {
+     "pct": 57.0,
+     "hits": 69308,
+     "lookups": 121604
+    },
+    "decode_timing": {
+     "windows": 255,
+     "avg_T": 1.0,
+     "tok_per_window": 1.0,
+     "ms_per_window": 33.13,
+     "commit_emit_ms": 0.81,
+     "draft_ms": 1.39
+    }
+   },
+   {
+    "tag": "p1k:rep2",
+    "harness": {
+     "ttft_s": 0.183,
+     "prefill_tps": 6092.9,
+     "decode_tps": 31.52,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 1110
+    },
+    "serve": {
+     "prompt_tokens": 1115,
+     "reused": 1110,
+     "read": 5,
+     "read_ms": 136.0,
+     "read_tps": 36.9,
+     "generated": 256,
+     "decode_ms": 8134.0,
+     "decode_tps": 31.5,
+     "drafts_accepted": 10,
+     "drafts_offered": 10,
+     "checkpoints": 1
+    },
+    "log_decode_tps": 31.5,
+    "log_read_tps": 36.9,
+    "reused_frac": 0.9955,
+    "hit": {
+     "pct": 55.3,
+     "hits": 66982,
+     "lookups": 121065
+    },
+    "decode_timing": {
+     "windows": 246,
+     "avg_T": 1.04,
+     "tok_per_window": 1.04,
+     "ms_per_window": 33.07,
+     "commit_emit_ms": 0.81,
+     "draft_ms": 1.39
+    }
+   },
+   {
+    "tag": "p4k:rep0",
+    "harness": {
+     "ttft_s": 10.524,
+     "prefill_tps": 598.73,
+     "decode_tps": 31.36,
+     "prompt_tokens": 6301,
+     "completion_tokens": 256,
+     "cached_tokens": 0
+    },
+    "serve": {
+     "prompt_tokens": 6301,
+     "reused": 0,
+     "read": 6301,
+     "read_ms": 10471.0,
+     "read_tps": 601.7,
+     "generated": 256,
+     "decode_ms": 8173.0,
+     "decode_tps": 31.3,
+     "drafts_accepted": 12,
+     "drafts_offered": 12,
+     "checkpoints": 1
+    },
+    "log_decode_tps": 31.3,
+    "log_read_tps": 601.7,
+    "reused_frac": 0.0,
+    "hit": {
+     "pct": 54.8,
+     "hits": 66153,
+     "lookups": 120757
+    },
+    "decode_timing": {
+     "windows": 244,
+     "avg_T": 1.05,
+     "tok_per_window": 1.05,
+     "ms_per_window": 33.49,
+     "commit_emit_ms": 0.81,
+     "draft_ms": 1.48
+    }
+   },
+   {
+    "tag": "p4k:rep1",
+    "harness": {
+     "ttft_s": 0.162,
+     "prefill_tps": 38895.06,
+     "decode_tps": 31.78,
+     "prompt_tokens": 6301,
+     "completion_tokens": 256,
+     "cached_tokens": 6296
+    },
+    "serve": {
+     "prompt_tokens": 6301,
+     "reused": 6296,
+     "read": 5,
+     "read_ms": 116.0,
+     "read_tps": 43.0,
+     "generated": 256,
+     "decode_ms": 8056.0,
+     "decode_tps": 31.8,
+     "drafts_accepted": 13,
+     "drafts_offered": 13,
+     "checkpoints": 1
+    },
+    "log_decode_tps": 31.8,
+    "log_read_tps": 43.0,
+    "reused_frac": 0.9992,
+    "hit": {
+     "pct": 58.7,
+     "hits": 71387,
+     "lookups": 121520
+    },
+    "decode_timing": {
+     "windows": 244,
+     "avg_T": 1.05,
+     "tok_per_window": 1.05,
+     "ms_per_window": 33.02,
+     "commit_emit_ms": 0.81,
+     "draft_ms": 1.48
+    }
+   },
+   {
+    "tag": "p4k:rep2",
+    "harness": {
+     "ttft_s": 0.169,
+     "prefill_tps": 37284.02,
+     "decode_tps": 31.57,
+     "prompt_tokens": 6301,
+     "completion_tokens": 256,
+     "cached_tokens": 6296
+    },
+    "serve": {
+     "prompt_tokens": 6301,
+     "reused": 6296,
+     "read": 5,
+     "read_ms": 121.0,
+     "read_tps": 41.3,
+     "generated": 256,
+     "decode_ms": 8112.0,
+     "decode_tps": 31.6,
+     "drafts_accepted": 3,
+     "drafts_offered": 3,
+     "checkpoints": 1
+    },
+    "log_decode_tps": 31.6,
+    "log_read_tps": 41.3,
+    "reused_frac": 0.9992,
+    "hit": {
+     "pct": 60.8,
+     "hits": 73797,
+     "lookups": 121283
+    },
+    "decode_timing": {
+     "windows": 253,
+     "avg_T": 1.01,
+     "tok_per_window": 1.01,
+     "ms_per_window": 32.07,
+     "commit_emit_ms": 0.81,
+     "draft_ms": 1.48
+    }
+   },
+   {
+    "tag": "p12k:rep0",
+    "harness": {
+     "ttft_s": null,
+     "prefill_tps": null,
+     "decode_tps": null,
+     "prompt_tokens": null,
+     "completion_tokens": null,
+     "cached_tokens": null
+    }
+   }
+  ],
+  "draft_cost": {
+   "avg_draft_ms_per_window": 1.43,
+   "avg_commit_emit_ms_per_window": 0.807,
+   "avg_ms_per_window": 32.536,
+   "avg_T": 1.027,
+   "n": 7
+  }
+ }
+}

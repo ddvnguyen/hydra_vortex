@@ -1,0 +1,62 @@
+0.00.117.195 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.117.449 W srv  llama_server: -----------------
+0.00.117.450 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.117.450 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.117.450 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.117.450 W srv  llama_server: -----------------
+0.00.118.677 I srv    load_model: loading model '/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+1.21.553.516 I cmn          init: llama threadpool init, n_threads = 6
+1.21.896.618 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+1.21.900.531 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.21.900.559 I srv  llama_server: model loaded
+1.21.900.562 I srv  llama_server: listening on http://127.0.0.1:18093
+5.05.028.488 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+5.05.028.581 I slot launch_slot_: id  0 | task -1 | decode overlap: backend sampling enabled, device input checked after prefill
+5.05.028.582 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+5.09.760.505 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =     92, progress = 0.96, t =   4.73 s / 19.44 tokens per second
+5.10.036.809 E process_ubatch: rebuilt graph requires another backend for ffn_moe_gate-0 (MUL_MAT_ID)
+5.10.036.812 W decode: removing memory module entries for seq_id = 0, pos = [96, +inf)
+5.10.036.899 E srv  update_slots: post_decode() failed: failed to queue decode overlap batch
+5.10.036.905 E srv    send_error: task id = 0, error: post_decode() failed: failed to queue decode overlap batch
+5.10.036.908 I slot      release: id  0 | task 0 | stop processing: n_tokens = 96, truncated = 0
+5.10.036.933 W srv          stop: cancel task, id_task = 0
+5.48.232.643 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+5.48.232.718 I slot launch_slot_: id  0 | task -1 | decode overlap: backend sampling enabled, device input checked after prefill
+5.48.232.720 I slot launch_slot_: id  0 | task 5 | processing task, is_child = 0
+5.48.604.176 E process_ubatch: rebuilt graph requires another backend for ffn_moe_gate-0 (MUL_MAT_ID)
+5.48.604.180 W decode: removing memory module entries for seq_id = 0, pos = [96, +inf)
+5.48.604.237 E srv  update_slots: post_decode() failed: failed to queue decode overlap batch
+5.48.604.241 E srv    send_error: task id = 5, error: post_decode() failed: failed to queue decode overlap batch
+5.48.604.245 I slot      release: id  0 | task 5 | stop processing: n_tokens = 96, truncated = 0
+5.48.604.265 W srv          stop: cancel task, id_task = 5
+5.48.646.942 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 21356048226
+5.48.766.882 I slot launch_slot_: id  0 | task -1 | decode overlap: backend sampling enabled, device input checked after prefill
+5.48.766.885 I slot launch_slot_: id  0 | task 8 | processing task, is_child = 0
+5.56.589.914 I slot print_timing: id  0 | task 8 | prompt processing, n_tokens =   1069, progress = 1.00, t =   7.82 s / 136.65 tokens per second
+5.56.847.869 E process_ubatch: rebuilt graph requires another backend for ffn_moe_gate-0 (MUL_MAT_ID)
+5.56.847.872 W decode: removing memory module entries for seq_id = 0, pos = [1115, +inf)
+5.56.847.926 E srv  update_slots: post_decode() failed: failed to queue decode overlap batch
+5.56.847.928 E srv    send_error: task id = 8, error: post_decode() failed: failed to queue decode overlap batch
+5.56.847.931 I slot      release: id  0 | task 8 | stop processing: n_tokens = 1115, truncated = 0
+5.56.848.030 W srv          stop: cancel task, id_task = 8
+5.56.851.744 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+5.56.851.795 I slot launch_slot_: id  0 | task -1 | decode overlap: backend sampling enabled, device input checked after prefill
+5.56.851.796 I slot launch_slot_: id  0 | task 12 | processing task, is_child = 0
+5.57.200.923 E process_ubatch: rebuilt graph requires another backend for ffn_moe_gate-0 (MUL_MAT_ID)
+5.57.200.927 W decode: removing memory module entries for seq_id = 0, pos = [1115, +inf)
+5.57.200.981 E srv  update_slots: post_decode() failed: failed to queue decode overlap batch
+5.57.200.984 E srv    send_error: task id = 12, error: post_decode() failed: failed to queue decode overlap batch
+5.57.200.987 I slot      release: id  0 | task 12 | stop processing: n_tokens = 1115, truncated = 0
+5.57.200.994 W srv          stop: cancel task, id_task = 12
+5.57.206.418 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 21364644968
+5.57.336.340 I slot launch_slot_: id  0 | task -1 | decode overlap: backend sampling enabled, device input checked after prefill
+5.57.336.343 I slot launch_slot_: id  0 | task 15 | processing task, is_child = 0
+6.07.232.481 I slot print_timing: id  0 | task 15 | prompt processing, n_tokens =   2029, progress = 0.50, t =   9.90 s / 205.03 tokens per second
+6.17.346.016 I slot print_timing: id  0 | task 15 | prompt processing, n_tokens =   4073, progress = 1.00, t =  20.01 s / 203.55 tokens per second
+6.17.593.741 E process_ubatch: rebuilt graph requires another backend for ffn_moe_gate-0 (MUL_MAT_ID)
+6.17.593.745 W decode: removing memory module entries for seq_id = 0, pos = [4119, +inf)
+6.17.593.799 E srv  update_slots: post_decode() failed: failed to queue decode overlap batch
+6.17.593.802 E srv    send_error: task id = 15, error: post_decode() failed: failed to queue decode overlap batch
+6.17.593.805 I slot      release: id  0 | task 15 | stop processing: n_tokens = 4119, truncated = 0
+6.17.593.895 W srv          stop: cancel task, id_task = 15
+8.31.944.895 I srv    operator(): operator(): cleaning up before exit...

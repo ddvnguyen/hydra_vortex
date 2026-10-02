@@ -1,0 +1,11 @@
+Thanks - that context is exactly what I needed. A few follow-ups before I try the split on my own rig: an RTX 4080 16 GB as card 0 and an RTX 3060 12 GB as card 1, both on one host, Coder model.
+
+1. The auto split picks K by how many profiled pairs the caches can hold, hottest pairs weighted most, and ties go to the placement that leaves the fullest card the most room. On a 16 GB + 12 GB pair the second card is the tight one. Can the tie-break ever give the 3060 more layers at the expense of layers on the 4080, or is the first card always saturated first?
+
+2. During prompt processing the chunks are said to flow through the cards in turn - while a later card reads chunk c, the first card already reads chunk c+1. Is that pipelining a property of every chunk boundary during prefill, or only of the verify-window seam during decode? I want to know whether prompt throughput truly comes from two cards reading adjacent chunks, or only from overlapping the hand-off with the next window.
+
+3. My current config still carries --expert-cache-remote from the helper-GPU experiment. The limits say the helper caches take the visible GPUs no stage runs on - with both of my cards used as stages there are none left. Should I remove the flag before the first split start, or does setup ignore it silently?
+
+4. Prompt-path buffers cost 1.5 GB per card at the default 2048-token chunk and --prefill 1024 halves that, while the 12 GB card also has to hold KV for a 32K session. Which startup line shows the first card's capped --expert-cache so I can confirm the buffers fit before I trust the numbers?
+
+5. The helper-GPU doc says prompt prefill still uses CUDA0 while secondary GPUs serve decode, including MTP verification, and the layer-split doc says the last card runs the output head and the draft (MTP) layer. Under a plain layer split, where does MTP verification actually execute - on every card for its own layers, or only on the last card next to the draft? A draft token then crosses the split once per window - how does that cost compare with the acceptance rate I measured unsplit?

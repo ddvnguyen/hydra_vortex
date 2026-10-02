@@ -1,0 +1,29 @@
+{
+ "arm": "F0-1",
+ "engine": "fork",
+ "port": 8093,
+ "model": "gsq-rco-iq3_s",
+ "reps": 3,
+ "max_tokens": 256,
+ "manifest_sha256_of_sha256sums": "eff755f3af8c0bad143e5c79c0842d1b17fd6bae5febd9f20f94cb423e433e1d",
+ "started": "2026-10-02T00:56:46.861+07:00",
+ "finished": "2026-10-02T00:56:52.050+07:00",
+ "status": "error: warmup failed: RuntimeError: server error: {\"code\": 500, \"message\": \"post_decode() failed: failed to queue decode overlap batch\", \"type\": \"server_error\"}",
+ "warmup": {
+  "start": "2026-10-02T00:56:46.861+07:00",
+  "end": "2026-10-02T00:56:52.050+07:00",
+  "ttft_s": null,
+  "prefill_tps": null,
+  "decode_tps": null,
+  "wall_s": 5.189,
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "cached_tokens": null,
+  "finish_reason": null,
+  "usage": null,
+  "snippet": "",
+  "error": "RuntimeError: server error: {\"code\": 500, \"message\": \"post_decode() failed: failed to queue decode overlap batch\", \"type\": \"server_error\"}"
+ },
+ "cells": [],
+ "requests_total": 1
+}

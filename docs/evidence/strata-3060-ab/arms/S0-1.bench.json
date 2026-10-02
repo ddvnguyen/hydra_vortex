@@ -1,0 +1,257 @@
+{
+ "arm": "S0-1",
+ "engine": "strata",
+ "port": 8092,
+ "model": "gsq-rco-iq3_s",
+ "reps": 3,
+ "max_tokens": 256,
+ "manifest_sha256_of_sha256sums": "f104311637b021ef05dc2f89fed9e356cc9bd3c2dc465781ea2c9a8339cdeaae",
+ "started": "2026-10-02T00:28:11.730+07:00",
+ "finished": "2026-10-02T00:29:20.421+07:00",
+ "status": "error: p12k rep0 failed: HTTPError: HTTP Error 400: Bad Request",
+ "warmup": {
+  "start": "2026-10-02T00:28:11.730+07:00",
+  "end": "2026-10-02T00:28:20.631+07:00",
+  "ttft_s": 6.892,
+  "prefill_tps": 161.78,
+  "decode_tps": 31.36,
+  "wall_s": 8.901,
+  "prompt_tokens": 1115,
+  "completion_tokens": 64,
+  "cached_tokens": 0,
+  "finish_reason": "length",
+  "usage": {
+   "prompt_tokens": 1115,
+   "completion_tokens": 64,
+   "total_tokens": 1179,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "snippet": "We need answer user's multi-part request. Need produce final ans",
+  "error": null
+ },
+ "cells": [
+  {
+   "id": "p1k",
+   "kind": "prefill_decode",
+   "reps": [
+    {
+     "start": "2026-10-02T00:28:20.631+07:00",
+     "end": "2026-10-02T00:28:28.429+07:00",
+     "ttft_s": 0.173,
+     "prefill_tps": 6445.09,
+     "decode_tps": 33.45,
+     "wall_s": 7.797,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 1110,
+     "finish_reason": "length",
+     "usage": {
+      "prompt_tokens": 1115,
+      "completion_tokens": 256,
+      "total_tokens": 1371,
+      "prompt_tokens_details": {
+       "cached_tokens": 1110
+      }
+     },
+     "snippet": "We need answer user's multi-part request. Need produce final ans",
+     "error": null,
+     "rep": 0
+    },
+    {
+     "start": "2026-10-02T00:28:28.429+07:00",
+     "end": "2026-10-02T00:28:37.027+07:00",
+     "ttft_s": 0.186,
+     "prefill_tps": 5994.62,
+     "decode_tps": 30.31,
+     "wall_s": 8.598,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 1110,
+     "finish_reason": "length",
+     "usage": {
+      "prompt_tokens": 1115,
+      "completion_tokens": 256,
+      "total_tokens": 1371,
+      "prompt_tokens_details": {
+       "cached_tokens": 1110
+      }
+     },
+     "snippet": "We need answer user's multi-part prompt. Need produce final answ",
+     "error": null,
+     "rep": 1
+    },
+    {
+     "start": "2026-10-02T00:28:37.027+07:00",
+     "end": "2026-10-02T00:28:45.302+07:00",
+     "ttft_s": 0.183,
+     "prefill_tps": 6092.9,
+     "decode_tps": 31.52,
+     "wall_s": 8.275,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 1110,
+     "finish_reason": "length",
+     "usage": {
+      "prompt_tokens": 1115,
+      "completion_tokens": 256,
+      "total_tokens": 1371,
+      "prompt_tokens_details": {
+       "cached_tokens": 1110
+      }
+     },
+     "snippet": "We need answer user's multi-part request. Need produce final ans",
+     "error": null,
+     "rep": 2
+    }
+   ],
+   "ttft_s_stats": {
+    "median": 0.18,
+    "min": 0.17,
+    "max": 0.19,
+    "n": 3
+   },
+   "prefill_tps_stats": {
+    "median": 6092.9,
+    "min": 5994.62,
+    "max": 6445.09,
+    "n": 3
+   },
+   "decode_tps_stats": {
+    "median": 31.52,
+    "min": 30.31,
+    "max": 33.45,
+    "n": 3
+   },
+   "wall_s_stats": {
+    "median": 8.28,
+    "min": 7.8,
+    "max": 8.6,
+    "n": 3
+   }
+  },
+  {
+   "id": "p4k",
+   "kind": "prefill_decode",
+   "reps": [
+    {
+     "start": "2026-10-02T00:28:45.302+07:00",
+     "end": "2026-10-02T00:29:03.959+07:00",
+     "ttft_s": 10.524,
+     "prefill_tps": 598.73,
+     "decode_tps": 31.36,
+     "wall_s": 18.657,
+     "prompt_tokens": 6301,
+     "completion_tokens": 256,
+     "cached_tokens": 0,
+     "finish_reason": "length",
+     "usage": {
+      "prompt_tokens": 6301,
+      "completion_tokens": 256,
+      "total_tokens": 6557,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     },
+     "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+     "error": null,
+     "rep": 0
+    },
+    {
+     "start": "2026-10-02T00:29:03.959+07:00",
+     "end": "2026-10-02T00:29:12.145+07:00",
+     "ttft_s": 0.162,
+     "prefill_tps": 38895.06,
+     "decode_tps": 31.78,
+     "wall_s": 8.186,
+     "prompt_tokens": 6301,
+     "completion_tokens": 256,
+     "cached_tokens": 6296,
+     "finish_reason": "length",
+     "usage": {
+      "prompt_tokens": 6301,
+      "completion_tokens": 256,
+      "total_tokens": 6557,
+      "prompt_tokens_details": {
+       "cached_tokens": 6296
+      }
+     },
+     "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+     "error": null,
+     "rep": 1
+    },
+    {
+     "start": "2026-10-02T00:29:12.145+07:00",
+     "end": "2026-10-02T00:29:20.391+07:00",
+     "ttft_s": 0.169,
+     "prefill_tps": 37284.02,
+     "decode_tps": 31.57,
+     "wall_s": 8.246,
+     "prompt_tokens": 6301,
+     "completion_tokens": 256,
+     "cached_tokens": 6296,
+     "finish_reason": "length",
+     "usage": {
+      "prompt_tokens": 6301,
+      "completion_tokens": 256,
+      "total_tokens": 6557,
+      "prompt_tokens_details": {
+       "cached_tokens": 6296
+      }
+     },
+     "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+     "error": null,
+     "rep": 2
+    }
+   ],
+   "ttft_s_stats": {
+    "median": 0.17,
+    "min": 0.16,
+    "max": 10.52,
+    "n": 3
+   },
+   "prefill_tps_stats": {
+    "median": 37284.02,
+    "min": 598.73,
+    "max": 38895.06,
+    "n": 3
+   },
+   "decode_tps_stats": {
+    "median": 31.57,
+    "min": 31.36,
+    "max": 31.78,
+    "n": 3
+   },
+   "wall_s_stats": {
+    "median": 8.25,
+    "min": 8.19,
+    "max": 18.66,
+    "n": 3
+   }
+  },
+  {
+   "id": "p12k",
+   "kind": "prefill_decode",
+   "reps": [
+    {
+     "start": "2026-10-02T00:29:20.392+07:00",
+     "end": "2026-10-02T00:29:20.421+07:00",
+     "ttft_s": null,
+     "prefill_tps": null,
+     "decode_tps": null,
+     "wall_s": 0.029,
+     "prompt_tokens": null,
+     "completion_tokens": null,
+     "cached_tokens": null,
+     "finish_reason": null,
+     "usage": null,
+     "snippet": "",
+     "error": "HTTPError: HTTP Error 400: Bad Request",
+     "rep": 0
+    }
+   ]
+  }
+ ],
+ "requests_total": 8
+}
