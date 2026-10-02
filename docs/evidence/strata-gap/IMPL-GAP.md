@@ -1,0 +1,73 @@
+# Epic #811 — Implementation-level gap: Strata v0.1.29 vs our fork on RTX 3060
+
+Task: explain **why** Strata is 2.12× on spec-off 4K decode (32.4 vs 15.3 tok/s) and ~3.0× on cold 12K prefill (606 vs 201 tok/s), at implementation level, with file:line evidence.
+Branch: `docs/811-impl-gap` (off `epic/811-strata-gap-analysis`). READ-ONLY analysis — no rig, no GPU runs, no commits.
+Sources: Strata `/mnt/WorkDisk/strata/src-v0.1.29`; fork `.local/q2g/src`; measured evidence `docs/evidence/strata-3060-ab/` (S0-2/S0-3/F0-2/F0-3 etc.).
+Claim tags: **[verified in source]** = cited file:line read directly; **[hypothesis]** = reasoned, source not yet read; **[measured]** = from our own run logs.
+
+> **Correction to a common reading of the decode line** [verified in source]:
+> `per layer-window: CPU experts 3.79 (3.80 entries), VRAM hits 6.14, PCIe 0.10` are **COUNTS** (distinct experts / routed entries per window×layer, summing to K=10 routed experts), **NOT milliseconds**. Counters: `multi_misses += njobs` `src/core/expert_source.cpp:989`, `multi_entries` `:965`, `cache_hits` `:939`, `pcie_experts` `:889`; print `src/program/generate.cpp:4212-4220`. The **real CPU milliseconds** are the `CPU 10.20` bracket field = `d.ms_run` (`expert_source.cpp:969-970,984`).
+
+## 0. The measured decomposition (S0-2 engine log) [measured]
+
+Decode, per window (~1 token × 48 MoE layers), 255-window lines (typical):
+```
+30.37 ms/window = verify 28.18 (GPU-reach wait 15.76 + per-layer host 10.52
+  [plan 0.03 actq 0.18 jobs 0.09 CPU 10.20] + stage 0.29) + commit/emit 0.80 + draft 1.39
+```
+Range across windows: verify 28.2–29.7 = **GPU-reach wait 15.7–16.4** + **per-layer host 10.5–12.2 (CPU experts 10.2–11.9)** + stage 0.1–0.3; commit/emit 0.80; draft 1.35–1.45; avg T 1.00–1.04 (S0 spec-2/min-p 1.0 → drafts almost never accepted). ≈ leader's "29.8 ≈ 16.3 + 11.55, draft 1.5" ✓.
+Field → code mapping [verified in source]: `GPU-reach wait` = `ver.ms_wait`, host spin until CUDA graph rings layer k, `src/core/verify.cpp:1007-1021` (acc `:1046`); `per-layer host` = `ver.ms_pool` whole `pool()` window `verify.cpp:1028-1030,1047`; `plan/actq/jobs/CPU` = `d.ms_plan/ms_actq/ms_jobs/ms_run` `src/core/expert_source.cpp:886-887,919-925,927-967,969-970` (aggregates `:981-984`); `stage` = `ver.ms_host` `verify.cpp:960-989`; `commit/emit`/`draft` = `dt_commit`/`dt_draft` `generate.cpp:4188,4216-4217`.
+Strata totals [measured]: **≈31 ms/token → 32.4 tok/s**. Fork [measured]: **65.4 ms/token → 15.3 tok/s** (F0-2/F0-3, print_timing confirms server-side). Δ ≈ 34 ms/token.
+Strata CPU expert time ≈ **10–12 ms/token for all 48 layers** (~0.21–0.25 ms/layer for ~3.8 routed experts) [measured].
+
+## 1. Ranked gap table
+
+| # | Gap | Affects | Est. contribution | Evidence | Portable to fork? |
+|---|-----|---------|-------------------|----------|-------------------|
+| **1** | **Where expert GEMMs run: Strata computes experts on the GPU** (VRAM-resident grouped IQ3_S kernels, or PCIe-streamed blobs read directly from pinned host arena) **while the fork sends all MoE expert compute to the CPU** (`--n-cpu-moe 99` ⇒ MUL_MAT_ID on CPU backend). Strata's host CPU only does ~10–12 ms/token of overlapped expert work; Strata's *cold prefill* never dequantizes experts on the host at all — MMQ int8 tensor-core GEMMs on GPU from streamed quantized weights. | prefill (main), decode | **prefill ~3× is mostly this**: fork 201 tok/s is a flat CPU memory-bound ceiling (4K→12K both ≈201–203), Strata 451→606 rises with chunk amortisation. Decode: Strata GPU path gives VRAM hits ~6.1 entries/layer-window served by GPU while CPU does 3.8 [measured counts]; fork does 10/10 on CPU. | Strata: [verified in source] `src/kernels/cuda/iq_kernels.cu:351-373` (grouped IQ3_S, `__dp4a`, warp/row), `src/prefill/moe_mmq.cu:125-151` (MMQ IQ3_S `:142`), pinned arena + device alias `src/core/expert_source.cpp:505-537,645`, resident→`device_slot` `src/prefill/prefill.cpp:1690,1722`, streamed→`cudaStreamWaitEvent(copied)` `:1692-1694`. Fork routing: **[hypothesis]** (source map aborted — see §4). | **Partially.** Fork *has* a GPU expert path (`--moe-expert-cache-size` GPU LRU; measured F1 proves it runs) but at N=22 it is *slower* than cache-0 (9.3 vs 15.3) and fill-matched N=64 OOMs — porting = fix thrash/gather overhead or stream experts like Strata (design work, not a flag). |
+| **2** | **Per-layer CPU↔GPU serialization in the fork decode loop vs Strata's publish-first pipeline.** Strata: plan is published *before* compute "so the GPU starts while the CPU works" (`expert_source.cpp:816-820` comment), host then spins on a per-layer CUDA-graph reach event (`verify.cpp:1007-1021`) and runs the CPU pool — measured additive 16.3 wait + 11.5 host ≈ 28 ms verify. The fork (ggml_backend_sched, mixed CUDA+CPU backends) must split/sync the graph around every CPU MUL_MAT_ID ⇒ ~48 round-trips/token. | decode | **est. 15–25 ms/token** of the 34 ms Δ (48 layers × 0.3–0.5 ms split+sync) — **[hypothesis]**, the single biggest unknown | Strata side [verified in source] as cited; fork side **[hypothesis]** — `ggml_backend_sched` split behavior, CUDA-graph coverage under mixed backends, and actual per-layer sync count **not yet read** (subagent aborted). | **Design-level.** ggml's sched-split-per-op is architectural; a fork fix would need MoE-layer graph partitioning / async copy+compute (large change). |
+| **3** | **CPU expert engine quality when it *does* run on host.** Strata: dedicated physical-core pinned thread pool (one worker/physical core, siblings dropped, affinity set, first core reserved), row-parallel across ALL experts of a layer at once (`mtasks = 3×threads`, `pool.cpp:494-506,361,398`), activation quant fused to `block_q8_K` on the main thread (`expert_source.cpp:919-925`), AVX-512 multi-token i-quant rows for nt≥2 (`src/kernels/cpu/iq_avx512.cpp:188-226`, MAXT=8) and llama.cpp-class single-token vec_dot at T=1 — with an in-source comment: custom kernels are "2.0–2.4× ggml-cpu at three tokens, **no faster at one**" (`native_expert.cpp:80-84,97-108`). Fork: `-t 6` threads [measured from our own flags], CPU GEMM path not yet read. | decode (and fork prefill CPU share) | **est. 2–6 ms/token** if fork under-threads its CPU MoEs (Strata spends only 10–12 ms total with full-core pool); **[hypothesis]** on the fork side | Strata [verified in source] (cited above). Fork thread use for MUL_MAT_ID: **[hypothesis]**. | **Yes — portable.** Thread count/affinity/row-split are tunables; but note at T=1 even Strata falls back to llama-class vec_dot, so kernel redesign buys little on decode at spec-off — the pool/scheduling is the lever. |
+| **4** | **Prefill chunk + DMA ring pipeline (Strata) vs raw per-ubatch chain (fork).** Strata: chunk 2048–8192 chosen by cache-slot budget (`generate.cpp:3062-3085,1181-1185`), separate copy stream with event-guarded ring (96–384 slots; 384 when ≥90% pinned, `prefill.cpp:77-88`), dedicated issuer thread `cudaMemcpyAsync` ring `:1131-1177`, stager threads for unpinned blobs `:125-149`, PLE-row gather overlapped on a thread while GPU runs the current chunk `:955-967,1047-1066`, ONE host-grouping sync per MoE layer per chunk `:1503-1512`. | prefill | **est. 30–50% of the 3×** beyond gap #1 (fixed per-chunk cost × 6 chunks at 2048 vs ×2 at 8192; ring overlap vs inline staging) | [verified in source], sites cited. Actual chunk used in our S0-2 run **not yet confirmed** from log (open Q1 §4). | **Partially portable.** Ring/stream staging exists in fork form (`--ple-prefetch`, moe-cache H2D) but measured F1 shows it currently loses; chunk-size semantics differ (ubatch vs expert-stream plan). |
+| **5** | **GPU dense/attention floor = Strata's own 16.3 ms.** GPU-reach wait 15.7–16.4 ms/window [measured] is what Strata's GPU stack (dense projections cuBLAS bf16, attention, router, combine) costs per token. Fork's GPU share should be similar-class on the same card **[hypothesis]** ⇒ not the gap driver; it caps Strata at ~32 tok/s. | decode | baseline, not a gap | [measured] + [verified in source] semantics `verify.cpp:1007-1021`. | n/a |
+| **6** | **Spec-draft overhead carried by Strata, not the fork.** S0 pays draft 1.35–1.45 + commit/emit 0.80 ms/window ≈ **2.2 ms/token (~7%)** even at T≈1.02; F0 runs `--spec-type none` ⇒ 0. | decode | −7% against Strata (already inside the 32.4) | [measured] lines + print site `generate.cpp:4188,4216-4217`. | n/a — favours fork; primary verdict unchanged (draft-adjusted 34.1 → 2.23×). |
+| **7** | **Prefix turn-2: fork 10.0 s vs Strata 5.8 s for the same ~731 uncached tokens** (9159/9890 reused both engines [measured]). Strata serve line: `reused 9158 read 732 read_ms 5758`. Fork must re-evaluate ~731 tok at its ~137 tok/s cold-1K rate (5.3 s) + ~4–5 s unexplained fixed cost; Strata pays 5.8 s total. | prefix TTFT | **1.7× on turn-2/3 TTFT** (rule 3 in t0006) | Both **[measured]**; cause **[hypothesis]**: prompt re-render/template, `kv_unified = false` slot path [measured in probe log], per-ubatch syncs, or re-encode of cached prefix. Decision code (`tools/server/server-context.cpp` cached_tokens / prompt-cache skip) **not yet read** (subagent aborted). | Unknown — needs the fork-side code map first. |
+| **8** | **GPU expert-residency asymmetry (Strata 5.06 GiB always-on vs fork F0 none / F1 1.77 GiB thrashing).** Strata's auto cache keeps 2641 slots warm — decode shows `VRAM hits 6.14` of 10 entries/layer-window served from device [measured counts]; fork F0 has zero GPU expert residency (all CPU) and F1's N=22 LRU moves 6.5 GiB H2D per run (measured `moe-cache-mm h2d_mib=6520`). | decode | overlaps #1; explains why the fork's *available* GPU path doesn't currently help | [measured] + Strata resident test `prefill.cpp:1090,1591,1688` [verified in source]. | Design-level on 12 GB (N=64 fill-match OOMs). |
+
+## 2. Decode: what runs where (side-by-side)
+
+**Strata (per token/window)** — [verified in source] + [measured]:
+1. CUDA graph of dense/attention layers advances; host spins `GPU-reach` event per layer (`verify.cpp:1007-1021`) → **16.3 ms** [measured].
+2. Plan published first (`expert_source.cpp:816-899`) so GPU and CPU overlap by design; activation quant `block_q8_K` main thread (`:919-925`, 0.18 ms [measured]); jobs built (`:927-967`, 0.09 ms).
+3. `pool()` row-splits each layer's ~3.8 CPU-resident experts across **all physical cores, pinned** (`pool.cpp:179,95-110,361,398,494-506`) → **CPU 10.2–11.9 ms total for 48 layers** [measured].
+4. ~6.1 entries/layer-window hit VRAM experts → GPU grouped kernels (`iq_kernels.cu:351-373`); ~0.1 expert read over PCIe from pinned arena with device alias (`expert_source.cpp:505-537`; counter `:889`).
+5. `commit/emit` 0.80 ms, `draft` 1.4 ms (`generate.cpp:4188,4216-4217`) [measured].
+Totals: **≈31 ms → 32.4 tok/s** [measured].
+
+**Fork (per token, F0)** — **[hypothesis except where noted]**:
+1. `--n-cpu-moe 99` ⇒ all `ffn_*_exps` MUL_MAT_ID execute on the CPU backend; ggml_backend_sched splits CUDA↔CPU graphs and syncs (split sites/sync count **unverified**).
+2. Dense/attention on GPU between splits; CUDA-graph applicability under mixed backends **unverified**.
+3. CPU expert GEMM = llama.cpp vec_dot IQ3_S at `-t 6` threads; per-expert batching/threading **unverified**.
+Totals: **65.4 ms** [measured from print_timing tg]; attribution across (GPU + splits + CPU GEMM) is the core open item — est. CPU GEMM 15–25 + splits 15–25 + GPU 16–20 **[hypothesis]**.
+
+## 3. Prefill: why 3× at 12K
+
+- Fork: **201 tok/s flat at 4K and 12K** [measured] ⇒ fixed CPU throughput ceiling (all experts on CPU), not chunking. TTFT 61.3 s @12K [measured].
+- Strata: 167 (1K) → 451 (4K) → 606 (12K) [measured]; engine line: `GPU timeline ≈ wall` with phase shares `dequant 8.5%, gemm gate/up 14.3%, gemm down 7.7% … wait copy 14.1%` and `host staging` **session-cumulative, never reset** (`stats_.ms_experts_host`, `prefill.hpp:115`, acc `:1126,1613,1775` — can exceed wall; interpretation rule `prefill.cpp:884-887`: phase % are shares of the **GPU event timeline including GPU-idle gaps**). [verified in source]
+- Mechanics: experts stay quantized; GPU MMQ int8 (`moe_mmq.cu:125-151`), blob streamed by issuer thread on a copy stream into a ring (`prefill.cpp:1131-1177`), compute waits only per-entry events (`:1692-1694`); one host-grouping sync per layer per chunk (`:1503-1512`); PLE/ngram rows overlapped (`:955-967`). Cold cache ⇒ every blob streams each chunk (resident test `:1090,1591,1688`) — yet still 3× the fork. [verified in source]
+
+## 4. Open / not yet verified
+
+1. **Fork code map (blocked):** the fork-side subagent was aborted. Unread: `--n-cpu-moe`/`--cpu-moe`/`--override-tensor` parsing → CPU MUL_MAT_ID routing; ggml-cpu IQ3_S vec_dot + repack; backend-sched split/sync count per layer; CUDA-graph behavior under mixed backends; GPU LRU `--moe-expert-cache-size` internals (the "routes through the GPU LRU regardless of --n-cpu-moe" warning source); **prefix cached_tokens decision path** (`tools/server/server-context.cpp`) for gap #7. → *re-dispatch with fresh context.*
+2. **Strata decode subagent's full walkthrough** arrived only as summary; core facts re-sourced via the kernels/prefill map, but details (thread creation site beyond `pool.cpp`, graph capture site, exact pipeline overlap vs additive verify) not re-verified.
+3. **Which prefill chunk did S0-2 actually get?** Log line `strata serve: prompt chunk auto: N` (`generate.cpp:3105`) not yet grepped → decides 2048-vs-8192 fixed-cost story in gap #4.
+4. **Is `verify = wait + host` truly additive (no cross-layer pipeline)?** Publish-first comment (`expert_source.cpp:816-820`) vs additive accounting — semantics need one careful read of `verify.cpp:950-1050`.
+5. **Gap #2 magnitude** (fork per-layer split cost) — cannot be ranked reliably without (1); currently estimated only.
+6. **MMQ on/off and pinned share in our run** (Strata-side open Qs from kernel map): affects how much of the 605 tok/s is the optimized path.
+7. `avg T=1.00` windows + `draft 1.39` — at T=1 the draft phase still costs 1.4 ms (graph launch+sync); confirm `S_mtp`/break path (`generate.cpp:4111-4116`).
+
+## 5. Follow-ups (for re-dispatch)
+
+- F-A: fork decode code map (routing, sched splits, sync inventory, IQ3_S CPU kernels, thread use) → firm up gaps #1/#2/#3 fork side.
+- F-B: fork prefix-cache decision walkthrough → close gap #7 (why 10.0 s for 731 new).
+- F-C: grep our S0-2/S1 logs for `prompt chunk` + `STRATA_VERIFY_PROFILE` feasibility → close open Q3/Q4/Q6.
+- F-D: re-read `verify.cpp:950-1050` once to settle pipeline-vs-additive semantics (open Q4).
