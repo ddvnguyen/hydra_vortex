@@ -1,0 +1,14 @@
+[T6] pre-arm gates (threads=6):
+GATE ok: MemAvailable 72.8 GiB (>= 67)
+[T6] h2d pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+[T6] llama-server pid 2111057, waiting for /health (max 900s)
+[T6] ready
+[T6] vram_after_load_mib=6271
+  p4k rep0 ttft=20.41 prefill=201.81 decode=13.58 err=None
+  p4k rep1 ttft=0.25 prefill=16476.0 decode=13.84 err=None
+  p4k rep2 ttft=0.258 prefill=15965.12 decode=12.33 err=None
+[T6] bench rc=0
+[T6] PROF lines: 15 -> /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/arms/T6-1.prof.txt
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+T6-1 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/arms/T6-1.logparse.json (align match=True)
+T6-1 done status=ok threads=6 bench_rc=0 parse_rc=0 mem_avail_after=74.3GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;] link_bad_samples=0 prof_lines=15 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/logs/T6-1.summary.txt
