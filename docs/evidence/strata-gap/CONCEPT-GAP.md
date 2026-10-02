@@ -21,7 +21,7 @@ Inputs: `docs/evidence/strata-3060-ab/` (t0006, 9 scored arms), Strata `DETAILS-
 
 ## What this means for our own history
 
-- Our shelved split-execution result on the 3060 (+9-14%) and every fork 3060 number before 2026-10-01 were measured on the Gen1-stuck PCIe link (6.1 GB/s now; Gen1 was ~0.5-1 GB/s effective). Strata's design is built around PCIe being usable; **re-measure the shelved bypass on the healthy link before concluding it was thin**.
+- Our shelved split-execution result on the 3060 (+9-14%) and every fork 3060 number before 2026-10-01 were measured on the Gen1-stuck PCIe link (3060 H2D is 6.1 GB/s now; the Gen1-era figure is not in these artefacts and should be re-read from the old logs before quoting). Strata's design is built around PCIe being usable; **re-measure the shelved bypass on the healthy link before concluding it was thin**.
 - Atlas hit-rate work (h@N vs the N/n_expert baseline) maps directly onto Strata's adaptive cache; Strata's 59-61% at 10.7% residency is ~5.6x the uniform baseline, in the range our atlas measured. The atlas->STRP profile bridge (Tier-2 spike) is the integration point if we adopt Strata's engine rather than port it.
 
 ## Experiments proposed (attribute the gap, no assertion)
