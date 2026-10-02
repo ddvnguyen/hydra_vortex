@@ -1,0 +1,2 @@
+2026-10-03T00:37:22+07:00 watcher start: cap 1h, stable=3 x 60s, gate MemAvailable>=67 + swap quiet
+2026-10-03T00:41:22+07:00 still waiting: mem 54.44 GiB (iter 5)

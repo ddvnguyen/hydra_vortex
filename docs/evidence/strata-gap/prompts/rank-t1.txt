@@ -1,0 +1,32 @@
+You are a senior Python engineer. Implement a thread-safe LRU cache with per-entry TTL in Python 3.11, delivered as a small library plus tests.
+
+Requirements:
+
+1. Class `TTLCache` with constructor `TTLCache(max_entries: int, default_ttl: float, clock: Callable[[], float] = time.monotonic)`. The injectable clock is mandatory: tests must be able to freeze and advance time without sleeping.
+
+2. Operations:
+   - `get(key)` returns the value and marks the entry most-recently-used. Returns `None` when absent, and also when the entry is expired. Expired entries discovered by `get` must be evicted immediately, not lazily kept.
+   - `set(key, value, ttl: float | None = None)` uses `default_ttl` when ttl is omitted. Re-setting an existing key refreshes both its value and its expiry and moves it to the most-recent position. A ttl of zero or less must raise `ValueError`.
+   - `delete(key)` returns True if an entry was removed.
+   - `purge_expired()` walks the cache once, removes every expired entry, and returns how many were removed. It must be safe to call from any thread and must not raise if another thread mutated the cache concurrently.
+   - `__len__` counts only live (unexpired) entries. `__contains__` must not resurrect an expired entry's recency.
+   - `keys_mru()` yields keys from most to least recently used, skipping expired entries.
+
+3. Eviction: when a `set` pushes the cache past `max_entries`, evict least-recently-used entries until within budget. Eviction must consider expiry too: if the incoming set happens while stale entries exist, purge them first so you never evict a fresh entry to make room for a stale one.
+
+4. Concurrency: use one `threading.RLock` around all mutations. Reads may share the lock since the underlying OrderedDict is not safe under concurrent write. Document the lock discipline in the class docstring in three sentences or fewer. No lock may be held across user callbacks such as the clock function being called more than needed - actually call the clock inside the lock but never call arbitrary user code while holding it.
+
+5. Observability: keep counters for hits, misses, expirations, and evictions, exposed as a `stats()` dict. Counters must be updated under the lock so a reader never sees a torn pair of increments.
+
+6. Tests with pytest, using a fake clock object whose `now()` the test advances manually. Cover at least: hit promotes recency; TTL expiry via get, via contains, and via purge; eviction order under max_entries; refresh on re-set; ttl override vs default; ValueError on non-positive ttl; stats counters after each class of event; and a smoke test with 8 threads doing mixed get/set for 200 iterations with a barrier start, asserting no exception and that len stays within budget at the end.
+
+Deliver: `ttlcache.py`, `test_ttlcache.py`, and a short README section stating the complexity of each operation (all O(1) amortized) and the one known tradeoff you made (why a single lock rather than a sharded lock). Keep the whole thing under 250 lines excluding tests. Walk me through the eviction path step by step after the code, including where expiry and LRU interact.
+
+Also cover these edge cases explicitly, each with a one-line rationale in the code comments or the README:
+- What happens when `max_entries` is 0 (I expect every set to be a no-op or raise - pick one, justify it).
+- What happens when two different keys map to the same hash bucket (dict collisions are handled for us, but say why you did not need a custom hash map).
+- What should `set` do when the ttl parameter is present but the key already exists with a different ttl - overwrite or keep the earlier expiry?
+- Whether `get` on an expired entry counts as a miss for stats purposes (it should), and whether it counts as an expiration too (I want both counters incremented in that case - confirm or argue).
+- Whether `keys_mru` is safe to consume while another thread mutates the cache, and if not, what a caller should do instead (copy under lock, iterate outside - show the two-line pattern).
+- How you would unit-test that the lock is actually held during a mutation without sleeping: hint, a subclass that records ordering of operations with a fake clock, or a barrier-based assertion.
+Finally, restate the invariant that ties TTL and LRU together in one sentence - the exact rule a reviewer can check your implementation against when reading the eviction loop.

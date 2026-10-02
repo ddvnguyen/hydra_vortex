@@ -1,0 +1,33 @@
+Good. Now extend the `TTLCache` you just wrote with persistence and richer metrics, and then review the design for correctness traps.
+
+Part A - persistence:
+
+1. Add `snapshot(path: Path) -> None` which serializes the cache to the given path atomically: write to a temporary sibling file in the same directory, `flush()` plus `os.fsync()`, then `os.replace()`. A crash at any point must leave either the old file or the new file, never a torn file.
+
+2. Snapshot format is JSON with a versioned envelope: `{"version": 1, "saved_at": <unix epoch float>, "entries": [{"k": ..., "v": ..., "expires_at": <epoch>, "atime": <epoch>}]}`. Because the live cache uses a monotonic clock, persistence needs a conversion: keep a module-level anchor that records `time.time() - clock()` at construction and use it to translate absolute wall-clock expiry back into monotonic terms on load. Explain in two sentences why loading a snapshot on a different machine or after a reboot can shift expiries, and what your chosen semantics are (drop entries whose translated expiry is already in the past).
+
+3. `load(path: Path, *, strict: bool = True) -> int` reads such a file, applies the translation above, inserts entries in stored atime order so LRU order is restored, and returns how many entries were accepted. In `strict=True` mode an unparseable file or a version greater than 1 raises `ValueError`; in strict=False mode it returns 0 and leaves the cache untouched. Loading must merge, not clear, unless you pass a new keyword you define and document.
+
+4. Add a `CloseableTTLCache(TTLCache)` subclass that registers an `atexit` hook for a final best-effort snapshot to a configured path, and make the hook idempotent so calling `snapshot` manually afterwards does not double-write.
+
+Part B - metrics:
+
+5. Extend `stats()` with `bytes_estimate` (sum of a per-entry cost = `len(pickle) would be wrong`; instead estimate with `sys.getsizeof(key) + sys.getsizeof(value)` and document that it is a rough estimate), `oldest_age_s` (now - oldest atime among live entries), and `expiry_horizon_s` (now until the earliest expiry, or None).
+
+6. Add a `hit_rate(window: int)` helper that keeps a bounded deque of the last `window` outcomes (1 for hit, 0 for miss) and returns the fraction, or None if fewer than window samples exist.
+
+Part C - review:
+
+7. List five concrete correctness traps in this design. For each: the failure scenario, and the mitigation you implemented or deliberately declined with one line of reasoning. I specifically want your analysis of: clock adjustment if someone passes `time.time` instead of `time.monotonic`; snapshot concurrent with a `set`; `purge_expired` racing `snapshot`; unbounded memory from large values inside a fixed entry count; and recursion or reentrancy if the clock callback itself touches the cache.
+
+8. Add the tests for snapshot round-trip (including LRU order restoration and expiry translation), atomicity under an injected `os.replace` failure, strict vs lenient load, hit_rate window edge cases, and one test proving the concurrent snapshot plus set scenario never writes a torn file (run it 20 times).
+
+Show the diff-style changes to each file rather than repeating unchanged code, then the new tests in full.
+
+One more pass at the end - engineering hygiene:
+
+9. Type annotations: run mentally through every public function and confirm the signatures are complete (parameter types, return types, and the `dict` shape of `stats()` via a `TypedDict` or a documented dict literal). Show the final `stats()` type definition.
+
+10. Failure-mode documentation: add a README table with columns `Scenario`, `Symptom`, `Detection`, `Response` covering at least: snapshot file corrupted by external disk failure; clock jumping backwards (NTP step) with `time.time` passed as the clock; OOM while a large value is being set; two processes loading the same snapshot path; and the atexit hook running after a fork. Fill each cell concretely for this implementation - no generic advice.
+
+11. Performance note: given the cache holds at most `max_entries` and every operation takes the lock, state the expected throughput ceiling on one core in operations per second for a cache of 10,000 entries, order-of-magnitude, with your reasoning (lock contention, dict op cost, clock call cost), and identify the single hottest instruction path you would optimize first if profiling showed the lock was the bottleneck - and why sharding is or is not worth it at that size.

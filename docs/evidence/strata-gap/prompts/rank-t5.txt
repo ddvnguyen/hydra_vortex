@@ -1,0 +1,29 @@
+Back to engineering: design and implement a concurrency-safe token-bucket rate limiter in Go, suitable for protecting a public HTTP API, and explain the scheduling behavior under bursty load.
+
+Requirements:
+
+1. Package `ratelimit` with:
+   - `New(rate float64, burst int, opts ...Option) *Limiter` where `rate` is tokens per second (fractional allowed, e.g. 0.5) and `burst` is the bucket capacity.
+   - `Allow(ctx context.Context) (time.Duration, error)` - consumes one token, returning how long to wait before the caller may retry when limited; returns an error if ctx is done first.
+   - `AllowN(ctx, n int)` and `Reserve`-style `ReserveN(n int) Reservation` where a `Reservation` exposes `Delay() time.Duration`, `OK() bool`, and `Cancel() bool` (idempotent, returns tokens if not yet served).
+   - `SetRate(newRate float64)` and `SetBurst(newBurst int)` usable at runtime; changing either must take effect for the next request without a restart and without corrupting the accumulated credit (clamp tokens to the new burst immediately).
+
+2. Time handling: inject a clock via `Option` (`WithClock(func() time.Time)`) so tests never sleep. Lazily advance the bucket on each operation rather than running a background ticker - no goroutine is started by `New`. Explain why a ticker-based design was rejected (goroutine per limiter, alignment skew, shutdown burden) in three sentences.
+
+3. Concurrency: protect state with a `sync.Mutex`; show the invariant you maintain (`tokens = min(burst, tokens + elapsed*rate)` recomputed from `last` timestamp) and prove in prose that two concurrent `Allow` calls cannot both succeed when only one token remains. Avoid holding the lock while blocking on ctx - the implementation must never block under the lock; waiting happens after computing the delay, either by returning it to the caller or by sleeping outside the lock when using `Wait(ctx)`.
+
+4. Add `Wait(ctx) error` as a convenience that sleeps for the reservation delay and honors cancellation mid-sleep (use a timer and a select on ctx.Done()).
+
+5. Fairness under bursty traffic: add a FIFO waiter mode behind an option `WithFIFO()`. In FIFO mode, callers that must wait enqueue into a channel-backed queue; the first waiter is served when enough tokens accrue, and cancellation of a waiter removes it without leaking tokens into the bucket. Document the memory cost (one goroutine per waiter) and the alternative (immediate-fail with `Allow`) in the README.
+
+6. Metrics: expose a `Snapshot()` returning `{Allowed, Limited, CurrentTokens float64, Waiters int}` for Prometheus scraping; increments under the same lock.
+
+7. Tests: table-driven unit tests with the fake clock covering fractional rate accrual over fractional seconds; burst exhaustion then refill timing exact to the microsecond; `AllowN` larger than burst (must fail, not go negative); runtime `SetRate` from 10 to 1 while 5 tokens are banked (tokens clamp to burst only if exceeding it); ctx cancellation during `Wait`; FIFO order among 5 concurrent waiters released by advancing the clock; `Cancel` returning tokens; and a race detector test (`go test -race`) with 32 goroutines calling `Allow` for 100ms of wall time, asserting the total successes equals expected within tolerance.
+
+After the code, give me: (a) the exact math for when the next token becomes available given current state; (b) what happens when rate is set to 0 (disable, document your choice); (c) the behavior difference between this and a GCRA/leaky-bucket formulation, one paragraph; and (d) how you would shard a single global limiter across instances of the service without a central store - approximation schemes, error bounds, and why eventual over-admission is acceptable.
+
+Before finishing, add two more deliverables:
+
+8. A benchmark: `limiter_bench_test.go` with `go test -bench=. -benchtime=1s` covering `Allow` uncontended (lock always free), `Allow` contended (32 goroutines), and `Wait` with immediate availability. Report the ns/op you expect for the uncontended path and explain what dominates it (mutex fast path vs time.Now syscall vs multiplication).
+
+9. A correctness argument in the README as a numbered proof sketch: given the lazy-refill invariant, prove that for a stable rate the long-run number of admitted requests over time T is at most `floor(initial_tokens + rate*T)`, and state the assumptions (monotonic clock, no SetRate during the window). Then give a counterexample showing the bound is violated if the clock is not monotonic - a concrete sequence of timestamps where the limiter admits extra requests, and the one-line fix (clamp elapsed to non-negative) that closes it.
