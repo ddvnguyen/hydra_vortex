@@ -1,0 +1,47 @@
+T0=1791002222.154434605
+0.00.171.859 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.172.102 W srv  llama_server: -----------------
+0.00.172.103 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.172.103 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.172.103 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.172.103 W srv  llama_server: -----------------
+0.00.173.339 I srv    load_model: loading model '/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+1.51.854.903 I cmn          init: llama threadpool init, n_threads = 6
+1.52.257.771 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+1.52.261.679 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.52.261.708 I srv  llama_server: model loaded
+1.52.261.713 I srv  llama_server: listening on http://127.0.0.1:8093
+1.56.324.304 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.56.324.352 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+2.00.969.246 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =     92, progress = 0.96, t =   4.64 s / 19.81 tokens per second
+2.05.637.341 I slot print_timing: id  0 | task 0 | prompt eval time =    4870.60 ms /    96 tokens (   50.74 ms per token,    19.71 tokens per second)
+2.05.637.343 I slot print_timing: id  0 | task 0 |        eval time =    4442.37 ms /    64 tokens (   70.51 ms per token,    14.18 tokens per second)
+2.05.637.344 I slot print_timing: id  0 | task 0 |       total time =    9312.96 ms /   160 tokens
+2.05.637.348 I slot print_timing: id  0 | task 0 |    graphs reused =         63
+2.05.637.369 I slot      release: id  0 | task 0 | stop processing: n_tokens = 159, truncated = 0
+2.05.641.901 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 145757379154
+2.05.766.407 I slot launch_slot_: id  0 | task 67 | processing task, is_child = 0
+2.15.628.797 I slot print_timing: id  0 | task 67 | prompt processing, n_tokens =   2029, progress = 0.50, t =   9.86 s / 205.73 tokens per second
+2.25.721.582 I slot print_timing: id  0 | task 67 | prompt processing, n_tokens =   4073, progress = 1.00, t =  19.96 s / 204.11 tokens per second
+2.33.115.893 I slot print_timing: id  0 | task 67 | n_gen =    100, tg =  13.79 t/s, tg_3s =  13.93 t/s
+2.36.173.446 I slot print_timing: id  0 | task 67 | n_gen =    142, tg =  13.77 t/s, tg_3s =  13.74 t/s
+2.39.181.818 I slot print_timing: id  0 | task 67 | n_gen =    186, tg =  13.97 t/s, tg_3s =  14.63 t/s
+2.42.217.085 I slot print_timing: id  0 | task 67 | n_gen =    226, tg =  13.82 t/s, tg_3s =  13.18 t/s
+2.44.426.265 I slot print_timing: id  0 | task 67 | prompt eval time =   20169.37 ms /  4077 tokens (    4.95 ms per token,   202.14 tokens per second)
+2.44.426.267 I slot print_timing: id  0 | task 67 |        eval time =   18490.47 ms /   256 tokens (   72.51 ms per token,    13.79 tokens per second)
+2.44.426.268 I slot print_timing: id  0 | task 67 |       total time =   38659.84 ms /  4333 tokens
+2.44.426.268 I slot print_timing: id  0 | task 67 |    graphs reused =        316
+2.44.426.376 I slot      release: id  0 | task 67 | stop processing: n_tokens = 4374, truncated = 0
+2.44.430.893 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.942
+2.44.430.932 I slot launch_slot_: id  0 | task 326 | processing task, is_child = 0
+2.53.011.835 I slot print_timing: id  0 | task 326 | n_gen =    100, tg =  11.90 t/s, tg_3s =  12.02 t/s
+2.56.061.609 I slot print_timing: id  0 | task 326 | n_gen =    138, tg =  12.05 t/s, tg_3s =  12.46 t/s
+2.58.411.001 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/tmp/nsys-report-d964.qdstrm'
+Press Ctrl-C to stop symbol files downloading
+[1/1] [0%                          ] NSYS-2.nsys-rep[1/1] [0%                          ] NSYS-2.nsys-rep[1/1] [5%                          ] NSYS-2.nsys-rep[1/1] [6%                          ] NSYS-2.nsys-rep[1/1] [=16%                        ] NSYS-2.nsys-rep[1/1] [=15%                        ] NSYS-2.nsys-rep[1/1] [14%                         ] NSYS-2.nsys-rep[1/1] [13%                         ] NSYS-2.nsys-rep[1/1] [===23%                      ] NSYS-2.nsys-rep[1/1] [===22%                      ] NSYS-2.nsys-rep[1/1] [==21%                       ] NSYS-2.nsys-rep[1/1] [==20%                       ] NSYS-2.nsys-rep[1/1] [=====29%                    ] NSYS-2.nsys-rep[1/1] [====28%                     ] NSYS-2.nsys-rep[1/1] [====27%                     ] NSYS-2.nsys-rep[1/1] [====26%                     ] NSYS-2.nsys-rep[1/1] [======34%                   ] NSYS-2.nsys-rep[1/1] [======33%                   ] NSYS-2.nsys-rep[1/1] [=====32%                    ] NSYS-2.nsys-rep[1/1] [=====31%                    ] NSYS-2.nsys-rep[1/1] [=====30%                    ] NSYS-2.nsys-rep[1/1] [=====29%                    ] NSYS-2.nsys-rep[1/1] [====28%                     ] NSYS-2.nsys-rep[1/1] [====27%                     ] NSYS-2.nsys-rep[1/1] [====26%                     ] NSYS-2.nsys-rep[1/1] [====25%                     ] NSYS-2.nsys-rep[1/1] [====26%                     ] NSYS-2.nsys-rep[1/1] [====27%                     ] NSYS-2.nsys-rep[1/1] [====28%                     ] NSYS-2.nsys-rep[1/1] [=====29%                    ] NSYS-2.nsys-rep[1/1] [=====30%                    ] NSYS-2.nsys-rep[1/1] [=====31%                    ] NSYS-2.nsys-rep[1/1] [=====32%                    ] NSYS-2.nsys-rep[1/1] [======33%                   ] NSYS-2.nsys-rep[1/1] [======34%                   ] NSYS-2.nsys-rep[1/1] [======35%                   ] NSYS-2.nsys-rep[1/1] [=======36%                  ] NSYS-2.nsys-rep[1/1] [=======37%                  ] NSYS-2.nsys-rep[1/1] [=======38%                  ] NSYS-2.nsys-rep[1/1] [=======39%                  ] NSYS-2.nsys-rep[1/1] [========40%                 ] NSYS-2.nsys-rep[1/1] [========41%                 ] NSYS-2.nsys-rep[1/1] [========42%                 ] NSYS-2.nsys-rep[1/1] [=========43%                ] NSYS-2.nsys-rep[1/1] [=========44%                ] NSYS-2.nsys-rep[1/1] [=========45%                ] NSYS-2.nsys-rep[1/1] [=========46%                ] NSYS-2.nsys-rep[1/1] [==========47%               ] NSYS-2.nsys-rep[1/1] [==========48%               ] NSYS-2.nsys-rep[1/1] [==========49%               ] NSYS-2.nsys-rep[1/1] [===========50%              ] NSYS-2.nsys-rep[1/1] [===========51%              ] NSYS-2.nsys-rep[1/1] [===========52%              ] NSYS-2.nsys-rep[1/1] [===========53%              ] NSYS-2.nsys-rep[1/1] [============54%             ] NSYS-2.nsys-rep[1/1] [============55%             ] NSYS-2.nsys-rep[1/1] [============56%             ] NSYS-2.nsys-rep[1/1] [============57%             ] NSYS-2.nsys-rep[1/1] [=============58%            ] NSYS-2.nsys-rep[1/1] [=============59%            ] NSYS-2.nsys-rep[1/1] [=============60%            ] NSYS-2.nsys-rep[1/1] [==============61%           ] NSYS-2.nsys-rep[1/1] [==============62%           ] NSYS-2.nsys-rep[1/1] [==============63%           ] NSYS-2.nsys-rep[1/1] [==============64%           ] NSYS-2.nsys-rep[1/1] [===============65%          ] NSYS-2.nsys-rep[1/1] [===============66%          ] NSYS-2.nsys-rep[1/1] [===============67%          ] NSYS-2.nsys-rep[1/1] [================68%         ] NSYS-2.nsys-rep[1/1] [================69%         ] NSYS-2.nsys-rep[1/1] [================70%         ] NSYS-2.nsys-rep[1/1] [================71%         ] NSYS-2.nsys-rep[1/1] [=================72%        ] NSYS-2.nsys-rep[1/1] [=================73%        ] NSYS-2.nsys-rep[1/1] [========================100%] NSYS-2.nsys-rep[1/1] [========================100%] NSYS-2.nsys-rep
+Generated:
+	/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/strata-research/nsys/NSYS-2.nsys-rep
+3.28.413.214 W srv          stop: cancel task, id_task = 326
+Received second interrupt, terminating immediately.
