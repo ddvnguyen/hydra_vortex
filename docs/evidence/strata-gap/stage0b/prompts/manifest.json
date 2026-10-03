@@ -1,0 +1,18 @@
+{
+ "cells": [
+  {
+   "id": "p4k",
+   "kind": "prefill_decode",
+   "file": "p4k.txt",
+   "target_tokens": 4096,
+   "actual_tokens": 4068
+  },
+  {
+   "id": "p12k",
+   "kind": "prefill_decode",
+   "file": "p12k.txt",
+   "target_tokens": 12288,
+   "actual_tokens": 12283
+  }
+ ]
+}
