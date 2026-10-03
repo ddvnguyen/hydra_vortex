@@ -1,0 +1,119 @@
+{
+ "arm": "SPLIT-1",
+ "engine": "fork",
+ "log": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0/docs/evidence/strata-gap/stage0/logs/SPLIT-1-engine.log",
+ "bench": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0/docs/evidence/strata-gap/stage0/arms/SPLIT-1.bench.json",
+ "align": {
+  "requests": 3,
+  "print_timing_blocks": 3,
+  "match": true
+ },
+ "parsed": {
+  "timing": [
+   {
+    "task": 0,
+    "prompt_eval_ms": 4876.11,
+    "prompt_eval_tokens": 96,
+    "eval_ms": 4472.98,
+    "eval_tokens": 64,
+    "total_ms": 9349.09,
+    "total_tokens": 160,
+    "graphs_reused": 63
+   },
+   {
+    "task": 67,
+    "prompt_eval_ms": 20217.13,
+    "prompt_eval_tokens": 4077,
+    "eval_ms": 9297.89,
+    "eval_tokens": 128,
+    "total_ms": 29515.02,
+    "total_tokens": 4205,
+    "graphs_reused": 189
+   },
+   {
+    "task": 198,
+    "prompt_eval_ms": 61217.45,
+    "prompt_eval_tokens": 12292,
+    "eval_ms": 8865.66,
+    "eval_tokens": 128,
+    "total_ms": 70083.11,
+    "total_tokens": 12420,
+    "graphs_reused": 315
+   }
+  ],
+  "phase": {},
+  "experts": null,
+  "draft_lines": [],
+  "joined": [
+   {
+    "tag": "warmup",
+    "harness": {
+     "ttft_s": 4.883,
+     "prefill_tps": 19.66,
+     "decode_tps": 14.08,
+     "prompt_tokens": 96,
+     "completion_tokens": 64,
+     "cached_tokens": 0
+    },
+    "timing": {
+     "task": 0,
+     "prompt_eval_ms": 4876.11,
+     "prompt_eval_tokens": 96,
+     "eval_ms": 4472.98,
+     "eval_tokens": 64,
+     "total_ms": 9349.09,
+     "total_tokens": 160,
+     "graphs_reused": 63
+    },
+    "derived_cached_tokens": 0,
+    "log_decode_tps": 14.08
+   },
+   {
+    "tag": "p4k:rep0",
+    "harness": {
+     "ttft_s": 20.347,
+     "prefill_tps": 202.44,
+     "decode_tps": 13.66,
+     "prompt_tokens": 4119,
+     "completion_tokens": 128,
+     "cached_tokens": 42
+    },
+    "timing": {
+     "task": 67,
+     "prompt_eval_ms": 20217.13,
+     "prompt_eval_tokens": 4077,
+     "eval_ms": 9297.89,
+     "eval_tokens": 128,
+     "total_ms": 29515.02,
+     "total_tokens": 4205,
+     "graphs_reused": 189
+    },
+    "derived_cached_tokens": 42,
+    "log_decode_tps": 13.66
+   },
+   {
+    "tag": "p12k:rep0",
+    "harness": {
+     "ttft_s": 61.444,
+     "prefill_tps": 200.74,
+     "decode_tps": 14.32,
+     "prompt_tokens": 12334,
+     "completion_tokens": 128,
+     "cached_tokens": 42
+    },
+    "timing": {
+     "task": 198,
+     "prompt_eval_ms": 61217.45,
+     "prompt_eval_tokens": 12292,
+     "eval_ms": 8865.66,
+     "eval_tokens": 128,
+     "total_ms": 70083.11,
+     "total_tokens": 12420,
+     "graphs_reused": 315
+    },
+    "derived_cached_tokens": 42,
+    "log_decode_tps": 14.32
+   }
+  ]
+ }
+}

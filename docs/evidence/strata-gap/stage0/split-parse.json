@@ -1,0 +1,215 @@
+{
+ "source": "logs/SPLIT-1-engine.log",
+ "blocks_total": 24,
+ "splits_total": 2916,
+ "block_kinds": {
+  "decode": {
+   "blocks": 12,
+   "splits": 98,
+   "backends": {
+    "CPU": 49,
+    "CUDA0": 49
+   },
+   "boundaries": 97,
+   "splits_with_inputs": 97,
+   "input_entries": 158,
+   "input_entries_nonzero": 103,
+   "declared_MiB": 5.41,
+   "declared_weight_MiB": 0,
+   "declared_act_MiB": 5.41,
+   "weight_tensors": 0,
+   "weight_layers": 0,
+   "state_cache_entries": 0,
+   "block_split_hist": {
+    "98": 12
+   },
+   "backend_seq_first12": [
+    "CPU",
+    "CUDA0",
+    "CPU",
+    "CUDA0",
+    "CPU",
+    "CUDA0",
+    "CPU",
+    "CUDA0",
+    "CPU",
+    "CUDA0",
+    "CPU",
+    "CUDA0"
+   ],
+   "strict_alternating": true,
+   "distinct_declared_MiB_across_blocks": [
+    5.41,
+    5.41,
+    5.41,
+    5.41,
+    10.34,
+    20.66,
+    5.18,
+    20.76,
+    5.24,
+    20.79,
+    20.94,
+    5.35
+   ],
+   "families_top": [
+    [
+     "ffn_moe_down-N",
+     48,
+     4.688
+    ],
+    [
+     "leaf_111",
+     1,
+     0.062
+    ],
+    [
+     "leaf_113",
+     1,
+     0.062
+    ],
+    [
+     "leaf_117",
+     1,
+     0.062
+    ],
+    [
+     "attn_inp_kq_mask",
+     1,
+     0.031
+    ],
+    [
+     "leaf_116",
+     1,
+     0.016
+    ],
+    [
+     "model.input_embed (reshaped)",
+     1,
+     0.01
+    ],
+    [
+     "hc_mixed-0 (reshaped)",
+     1,
+     0.01
+    ]
+   ]
+  },
+  "prefill": {
+   "blocks": 12,
+   "splits": 145,
+   "backends": {
+    "CPU": 2,
+    "CUDA0": 143
+   },
+   "boundaries": 144,
+   "splits_with_inputs": 144,
+   "input_entries": 158,
+   "input_entries_nonzero": 154,
+   "declared_MiB": 46765.37,
+   "declared_weight_MiB": 46629.0,
+   "declared_act_MiB": 136.373,
+   "weight_tensors": 141,
+   "weight_layers": 47,
+   "state_cache_entries": 0,
+   "block_split_hist": {
+    "145": 12
+   },
+   "backend_seq_first12": [
+    "CPU",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0",
+    "CUDA0"
+   ],
+   "strict_alternating": null,
+   "distinct_declared_MiB_across_blocks": [
+    46765.37,
+    46765.37,
+    46629.85,
+    46630.02,
+    46679.1,
+    46691.12,
+    46682.1,
+    46694.13,
+    46706.15,
+    46718.17,
+    46730.2,
+    46739.22
+   ],
+   "families_top": [
+    [
+     "blk.0.ffn_down_exps.weight",
+     1,
+     450.0
+    ],
+    [
+     "blk.2.ffn_down_exps.weight",
+     1,
+     450.0
+    ],
+    [
+     "blk.3.ffn_down_exps.weight",
+     1,
+     450.0
+    ],
+    [
+     "blk.4.ffn_down_exps.weight",
+     1,
+     450.0
+    ],
+    [
+     "blk.5.ffn_down_exps.weight",
+     1,
+     450.0
+    ],
+    [
+     "blk.6.ffn_down_exps.weight",
+     1,
+     450.0
+    ],
+    [
+     "blk.7.ffn_down_exps.weight",
+     1,
+     450.0
+    ],
+    [
+     "blk.9.ffn_down_exps.weight",
+     1,
+     450.0
+    ]
+   ]
+  }
+ },
+ "decode_declared_MiB_unique": [
+  5.179,
+  5.237,
+  5.354,
+  5.41,
+  10.34,
+  20.662,
+  20.756,
+  20.789,
+  20.943
+ ],
+ "prefill_declared_MiB_unique": [
+  46629.85,
+  46630.02,
+  46679.1,
+  46682.1,
+  46691.12,
+  46694.13,
+  46706.15,
+  46718.17,
+  46730.2,
+  46739.22,
+  46765.37
+ ]
+}

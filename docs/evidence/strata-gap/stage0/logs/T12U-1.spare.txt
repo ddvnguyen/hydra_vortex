@@ -1,0 +1,5 @@
+pre-arm GPU0=1MiB GPU1=1MiB
+nproc=20 threads=12 spare=8 (nproc-threads, leader-handoff:756)
+load1_pre=6.23 (host incl. other jobs; recorded, not part of the spare rule)
+h2d_pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.13 GB/s best 6.13 GB/s
+load1_max=6.61 spare=8 (nproc-threads, constant for this arm)
