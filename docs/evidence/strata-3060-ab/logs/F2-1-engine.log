@@ -1,0 +1,365 @@
+0.00.057.144 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.057.387 W srv  llama_server: -----------------
+0.00.057.388 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.057.388 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.057.388 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.057.389 W srv  llama_server: -----------------
+0.00.058.601 I srv    load_model: loading model '/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+0.00.058.627 W --moe-expert-cache-size is set; expert tensors route through the GPU LRU cache regardless of --cpu-moe / --n-cpu-moe.
+1.30.187.122 I cmn          init: llama threadpool init, n_threads = 6
+1.30.647.122 I common_speculative_init_result: loading draft model '/mnt/SSD/MTP/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf'
+1.36.196.521 I srv    load_model: MTP recurrent-plane policy: draft depth = 3, total planes = 4, direct rollback horizon = 3, full-shape GPU replay = disabled
+1.36.196.524 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+1.36.310.957 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.36.310.986 I srv  llama_server: model loaded
+1.36.310.988 I srv  llama_server: listening on http://127.0.0.1:8093
+1.39.791.798 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.39.791.871 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.44.343.725 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =     92, progress = 0.96, t =   4.45 s / 20.69 tokens per second
+1.53.153.485 I slot print_timing: id  0 | task 0 | prompt eval time =    4833.23 ms /    96 tokens (   50.35 ms per token,    19.86 tokens per second)
+1.53.153.488 I slot print_timing: id  0 | task 0 |        eval time =    8528.34 ms /    64 tokens (  135.37 ms per token,     7.39 tokens per second)
+1.53.153.488 I slot print_timing: id  0 | task 0 |       total time =   13361.57 ms /   160 tokens
+1.53.153.491 I slot print_timing: id  0 | task 0 |    graphs reused =         13
+1.53.153.493 I slot print_timing: id  0 | task 0 | draft acceptance = 1.00000 (   43 accepted /    43 generated), mean len =  3.69
+moe-grouped-decode: registered=49 covered=49 plan_calls=70 plan_compiles=29 plan_reuses=41 calls=1010 ready=1010 ready_min=20 ready_max=50 completed=1010 completed_min=20 completed_max=50 admitted_banks=3030 fallback=0 rollback=0 host_calls=672 host_ops=2016 host_split_ops=0 strategy_switches=288 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=8811 h2d_bytes=6519859200
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=8100 unique_pct=10.99 accesses=32252 first_touches=8100 first_touch_pct=25.11 touched_once=870 touched_ge2=7230 reuse_le_l1=21002 reuse_le_l1_pct=86.96 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=3150 reuse_gt_l2_pct=13.04 top1_pct=21.64 top5_pct=68.63 top10_pct=97.75
+moe-cache-experts-hot: tensor=blk.28.ffn_down_exps.weight experts=512 unique=55 unique_pct=10.74 accesses=265 touched_once=0 touched_ge2=55 top10_pct=97.74 reuse_gt_l2_pct=10.95
+moe-cache-tensor-hot-decode-miss: tensor=blk.47.ffn_down_exps.weight l1_hits=42 l1_misses=18 l1_evictions=0 l1_hit_rate=70.00% h2d_copies=18 h2d_mib=15.82 h2d_enqueue_ms=0.020 prefetch_used=18 prefetch_h2d_copies=18 prefetch_h2d_mib=15.82 reuse_gt_l1_pct=0.00
+moe-cache-tensor-top-decode-miss: rank=1 tensor=blk.47.ffn_down_exps.weight phase=decode l1_hits=42 l1_misses=18 l1_hit_rate=70.00% l1_evictions=0 h2d_copies=18 h2d_mib=15.82 reuse_gt_l1_pct=0.00 reuse_le_l1_pct=100.00 unique_experts=18 unique_pct=3.52 touched_once=0 touched_ge2=18 top1_pct=40.00 top5_pct=100.00 top10_pct=100.00 demand_h2d_copies=0 prefetch_h2d_copies=18 prefetch_used=18 prefetch_unused=0 prefetch_use_rate=100.00% demand_evictions=0 prefetch_evictions=0 evicted_prefetched=0 evicted_hit_count_le1=0 evicted_hit_count_ge2=0 evicted_age_le_l1=0 evicted_age_gt_l1=0 rd_first_touch=18 rd_le8=1 rd_le16=41 rd_le32=0 rd_le_l1=0 rd_le_2xl1=0 rd_gt_2xl1=0
+moe-cache-tensor-top-decode-miss: rank=2 tensor=blk.47.ffn_up_exps.weight phase=decode l1_hits=42 l1_misses=18 l1_hit_rate=70.00% l1_evictions=0 h2d_copies=18 h2d_mib=14.94 reuse_gt_l1_pct=0.00 reuse_le_l1_pct=100.00 unique_experts=18 unique_pct=3.52 touched_once=0 touched_ge2=18 top1_pct=40.00 top5_pct=100.00 top10_pct=100.00 demand_h2d_copies=0 prefetch_h2d_copies=18 prefetch_used=18 prefetch_unused=0 prefetch_use_rate=100.00% demand_evictions=0 prefetch_evictions=0 evicted_prefetched=0 evicted_hit_count_le1=0 evicted_hit_count_ge2=0 evicted_age_le_l1=0 evicted_age_gt_l1=0 rd_first_touch=18 rd_le8=1 rd_le16=41 rd_le32=0 rd_le_l1=0 rd_le_2xl1=0 rd_gt_2xl1=0
+moe-cache-tensor-top-decode-miss: rank=3 tensor=blk.47.ffn_gate_exps.weight phase=decode l1_hits=42 l1_misses=18 l1_hit_rate=70.00% l1_evictions=0 h2d_copies=18 h2d_mib=14.94 reuse_gt_l1_pct=0.00 reuse_le_l1_pct=100.00 unique_experts=18 unique_pct=3.52 touched_once=0 touched_ge2=18 top1_pct=40.00 top5_pct=100.00 top10_pct=100.00 demand_h2d_copies=18 prefetch_h2d_copies=0 prefetch_used=0 prefetch_unused=0 prefetch_use_rate=0.00% demand_evictions=0 prefetch_evictions=0 evicted_prefetched=0 evicted_hit_count_le1=0 evicted_hit_count_ge2=0 evicted_age_le_l1=0 evicted_age_gt_l1=0 rd_first_touch=18 rd_le8=1 rd_le16=41 rd_le32=0 rd_le_l1=0 rd_le_2xl1=0 rd_gt_2xl1=0
+moe-cache-tensor-donor-candidate: rank=1 tensor=blk.47.ffn_up_exps.weight l1_hit_rate=70.00% h2d_mib=14.94 l1_misses=18 reuse_gt_l1_pct=0.00 unique_pct=3.52 top10_pct=100.00
+moe-cache-tensor-donor-candidate: rank=2 tensor=blk.47.ffn_gate_exps.weight l1_hit_rate=70.00% h2d_mib=14.94 l1_misses=18 reuse_gt_l1_pct=0.00 unique_pct=3.52 top10_pct=100.00
+moe-cache-tensor-donor-candidate: rank=3 tensor=blk.47.ffn_down_exps.weight l1_hit_rate=70.00% h2d_mib=15.82 l1_misses=18 reuse_gt_l1_pct=0.00 unique_pct=3.52 top10_pct=100.00
+moe-cache-phase: phase=prefill ops=714 staged_ops=294 split_staged_ops=288 overflow_ops=294 unique_avg=63.05 unique_max=223 ids_mib=26.73 ids_d2h_mib=26.73 ids_d2h_ms=393.949 ids_d2h_syncs=140 ids_cache_hits=476 acquire_ms=95.887 remap_ms=0.612 copy_wait_events=420 copy_wait_event_ms=0.300 op_cpu_ms=888.657 l1_hits=22001 l1_misses=10071 l1_evictions=6957 l1_hit_rate=68.60% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=10071 h2d_mib=6571.81 h2d_enqueue_ms=12.727 prefetch_hits=16375 prefetch_misses=7201 prefetch_used=4600 prefetch_h2d_copies=7201 prefetch_h2d_mib=4918.77 prefetch_h2d_enqueue_ms=9.428
+moe-cache-phase: phase=decode ops=6 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=10.00 unique_max=10 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=6.087 ids_d2h_syncs=1 ids_cache_hits=4 acquire_ms=1.578 remap_ms=0.010 copy_wait_events=6 copy_wait_event_ms=0.004 op_cpu_ms=8.080 l1_hits=126 l1_misses=54 l1_evictions=0 l1_hit_rate=70.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=54 h2d_mib=45.70 h2d_enqueue_ms=0.066 prefetch_hits=84 prefetch_misses=36 prefetch_used=36 prefetch_h2d_copies=36 prefetch_h2d_mib=30.76 prefetch_h2d_enqueue_ms=0.045
+moe-cache-mm: h2d_copies=10125 h2d_mib=6617.52 h2d_enqueue_ms=12.793 mincore_sampled=158 resident_pages=26796/26796 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=0 proc_majflt=0 vm_pswpin=0 vm_pswpout=0 vm_pgfault=0 vm_pgmajfault=0 vm_pgpgin=0 vm_pgpgout=0 vm_refault_file=0 vm_refault_anon=0
+1.53.156.530 I slot      release: id  0 | task 0 | stop processing: n_tokens = 159, truncated = 0
+1.53.161.201 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 26585257779
+1.53.282.993 I slot launch_slot_: id  0 | task 24 | processing task, is_child = 0
+2.01.391.795 I slot print_timing: id  0 | task 24 | prompt processing, n_tokens =   1069, progress = 1.00, t =   7.69 s / 138.98 tokens per second
+2.15.764.264 I slot print_timing: id  0 | task 24 | n_gen =    100, tg =   7.03 t/s, tg_3s =   7.10 t/s
+2.19.200.223 I slot print_timing: id  0 | task 24 | n_gen =    124, tg =   7.02 t/s, tg_3s =   6.98 t/s
+2.22.217.970 I slot print_timing: id  0 | task 24 | n_gen =    144, tg =   6.96 t/s, tg_3s =   6.63 t/s
+2.25.238.673 I slot print_timing: id  0 | task 24 | n_gen =    164, tg =   6.92 t/s, tg_3s =   6.62 t/s
+2.28.652.774 I slot print_timing: id  0 | task 24 | n_gen =    185, tg =   6.82 t/s, tg_3s =   6.15 t/s
+2.31.776.344 I slot print_timing: id  0 | task 24 | n_gen =    207, tg =   6.84 t/s, tg_3s =   7.04 t/s
+2.34.898.946 I slot print_timing: id  0 | task 24 | n_gen =    233, tg =   6.98 t/s, tg_3s =   8.33 t/s
+2.37.481.431 I slot print_timing: id  0 | task 24 | prompt eval time =    8393.82 ms /  1073 tokens (    7.82 ms per token,   127.83 tokens per second)
+2.37.481.433 I slot print_timing: id  0 | task 24 |        eval time =   35804.60 ms /   256 tokens (  140.41 ms per token,     7.12 tokens per second)
+2.37.481.433 I slot print_timing: id  0 | task 24 |       total time =   44198.42 ms /  1329 tokens
+2.37.481.433 I slot print_timing: id  0 | task 24 |    graphs reused =         62
+2.37.481.436 I slot print_timing: id  0 | task 24 | draft acceptance = 0.88462 (  115 accepted /   130 generated), mean len =  2.72
+moe-grouped-decode: registered=49 covered=49 plan_calls=386 plan_compiles=230 plan_reuses=156 calls=6966 ready=6966 ready_min=140 ready_max=246 completed=6966 completed_min=140 completed_max=246 admitted_banks=20898 fallback=0 rollback=0 host_calls=1920 host_ops=5760 host_split_ops=0 strategy_switches=2064 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=111507 h2d_bytes=78227328000
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=4374 unique_pct=5.93 accesses=12801 first_touches=4374 first_touch_pct=34.17 touched_once=695 touched_ge2=3679 reuse_le_l1=7950 reuse_le_l1_pct=94.34 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=477 reuse_gt_l2_pct=5.66 top1_pct=28.83 top5_pct=94.63 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.47.ffn_down_exps.weight experts=512 unique=32 unique_pct=6.25 accesses=110 touched_once=0 touched_ge2=32 top10_pct=100.00 reuse_gt_l2_pct=6.41
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=288 staged_ops=162 split_staged_ops=144 overflow_ops=162 unique_avg=189.92 unique_max=433 ids_mib=301.23 ids_d2h_mib=301.23 ids_d2h_ms=172.297 ids_d2h_syncs=42 ids_cache_hits=192 acquire_ms=2.216 remap_ms=0.156 copy_wait_events=126 copy_wait_event_ms=0.087 op_cpu_ms=295.797 l1_hits=8175 l1_misses=4626 l1_evictions=1458 l1_hit_rate=63.86% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=4626 h2d_mib=3018.16 h2d_enqueue_ms=6.189 prefetch_hits=6239 prefetch_misses=3175 prefetch_used=1554 prefetch_h2d_copies=3175 prefetch_h2d_mib=2178.85 prefetch_h2d_enqueue_ms=4.557
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=4626 h2d_mib=3018.16 h2d_enqueue_ms=6.189 mincore_sampled=72 resident_pages=12382/12382 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=214748 proc_majflt=0 vm_pswpin=4 vm_pswpout=0 vm_pgfault=1244348 vm_pgmajfault=4 vm_pgpgin=76984 vm_pgpgout=8302 vm_refault_file=22 vm_refault_anon=4
+2.37.484.020 I slot      release: id  0 | task 24 | stop processing: n_tokens = 1370, truncated = 0
+2.37.488.575 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.814
+2.37.488.613 I slot launch_slot_: id  0 | task 167 | processing task, is_child = 0
+2.37.488.618 W slot   operator(): id  0 | task 167 | need to evaluate at least 1 token for each active slot (n_past = 1115, task.n_tokens() = 1115)
+2.37.488.618 W slot   operator(): id  0 | task 167 | n_past was set to 1114
+2.52.006.024 I slot print_timing: id  0 | task 167 | n_gen =    100, tg =   7.04 t/s, tg_3s =   7.11 t/s
+2.55.431.172 I slot print_timing: id  0 | task 167 | n_gen =    124, tg =   7.03 t/s, tg_3s =   7.01 t/s
+2.58.452.823 I slot print_timing: id  0 | task 167 | n_gen =    144, tg =   6.97 t/s, tg_3s =   6.62 t/s
+3.01.468.677 I slot print_timing: id  0 | task 167 | n_gen =    164, tg =   6.93 t/s, tg_3s =   6.63 t/s
+3.04.868.926 I slot print_timing: id  0 | task 167 | n_gen =    185, tg =   6.83 t/s, tg_3s =   6.18 t/s
+3.07.982.357 I slot print_timing: id  0 | task 167 | n_gen =    207, tg =   6.86 t/s, tg_3s =   7.07 t/s
+3.11.090.462 I slot print_timing: id  0 | task 167 | n_gen =    233, tg =   7.00 t/s, tg_3s =   8.37 t/s
+3.13.678.927 I slot print_timing: id  0 | task 167 | prompt eval time =     457.23 ms /     4 tokens (  114.31 ms per token,     8.75 tokens per second)
+3.13.678.930 I slot print_timing: id  0 | task 167 |        eval time =   35733.07 ms /   256 tokens (  140.13 ms per token,     7.14 tokens per second)
+3.13.678.930 I slot print_timing: id  0 | task 167 |       total time =   36190.30 ms /   260 tokens
+3.13.678.931 I slot print_timing: id  0 | task 167 |    graphs reused =        111
+3.13.678.934 I slot print_timing: id  0 | task 167 | draft acceptance = 0.88462 (  115 accepted /   130 generated), mean len =  2.72
+moe-grouped-decode: registered=49 covered=49 plan_calls=386 plan_compiles=230 plan_reuses=156 calls=6966 ready=6966 ready_min=140 ready_max=246 completed=6966 completed_min=140 completed_max=246 admitted_banks=20898 fallback=0 rollback=0 host_calls=1920 host_ops=5760 host_split_ops=0 strategy_switches=2064 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=111582 h2d_bytes=78316928000
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=2727 unique_pct=3.70 accesses=7521 first_touches=2727 first_touch_pct=36.26 touched_once=264 touched_ge2=2463 reuse_le_l1=4794 reuse_le_l1_pct=100.00 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=0 reuse_gt_l2_pct=0.00 top1_pct=29.44 top5_pct=100.00 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.47.ffn_down_exps.weight experts=512 unique=22 unique_pct=4.30 accesses=66 touched_once=0 touched_ge2=22 top10_pct=100.00 reuse_gt_l2_pct=0.00
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=144 staged_ops=18 split_staged_ops=0 overflow_ops=18 unique_avg=19.33 unique_max=30 ids_mib=0.85 ids_d2h_mib=0.85 ids_d2h_ms=295.810 ids_d2h_syncs=42 ids_cache_hits=96 acquire_ms=3.549 remap_ms=0.158 copy_wait_events=126 copy_wait_event_ms=0.086 op_cpu_ms=300.498 l1_hits=4794 l1_misses=2727 l1_evictions=0 l1_hit_rate=63.74% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=2727 h2d_mib=1783.52 h2d_enqueue_ms=3.201 prefetch_hits=3240 prefetch_misses=1950 prefetch_used=1554 prefetch_h2d_copies=1950 prefetch_h2d_mib=1335.22 prefetch_h2d_enqueue_ms=2.301
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=2727 h2d_mib=1783.52 h2d_enqueue_ms=3.201 mincore_sampled=43 resident_pages=6927/6927 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=28893 proc_majflt=0 vm_pswpin=1 vm_pswpout=0 vm_pgfault=824642 vm_pgmajfault=2 vm_pgpgin=336 vm_pgpgout=7347 vm_refault_file=46 vm_refault_anon=2
+3.13.681.331 I slot      release: id  0 | task 167 | stop processing: n_tokens = 1370, truncated = 0
+3.13.685.514 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.814
+3.13.685.547 I slot launch_slot_: id  0 | task 309 | processing task, is_child = 0
+3.13.685.552 W slot   operator(): id  0 | task 309 | need to evaluate at least 1 token for each active slot (n_past = 1115, task.n_tokens() = 1115)
+3.13.685.553 W slot   operator(): id  0 | task 309 | n_past was set to 1114
+3.28.198.352 I slot print_timing: id  0 | task 309 | n_gen =    100, tg =   7.04 t/s, tg_3s =   7.12 t/s
+3.31.623.489 I slot print_timing: id  0 | task 309 | n_gen =    124, tg =   7.04 t/s, tg_3s =   7.01 t/s
+3.34.628.460 I slot print_timing: id  0 | task 309 | n_gen =    144, tg =   6.98 t/s, tg_3s =   6.66 t/s
+3.37.642.628 I slot print_timing: id  0 | task 309 | n_gen =    164, tg =   6.94 t/s, tg_3s =   6.64 t/s
+3.41.047.683 I slot print_timing: id  0 | task 309 | n_gen =    185, tg =   6.84 t/s, tg_3s =   6.17 t/s
+3.44.171.269 I slot print_timing: id  0 | task 309 | n_gen =    207, tg =   6.86 t/s, tg_3s =   7.04 t/s
+3.47.282.909 I slot print_timing: id  0 | task 309 | n_gen =    233, tg =   7.00 t/s, tg_3s =   8.36 t/s
+3.49.864.860 I slot print_timing: id  0 | task 309 | prompt eval time =     460.03 ms /     4 tokens (  115.01 ms per token,     8.70 tokens per second)
+3.49.864.862 I slot print_timing: id  0 | task 309 |        eval time =   35719.27 ms /   256 tokens (  140.08 ms per token,     7.14 tokens per second)
+3.49.864.863 I slot print_timing: id  0 | task 309 |       total time =   36179.30 ms /   260 tokens
+3.49.864.864 I slot print_timing: id  0 | task 309 |    graphs reused =        160
+3.49.864.866 I slot print_timing: id  0 | task 309 | draft acceptance = 0.88462 (  115 accepted /   130 generated), mean len =  2.72
+moe-grouped-decode: registered=49 covered=49 plan_calls=386 plan_compiles=230 plan_reuses=156 calls=6966 ready=6966 ready_min=140 ready_max=246 completed=6966 completed_min=140 completed_max=246 admitted_banks=20898 fallback=0 rollback=0 host_calls=1920 host_ops=5760 host_split_ops=0 strategy_switches=2064 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=111531 h2d_bytes=78256000000
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=2727 unique_pct=3.70 accesses=7521 first_touches=2727 first_touch_pct=36.26 touched_once=264 touched_ge2=2463 reuse_le_l1=4794 reuse_le_l1_pct=100.00 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=0 reuse_gt_l2_pct=0.00 top1_pct=29.44 top5_pct=100.00 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.47.ffn_down_exps.weight experts=512 unique=22 unique_pct=4.30 accesses=66 touched_once=0 touched_ge2=22 top10_pct=100.00 reuse_gt_l2_pct=0.00
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=144 staged_ops=18 split_staged_ops=0 overflow_ops=18 unique_avg=19.33 unique_max=30 ids_mib=0.85 ids_d2h_mib=0.85 ids_d2h_ms=296.096 ids_d2h_syncs=42 ids_cache_hits=96 acquire_ms=3.456 remap_ms=0.151 copy_wait_events=126 copy_wait_event_ms=0.094 op_cpu_ms=300.704 l1_hits=4794 l1_misses=2727 l1_evictions=0 l1_hit_rate=63.74% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=2727 h2d_mib=1783.52 h2d_enqueue_ms=3.191 prefetch_hits=3240 prefetch_misses=1950 prefetch_used=1554 prefetch_h2d_copies=1950 prefetch_h2d_mib=1335.22 prefetch_h2d_enqueue_ms=2.322
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=2727 h2d_mib=1783.52 h2d_enqueue_ms=3.191 mincore_sampled=42 resident_pages=7388/7388 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=28893 proc_majflt=0 vm_pswpin=4 vm_pswpout=0 vm_pgfault=815729 vm_pgmajfault=7 vm_pgpgin=360 vm_pgpgout=8277 vm_refault_file=81 vm_refault_anon=4
+3.49.867.233 I slot      release: id  0 | task 309 | stop processing: n_tokens = 1370, truncated = 0
+3.49.871.648 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 26701968482
+3.50.006.116 I slot launch_slot_: id  0 | task 451 | processing task, is_child = 0
+4.00.378.231 I slot print_timing: id  0 | task 451 | prompt processing, n_tokens =   2029, progress = 0.50, t =   9.61 s / 211.17 tokens per second
+4.11.008.283 I slot print_timing: id  0 | task 451 | prompt processing, n_tokens =   4073, progress = 1.00, t =  20.24 s / 201.27 tokens per second
+4.25.025.021 I slot print_timing: id  0 | task 451 | n_gen =    100, tg =   7.28 t/s, tg_3s =   7.35 t/s
+4.28.450.497 I slot print_timing: id  0 | task 451 | n_gen =    125, tg =   7.28 t/s, tg_3s =   7.30 t/s
+4.31.586.089 I slot print_timing: id  0 | task 451 | n_gen =    148, tg =   7.29 t/s, tg_3s =   7.34 t/s
+4.34.823.557 I slot print_timing: id  0 | task 451 | n_gen =    172, tg =   7.31 t/s, tg_3s =   7.41 t/s
+4.38.260.393 I slot print_timing: id  0 | task 451 | n_gen =    197, tg =   7.30 t/s, tg_3s =   7.27 t/s
+4.41.659.361 I slot print_timing: id  0 | task 451 | n_gen =    221, tg =   7.28 t/s, tg_3s =   7.06 t/s
+4.44.911.600 I slot print_timing: id  0 | task 451 | n_gen =    240, tg =   7.14 t/s, tg_3s =   5.84 t/s
+4.47.063.088 I slot print_timing: id  0 | task 451 | prompt eval time =   21415.59 ms /  4077 tokens (    5.25 ms per token,   190.38 tokens per second)
+4.47.063.090 I slot print_timing: id  0 | task 451 |        eval time =   35641.33 ms /   256 tokens (  139.77 ms per token,     7.15 tokens per second)
+4.47.063.091 I slot print_timing: id  0 | task 451 |       total time =   57056.93 ms /  4333 tokens
+4.47.063.091 I slot print_timing: id  0 | task 451 |    graphs reused =        244
+4.47.063.093 I slot print_timing: id  0 | task 451 | draft acceptance = 0.94262 (  115 accepted /   122 generated), mean len =  2.98
+moe-grouped-decode: registered=49 covered=49 plan_calls=373 plan_compiles=197 plan_reuses=176 calls=6953 ready=6953 ready_min=140 ready_max=233 completed=6953 completed_min=140 completed_max=233 admitted_banks=20859 fallback=0 rollback=0 host_calls=1680 host_ops=5040 host_split_ops=0 strategy_switches=1344 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=110928 h2d_bytes=78183782400
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=7386 unique_pct=10.02 accesses=17462 first_touches=7386 first_touch_pct=42.30 touched_once=2568 touched_ge2=4818 reuse_le_l1=8504 reuse_le_l1_pct=84.40 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=1572 reuse_gt_l2_pct=15.60 top1_pct=21.18 top5_pct=72.34 top10_pct=99.93
+moe-cache-experts-hot: tensor=blk.47.ffn_down_exps.weight experts=512 unique=52 unique_pct=10.16 accesses=154 touched_once=0 touched_ge2=52 top10_pct=100.00 reuse_gt_l2_pct=11.76
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=432 staged_ops=291 split_staged_ops=288 overflow_ops=291 unique_avg=284.22 unique_max=475 ids_mib=1145.83 ids_d2h_mib=1145.83 ids_d2h_ms=321.738 ids_d2h_syncs=47 ids_cache_hits=288 acquire_ms=3.915 remap_ms=0.197 copy_wait_events=141 copy_wait_event_ms=0.098 op_cpu_ms=390.480 l1_hits=8507 l1_misses=8955 l1_evictions=5787 l1_hit_rate=48.72% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=8955 h2d_mib=5831.91 h2d_enqueue_ms=12.340 prefetch_hits=6765 prefetch_misses=6979 prefetch_used=1742 prefetch_h2d_copies=6979 prefetch_h2d_mib=4688.20 prefetch_h2d_enqueue_ms=10.124
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=8955 h2d_mib=5831.91 h2d_enqueue_ms=12.340 mincore_sampled=140 resident_pages=22883/22883 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=366502 proc_majflt=0 vm_pswpin=3 vm_pswpout=0 vm_pgfault=1558740 vm_pgmajfault=6 vm_pgpgin=146020 vm_pgpgout=7253 vm_refault_file=45 vm_refault_anon=3
+4.47.065.996 I slot      release: id  0 | task 451 | stop processing: n_tokens = 4374, truncated = 0
+4.47.070.518 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.942
+4.47.070.552 I slot launch_slot_: id  0 | task 595 | processing task, is_child = 0
+4.47.070.558 W slot   operator(): id  0 | task 595 | need to evaluate at least 1 token for each active slot (n_past = 4119, task.n_tokens() = 4119)
+4.47.070.558 W slot   operator(): id  0 | task 595 | n_past was set to 4118
+5.00.902.787 I slot print_timing: id  0 | task 595 | n_gen =    101, tg =   7.46 t/s, tg_3s =   7.54 t/s
+5.04.032.966 I slot print_timing: id  0 | task 595 | n_gen =    122, tg =   7.32 t/s, tg_3s =   6.71 t/s
+5.07.176.224 I slot print_timing: id  0 | task 595 | n_gen =    147, tg =   7.42 t/s, tg_3s =   7.95 t/s
+5.10.230.863 I slot print_timing: id  0 | task 595 | n_gen =    160, tg =   7.00 t/s, tg_3s =   4.26 t/s
+5.13.643.666 I slot print_timing: id  0 | task 595 | n_gen =    185, tg =   7.04 t/s, tg_3s =   7.33 t/s
+5.16.929.954 I slot print_timing: id  0 | task 595 | n_gen =    206, tg =   6.97 t/s, tg_3s =   6.39 t/s
+5.20.230.353 I slot print_timing: id  0 | task 595 | n_gen =    225, tg =   6.84 t/s, tg_3s =   5.76 t/s
+5.23.421.172 I slot print_timing: id  0 | task 595 | n_gen =    247, tg =   6.85 t/s, tg_3s =   6.89 t/s
+5.24.727.422 I slot print_timing: id  0 | task 595 | prompt eval time =     434.72 ms /     4 tokens (  108.68 ms per token,     9.20 tokens per second)
+5.24.727.425 I slot print_timing: id  0 | task 595 |        eval time =   37222.11 ms /   256 tokens (  145.97 ms per token,     6.85 tokens per second)
+5.24.727.425 I slot print_timing: id  0 | task 595 |       total time =   37656.83 ms /   260 tokens
+5.24.727.425 I slot print_timing: id  0 | task 595 |    graphs reused =        314
+5.24.727.428 I slot print_timing: id  0 | task 595 | draft acceptance = 0.86508 (  109 accepted /   126 generated), mean len =  2.60
+moe-grouped-decode: registered=49 covered=49 plan_calls=394 plan_compiles=222 plan_reuses=172 calls=7256 ready=7256 ready_min=146 ready_max=248 completed=7256 completed_min=146 completed_max=248 admitted_banks=21768 fallback=0 rollback=0 host_calls=1680 host_ops=5040 host_split_ops=0 strategy_switches=1728 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=126027 h2d_bytes=88623974400
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=2670 unique_pct=3.62 accesses=7900 first_touches=2670 first_touch_pct=33.80 touched_once=44 touched_ge2=2626 reuse_le_l1=5230 reuse_le_l1_pct=100.00 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=0 reuse_gt_l2_pct=0.00 top1_pct=28.03 top5_pct=100.00 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.47.ffn_down_exps.weight experts=512 unique=22 unique_pct=4.30 accesses=66 touched_once=0 touched_ge2=22 top10_pct=100.00 reuse_gt_l2_pct=0.00
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=144 staged_ops=3 split_staged_ops=0 overflow_ops=3 unique_avg=18.69 unique_max=29 ids_mib=0.85 ids_d2h_mib=0.85 ids_d2h_ms=319.176 ids_d2h_syncs=47 ids_cache_hits=96 acquire_ms=3.750 remap_ms=0.163 copy_wait_events=141 copy_wait_event_ms=0.095 op_cpu_ms=323.840 l1_hits=5230 l1_misses=2670 l1_evictions=0 l1_hit_rate=66.20% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=2670 h2d_mib=1744.63 h2d_enqueue_ms=3.027 prefetch_hits=3494 prefetch_misses=1802 prefetch_used=1736 prefetch_h2d_copies=1802 prefetch_h2d_mib=1240.77 prefetch_h2d_enqueue_ms=2.071
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=2670 h2d_mib=1744.63 h2d_enqueue_ms=3.027 mincore_sampled=42 resident_pages=7173/7173 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=30907 proc_majflt=0 vm_pswpin=125 vm_pswpout=0 vm_pgfault=2117099 vm_pgmajfault=143 vm_pgpgin=69349 vm_pgpgout=6606 vm_refault_file=19 vm_refault_anon=125
+5.24.729.830 I slot      release: id  0 | task 595 | stop processing: n_tokens = 4374, truncated = 0
+5.24.736.125 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.942
+5.24.736.170 I slot launch_slot_: id  0 | task 743 | processing task, is_child = 0
+5.24.736.175 W slot   operator(): id  0 | task 743 | need to evaluate at least 1 token for each active slot (n_past = 4119, task.n_tokens() = 4119)
+5.24.736.176 W slot   operator(): id  0 | task 743 | n_past was set to 4118
+5.38.911.283 I slot print_timing: id  0 | task 743 | n_gen =    100, tg =   7.21 t/s, tg_3s =   7.28 t/s
+5.41.924.959 I slot print_timing: id  0 | task 743 | n_gen =    123, tg =   7.28 t/s, tg_3s =   7.63 t/s
+5.45.043.463 I slot print_timing: id  0 | task 743 | n_gen =    147, tg =   7.35 t/s, tg_3s =   7.70 t/s
+5.48.078.847 I slot print_timing: id  0 | task 743 | n_gen =    169, tg =   7.34 t/s, tg_3s =   7.25 t/s
+5.51.276.593 I slot print_timing: id  0 | task 743 | n_gen =    193, tg =   7.36 t/s, tg_3s =   7.51 t/s
+5.54.653.587 I slot print_timing: id  0 | task 743 | n_gen =    217, tg =   7.33 t/s, tg_3s =   7.11 t/s
+5.57.888.706 I slot print_timing: id  0 | task 743 | n_gen =    241, tg =   7.34 t/s, tg_3s =   7.42 t/s
+6.00.097.374 I slot print_timing: id  0 | task 743 | prompt eval time =     441.34 ms /     4 tokens (  110.33 ms per token,     9.06 tokens per second)
+6.00.097.376 I slot print_timing: id  0 | task 743 |        eval time =   34919.83 ms /   256 tokens (  136.94 ms per token,     7.30 tokens per second)
+6.00.097.377 I slot print_timing: id  0 | task 743 |       total time =   35361.17 ms /   260 tokens
+6.00.097.377 I slot print_timing: id  0 | task 743 |    graphs reused =        412
+6.00.097.380 I slot print_timing: id  0 | task 743 | draft acceptance = 0.93137 (   95 accepted /   102 generated), mean len =  2.79
+moe-grouped-decode: registered=49 covered=49 plan_calls=401 plan_compiles=223 plan_reuses=178 calls=7921 ready=7921 ready_min=160 ready_max=241 completed=7921 completed_min=160 completed_max=241 admitted_banks=23763 fallback=0 rollback=0 host_calls=1392 host_ops=4176 host_split_ops=0 strategy_switches=1248 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=129111 h2d_bytes=90674688000
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=2670 unique_pct=3.62 accesses=7900 first_touches=2670 first_touch_pct=33.80 touched_once=44 touched_ge2=2626 reuse_le_l1=5230 reuse_le_l1_pct=100.00 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=0 reuse_gt_l2_pct=0.00 top1_pct=28.03 top5_pct=100.00 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.47.ffn_down_exps.weight experts=512 unique=22 unique_pct=4.30 accesses=66 touched_once=0 touched_ge2=22 top10_pct=100.00 reuse_gt_l2_pct=0.00
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=144 staged_ops=3 split_staged_ops=0 overflow_ops=3 unique_avg=18.69 unique_max=29 ids_mib=0.85 ids_d2h_mib=0.85 ids_d2h_ms=323.463 ids_d2h_syncs=47 ids_cache_hits=96 acquire_ms=3.833 remap_ms=0.167 copy_wait_events=141 copy_wait_event_ms=0.096 op_cpu_ms=328.220 l1_hits=5230 l1_misses=2670 l1_evictions=0 l1_hit_rate=66.20% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=2670 h2d_mib=1744.63 h2d_enqueue_ms=3.103 prefetch_hits=3494 prefetch_misses=1802 prefetch_used=1736 prefetch_h2d_copies=1802 prefetch_h2d_mib=1240.77 prefetch_h2d_enqueue_ms=2.145
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=2670 h2d_mib=1744.63 h2d_enqueue_ms=3.103 mincore_sampled=42 resident_pages=7245/7245 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=29942 proc_majflt=0 vm_pswpin=0 vm_pswpout=0 vm_pgfault=976147 vm_pgmajfault=2 vm_pgpgin=3980 vm_pgpgout=22307 vm_refault_file=0 vm_refault_anon=0
+6.00.099.835 I slot      release: id  0 | task 743 | stop processing: n_tokens = 4374, truncated = 0
+6.00.112.151 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 26832201083
+6.00.322.332 I slot launch_slot_: id  0 | task 905 | processing task, is_child = 0
+6.10.940.268 I slot print_timing: id  0 | task 905 | prompt processing, n_tokens =   2048, progress = 0.17, t =   9.88 s / 207.36 tokens per second
+6.21.478.575 I slot print_timing: id  0 | task 905 | prompt processing, n_tokens =   4096, progress = 0.34, t =  20.42 s / 200.61 tokens per second
+6.32.048.144 I slot print_timing: id  0 | task 905 | prompt processing, n_tokens =   6144, progress = 0.50, t =  30.99 s / 198.29 tokens per second
+6.42.678.605 I slot print_timing: id  0 | task 905 | prompt processing, n_tokens =   8192, progress = 0.67, t =  41.62 s / 196.81 tokens per second
+6.53.251.794 I slot print_timing: id  0 | task 905 | prompt processing, n_tokens =  10240, progress = 0.83, t =  52.19 s / 196.21 tokens per second
+6.53.875.708 I slot print_timing: id  0 | task 905 | prompt processing, n_tokens =  10244, progress = 0.83, t =  53.52 s / 191.41 tokens per second
+7.04.640.310 I slot print_timing: id  0 | task 905 | prompt processing, n_tokens =  12288, progress = 1.00, t =  63.56 s / 193.33 tokens per second
+7.19.982.247 I slot print_timing: id  0 | task 905 | n_gen =    100, tg =   6.65 t/s, tg_3s =   6.71 t/s
+7.23.042.368 I slot print_timing: id  0 | task 905 | n_gen =    124, tg =   6.85 t/s, tg_3s =   7.84 t/s
+7.26.557.267 I slot print_timing: id  0 | task 905 | n_gen =    149, tg =   6.89 t/s, tg_3s =   7.11 t/s
+7.29.623.813 I slot print_timing: id  0 | task 905 | n_gen =    170, tg =   6.89 t/s, tg_3s =   6.85 t/s
+7.32.707.080 I slot print_timing: id  0 | task 905 | n_gen =    194, tg =   6.99 t/s, tg_3s =   7.78 t/s
+7.35.800.897 I slot print_timing: id  0 | task 905 | n_gen =    218, tg =   7.07 t/s, tg_3s =   7.76 t/s
+7.38.875.079 I slot print_timing: id  0 | task 905 | n_gen =    239, tg =   7.04 t/s, tg_3s =   6.83 t/s
+7.41.362.821 I slot print_timing: id  0 | task 905 | prompt eval time =   64765.32 ms / 12292 tokens (    5.27 ms per token,   189.79 tokens per second)
+7.41.362.823 I slot print_timing: id  0 | task 905 |        eval time =   36275.12 ms /   256 tokens (  142.26 ms per token,     7.03 tokens per second)
+7.41.362.824 I slot print_timing: id  0 | task 905 |       total time =  101040.44 ms / 12548 tokens
+7.41.362.824 I slot print_timing: id  0 | task 905 |    graphs reused =        497
+7.41.362.827 I slot print_timing: id  0 | task 905 | draft acceptance = 0.96117 (   99 accepted /   103 generated), mean len =  2.62
+moe-grouped-decode: registered=49 covered=49 plan_calls=396 plan_compiles=228 plan_reuses=168 calls=7728 ready=7728 ready_min=156 ready_max=240 completed=7728 completed_min=156 completed_max=240 admitted_banks=23184 fallback=0 rollback=0 host_calls=1104 host_ops=3312 host_split_ops=0 strategy_switches=1056 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=140718 h2d_bytes=98523622400
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=18288 unique_pct=24.80 accesses=38920 first_touches=18288 first_touch_pct=46.99 touched_once=7519 touched_ge2=10769 reuse_le_l1=15860 reuse_le_l1_pct=76.87 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=4772 reuse_gt_l2_pct=23.13 top1_pct=11.38 top5_pct=42.18 top10_pct=63.23
+moe-cache-experts-hot: tensor=blk.14.ffn_down_exps.weight experts=512 unique=126 unique_pct=24.61 accesses=387 touched_once=0 touched_ge2=126 top10_pct=60.72 reuse_gt_l2_pct=10.73
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=1152 staged_ops=1002 split_staged_ops=864 overflow_ops=1002 unique_avg=321.86 unique_max=475 ids_mib=3454.92 ids_d2h_mib=3454.92 ids_d2h_ms=357.814 ids_d2h_syncs=50 ids_cache_hits=768 acquire_ms=3.998 remap_ms=0.177 copy_wait_events=150 copy_wait_event_ms=0.106 op_cpu_ms=550.256 l1_hits=16105 l1_misses=22815 l1_evictions=19647 l1_hit_rate=41.38% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=22815 h2d_mib=14855.22 h2d_enqueue_ms=32.611 prefetch_hits=14230 prefetch_misses=20718 prefetch_used=1875 prefetch_h2d_copies=20718 prefetch_h2d_mib=13646.40 prefetch_h2d_enqueue_ms=30.177
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=22815 h2d_mib=14855.22 h2d_enqueue_ms=32.611 mincore_sampled=356 resident_pages=59599/59599 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=488698 proc_majflt=0 vm_pswpin=6 vm_pswpout=0 vm_pgfault=3604520 vm_pgmajfault=8 vm_pgpgin=373816 vm_pgpgout=19942 vm_refault_file=70 vm_refault_anon=6
+7.41.366.408 I slot      release: id  0 | task 905 | stop processing: n_tokens = 12589, truncated = 0
+7.41.380.587 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.980
+7.41.380.629 I slot launch_slot_: id  0 | task 1070 | processing task, is_child = 0
+7.41.380.638 W slot   operator(): id  0 | task 1070 | need to evaluate at least 1 token for each active slot (n_past = 12334, task.n_tokens() = 12334)
+7.41.380.639 W slot   operator(): id  0 | task 1070 | n_past was set to 12333
+7.56.653.516 I slot print_timing: id  0 | task 1070 | n_gen =    100, tg =   6.69 t/s, tg_3s =   6.76 t/s
+7.59.653.968 I slot print_timing: id  0 | task 1070 | n_gen =    121, tg =   6.74 t/s, tg_3s =   7.00 t/s
+8.02.990.704 I slot print_timing: id  0 | task 1070 | n_gen =    140, tg =   6.58 t/s, tg_3s =   5.69 t/s
+8.06.043.382 I slot print_timing: id  0 | task 1070 | n_gen =    159, tg =   6.53 t/s, tg_3s =   6.22 t/s
+8.09.169.658 I slot print_timing: id  0 | task 1070 | n_gen =    182, tg =   6.63 t/s, tg_3s =   7.36 t/s
+8.12.200.522 I slot print_timing: id  0 | task 1070 | n_gen =    202, tg =   6.62 t/s, tg_3s =   6.60 t/s
+8.15.797.559 I slot print_timing: id  0 | task 1070 | n_gen =    225, tg =   6.60 t/s, tg_3s =   6.39 t/s
+8.18.924.313 I slot print_timing: id  0 | task 1070 | n_gen =    247, tg =   6.64 t/s, tg_3s =   7.04 t/s
+8.20.019.720 I slot print_timing: id  0 | task 1070 | prompt eval time =     478.80 ms /     4 tokens (  119.70 ms per token,     8.35 tokens per second)
+8.20.019.722 I slot print_timing: id  0 | task 1070 |        eval time =   38160.25 ms /   256 tokens (  149.65 ms per token,     6.68 tokens per second)
+8.20.019.722 I slot print_timing: id  0 | task 1070 |       total time =   38639.05 ms /   260 tokens
+8.20.019.724 I slot print_timing: id  0 | task 1070 |    graphs reused =        572
+8.20.019.730 I slot print_timing: id  0 | task 1070 | draft acceptance = 0.92105 (  105 accepted /   114 generated), mean len =  2.62
+moe-grouped-decode: registered=49 covered=49 plan_calls=396 plan_compiles=225 plan_reuses=171 calls=7446 ready=7446 ready_min=150 ready_max=246 completed=7446 completed_min=150 completed_max=246 admitted_banks=22338 fallback=0 rollback=0 host_calls=1536 host_ops=4608 host_split_ops=0 strategy_switches=1680 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=130914 h2d_bytes=91905356800
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=2679 unique_pct=3.63 accesses=7707 first_touches=2679 first_touch_pct=34.76 touched_once=132 touched_ge2=2547 reuse_le_l1=5028 reuse_le_l1_pct=100.00 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=0 reuse_gt_l2_pct=0.00 top1_pct=28.73 top5_pct=100.00 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.47.ffn_down_exps.weight experts=512 unique=22 unique_pct=4.30 accesses=66 touched_once=0 touched_ge2=22 top10_pct=100.00 reuse_gt_l2_pct=0.00
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=144 staged_ops=9 split_staged_ops=0 overflow_ops=9 unique_avg=18.83 unique_max=30 ids_mib=0.85 ids_d2h_mib=0.85 ids_d2h_ms=319.904 ids_d2h_syncs=45 ids_cache_hits=96 acquire_ms=3.651 remap_ms=0.166 copy_wait_events=135 copy_wait_event_ms=0.079 op_cpu_ms=324.526 l1_hits=5028 l1_misses=2679 l1_evictions=0 l1_hit_rate=65.24% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=2679 h2d_mib=1749.44 h2d_enqueue_ms=3.089 prefetch_hits=3374 prefetch_misses=1852 prefetch_used=1654 prefetch_h2d_copies=1852 prefetch_h2d_mib=1270.81 prefetch_h2d_enqueue_ms=2.175
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=2679 h2d_mib=1749.44 h2d_enqueue_ms=3.089 mincore_sampled=42 resident_pages=7185/7185 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=36781 proc_majflt=0 vm_pswpin=1 vm_pswpout=0 vm_pgfault=868874 vm_pgmajfault=2 vm_pgpgin=5204 vm_pgpgout=7169 vm_refault_file=16 vm_refault_anon=1
+8.20.022.441 I slot      release: id  0 | task 1070 | stop processing: n_tokens = 12589, truncated = 0
+8.20.033.840 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.980
+8.20.033.888 I slot launch_slot_: id  0 | task 1222 | processing task, is_child = 0
+8.20.033.898 W slot   operator(): id  0 | task 1222 | need to evaluate at least 1 token for each active slot (n_past = 12334, task.n_tokens() = 12334)
+8.20.033.899 W slot   operator(): id  0 | task 1222 | n_past was set to 12333
+8.35.086.592 I slot print_timing: id  0 | task 1222 | n_gen =    100, tg =   6.79 t/s, tg_3s =   6.86 t/s
+8.38.140.763 I slot print_timing: id  0 | task 1222 | n_gen =    122, tg =   6.86 t/s, tg_3s =   7.20 t/s
+8.41.345.163 I slot print_timing: id  0 | task 1222 | n_gen =    147, tg =   7.01 t/s, tg_3s =   7.80 t/s
+8.44.389.453 I slot print_timing: id  0 | task 1222 | n_gen =    168, tg =   6.99 t/s, tg_3s =   6.90 t/s
+8.47.475.652 I slot print_timing: id  0 | task 1222 | n_gen =    193, tg =   7.12 t/s, tg_3s =   8.10 t/s
+8.50.641.602 I slot print_timing: id  0 | task 1222 | n_gen =    214, tg =   7.07 t/s, tg_3s =   6.63 t/s
+8.53.693.971 I slot print_timing: id  0 | task 1222 | n_gen =    237, tg =   7.11 t/s, tg_3s =   7.54 t/s
+8.56.407.239 I slot print_timing: id  0 | task 1222 | prompt eval time =     472.35 ms /     4 tokens (  118.09 ms per token,     8.47 tokens per second)
+8.56.407.240 I slot print_timing: id  0 | task 1222 |        eval time =   35900.98 ms /   256 tokens (  140.79 ms per token,     7.10 tokens per second)
+8.56.407.241 I slot print_timing: id  0 | task 1222 |       total time =   36373.33 ms /   260 tokens
+8.56.407.241 I slot print_timing: id  0 | task 1222 |    graphs reused =        654
+8.56.407.244 I slot print_timing: id  0 | task 1222 | draft acceptance = 0.95789 (   91 accepted /    95 generated), mean len =  2.40
+moe-grouped-decode: registered=49 covered=49 plan_calls=412 plan_compiles=245 plan_reuses=167 calls=8120 ready=8120 ready_min=164 ready_max=248 completed=8120 completed_min=164 completed_max=248 admitted_banks=24360 fallback=0 rollback=0 host_calls=960 host_ops=2880 host_split_ops=0 strategy_switches=1200 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=153882 h2d_bytes=107517849600
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=2679 unique_pct=3.63 accesses=7707 first_touches=2679 first_touch_pct=34.76 touched_once=132 touched_ge2=2547 reuse_le_l1=5028 reuse_le_l1_pct=100.00 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=0 reuse_gt_l2_pct=0.00 top1_pct=28.73 top5_pct=100.00 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.47.ffn_down_exps.weight experts=512 unique=22 unique_pct=4.30 accesses=66 touched_once=0 touched_ge2=22 top10_pct=100.00 reuse_gt_l2_pct=0.00
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=144 staged_ops=9 split_staged_ops=0 overflow_ops=9 unique_avg=18.83 unique_max=30 ids_mib=0.85 ids_d2h_mib=0.85 ids_d2h_ms=318.683 ids_d2h_syncs=45 ids_cache_hits=96 acquire_ms=3.733 remap_ms=0.175 copy_wait_events=135 copy_wait_event_ms=0.102 op_cpu_ms=323.560 l1_hits=5028 l1_misses=2679 l1_evictions=0 l1_hit_rate=65.24% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=2679 h2d_mib=1749.44 h2d_enqueue_ms=3.228 prefetch_hits=3374 prefetch_misses=1852 prefetch_used=1654 prefetch_h2d_copies=1852 prefetch_h2d_mib=1270.81 prefetch_h2d_enqueue_ms=2.290
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=2679 h2d_mib=1749.44 h2d_enqueue_ms=3.228 mincore_sampled=42 resident_pages=7155/7155 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=30412 proc_majflt=0 vm_pswpin=1 vm_pswpout=0 vm_pgfault=818925 vm_pgmajfault=3 vm_pgpgin=4564 vm_pgpgout=5600 vm_refault_file=16 vm_refault_anon=1
+8.56.409.858 I slot      release: id  0 | task 1222 | stop processing: n_tokens = 12589, truncated = 0
+8.56.422.345 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 27008511107
+8.56.747.202 I slot launch_slot_: id  0 | task 1388 | processing task, is_child = 0
+9.06.961.864 I slot print_timing: id  0 | task 1388 | prompt processing, n_tokens =   2048, progress = 0.23, t =   9.47 s / 216.24 tokens per second
+9.17.197.280 I slot print_timing: id  0 | task 1388 | prompt processing, n_tokens =   4096, progress = 0.45, t =  19.71 s / 207.80 tokens per second
+9.27.775.472 I slot print_timing: id  0 | task 1388 | prompt processing, n_tokens =   6144, progress = 0.68, t =  30.27 s / 202.96 tokens per second
+9.35.915.649 I slot print_timing: id  0 | task 1388 | prompt processing, n_tokens =   7073, progress = 0.78, t =  38.75 s / 182.53 tokens per second
+9.46.872.995 I slot print_timing: id  0 | task 1388 | prompt processing, n_tokens =   9117, progress = 1.00, t =  49.35 s / 184.74 tokens per second
+10.02.039.000 I slot print_timing: id  0 | task 1388 | n_gen =    100, tg =   6.71 t/s, tg_3s =   6.77 t/s
+10.05.259.161 I slot print_timing: id  0 | task 1388 | n_gen =    126, tg =   6.95 t/s, tg_3s =   8.07 t/s
+10.08.355.432 I slot print_timing: id  0 | task 1388 | n_gen =    148, tg =   6.97 t/s, tg_3s =   7.11 t/s
+10.11.441.390 I slot print_timing: id  0 | task 1388 | n_gen =    171, tg =   7.03 t/s, tg_3s =   7.45 t/s
+10.14.557.902 I slot print_timing: id  0 | task 1388 | n_gen =    192, tg =   7.00 t/s, tg_3s =   6.74 t/s
+10.17.672.367 I slot print_timing: id  0 | task 1388 | n_gen =    215, tg =   7.04 t/s, tg_3s =   7.38 t/s
+10.20.694.084 I slot print_timing: id  0 | task 1388 | n_gen =    238, tg =   7.09 t/s, tg_3s =   7.61 t/s
+10.22.883.518 I slot print_timing: id  0 | task 1388 | prompt eval time =   50529.23 ms /  9121 tokens (    5.54 ms per token,   180.51 tokens per second)
+10.22.883.520 I slot print_timing: id  0 | task 1388 |        eval time =   35607.04 ms /   256 tokens (  139.64 ms per token,     7.16 tokens per second)
+10.22.883.520 I slot print_timing: id  0 | task 1388 |       total time =   86136.27 ms /  9377 tokens
+10.22.883.521 I slot print_timing: id  0 | task 1388 |    graphs reused =        728
+10.22.883.523 I slot print_timing: id  0 | task 1388 | draft acceptance = 0.90476 (   95 accepted /   105 generated), mean len =  2.36
+moe-grouped-decode: registered=49 covered=49 plan_calls=412 plan_compiles=247 plan_reuses=165 calls=7932 ready=7932 ready_min=160 ready_max=252 completed=7932 completed_min=160 completed_max=252 admitted_banks=23796 fallback=0 rollback=0 host_calls=1104 host_ops=3312 host_split_ops=0 strategy_switches=1872 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=151659 h2d_bytes=106068147200
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=14076 unique_pct=19.09 accesses=29838 first_touches=14076 first_touch_pct=47.17 touched_once=5888 touched_ge2=8188 reuse_le_l1=12340 reuse_le_l1_pct=78.29 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=3422 reuse_gt_l2_pct=21.71 top1_pct=14.12 top5_pct=50.10 top10_pct=74.80
+moe-cache-experts-hot: tensor=blk.14.ffn_down_exps.weight experts=512 unique=105 unique_pct=20.51 accesses=286 touched_once=0 touched_ge2=105 top10_pct=62.94 reuse_gt_l2_pct=11.05
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=864 staged_ops=732 split_staged_ops=720 overflow_ops=732 unique_avg=342.01 unique_max=474 ids_mib=2563.63 ids_d2h_mib=2563.63 ids_d2h_ms=273.935 ids_d2h_syncs=44 ids_cache_hits=576 acquire_ms=3.254 remap_ms=0.175 copy_wait_events=132 copy_wait_event_ms=0.079 op_cpu_ms=424.337 l1_hits=12411 l1_misses=17427 l1_evictions=14259 l1_hit_rate=41.59% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=17427 h2d_mib=11334.91 h2d_enqueue_ms=24.963 prefetch_hits=10707 prefetch_misses=15535 prefetch_used=1704 prefetch_h2d_copies=15535 prefetch_h2d_mib=10248.08 prefetch_h2d_enqueue_ms=22.798
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=17427 h2d_mib=11334.91 h2d_enqueue_ms=24.963 mincore_sampled=272 resident_pages=44830/44830 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=476076 proc_majflt=0 vm_pswpin=24 vm_pswpout=0 vm_pgfault=2352539 vm_pgmajfault=29 vm_pgpgin=371128 vm_pgpgout=21901 vm_refault_file=114 vm_refault_anon=24
+10.22.886.991 I slot      release: id  0 | task 1388 | stop processing: n_tokens = 9418, truncated = 0
+10.22.901.908 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.926 (> 0.100 thold), f_keep = 0.973
+10.22.901.947 I slot launch_slot_: id  0 | task 1555 | processing task, is_child = 0
+10.26.925.907 I slot print_timing: id  0 | task 1555 | prompt processing, n_tokens =    220, progress = 0.95, t =   3.85 s / 57.10 tokens per second
+10.32.926.442 I slot print_timing: id  0 | task 1555 | prompt processing, n_tokens =    729, progress = 1.00, t =   9.74 s / 74.81 tokens per second
+10.49.491.437 I slot print_timing: id  0 | task 1555 | n_gen =    102, tg =   6.23 t/s, tg_3s =   6.29 t/s
+10.52.605.684 I slot print_timing: id  0 | task 1555 | n_gen =    124, tg =   6.36 t/s, tg_3s =   7.06 t/s
+10.55.889.776 I slot print_timing: id  0 | task 1555 | n_gen =    146, tg =   6.41 t/s, tg_3s =   6.70 t/s
+10.59.095.637 I slot print_timing: id  0 | task 1555 | n_gen =    167, tg =   6.43 t/s, tg_3s =   6.55 t/s
+11.02.244.221 I slot print_timing: id  0 | task 1555 | n_gen =    188, tg =   6.46 t/s, tg_3s =   6.67 t/s
+11.05.682.224 I slot print_timing: id  0 | task 1555 | n_gen =    211, tg =   6.48 t/s, tg_3s =   6.69 t/s
+11.09.138.858 I slot print_timing: id  0 | task 1555 | n_gen =    235, tg =   6.53 t/s, tg_3s =   6.94 t/s
+11.12.322.547 I slot print_timing: id  0 | task 1555 | prompt eval time =   10376.39 ms /   733 tokens (   14.16 ms per token,    70.64 tokens per second)
+11.12.322.549 I slot print_timing: id  0 | task 1555 |        eval time =   39044.19 ms /   256 tokens (  153.11 ms per token,     6.53 tokens per second)
+11.12.322.549 I slot print_timing: id  0 | task 1555 |       total time =   49420.58 ms /   989 tokens
+11.12.322.550 I slot print_timing: id  0 | task 1555 |    graphs reused =        787
+11.12.322.552 I slot print_timing: id  0 | task 1555 | draft acceptance = 0.94839 (  147 accepted /   155 generated), mean len =  3.26
+moe-grouped-decode: registered=49 covered=49 plan_calls=328 plan_compiles=156 plan_reuses=172 calls=5404 ready=5404 ready_min=108 ready_max=220 completed=5404 completed_min=108 completed_max=220 admitted_banks=16212 fallback=0 rollback=0 host_calls=2304 host_ops=6912 host_split_ops=0 strategy_switches=1296 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=78270 h2d_bytes=55241216000
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=4884 unique_pct=6.62 accesses=16311 first_touches=4884 first_touch_pct=29.94 touched_once=959 touched_ge2=3925 reuse_le_l1=9068 reuse_le_l1_pct=79.36 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=2359 reuse_gt_l2_pct=20.64 top1_pct=29.31 top5_pct=91.20 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.22.ffn_down_exps.weight experts=512 unique=33 unique_pct=6.45 accesses=154 touched_once=0 touched_ge2=33 top10_pct=100.00 reuse_gt_l2_pct=16.53
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=432 staged_ops=342 split_staged_ops=288 overflow_ops=342 unique_avg=176.55 unique_max=408 ids_mib=205.33 ids_d2h_mib=205.33 ids_d2h_ms=133.699 ids_d2h_syncs=30 ids_cache_hits=288 acquire_ms=1.381 remap_ms=0.132 copy_wait_events=90 copy_wait_event_ms=0.052 op_cpu_ms=175.510 l1_hits=10009 l1_misses=6302 l1_evictions=3134 l1_hit_rate=61.36% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=6302 h2d_mib=4132.23 h2d_enqueue_ms=8.168 prefetch_hits=8577 prefetch_misses=4845 prefetch_used=1182 prefetch_h2d_copies=4845 prefetch_h2d_mib=3291.02 prefetch_h2d_enqueue_ms=6.544
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=6302 h2d_mib=4132.23 h2d_enqueue_ms=8.168 mincore_sampled=99 resident_pages=16309/16309 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=107850 proc_majflt=0 vm_pswpin=3 vm_pswpout=0 vm_pgfault=1170681 vm_pgmajfault=3 vm_pgpgin=25248 vm_pgpgout=6093 vm_refault_file=2 vm_refault_anon=3
+11.12.325.450 I slot      release: id  0 | task 1555 | stop processing: n_tokens = 10147, truncated = 0
+11.12.340.200 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.930 (> 0.100 thold), f_keep = 0.975
+11.12.340.237 I slot launch_slot_: id  0 | task 1667 | processing task, is_child = 0
+11.17.964.640 I slot print_timing: id  0 | task 1667 | prompt processing, n_tokens =    258, progress = 0.95, t =   5.41 s / 47.73 tokens per second
+11.24.016.296 I slot print_timing: id  0 | task 1667 | prompt processing, n_tokens =    747, progress = 1.00, t =  11.41 s / 65.49 tokens per second
+11.39.803.403 I slot print_timing: id  0 | task 1667 | n_gen =    103, tg =   6.62 t/s, tg_3s =   6.69 t/s
+11.43.196.215 I slot print_timing: id  0 | task 1667 | n_gen =    126, tg =   6.65 t/s, tg_3s =   6.78 t/s
+11.46.211.465 I slot print_timing: id  0 | task 1667 | n_gen =    147, tg =   6.70 t/s, tg_3s =   6.96 t/s
+11.49.327.731 I slot print_timing: id  0 | task 1667 | n_gen =    167, tg =   6.66 t/s, tg_3s =   6.42 t/s
+11.52.725.666 I slot print_timing: id  0 | task 1667 | n_gen =    190, tg =   6.67 t/s, tg_3s =   6.77 t/s
+11.56.098.142 I slot print_timing: id  0 | task 1667 | n_gen =    212, tg =   6.66 t/s, tg_3s =   6.52 t/s
+11.59.151.333 I slot print_timing: id  0 | task 1667 | n_gen =    232, tg =   6.65 t/s, tg_3s =   6.55 t/s
+12.02.312.883 I slot print_timing: id  0 | task 1667 | n_gen =    252, tg =   6.62 t/s, tg_3s =   6.33 t/s
+12.02.907.121 I slot print_timing: id  0 | task 1667 | prompt eval time =   12065.14 ms /   751 tokens (   16.07 ms per token,    62.25 tokens per second)
+12.02.907.123 I slot print_timing: id  0 | task 1667 |        eval time =   38501.70 ms /   256 tokens (  150.99 ms per token,     6.62 tokens per second)
+12.02.907.123 I slot print_timing: id  0 | task 1667 |       total time =   50566.84 ms /  1007 tokens
+12.02.907.124 I slot print_timing: id  0 | task 1667 |    graphs reused =        847
+12.02.907.126 I slot print_timing: id  0 | task 1667 | draft acceptance = 0.97902 (  140 accepted /   143 generated), mean len =  3.33
+moe-grouped-decode: registered=49 covered=49 plan_calls=336 plan_compiles=170 plan_reuses=166 calls=5741 ready=5741 ready_min=115 ready_max=221 completed=5741 completed_min=115 completed_max=221 admitted_banks=17223 fallback=0 rollback=0 host_calls=2208 host_ops=6624 host_split_ops=0 strategy_switches=1440 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=80685 h2d_bytes=57245235200
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=4773 unique_pct=6.47 accesses=15595 first_touches=4773 first_touch_pct=30.61 touched_once=979 touched_ge2=3794 reuse_le_l1=8269 reuse_le_l1_pct=76.41 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=2553 reuse_gt_l2_pct=23.59 top1_pct=30.18 top5_pct=92.35 top10_pct=100.00
+moe-cache-experts-hot: tensor=blk.28.ffn_down_exps.weight experts=512 unique=31 unique_pct=6.05 accesses=154 touched_once=0 touched_ge2=31 top10_pct=100.00 reuse_gt_l2_pct=17.89
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=432 staged_ops=363 split_staged_ops=288 overflow_ops=363 unique_avg=207.91 unique_max=415 ids_mib=210.39 ids_d2h_mib=210.39 ids_d2h_ms=111.545 ids_d2h_syncs=23 ids_cache_hits=288 acquire_ms=1.070 remap_ms=0.084 copy_wait_events=69 copy_wait_event_ms=0.051 op_cpu_ms=159.248 l1_hits=9013 l1_misses=6582 l1_evictions=3414 l1_hit_rate=57.79% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=6582 h2d_mib=4313.02 h2d_enqueue_ms=8.978 prefetch_hits=7936 prefetch_misses=5250 prefetch_used=888 prefetch_h2d_copies=5250 prefetch_h2d_mib=3544.37 prefetch_h2d_enqueue_ms=7.464
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=6582 h2d_mib=4313.02 h2d_enqueue_ms=8.978 mincore_sampled=102 resident_pages=16958/16958 resident_pct=100.00 nonresident_experts=0 mincore_fail=0 proc_minflt=105394 proc_majflt=0 vm_pswpin=69 vm_pswpout=0 vm_pgfault=1186598 vm_pgmajfault=70 vm_pgpgin=24868 vm_pgpgout=9930 vm_refault_file=11 vm_refault_anon=69
+12.02.910.061 I slot      release: id  0 | task 1667 | stop processing: n_tokens = 10894, truncated = 0
+12.02.919.003 I srv    operator(): operator(): cleaning up before exit...
+moe-grouped-decode: registered=49 covered=0 plan_calls=0 plan_compiles=0 plan_reuses=0 calls=0 ready=0 ready_min=0 ready_max=0 completed=0 completed_min=0 completed_max=0 admitted_banks=0 fallback=0 rollback=0 host_calls=0 host_ops=0 host_split_ops=0 strategy_switches=0 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=0 h2d_bytes=0
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=0 unique_pct=0.00 accesses=0 first_touches=0 first_touch_pct=0.00 touched_once=0 touched_ge2=0 reuse_le_l1=0 reuse_le_l1_pct=0.00 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=0 reuse_gt_l2_pct=0.00 top1_pct=0.00 top5_pct=0.00 top10_pct=0.00
+moe-cache-experts-hot: tensor=? experts=0 unique=0 unique_pct=0.00 accesses=0 touched_once=0 touched_ge2=0 top10_pct=0.00 reuse_gt_l2_pct=0.00
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 mincore_sampled=0 resident_pages=0/0 resident_pct=0.00 nonresident_experts=0 mincore_fail=0 proc_minflt=6 proc_majflt=0 vm_pswpin=0 vm_pswpout=0 vm_pgfault=538 vm_pgmajfault=0 vm_pgpgin=0 vm_pgpgout=32 vm_refault_file=0 vm_refault_anon=0
+moe-grouped-decode: registered=48 covered=0 plan_calls=0 plan_compiles=0 plan_reuses=0 calls=0 ready=0 ready_min=0 ready_max=0 completed=0 completed_min=0 completed_max=0 admitted_banks=0 fallback=0 rollback=0 host_calls=0 host_ops=0 host_split_ops=0 strategy_switches=0 required_unsupported=0 prepare_error=0 finish_error=0 h2d_banks=0 h2d_bytes=0
+moe-cache-l2: l2_budget_mib=0.00 l2_slots=0 l2_used_mib=0.00 l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00%
+moe-cache-experts: tensors=144 experts=73728 unique=0 unique_pct=0.00 accesses=0 first_touches=0 first_touch_pct=0.00 touched_once=0 touched_ge2=0 reuse_le_l1=0 reuse_le_l1_pct=0.00 reuse_le_l2=0 reuse_le_l2_pct=0.00 reuse_gt_l2=0 reuse_gt_l2_pct=0.00 top1_pct=0.00 top5_pct=0.00 top10_pct=0.00
+moe-cache-experts-hot: tensor=? experts=0 unique=0 unique_pct=0.00 accesses=0 touched_once=0 touched_ge2=0 top10_pct=0.00 reuse_gt_l2_pct=0.00
+moe-cache-tensor-hot-decode-miss: tensor=? l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 reuse_gt_l1_pct=0.00
+moe-cache-phase: phase=prefill ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-phase: phase=decode ops=0 staged_ops=0 split_staged_ops=0 overflow_ops=0 unique_avg=0.00 unique_max=0 ids_mib=0.00 ids_d2h_mib=0.00 ids_d2h_ms=0.000 ids_d2h_syncs=0 ids_cache_hits=0 acquire_ms=0.000 remap_ms=0.000 copy_wait_events=0 copy_wait_event_ms=0.000 op_cpu_ms=0.000 l1_hits=0 l1_misses=0 l1_evictions=0 l1_hit_rate=0.00% l2_hits=0 l2_misses=0 l2_fills=0 l2_evictions=0 l2_fill_mib=0.00 l2_fill_ms=0.000 l2_hit_rate=0.00% h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 prefetch_hits=0 prefetch_misses=0 prefetch_used=0 prefetch_h2d_copies=0 prefetch_h2d_mib=0.00 prefetch_h2d_enqueue_ms=0.000
+moe-cache-mm: h2d_copies=0 h2d_mib=0.00 h2d_enqueue_ms=0.000 mincore_sampled=0 resident_pages=0/0 resident_pct=0.00 nonresident_experts=0 mincore_fail=0 proc_minflt=0 proc_majflt=0 vm_pswpin=0 vm_pswpout=0 vm_pgfault=60 vm_pgmajfault=0 vm_pgpgin=0 vm_pgpgout=0 vm_refault_file=0 vm_refault_anon=0

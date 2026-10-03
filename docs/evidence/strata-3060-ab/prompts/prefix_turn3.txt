@@ -1,0 +1,11 @@
+Good. Two more threads from the rest of that context, then I will stop bothering you.
+
+Checkpoints and correctness: conversation checkpoints save and restore every card's state, and mid-prompt checkpoints (--prompt-cache-every) have each card save its part when it has read that chunk. The measured section claims one GPU is byte-identical to 0.1.20 and the hand-off itself is bit-exact. What exactly was validated for the split across a save/restore cycle - is there a parity check that stops a stream mid-prompt, restarts the process, resumes, and compares the continuation against a never-restarted split run?
+
+Orca IQ3_XXS on the split: ORCA.md's example config has no gpu or layer_split keys, and the pack keeps the 28.8 GB PLE lookup table on disk. Every card holds a copy of the dense weights. Is the PLE read as part of the dense weights on each card, or only by the card that owns those layers? I need to know whether adding a split changes the memory math that the 32K-context example was tuned for.
+
+AMD/HIP side: HIP blocking expert uploads use one reusable pinned staging buffer, prompt-cache refills included, and --resident-cpu-experts guards itself against cgroup-v2 limits. Two quick ones: (a) does "prompt-cache refill" here mean the same --prompt-cache-every mechanism as the split's mid-prompt checkpoints, or a separate cache? (b) STRATA_PREFILL_RING=96 is documented for the measured arm - is that per card when a split is active, or one host-side ring shared by all stages?
+
+Last: with "gpu": [0, 1] set in strata-*.json, does the setup GPU menu still ask at the next start, or is the answer fully remembered?
+
+Related to that: the limits section says images work across cards with each card keeping its own image-position table, while the Orca example is text-only. If I later add --vision on the split, does every card receive the embedded image positions for its layers, or is there a single encoder path whose output then flows through the hand-off like a token? I want to know before deciding whether the vision path is the thing to benchmark first or last.

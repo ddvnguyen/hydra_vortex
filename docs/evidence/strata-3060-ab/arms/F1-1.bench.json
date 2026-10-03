@@ -1,0 +1,433 @@
+{
+ "arm": "F1-1",
+ "engine": "fork",
+ "port": 8093,
+ "model": "gsq-rco-iq3_s",
+ "reps": 3,
+ "max_tokens": 256,
+ "manifest_sha256_of_sha256sums": "eff755f3af8c0bad143e5c79c0842d1b17fd6bae5febd9f20f94cb423e433e1d",
+ "started": "2026-10-02T01:44:44.334+07:00",
+ "finished": "2026-10-02T01:53:08.971+07:00",
+ "status": "ok",
+ "warmup": {
+  "start": "2026-10-02T01:44:44.334+07:00",
+  "end": "2026-10-02T01:44:55.832+07:00",
+  "ttft_s": 4.552,
+  "prefill_tps": 21.09,
+  "decode_tps": 9.07,
+  "wall_s": 11.497,
+  "prompt_tokens": 96,
+  "completion_tokens": 64,
+  "cached_tokens": 0,
+  "finish_reason": "length",
+  "usage": {
+   "completion_tokens": 64,
+   "prompt_tokens": 96,
+   "total_tokens": 160,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "snippet": "We need answer user: \"Write a detailed technical explanation of ",
+  "error": null
+ },
+ "cells": [
+  {
+   "id": "p1k",
+   "kind": "prefill_decode",
+   "reps": [
+    {
+     "start": "2026-10-02T01:44:55.832+07:00",
+     "end": "2026-10-02T01:45:30.457+07:00",
+     "ttft_s": 8.061,
+     "prefill_tps": 138.32,
+     "decode_tps": 9.6,
+     "wall_s": 34.625,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 42,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 1115,
+      "total_tokens": 1371,
+      "prompt_tokens_details": {
+       "cached_tokens": 42
+      }
+     },
+     "snippet": "We need answer user's multi-part request. Need produce final ans",
+     "error": null,
+     "rep": 0
+    },
+    {
+     "start": "2026-10-02T01:45:30.457+07:00",
+     "end": "2026-10-02T01:45:57.366+07:00",
+     "ttft_s": 0.459,
+     "prefill_tps": 2429.19,
+     "decode_tps": 9.64,
+     "wall_s": 26.91,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 1111,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 1115,
+      "total_tokens": 1371,
+      "prompt_tokens_details": {
+       "cached_tokens": 1111
+      }
+     },
+     "snippet": "We need answer user's multi-part request. Need produce final ans",
+     "error": null,
+     "rep": 1
+    },
+    {
+     "start": "2026-10-02T01:45:57.367+07:00",
+     "end": "2026-10-02T01:46:24.250+07:00",
+     "ttft_s": 0.458,
+     "prefill_tps": 2434.5,
+     "decode_tps": 9.65,
+     "wall_s": 26.884,
+     "prompt_tokens": 1115,
+     "completion_tokens": 256,
+     "cached_tokens": 1111,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 1115,
+      "total_tokens": 1371,
+      "prompt_tokens_details": {
+       "cached_tokens": 1111
+      }
+     },
+     "snippet": "We need answer user's multi-part request. Need produce final ans",
+     "error": null,
+     "rep": 2
+    }
+   ],
+   "ttft_s_stats": {
+    "median": 0.46,
+    "min": 0.46,
+    "max": 8.06,
+    "n": 3
+   },
+   "prefill_tps_stats": {
+    "median": 2429.19,
+    "min": 138.32,
+    "max": 2434.5,
+    "n": 3
+   },
+   "decode_tps_stats": {
+    "median": 9.64,
+    "min": 9.6,
+    "max": 9.65,
+    "n": 3
+   },
+   "wall_s_stats": {
+    "median": 26.91,
+    "min": 26.88,
+    "max": 34.62,
+    "n": 3
+   }
+  },
+  {
+   "id": "p4k",
+   "kind": "prefill_decode",
+   "reps": [
+    {
+     "start": "2026-10-02T01:46:24.250+07:00",
+     "end": "2026-10-02T01:47:12.454+07:00",
+     "ttft_s": 20.049,
+     "prefill_tps": 205.45,
+     "decode_tps": 9.06,
+     "wall_s": 48.204,
+     "prompt_tokens": 4119,
+     "completion_tokens": 256,
+     "cached_tokens": 42,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 4119,
+      "total_tokens": 4375,
+      "prompt_tokens_details": {
+       "cached_tokens": 42
+      }
+     },
+     "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+     "error": null,
+     "rep": 0
+    },
+    {
+     "start": "2026-10-02T01:47:12.454+07:00",
+     "end": "2026-10-02T01:47:40.274+07:00",
+     "ttft_s": 0.448,
+     "prefill_tps": 9194.2,
+     "decode_tps": 9.32,
+     "wall_s": 27.82,
+     "prompt_tokens": 4119,
+     "completion_tokens": 256,
+     "cached_tokens": 4115,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 4119,
+      "total_tokens": 4375,
+      "prompt_tokens_details": {
+       "cached_tokens": 4115
+      }
+     },
+     "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+     "error": null,
+     "rep": 1
+    },
+    {
+     "start": "2026-10-02T01:47:40.274+07:00",
+     "end": "2026-10-02T01:48:07.989+07:00",
+     "ttft_s": 0.444,
+     "prefill_tps": 9277.03,
+     "decode_tps": 9.35,
+     "wall_s": 27.715,
+     "prompt_tokens": 4119,
+     "completion_tokens": 256,
+     "cached_tokens": 4115,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 4119,
+      "total_tokens": 4375,
+      "prompt_tokens_details": {
+       "cached_tokens": 4115
+      }
+     },
+     "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+     "error": null,
+     "rep": 2
+    }
+   ],
+   "ttft_s_stats": {
+    "median": 0.45,
+    "min": 0.44,
+    "max": 20.05,
+    "n": 3
+   },
+   "prefill_tps_stats": {
+    "median": 9194.2,
+    "min": 205.45,
+    "max": 9277.03,
+    "n": 3
+   },
+   "decode_tps_stats": {
+    "median": 9.32,
+    "min": 9.06,
+    "max": 9.35,
+    "n": 3
+   },
+   "wall_s_stats": {
+    "median": 27.82,
+    "min": 27.71,
+    "max": 48.2,
+    "n": 3
+   }
+  },
+  {
+   "id": "p12k",
+   "kind": "prefill_decode",
+   "reps": [
+    {
+     "start": "2026-10-02T01:48:07.989+07:00",
+     "end": "2026-10-02T01:49:36.391+07:00",
+     "ttft_s": 60.531,
+     "prefill_tps": 203.76,
+     "decode_tps": 9.15,
+     "wall_s": 88.402,
+     "prompt_tokens": 12334,
+     "completion_tokens": 256,
+     "cached_tokens": 42,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 12334,
+      "total_tokens": 12590,
+      "prompt_tokens_details": {
+       "cached_tokens": 42
+      }
+     },
+     "snippet": "We need answer to user. User provided a huge benchmark prompt ce",
+     "error": null,
+     "rep": 0
+    },
+    {
+     "start": "2026-10-02T01:49:36.391+07:00",
+     "end": "2026-10-02T01:50:04.841+07:00",
+     "ttft_s": 0.442,
+     "prefill_tps": 27904.98,
+     "decode_tps": 9.1,
+     "wall_s": 28.45,
+     "prompt_tokens": 12334,
+     "completion_tokens": 256,
+     "cached_tokens": 12330,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 12334,
+      "total_tokens": 12590,
+      "prompt_tokens_details": {
+       "cached_tokens": 12330
+      }
+     },
+     "snippet": "We need answer to user. User provided a huge benchmark prompt ce",
+     "error": null,
+     "rep": 1
+    },
+    {
+     "start": "2026-10-02T01:50:04.841+07:00",
+     "end": "2026-10-02T01:50:33.530+07:00",
+     "ttft_s": 0.445,
+     "prefill_tps": 27716.85,
+     "decode_tps": 9.03,
+     "wall_s": 28.689,
+     "prompt_tokens": 12334,
+     "completion_tokens": 256,
+     "cached_tokens": 12330,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 12334,
+      "total_tokens": 12590,
+      "prompt_tokens_details": {
+       "cached_tokens": 12330
+      }
+     },
+     "snippet": "We need answer to user. User provided a huge benchmark prompt ce",
+     "error": null,
+     "rep": 2
+    }
+   ],
+   "ttft_s_stats": {
+    "median": 0.45,
+    "min": 0.44,
+    "max": 60.53,
+    "n": 3
+   },
+   "prefill_tps_stats": {
+    "median": 27716.85,
+    "min": 203.76,
+    "max": 27904.98,
+    "n": 3
+   },
+   "decode_tps_stats": {
+    "median": 9.1,
+    "min": 9.03,
+    "max": 9.15,
+    "n": 3
+   },
+   "wall_s_stats": {
+    "median": 28.69,
+    "min": 28.45,
+    "max": 88.4,
+    "n": 3
+   }
+  },
+  {
+   "id": "prefix",
+   "kind": "prefix",
+   "reps": [
+    {
+     "start": "2026-10-02T01:50:33.530+07:00",
+     "end": "2026-10-02T01:51:47.859+07:00",
+     "ttft_s": 47.553,
+     "prefill_tps": 192.69,
+     "decode_tps": 9.52,
+     "wall_s": 74.329,
+     "prompt_tokens": 9163,
+     "completion_tokens": 256,
+     "cached_tokens": 42,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 9163,
+      "total_tokens": 9419,
+      "prompt_tokens_details": {
+       "cached_tokens": 42
+      }
+     },
+     "snippet": "We need answer to user? User pasted long documentation. No expli",
+     "error": null,
+     "turn": 1
+    },
+    {
+     "start": "2026-10-02T01:51:47.859+07:00",
+     "end": "2026-10-02T01:52:28.206+07:00",
+     "ttft_s": 10.016,
+     "prefill_tps": 987.72,
+     "decode_tps": 8.41,
+     "wall_s": 40.347,
+     "prompt_tokens": 9893,
+     "completion_tokens": 256,
+     "cached_tokens": 9159,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 9893,
+      "total_tokens": 10149,
+      "prompt_tokens_details": {
+       "cached_tokens": 9159
+      }
+     },
+     "snippet": "We need answer five technical questions based on provided docs. ",
+     "error": null,
+     "turn": 2
+    },
+    {
+     "start": "2026-10-02T01:52:28.206+07:00",
+     "end": "2026-10-02T01:53:08.971+07:00",
+     "ttft_s": 11.038,
+     "prefill_tps": 964.49,
+     "decode_tps": 8.58,
+     "wall_s": 40.764,
+     "prompt_tokens": 10646,
+     "completion_tokens": 256,
+     "cached_tokens": 9889,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 10646,
+      "total_tokens": 10902,
+      "prompt_tokens_details": {
+       "cached_tokens": 9889
+      }
+     },
+     "snippet": "We need answer user's follow-up questions. Need be careful: user",
+     "error": null,
+     "turn": 3
+    }
+   ],
+   "ttft_s_stats": {
+    "median": 11.04,
+    "min": 10.02,
+    "max": 47.55,
+    "n": 3
+   },
+   "prefill_tps_stats": {
+    "median": 964.49,
+    "min": 192.69,
+    "max": 987.72,
+    "n": 3
+   },
+   "decode_tps_stats": {
+    "median": 8.58,
+    "min": 8.41,
+    "max": 9.52,
+    "n": 3
+   },
+   "wall_s_stats": {
+    "median": 40.76,
+    "min": 40.35,
+    "max": 74.33,
+    "n": 3
+   }
+  }
+ ],
+ "requests_total": 13
+}

@@ -1,0 +1,21 @@
+[S0] pre-arm gates:
+GATE ok: MemAvailable 89.0 GiB (>= 67)
+[S0] h2d pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.13 GB/s
+[S0] server.py pid 1281535, waiting for /health (max 900s)
+[S0] ready, engine pid 1282044
+  p1k rep0 ttft=6.666 prefill=167.27 decode=32.5 err=None
+  p1k rep1 ttft=0.168 prefill=6636.9 decode=33.09 err=None
+  p1k rep2 ttft=0.16 prefill=6968.75 decode=33.46 err=None
+  p4k rep0 ttft=9.129 prefill=451.2 decode=32.2 err=None
+  p4k rep1 ttft=0.164 prefill=25115.85 decode=33.08 err=None
+  p4k rep2 ttft=0.163 prefill=25269.94 decode=32.37 err=None
+  p12k rep0 ttft=20.372 prefill=605.44 decode=33.96 err=None
+  p12k rep1 ttft=0.179 prefill=68905.03 decode=34.17 err=None
+  p12k rep2 ttft=0.184 prefill=67032.61 decode=32.69 err=None
+  prefix turn1 ttft=19.115 prefill=479.36 prompt=9163 err=None
+  prefix turn2 ttft=5.817 prefill=1700.19 prompt=9890 err=None
+  prefix turn3 ttft=5.855 prefill=1812.64 prompt=10613 err=None
+[S0] bench rc=0
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+S0-2 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ab/arms/S0-2.logparse.json (align match=True)
+S0-2 done status=ok bench_rc=0 parse_rc=0 mem_avail_after=90.1GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.13 GB/s;dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s;] link_bad_samples=0 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ab/logs/S0-2.summary.txt

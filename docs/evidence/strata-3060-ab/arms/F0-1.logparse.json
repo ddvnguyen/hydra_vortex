@@ -1,0 +1,30 @@
+{
+ "arm": "F0-1",
+ "engine": "fork",
+ "log": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ab/logs/F0-1-engine.log",
+ "bench": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ab/arms/F0-1.bench.json",
+ "align": {
+  "requests": 1,
+  "print_timing_blocks": 0,
+  "match": false
+ },
+ "parsed": {
+  "timing": [],
+  "phase": {},
+  "experts": null,
+  "draft_lines": [],
+  "joined": [
+   {
+    "tag": "warmup",
+    "harness": {
+     "ttft_s": null,
+     "prefill_tps": null,
+     "decode_tps": null,
+     "prompt_tokens": null,
+     "completion_tokens": null,
+     "cached_tokens": null
+    }
+   }
+  ]
+ }
+}

@@ -1,0 +1,40 @@
+{
+ "cells": [
+  {
+   "id": "p1k",
+   "kind": "prefill_decode",
+   "file": "p1k.txt",
+   "target_tokens": 1024,
+   "actual_tokens": 1064
+  },
+  {
+   "id": "p4k",
+   "kind": "prefill_decode",
+   "file": "p4k.txt",
+   "target_tokens": 4096,
+   "actual_tokens": 4068
+  },
+  {
+   "id": "p12k",
+   "kind": "prefill_decode",
+   "file": "p12k.txt",
+   "target_tokens": 12288,
+   "actual_tokens": 12283
+  },
+  {
+   "id": "prefix",
+   "kind": "prefix",
+   "files": [
+    "prefix_turn1.txt",
+    "prefix_turn2.txt",
+    "prefix_turn3.txt"
+   ],
+   "target_tokens": 8192,
+   "actual_tokens": [
+    9112,
+    504,
+    484
+   ]
+  }
+ ]
+}
