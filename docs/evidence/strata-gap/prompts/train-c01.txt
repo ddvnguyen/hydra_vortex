@@ -1,0 +1,70 @@
+`tools/uploader/main.go` uploads 5 GB files by reading them fully into RAM (`os.ReadFile`, OOM-killed at 1.2 GB RSS on the small node). Rewrite with multipart upload (`s3manager.Uploader`, part size 64 MB, concurrency 4), progress callback logging every 256 MB, and resume-on-restart via a local `.partmap` JSON. Handle the `EntityTooSmall` edge case for the final part. Include the uploader struct and the retry wrapper around `UploadWithContext`.
+
+Full context pasted below — use it, do not ask for it again:
+`cat uploader/upload.go` (current, abridged):
+```
+// upload.go — package uploader (abridged)
+package uploader
+
+import ("context"; "sync"; "time")
+
+type Conn struct { ID int; Out chan []byte; done chan struct{} }
+
+func upload(c *Conn) {
+    // BUG: blocks on <-c.Out forever after client disconnect
+    for msg := range c.Out {
+        _ = msg
+    }
+}
+
+var cfg = struct{ Timeout time.Duration }{5 * time.Second}  // racy global
+
+var wg sync.WaitGroup
+func Serve(ctx context.Context, conns []*Conn) {
+    for _, c := range conns {
+        wg.Add(1)
+        go func(c *Conn) { defer wg.Done(); upload(c) }(c)
+    }
+    wg.Wait()
+}
+```
+$ go tool pprof -top goroutine.prof (abridged):
+flat flat% sum% cum cum% calls function
+  0.55  0.28%  61%    1.65  0.83%  4359 s3.Upload
+  9.77  4.88%  29%   29.31 14.65%  6802 json.Unmarshal
+ 10.16  5.08%  41%   30.48 15.24%  8842 netpollblock
+  1.58  0.79%  81%    4.74  2.37%  5765 memmove
+  8.67  4.33%  31%   26.01 13.00%  4457 memmove
+  0.21  0.10%   2%    0.63  0.32%  7538 growslice
+ 12.33  6.17%  23%   36.99 18.50%  7604 mallocgc
+  2.44  1.22%  49%    7.32  3.66%  5743 scang
+  5.61  2.81%  42%   16.83  8.42%  7048 growslice
+  4.03  2.02%  50%   12.09  6.04%  2863 json.Unmarshal
+  2.77  1.39%  85%    8.31  4.16%  7825 growslice
+  4.39  2.19%  80%   13.17  6.58%  4512 s3.Upload
+  1.42  0.71%  74%    4.26  2.13%  8803 s3.Upload
+  9.89  4.95%   6%   29.67 14.84%   393 netpollblock
+ 11.11  5.55%  21%   33.33 16.66%  7407 json.Unmarshal
+  9.65  4.83%  90%   28.95 14.48%   694 sync.Chan recv pump
+ 11.04  5.52%  68%   33.12 16.56%  4283 memmove
+ 12.59  6.29%  42%   37.77 18.88%   573 growslice
+  3.34  1.67%  86%   10.02  5.01%  1556 netpollblock
+ 13.04  6.52%  38%   39.12 19.56%  2240 sync.Chan recv pump
+ 10.94  5.47%  59%   32.82 16.41%  3121 scang
+   4.8  2.40%  30%   14.40  7.20%  4358 netpollblock
+  4.06  2.03%  28%   12.18  6.09%  1415 json.Unmarshal
+  5.85  2.92%  32%   17.55  8.77%  8142 sync.Chan recv pump
+  4.16  2.08%   3%   12.48  6.24%  4485 growslice
+  0.63  0.32%  54%    1.89  0.95%  4754 growslice
+  6.36  3.18%  61%   19.08  9.54%  8046 memmove
+  2.02  1.01%   1%    6.06  3.03%  2939 growslice
+  2.41  1.21%  78%    7.23  3.62%  5845 growslice
+  8.08  4.04%   9%   24.24 12.12%  6387 scang
+  8.34  4.17%  26%   25.02 12.51%  4729 s3.Upload
+  8.18  4.09%  33%   24.54 12.27%  3923 growslice
+  7.55  3.77%  60%   22.65 11.32%  3523 scang
+ 12.35  6.17%   8%   37.05 18.52%  7701 json.Unmarshal
+  5.59  2.79%  21%   16.77  8.38%  8565 netpollblock
+  5.28  2.64%  13%   15.84  7.92%  3476 growslice
+ 13.95  6.97%  48%   41.85 20.92%  1100 s3.Upload
+  8.72  4.36%  60%   26.16 13.08%   378 growslice

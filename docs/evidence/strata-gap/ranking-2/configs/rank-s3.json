@@ -1,0 +1,40 @@
+{
+ "exe": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/strata-research/strata-tee.sh",
+ "args": [
+  "--pack",
+  "/mnt/SSD/strata-models/packs/iq3_s",
+  "--native",
+  "/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+  "--expert-profile",
+  "/mnt/WorkDisk/strata/src-v0.1.29/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "/mnt/SSD/strata-models/mtp/rt",
+  "--max-context",
+  "16384"
+ ],
+ "cwd": "/mnt/WorkDisk/strata/src-v0.1.29",
+ "tokenizer": "/mnt/SSD/strata-models/packs/iq3_s/tokenizer",
+ "model_name": "gsq-rco-iq3_s",
+ "log": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/ranking-2/logs/S3-engine.log",
+ "lib_dirs": [
+  "/opt/software/cuda/13.2.2/targets/x86_64-linux/lib"
+ ],
+ "env": {
+  "STRATA_DECODE_TIMING": "1",
+  "STRATA_PREFILL_TIMING": "1",
+  "STRATA_STDOUT_LOG": "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/ranking-2/logs/S3.stdout.log"
+ },
+ "gpu": 1,
+ "host": "127.0.0.1",
+ "port": 8092
+}

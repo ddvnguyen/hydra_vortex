@@ -1,0 +1,121 @@
+My daughter's 8th birthday party (14 kids, backyard, Saturday) now forecasts all-day rain and the rental hall is booked. Brainstorm 8 indoor pivots using only a living room + garage, ranked by setup time, each with: activity, mess level (1–5), and what to buy tonight under $40 total. End with the 3-text sequence to send parents. Keep it playful and practical.
+
+Full context pasted below — use it, do not ask for it again:
+Constraints + price checks tonight (one store run, $40 total):
+item | price_$ | covers_kids | mess_1-5
+string lights | 4.16 | 13 | 5
+washable paint | 7.22 | 12 | 5
+cupcakes mix | 8.19 | 8 | 4
+stickers | 7.88 | 5 | 3
+stickers | 3.91 | 14 | 5
+juice boxes | 4.27 | 11 | 1
+juice boxes | 3.39 | 8 | 1
+balloons | 4.38 | 4 | 2
+string lights | 5.73 | 12 | 3
+washable paint | 3.46 | 13 | 3
+paper cups | 8.94 | 8 | 3
+paper cups | 8.04 | 14 | 5
+balloons | 8.18 | 7 | 3
+paper cups | 8.55 | 4 | 1
+masking tape | 5.71 | 6 | 3
+pizza dough kit | 7.56 | 14 | 5
+stickers | 3.31 | 12 | 4
+pizza dough kit | 2.54 | 11 | 5
+balloons | 7.96 | 8 | 4
+pizza dough kit | 4.8 | 4 | 3
+obstacle cones | 2.86 | 14 | 1
+balloons | 2.12 | 10 | 2
+washable paint | 6.38 | 5 | 4
+obstacle cones | 8.28 | 9 | 3
+obstacle cones | 2.57 | 9 | 1
+pizza dough kit | 3.57 | 11 | 3
+string lights | 2.83 | 8 | 3
+stickers | 7.78 | 11 | 2
+pizza dough kit | 3.64 | 12 | 2
+pizza dough kit | 3.22 | 9 | 3
+Space: living room 5x4m + garage; 14 kids age 6-9; rental hall booked; forecast: rain all day Sat.
+
+parent reply: 'Can I drop off early?'.
+parent reply: 'See you at 2!'.
+catalog: parachute mat $3.77 for 5 kids, mess 5.
+parent reply: 'Thanks for heads-up!'.
+catalog: craft kit $3.9 for 7 kids, mess 1.
+catalog: balloon pump $5.31 for 6 kids, mess 3.
+parent reply: 'See you at 2!'.
+parent reply: 'Can I drop off early?'.
+catalog: balloon pump $4.72 for 11 kids, mess 5.
+catalog: cupcake mix $5.23 for 14 kids, mess 1.
+parent reply: 'Can I drop off early?'.
+parent reply: 'Can I drop off early?'.
+parent reply: 'Allergy: nuts, noted?'.
+parent reply: 'Allergy: nuts, noted?'.
+catalog: cupcake mix $8.18 for 8 kids, mess 5.
+parent reply: 'Thanks for heads-up!'.
+parent reply: 'Allergy: nuts, noted?'.
+parent reply: 'See you at 2!'.
+parent reply: 'Thanks for heads-up!'.
+parent reply: 'Can I drop off early?'.
+parent reply: 'Allergy: nuts, noted?'.
+catalog: craft kit $10.67 for 14 kids, mess 5.
+parent reply: 'Can I drop off early?'.
+catalog: freeze dance cards $6.97 for 9 kids, mess 5.
+parent reply: 'See you at 2!'.
+parent reply: 'Can I drop off early?'.
+parent reply: 'Can I drop off early?'.
+catalog: balloon pump $7.63 for 10 kids, mess 2.
+catalog: freeze dance cards $11.7 for 8 kids, mess 5.
+parent reply: 'Thanks for heads-up!'.
+parent reply: 'See you at 2!'.
+catalog: balloon pump $4.29 for 6 kids, mess 4.
+catalog: parachute mat $10.95 for 11 kids, mess 5.
+catalog: balloon pump $3.14 for 6 kids, mess 2.
+parent reply: 'See you at 2!'.
+parent reply: 'Allergy: nuts, noted?'.
+parent reply: 'Can I drop off early?'.
+catalog: parachute mat $3.96 for 7 kids, mess 2.
+parent reply: 'See you at 2!'.
+parent reply: 'Can I drop off early?'.
+parent reply: 'Allergy: nuts, noted?'.
+parent reply: 'See you at 2!'.
+parent reply: 'Can I drop off early?'.
+catalog: parachute mat $3.97 for 10 kids, mess 4.
+parent reply: 'Thanks for heads-up!'.
+parent reply: 'Thanks for heads-up!'.
+parent reply: 'See you at 2!'.
+catalog: cupcake mix $10.15 for 8 kids, mess 1.
+parent reply: 'Can I drop off early?'.
+parent reply: 'See you at 2!'.
+parent reply: 'Allergy: nuts, noted?'.
+parent reply: 'Thanks for heads-up!'.
+catalog: craft kit $10.26 for 12 kids, mess 5.
+parent reply: 'Allergy: nuts, noted?'.
+catalog: balloon pump $5.7 for 11 kids, mess 2.
+parent reply: 'Thanks for heads-up!'.
+catalog: balloon pump $4.23 for 9 kids, mess 2.
+catalog: craft kit $8.95 for 14 kids, mess 2.
+parent reply: 'Allergy: nuts, noted?'.
+catalog: balloon pump $6.75 for 13 kids, mess 3.
+parent reply: 'Can I drop off early?'.
+catalog: freeze dance cards $10.55 for 8 kids, mess 4.
+parent reply: 'Can I drop off early?'.
+parent reply: 'Allergy: nuts, noted?'.
+parent reply: 'Thanks for heads-up!'.
+parent reply: 'Thanks for heads-up!'.
+parent reply: 'See you at 2!'.
+parent reply: 'See you at 2!'.
+parent reply: 'Thanks for heads-up!'.
+parent reply: 'Thanks for heads-up!'.
+catalog: craft kit $7.71 for 13 kids, mess 2.
+catalog: freeze dance cards $9.39 for 7 kids, mess 3.
+catalog: freeze dance cards $8.23 for 10 kids, mess 1.
+catalog: balloon pump $4.78 for 14 kids, mess 2.
+parent reply: 'Thanks for heads-up!'.
+catalog: balloon pump $4.99 for 14 kids, mess 5.
+parent reply: 'See you at 2!'.
+catalog: cupcake mix $9.57 for 13 kids, mess 2.
+parent reply: 'Allergy: nuts, noted?'.
+parent reply: 'Thanks for heads-up!'.
+catalog: cupcake mix $11.3 for 13 kids, mess 2.
+parent reply: 'See you at 2!'.
+parent reply: 'See you at 2!'.
+parent reply: 'See you at 2!'.

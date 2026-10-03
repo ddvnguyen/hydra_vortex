@@ -1,0 +1,104 @@
+Solve the 14-nurse roster puzzle below by pure reasoning — no code, show eliminations. Constraints: 7 days, 3 shifts (E/L/N), each shift needs 4 nurses; nobody works N then E next day; max 5 shifts per nurse per week; Ana and Bo never share a shift; nights must include at least one of {Cara, Dan, Eli}; Faye wants weekends off, Gus wants nights only. The pasted availability table marks 23 forbidden slots. Produce a full valid roster or prove none exists under one stated relaxation, showing each deduction (which rule fires, which slots it closes) in order. If multiple solutions exist, give one and name the freest remaining choice. End with the verification checklist against every rule.
+
+Full context pasted below — use it, do not ask for it again:
+pasted availability (X = forbidden):
+nurse | d1 | d2 | d3 | d4 | d5 | d6 | d7
+Ana | . | . | . | . | . | X | .
+Bo | . | . | . | . | X | . | .
+Cara | . | . | . | X | X | X | X
+Dan | . | . | . | . | . | . | .
+Eli | . | X | X | . | . | . | X
+Faye | . | . | . | . | . | . | .
+Gus | X | . | . | X | . | . | .
+Hana | X | X | . | . | . | . | .
+Ivo | X | . | X | . | . | X | .
+Jae | . | . | . | . | X | . | X
+Kira | . | X | X | X | . | X | .
+Lena | . | . | . | . | . | . | .
+Moe | . | . | . | . | X | . | X
+Nia | X | . | . | X | . | X | .
+constraint log from the last attempt (keep, all still binding):
+- N-then-E ban closes 11 slots (attempt rev 6).
+- weekend cover needs 8 distinct nurses (attempt rev 5).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 5).
+- N-then-E ban closes 11 slots (attempt rev 3).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 8).
+- weekend cover needs 8 distinct nurses (attempt rev 6).
+- weekend cover needs 8 distinct nurses (attempt rev 9).
+- N-then-E ban closes 11 slots (attempt rev 7).
+- N-then-E ban closes 11 slots (attempt rev 5).
+- N-then-E ban closes 11 slots (attempt rev 4).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 5).
+- N-then-E ban closes 11 slots (attempt rev 5).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 8).
+- Faye weekends-off moves 4 shifts to L (attempt rev 6).
+- weekend cover needs 8 distinct nurses (attempt rev 6).
+- weekend cover needs 8 distinct nurses (attempt rev 7).
+- Ana/Bo separation forces split weekends (attempt rev 9).
+- Faye weekends-off moves 4 shifts to L (attempt rev 3).
+- N-then-E ban closes 11 slots (attempt rev 3).
+- 5-shift cap binds on 6 nurses already (attempt rev 5).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 9).
+- 5-shift cap binds on 6 nurses already (attempt rev 7).
+- Ana/Bo separation forces split weekends (attempt rev 6).
+- Faye weekends-off moves 4 shifts to L (attempt rev 3).
+- 5-shift cap binds on 6 nurses already (attempt rev 3).
+- 5-shift cap binds on 6 nurses already (attempt rev 8).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 8).
+- Faye weekends-off moves 4 shifts to L (attempt rev 9).
+- weekend cover needs 8 distinct nurses (attempt rev 8).
+- N-then-E ban closes 11 slots (attempt rev 4).
+- N-then-E ban closes 11 slots (attempt rev 7).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 9).
+- weekend cover needs 8 distinct nurses (attempt rev 9).
+- Ana/Bo separation forces split weekends (attempt rev 3).
+- 5-shift cap binds on 6 nurses already (attempt rev 3).
+- 5-shift cap binds on 6 nurses already (attempt rev 7).
+- 5-shift cap binds on 6 nurses already (attempt rev 9).
+- N-then-E ban closes 11 slots (attempt rev 7).
+- weekend cover needs 8 distinct nurses (attempt rev 3).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 3).
+- Ana/Bo separation forces split weekends (attempt rev 5).
+- 5-shift cap binds on 6 nurses already (attempt rev 7).
+- 5-shift cap binds on 6 nurses already (attempt rev 8).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 7).
+- weekend cover needs 8 distinct nurses (attempt rev 5).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 8).
+- 5-shift cap binds on 6 nurses already (attempt rev 9).
+- nights pool = {Cara, Dan, Eli} + volunteers (attempt rev 3).
+- Ana/Bo separation forces split weekends (attempt rev 7).
+- Ana/Bo separation forces split weekends (attempt rev 3).
+- 5-shift cap binds on 6 nurses already (attempt rev 3).
+- weekend cover needs 8 distinct nurses (attempt rev 6).
+- weekend cover needs 8 distinct nurses (attempt rev 3).
+- Ana/Bo separation forces split weekends (attempt rev 7).
+- 5-shift cap binds on 6 nurses already (attempt rev 5).
+- Faye weekends-off moves 4 shifts to L (attempt rev 5).
+- 5-shift cap binds on 6 nurses already (attempt rev 5).
+- 5-shift cap binds on 6 nurses already (attempt rev 6).
+pasted availability (X = forbidden):
+nurse | d1 | d2 | d3 | d4 | d5 | d6 | d7
+Ana | . | . | . | . | X | X | .
+Bo | X | . | . | . | X | . | .
+Cara | . | . | X | . | . | . | .
+Dan | . | . | . | . | . | . | .
+Eli | . | . | . | . | . | X | .
+Faye | . | . | . | . | . | . | .
+Gus | . | . | X | X | X | . | .
+Hana | . | . | . | X | . | . | .
+constraint log from the last attempt (keep, all still binding):
+- 5-shift cap binds on 6 nurses already (attempt rev 9).
+pasted availability (X = forbidden):
+nurse | d1 | d2 | d3 | d4 | d5 | d6 | d7
+Ana | . | . | . | . | . | X | X
+Bo | . | . | X | . | . | . | .
+Cara | . | X | . | . | . | . | .
+Dan | . | . | . | X | X | . | .
+Eli | . | X | . | . | . | X | .
+Faye | . | . | . | . | . | . | .
+Gus | . | . | . | X | . | . | .
+Hana | . | X | . | . | . | . | .
+constraint log from the last attempt (keep, all still binding):
+- weekend cover needs 8 distinct nurses (attempt rev 3).
+pasted availability (X = forbidden):
+nurse | d1 | d2 | d3 | d4 | d5 | d6 | d7

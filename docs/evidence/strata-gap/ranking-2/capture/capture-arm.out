@@ -1,0 +1,37 @@
+2026-10-03T12:50:22+07:00
+[capture16] pre-arm gates:
+GATE ok: MemAvailable 71.4 GiB (>= 67)
+[capture16] h2d pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+[capture16] server.py pid 1133403, waiting for /health (max 900s)
+[capture16] ready, engine pid 1133417
+[capture16] startup facts:
+    strata generate: profile /mnt/WorkDisk/strata/src-v0.1.29/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+    strata generate: expert cache auto: 5.96 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 2041 slots
+    strata generate: expert cache 2638 slots, 5.06 GiB of VRAM; policy is
+    strata generate: pre-filled 2638 of 2638 slots from the profile; slot 0 verified
+    strata serve: prompt chunk auto: 8192 tokens
+    strata serve: the prompt path borrows 2313 cache slots (4.43 GiB)
+conv 1 train-c01: prompt_tokens 1950, completion 256, reused 0, read 1950, trace +9461760 bytes (~2240 tokens)
+conv 2 train-c02: prompt_tokens 1946, completion 256, reused 0, read 1946, trace +9533568 bytes (~2257 tokens)
+conv 3 train-c03: prompt_tokens 1915, completion 256, reused 0, read 1915, trace +9305472 bytes (~2203 tokens)
+conv 4 train-c04: prompt_tokens 1943, completion 256, reused 0, read 1943, trace +9491328 bytes (~2247 tokens)
+conv 5 train-c05: prompt_tokens 1912, completion 256, reused 0, read 1912, trace +9313920 bytes (~2205 tokens)
+conv 6 train-c06: prompt_tokens 1925, completion 256, reused 0, read 1925, trace +9292800 bytes (~2200 tokens)
+conv 7 train-c07: prompt_tokens 1920, completion 256, reused 0, read 1920, trace +9373056 bytes (~2219 tokens)
+conv 8 train-c08: prompt_tokens 1942, completion 256, reused 0, read 1942, trace +9465984 bytes (~2241 tokens)
+conv 9 train-g01: prompt_tokens 1950, completion 256, reused 0, read 1950, trace +9495552 bytes (~2248 tokens)
+conv 10 train-g02: prompt_tokens 1939, completion 256, reused 0, read 1939, trace +9423744 bytes (~2231 tokens)
+conv 11 train-g03: prompt_tokens 1946, completion 256, reused 0, read 1946, trace +9529344 bytes (~2256 tokens)
+conv 12 train-g04: prompt_tokens 1945, completion 256, reused 0, read 1945, trace +9415296 bytes (~2229 tokens)
+conv 13 train-g05: prompt_tokens 1944, completion 256, reused 0, read 1944, trace +9381504 bytes (~2221 tokens)
+conv 14 train-g06: prompt_tokens 1944, completion 256, reused 0, read 1944, trace +9465984 bytes (~2241 tokens)
+conv 15 train-g07: prompt_tokens 1939, completion 256, reused 0, read 1939, trace +9474432 bytes (~2243 tokens)
+conv 16 train-g08: prompt_tokens 1935, completion 256, reused 0, read 1935, trace +9499776 bytes (~2249 tokens)
+capture16 ok (16/16 ok, 16/16 prefix_ok) -> /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/ranking-2/capture/capture16.json
+[capture16] convo rc=0
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+[capture16] trace: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/ranking2/trace.bin size=150923520 bytes sha256=699ea0acd6d8b1f1aa231d0503b8c429720ab36b6b685e012b1263495fbe8242
+trace records=1715040 tokens~=35730 ids=17150400 distinct(layer,expert)=24368 bytes=150923520
+capture16 done status=ok convo_rc=0 trace_rc=0 trace_bytes=150923520 mem_avail_after=85.3GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s;dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;] link_bad_samples=0 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/ranking-2/capture/capture-summary.txt
+CAPTURE_EXIT=0
+2026-10-03T13:09:31+07:00
