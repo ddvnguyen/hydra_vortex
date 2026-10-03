@@ -1,0 +1,131 @@
+Audit `ffi/src/decode.rs`: an `unsafe` block at line 112 does `slice::from_raw_parts(ptr, len)` where `len` comes from a u16 network field unchecked — fuzzer input `ff ff 00 ...` panics with `out of bounds`. Write the bounds-check wrapper (`checked_slice(ptr, len, avail) -> Result`), wire it into the decode path, add a `cargo-fuzz` seed regression test with that exact prefix, and document the safety invariant in a `// SAFETY:` comment. Keep the hot path branch-free where possible.
+
+Full context pasted below — use it, do not ask for it again:
+`cat ffi/src/lib.rs` (current, abridged):
+```
+// ffi.rs — current file content (abridged, 304 lines total)
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+const CAP: usize = 11661;
+const MAX_ATTEMPTS: u32 = 5;
+
+pub struct CheckedSlice {
+    tx: mpsc::Sender<Vec<u8>>,
+    inner: Arc<Mutex<BatchState>>,
+}
+
+struct BatchState {
+    buf: Vec<Vec<u8>>,
+    dropped: u64,
+    last_flush: Option<Instant>,
+}
+
+impl CheckedSlice {
+    pub fn new() -> (Self, mpsc::Receiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::channel(CAP);
+        let s = CheckedSlice { tx, inner: Arc::new(Mutex::new(BatchState {
+            buf: Vec::new(), dropped: 0, last_flush: None })) }};
+        (s, rx)
+    }
+
+    pub async fn decode_checked(&self, msg: Vec<u8>) -> Result<(), SendError> {
+        let mut attempt = 0u32;
+        loop {
+            match self.tx.try_send(msg.clone()) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Full(m)) => {
+                    attempt += 1;
+                    if attempt >= MAX_ATTEMPTS { return Err(SendError::Overload); }
+                    let backoff = Duration::from_millis(50 * (1 << attempt));
+                    tokio::time::sleep(backoff).await;
+                    let _ = m;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => return Err(SendError::Closed),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn retry_eventually_sends() {
+        let (ffi, _rx) = CheckedSlice::new();
+        // NOTE: hangs on current code — see worker.rs:142
+        ffi.decode_checked(vec![1, 2, 3]).await.unwrap();
+    }
+}
+```
+$ cargo test -p ffi 2>&1 | tail -157:
+test session: ffi
+test frame::test_shutdown_0 ... ok (65.7ms)
+test queue::test_edge_1 ... ok (38.7ms)
+test sync::test_edge_2 ... ok (4.8ms)
+test queue::test_ok_path_3 ... FAILED (16.2ms)
+test retry::test_shutdown_4 ... ok (11.1ms)
+test queue::test_retry_5 ... ok (81.3ms)
+test ingest::test_parse_6 ... ok (73.3ms)
+test batch::test_parse_7 ... ok (68.5ms)
+test auth::test_parse_8 ... ok (21.3ms)
+test queue::test_ok_path_9 ... ok (36.2ms)
+test ingest::test_edge_10 ... ok (33.5ms)
+test store::test_edge_11 ... ok (3.5ms)
+test queue::test_drain_12 ... ok (39.3ms)
+test frame::test_parse_13 ... ok (24.0ms)
+test parse::test_shutdown_14 ... ok (42.5ms)
+test sync::test_shutdown_15 ... ok (4.5ms)
+test flush::test_edge_16 ... ok (5.5ms)
+test flush::test_shutdown_17 ... ok (32.5ms)
+test queue::test_edge_18 ... ok (50.4ms)
+test parse::test_edge_19 ... ok (45.6ms)
+test cache::test_retry_20 ... ok (21.1ms)
+test ingest::test_parse_21 ... ok (35.4ms)
+test flush::test_edge_22 ... ok (16.9ms)
+test batch::test_shutdown_23 ... ok (51.7ms)
+test queue::test_shutdown_24 ... ok (67.8ms)
+test store::test_parse_25 ... ok (32.1ms)
+test parse::test_roundtrip_26 ... ok (5.3ms)
+test net::test_roundtrip_27 ... ok (59.0ms)
+test net::test_roundtrip_28 ... ok (12.9ms)
+test retry::test_edge_29 ... ok (44.2ms)
+test cache::test_retry_30 ... ok (14.2ms)
+test ingest::test_shutdown_31 ... ok (62.4ms)
+test queue::test_shutdown_32 ... ok (9.5ms)
+test net::test_parse_33 ... ok (79.3ms)
+test sync::test_retry_34 ... ok (1.8ms)
+test auth::test_retry_35 ... ok (36.2ms)
+test queue::test_shutdown_36 ... ok (10.4ms)
+test batch::test_shutdown_37 ... ok (21.0ms)
+test flush::test_retry_38 ... ok (8.0ms)
+test parse::test_ok_path_39 ... ok (78.1ms)
+test parse::test_retry_40 ... ok (50.6ms)
+test batch::test_roundtrip_41 ... ok (71.7ms)
+test ingest::test_retry_42 ... ok (12.9ms)
+test net::test_drain_43 ... ok (25.7ms)
+test cache::test_drain_44 ... ok (7.3ms)
+test retry::test_ok_path_45 ... ok (43.3ms)
+test flush::test_drain_46 ... ok (63.9ms)
+test store::test_shutdown_47 ... ok (8.9ms)
+test cache::test_ok_path_48 ... ok (38.5ms)
+test net::test_parse_49 ... ok (10.2ms)
+test parse::test_shutdown_50 ... ok (57.5ms)
+test queue::test_retry_51 ... ok (27.4ms)
+test ingest::test_retry_52 ... ok (16.4ms)
+test flush::test_drain_53 ... ok (33.0ms)
+test net::test_shutdown_54 ... ok (14.5ms)
+test retry::test_parse_55 ... ok (34.4ms)
+test cache::test_parse_56 ... ok (24.8ms)
+test flush::test_edge_57 ... ok (48.4ms)
+test batch::test_roundtrip_58 ... ok (38.7ms)
+test flush::test_retry_59 ... ok (47.3ms)
+test ingest::test_drain_60 ... ok (40.3ms)
+test net::test_parse_61 ... ok (30.0ms)
+test sync::test_retry_62 ... ok (5.2ms)
+test queue::test_roundtrip_63 ... ok (10.9ms)
+test frame::test_roundtrip_64 ... ok (69.7ms)
+test retry::test_parse_65 ... ok (50.0ms)
+test parse::test_edge_66 ... ok (16.8ms)

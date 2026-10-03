@@ -1,0 +1,103 @@
+Explain the US Electoral College to a smart newcomer in ~400 words: how 538 votes map to states, what "winner-take-all" does to campaign geography, two real elections where the popular and electoral winners split, and one reform proposal with its main tradeoff. Neutral tone, no partisan framing, end with a 3-line recap.
+
+Full context pasted below — use it, do not ask for it again:
+Electoral vote table (for reference while you explain):
+CA | 54 electors | district split (ME/NE)
+TX | 40 electors | winner-take-all
+FL | 30 electors | winner-take-all
+NY | 28 electors | winner-take-all
+PA | 19 electors | winner-take-all
+IL | 19 electors | winner-take-all
+OH | 17 electors | winner-take-all
+GA | 16 electors | winner-take-all
+NC | 16 electors | winner-take-all
+MI | 15 electors | district split (ME/NE)
+NJ | 14 electors | district split (ME/NE)
+VA | 13 electors | winner-take-all
+WA | 12 electors | winner-take-all
+AZ | 11 electors | winner-take-all
+MA | 11 electors | winner-take-all
+TN | 11 electors | winner-take-all
+IN | 11 electors | winner-take-all
+MD | 10 electors | winner-take-all
+MO | 10 electors | district split (ME/NE)
+MN | 10 electors | winner-take-all
+WI | 10 electors | winner-take-all
+CO | 10 electors | district split (ME/NE)
+SC | 9 electors | winner-take-all
+AL | 9 electors | winner-take-all
+LA | 8 electors | winner-take-all
+KY | 8 electors | winner-take-all
+OR | 8 electors | winner-take-all
+OK | 7 electors | winner-take-all
+CT | 7 electors | district split (ME/NE)
+UT | 6 electors | district split (ME/NE)
+IA | 6 electors | district split (ME/NE)
+NV | 6 electors | winner-take-all
+KS | 6 electors | winner-take-all
+AR | 6 electors | winner-take-all
+MS | 6 electors | winner-take-all
+NM | 5 electors | winner-take-all
+NE | 5 electors | winner-take-all
+ID | 4 electors | district split (ME/NE)
+WV | 4 electors | district split (ME/NE)
+HI | 4 electors | district split (ME/NE)
+NH | 4 electors | district split (ME/NE)
+ME | 4 electors | winner-take-all
+MT | 4 electors | winner-take-all
+RI | 4 electors | winner-take-all
+DE | 3 electors | district split (ME/NE)
+SD | 3 electors | district split (ME/NE)
+ND | 3 electors | winner-take-all
+AK | 3 electors | winner-take-all
+VT | 3 electors | winner-take-all
+WY | 3 electors | winner-take-all
+DC | 3 electors | winner-take-all
+Split elections: 2000, 2016 (also 1876, 1888); reform: National Popular Vote compact (adopted states total 195 of 270 needed).
+
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+reform note: direct vote + runoff — tradeoff: third-party spoilers.
+NPV compact: signed 2007-2023; total short of 270.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+GA | 16 EVs | 2000: Bush margin 1.0% (PA-2016).
+reform note: direct vote + runoff — tradeoff: third-party spoilers.
+reform note: direct vote + runoff — tradeoff: third-party spoilers.
+reform note: district plan (ME/NE model) — tradeoff: small-state weight.
+NPV compact: signed 2007-2023; total short of 270.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+ID | 4 EVs | 2000: Bush margin 0.2% (MI-2016).
+NPV compact: signed 2007-2023; total short of 270.
+reform note: keep college, auto-registration — tradeoff: small-state weight.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+PA | 19 EVs | 2016: Trump margin 0.5% (NM-2000).
+IN | 11 EVs | 2016: Trump margin 0.5% (NM-2000).
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+reform note: direct vote + runoff — tradeoff: small-state weight.
+reform note: direct vote + runoff — tradeoff: recount scope.
+CT | 7 EVs | 2000: Gore margin 5%+.
+NH | 4 EVs | 2016: Trump margin 1.0% (PA-2016).
+reform note: district plan (ME/NE model) — tradeoff: recount scope.
+reform note: proportional plan — tradeoff: third-party spoilers.
+NPV compact: signed 2007-2023; total short of 270.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+TX | 40 EVs | 2000: Bush margin 0.5% (NM-2000).
+NPV compact: signed 2007-2023; total short of 270.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+AR | 6 EVs | 2000: Gore margin 0.5% (NM-2000).
+reform note: direct vote + runoff — tradeoff: third-party spoilers.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+ME | 4 EVs | 2016: Trump margin 537 votes (FL-2000).
+CA | 54 EVs | 2000: Gore margin 537 votes (FL-2000).
+NPV compact: signed 2007-2023; total short of 270.
+SC | 9 EVs | 2016: Trump margin 1.0% (PA-2016).
+AL | 9 EVs | 2000: Gore margin 1.0% (PA-2016).
+NPV compact: signed 2007-2023; total short of 270.
+reform note: proportional plan — tradeoff: third-party spoilers.
+reform note: direct vote + runoff — tradeoff: small-state weight.
+NPV compact: CA NY IL NJ WA MA MD VT HI RI CT DC CO NM DE OR.
+UT | 6 EVs | 2000: Gore margin 537 votes (FL-2000).
+NPV compact: signed 2007-2023; total short of 270.

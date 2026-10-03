@@ -1,0 +1,46 @@
+CI job `e2e-postgres` flakes ~1/8 runs: `AssertionError: 199 != 200 rows` in `tests/test_sync.py::test_replay`, always on the `pg14` shard, never local. `git log --oneline -8` shows suspect `a3f1c2 absorb retries into batch`. Give a bisect plan (`git bisect start/run` with the flaky-test wrapper loop of 6 repeats), two hypotheses (uncommitted-read vs dedupe-key race), the one-query instrumentation (`SELECT count(*), count(DISTINCT idem_key) FROM inbox`) that separates them, and the fix shape for the likelier one.
+
+Full context pasted below — use it, do not ask for it again:
+$ journalctl -u gateway --since '02:00' (abridged):
+Aug 20 04:59:48 gw-01 gateway[4670]: route_resolve: table=NULL, dropping batch
+Aug 23 01:47:19 gw-01 gateway[4012]: tls handshake timeout after 3000ms
+Aug 24 04:13:50 gw-02 gateway[4407]: tls handshake timeout after 3000ms
+Aug 25 05:38:35 gw-02 gateway[4395]: flusher lag 2.4s, queue 8192/8192
+Aug 21 05:49:41 gw-01 gateway[4044]: tls handshake timeout after 3000ms
+Aug 24 04:32:29 gw-03 gateway[4999]: segfault at 7f3ca60869d5 ip 00007f3c2576c4d5 in librouter.so
+Aug 27 01:46:53 gw-01 gateway[4795]: tls handshake timeout after 3000ms
+Aug 25 05:56:36 gw-02 gateway[4831]: route_resolve: table=NULL, dropping batch
+Aug 25 02:46:19 gw-03 gateway[4915]: flusher lag 2.4s, queue 8192/8192
+Aug 28 01:10:17 gw-03 gateway[4211]: tls handshake timeout after 3000ms
+Aug 21 02:57:55 gw-02 gateway[4338]: flusher lag 2.4s, queue 8192/8192
+Aug 22 03:32:37 gw-01 gateway[4427]: tls handshake timeout after 3000ms
+Aug 27 03:59:55 gw-01 gateway[4002]: tls handshake timeout after 3000ms
+Aug 22 04:40:40 gw-02 gateway[4808]: route_resolve: table=NULL, dropping batch
+Aug 28 05:24:26 gw-03 gateway[4844]: tls handshake timeout after 3000ms
+Aug 22 01:29:24 gw-02 gateway[4058]: tls handshake timeout after 3000ms
+Aug 23 01:35:10 gw-03 gateway[4629]: flusher lag 2.4s, queue 8192/8192
+Aug 24 04:32:17 gw-02 gateway[4858]: flusher lag 2.4s, queue 8192/8192
+Aug 24 02:25:35 gw-03 gateway[4593]: tls handshake timeout after 3000ms
+Aug 24 04:19:16 gw-01 gateway[4780]: flusher lag 2.4s, queue 8192/8192
+Aug 24 01:35:15 gw-02 gateway[4058]: segfault at 7f3c6db18a56 ip 00007f3cd3fcd347 in librouter.so
+Aug 20 04:51:15 gw-03 gateway[4116]: segfault at 7f3c7abfe30f ip 00007f3c116fa303 in librouter.so
+Aug 27 02:13:33 gw-03 gateway[4689]: route_resolve: table=NULL, dropping batch
+Aug 27 03:56:25 gw-01 gateway[4269]: tls handshake timeout after 3000ms
+Aug 27 03:29:51 gw-03 gateway[4107]: route_resolve: table=NULL, dropping batch
+Aug 27 02:54:40 gw-03 gateway[4455]: tls handshake timeout after 3000ms
+Aug 20 03:41:10 gw-02 gateway[4776]: segfault at 7f3ccc76704a ip 00007f3ccbf03a05 in librouter.so
+Aug 25 05:51:41 gw-01 gateway[4672]: tls handshake timeout after 3000ms
+Aug 24 04:39:58 gw-03 gateway[4770]: route_resolve: table=NULL, dropping batch
+Aug 21 01:46:25 gw-02 gateway[4322]: route_resolve: table=NULL, dropping batch
+Aug 22 02:39:35 gw-03 gateway[4847]: tls handshake timeout after 3000ms
+Aug 28 04:23:16 gw-01 gateway[4175]: tls handshake timeout after 3000ms
+Aug 20 01:33:20 gw-03 gateway[4779]: flusher lag 2.4s, queue 8192/8192
+Aug 25 02:53:52 gw-01 gateway[4764]: segfault at 7f3ca952a0a4 ip 00007f3c2eda7a6e in librouter.so
+Aug 20 01:21:39 gw-01 gateway[4381]: tls handshake timeout after 3000ms
+Aug 21 02:15:48 gw-03 gateway[4152]: route_resolve: table=NULL, dropping batch
+Aug 21 04:15:20 gw-02 gateway[4699]: route_resolve: table=NULL, dropping batch
+Aug 20 02:45:59 gw-01 gateway[4229]: flusher lag 2.4s, queue 8192/8192
+Aug 20 04:59:19 gw-03 gateway[4524]: tls handshake timeout after 3000ms
+Aug 23 01:54:25 gw-02 gateway[4756]: tls handshake timeout after 3000ms
+Aug 24 03:11:26 gw-01 gateway[4838]: flusher lag 2.4s, queue 8192/8192
+Aug 22 05:18:54 gw-03 gateway[4175]: flusher lag 2.4s, queue 8192/8192

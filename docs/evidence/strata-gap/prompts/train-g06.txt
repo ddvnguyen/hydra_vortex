@@ -1,0 +1,67 @@
+Rewrite this pasted cover letter (178 words, junior designer, too formal, three "I am writing to" openers, no portfolio link above the fold) into a punchier 140-word version: first line names the role + one shipped project, cut all throat-clearing, keep one sincere line about the studio's recent exhibit, end with portfolio URL + availability. Then list the 5 edits you made as bullets. Paste: [letter text follows in the real run — "Dear Hiring Manager, I am writing to apply..."].
+
+Full context pasted below — use it, do not ask for it again:
+The cover letter (full text, 178 words):
+Dear Hiring Manager, I am writing to apply for the Junior Designer role. I am writing to express my strong interest in your studio. I am writing to highlight my three years of freelance work including a rebrand for a local bakery, packaging for a tea startup, and posters for a music festival. I admire your studio greatly. I work hard and learn fast. I know Figma, Illustrator, and basic motion. I would love to discuss my application. Sincerely, J. — portfolio: j-designs.example.com (buried at the very bottom).
+studio note 1: recent exhibit 'Night Markets' drew 1368 visitors; role wants 'systems thinking'.
+studio note 2: recent exhibit 'Paper Cities' drew 1936 visitors; role wants 'web basics'.
+studio note 3: recent exhibit 'Soft Machines' drew 294 visitors; role wants 'web basics'.
+studio note 4: recent exhibit 'Night Markets' drew 1892 visitors; role wants 'web basics'.
+studio note 5: recent exhibit 'Soft Machines' drew 1808 visitors; role wants 'motion reel'.
+studio note 6: recent exhibit 'Soft Machines' drew 844 visitors; role wants 'systems thinking'.
+studio note 7: recent exhibit 'Soft Machines' drew 579 visitors; role wants 'systems thinking'.
+studio note 8: recent exhibit 'Paper Cities' drew 605 visitors; role wants 'systems thinking'.
+studio note 9: recent exhibit 'Night Markets' drew 1659 visitors; role wants 'print craft'.
+studio note 10: recent exhibit 'Night Markets' drew 229 visitors; role wants 'web basics'.
+studio note 11: recent exhibit 'Paper Cities' drew 1165 visitors; role wants 'print craft'.
+studio note 12: recent exhibit 'Night Markets' drew 421 visitors; role wants 'motion reel'.
+studio note 13: recent exhibit 'Night Markets' drew 1402 visitors; role wants 'motion reel'.
+studio note 14: recent exhibit 'Paper Cities' drew 916 visitors; role wants 'web basics'.
+studio note 15: recent exhibit 'Paper Cities' drew 1404 visitors; role wants 'web basics'.
+studio note 16: recent exhibit 'Soft Machines' drew 966 visitors; role wants 'systems thinking'.
+studio note 17: recent exhibit 'Soft Machines' drew 437 visitors; role wants 'print craft'.
+studio note 18: recent exhibit 'Soft Machines' drew 1203 visitors; role wants 'web basics'.
+studio note 19: recent exhibit 'Night Markets' drew 668 visitors; role wants 'web basics'.
+studio note 20: recent exhibit 'Night Markets' drew 1829 visitors; role wants 'web basics'.
+studio note 21: recent exhibit 'Paper Cities' drew 628 visitors; role wants 'print craft'.
+studio note 22: recent exhibit 'Night Markets' drew 1223 visitors; role wants 'web basics'.
+studio note 23: recent exhibit 'Night Markets' drew 1241 visitors; role wants 'motion reel'.
+studio note 24: recent exhibit 'Soft Machines' drew 1539 visitors; role wants 'print craft'.
+studio note 25: recent exhibit 'Night Markets' drew 1631 visitors; role wants 'print craft'.
+studio note 26: recent exhibit 'Paper Cities' drew 512 visitors; role wants 'web basics'.
+studio note 27: recent exhibit 'Night Markets' drew 875 visitors; role wants 'web basics'.
+studio note 28: recent exhibit 'Soft Machines' drew 926 visitors; role wants 'motion reel'.
+studio note 29: recent exhibit 'Paper Cities' drew 632 visitors; role wants 'print craft'.
+studio note 30: recent exhibit 'Paper Cities' drew 858 visitors; role wants 'web basics'.
+studio note 31: recent exhibit 'Paper Cities' drew 500 visitors; role wants 'motion reel'.
+studio note 32: recent exhibit 'Paper Cities' drew 397 visitors; role wants 'web basics'.
+studio note 33: recent exhibit 'Night Markets' drew 1755 visitors; role wants 'web basics'.
+studio note 34: recent exhibit 'Soft Machines' drew 1854 visitors; role wants 'print craft'.
+studio note 35: recent exhibit 'Soft Machines' drew 1432 visitors; role wants 'web basics'.
+studio note 36: recent exhibit 'Paper Cities' drew 371 visitors; role wants 'web basics'.
+studio note 37: recent exhibit 'Paper Cities' drew 367 visitors; role wants 'web basics'.
+studio note 38: recent exhibit 'Night Markets' drew 381 visitors; role wants 'systems thinking'.
+studio note 39: recent exhibit 'Paper Cities' drew 437 visitors; role wants 'motion reel'.
+studio note 40: recent exhibit 'Soft Machines' drew 1348 visitors; role wants 'motion reel'.
+studio note 41: recent exhibit 'Paper Cities' drew 943 visitors; role wants 'motion reel'.
+studio note 42: recent exhibit 'Paper Cities' drew 1371 visitors; role wants 'print craft'.
+studio note 43: recent exhibit 'Paper Cities' drew 1456 visitors; role wants 'motion reel'.
+studio note 44: recent exhibit 'Soft Machines' drew 954 visitors; role wants 'print craft'.
+studio note 45: recent exhibit 'Night Markets' drew 1577 visitors; role wants 'motion reel'.
+studio note 46: recent exhibit 'Soft Machines' drew 1771 visitors; role wants 'systems thinking'.
+studio note 47: recent exhibit 'Night Markets' drew 1695 visitors; role wants 'web basics'.
+studio note 48: recent exhibit 'Soft Machines' drew 1719 visitors; role wants 'web basics'.
+studio note 49: recent exhibit 'Night Markets' drew 981 visitors; role wants 'motion reel'.
+studio note 50: recent exhibit 'Soft Machines' drew 996 visitors; role wants 'motion reel'.
+studio note 51: recent exhibit 'Night Markets' drew 1212 visitors; role wants 'motion reel'.
+studio note 52: recent exhibit 'Paper Cities' drew 281 visitors; role wants 'web basics'.
+studio note 53: recent exhibit 'Night Markets' drew 990 visitors; role wants 'print craft'.
+studio note 54: recent exhibit 'Paper Cities' drew 1062 visitors; role wants 'print craft'.
+studio note 55: recent exhibit 'Paper Cities' drew 674 visitors; role wants 'systems thinking'.
+studio note 56: recent exhibit 'Soft Machines' drew 1476 visitors; role wants 'print craft'.
+studio note 57: recent exhibit 'Soft Machines' drew 559 visitors; role wants 'systems thinking'.
+studio note 58: recent exhibit 'Soft Machines' drew 1706 visitors; role wants 'systems thinking'.
+studio note 59: recent exhibit 'Soft Machines' drew 853 visitors; role wants 'web basics'.
+studio note 60: recent exhibit 'Soft Machines' drew 1013 visitors; role wants 'systems thinking'.
+studio note 61: recent exhibit 'Soft Machines' drew 535 visitors; role wants 'motion reel'.
+studio note 62: recent exhibit 'Soft Machines' drew 962 visitors; role wants 'print craft'.

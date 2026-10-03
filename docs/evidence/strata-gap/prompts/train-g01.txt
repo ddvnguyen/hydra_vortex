@@ -1,0 +1,89 @@
+I have 25 min/day, 90 days, goal: hold a 5-minute café conversation in Spanish. Build the plan: daily split (input/speaking/review minutes), the 300-word starter list strategy (not the list itself), when to start italki (which week + session length), two plateau-breakers for week 6, and a weekly self-test with pass/fail bar. Include what to stop doing (Duolingo streak-chasing) in 2 lines.
+
+Full context pasted below — use it, do not ask for it again:
+Constraints + resource shortlist (25 min/day, 90 days):
+resource | min_per_day | cost | speaking?
+journal prompts | 10 | $8/session | yes
+Anki core deck | 12 | free | yes
+italki tutor | 10 | free | yes
+Anki core deck | 8 | $12/mo | yes
+shadowing drills | 14 | $12/mo | yes
+journal prompts | 18 | free | no
+graded reader | 17 | free | yes
+podcast episode | 6 | $12/mo | yes
+italki tutor | 13 | free | yes
+journal prompts | 8 | free | yes
+podcast episode | 6 | $12/mo | yes
+graded reader | 15 | $12/mo | yes
+podcast episode | 5 | free | no
+italki tutor | 16 | $12/mo | no
+podcast episode | 8 | free | yes
+journal prompts | 11 | free | no
+podcast episode | 17 | free | yes
+shadowing drills | 7 | $8/session | no
+italki tutor | 13 | free | yes
+graded reader | 20 | free | no
+self-test W1: 32-word monologue, pass = 4 min without switching to English.
+self-test W2: 50-word monologue, pass = 5 min without switching to English.
+self-test W3: 40-word monologue, pass = 4 min without switching to English.
+self-test W4: 38-word monologue, pass = 5 min without switching to English.
+self-test W5: 49-word monologue, pass = 4 min without switching to English.
+self-test W6: 32-word monologue, pass = 4 min without switching to English.
+self-test W7: 45-word monologue, pass = 3 min without switching to English.
+self-test W8: 53-word monologue, pass = 3 min without switching to English.
+self-test W9: 29-word monologue, pass = 5 min without switching to English.
+self-test W10: 38-word monologue, pass = 3 min without switching to English.
+self-test W11: 60-word monologue, pass = 3 min without switching to English.
+self-test W12: 29-word monologue, pass = 4 min without switching to English.
+self-test W1: 23-word monologue, pass = 5 min without switching to English.
+self-test W2: 25-word monologue, pass = 3 min without switching to English.
+self-test W3: 58-word monologue, pass = 3 min without switching to English.
+self-test W4: 51-word monologue, pass = 5 min without switching to English.
+self-test W5: 47-word monologue, pass = 3 min without switching to English.
+self-test W6: 51-word monologue, pass = 5 min without switching to English.
+self-test W7: 38-word monologue, pass = 4 min without switching to English.
+self-test W8: 24-word monologue, pass = 3 min without switching to English.
+self-test W9: 58-word monologue, pass = 3 min without switching to English.
+self-test W10: 36-word monologue, pass = 5 min without switching to English.
+self-test W11: 48-word monologue, pass = 5 min without switching to English.
+self-test W12: 31-word monologue, pass = 4 min without switching to English.
+self-test W1: 59-word monologue, pass = 5 min without switching to English.
+self-test W2: 31-word monologue, pass = 5 min without switching to English.
+self-test W3: 53-word monologue, pass = 5 min without switching to English.
+self-test W4: 23-word monologue, pass = 5 min without switching to English.
+self-test W5: 44-word monologue, pass = 3 min without switching to English.
+self-test W6: 25-word monologue, pass = 5 min without switching to English.
+self-test W7: 23-word monologue, pass = 5 min without switching to English.
+self-test W8: 53-word monologue, pass = 3 min without switching to English.
+self-test W9: 57-word monologue, pass = 5 min without switching to English.
+self-test W10: 39-word monologue, pass = 4 min without switching to English.
+self-test W11: 42-word monologue, pass = 4 min without switching to English.
+self-test W12: 50-word monologue, pass = 5 min without switching to English.
+self-test W1: 24-word monologue, pass = 4 min without switching to English.
+self-test W2: 37-word monologue, pass = 3 min without switching to English.
+self-test W3: 31-word monologue, pass = 5 min without switching to English.
+self-test W4: 42-word monologue, pass = 5 min without switching to English.
+self-test W5: 29-word monologue, pass = 4 min without switching to English.
+self-test W6: 54-word monologue, pass = 5 min without switching to English.
+self-test W7: 33-word monologue, pass = 4 min without switching to English.
+self-test W8: 48-word monologue, pass = 5 min without switching to English.
+self-test W9: 47-word monologue, pass = 5 min without switching to English.
+self-test W10: 20-word monologue, pass = 5 min without switching to English.
+self-test W11: 34-word monologue, pass = 4 min without switching to English.
+self-test W12: 39-word monologue, pass = 5 min without switching to English.
+self-test W1: 29-word monologue, pass = 5 min without switching to English.
+self-test W2: 40-word monologue, pass = 4 min without switching to English.
+self-test W3: 55-word monologue, pass = 3 min without switching to English.
+self-test W4: 54-word monologue, pass = 4 min without switching to English.
+self-test W5: 29-word monologue, pass = 5 min without switching to English.
+self-test W6: 24-word monologue, pass = 3 min without switching to English.
+self-test W7: 28-word monologue, pass = 5 min without switching to English.
+self-test W8: 54-word monologue, pass = 3 min without switching to English.
+self-test W9: 36-word monologue, pass = 5 min without switching to English.
+self-test W10: 31-word monologue, pass = 4 min without switching to English.
+self-test W11: 37-word monologue, pass = 3 min without switching to English.
+self-test W12: 37-word monologue, pass = 5 min without switching to English.
+self-test W1: 33-word monologue, pass = 4 min without switching to English.
+self-test W2: 32-word monologue, pass = 4 min without switching to English.
+self-test W3: 22-word monologue, pass = 3 min without switching to English.
+self-test W4: 29-word monologue, pass = 3 min without switching to English.

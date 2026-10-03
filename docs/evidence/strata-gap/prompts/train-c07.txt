@@ -1,0 +1,69 @@
+`SIGHUP` reload in `cmd/serve/main.go` racy: `cfg` is a global struct read by 40 handlers, reload writes it in place — `-race` flags `WARNING: DATA RACE` at `cfg.Timeout`. Fix with `atomic.Pointer[Config]` (or `sync.RWMutex`), double-checked validation (reject bad config, keep old, log diff), and a test that hammers reads during 50 reloads under `-race`. Show the global declaration before/after.
+
+Full context pasted below — use it, do not ask for it again:
+`cat serve/reload.go` (current, abridged):
+```
+// reload.go — package serve (abridged)
+package serve
+
+import ("context"; "sync"; "time")
+
+type Conn struct { ID int; Out chan []byte; done chan struct{} }
+
+func reload(c *Conn) {
+    // BUG: blocks on <-c.Out forever after client disconnect
+    for msg := range c.Out {
+        _ = msg
+    }
+}
+
+var cfg = struct{ Timeout time.Duration }{5 * time.Second}  // racy global
+
+var wg sync.WaitGroup
+func Serve(ctx context.Context, conns []*Conn) {
+    for _, c := range conns {
+        wg.Add(1)
+        go func(c *Conn) { defer wg.Done(); reload(c) }(c)
+    }
+    wg.Wait()
+}
+```
+$ go tool pprof -top goroutine.prof (abridged):
+flat flat% sum% cum cum% calls function
+   4.4  2.20%  73%   13.20  6.60%  3850 growslice
+ 13.72  6.86%  35%   41.16 20.58%    88 memmove
+   8.6  4.30%  40%   25.80 12.90%  2868 s3.Upload
+ 10.49  5.25%  31%   31.47 15.73%  6090 sync.Chan recv pump
+ 11.08  5.54%  38%   33.24 16.62%  5396 netpollblock
+ 12.93  6.46%  53%   38.79 19.39%  6015 json.Unmarshal
+   8.2  4.10%  80%   24.60 12.30%  8182 s3.Upload
+ 13.41  6.71%   6%   40.23 20.12%  4341 growslice
+  9.98  4.99%   8%   29.94 14.97%  8664 growslice
+  8.38  4.19%   6%   25.14 12.57%  3667 growslice
+  13.1  6.55%  53%   39.30 19.65%  7677 growslice
+  9.69  4.84%  36%   29.07 14.54%  8372 netpollblock
+  9.73  4.87%   8%   29.19 14.60%  8149 growslice
+  3.62  1.81%  17%   10.86  5.43%  6636 scang
+ 10.66  5.33%  83%   31.98 15.99%  6428 sync.Chan recv pump
+  9.71  4.86%  32%   29.13 14.57%  8122 s3.Upload
+ 10.23  5.12%  69%   30.69 15.35%  8156 memmove
+  1.88  0.94%  32%    5.64  2.82%  1686 memmove
+  6.24  3.12%  33%   18.72  9.36%  4876 json.Unmarshal
+  4.19  2.10%  42%   12.57  6.29%  3596 s3.Upload
+ 12.88  6.44%  87%   38.64 19.32%  6677 growslice
+  7.97  3.98%  67%   23.91 11.96%  8557 s3.Upload
+  8.72  4.36%  60%   26.16 13.08%  2513 s3.Upload
+ 12.31  6.16%  89%   36.93 18.46%  5810 sync.Chan recv pump
+  9.54  4.77%  73%   28.62 14.31%  3053 s3.Upload
+ 11.07  5.54%  44%   33.21 16.61%  8425 memmove
+  9.15  4.58%  36%   27.45 13.73%  6059 scang
+   0.4  0.20%  46%    1.20  0.60%  7621 mallocgc
+  6.87  3.44%  16%   20.61 10.30%  5902 s3.Upload
+ 10.25  5.12%  60%   30.75 15.38%  8046 growslice
+  5.39  2.69%  56%   16.17  8.08%  2622 s3.Upload
+  7.92  3.96%  36%   23.76 11.88%  2802 growslice
+  7.97  3.98%  69%   23.91 11.96%  6670 s3.Upload
+  8.88  4.44%  40%   26.64 13.32%  4896 s3.Upload
+  4.97  2.48%  75%   14.91  7.46%  2887 growslice
+ 11.92  5.96%  70%   35.76 17.88%  3767 netpollblock
+  1.62  0.81%  63%    4.86  2.43%  1465 growslice

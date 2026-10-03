@@ -1,0 +1,87 @@
+`render/farm.ts` spawns one `Worker` per tile (up to 600 workers, tab crashes at ~200). `chrome://tracing` shows thread-spawn storm; console: `Failed to construct 'Worker': script unreachable` past 180. Rework to a fixed pool (`navigator.hardwareConcurrency`, task queue with transferables), add backpressure (`highWaterMark=64`, drop-oldest + counter), and a stress test asserting max live workers ≤ pool size and zero dropped frames under 120 tiles. Paste the pool class skeleton.
+
+Full context pasted below — use it, do not ask for it again:
+`cat render/farm.ts` (current, abridged):
+```
+// render/farm.ts — current content (abridged)
+import { useEffect, useRef, useState } from 'react';
+
+const cache = new Map<string, Promise<string>>();
+
+export function Farm(file: File) {
+  const [progress, setProgress] = useState(0);
+  useEffect(() => {
+    FarmUpload(file).then((url) => {
+      setProgress(100);  // BUG: no cleanup — fires after unmount
+      return url;
+    }});
+  }, [file]);
+  return progress;
+}
+
+async function FarmUpload(f: File): Promise<string> {
+  const h = await hash(f);
+  if (!cache.has(h)) cache.set(h, post(f));
+  return cache.get(h)!;
+}
+
+declare function hash(f: File): Promise<string>;
+declare function post(f: File): Promise<string>;
+```
+$ tsc --noEmit 2>&1 | head:
+src/hooks/useUpload.ts(46,19): error TS2376: Object is possibly undefined.
+src/api/parse.ts(260,6): error TS2534: Property then does not exist.
+src/render/farm.ts(86,5): error TS2321: Property then does not exist.
+src/api/parse.ts(146,8): error TS2723: Property then does not exist.
+src/hooks/useUpload.ts(220,35): error TS2767: Property then does not exist.
+src/render/farm.ts(191,28): error TS2680: Type string is not assignable to never.
+src/api/parse.ts(45,13): error TS2619: Type string is not assignable to never.
+src/lib/uploadCache.ts(100,17): error TS2739: Object is possibly undefined.
+src/render/farm.ts(175,3): error TS2353: Object is possibly undefined.
+src/api/parse.ts(253,22): error TS2574: Property then does not exist.
+src/api/parse.ts(82,20): error TS2610: Object is possibly undefined.
+src/hooks/useUpload.ts(139,27): error TS2577: Type string is not assignable to never.
+src/api/parse.ts(33,10): error TS2365: Type string is not assignable to never.
+src/hooks/useUpload.ts(94,29): error TS2559: Type string is not assignable to never.
+src/render/farm.ts(189,14): error TS2505: Object is possibly undefined.
+src/hooks/useUpload.ts(15,21): error TS2644: Type string is not assignable to never.
+src/api/parse.ts(63,40): error TS2788: Property then does not exist.
+src/hooks/useUpload.ts(258,11): error TS2687: Property then does not exist.
+src/lib/uploadCache.ts(258,21): error TS2647: Type string is not assignable to never.
+src/hooks/useUpload.ts(203,31): error TS2743: Object is possibly undefined.
+src/hooks/useUpload.ts(85,30): error TS2451: Type string is not assignable to never.
+src/api/parse.ts(215,23): error TS2679: Type string is not assignable to never.
+src/lib/uploadCache.ts(116,35): error TS2454: Property then does not exist.
+src/lib/uploadCache.ts(143,30): error TS2611: Type string is not assignable to never.
+src/hooks/useUpload.ts(164,20): error TS2478: Property then does not exist.
+src/api/parse.ts(32,10): error TS2352: Object is possibly undefined.
+src/hooks/useUpload.ts(14,12): error TS2342: Property then does not exist.
+src/api/parse.ts(281,3): error TS2625: Property then does not exist.
+src/api/parse.ts(19,27): error TS2302: Type string is not assignable to never.
+src/hooks/useUpload.ts(300,32): error TS2365: Type string is not assignable to never.
+src/api/parse.ts(34,10): error TS2349: Type string is not assignable to never.
+src/render/farm.ts(78,29): error TS2399: Property then does not exist.
+src/render/farm.ts(289,26): error TS2526: Type string is not assignable to never.
+src/lib/uploadCache.ts(191,11): error TS2780: Type string is not assignable to never.
+src/render/farm.ts(207,34): error TS2795: Object is possibly undefined.
+src/hooks/useUpload.ts(118,25): error TS2778: Type string is not assignable to never.
+src/hooks/useUpload.ts(115,7): error TS2317: Type string is not assignable to never.
+src/render/farm.ts(164,27): error TS2553: Object is possibly undefined.
+src/lib/uploadCache.ts(24,33): error TS2516: Object is possibly undefined.
+src/lib/uploadCache.ts(148,25): error TS2440: Type string is not assignable to never.
+src/api/parse.ts(157,4): error TS2527: Object is possibly undefined.
+src/hooks/useUpload.ts(10,36): error TS2357: Property then does not exist.
+src/render/farm.ts(208,36): error TS2545: Property then does not exist.
+src/api/parse.ts(67,35): error TS2481: Property then does not exist.
+src/hooks/useUpload.ts(137,22): error TS2310: Property then does not exist.
+src/hooks/useUpload.ts(70,36): error TS2609: Type string is not assignable to never.
+src/api/parse.ts(226,22): error TS2731: Type string is not assignable to never.
+src/hooks/useUpload.ts(129,33): error TS2429: Property then does not exist.
+src/render/farm.ts(103,7): error TS2731: Property then does not exist.
+src/lib/uploadCache.ts(85,28): error TS2390: Property then does not exist.
+src/api/parse.ts(111,30): error TS2747: Object is possibly undefined.
+src/render/farm.ts(161,8): error TS2477: Property then does not exist.
+src/lib/uploadCache.ts(181,5): error TS2316: Type string is not assignable to never.
+src/api/parse.ts(262,36): error TS2623: Object is possibly undefined.
+src/api/parse.ts(222,5): error TS2686: Object is possibly undefined.
+src/api/parse.ts(263,22): error TS2785: Property then does not exist.

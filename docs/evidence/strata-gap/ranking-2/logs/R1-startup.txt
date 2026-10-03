@@ -1,0 +1,6 @@
+strata generate: profile /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/ranking2/R.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: expert cache auto: 5.96 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 2041 slots
+strata generate: expert cache 2663 slots, 5.06 GiB of VRAM; policy is
+strata generate: pre-filled 2663 of 2663 slots from the profile; slot 0 verified
+strata serve: prompt chunk auto: 8192 tokens
+strata serve: the prompt path borrows 2333 cache slots (4.43 GiB)

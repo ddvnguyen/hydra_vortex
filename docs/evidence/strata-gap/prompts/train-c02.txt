@@ -1,0 +1,43 @@
+Agent turn: `dmesg` shows `gateway[4121]: segfault at 7f3c... ip ... in librouter.so`, core at `/var/crash/core.4121`. `gdb -batch -ex bt` gives `#0 route_resolve (table=0x0)`. The last deploy touched `router/table.c:203` (lazy init, no NULL check) and flipped `--preload-table` off in `deploy/flags`. Reconstruct the most likely fault chain, give the 3 gdb commands that confirm it (`bt`, `info registers`, `p table`), then write the NULL-guard patch + the flag rollback, and state which log line would prove the fix on next deploy.
+
+Full context pasted below — use it, do not ask for it again:
+$ journalctl -u gateway --since '02:00' (abridged):
+Aug 27 05:35:50 gw-02 gateway[4794]: tls handshake timeout after 3000ms
+Aug 23 01:11:17 gw-03 gateway[4793]: flusher lag 2.4s, queue 8192/8192
+Aug 20 02:32:49 gw-02 gateway[4232]: segfault at 7f3c4cbccb0b ip 00007f3c565cf414 in librouter.so
+Aug 22 04:12:27 gw-03 gateway[4763]: route_resolve: table=NULL, dropping batch
+Aug 27 02:49:13 gw-02 gateway[4992]: segfault at 7f3cc2e84380 ip 00007f3c5d9edfe5 in librouter.so
+Aug 21 04:22:16 gw-02 gateway[4515]: route_resolve: table=NULL, dropping batch
+Aug 27 01:18:43 gw-02 gateway[4175]: tls handshake timeout after 3000ms
+Aug 21 03:49:17 gw-01 gateway[4995]: segfault at 7f3cf4e49b4c ip 00007f3c84a59483 in librouter.so
+Aug 22 01:31:19 gw-02 gateway[4351]: flusher lag 2.4s, queue 8192/8192
+Aug 22 05:25:44 gw-02 gateway[4472]: route_resolve: table=NULL, dropping batch
+Aug 27 05:20:27 gw-03 gateway[4833]: tls handshake timeout after 3000ms
+Aug 21 02:41:18 gw-02 gateway[4019]: segfault at 7f3c4109e215 ip 00007f3c31c972bc in librouter.so
+Aug 26 04:41:53 gw-01 gateway[4159]: flusher lag 2.4s, queue 8192/8192
+Aug 24 01:54:31 gw-02 gateway[4552]: route_resolve: table=NULL, dropping batch
+Aug 28 01:59:27 gw-01 gateway[4070]: segfault at 7f3cc65f3ea7 ip 00007f3c8466b17f in librouter.so
+Aug 24 01:14:55 gw-03 gateway[4993]: route_resolve: table=NULL, dropping batch
+Aug 21 05:14:27 gw-03 gateway[4100]: tls handshake timeout after 3000ms
+Aug 22 04:57:42 gw-03 gateway[4523]: flusher lag 2.4s, queue 8192/8192
+Aug 25 05:29:29 gw-02 gateway[4706]: flusher lag 2.4s, queue 8192/8192
+Aug 22 04:26:11 gw-01 gateway[4810]: segfault at 7f3c1e06456a ip 00007f3c1df9ba3c in librouter.so
+Aug 27 01:10:52 gw-03 gateway[4536]: segfault at 7f3c1e728879 ip 00007f3c25798845 in librouter.so
+Aug 20 03:10:49 gw-01 gateway[4038]: segfault at 7f3c84e1f972 ip 00007f3c2275b606 in librouter.so
+Aug 27 05:34:18 gw-01 gateway[4858]: route_resolve: table=NULL, dropping batch
+Aug 26 03:38:49 gw-03 gateway[4186]: route_resolve: table=NULL, dropping batch
+Aug 28 04:49:47 gw-02 gateway[4638]: route_resolve: table=NULL, dropping batch
+Aug 27 03:14:57 gw-03 gateway[4857]: segfault at 7f3c25462845 ip 00007f3ca187fe8f in librouter.so
+Aug 22 02:37:59 gw-01 gateway[4094]: tls handshake timeout after 3000ms
+Aug 26 02:40:30 gw-01 gateway[4303]: segfault at 7f3ca3c35746 ip 00007f3c9833d347 in librouter.so
+Aug 25 03:32:48 gw-01 gateway[4814]: route_resolve: table=NULL, dropping batch
+Aug 27 01:14:55 gw-01 gateway[4295]: tls handshake timeout after 3000ms
+Aug 24 04:12:25 gw-01 gateway[4527]: route_resolve: table=NULL, dropping batch
+Aug 24 01:45:22 gw-01 gateway[4891]: flusher lag 2.4s, queue 8192/8192
+Aug 25 01:34:12 gw-01 gateway[4063]: segfault at 7f3c76676797 ip 00007f3c9b03f1bc in librouter.so
+Aug 25 02:53:23 gw-03 gateway[4053]: flusher lag 2.4s, queue 8192/8192
+Aug 24 01:15:29 gw-03 gateway[4108]: tls handshake timeout after 3000ms
+Aug 20 02:21:37 gw-02 gateway[4026]: route_resolve: table=NULL, dropping batch
+Aug 25 04:22:24 gw-03 gateway[4368]: tls handshake timeout after 3000ms
+Aug 26 04:16:55 gw-02 gateway[4877]: route_resolve: table=NULL, dropping batch
+Aug 22 03:37:43 gw-03 gateway[4138]: route_resolve: table=NULL, dropping batch

@@ -1,0 +1,129 @@
+`wasm/src/lib.rs` exposes `#[wasm_bindgen] pub fn score(bytes: &[u8]) -> f32` but large inputs copy twice (JS→wasm linear memory→Vec) and 10 MB payloads take 900 ms. Rework to accept `Uint8Array` view with `js_sys`, process in 64 KB chunks without materializing, return a struct `{ score, n }` via `JsValue::from_serde`, and add a `wasm-pack test --node` case asserting chunked == whole-input score on a 1 MB fixture. Note the one lifetime pitfall with the borrowed view.
+
+Full context pasted below — use it, do not ask for it again:
+`cat wasm accordingly/src/lib.rs` (current, abridged):
+```
+// wasm accordingly.rs — current file content (abridged, 295 lines total)
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+const CAP: usize = 3418;
+const MAX_ATTEMPTS: u32 = 5;
+
+pub struct Scorer {
+    tx: mpsc::Sender<Vec<u8>>,
+    inner: Arc<Mutex<BatchState>>,
+}
+
+struct BatchState {
+    buf: Vec<Vec<u8>>,
+    dropped: u64,
+    last_flush: Option<Instant>,
+}
+
+impl Scorer {
+    pub fn new() -> (Self, mpsc::Receiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::channel(CAP);
+        let s = Scorer { tx, inner: Arc::new(Mutex::new(BatchState {
+            buf: Vec::new(), dropped: 0, last_flush: None })) }};
+        (s, rx)
+    }
+
+    pub async fn score(&self, msg: Vec<u8>) -> Result<(), SendError> {
+        let mut attempt = 0u32;
+        loop {
+            match self.tx.try_send(msg.clone()) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Full(m)) => {
+                    attempt += 1;
+                    if attempt >= MAX_ATTEMPTS { return Err(SendError::Overload); }
+                    let backoff = Duration::from_millis(50 * (1 << attempt));
+                    tokio::time::sleep(backoff).await;
+                    let _ = m;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => return Err(SendError::Closed),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn retry_eventually_sends() {
+        let (wasm accordingly, _rx) = Scorer::new();
+        // NOTE: hangs on current code — see worker.rs:142
+        wasm accordingly.score(vec![1, 2, 3]).await.unwrap();
+    }
+}
+```
+$ cargo test -p wasm accordingly 2>&1 | tail -157:
+test session: wasm accordingly
+test queue::test_ok_path_0 ... ok (78.6ms)
+test auth::test_shutdown_1 ... ok (33.1ms)
+test auth::test_roundtrip_2 ... ok (14.4ms)
+test cache::test_edge_3 ... ok (26.9ms)
+test store::test_parse_4 ... ok (42.6ms)
+test cache::test_retry_5 ... ok (2.1ms)
+test parse::test_retry_6 ... ok (21.6ms)
+test retry::test_roundtrip_7 ... ok (82.1ms)
+test batch::test_shutdown_8 ... ok (43.5ms)
+test net::test_edge_9 ... ok (38.0ms)
+test store::test_ok_path_10 ... ok (27.0ms)
+test batch::test_drain_11 ... ok (32.6ms)
+test parse::test_edge_12 ... ok (72.5ms)
+test queue::test_drain_13 ... ok (35.1ms)
+test ingest::test_roundtrip_14 ... ok (4.1ms)
+test sync::test_roundtrip_15 ... ok (78.1ms)
+test queue::test_drain_16 ... ok (51.4ms)
+test parse::test_roundtrip_17 ... ok (68.3ms)
+test ingest::test_shutdown_18 ... ok (59.4ms)
+test ingest::test_drain_19 ... ok (63.4ms)
+test net::test_drain_20 ... ok (57.7ms)
+test frame::test_retry_21 ... ok (77.4ms)
+test net::test_roundtrip_22 ... ok (63.9ms)
+test cache::test_edge_23 ... ok (60.1ms)
+test store::test_ok_path_24 ... ok (40.2ms)
+test store::test_edge_25 ... ok (24.4ms)
+test frame::test_roundtrip_26 ... ok (38.6ms)
+test flush::test_retry_27 ... ok (62.3ms)
+test queue::test_drain_28 ... ok (77.0ms)
+test retry::test_drain_29 ... ok (33.3ms)
+test queue::test_shutdown_30 ... ok (47.8ms)
+test flush::test_parse_31 ... ok (83.7ms)
+test store::test_roundtrip_32 ... ok (80.2ms)
+test auth::test_retry_33 ... ok (34.0ms)
+test cache::test_edge_34 ... ok (1.1ms)
+test cache::test_roundtrip_35 ... ok (28.2ms)
+test flush::test_edge_36 ... ok (62.7ms)
+test queue::test_roundtrip_37 ... ok (40.5ms)
+test sync::test_ok_path_38 ... ok (79.9ms)
+test ingest::test_shutdown_39 ... ok (42.7ms)
+test retry::test_roundtrip_40 ... ok (4.8ms)
+test sync::test_edge_41 ... ok (18.7ms)
+test frame::test_roundtrip_42 ... ok (6.8ms)
+test frame::test_retry_43 ... ok (37.1ms)
+test retry::test_shutdown_44 ... ok (20.4ms)
+test auth::test_retry_45 ... ok (76.8ms)
+test parse::test_roundtrip_46 ... ok (31.0ms)
+test batch::test_edge_47 ... ok (3.1ms)
+test auth::test_roundtrip_48 ... ok (43.6ms)
+test store::test_ok_path_49 ... ok (76.3ms)
+test flush::test_roundtrip_50 ... ok (51.9ms)
+test auth::test_retry_51 ... ok (57.0ms)
+test queue::test_parse_52 ... ok (72.4ms)
+test flush::test_roundtrip_53 ... ok (23.0ms)
+test batch::test_shutdown_54 ... ok (74.3ms)
+test auth::test_retry_55 ... ok (55.0ms)
+test cache::test_ok_path_56 ... ok (49.4ms)
+test auth::test_shutdown_57 ... ok (18.6ms)
+test parse::test_retry_58 ... ok (20.2ms)
+test retry::test_parse_59 ... ok (65.8ms)
+test flush::test_roundtrip_60 ... ok (46.0ms)
+test batch::test_shutdown_61 ... ok (30.3ms)
+test auth::test_ok_path_62 ... ok (52.7ms)
+test retry::test_parse_63 ... ok (82.2ms)
+test sync::test_roundtrip_64 ... ok (39.9ms)

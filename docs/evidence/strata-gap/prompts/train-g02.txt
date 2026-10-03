@@ -1,0 +1,99 @@
+Write a plain-English expository essay (~700 words) explaining how concrete sets: what is actually happening chemically in the first 72 hours, why water is both necessary and the enemy, what rebar contributes and what it can't fix, why a hot windy day ruins a pour, and how a Roman harbor wall differs from a modern slab. Use one extended analogy at most, define every technical term on first use, and end with a three-line recap a reader could quote. Draw only on the pasted fact sheet (mix ratios, curing timetable, the two failure photos described) and flag the one claim that needs an engineer's sign-off.
+
+Full context pasted below — use it, do not ask for it again:
+fact sheet — concrete/seed briefing (ground every number here; flag the rest):
+- rebar covers tension; cover depth 50mm min.
+- cure: keep damp 7d, 70% strength at 7d, ~99% at 28d.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- hot wind >30C: surface dries, cracks before set.
+- cure: keep damp 7d, 70% strength at 7d, ~99% at 28d.
+- Svalbard: -18C permafrost backup, no withdrawals to date for planting.
+- Svalbard: -18C permafrost backup, no withdrawals to date for planting.
+- rebar covers tension; cover depth 50mm min.
+- mix ratio 1:2:3 + w/c 0.45; slump 75mm.
+- rebar covers tension; cover depth 50mm min.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- rebar covers tension; cover depth 50mm min.
+- Svalbard: -18C permafrost backup, no withdrawals to date for planting.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- cure: keep damp 7d, 70% strength at 7d, ~99% at 28d.
+- mix ratio 1:2:3 + w/c 0.45; slump 75mm.
+- Svalbard: -18C permafrost backup, no withdrawals to date for planting.
+- accession 12,400 lots; germination threshold 85%; regen every 10-20y.
+- Svalbard: -18C permafrost backup, no withdrawals to date for planting.
+- cure: keep damp 7d, 70% strength at 7d, ~99% at 28d.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- rebar covers tension; cover depth 50mm min.
+- rebar covers tension; cover depth 50mm min.
+- hot wind >30C: surface dries, cracks before set.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- hot wind >30C: surface dries, cracks before set.
+- accession 12,400 lots; germination threshold 85%; regen every 10-20y.
+- accession 12,400 lots; germination threshold 85%; regen every 10-20y.
+- accession 12,400 lots; germination threshold 85%; regen every 10-20y.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- hot wind >30C: surface dries, cracks before set.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- Svalbard: -18C permafrost backup, no withdrawals to date for planting.
+- Svalbard: -18C permafrost backup, no withdrawals to date for planting.
+- hot wind >30C: surface dries, cracks before set.
+- rebar covers tension; cover depth 50mm min.
+- rebar covers tension; cover depth 50mm min.
+- accession 12,400 lots; germination threshold 85%; regen every 10-20y.
+- Svalbard: -18C permafrost backup, no withdrawals to date for planting.
+- hot wind >30C: surface dries, cracks before set.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- hot wind >30C: surface dries, cracks before set.
+- hot wind >30C: surface dries, cracks before set.
+- rebar covers tension; cover depth 50mm min.
+- cure: keep damp 7d, 70% strength at 7d, ~99% at 28d.
+- mix ratio 1:2:3 + w/c 0.45; slump 75mm.
+- cure: keep damp 7d, 70% strength at 7d, ~99% at 28d.
+- rebar covers tension; cover depth 50mm min.
+- recalcitrant seeds cannot dry — cryo or living collections only.
+- accession 12,400 lots; germination threshold 85%; regen every 10-20y.
+- rebar covers tension; cover depth 50mm min.
+- cure: keep damp 7d, 70% strength at 7d, ~99% at 28d.
+- mix ratio 1:2:3 + w/c 0.45; slump 75mm.
+- hot wind >30C: surface dries, cracks before set.
+- accession 12,400 lots; germination threshold 85%; regen every 10-20y.
+- hot wind >30C: surface dries, cracks before set.
+reader questions (answer inline, plain terms):
+- who pays for the vault when nobody harvests from it?
+- who pays for the vault when nobody harvests from it?
+- what does the 28-day number actually promise?
+- who pays for the vault when nobody harvests from it?
+- why does added water weaken it if water starts the reaction?
+- why does added water weaken it if water starts the reaction?
+- is a community seed library the same thing at smaller scale?
+- who pays for the vault when nobody harvests from it?
+- why does added water weaken it if water starts the reaction?
+- what does the 28-day number actually promise?
+- what does the 28-day number actually promise?
+- what does the 28-day number actually promise?
+- why does added water weaken it if water starts the reaction?
+- who pays for the vault when nobody harvests from it?
+- who pays for the vault when nobody harvests from it?
+- what does the 28-day number actually promise?
+- is a community seed library the same thing at smaller scale?
+- what does the 28-day number actually promise?
+- who pays for the vault when nobody harvests from it?
+- who pays for the vault when nobody harvests from it?
+- who pays for the vault when nobody harvests from it?
+- what does the 28-day number actually promise?
+- why does added water weaken it if water starts the reaction?
+- why does added water weaken it if water starts the reaction?
+- what does the 28-day number actually promise?
+- who pays for the vault when nobody harvests from it?
+- is a community seed library the same thing at smaller scale?
+- is a community seed library the same thing at smaller scale?
+- is a community seed library the same thing at smaller scale?
+- who pays for the vault when nobody harvests from it?
+- what does the 28-day number actually promise?
+- why does added water weaken it if water starts the reaction?
+- what does the 28-day number actually promise?
+- why does added water weaken it if water starts the reaction?
+- what does the 28-day number actually promise?

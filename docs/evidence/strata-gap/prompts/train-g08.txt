@@ -1,0 +1,42 @@
+Compare asking an LLM vs classic web search for three tasks (debugging an error message, learning a new medication's side effects, planning a 3-day itinerary): accuracy/freshness/cost-per-query table, which tool wins each task and why in 2 lines each, and the one hybrid workflow you'd actually recommend. ~350 words. No model names.
+
+Full context pasted below — use it, do not ask for it again:
+Pasted evidence to use in the comparison (3 tasks):
+case 1: error 'pip resolver loop' — LLM answer correct; top web result forum thread, 2019; cost LLM $0.02 vs search $0 (ads).
+case 2: error 'cannot read properties of undefined' — LLM answer correct; top web result exact fix, 2024; cost LLM $0.037 vs search $0 (ads).
+case 3: error 'pip resolver loop' — LLM answer hallucinated flag; top web result docs page, current; cost LLM $0.044 vs search $0 (ads).
+case 4: error 'cannot read properties of undefined' — LLM answer correct; top web result forum thread, 2019; cost LLM $0.024 vs search $0 (ads).
+case 5: error 'EADDRINUSE 3000' — LLM answer stale; top web result docs page, current; cost LLM $0.035 vs search $0 (ads).
+case 6: error 'EADDRINUSE 3000' — LLM answer stale; top web result docs page, current; cost LLM $0.042 vs search $0 (ads).
+case 7: error 'cannot read properties of undefined' — LLM answer hallucinated flag; top web result docs page, current; cost LLM $0.029 vs search $0 (ads).
+case 8: error 'cannot read properties of undefined' — LLM answer hallucinated flag; top web result exact fix, 2024; cost LLM $0.015 vs search $0 (ads).
+case 9: error 'pip resolver loop' — LLM answer correct; top web result docs page, current; cost LLM $0.025 vs search $0 (ads).
+case 10: error 'CUDA OOM' — LLM answer hallucinated flag; top web result exact fix, 2024; cost LLM $0.021 vs search $0 (ads).
+case 11: error 'cannot read properties of undefined' — LLM answer hallucinated flag; top web result exact fix, 2024; cost LLM $0.016 vs search $0 (ads).
+case 12: error 'pip resolver loop' — LLM answer hallucinated flag; top web result exact fix, 2024; cost LLM $0.047 vs search $0 (ads).
+case 13: error 'CUDA OOM' — LLM answer correct; top web result forum thread, 2019; cost LLM $0.008 vs search $0 (ads).
+case 14: error 'CUDA OOM' — LLM answer correct; top web result docs page, current; cost LLM $0.019 vs search $0 (ads).
+case 15: error 'cannot read properties of undefined' — LLM answer hallucinated flag; top web result forum thread, 2019; cost LLM $0.047 vs search $0 (ads).
+case 16: error 'CUDA OOM' — LLM answer hallucinated flag; top web result exact fix, 2024; cost LLM $0.039 vs search $0 (ads).
+case 17: error 'cannot read properties of undefined' — LLM answer stale; top web result forum thread, 2019; cost LLM $0.024 vs search $0 (ads).
+case 18: error 'CUDA OOM' — LLM answer hallucinated flag; top web result docs page, current; cost LLM $0.038 vs search $0 (ads).
+case 19: error 'pip resolver loop' — LLM answer stale; top web result docs page, current; cost LLM $0.032 vs search $0 (ads).
+case 20: error 'CUDA OOM' — LLM answer correct; top web result exact fix, 2024; cost LLM $0.035 vs search $0 (ads).
+case 21: error 'EADDRINUSE 3000' — LLM answer correct; top web result docs page, current; cost LLM $0.03 vs search $0 (ads).
+case 22: error 'pip resolver loop' — LLM answer hallucinated flag; top web result forum thread, 2019; cost LLM $0.033 vs search $0 (ads).
+case 23: error 'cannot read properties of undefined' — LLM answer correct; top web result docs page, current; cost LLM $0.032 vs search $0 (ads).
+case 24: error 'EADDRINUSE 3000' — LLM answer stale; top web result forum thread, 2019; cost LLM $0.033 vs search $0 (ads).
+case 25: error 'cannot read properties of undefined' — LLM answer stale; top web result exact fix, 2024; cost LLM $0.033 vs search $0 (ads).
+case 26: error 'CUDA OOM' — LLM answer stale; top web result docs page, current; cost LLM $0.033 vs search $0 (ads).
+case 27: error 'CUDA OOM' — LLM answer stale; top web result exact fix, 2024; cost LLM $0.046 vs search $0 (ads).
+case 28: error 'cannot read properties of undefined' — LLM answer hallucinated flag; top web result forum thread, 2019; cost LLM $0.01 vs search $0 (ads).
+case 29: error 'pip resolver loop' — LLM answer correct; top web result forum thread, 2019; cost LLM $0.011 vs search $0 (ads).
+case 30: error 'CUDA OOM' — LLM answer stale; top web result exact fix, 2024; cost LLM $0.014 vs search $0 (ads).
+case 31: error 'pip resolver loop' — LLM answer hallucinated flag; top web result exact fix, 2024; cost LLM $0.037 vs search $0 (ads).
+case 32: error 'CUDA OOM' — LLM answer hallucinated flag; top web result forum thread, 2019; cost LLM $0.05 vs search $0 (ads).
+case 33: error 'cannot read properties of undefined' — LLM answer stale; top web result forum thread, 2019; cost LLM $0.032 vs search $0 (ads).
+case 34: error 'CUDA OOM' — LLM answer correct; top web result forum thread, 2019; cost LLM $0.02 vs search $0 (ads).
+case 35: error 'pip resolver loop' — LLM answer hallucinated flag; top web result forum thread, 2019; cost LLM $0.045 vs search $0 (ads).
+case 36: error 'cannot read properties of undefined' — LLM answer correct; top web result forum thread, 2019; cost LLM $0.031 vs search $0 (ads).
+case 37: error 'EADDRINUSE 3000' — LLM answer stale; top web result forum thread, 2019; cost LLM $0.006 vs search $0 (ads).
+case 38: error 'cannot read properties of undefined' — LLM answer hallucinated flag; top web result forum thread, 2019; cost LLM $0.028 vs search $0 (ads).

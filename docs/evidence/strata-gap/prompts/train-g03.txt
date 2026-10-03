@@ -1,0 +1,110 @@
+Write a dialogue-only scene (~700 words, no narration, names in caps) between two night-shift nurses, MARA and JUNE, at 3am by the vending machine: MARA wants to propose a shift-swap scheme to the ward manager and needs JUNE's backing; JUNE is sympathetic but burned from covering last month and worried about the Faye situation. Let the proposal emerge through interruptions, the machine eating coins, and a pager going off twice — never as a speech. End mid-decision, with one of them holding the other's pager by mistake. Use the pasted ward roster and the incident note as background; don't explain them, let them surface in talk.
+
+Full context pasted below — use it, do not ask for it again:
+background — ward background (let surface in talk, never explain):
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- vending machine takes exact coins since Tuesday.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- roster: nights Mara/June, Faye owed 3 covers from March.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- agent viewing Thursday 6pm; application fee 95 each.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- vending machine takes exact coins since Tuesday.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- roster: nights Mara/June, Faye owed 3 covers from March.
+- agent viewing Thursday 6pm; application fee 95 each.
+- roster: nights Mara/June, Faye owed 3 covers from March.
+- vending machine takes exact coins since Tuesday.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- agent viewing Thursday 6pm; application fee 95 each.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- agent viewing Thursday 6pm; application fee 95 each.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- agent viewing Thursday 6pm; application fee 95 each.
+- agent viewing Thursday 6pm; application fee 95 each.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- vending machine takes exact coins since Tuesday.
+- agent viewing Thursday 6pm; application fee 95 each.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- vending machine takes exact coins since Tuesday.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- vending machine takes exact coins since Tuesday.
+- vending machine takes exact coins since Tuesday.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- agent viewing Thursday 6pm; application fee 95 each.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- roster: nights Mara/June, Faye owed 3 covers from March.
+- vending machine takes exact coins since Tuesday.
+- roster: nights Mara/June, Faye owed 3 covers from March.
+- agent viewing Thursday 6pm; application fee 95 each.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- agent viewing Thursday 6pm; application fee 95 each.
+- roster: nights Mara/June, Faye owed 3 covers from March.
+- roster: nights Mara/June, Faye owed 3 covers from March.
+- agent viewing Thursday 6pm; application fee 95 each.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- vending machine takes exact coins since Tuesday.
+- vending machine takes exact coins since Tuesday.
+- agent viewing Thursday 6pm; application fee 95 each.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- vending machine takes exact coins since Tuesday.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- vending machine takes exact coins since Tuesday.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- pager code 77 = bed alarm, 31 = pharmacy.
+- agent viewing Thursday 6pm; application fee 95 each.
+- flat history: dishwasher saga (Nov), plant-watering rota, bass-guitar Sundays.
+- agent viewing Thursday 6pm; application fee 95 each.
+- agent viewing Thursday 6pm; application fee 95 each.
+- rent hike 12%: 1450 -> 1624, deposit 1875, van quote 120.
+- roster: nights Mara/June, Faye owed 3 covers from March.
+overheard fragments (fold in, don't quote directly):
+- “the Thursday people”
+- “it ate my last pound”
+- “the Thursday people”
+- “it ate my last pound”
+- “tell that to Faye”
+- “kettle’s boiled dry again”
+- “it ate my last pound”
+- “it ate my last pound”
+- “it ate my last pound”
+- “kettle’s boiled dry again”
+- “you said you had me”
+- “we split it weird last time too”
+- “kettle’s boiled dry again”
+- “kettle’s boiled dry again”
+- “it ate my last pound”
+- “it ate my last pound”
+- “it ate my last pound”
+- “we split it weird last time too”
+- “the Thursday people”
+- “you said you had me”
+- “the Thursday people”
+- “it ate my last pound”
+- “you said you had me”
+- “kettle’s boiled dry again”
+- “kettle’s boiled dry again”
+- “tell that to Faye”
+- “the Thursday people”
+- “the Thursday people”
+- “tell that to Faye”
+- “kettle’s boiled dry again”
+- “it ate my last pound”
+- “you said you had me”

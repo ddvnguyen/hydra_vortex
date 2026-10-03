@@ -1,0 +1,36 @@
+Ticket: "per-org weekly active pipelines, plus week-over-week delta, from `runs`". `runs(id, org_id, pipeline_id, started_at, status)` has 80M rows. Write the query with `date_trunc('week', started_at)`, `count(DISTINCT pipeline_id)`, `lag() OVER (PARTITION BY org_id ORDER BY wk)` for the delta, guard the current partial week (exclude or flag `is_partial`), and give the covering index `(org_id, started_at, pipeline_id)` with a size/lock note. Include a 5-row expected-output sample.
+
+Full context pasted below — use it, do not ask for it again:
+`cat schema.sql` (current, abridged):
+```
+CREATE TABLE orgs (id UUID PRIMARY KEY, name TEXT NOT NULL, deleted_at TIMESTAMPTZ);
+CREATE TABLE pipelines (id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id), name TEXT);
+CREATE TABLE runs (id UUID PRIMARY KEY, pipeline_id UUID, org_id UUID,
+  started_at TIMESTAMPTZ NOT NULL, status TEXT NOT NULL);
+-- missing: live-run guard, seq guard, covering indexes (see task)
+```
+$ psql -c 'EXPLAIN (ANALYZE, BUFFERS) <dashboard query>' (abridged):
+Seq Scan on events (cost=0.00..1842000.00 rows=42M) (actual time=9210ms)
+08:54:56 LOG: duration: 6135.8 ms statement: SELECT day, count(*) FROM events WHERE org_id = '190' AND ts > now() - interval '30 days' (buffers hit=1066 read=6029)
+03:33:39 LOG: duration: 1403.8 ms statement: SELECT day, count(*) FROM events WHERE org_id = '464' AND ts > now() - interval '30 days' (buffers hit=5452 read=82312)
+03:48:42 LOG: duration: 2498.0 ms statement: SELECT day, count(*) FROM events WHERE org_id = '589' AND ts > now() - interval '30 days' (buffers hit=4140 read=18185)
+04:11:14 LOG: duration: 1711.6 ms statement: SELECT day, count(*) FROM events WHERE org_id = '822' AND ts > now() - interval '30 days' (buffers hit=6076 read=28661)
+06:30:19 LOG: duration: 3089.3 ms statement: SELECT day, count(*) FROM events WHERE org_id = '127' AND ts > now() - interval '30 days' (buffers hit=1987 read=35780)
+04:28:32 LOG: duration: 3031.8 ms statement: SELECT day, count(*) FROM events WHERE org_id = '975' AND ts > now() - interval '30 days' (buffers hit=8915 read=24256)
+02:39:15 LOG: duration: 1696.2 ms statement: SELECT day, count(*) FROM events WHERE org_id = '457' AND ts > now() - interval '30 days' (buffers hit=8934 read=79840)
+02:25:50 LOG: duration: 7675.7 ms statement: SELECT day, count(*) FROM events WHERE org_id = '237' AND ts > now() - interval '30 days' (buffers hit=5217 read=1853)
+02:24:52 LOG: duration: 1505.4 ms statement: SELECT day, count(*) FROM events WHERE org_id = '643' AND ts > now() - interval '30 days' (buffers hit=8166 read=44080)
+08:23:47 LOG: duration: 3062.3 ms statement: SELECT day, count(*) FROM events WHERE org_id = '115' AND ts > now() - interval '30 days' (buffers hit=6224 read=57777)
+02:30:54 LOG: duration: 1453.0 ms statement: SELECT day, count(*) FROM events WHERE org_id = '865' AND ts > now() - interval '30 days' (buffers hit=1540 read=87965)
+03:25:52 LOG: duration: 4210.6 ms statement: SELECT day, count(*) FROM events WHERE org_id = '816' AND ts > now() - interval '30 days' (buffers hit=6535 read=26599)
+09:44:48 LOG: duration: 1768.2 ms statement: SELECT day, count(*) FROM events WHERE org_id = '550' AND ts > now() - interval '30 days' (buffers hit=1825 read=43895)
+06:13:43 LOG: duration: 4044.4 ms statement: SELECT day, count(*) FROM events WHERE org_id = '739' AND ts > now() - interval '30 days' (buffers hit=3499 read=59602)
+07:32:20 LOG: duration: 3613.4 ms statement: SELECT day, count(*) FROM events WHERE org_id = '852' AND ts > now() - interval '30 days' (buffers hit=6705 read=33163)
+03:39:14 LOG: duration: 3691.7 ms statement: SELECT day, count(*) FROM events WHERE org_id = '956' AND ts > now() - interval '30 days' (buffers hit=7218 read=40168)
+04:52:27 LOG: duration: 2747.2 ms statement: SELECT day, count(*) FROM events WHERE org_id = '740' AND ts > now() - interval '30 days' (buffers hit=1725 read=10515)
+09:46:38 LOG: duration: 8419.7 ms statement: SELECT day, count(*) FROM events WHERE org_id = '442' AND ts > now() - interval '30 days' (buffers hit=5735 read=43636)
+06:32:52 LOG: duration: 1705.9 ms statement: SELECT day, count(*) FROM events WHERE org_id = '243' AND ts > now() - interval '30 days' (buffers hit=7300 read=41507)
+05:37:30 LOG: duration: 7213.0 ms statement: SELECT day, count(*) FROM events WHERE org_id = '547' AND ts > now() - interval '30 days' (buffers hit=6597 read=51769)
+03:29:40 LOG: duration: 4106.4 ms statement: SELECT day, count(*) FROM events WHERE org_id = '605' AND ts > now() - interval '30 days' (buffers hit=422 read=3188)
+08:12:10 LOG: duration: 4076.1 ms statement: SELECT day, count(*) FROM events WHERE org_id = '152' AND ts > now() - interval '30 days' (buffers hit=5219 read=73673)
+07:41:48 LOG: duration: 273.9 ms statement: SELECT day, count(*) FROM events WHERE org_id = '241' AND ts > now() - interval '30 days' (buffers hit=5693 read=63528)

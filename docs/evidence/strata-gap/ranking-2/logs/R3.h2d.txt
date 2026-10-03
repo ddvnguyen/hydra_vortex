@@ -1,0 +1,2 @@
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.12 GB/s

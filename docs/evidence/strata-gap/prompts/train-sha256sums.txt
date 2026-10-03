@@ -1,0 +1,16 @@
+732165a892982ed836aa151e7e4a6308910e9a807d352f71540f4178d115bce6  docs/evidence/strata-gap/prompts/train-c01.txt
+48c26c55ae749a90aacf62127d3b2344f6be7f0325727aba1175efadd2373d36  docs/evidence/strata-gap/prompts/train-c02.txt
+7d08654c5d837a0336967df06cdf7db54651208fe65218199cf3a9851fe3de3e  docs/evidence/strata-gap/prompts/train-c03.txt
+2de49e639297a7158a7e021e95650322d08dc29635880db3e15631811061c4ae  docs/evidence/strata-gap/prompts/train-c04.txt
+2c21cce47b89a6dc6098f39482518699752497f40b9b406076cc3055f8ee6623  docs/evidence/strata-gap/prompts/train-c05.txt
+a4cdf99880a0bb8e4d27edc5e5a48a0bac4c1c219aa7a76525fdc061cb5bba66  docs/evidence/strata-gap/prompts/train-c06.txt
+c6c27e549bbb9f0e256037b7de50d8df26f4d62cd96a4f0306d381b3a33136ad  docs/evidence/strata-gap/prompts/train-c07.txt
+1215302bccaf7fb30b763ed0983a698440bf91e548dbaf5c7f3bd868589f3d78  docs/evidence/strata-gap/prompts/train-c08.txt
+9af88ecde21b3f899a367c8633331c770e5d6b00ce1b438daddb15761914cab2  docs/evidence/strata-gap/prompts/train-g01.txt
+40167fbb5ff9f53c52ed30ad7f458ae1885bdc99b20c19ca92ce29e1b5455b1b  docs/evidence/strata-gap/prompts/train-g02.txt
+63adb987469bfd22c8da13f34323ac784c1a7e652e288ddf6fad091db53010ce  docs/evidence/strata-gap/prompts/train-g03.txt
+9e8d58855fe610a51eb3d2a1afa335136e8ee66b44bba43c6c78ee818a6ce897  docs/evidence/strata-gap/prompts/train-g04.txt
+aec10bafc295faaa9c7da2afa421129cf8aaf4b551a863c1179cb16cf6381e65  docs/evidence/strata-gap/prompts/train-g05.txt
+2114e86e37c6cbb0b4ed580422c6c601136d01f8bc7d49870e94556c8f554378  docs/evidence/strata-gap/prompts/train-g06.txt
+b9f3ede790dc3bfc9aa9f41b36b0c710e9f667b6edb763d4b1055055a24c3ffd  docs/evidence/strata-gap/prompts/train-g07.txt
+1f8d59149470ec068ea3ef59a0477b8b822236a808fc02bab87532017a823530  docs/evidence/strata-gap/prompts/train-g08.txt
