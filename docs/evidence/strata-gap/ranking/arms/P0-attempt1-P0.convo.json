@@ -1,0 +1,22 @@
+{
+ "arm": "P0",
+ "seed": 42,
+ "max_tokens": 256,
+ "ok": false,
+ "turns": [
+  {
+   "t_start": "2026-10-02T23:56:16.688+07:00",
+   "t_end": "2026-10-02T23:56:29.472+07:00",
+   "ttft_s": null,
+   "decode_tps_client": null,
+   "wall_s": 12.7836,
+   "prompt_tokens": 779,
+   "completion_tokens": 256,
+   "finish": "length",
+   "error": "no first token observed",
+   "content_chars": 0,
+   "content": "",
+   "turn": 1
+  }
+ ]
+}

@@ -1,0 +1,23 @@
+[P2] pre-arm gates:
+GATE ok: MemAvailable 67.8 GiB (>= 67)
+[P2] h2d pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+[P2] server.py pid 2356500, waiting for /health (max 900s)
+[P2] ready, engine pid 2356528
+[P2] startup facts:
+    strata generate: profile /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/poc-ranking/shuffled.bin: 24576 ranked pairs, built for 24576 slots
+    strata generate: expert cache auto: 5.96 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 2041 slots
+    strata generate: expert cache 2656 slots, 5.06 GiB of VRAM; policy is
+    strata generate: pre-filled 2656 of 2656 slots from the profile; slot 0 verified
+    strata serve: prompt chunk auto: 8192 tokens
+    strata serve: the prompt path borrows 2330 cache slots (4.43 GiB)
+P2 T1: tps=31.539 prompt_tok=1057 gen=256 ttft=6.6031 err=None
+P2 T2: tps=34.084 prompt_tok=2344 gen=256 ttft=7.0701 err=None
+P2 T3: tps=27.716 prompt_tok=3481 gen=256 ttft=6.9946 err=None
+P2 T4: tps=35.67 prompt_tok=4721 gen=256 ttft=7.0843 err=None
+P2 T5: tps=26.391 prompt_tok=6047 gen=256 ttft=7.7633 err=None
+P2 T6: tps=34.401 prompt_tok=7332 gen=256 ttft=7.4568 err=None
+P2 convo ok (6/6 turns) -> /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/ranking/arms/P2.convo.json
+[P2] convo rc=0
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.12 GB/s
+P2 rank parse: aligned=True counts={'serve': 6, 'hit': 6, 'decode_timing': 6, 'prefill': 6, 'adaptive': 0, 'speculation': 0, 'convo': 6} startup_slots=2656 pre-filled=2656 med_decode_tps=32.7 med_hit_pct=55.1
+P2 done status=ok convo_rc=0 parse_rc=0 mem_avail_after=69.6GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s;dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.12 GB/s;] link_bad_samples=0 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/ranking/logs/P2.summary.txt

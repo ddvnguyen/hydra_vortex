@@ -1,0 +1,83 @@
+{
+ "arm": "P0",
+ "aligned": false,
+ "counts": {
+  "serve": 1,
+  "hit": 1,
+  "decode_timing": 1,
+  "prefill": 1,
+  "adaptive": 0,
+  "speculation": 0,
+  "convo": 1
+ },
+ "startup": {
+  "policy": null,
+  "profile_path": "/mnt/WorkDisk/strata/src-v0.1.29/data/expert-profile.bin",
+  "ranked_pairs": 24576,
+  "built_slots": 24576,
+  "auto_slots": 2041,
+  "cache_slots": 2638,
+  "cache_gib": 5.06,
+  "prefilled": 2638,
+  "prefilled_total": 2638,
+  "resident_at_start": 2638,
+  "chunk_tokens": 8192,
+  "borrow_slots": 2313,
+  "borrow_gib": 4.43
+ },
+ "turns": [
+  {
+   "turn": 1,
+   "prompt_tokens": 779,
+   "reused": 0,
+   "read_tokens": 779,
+   "read_ms": 5917.0,
+   "read_tps": 131.7,
+   "generated": 256,
+   "decode_ms": 6858.0,
+   "decode_tps": 37.3,
+   "drafts_accepted": 147,
+   "drafts_offered": 203,
+   "checkpoints": 1,
+   "hit_pct": 55.6,
+   "hits": 80958,
+   "lookups": 145669,
+   "windows": 111,
+   "avg_T": 2.83,
+   "tok_per_window": 2.31,
+   "ms_per_window": 61.79,
+   "verify_ms": 57.83,
+   "cpu_experts_misses": 9.93,
+   "cpu_experts_entries": 12.15,
+   "vram_hits": 15.19,
+   "pcie": 0.94,
+   "gpu_stages": null,
+   "prefill": {
+    "tokens": 774,
+    "gpu_ms": 5651.0,
+    "wall_ms": 5655.0
+   },
+   "client": {
+    "t_start": "2026-10-02T23:56:16.688+07:00",
+    "t_end": "2026-10-02T23:56:29.472+07:00",
+    "ttft_s": null,
+    "decode_tps_client": null,
+    "wall_s": 12.7836,
+    "prompt_tokens": 779,
+    "completion_tokens": 256,
+    "finish": "length",
+    "error": "no first token observed",
+    "content_chars": 0,
+    "turn": 1
+   }
+  }
+ ],
+ "medians": {
+  "decode_tps": 37.3,
+  "hit_pct": 55.6,
+  "decode_tps_client": null
+ },
+ "adaptive_seen": [],
+ "speculation": [],
+ "convo_ok": false
+}

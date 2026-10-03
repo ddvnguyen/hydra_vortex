@@ -1,0 +1,6 @@
+ea9b09b733a1db3cc5fe19fcfe45f598ea5799e948f81261cc44968876daff31  docs/evidence/strata-gap/prompts/rank-t1.txt
+fcab55c930fe3c5dbc6b4b4f3877febcd469891e72ece78a4520227a2a6f9556  docs/evidence/strata-gap/prompts/rank-t2.txt
+e41e7952fe913b02fde96ad9e3b0b8dc66f986a16c8a8db5d0275264005dc56c  docs/evidence/strata-gap/prompts/rank-t3.txt
+792949361669b525bcae3aa6087ec341fe7c6f8f9e0142b7a28ef0d35861d7cd  docs/evidence/strata-gap/prompts/rank-t4.txt
+3b7f45b8573137b6f121ef9fc81c9608403e4a0dc4012c065bd604ca6acbc4b5  docs/evidence/strata-gap/prompts/rank-t5.txt
+0ad358280f07e1a0d365f040c1702c3dbfa6ae6526f06c5101b4b19025a3f9cc  docs/evidence/strata-gap/prompts/rank-t6.txt

@@ -1,0 +1,23 @@
+Switching topics entirely: explain how the Global Positioning System works, from satellite physics to the meter-level accuracy you actually get on a phone.
+
+Cover these layers in order:
+
+1. The space segment. How many satellites, which orbital shells (medium Earth orbit altitudes), why that altitude was chosen over geostationary or low Earth orbit (signal visibility, Doppler, number of birds needed, satellite lifetime and radiation belts). What the constellation's ground track repetition means for coverage at high latitudes versus the equator.
+
+2. The signal. What a ranging code is and why a pseudo-random noise code lets many satellites share one frequency (code-division multiple access). The difference between the coarse/acquisition C/A code and the encrypted precision P(Y) code, and what "selective availability" was and when it was switched off. Why the signal carries both a ranging component and the navigation message at a very low bit rate, and how correlation at the receiver recovers timing despite the noise floor being above the signal.
+
+3. The measurement and the math. Why a receiver measures pseudorange rather than range: clock bias in the receiver's cheap quartz oscillator means you have four unknowns (x, y, z, receiver clock error) and need at least four satellites. Show the trilateration logic: with known satellite positions and true ranges you intersect spheres; with pseudoranges you effectively intersect spheres of unknown radius that are all offset by the same c*delta_t. Explain why dilution of precision multiplies the ranging error through the geometry and give a numeric example: 1 m ranging error with GDOP of 3 gives roughly a 3 m position error, then split that into horizontal and vertical components and say why vertical error is typically worse.
+
+4. Error sources and corrections. Ionospheric delay (frequency-dependent, corrected with a dual-frequency combination on military/setellite-augmented signals, modeled with a single-frequency broadcast model for civilians); tropospheric delay (not frequency-dependent, modeled with Saastamoinen or Hopfield models); satellite clock and ephemeris errors broadcast in the message; multipath in urban canyons; and the receiver's own noise. Give a table of typical magnitude in meters for each on a consumer receiver.
+
+5. Augmentations. How WAAS/EGNOS (satellite-based augmentation) and ground-based RTK networks get you from ~3-5 m to centimeters: reference stations at known coordinates compute residual errors, broadcast corrections, and RTK's carrier-phase integer ambiguity resolution. One paragraph each, and the accuracy each achieves.
+
+6. The phone case. How A-GPS uses cell/Wi-Fi assistance to seed almanac data and reduce time to first fix, why phones fall back to Wi-Fi and cell positioning indoors, and how sensor fusion (IMU, barometer) dead-reckons through outages.
+
+End with a short summary table: component, whether it is a measurement, a model, or a broadcast, and its residual error contribution. Keep the tone explanatory, use concrete numbers throughout, and do not just name effects - say which direction each error shifts the solution and how the receiver cancels it.
+
+After the table, add a final section 7 on time itself, because every measurement above depends on it:
+- What GPS time is, how it relates to UTC (the 18-second offset from leap seconds as of the current era), and who decides when to add a leap second and how the announcement reaches satellites versus receivers.
+- Why the satellite clocks are cesium or rubidium frequency standards rather than the much better optical clocks that exist on the ground, and roughly how much each satellite's clock drifts per day without correction.
+- The GPS week number rollover problem: the 10-bit week field, what happens when it overflows, why old receivers show dates in 1999 or 1980 after the rollover, and how the modernized signal extended the range.
+- How precise point positioning uses a network of reference stations to solve for satellite clock and orbit errors jointly with the receiver position, and why that needs convergence time measured in tens of minutes rather than seconds.

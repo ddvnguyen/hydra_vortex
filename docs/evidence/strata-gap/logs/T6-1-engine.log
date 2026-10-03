@@ -1,0 +1,73 @@
+0.00.057.818 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.061.218 W srv  llama_server: -----------------
+0.00.061.219 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.061.219 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.061.219 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.061.220 W srv  llama_server: -----------------
+0.00.062.430 I srv    load_model: loading model '/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+prof_init: profiling on cuda dev 0, link gen 1 x8
+1.51.071.799 I cmn          init: llama threadpool init, n_threads = 6
+1.51.631.408 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+1.51.641.738 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.51.641.768 I srv  llama_server: model loaded
+1.51.641.771 I srv  llama_server: listening on http://127.0.0.1:8093
+1.55.702.084 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.55.702.133 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+2.00.389.615 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =     92, progress = 0.96, t =   4.69 s / 19.63 tokens per second
+PROF ctx=0x5867628c7370 win=0 steps=64 tps=6.67 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=9290.3 t_cpu_ms=20769.7 t_dev_ms=9268.2 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+2.05.104.609 I slot print_timing: id  0 | task 0 | prompt eval time =    4919.06 ms /    96 tokens (   51.24 ms per token,    19.52 tokens per second)
+2.05.104.613 I slot print_timing: id  0 | task 0 |        eval time =    4483.38 ms /    64 tokens (   71.16 ms per token,    14.05 tokens per second)
+2.05.104.614 I slot print_timing: id  0 | task 0 |       total time =    9402.45 ms /   160 tokens
+2.05.104.617 I slot print_timing: id  0 | task 0 |    graphs reused =         63
+2.05.104.644 I slot      release: id  0 | task 0 | stop processing: n_tokens = 159, truncated = 0
+2.05.109.175 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 101541485803
+2.05.236.795 I slot launch_slot_: id  0 | task 67 | processing task, is_child = 0
+PROF prefill ctx=0x5867628c7370 n_tokens=2029 tps=205.82 t_wall_ms=9857.9 t_cpu_ms=9638.9 t_dev_ms=9846.1 t_sync_ms=0.0
+2.15.182.566 I slot print_timing: id  0 | task 67 | prompt processing, n_tokens =   2029, progress = 0.50, t =   9.95 s / 204.01 tokens per second
+2.25.300.489 I slot print_timing: id  0 | task 67 | prompt processing, n_tokens =   4073, progress = 1.00, t =  20.06 s / 203.00 tokens per second
+PROF ctx=0x5867628c7370 win=1 steps=64 tps=4.33 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=14549.4 t_cpu_ms=25724.4 t_dev_ms=14526.8 t_sync_ms=0.2 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+2.32.698.790 I slot print_timing: id  0 | task 67 | n_gen =    100, tg =  13.78 t/s, tg_3s =  13.92 t/s
+PROF ctx=0x5867628c7370 win=2 steps=64 tps=13.55 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=4723.2 t_cpu_ms=16265.9 t_dev_ms=4715.5 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+2.35.706.439 I slot print_timing: id  0 | task 67 | n_gen =    142, tg =  13.83 t/s, tg_3s =  13.96 t/s
+2.38.776.605 I slot print_timing: id  0 | task 67 | n_gen =    183, tg =  13.72 t/s, tg_3s =  13.35 t/s
+PROF ctx=0x5867628c7370 win=3 steps=64 tps=13.60 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=4705.4 t_cpu_ms=16118.3 t_dev_ms=4697.7 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+2.41.787.198 I slot print_timing: id  0 | task 67 | n_gen =    221, tg =  13.52 t/s, tg_3s =  12.62 t/s
+PROF ctx=0x5867628c7370 win=4 steps=64 tps=13.72 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=4665.1 t_cpu_ms=16030.2 t_dev_ms=4654.2 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+2.44.285.987 I slot print_timing: id  0 | task 67 | prompt eval time =   20277.53 ms /  4077 tokens (    4.97 ms per token,   201.06 tokens per second)
+2.44.285.989 I slot print_timing: id  0 | task 67 |        eval time =   18771.63 ms /   256 tokens (   73.61 ms per token,    13.58 tokens per second)
+2.44.285.989 I slot print_timing: id  0 | task 67 |       total time =   39049.16 ms /  4333 tokens
+2.44.285.990 I slot print_timing: id  0 | task 67 |    graphs reused =        316
+2.44.286.136 I slot      release: id  0 | task 67 | stop processing: n_tokens = 4374, truncated = 0
+2.44.291.595 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.942
+2.44.291.634 I slot launch_slot_: id  0 | task 326 | processing task, is_child = 0
+PROF ctx=0x5867628c7370 win=5 steps=64 tps=13.69 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=4676.0 t_cpu_ms=16317.6 t_dev_ms=4660.2 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+2.51.765.268 I slot print_timing: id  0 | task 326 | n_gen =    100, tg =  13.70 t/s, tg_3s =  13.83 t/s
+PROF ctx=0x5867628c7370 win=6 steps=64 tps=14.15 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=4522.7 t_cpu_ms=15678.0 t_dev_ms=4515.2 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+2.54.775.845 I slot print_timing: id  0 | task 326 | n_gen =    143, tg =  13.87 t/s, tg_3s =  14.28 t/s
+2.57.837.015 I slot print_timing: id  0 | task 326 | n_gen =    186, tg =  13.91 t/s, tg_3s =  14.05 t/s
+PROF ctx=0x5867628c7370 win=7 steps=64 tps=14.18 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=4514.2 t_cpu_ms=15798.2 t_dev_ms=4506.5 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+3.00.877.543 I slot print_timing: id  0 | task 326 | n_gen =    227, tg =  13.83 t/s, tg_3s =  13.48 t/s
+PROF ctx=0x5867628c7370 win=8 steps=64 tps=14.16 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=4518.6 t_cpu_ms=15735.6 t_dev_ms=4507.8 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+3.02.954.765 I slot print_timing: id  0 | task 326 | prompt eval time =     244.98 ms /     4 tokens (   61.25 ms per token,    16.33 tokens per second)
+3.02.954.768 I slot print_timing: id  0 | task 326 |        eval time =   18418.13 ms /   256 tokens (   72.23 ms per token,    13.85 tokens per second)
+3.02.954.768 I slot print_timing: id  0 | task 326 |       total time =   18663.11 ms /   260 tokens
+3.02.954.769 I slot print_timing: id  0 | task 326 |    graphs reused =        569
+3.02.954.915 I slot      release: id  0 | task 326 | stop processing: n_tokens = 4374, truncated = 0
+3.02.959.224 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.942
+3.02.959.265 I slot launch_slot_: id  0 | task 583 | processing task, is_child = 0
+PROF ctx=0x5867628c7370 win=9 steps=64 tps=11.98 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=5340.4 t_cpu_ms=17841.5 t_dev_ms=5324.3 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+3.11.554.761 I slot print_timing: id  0 | task 583 | n_gen =    100, tg =  11.87 t/s, tg_3s =  11.99 t/s
+PROF ctx=0x5867628c7370 win=10 steps=64 tps=12.09 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=5294.0 t_cpu_ms=18301.2 t_dev_ms=5285.7 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+3.14.606.850 I slot print_timing: id  0 | task 583 | n_gen =    136, tg =  11.85 t/s, tg_3s =  11.80 t/s
+3.17.621.688 I slot print_timing: id  0 | task 583 | n_gen =    173, tg =  11.94 t/s, tg_3s =  12.27 t/s
+PROF ctx=0x5867628c7370 win=11 steps=64 tps=12.24 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=5230.7 t_cpu_ms=17703.7 t_dev_ms=5222.4 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+3.20.635.952 I slot print_timing: id  0 | task 583 | n_gen =    214, tg =  12.23 t/s, tg_3s =  13.60 t/s
+PROF ctx=0x5867628c7370 win=12 steps=64 tps=13.82 gen=1 width=x8 rx_mbs=0 tx_mbs=0 t_wall_ms=4632.6 t_cpu_ms=15860.8 t_dev_ms=4621.4 t_sync_ms=0.3 bytes_per_step_mib=0.0 draft_ms=0.0 verify_ms=0.0 drafted=0 accepted=0 acc=0.000
+3.23.655.709 I slot print_timing: id  0 | task 583 | n_gen =    253, tg =  12.33 t/s, tg_3s =  12.91 t/s
+3.23.899.088 I slot print_timing: id  0 | task 583 | prompt eval time =     254.01 ms /     4 tokens (   63.50 ms per token,    15.75 tokens per second)
+3.23.899.090 I slot print_timing: id  0 | task 583 |        eval time =   20685.80 ms /   256 tokens (   81.12 ms per token,    12.33 tokens per second)
+3.23.899.091 I slot print_timing: id  0 | task 583 |       total time =   20939.81 ms /   260 tokens
+3.23.899.091 I slot print_timing: id  0 | task 583 |    graphs reused =        822
+3.23.899.197 I slot      release: id  0 | task 583 | stop processing: n_tokens = 4374, truncated = 0
+3.23.985.317 I srv    operator(): operator(): cleaning up before exit...
+PROF summary ctx=0x5867628c7370 windows=13 tps=13.60 rx_mbs=0 tx_mbs=0 t_wall_ms=4705.4 t_cpu_ms=16265.9 t_dev_ms=4697.7 t_sync_ms=0.3 bytes_per_step_mib=0.0 acc=0.000
