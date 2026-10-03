@@ -1,0 +1,14 @@
+[DRY-2] pre-arm gates (mode=DRY):
+GATE ok: MemAvailable 76.0 GiB (>= 67, pre-arm)
+[DRY-2] h2d pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+[DRY-2] launcher pid 678331, waiting for /health (max 900s)
+[DRY-2] ready
+[DRY-2] vram_after_load_mib=6271
+[DRY-2] mem_at_bench=27.3GiB (expected ~27: workload holds 48G shmem-dirty; pre-arm gate passed)
+  p4k rep0 ttft=20.338 prefill=202.53 decode=13.9 err=None
+  p4k rep1 ttft=0.249 prefill=16542.17 decode=14.08 err=None
+  p4k rep2 ttft=0.25 prefill=16476.0 decode=13.97 err=None
+[DRY-2] bench rc=0
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+DRY-2 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/arms/DRY-2.logparse.json (align match=True)
+DRY-2 done status=ok mode=DRY bench_rc=0 parse_rc=0 decode_tps_med=13.97 mem_at_bench=27.3GiB mem_min_during=26.269GiB external_pressure=0 mem_avail_after=75.9GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s;] link_bad_samples=0 rep_bytes=na summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/logs/DRY-2.summary.txt

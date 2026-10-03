@@ -1,0 +1,6 @@
+[NSYS-1] pre-arm gates (mode=NSYS):
+GATE ok: MemAvailable 75.9 GiB (>= 67, pre-arm)
+[NSYS-1] h2d pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+[NSYS-1] launcher pid 698853, waiting for /health (max 900s)
+[NSYS-1] ready
+[NSYS-1] llama-server child not found under nsys

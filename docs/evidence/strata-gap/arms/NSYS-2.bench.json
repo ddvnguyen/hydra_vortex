@@ -1,0 +1,98 @@
+{
+ "arm": "NSYS-2",
+ "engine": "fork",
+ "port": 8093,
+ "model": "gsq-rco-iq3_s",
+ "reps": 3,
+ "max_tokens": 256,
+ "manifest_sha256_of_sha256sums": "a3950ee6903eadce95e24a30eb0b2585ca8c7ff86785424fe42a624890899be2",
+ "started": "2026-10-03T11:38:58.951+07:00",
+ "finished": "2026-10-03T11:40:31.047+07:00",
+ "status": "error: p4k rep2 failed: URLError: <urlopen error [Errno 111] Connection refused>",
+ "warmup": {
+  "start": "2026-10-03T11:38:58.951+07:00",
+  "end": "2026-10-03T11:39:08.270+07:00",
+  "ttft_s": 4.877,
+  "prefill_tps": 19.68,
+  "decode_tps": 14.18,
+  "wall_s": 9.319,
+  "prompt_tokens": 96,
+  "completion_tokens": 64,
+  "cached_tokens": 0,
+  "finish_reason": "length",
+  "usage": {
+   "completion_tokens": 64,
+   "prompt_tokens": 96,
+   "total_tokens": 160,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "snippet": "We need answer user: \"Write a detailed technical explanation of ",
+  "error": null
+ },
+ "cells": [
+  {
+   "id": "p4k",
+   "kind": "prefill_decode",
+   "reps": [
+    {
+     "start": "2026-10-03T11:39:08.271+07:00",
+     "end": "2026-10-03T11:39:47.059+07:00",
+     "ttft_s": 20.298,
+     "prefill_tps": 202.93,
+     "decode_tps": 13.79,
+     "wall_s": 38.789,
+     "prompt_tokens": 4119,
+     "completion_tokens": 256,
+     "cached_tokens": 42,
+     "finish_reason": "length",
+     "usage": {
+      "completion_tokens": 256,
+      "prompt_tokens": 4119,
+      "total_tokens": 4375,
+      "prompt_tokens_details": {
+       "cached_tokens": 42
+      }
+     },
+     "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+     "error": null,
+     "rep": 0
+    },
+    {
+     "start": "2026-10-03T11:39:47.059+07:00",
+     "end": "2026-10-03T11:40:31.046+07:00",
+     "ttft_s": 0.267,
+     "prefill_tps": null,
+     "decode_tps": null,
+     "wall_s": 43.987,
+     "prompt_tokens": null,
+     "completion_tokens": null,
+     "cached_tokens": null,
+     "finish_reason": null,
+     "usage": null,
+     "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+     "error": null,
+     "rep": 1
+    },
+    {
+     "start": "2026-10-03T11:40:31.046+07:00",
+     "end": "2026-10-03T11:40:31.047+07:00",
+     "ttft_s": null,
+     "prefill_tps": null,
+     "decode_tps": null,
+     "wall_s": 0.0,
+     "prompt_tokens": null,
+     "completion_tokens": null,
+     "cached_tokens": null,
+     "finish_reason": null,
+     "usage": null,
+     "snippet": "",
+     "error": "URLError: <urlopen error [Errno 111] Connection refused>",
+     "rep": 2
+    }
+   ]
+  }
+ ],
+ "requests_total": 4
+}

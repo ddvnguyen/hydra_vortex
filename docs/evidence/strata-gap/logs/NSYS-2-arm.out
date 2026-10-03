@@ -1,0 +1,17 @@
+[NSYS-2] pre-arm gates (mode=NSYS):
+GATE ok: MemAvailable 75.7 GiB (>= 67, pre-arm)
+[NSYS-2] h2d pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+[NSYS-2] launcher pid 762692, waiting for /health (max 900s)
+[NSYS-2] ready
+[NSYS-2] nsys pid 762692, llama-server pid 762746
+[NSYS-2] vram_after_load_mib=6283
+[NSYS-2] mem_at_bench=26.3GiB (expected ~27: workload holds 48G shmem-dirty; pre-arm gate passed)
+  p4k rep0 ttft=20.298 prefill=202.93 decode=13.79 err=None
+  p4k rep1 ttft=0.267 prefill=None decode=None err=None
+  p4k rep2 ttft=None prefill=None decode=None err=URLError: <urlopen error [Errno 111] Connection refused>
+ABORT NSYS-2: p4k rep2 failed: URLError: <urlopen error [Errno 111] Connection refused>
+[NSYS-2] bench rc=1
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.13 GB/s
+WARNING: request/line count mismatch
+NSYS-2 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/arms/NSYS-2.logparse.json (align match=False)
+NSYS-2 done status=link_invalid mode=NSYS bench_rc=1 parse_rc=2 decode_tps_med=13.79 mem_at_bench=26.3GiB mem_min_during=24.776GiB external_pressure=0 mem_avail_after=25.4GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.13 GB/s;] link_bad_samples=1 rep_bytes=21574210 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-gap/logs/NSYS-2.summary.txt

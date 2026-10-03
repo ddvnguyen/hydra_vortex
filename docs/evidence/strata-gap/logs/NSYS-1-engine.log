@@ -1,0 +1,20 @@
+T0=1791001396.590894689
+0.00.176.862 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.177.110 W srv  llama_server: -----------------
+0.00.177.111 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.177.111 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.177.111 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.177.112 W srv  llama_server: -----------------
+0.00.178.343 I srv    load_model: loading model '/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+1.50.672.367 I cmn          init: llama threadpool init, n_threads = 6
+1.51.194.583 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+1.51.200.332 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.51.200.363 I srv  llama_server: model loaded
+1.51.200.365 I srv  llama_server: listening on http://127.0.0.1:8093
+3.04.793.937 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/tmp/nsys-report-d741.qdstrm'
+Press Ctrl-C to stop symbol files downloading
+[1/1] [0%                          ] NSYS-1.nsys-rep[1/1] [0%                          ] NSYS-1.nsys-rep[1/1] [9%                          ] NSYS-1.nsys-rep[1/1] [========40%                 ] NSYS-1.nsys-rep[1/1] [==========47%               ] NSYS-1.nsys-rep[1/1] [============54%             ] NSYS-1.nsys-rep[1/1] [============55%             ] NSYS-1.nsys-rep[1/1] [==============64%           ] NSYS-1.nsys-rep[1/1] [===============66%          ] NSYS-1.nsys-rep[1/1] [========================100%] NSYS-1.nsys-rep[1/1] [========================100%] NSYS-1.nsys-rep
+Generated:
+	/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/strata-research/nsys/NSYS-1.nsys-rep
