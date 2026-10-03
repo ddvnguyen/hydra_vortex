@@ -1,0 +1,64 @@
+GLOBAL tensors (non-block):
+  output.weight                            q6_K        0.486 GiB  ne=2560x248320x1x1
+  output_hc_down.weight                    q8_0        0.003 GiB  ne=10240x320x1x1
+  output_hc_norm.weight                    f32         0.000 GiB  ne=10240x1x1x1
+  output_hc_up.weight                      q8_0        0.003 GiB  ne=320x10240x1x1
+  per_layer_token_embd.weight              iq4_nl     26.822 GiB  ne=160x320001536x1x1
+  token_embd.weight                        iq4_xs      0.315 GiB  ne=2560x248320x1x1
+
+ L kind      gate     up       down      exp GiB attn/ssm GiB shexp GiB other GiB total GiB  extra
+ 0 DeltaNet  iq3_xxs  iq3_s    iq4_nl      1.074        0.044     0.004     0.011     1.134  
+ 1 DeltaNet  iq3_xxs  iq3_s    iq4_nl      1.074        0.044     0.004     0.037     1.159  
+ 2 DeltaNet  iq3_xxs  iq3_s    iq4_nl      1.074        0.044     0.004     0.011     1.134  
+ 3 full-attn iq2_xs   iq2_s    iq4_nl      0.916        0.039     0.004     0.014     0.973  
+ 4 DeltaNet  iq2_xs   iq2_s    iq4_nl      0.916        0.044     0.004     0.011     0.975  
+ 5 DeltaNet  iq2_xs   iq2_s    iq4_nl      0.916        0.044     0.004     0.011     0.975  
+ 6 DeltaNet  iq2_xs   iq2_s    iq4_nl      0.916        0.044     0.004     0.011     0.975  
+ 7 full-attn iq2_xs   iq2_s    iq4_nl      0.916        0.039     0.004     0.014     0.973  
+ 8 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+ 9 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+10 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+11 full-attn iq2_xxs  iq2_xs   iq4_nl      0.867        0.039     0.004     0.014     0.924  
+12 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+13 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+14 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+15 full-attn iq2_xxs  iq2_xs   iq4_nl      0.867        0.039     0.004     0.014     0.924  
+16 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+17 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+18 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+19 full-attn iq2_xxs  iq2_xs   iq4_nl      0.867        0.039     0.004     0.014     0.924  
+20 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+21 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+22 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+23 full-attn iq2_xxs  iq2_xs   iq4_nl      0.867        0.039     0.004     0.014     0.924  
+24 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+25 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+26 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+27 full-attn iq2_xxs  iq2_xs   iq4_nl      0.867        0.039     0.004     0.014     0.924  
+28 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+29 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+30 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+31 full-attn iq2_xxs  iq2_xs   iq4_nl      0.867        0.039     0.004     0.014     0.924  
+32 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+33 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+34 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+35 full-attn iq2_xxs  iq2_xs   iq4_nl      0.867        0.039     0.004     0.014     0.924  
+36 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+37 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+38 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+39 full-attn iq2_xxs  iq2_xs   iq4_nl      0.867        0.039     0.004     0.014     0.924  
+40 DeltaNet  iq2_xxs  iq2_xs   iq4_nl      0.867        0.044     0.004     0.011     0.926  
+41 DeltaNet  iq2_xs   iq2_s    iq4_nl      0.916        0.044     0.004     0.011     0.975  
+42 DeltaNet  iq2_xs   iq2_s    iq4_nl      0.916        0.044     0.004     0.011     0.975  
+43 full-attn iq2_xs   iq2_s    iq4_nl      0.916        0.039     0.004     0.014     0.973  
+44 DeltaNet  iq2_xs   iq2_s    iq4_nl      0.916        0.044     0.004     0.011     0.975  
+45 DeltaNet  iq2_xs   iq2_s    iq4_nl      0.916        0.044     0.004     0.011     0.975  
+46 DeltaNet  iq2_xs   iq2_s    iq4_nl      0.916        0.044     0.004     0.011     0.975  
+47 full-attn iq2_xs   iq2_s    iq4_nl      0.916        0.039     0.004     0.014     0.973  
+
+TOTALS GiB: experts 42.81  attn/ssm 2.04  shared-exp 0.20  other-in-block 0.61  non-block 27.63  ALL 73.29
+
+expert quant combos (gate,up,down) -> #layers:
+  ('iq2_xxs', 'iq2_xs', 'iq4_nl') 33
+  ('iq2_xs', 'iq2_s', 'iq4_nl') 12
+  ('iq3_xxs', 'iq3_s', 'iq4_nl') 3

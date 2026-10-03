@@ -1,0 +1,12 @@
+[K1] pre-arm gates:
+GATE ok: MemAvailable 76.5 GiB (>= 67)
+[K1] h2d pre: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+[K1] server.py pid 1099381, waiting for /health (max 900s)
+[K1] ready, engine pid 1099413
+  p63k rep0 ttft=92.308 prefill=682.94 decode=25.18 err=None
+  p63k rep1 ttft=0.302 prefill=208745.03 decode=36.82 err=None
+  p63k rep2 ttft=0.283 prefill=222759.72 decode=38.13 err=None
+[K1] bench rc=0
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+K1-1 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ctx63k/arms/K1-1.logparse.json (align match=True)
+K1-1 done status=ok bench_rc=0 parse_rc=0 mem_avail_after=77.3GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s;] link_bad_samples=0 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/docs/evidence/strata-3060-ctx63k/logs/K1-1.summary.txt
