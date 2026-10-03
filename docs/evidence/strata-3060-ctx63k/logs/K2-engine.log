@@ -1,0 +1,58 @@
+strata generate: PCIe probe: 6.1 GB/s host->device -> pcie_frac 0.13 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: /mnt/SSD/strata-models/packs/iq3_s experts (largest blob 2.66 MB), token embedding type 23 in mapped host memory (322 MiB)
+strata generate: 1466 MiB of weights loaded from /mnt/SSD/strata-models/packs/iq3_s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights
+strata generate: KV streaming: 32768 of 65536 cells per QSA layer in VRAM, the K/V in 0.77 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+strata mtp: draft layer loaded, 835 MiB of VRAM (experts 675, dense 111), files read in 1.72 s (457 MiB/s)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages
+strata generate: loaded 46.84 GiB at 0.46 GiB/s
+strata generate: profile /mnt/WorkDisk/strata/src-v0.1.29/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: experimental native Q5_K head, 521472000 bytes
+strata generate: expert cache auto: 5.86 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 1999 slots
+strata generate: expert cache 2581 slots, 4.96 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 2581 of 2581 slots from the profile; slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.29)
+strata generate: token graph hit path: 2581 resident experts, decided on the device
+strata serve: prompt chunk auto: 6144 tokens
+strata serve: the prompt path borrows 1913 cache slots (3.67 GiB)
+strata verify: window up to 6 tokens, 74.3 MiB of device buffers
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: 458 MiB of VRAM free with everything loaded
+strata prefill timing: 91 tokens, GPU timeline 2953 ms, wall 2958 ms, host staging 32 ms: embed+steps 24 (0.8%) hc read 54 (1.8%) gdn 160 (5.4%) qsa proj 46 (1.6%) qsa indexer 0 (0.0%) qsa select 0 (0.0%) qsa attn 0 (0.0%) router+shared 20 (0.7%) host grouping 6 (0.2%) gather 4 (0.1%) wait copy 2156 (73.0%) dequant 262 (8.9%) gemm gate/up 105 (3.5%) gemm down 58 (1.9%) combine 4 (0.1%) ple 1 (0.0%) kv stage 0 (0.0%) gdn conv+gates 2 (0.1%) gdn recurrence 6 (0.2%) gdn out proj 44 (1.5%)
+strata prefill timing: host: chunk setup (PLE rows, the expert stream plan) 24 ms, waiting for each chunk 69 ms, after each chunk (the draft layer, progress) 6 ms, PLE 24 ms
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata verify: captured the 6-token window (upload no error, sync no error)
+strata verify: captured the 2-token window (upload no error, sync no error)
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata decode timing: 19 windows, avg T 3.84, 3.37 tokens/window, 91.25 ms/window = verify 86.33 (GPU-reach wait 25.94 + per-layer host 53.42 [plan 0.18 actq 1.39 jobs 0.64 CPU 51.15] + stage 0.55) + commit/emit 1.05 + draft 3.86; per layer-window: CPU experts 15.94 (22.59 entries), VRAM hits 14.01, PCIe 1.79
+strata serve: prompt 96 tokens = 0 reused + 96 read in 3240 ms (29.6 tok/s), 64 generated in 1734 ms (36.9 tok/s), drafts accepted 46 of 54, 1 checkpoints
+strata serve: decode expert cache hit rate: 38.3% (12775 hits / 33374 lookups)
+strata serve: KV streaming: 98.38% of 29616 block reads hit VRAM, 1.9 MiB read from RAM
+strata serve: suffix drafts: 3 windows, 15 of 15 drafts accepted
+strata prefill timing: 63036 tokens, GPU timeline 102434 ms, wall 102524 ms, host staging 1034 ms: embed+steps 4012 (3.9%) hc read 5554 (5.4%) gdn 8011 (7.8%) qsa proj 4177 (4.1%) qsa indexer 2 (0.0%) qsa select 2362 (2.3%) qsa attn 5357 (5.2%) router+shared 1839 (1.8%) host grouping 326 (0.3%) gather 1019 (1.0%) wait copy 23682 (23.1%) dequant 7046 (6.9%) gemm gate/up 10053 (9.8%) gemm down 5817 (5.7%) combine 2417 (2.4%) ple 261 (0.3%) kv stage 12050 (11.8%) gdn conv+gates 742 (0.7%) gdn recurrence 3646 (3.6%) gdn out proj 4058 (4.0%)
+strata prefill timing: host: chunk setup (PLE rows, the expert stream plan) 905 ms, waiting for each chunk 574 ms, after each chunk (the draft layer, progress) 2134 ms, PLE 914 ms
+strata verify: captured the 5-token window (upload no error, sync no error)
+strata decode timing: 145 windows, avg T 2.14, 1.77 tokens/window, 50.61 ms/window = verify 45.76 (GPU-reach wait 21.71 + per-layer host 21.21 [plan 0.12 actq 0.90 jobs 0.55 CPU 19.61] + stage 0.62) + commit/emit 0.94 + draft 3.88; per layer-window: CPU experts 6.30 (7.41 entries), VRAM hits 13.58, PCIe 0.45
+strata serve: prompt 63041 tokens = 0 reused + 63041 read in 103367 ms (609.9 tok/s), 256 generated in 7338 ms (34.9 tok/s), drafts accepted 112 of 166, 4 checkpoints
+strata serve: decode expert cache hit rate: 64.7% (94535 hits / 146078 lookups)
+strata serve: KV streaming: 97.38% of 1940988 block reads hit VRAM, 204.8 MiB read from RAM
+strata serve: suffix drafts: 5 windows, 10 of 13 drafts accepted
+strata decode timing: 150 windows, avg T 2.08, 1.71 tokens/window, 46.83 ms/window = verify 41.97 (GPU-reach wait 21.64 + per-layer host 17.66 [plan 0.12 actq 0.89 jobs 0.56 CPU 16.06] + stage 0.51) + commit/emit 0.94 + draft 3.90; per layer-window: CPU experts 5.22 (6.10 entries), VRAM hits 14.34, PCIe 0.35
+strata serve: prompt 63041 tokens = 63036 reused + 5 read in 113 ms (44.1 tok/s), 256 generated in 7025 ms (36.4 tok/s), drafts accepted 107 of 162, 4 checkpoints
+strata serve: decode expert cache hit rate: 70.2% (103282 hits / 147205 lookups)
+strata serve: KV streaming: 98.57% of 3888252 block reads hit VRAM, 223.7 MiB read from RAM
+strata serve: suffix drafts: 5 windows, 10 of 12 drafts accepted
+strata decode timing: 143 windows, avg T 2.22, 1.79 tokens/window, 51.01 ms/window = verify 46.01 (GPU-reach wait 21.97 + per-layer host 21.53 [plan 0.11 actq 0.90 jobs 0.57 CPU 19.91] + stage 0.30) + commit/emit 0.94 + draft 4.04; per layer-window: CPU experts 6.38 (7.64 entries), VRAM hits 14.10, PCIe 0.48
+strata serve: prompt 63041 tokens = 63036 reused + 5 read in 117 ms (42.8 tok/s), 256 generated in 7294 ms (35.1 tok/s), drafts accepted 113 of 175, 4 checkpoints
+strata serve: decode expert cache hit rate: 64.8% (96810 hits / 149283 lookups)
+strata serve: KV streaming: 98.93% of 5872428 block reads hit VRAM, 253.5 MiB read from RAM
+strata serve: suffix drafts: 15 windows, 32 of 36 drafts accepted

@@ -1,0 +1,55 @@
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.architecture	qwen4exp
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.description	A Preview of the Qwen4 Architecture
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.file_type	26
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.name	Qwen3.8-Flash-Next GSQ-RCO
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.quantization_version	2
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.quantized_by	ISTA DASLab
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.repo_url	https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.sampling.temp	1
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.sampling.top_k	20
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.sampling.top_p	0.95
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.size_label	512x56B
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	general.type	model
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	quantize.imatrix.chunks_count	1000
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	quantize.imatrix.dataset	calib_qwen3.8-flash-next.tokids
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	quantize.imatrix.entries_count	926
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	quantize.imatrix.file	imatrix-qwen3.8-flash-next.gguf
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.compress_ratios	<array n=48>
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.head_count	24
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.head_count_kv	2
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.indexer.head_count	4
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.indexer.key_length	128
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.indexer.top_k	2048
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.key_length	256
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.layer_norm_rms_epsilon	1e-06
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.attention.value_length	256
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.block_count	48
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.context_length	262144
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.embedding_length	2560
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.embedding_length_per_layer_input	160
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.expert_count	512
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.expert_feed_forward_length	640
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.expert_shared_feed_forward_length	640
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.expert_used_count	10
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.full_attention_interval	4
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.hyper_connection.count	4
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.hyper_connection.low_rank	320
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.conv_kernel	4
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.eos_token_id	248044
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.head_offsets	<array n=16>
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.heads_per_ngram	8
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.head_vocab_sizes	<array n=16>
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.image_token_id	248056
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.layer_multipliers	<array n=3>
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.layers	<array n=1>
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ple.ngram_size	3
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.rope.dimension_count	64
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.rope.dimension_sections	<array n=4>
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.rope.freq_base	1e+07
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ssm.conv_kernel	4
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ssm.group_count	16
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ssm.inner_size	6144
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ssm.state_size	128
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	qwen4exp.ssm.time_step_rank	48
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf	split.tensors.count	1224
+KV	Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf	split.tensors.count	1224
