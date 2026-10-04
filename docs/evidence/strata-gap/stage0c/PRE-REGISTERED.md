@@ -210,3 +210,25 @@ disk bound `K·s ≤ 60 GB` ⇒ **K ≤ 14**.
 ### base-file peak 57.0 GB (95 GB free → ≥ 38 GB remains, ≥ 30 GB rule holds).
 
 No other pre-registered item changes. P1/P2/P3 and C1 run at this extent.
+
+---
+
+## 9. AMENDMENT — control `C1` moved to immediately after `B1` (2026-10-04 10:30 +07)
+
+**When:** after `A1` completed (`rc=0`, wall 1767.5 s, base 56 953 530 276 B = 57.0 GB),
+**before** `C1`/`A2`/`B2`/`A3`/`B3`. Nothing about the metric, extent, flags, env or pair
+definition changes.
+
+**Why (disk arithmetic in §4 was infeasible as written):** §4 said "keep `A1` until after
+`C1`, delete `A2`/`A3` after their pair". Two live bases at once = 114 GB while the
+worktree had 95 GB free pre-arm (41 GB free after `A1`), which also breaks §5's
+`K·s ≤ 60 GB` base-file rule. With `s = 4.07 GB/chunk` and `K = 14`, **exactly one base
+file can exist at any time**.
+
+**Resolution (no other option preserves `C1`):** execute `C1` (repeat run B against the
+same `A1`, identical flags, all `HYDRA_*` unset) **right after `B1`**, then delete `A1.kld`,
+then run `P2` and `P3`. The control is unaffected in substance — it is a byte-identical
+re-run of `B1` against the same base; its only difference from the registered order is
+that it sits adjacent to `B1` instead of after `P3`, which *reduces* (not increases)
+environmental drift between `B1` and `C1` and is the same adjacency the E1 isolation legs
+used. Every reading is reported raw, so any residual time-drift caveat is visible.
