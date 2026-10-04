@@ -1,0 +1,83 @@
+=== stage0c B2 ===
+date: 2026-10-04T11:57:59+07:00
+host: ddv-server
+binary: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/../perplexity-ci/bin/llama-perplexity
+binary_sha256: 92594986686a4bbe23a2834695792ce32f8b18b9d57bf3c50e0ac87aba715fdd
+cmd: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 -np 1 --flash-attn on -t 6 --experimental-logs --load-mode none -b 2048 -ub 2048 --kl-divergence --kl-divergence-base .local/stage0c/A2.kld
+cwd: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c
+TMPDIR: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/.local/tmp
+env_HYDRA_LLAMA: (none — zero-change)
+nproc=20 threads=6 load1=7.78
+memavailable_gib: 85.8
+gpu_state_before:
+0, 1 MiB, 0 %
+1, 1 MiB, 100 %
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+--- output ---
+1.55.954.251 I cmn          init: llama threadpool init, n_threads = 6
+1.56.178.243 I 
+1.56.178.305 I system_info: n_threads = 6 (n_threads_batch = 6) / 20 | CUDA : ARCHS = 860,1200 | FORCE_CUBLAS = 1 | USE_GRAPHS = 1 | FA_QUANTS = all | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+1.57.604.379 I kl_divergence: computing over 14 chunks, n_ctx=16384, batch_size=2048, n_seq=1
+3.54.843.899 I kl_divergence: 117.24 seconds per pass - ETA 27.35 minutes
+
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+   1       2.1818 ±    0.0430       0.00269 ±    0.00168       0.00763 ±    0.00034     3.495 ±  0.138 %    97.546 ±  0.171 %
+   2       2.8441 ±    0.0431       0.00106 ±    0.00114       0.00712 ±    0.00019     3.079 ±  0.085 %    97.155 ±  0.130 %
+   3       2.4724 ±    0.0284       0.00036 ±    0.00085       0.00595 ±    0.00013     2.876 ±  0.063 %    97.619 ±  0.097 %
+   4       2.8088 ±    0.0296      -0.00045 ±    0.00068       0.00522 ±    0.00010     2.627 ±  0.053 %    97.647 ±  0.084 %
+   5       2.8866 ±    0.0271      -0.00054 ±    0.00058       0.00474 ±    0.00009     2.500 ±  0.046 %    97.746 ±  0.073 %
+   6       3.0269 ±    0.0267      -0.00015 ±    0.00052       0.00452 ±    0.00008     2.400 ±  0.041 %    97.776 ±  0.067 %
+   7       3.1308 ±    0.0256      -0.00015 ±    0.00047       0.00439 ±    0.00007     2.333 ±  0.037 %    97.733 ±  0.062 %
+   8       3.3888 ±    0.0268      -0.00026 ±    0.00043       0.00428 ±    0.00006     2.259 ±  0.034 %    97.638 ±  0.059 %
+   9       3.4454 ±    0.0259      -0.00081 ±    0.00043       0.00468 ±    0.00007     2.357 ±  0.039 %    97.580 ±  0.057 %
+  10       3.5312 ±    0.0253      -0.00082 ±    0.00040       0.00456 ±    0.00007     2.310 ±  0.037 %    97.583 ±  0.054 %
+  11       3.5359 ±    0.0240      -0.00077 ±    0.00037       0.00436 ±    0.00006     2.257 ±  0.034 %    97.589 ±  0.051 %
+  12       3.7313 ±    0.0247      -0.00067 ±    0.00036       0.00441 ±    0.00006     2.226 ±  0.032 %    97.519 ±  0.050 %
+  13       3.6085 ±    0.0228      -0.00106 ±    0.00037       0.00492 ±    0.00014     2.395 ±  0.042 %    97.526 ±  0.048 %
+  14       3.6802 ±    0.0227      -0.00052 ±    0.00037       0.00516 ±    0.00015     2.431 ±  0.046 %    97.511 ±  0.046 %
+
+====== Perplexity statistics ======
+Mean PPL(Q)                   :   3.680226 ±   0.022675
+Mean PPL(base)                :   3.682123 ±   0.022699
+Cor(ln(PPL(Q)), ln(PPL(base))):  99.82%
+Mean ln(PPL(Q)/PPL(base))     :  -0.000515 ±   0.000368
+Mean PPL(Q)/PPL(base)         :   0.999485 ±   0.000368
+Mean PPL(Q)-PPL(base)         :  -0.001897 ±   0.001355
+
+====== KL divergence statistics ======
+Mean    KLD:   0.005165 ±   0.000149
+Maximum KLD:  10.020530
+99.9%   KLD:   0.238767
+99.0%   KLD:   0.055921
+95.0%   KLD:   0.017942
+90.0%   KLD:   0.010002
+Median  KLD:   0.001171
+10.0%   KLD:   0.000010
+ 5.0%   KLD:   0.000002
+ 1.0%   KLD:  -0.000001
+ 0.1%   KLD:  -0.000012
+Minimum KLD:  -0.000166
+
+====== Token probability statistics ======
+Mean    Δp: -0.008 ± 0.007 %
+Maximum Δp: 99.913%
+99.9%   Δp: 19.320%
+99.0%   Δp:  6.940%
+95.0%   Δp:  2.724%
+90.0%   Δp:  1.490%
+75.0%   Δp:  0.240%
+Median  Δp: -0.000%
+25.0%   Δp: -0.267%
+10.0%   Δp: -1.540%
+ 5.0%   Δp: -2.809%
+ 1.0%   Δp: -6.994%
+ 0.1%   Δp: -17.867%
+Minimum Δp: -98.217%
+RMS Δp    :  2.431 ± 0.046 %
+Same top p: 97.511 ± 0.046 %
+
+--- rc=0 wall_s=1764.4 (2026-10-04T12:27:24+07:00) ---
+gpu_state_after:
+0, 1 MiB, 0 %
+1, 1 MiB, 66 %
+h2d_post: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.12 GB/s

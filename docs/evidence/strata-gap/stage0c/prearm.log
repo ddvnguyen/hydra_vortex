@@ -1,0 +1,12 @@
+=== stage0c pre-arm 2026-10-04T09:45:04+07:00 ===
+GATE ok: MemAvailable 87.9 GiB (>= 67, pre-arm only)
+GATE ok: spare 14 = nproc 20 - threads 6 (>= 2)
+GATE ok: worktree disk 95 GiB free (>= 30)
+gpu_state:
+0, 1 MiB, 0 %
+1, 1 MiB, 0 %
+env_HYDRA_LLAMA: (none)
+h2d_pre_check: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+binary: 92594986686a4bbe23a2834695792ce32f8b18b9d57bf3c50e0ac87aba715fdd  /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/../perplexity-ci/bin/llama-perplexity
+corpus: 173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08  /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/scripts/eval/wikitext-2-raw/wiki.test.raw
+ldd_not_found: 0
