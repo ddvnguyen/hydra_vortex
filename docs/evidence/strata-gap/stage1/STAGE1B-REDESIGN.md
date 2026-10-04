@@ -599,6 +599,46 @@ compile would have caught.
 
 ---
 
+## 10.4 G-K1 control — **PRE-REGISTERED, written before any flag-on data was seen**
+
+Review instruction: decide how the flag-off-vs-flag-off control is judged **before** looking at
+flag-on results, because a control measured after the fact is not a control.
+
+**The control.** Two *independent* `S1OFF` sessions, same binary, same sha256-pinned prompts,
+`temperature: 0`, `cache_prompt` disabled, 256 completion tokens, cells `warmup` / `p4k` / `p12k`.
+One prior flag-on measurement already exists (see §10.5); it is **excluded from the control** and
+used only as flag-on data.
+
+**The metric.** Per cell, the longest common prefix (LCP) of the **full concatenated output** —
+`content` then `reasoning_content` in arrival order, not a 64-char snippet — measured in
+**characters**, and reported as a fraction of the shorter run. Character-level LCP rather than
+token-level because the harness already reconstructs exact strings and a tokeniser-independent
+measure cannot itself be the thing that differs.
+
+**Pre-registered decision rule.** Let `L` = the minimum LCP fraction across the three cells of the
+two control runs.
+
+| `L` | verdict on G-K1 as originally written |
+|---|---|
+| `L == 1.0` (bit-identical control) | G-K1 is usable as written. Flag-on must match the control exactly. Any divergence is a real defect. |
+| `L < 1.0` | **G-K1 as written is not achievable on this model and cannot be used as a pass/fail gate.** It is downgraded to a *distributional* gate: flag-on's LCP-vs-control distribution must not be **worse** than the control-vs-control distribution. Concretely, flag-on is judged against the control pair's own worst-case LCP; a flag-on LCP at or above that worst case is PASS. |
+
+This is decided **now**, in advance, and will not be revisited after seeing flag-on data.
+
+**Why character-LCP and not identity.** `STAGE1-IMPL-SPEC.md` §7.1 R5 already records that this
+model's temp-0 sampling diverges between model builds ("acceptance 0.43 vs 0.80"), and
+`STAGE0C-RESULTS.md` §3.2 measured run-to-run Mean KLD of **1.45e-4** at build-vs-itself — i.e.
+*this model is not bit-reproducible at temperature 0*. A gate demanding 100% identical decode
+tokens is therefore a statement about the rig's determinism, not about this patch, and the
+control is what distinguishes the two. The control costs two extra sessions (~9 min) and is the
+cheapest way to stop a null from being misattributed — which is exactly the mistake the first
+measurement nearly made.
+
+**Measured control is reported in `STAGE1B-RESULTS.md`, not here**, so that this section stays a
+pure pre-registration.
+
+---
+
 ## 11. Untested / open
 
 - **Part 1 of the implementation is committed (`ffbbe31e`) and CI-validating (§10); nothing else
