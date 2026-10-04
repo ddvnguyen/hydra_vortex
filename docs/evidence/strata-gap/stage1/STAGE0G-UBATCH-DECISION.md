@@ -228,6 +228,16 @@ here — the freed VRAM has nothing to compete with, exactly as §4.2 argued.
 where it would apply; a sweep without `--n-cpu-moe 99` is a separate job on a 12 GiB card that
 cannot hold 42.81 GiB of expert weights, so it likely needs a different rig (5060 Ti or P100).
 
+## Leader review note (2026-10-05)
+
+"Decode does not move with `-ub`" should be read as **no detectable change at this n**, not as proof of none.
+The `-ub 4096` interval (0.946-1.046) excludes a change larger than about 5%, but the `-ub 8192` interval
+(0.876-1.106, sd 0.046, n=3, one outlier round) cannot exclude a change of about 10% either way, which is the
+size of the inferred -9.2%. So "~10x smaller than the inferred figure" (§4.2) is a point estimate, not a bound.
+Treat the 8192 decode claim as supported only for `--n-cpu-moe 99`, and still open at the interval's edge; a
+decision on 8192 needs either more rounds or the owner accepting that width. The remaining prerequisite for any
+default change is the teacher-forced KL (§3).
+
 ## 3. Teacher-forced KL — **NOT MEASURED**, deferred by instruction
 
 The leader deferred this: a ~57 GB base dump plus three passes is a separate long job. **Not
