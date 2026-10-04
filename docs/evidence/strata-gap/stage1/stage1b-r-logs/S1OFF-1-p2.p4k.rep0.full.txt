@@ -1,0 +1,9 @@
+We need answer to user? User pasted a long benchmark prompt cell p4k? It seems they want maybe produce something? Need infer task. The user content is just a benchmark prompt cell, no explicit question. We need respond likely summarize/analyze? Need maybe complete? Let's inspect. Title: "# t0006 benchmark prompt cell p4k
+
+# Layer split across GPUs (2026-09-29) ...
+
+## Why it is fast" ends abruptly. Maybe they expect us to continue? It says benchmark prompt cell p4k. Could be from some dataset where need answer? We need produce final answer likely a concise summary or analysis of benchmark? Need determine likely desired output. The prompt includes multiple benchmark reports. It ends with "## Why it is fast" incomplete. Maybe they want us to write the missing section? Or evaluate? The user likely pasted a prompt cell and expects model to generate something? We need satisfy. Could be asking to produce a benchmark prompt cell? Hmm.
+
+We need respond in English? User content English. Need final answer. Need maybe produce a coherent completion for "Why it is fast" based on data. Or summarize key findings. Let's think.
+
+The text:

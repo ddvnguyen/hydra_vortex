@@ -1,0 +1,1 @@
+S1ON-1-p1 done status=bench_failed threads=6 prof=0 sched=0 bench_rc=1 parse_rc=0 mem_avail_after=84.4GiB h2d=[dev 1 @;dev 1 @;] link_bad_samples=0 load1_max=33.32 spare=14 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/docs/evidence/strata-gap/stage1b-r/logs/S1ON-1-p1.summary.txt

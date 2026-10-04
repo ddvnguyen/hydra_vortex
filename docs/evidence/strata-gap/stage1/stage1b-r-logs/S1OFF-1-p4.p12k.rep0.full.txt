@@ -1,0 +1,5 @@
+We need answer to user. User provided a huge benchmark prompt cell p12k, likely expects something? The prompt is just content, no explicit question. Need infer task? It says "# t0006 benchmark prompt cell p12k" then README/benchmark data. Maybe this is a benchmark prompt cell, likely wants to process? We need respond maybe summarize? Need analyze. The user likely pasted a benchmark prompt cell and expects model to do something? There is no instruction. Could be from benchmark where prompt is a cell and we need answer? Need produce final answer. Need maybe identify that no question asked, ask clarification? But benchmark likely expects a specific output? Let's inspect. It includes a README for Strata, then many benchmark tables. Title "t0006 benchmark prompt cell p12k". Maybe they want to evaluate long context? Could be a prompt cell from a benchmark, maybe need answer a hidden question? There is no question. Could be they want to continue? Maybe the task is to generate a response to the prompt? The prompt itself is a README. Maybe they want to summarize? We need decide.
+
+The user message: "# t0006 benchmark prompt cell p12k
+
+<h

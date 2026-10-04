@@ -1,0 +1,126 @@
+{
+  "label": "S1ON-1-p2",
+  "port": 8093,
+  "max_tokens": 256,
+  "cells": {
+    "warmup": [
+      {
+        "start": "2026-10-04T20:04:59.417+07:00",
+        "end": "2026-10-04T20:05:25.949+07:00",
+        "ttft_s": 5.162,
+        "prefill_tps": 18.6,
+        "decode_tps": 11.93,
+        "wall_s": 26.532,
+        "prompt_tokens": 96,
+        "completion_tokens": 256,
+        "cached_tokens": 0,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 96,
+          "total_tokens": 352,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "snippet": "We need answer user: \"Write a detailed technical explanation of ",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b",
+        "full_file": "S1ON-1-p2.warmup.rep0.full.txt",
+        "full_sha256": "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b",
+        "full_len": 1193
+      }
+    ],
+    "p4k": [
+      {
+        "start": "2026-10-04T20:05:25.949+07:00",
+        "end": "2026-10-04T20:06:10.491+07:00",
+        "ttft_s": 23.054,
+        "prefill_tps": 178.67,
+        "decode_tps": 11.87,
+        "wall_s": 44.542,
+        "prompt_tokens": 4119,
+        "completion_tokens": 256,
+        "cached_tokens": 42,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 4119,
+          "total_tokens": 4375,
+          "prompt_tokens_details": {
+            "cached_tokens": 42
+          }
+        },
+        "snippet": "We need answer to user. User provided a long benchmark prompt ce",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "cc597fdde4c804adee7218e3a4d204679cd33d69e068bf9fe5abf2095a15a596",
+        "full_file": "S1ON-1-p2.p4k.rep0.full.txt",
+        "full_sha256": "cc597fdde4c804adee7218e3a4d204679cd33d69e068bf9fe5abf2095a15a596",
+        "full_len": 1148
+      }
+    ],
+    "p12k": [
+      {
+        "start": "2026-10-04T20:06:10.497+07:00",
+        "end": "2026-10-04T20:07:43.201+07:00",
+        "ttft_s": 69.838,
+        "prefill_tps": 176.61,
+        "decode_tps": 11.15,
+        "wall_s": 92.704,
+        "prompt_tokens": 12334,
+        "completion_tokens": 256,
+        "cached_tokens": 42,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 12334,
+          "total_tokens": 12590,
+          "prompt_tokens_details": {
+            "cached_tokens": 42
+          }
+        },
+        "snippet": "We need answer to user. User provided a huge benchmark prompt ce",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "a189480d7d91d148381c4ea0308055c2076c1c152362792167e7344291ff580a",
+        "full_file": "S1ON-1-p2.p12k.rep0.full.txt",
+        "full_sha256": "a189480d7d91d148381c4ea0308055c2076c1c152362792167e7344291ff580a",
+        "full_len": 1166
+      }
+    ]
+  },
+  "gk1_self_identical": true,
+  "gk1_detail": {
+    "warmup": {
+      "shas": [
+        "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b"
+      ],
+      "self_identical": true
+    },
+    "p4k": {
+      "shas": [
+        "cc597fdde4c804adee7218e3a4d204679cd33d69e068bf9fe5abf2095a15a596"
+      ],
+      "self_identical": true
+    },
+    "p12k": {
+      "shas": [
+        "a189480d7d91d148381c4ea0308055c2076c1c152362792167e7344291ff580a"
+      ],
+      "self_identical": true
+    }
+  },
+  "cold_prefill_tps": {
+    "warmup": 18.6,
+    "p4k": 178.67,
+    "p12k": 176.61
+  }
+}

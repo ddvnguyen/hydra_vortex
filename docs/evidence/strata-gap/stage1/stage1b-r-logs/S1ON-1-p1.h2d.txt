@@ -1,0 +1,2 @@
+dev 1 @ÔQ H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+dev 1 @ÔQ H2D pinned: avg 6.10 GB/s best 6.11 GB/s

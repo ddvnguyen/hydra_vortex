@@ -363,8 +363,10 @@ runtime**, not assume 1 ⇒ 2. G-V passes either way.
 | ⇒ transfer time | **5.0-5.9 s** ⇒ **49-58% of the wall is PCIe** |
 | link duty | **≈51%** (3.14 GiB/s mean, peak 6.689 GB/s) ⇒ **≈49% of the link is idle** |
 
-**Perfect-overlap ceiling** `[derived]`: wall → `max(transfer, compute)` instead of
-`transfer + non-transfer`:
+**Perfect-overlap ceiling** `[derived]` — **SUPERSEDED by §7a, do not quote this number.**
+It assumes the whole transfer hides behind compute, which the ids dependency forbids. Retained
+only to show where the original 1.9-2.4x (and the 1.73x below) came from: wall →
+`max(transfer, compute)` instead of `transfer + non-transfer`:
 
 ```
 transfer          = 5.9 s   (worst of 5.0-5.9)
@@ -384,6 +386,82 @@ copy engine can hide behind. **Kill condition in §9 tests exactly this.** If th
 term is itself mostly host stalls (188 of them) rather than GPU work, then removing the stalls
 wins even more; if it is GPU work the copy engine contends for, overlap wins less. Either way
 the measurement decides — that is what a falsified Stage 1 is.
+
+---
+
+## 7a. ADDENDUM — the overlap is **within** a layer, not across layers (§7 ceiling restated)
+
+Review finding F2. **§7's 1.73x ceiling is optimistic and is withdrawn.** The dependency chain is
+the whole story and it was missing from §7:
+
+> the used-experts set for layer *L+1* comes from `ids(L+1)` = router(hidden state **after**
+> layer *L*). So `copy(L+1)` cannot start before `GEMM(L)` has finished **and** the router for
+> layer *L+1* has run. **Layer-level overlap is impossible.**
+
+**What is actually hideable, and it is what the implementation already does.** Within one layer
+the expert weights are **three** tensors — `ffn_gate_exps`, `ffn_up_exps`, `ffn_down_exps` — and all
+three `mul_mat_id`s read the **same** `ids` tensor, which is why the scheduler pulls ids to host
+**once per layer**, not once per weight (`prev_ids_tensor` reuse, `ggml-backend.cpp:1836-1853`).
+So the per-layer timeline is:
+
+```
+c_gate  →  [ g_gate ∥ c_up  ]  →  [ g_up ∥ c_down  ]  →  g_down
+```
+
+| copy | hideable? | bounded by | why |
+|---|---|---|---|
+| `c_gate` | **no** | — | must wait for `ids(L)`, i.e. for `GEMM(L-1)` + the router + the ids host sync (`:1836-1839`) |
+| `c_up` | **yes** | `g_gate` | ids already on host; different weight tensor; bank parity puts it in the *other* bank |
+| `c_down` | **yes** | `g_up` | same |
+
+⇒ **2 of the 3 expert-weight copies per layer are hideable**, and the hideable part is bounded by
+`g_gate + g_up`. This is exactly the bank behaviour already implemented: `gate→bank0`,
+`up→bank1`, `down→bank0`, with `c_up` waiting on a never-recorded `free[1]` (no-op) and `c_down`
+waiting on `free[0]` recorded after the *gate* split — so `c_down` overlaps `g_up`, not `g_gate`.
+**No implementation change is needed for F2; only the arithmetic changes.**
+
+### Restated ceiling `[derived]`
+
+Per 2048-token chunk `[measured, STAGE0-RESULTS.md:256-270]`: wall **10.2 s**, transfer
+**5.0-5.9 s** (mean **5.45 s**), non-transfer **4.3-5.2 s** (mean **4.75 s**), over **47** layers.
+Per layer: transfer **116 ms**, non-transfer **101 ms**. Splitting each three ways:
+`c = 38.7 ms`, `g = 33.7 ms` per tensor.
+
+```
+saving/layer = min(g_gate, c_up) + min(g_up, c_down) = 33.7 + 33.7 = 67.4 ms
+saving/chunk = 67.4 ms x 47 layers               = 3.17 s
+new wall     = 10.2 - 3.17                        = 7.03 s
+speedup      = 10.2 / 7.03                        = 1.45x
+```
+
+**But the honest answer is a range, because "non-transfer" is not all GEMM.** It also contains
+attention, norms, graph launch, and the 47 ids host syncs. With `f` = the GEMM share of
+non-transfer:
+
+| `f` (GEMM share of non-transfer) | `g` per tensor | saving/chunk | speedup | G-P (≥1.15×) |
+|---|---:|---:|---:|---|
+| 1.00 | 33.7 ms | 3.17 s | **1.45×** | pass |
+| 0.80 | 27.0 ms | 2.54 s | **1.33×** | pass |
+| 0.60 | 20.2 ms | 1.90 s | **1.23×** | pass |
+| 0.50 | 16.9 ms | 1.59 s | **1.19×** | pass, thin |
+| 0.40 | 13.5 ms | 1.27 s | **1.14×** | **fail** |
+
+**So the gate outcome hinges on `f`, and `f` is not yet measured.** It is cheaply measurable —
+the mechanism check (§8, `dmon` alongside a prefill arm) plus a per-kernel NSYS capture of one
+prefill ubatch would pin it. **This is the single most decision-relevant unknown left in Stage
+1b-R**, and it is why a measured null must be reported with `f` attached rather than as a bare
+percentage.
+
+**Deliberately out of scope (v2).** Pre-staging a whole layer's weights *ahead* of the ids for
+that layer would break the layer-level dependency, but it needs the *previous* layer's union,
+which is not known until its GEMM has run — so it degenerates into full-bank staging with no ids
+filter, i.e. more bytes, not fewer. Not attempted now.
+
+**Gates unchanged** (`STAGE1B-REDESIGN.md` §8, `OPTION-C-DESIGN.md` Stage 1): G-P stays ≥1.15× on
+the same-binary paired control, and the mechanism check (per-chunk GiB not up, link duty up) stays
+— under F2 the mechanism is *fewer exposed copy seconds*, not fewer bytes, so the mechanism check
+should be read as **link duty up with per-chunk GiB flat**, which is the stricter and more
+informative form.
 
 ---
 
@@ -518,6 +596,46 @@ reading source and model metadata rather than by guessing, and both are recorded
 attempt starts from facts. Writing the remaining 150 lines with no compiler and no ability to run
 them would risk spending 3-4 of the 6 budgeted CI cycles on a class of bug that a 5-minute local
 compile would have caught.
+
+---
+
+## 10.4 G-K1 control — **PRE-REGISTERED, written before any flag-on data was seen**
+
+Review instruction: decide how the flag-off-vs-flag-off control is judged **before** looking at
+flag-on results, because a control measured after the fact is not a control.
+
+**The control.** Two *independent* `S1OFF` sessions, same binary, same sha256-pinned prompts,
+`temperature: 0`, `cache_prompt` disabled, 256 completion tokens, cells `warmup` / `p4k` / `p12k`.
+One prior flag-on measurement already exists (see §10.5); it is **excluded from the control** and
+used only as flag-on data.
+
+**The metric.** Per cell, the longest common prefix (LCP) of the **full concatenated output** —
+`content` then `reasoning_content` in arrival order, not a 64-char snippet — measured in
+**characters**, and reported as a fraction of the shorter run. Character-level LCP rather than
+token-level because the harness already reconstructs exact strings and a tokeniser-independent
+measure cannot itself be the thing that differs.
+
+**Pre-registered decision rule.** Let `L` = the minimum LCP fraction across the three cells of the
+two control runs.
+
+| `L` | verdict on G-K1 as originally written |
+|---|---|
+| `L == 1.0` (bit-identical control) | G-K1 is usable as written. Flag-on must match the control exactly. Any divergence is a real defect. |
+| `L < 1.0` | **G-K1 as written is not achievable on this model and cannot be used as a pass/fail gate.** It is downgraded to a *distributional* gate: flag-on's LCP-vs-control distribution must not be **worse** than the control-vs-control distribution. Concretely, flag-on is judged against the control pair's own worst-case LCP; a flag-on LCP at or above that worst case is PASS. |
+
+This is decided **now**, in advance, and will not be revisited after seeing flag-on data.
+
+**Why character-LCP and not identity.** `STAGE1-IMPL-SPEC.md` §7.1 R5 already records that this
+model's temp-0 sampling diverges between model builds ("acceptance 0.43 vs 0.80"), and
+`STAGE0C-RESULTS.md` §3.2 measured run-to-run Mean KLD of **1.45e-4** at build-vs-itself — i.e.
+*this model is not bit-reproducible at temperature 0*. A gate demanding 100% identical decode
+tokens is therefore a statement about the rig's determinism, not about this patch, and the
+control is what distinguishes the two. The control costs two extra sessions (~9 min) and is the
+cheapest way to stop a null from being misattributed — which is exactly the mistake the first
+measurement nearly made.
+
+**Measured control is reported in `STAGE1B-RESULTS.md`, not here**, so that this section stays a
+pure pre-registration.
 
 ---
 

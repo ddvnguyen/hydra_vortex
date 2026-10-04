@@ -1,0 +1,39 @@
+[S1OFF] pre-arm gates (threads=6 prof=0 sched=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 84.2 GiB (>= 67, pre-arm)
+nproc=20 threads=6 spare=14 (nproc-threads, leader-handoff:756)
+load1_pre=26.47 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 14 >= 2
+[S1OFF] h2d pre: dev 1 @ÔQ H2D pinned: avg 6.10 GB/s best 6.10 GB/s
+[S1OFF] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 6 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none 
+[S1OFF] llama-server pid 1074604, waiting for /health (max 900s)
+[S1OFF] ready
+[S1OFF] VALIDITY WARN: no util>=20 sample during load
+[S1OFF] vram_after_load_mib=7171
+  warmup rep0 ttft=5.406s prefill=17.76 tok/s decode=12.02 tok/s sha=e3b0c44298fc
+  p4k rep0 ttft=24.812s prefill=166.01 tok/s decode=11.19 tok/s sha=e3b0c44298fc
+  p12k rep0 ttft=73.384s prefill=168.07 tok/s decode=11.42 tok/s sha=e3b0c44298fc
+{
+  "label": "S1OFF-1-p1",
+  "gk1_self_identical": true,
+  "cold_prefill_tps": {
+    "warmup": 17.76,
+    "p4k": 166.01,
+    "p12k": 168.07
+  }
+}
+[S1OFF] gate rc=0
+[S1OFF] vram_after_bench_mib=7435
+Traceback (most recent call last):
+  File "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage1b-r/.local/stage1br/bench3060.py", line 232, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage1b-r/.local/stage1br/bench3060.py", line 147, in main
+    with open(manifest_path) as f:
+         ~~~~^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/docs/evidence/strata-gap/stage1b-r/prompts/manifest.json'
+[S1OFF] bench rc=1
+load1_max=27.29 spare=14 (nproc-threads, constant for this arm)
+dev 1 @ÔQ H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+S1OFF-1-p1 done status=bench_failed threads=6 prof=0 sched=0 bench_rc=1 parse_rc=0 mem_avail_after=84.4GiB h2d=[dev 1 @;dev 1 @;] link_bad_samples=0 load1_max=27.29 spare=14 summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/docs/evidence/strata-gap/stage1b-r/logs/S1OFF-1-p1.summary.txt
