@@ -83,14 +83,21 @@ sd 0.0102, 95% CI **[1.0553, 1.0752]**.
 
 **G-P: FAIL on both cells.** Warmup (1193 output chars, ~18 tok/s) is not a G-P cell.
 
-### 2.1 This ratio is *conservative* — and still fails
+### 2.1 This ratio is, if anything, *optimistic* — and still fails
+
+> **Leader erratum (review of PR #830, 2026-10-04).** The worker's draft called this ratio
+> "conservative" and said the true ratio is "somewhat above" 1.077/1.065. That has the direction
+> backwards and is corrected here.
 
 The `524a7659` control arm is **handicapped by a bug found during this run** (§5): flag-off was
 allocating the 900 MiB bank and taking one extra `ggml_backend_synchronize` per split. That makes
-the denominator artificially *slow*, so a correctly-gated flag-off would score slightly higher.
-Fixed in `34068ff9` (cycle 6, not rig-verified — see §8). **The honest statement is that the true
-ratio is somewhat above 1.077/1.065 and unknown; there is no plausible reading of this data in
-which it reaches 1.15.**
+the control (denominator) artificially *slow*, which **inflates** ratio = ON/OFF. A correctly-gated
+flag-off would be faster, so the true ratio is somewhat **below** 1.077/1.065 and unknown. Fixed
+in `34068ff9` (cycle 6, not rig-verified — see §8). The bias therefore does not rescue G-P; it
+makes the null slightly stronger. Two consequences: the implied `f` in §6 is an **upper bound**
+(`f ≤ 0.20–0.23`), and the "VRAM / graphs-reused identical on both arms" rows in §4 are partly
+vacuous, since the control also held the bank (7171 MiB flag off instead of the 6271 MiB
+baseline), so G-V and G-G show only that the flag-on arm stays inside its limits.
 
 ---
 
