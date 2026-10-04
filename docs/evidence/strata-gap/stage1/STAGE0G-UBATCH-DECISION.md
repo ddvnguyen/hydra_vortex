@@ -76,14 +76,14 @@ whole request wall including prefill). A corrected harness was written
 server's own `timings.predicted_per_second` and `timings.prompt_per_second`, `-ub` 2048/4096/8192,
 n=3, rotating order.
 
-**It has not produced a result.** The first invocation printed `PRE-ARM GATE: PASS` and then stopped
-with no arm output and no `llama-server` left running. **The exact failing command was**
-`bash decode.sh` (cwd `.local/wt-stage0d/.local/stage0g`, env `CUDA_VISIBLE_DEVICES=1`,
-`LD_LIBRARY_PATH=$STAGE1B_BIN:/opt/software/cuda/13.2.1/lib64`); the background wrapper filtered
-output through `grep -aE 'decode predicted|DONE|FAILED'`, so whatever the harness wrote to stderr was
-discarded and **no per-arm log was captured to diagnose from**. That is a harness defect (output
-filtering with no tee to a file), not yet an identified root cause — the re-run writes `$EV/*.log`
-per arm and does not filter.
+**First attempt produced no result.** It printed `PRE-ARM GATE: PASS` and then stopped with no arm
+output and no `llama-server` left running. **Exact failing command:** `bash decode.sh`
+(cwd `.local/wt-stage0d/.local/stage0g`, `CUDA_VISIBLE_DEVICES=1`,
+`LD_LIBRARY_PATH=<artifact>/bin:/opt/software/cuda/13.2.1/lib64`), launched through a wrapper that
+piped it into `grep -aE 'decode predicted|DONE|FAILED'`. Because that filter discarded
+everything else, **no per-arm log survived to diagnose from**, so the root cause is still
+unidentified. Re-run launched with output redirected to
+`.local/stage0g/decode-sweep.out` and per-arm logs at `.local/stage0g/dec-ub<N>-r<R>.log`, unfiltered.
 
 **Whether decode moves with `-ub` is therefore unknown.** This matters for the decision, because
 decode is what the VRAM in §4 would otherwise buy.
