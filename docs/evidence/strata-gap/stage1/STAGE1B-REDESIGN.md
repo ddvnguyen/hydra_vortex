@@ -331,10 +331,18 @@ If a fix-up pushes `ggml-backend.cpp` past 300, **stop and report** (leader gate
 | item | MiB | source |
 |---|---:|---|
 | F0 post-load VRAM | **6271** | `[measured]` `STAGE0-RESULTS.md:134` |
-| 2nd staging bank (largest expert weight) | **+450** | `[derived]` from `SPLIT-1-engine.log:3546` (`blk.0.ffn_down_exps.weight (450M)`) |
+| staging bank, **2 banks x largest expert weight** | **+900** | `[derived]`; see correction below |
 | pre-allocated events | ~0 (a few KiB) | `[derived]` |
-| **total** | **6721** | |
-| **headroom to G-V (11000)** | **4279** | |
+| **total** | **7171** | |
+| **headroom to G-V (11000)** | **3829** | |
+
+**Correction to the first draft of this section.** It quoted **+450 MiB / 6721 total**, on the
+assumption that the second bank *replaces* the single staging region. It does not: each weight's
+staging tensor stays a plain `ggml_dup_tensor_layout` dup (that is what keeps `view_src == NULL`,
+and therefore `bad_padding_clear == false` and the MMQ path unchanged — §10.1), so ggml-alloc
+still reserves its original ~450 MiB region, and the two banks are **additional**. The real
+figure is **+900 MiB, 7171 MiB total**. Still 3829 MiB inside G-V, so the gate passes with
+margin, but the number that ships must be the larger one.
 
 If the allocator happens to hand out *distinct* addresses per expert weight (the §2.1 reuse is
 an intent, and I verified it by arithmetic rather than by address logging), the bank is already
@@ -471,10 +479,9 @@ opposite conclusion was the obvious first reading and would have been wrong.)*
 1. Create the bank as one `GGML_TYPE_I8` node of `2 * bank_bytes` in `graph_copy`, marked
    input+output so ggml-alloc never reclaims it (pattern at `ggml-backend.cpp:1389-1391`), and
    only when the graph is prefill-shaped and the flag is on.
-2. In pass 5, for a staged MoE weight, replace `input_cpy` with a bank view at
-   `bank_index * padded_bank_bytes`, restoring `type`/`ne`/`nb` from the weight (the idiom
-   `ggml_dup_tensor_layout` itself uses at `:749-754`). **Trap:** the view must be added to
-   `graph_copy` (`:1517-1518`) or ggml-alloc will not reserve the bank.
+2. **Done differently from the sketch above, and better:** instead of making `input_cpy` a bank
+   view, it stays a plain dup and has `->data` redirected into the bank at execution time. That
+   removes the `view_src` question entirely (§10.1) and survives ggml-alloc reassigning `->data`.
 3. `bank_index = (++seq) & 1`, per MoE-weight split, in graph order.
 4. In `compute_splits`: replace the host block at `:1797-1802` with
    `stage_stream_wait_event(bank_free[bank_index])`; after `dispatch_split`, record
@@ -483,7 +490,27 @@ opposite conclusion was the obvious first reading and would have been wrong.)*
    must be per-split, not per-graph, or one refusal silently drops the ordering for the rest.
 5. Teardown the two events in `ggml_backend_sched_free`.
 
-**Why part 2 stopped here rather than being written blind.** It is ~150 lines of scheduler and
+### 10.3 There IS a local compile loop (correcting an earlier claim of mine)
+
+I previously stated that no local build was possible and that part 2 would have to be written
+without a compiler. **That was wrong**, and it cost real time. What the rig rule actually forbids
+is *producing binaries* (host `/` is ~100% full); it does not forbid **compiling to `/dev/null`
+for validation**, which costs nothing and catches every error CI would:
+
+```
+# ggml-backend.cpp  -> exit 0
+g++ -fsyntax-only -std=c++17 -I ggml/include -I ggml/src -I ggml/src/ggml-cuda     ggml/src/ggml-backend.cpp
+
+# ggml-cuda.cu (a real compile, not just syntax) -> exit 0
+CUDA_HOME=/opt/software/cuda/13.2.1 nvcc -std=c++17 --expt-relaxed-constexpr     -DGGML_CUDA_USE_GRAPHS -DGGML_CUDA_FA_ALL_QUANTS     -I ggml/include -I ggml/src -I ggml/src/ggml-cuda -I $CUDA_HOME/include     -c ggml/src/ggml-cuda/ggml-cuda.cu -o /dev/null
+```
+
+Both exit 0 on part 2 (`286536a6`). **Every future change on this branch should be gated on these
+two commands before spending a CI cycle.** Part 2 was written *after* the second one existed, and
+it still found two real defects by desk-check that the compiler then had nothing left to complain
+about — the loop is worth far more than it costs.
+
+**Why part 2 was nevertheless slow to land rather than quick.** It is ~150 lines of scheduler and
 tensor-layout surgery, there is **no local build** (host disk is full; every iteration is a ~1 h CI
 cycle), and the bank is precisely the part where an error is *silent* rather than loud. The two
 traps above — the dropped MMQ row padding and the `view_src` question — were both resolved by
