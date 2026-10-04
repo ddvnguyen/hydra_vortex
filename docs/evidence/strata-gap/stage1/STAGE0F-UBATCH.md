@@ -155,6 +155,35 @@ different model on different hardware); anything about flag-on staging, which re
 **Also unresolved:** ub8192's 467 MiB of headroom is measured post-prefill on an idle rig with
 `--parallel 1`. Any real deployment with concurrent slots would have less.
 
+## Leader review note (2026-10-04)
+
+The headline holds: a larger `-ub` is a large, config-only prefill win, reproduced to ~0.1% between rounds. Four
+qualifications the doc does not make:
+
+1. **The control is a single, low datum.** `ub2048` is n=1 at 153.37 (p4k) / 163.17 (p12k). The same binary
+   at `-ub 2048` measured 166.26 / 167.30 in #830 and 167.32 in STAGE0D's nsys run (152.5 in its "clean run"), so
+   this rig's `ub2048` baseline moves 152-167 across sessions. Against ~166 the p4k gains shrink to about
+   **1.35x (4096) / 1.29x (8192)**; p12k 8192 is about **1.58x**. Treat the stated ratios as an upper edge until
+   the paired n=3 lands.
+2. **Cost side is unmeasured, and it is the decision.** `-ub 8192` costs +3.2 GB VRAM after prefill
+   (6535 -> 10533 MiB; 4096 costs +1.2 GB). On the production path that VRAM is not free: it competes with the
+   GPU-resident experts that drive decode (decode was measured roughly linear in expert-layers resident). The
+   decode **rate** is not measured here (§9.1) and the VRAM-for-experts trade is not examined, so "one flag" is
+   not yet "a free win". The 467 MiB headroom was measured at `-c 16384 --parallel 1`; the 63K-context runs will
+   have less.
+3. **Numerics are not checked.** `-ub` changes the accumulation order. Coherence is not a correctness gate; a
+   teacher-forced KL against `-ub 2048` is needed before any default changes (the free-running temp-0
+   determinism problem from #830 does not apply to `--kl-divergence`).
+4. **The p4k@8192 explanation in §4 is speculation.** The legacy path has no overlap, so "no second ubatch to
+   overlap the tail" cannot be the cause. A more consistent reading from STAGE0E: a ubatch below the offload
+   threshold (32 tokens) runs on CPU and is not staged, so p4k is 2 staged ubatches at 2048 (+23-token tail)
+   and 1 staged ubatch at both 4096 and 8192, and the 4096-vs-8192 gap is compute, not transfer. The same
+   reading predicts a new lever: p12k leaves a 46-token tail ubatch (12334 = 6x2048 + 46) that is just above the
+   threshold and would restage the full ~31 GB for 46 tokens. Untested.
+
+Follow-up t0027 (once this sweep finishes): complete n=3 paired, valid decode rate, teacher-forced KL at 4096/8192
+vs 2048, and the VRAM-for-experts trade. Per-request H2D bytes (nsys) would confirm point 4.
+
 ## 9. Could not measure
 
 1. **The requested n ≥ 3 rounds did not complete.** Paired ratios are **n=1**; unpaired means are
