@@ -434,6 +434,176 @@ Tail-prefill first measurement (Stage 0 §8 handoff): same dmon method on a 731-
 turn-2-shaped prefill — resolves union-saturation vs per-token-scaling for the tail
 (C7 `[derived]`); record, not gate.
 
-(PART 3/4 committed — §4 correctness + §5 measurement. Next: §6 CI path + §7 risks/estimate.)
+---
+
+## 6. CI path: fork branch builds the rig artifact without local builds
+
+### 6.1 What PR #160 already built (do not re-do)
+
+Fork PR `ddvnguyen/llama.cpp#160` (`ci/perplexity-artifact`, base `hydra-fork`, **not to be
+merged**) added an **artifact mode** to the existing `hydra-build.yml` + `build-combo.sh`
+(`stage0/PERPLEXITY-CI.md:85-164`): new `workflow_dispatch` input `build_llama_perplexity`
+emits one combo `{arch sm86-sm120, binary llama-perplexity, cuda 13.2, arch 86;120, mode
+artifact}`; ghcr login / build-push / deploy-reminder steps are skipped for `mode=artifact`
+and replaced by `actions/upload-artifact` (binary + `*.so*` + `ldd.txt` + `build-info.txt`);
+`build-combo.sh` takes an optional 10th arg `MODE` (`image` default = unchanged behaviour;
+`artifact` = stage + exit before registry/podman, binary never executed). Configure flags
+are byte-identical to the `llama-server` combo (`CMAKE_CUDA_ARCHITECTURES=86;120`, Release,
+`GGML_CUDA=ON`, `GGML_CUDA_FORCE_CUBLAS=ON`, `GGML_RPC=ON`, `GGML_CUDA_FA(_ALL_QUANTS)=ON`,
+`GGML_CUDA_GRAPHS=ON`, `GGML_CUDA_NCCL=ON`, `BUILD_SHARED_LIBS=ON`, RPATH `$ORIGIN`).
+It produced `llama-perplexity-sm86-sm120-3808d4e` (660 MB, `cuobjdump`: 380 cubins
+alternating sm_86/sm_120a) from source commit `7a03f921d` (+2 CI-only workflow commits).
+
+### 6.2 Minimal extension for Stage 1: `llama-server` in artifact mode
+
+The artifact-mode plumbing is binary-agnostic except for two allowlist points
+[hypothesis on exact lines — re-verify against `hydra-build.yml` at patch time, the
+`PERPLEXITY-CI.md:96-151` diff is the map]:
+
+1. `hydra-build.yml` `resolve`: accept `build_llama_server=true` together with
+   `mode=artifact` (today only `build_llama_perplexity` routes to the artifact combo;
+   `gh pr diff 160` could not render the full 100-file PR body here — HTTP 406
+   diff-too-large — so the dev agent re-reads the two workflow files, not the PR page).
+   Proposed combo, mirroring the perplexity one exactly:
+   `{arch sm86-sm120, binary llama-server, cuda_version 13.2, cuda_arch 86;120, mode artifact}`.
+2. `build-combo.sh`: no change needed if `MODE` is already positional-arg-10 and the
+   binary name is parameterised (it is: `cp $BUILD_DIR/bin/$BINARY`, `PERPLEXITY-CI.md:138-151`).
+   If a per-binary build-target case exists, add the `llama-server` target beside it.
+
+Dispatch mirrors the approved one (owner-approved pattern, artifact only, cloud runner —
+cloud because the rig host cannot take a CUDA build mid-session, `PERPLEXITY-CI.md:70-83`):
+
+```bash
+gh workflow run hydra-build.yml --repo ddvnguyen/llama.cpp --ref <stage1-ci-branch> \
+  -f build_llama_engine=false -f build_llama_server=true -f build_llama_perplexity=false \
+  -f arch_sm86_sm120=true -f arch_sm60=false \
+  -f runner_target=cloud -f execution_mode=matrix -f runner=cloud
+```
+
+New branch per stage binary (e.g. `ci/stage1-prefill-stream`), created from the exact
+stage commit, carrying only the workflow allowlist diff; **never merged** (same rule as #160).
+The branch's only purpose is to let the workflow run from a non-default ref
+(`PERPLEXITY-CI.md:89-92` rationale: `workflow_dispatch` only registers workflows that
+exist on the default branch).
+
+### 6.3 Same-provenance rule (binding for every A/B in §5)
+
+- The G-P/G-D A/B uses **one artifact binary**; arms differ by runtime flag only
+  (`--moe-prefill-stream` on/off). Provenance divergence is excluded by construction.
+- The G-K2 floor uses the **perplexity artifact of the same source commit** (already built:
+  `3808d4e` == `7a03f921d` + CI-only workflow commits, `PERPLEXITY-CI.md:188`).
+  Never compare a rig-local build against a CI build numerically: the four recorded
+  configure deltas (`GGML_NATIVE`, `GGML_CUDA_FORCE_CUBLAS`, `GGML_RPC`,
+  `GGML_CUDA_FA_ALL_QUANTS`, `PERPLEXITY-CI.md:42-65`) forbid it. G-0b is build-vs-itself
+  for exactly this reason.
+- If a future stage binary is built with a different `runner_target`, the floor is
+  re-measured with a binary of the same provenance (`PERPLEXITY-CI.md:200-202`).
+
+---
+
+## 7. Risks, estimate, riskiest assumption, GPU-free falsification
+
+### 7.1 Risk list (inherits `OPTION-C-DESIGN.md:368-381` R1-R8; only Stage 1 deltas below)
+
+| # | Risk | Why it is real | Mitigation / gate |
+|---|---|---|---|
+| R1' | CUDA-graph capture refuses the new outcome | compat veto is narrow (`ggml-cuda.cu:4404-4412` per OPTION-C); prefill capture checks at `ggml-cuda.cu:6905-6917` [verified in source] must accept `PREFILL_STREAMED` | G-G (§5.3) + N3 (§4.3): log the outcome per chunk; silent fallback to legacy = stop |
+| R2' | Router-census / authority hazards inherited from the decode cached path | recorded blockers on that path (`design-prefill-fastpath-DRAFT.md:154`) | N2/N3 checks (§4.3), not assumptions |
+| R3' | Union saturates to the bank at 2048 chunks (B-union -> B-bank) | §7.5: 68-79% of declared already at 2048; saturation only costs volume, and whole-bank still fits (§3.5) | sizing cap = whole-bank; mechanism check (§5.3) records actual |
+| R4' | Pageable source halves H2D if pinning regresses | loader downgrade `llama-model-loader.cpp:1324-1332`; draft 4.6x->2.4x split (CUDA0 numbers, not a 3060 prediction) | all arms run `--load-mode none` (Stage 0 precedent); record source kind |
+| R5' | Temp-0 nondeterminism contaminates correctness reads | acceptance 0.43 vs 0.80 in the record (OPTION-C R6) | G-K1 on token sequences is same-binary flag-flip (deterministic path); G-K2 teacher-forced, never sampled |
+| R6' | Session drift swallows a ~15-30% prefill win (cf. Stage 0b halving +6.62% -> +3.35%) | C1 drift +10% day-over-day (`STAGE0-RESULTS.md:486-494`) | interleaved pairing (§5.2) + 95% CI; gate on session control, never the 201.0 reference |
+
+Deliberately not re-litigated: k stays 10, no `--override-kv`, one GPU = one task, N park,
+Option D default (`OPTION-C-DESIGN.md:44-53` §0.2; §3.5 exclusions).
+
+### 7.2 Agent-day estimate (implementation + CI + measurement)
+
+| Work | Agent-days | Notes |
+|---|---|---|
+| Implementation (§3: flag + outcome + union pass + copy-engine ungate + pool + grouped dispatch) | **5-7** | inherits OPTION-C Stage 1 band (`OPTION-C-DESIGN.md:208`); bulk is `moe-cache.cu` plan/authority certification |
+| CI extension (§6.2: allowlist + branch + dispatch + artifact verify) | **1** | plumbing exists (#160); two-file diff, `file`/`ldd`/`cuobjdump` verify only, binary never executed |
+| Measurement (§5: 8-arm paired session + dmon + KL leg + report) | **2** | one rig session + G-0b floor run dependency (floor binary exists; rig time is the cost) |
+| **Total** | **8-10** | inside OPTION-C's 15-25 overall only as the Stage 1 slice; Stages 3/4 separately priced |
+
+### 7.3 The single riskiest assumption
+
+**That the grouped GPU path can consume a ~300-450-expert/layer union (at ~17 tokens per
+expert, the draft's tiny-GEMM shape, `design-prefill-fastpath-DRAFT.md:52`) plus overlapped
+H2D fast enough to clear 1.15x — i.e. that cold prefill is CPU-expert-FLOP-bound (the
+D0-L2 premise, now barred from its `--override-kv` instrument by §0.2) AND that link duty
+can rise 51% -> ~85%+.**
+If prefill is instead dominated by something the union does not move (attention halves,
+host grouping sync, MMQ shape inefficiency at 17 rows), the wall will not move 15% no
+matter how well the streaming is built. The ceiling arithmetic (§3.6: 1.9-2.4x fully
+overlapped) says the prize exists; only the rig can say it is reachable — which is why
+G-P kills below 1.15x rather than tuning further.
+
+### 7.4 Cheap GPU-free falsification test (done — CPU-only analysis, reported numbers)
+
+Question: does the per-layer distinct-expert union for a 2048-token chunk fit a streamed
+design (B-union viable), or does it saturate to the bank (B-bank fallback)? Three
+in-repo/offline sources, no GPU, no build:
+
+1. **Prefill windows (draft, offline route traces):** 428 non-overlapping 512-token
+   windows, k=10: **union mean 292.5/512 = 57.1% (sd 38.1)** = 521.8 MiB/layer
+   (`design-prefill-fastpath-DRAFT.md:42-49`).
+2. **Decode probe ranks (in-repo `tools/atlas/expert-ranks-db4eab0cbde667d5.json`,
+   computed for this spec):** 48 layers x 512 positions (2 runs x 256 gen, k=10):
+   per-layer distinct **min 198 / max 411 / mean 307.6 / median 313.0** =
+   **mean 60.1%, median 61.1%** = 549 MiB/layer mean, 25.72 GiB over 48 layers.
+   (Lower bound for prefill chunks: decode-only positions, smaller sample.)
+3. **Stage 0 measured (rig `dmon` + SPLIT-1):** per-2048-chunk actual **31.0 / 32.5 /
+   35.9 GiB** = **68-79% of declared 45.67 GiB** (`STAGE0-RESULTS.md:256-262`);
+   96-token warmup already streams 17.16 GiB (38% of declared, `:271-272`) — no
+   cheap-chunk regime.
+
+Reading: the 512-token union sits at **57-61%** in two independent sources, and the
+2048-chunk stream at **68-79%** of declared — rising with chunk size as expected, but
+**not saturated**: even the top (79%) leaves ~21% of declared unstreamed, and the
+sizing cap (whole-bank 1.78 GiB double buffer, §3.5) fits G-V regardless. The earlier
+"one turn touches ~54% of experts per layer" is consistent with this band (57-61% at
+512 positions; the ranking `hit_pct` medians 54.85/56.3 are a different quantity — cache
+hits, not union — in the same band; do not conflate them) [hypothesis on the exact
+provenance of the ~54% figure — no single source line was found; the band agreement is
+the checkable claim].
+
+**Falsification verdict: NOT falsified.** B-union is viable; B-bank is a fitting fallback,
+not a redesign. Real bytes to stream per 2048-chunk: **31-36 GiB measured** (the sched
+slice copy already filters unused experts) — the design moves the same bytes overlapped
+with GPU compute instead of host-waited ahead of CPU compute. If a future trace shows
+union_2048 -> ~512/layer, only the buffer variant changes (1.02 -> 1.78 GiB), both under
+G-V.
+
+### 7.5 Open items for the dev agent (checklist, not blockers)
+
+1. Re-verify `ggml-cpu.c:2357-2361` (`n_tasks`) + `vec_dot` accumulate type (N1) in the
+   stage branch — export line numbers drift.
+2. Re-verify the two non-re-read cites before relying on them in code:
+   `prefill.cpp:1690-1694` (per-entry wait) and `moe_mmq.cu:125-151` (both via
+   `OPTION-C-DESIGN.md:110,112`).
+3. Confirm the `hydra-build.yml` allowlist lines for §6.2 (PR #160's full diff was
+   unrenderable here — HTTP 406; read the two workflow files directly).
+4. Fill the G-K2 floor placeholder the day the G-0b run lands; until then record raw KL
+   without pass/fail (§4.2).
+
+---
+
+## Change summary
+
+**Changed:** created this document only
+(`docs/evidence/strata-gap/STAGE1-IMPL-SPEC.md`) on branch `docs/811-stage1-spec`, in
+four incremental commits. No source, config, harness, or export file touched; no build,
+no server, no GPU/rig use; `/mnt/WorkDisk/strata` and `.local/q2g/src` opened read-only;
+nothing written under `/tmp`.
+
+**Assumptions:** `.local/q2g/src` == fork commit `7a03f921d` (tree-verified,
+`stage0/PERPLEXITY-CI.md:8-38`); Strata v0.1.29 paths as cited; Stage 0/0b numbers as
+reported in their results docs; the ~54% turn-coverage figure's exact provenance is
+unresolved (§7.4) and is not load-bearing.
+
+**Risks / open questions:** §7.1-§7.5 — the load-bearing ones are R1' (graph capture),
+R2' (router/authority hazards), and the §7.3 FLOP-bound assumption behind the 1.15x gate.
+
 
 
