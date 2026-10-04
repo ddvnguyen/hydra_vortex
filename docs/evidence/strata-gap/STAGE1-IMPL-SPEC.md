@@ -347,5 +347,93 @@ moves a layer's MoE compute to CPU while its `cache_*` tensors stay on CUDA0 wou
 introduce a new 112.57 MiB-per-state-set copy source (`:404-406`) — Stage 1 does not do
 this by construction (compute moves CPU->GPU, state stays GPU).
 
-(PART 2/4 committed — §2 target design + §3 patch sketch. Next: §4 correctness + §5 measurement.)
+---
+
+## 4. Correctness plan
+
+### 4.1 G-K1: decode identical tokens, flag on vs off (blocking, must be 100%)
+
+Construction claim: Stage 1 touches prefill only; with `--moe-prefill-stream` on, decode
+takes the same outcomes, same splits, same kernels as flag off. Test, not assumption:
+
+- temp 0, 256 new tokens, cells p1k/p4k/p12k (same prompts as Stage 0/0b,
+  `stage0/prompts/` sha-pinned): token sequence flag-ON vs flag-OFF (same binary) must be
+  **100% identical**. Any difference = bug, stop (same rule as Stage 2's scheduling-only
+  gate, `OPTION-C-DESIGN.md:278`).
+- Same-binary control (not same-provenance two-binary): A/B differ by runtime flag only,
+  so provenance divergence is excluded by construction.
+
+### 4.2 G-K2: KL <= 2x floor (blocking; floor placeholder — never invent a number)
+
+- Prefill numerics **may legitimately differ** (CPU `vec_dot` -> GPU MMQ int8), so G-K1
+  does not apply to prefill tokens; G-K2 is the gate
+  (`OPTION-C-DESIGN.md:239`, Stage 1 gates).
+- Corpus + tool: teacher-forced KLD over `scripts/eval/wikitext-2-raw/wiki.test.raw` via
+  the `kl-gate.sh` harness, stage binary vs control (same-provenance binary, §6 rule).
+- Floor status: **G-0b NOT RUN** (`STAGE0-RESULTS.md:344-354`) — the CI `llama-perplexity`
+  artifact now exists (`stage0/PERPLEXITY-CI.md`; artifact
+  `llama-perplexity-sm86-sm120-3808d4e`, sha256 `92594986…`, §6) but the KL floor run
+  itself has not happened. **Floor value: [PLACEHOLDER — to be filled by the G-0b run;
+  this spec invents no number.]** Stage 1 measurement is authorised to start when the
+  floor exists; until then §5's KL leg records raw divergences without a pass/fail.
+- Temp-0 nondeterminism caveat: the record shows model-level temp-0 nondeterminism
+  (acceptance 0.43 vs 0.80, `OPTION-C-DESIGN.md:379` R6) — the KL gate uses teacher-forced
+  distributions, not sampled tokens, precisely to stay out of that trap.
+
+### 4.3 Numerics checklist (pre-registered; each is a check, not an assumption)
+
+| # | Check | Why | Instrument |
+|---|---|---|---|
+| N1 | CPU `vec_dot` (F32 accumulate [hypothesis — verify `ggml-cpu.c` vec_dot type at patch time]) vs GPU MMQ int8 quant error per expert GEMM | the expected prefill-logit delta source; bounds G-K2 | `--dump-logits/-residual` fork dumps + KL leg; compare flag-ON prefill logits vs flag-OFF on a fixed 512-tok ubatch |
+| N2 | Router-census perturbation hazard: the decode-era cached path carries a recorded *router-census perturbation that changes logits* (`design-prefill-fastpath-DRAFT.md:154`) | if the union pass or grouped dispatch perturbs ids/weights seen by the router, prefill routing itself shifts | fixed-ubatch ids dump ON vs OFF must be bit-identical; any ids diff = stop |
+| N3 | Authority-invariant refusal: decode-era *authority invariant refusing pools* (same source) | `GROUP_REASON_PREFILL` records + certification must accept `PREFILL_STREAMED` (§3.3) or capture silently falls back | `GGML_SCHED_DEBUG` + `graphs reused` counter: streamed outcome present in plan, no silent `PREFILL_LEGACY` fallback (log the outcome per chunk) |
+| N4 | Padding semantics: sched copies `min(expert_size,512)` extra bytes for CUDA MMQ (`ggml-backend.cpp:1859-1867`) | the streamed pool must carry the same padding or MMQ reads NaNs | unit-check pool fill vs sched fill byte-compare on one layer before first GEMM |
+| N5 | Shared-expert + norm path unchanged | `qwen4exp.cpp:1227-1234` shared path is outside the union; norm scales (`expert_weights_scale`) must reach the GPU kernel unchanged | prefill-logit spot check with shared-expert-only prompt slice [hypothesis on instrument — record at patch time] |
+
+---
+
+## 5. Measurement protocol (reuses the Stage 0 harness, interleaved paired design)
+
+### 5.1 Harness (no new infrastructure)
+
+- Driver: `.local/wt-stage0/.local/strata-research/arm-stage0.sh` (flags
+  `stage0` §1.1 = t0006 F0 verbatim: `--split-mode layer -fit off -ngl 99 --n-cpu-moe 99
+  --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384
+  --parallel 1 --flash-attn on --jinja --experimental-logs --load-mode none --ple-prefetch
+  -b 2048 -ub 2048 --spec-type none`, port 8093, GPU1-only) + parsers
+  (`bench3060.py`, `parse_arm_logs.py`) + 1 Hz link sampler (`sample_link.sh`) +
+  pinned H2D probe pre/post every arm. `TMPDIR` under `.local/tmp`, never `/tmp`.
+- Add one dimension only: `--moe-prefill-stream` ON vs OFF. Everything else identical,
+  including `--load-mode none` (so pinning is not a confound, §3.7).
+- PCIe probe: `nvidia-smi dmon` alongside cold-prefill arms (Stage 0 §5 method) to re-measure
+  per-chunk GiB and link duty ON vs OFF — the mechanism's direct evidence.
+
+### 5.2 Interleaved paired design (as in `stage0b/`, merged)
+
+`stage0b/PRE-REGISTERED.md:32-48` + `STAGE0B-RESULTS.md:1-57`: 8 arms, strictly interleaved
+A B A B …, one session, fresh `llama-server` per arm, same-provenance binary (§6).
+Per-arm value V = median of 3 reps' `decode_tps` (prefill: median of rep0 cold `prompt_tokens/TTFT`);
+paired `delta_k = 100*(V(Tx-k)-V(C-k))/V(C-k)`, report mean/min/max + 95% CI exactly as
+Stage 0b did (`STAGE0B-RESULTS.md:22-25`). Stage 0b's lesson is binding: the non-interleaved
++6.62% halved to +3.35% under pairing — **no unpaired prefill claim ships**.
+
+### 5.3 Pre-registered thresholds (frozen before the first arm)
+
+| Gate | Threshold | Basis |
+|---|---|---|
+| **G-P primary** | cold-12K prefill **>= 1.15x** the same-session OFF control (>= ~231 tok/s against the 201.0 reference; gate computed on the session control, not the reference) | `OPTION-C-DESIGN.md:230-234`; kill below 1.15x. Stretch (recorded, not gating): >= 300 tok/s (1.5x); Strata 605.9 is ceiling reference only |
+| G-D / G-R | decode and every non-prefill axis regress **<= 3%** vs same-session control, flag ON and OFF | `OPTION-C-DESIGN.md:171` (3% > ~1-2% session noise [measured]) |
+| G-K1 | decode tokens 100% identical ON vs OFF (§4.1) | blocking |
+| G-K2 | prefill KL **<= 2x floor** (§4.2; floor placeholder until G-0b) | blocking for ship; raw divergences recorded meanwhile |
+| G-V | VRAM after load **<= 11000 MiB** | §3.5 arithmetic says ~7700-8100 |
+| G-L | pinned H2D probe **6.00-6.30 GB/s** pre+post; `gen1 AND util>=20 = 0` samples | `STAGE0-RESULTS.md:21` verbatim |
+| G-G | `graphs reused` >= control, zero `post_decode() failed`, zero HTTP 500 | `OPTION-C-DESIGN.md:374` R1 (D3 crash precedent) |
+| Mechanism check | per-chunk GiB ON <= OFF; link duty ON > OFF (dmon) | proves the overlap mechanism, not just the wall |
+
+Tail-prefill first measurement (Stage 0 §8 handoff): same dmon method on a 731-token
+turn-2-shaped prefill — resolves union-saturation vs per-token-scaling for the tail
+(C7 `[derived]`); record, not gate.
+
+(PART 3/4 committed — §4 correctness + §5 measurement. Next: §6 CI path + §7 risks/estimate.)
+
 
