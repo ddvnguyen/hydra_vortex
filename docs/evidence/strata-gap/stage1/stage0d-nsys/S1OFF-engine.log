@@ -1,0 +1,23 @@
+0.00.147.237 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.147.497 W srv  llama_server: -----------------
+0.00.147.498 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.147.498 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.147.498 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.147.498 W srv  llama_server: -----------------
+0.00.148.720 I srv    load_model: loading model '/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+1.58.400.926 I cmn          init: llama threadpool init, n_threads = 6
+1.59.245.418 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+1.59.252.912 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.59.253.047 I srv  llama_server: model loaded
+1.59.253.052 I srv  llama_server: listening on http://127.0.0.1:8093
+2.04.908.395 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+2.04.908.441 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+2.19.370.528 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   2071, progress = 0.50, t =  14.46 s / 143.27 tokens per second
+2.31.530.874 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   4115, progress = 1.00, t =  26.62 s / 154.61 tokens per second
+2.31.859.116 I slot print_timing: id  0 | task 0 | prompt eval time =   26944.26 ms /  4119 tokens (    6.54 ms per token,   152.87 tokens per second)
+2.31.859.119 I slot print_timing: id  0 | task 0 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+2.31.859.120 I slot print_timing: id  0 | task 0 |       total time =   26944.26 ms /  4120 tokens
+2.31.859.122 I slot print_timing: id  0 | task 0 |    graphs reused =          1
+2.31.859.280 I slot      release: id  0 | task 0 | stop processing: n_tokens = 4119, truncated = 0
+2.31.911.335 I srv    operator(): operator(): cleaning up before exit...
+Received second interrupt, terminating immediately.
