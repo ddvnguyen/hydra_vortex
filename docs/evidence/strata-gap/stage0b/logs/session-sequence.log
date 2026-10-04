@@ -1,0 +1,45 @@
+stage0b session start 2026-10-04T07:00:34+07:00
+sequence = T6 T12 T6 T12 T6 T12 T6 T12 (strict interleave, n=4 pairs)
+session pre-arm: GPU0=1MiB GPU1=1MiB MemAvailable=86.4GiB nproc=20 load=2.38 2.15 2.15
+
+[pos 1/8] pair 1 cfg T6 -> T6-1
+[pos 1/8] start 2026-10-04T07:00:34+07:00 load=2.38 2.15 2.15
+[pos 1/8] T6-1 exit=0 end 2026-10-04T07:06:06+07:00
+
+[pos 2/8] pair 1 cfg T12 -> T12-1
+[pos 2/8] start 2026-10-04T07:06:06+07:00 load=4.76 3.70 2.82
+[pos 2/8] T12-1 exit=0 end 2026-10-04T07:11:28+07:00
+
+[pos 3/8] pair 2 cfg T6 -> T6-2
+[pos 3/8] start 2026-10-04T07:11:28+07:00 load=4.68 4.18 3.28
+[pos 3/8] T6-2 exit=0 end 2026-10-04T07:16:53+07:00
+
+[pos 4/8] pair 2 cfg T12 -> T12-2
+[pos 4/8] start 2026-10-04T07:16:53+07:00 load=4.49 4.28 3.57
+[pos 4/8] T12-2 exit=0 end 2026-10-04T07:22:11+07:00
+
+[pos 5/8] pair 3 cfg T6 -> T6-3
+[pos 5/8] start 2026-10-04T07:22:11+07:00 load=6.78 5.39 4.20
+[pos 5/8] T6-3 exit=0 end 2026-10-04T07:27:36+07:00
+
+[pos 6/8] pair 3 cfg T12 -> T12-3
+[pos 6/8] start 2026-10-04T07:27:36+07:00 load=5.29 4.94 4.31
+[pos 6/8] T12-3 exit=0 end 2026-10-04T07:32:59+07:00
+
+[pos 7/8] pair 4 cfg T6 -> T6-4
+[pos 7/8] start 2026-10-04T07:32:59+07:00 load=6.55 5.39 4.62
+[pos 7/8] T6-4 exit=0 end 2026-10-04T07:38:21+07:00
+
+[pos 8/8] pair 4 cfg T12 -> T12-4
+[pos 8/8] start 2026-10-04T07:38:21+07:00 load=4.63 4.53 4.43
+[pos 8/8] T12-4 exit=0 end 2026-10-04T07:43:41+07:00
+
+stage0b session complete 2026-10-04T07:43:41+07:00
+T12-1.bench.json
+T12-2.bench.json
+T12-3.bench.json
+T12-4.bench.json
+T6-1.bench.json
+T6-2.bench.json
+T6-3.bench.json
+T6-4.bench.json
