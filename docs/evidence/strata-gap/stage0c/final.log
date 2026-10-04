@@ -1,0 +1,4 @@
+=== stage0c final GPU state 2026-10-04T13:34:02+07:00 ===
+0, 1 MiB, 0 %
+1, 1 MiB, 0 %
+expect: both GPUs ~1 MiB

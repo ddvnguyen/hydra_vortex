@@ -1,0 +1,32 @@
+=== stage0c T1A ===
+date: 2026-10-04T09:45:10+07:00
+host: ddv-server
+binary: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/../perplexity-ci/bin/llama-perplexity
+binary_sha256: 92594986686a4bbe23a2834695792ce32f8b18b9d57bf3c50e0ac87aba715fdd
+cmd: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 -np 1 --flash-attn on -t 6 --experimental-logs --load-mode none -b 2048 -ub 2048 -f /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/scripts/eval/wikitext-2-raw/wiki.test.raw --kl-divergence-base /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/.local/stage0c/T1A.kld --chunks 1
+cwd: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c
+TMPDIR: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/.local/tmp
+env_HYDRA_LLAMA: (none — zero-change)
+nproc=20 threads=6 load1=2.34
+memavailable_gib: 87.8
+gpu_state_before:
+0, 1 MiB, 0 %
+1, 1 MiB, 100 %
+dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+--- output ---
+1.52.652.384 I cmn          init: llama threadpool init, n_threads = 6
+1.52.923.332 I 
+1.52.923.409 I system_info: n_threads = 6 (n_threads_batch = 6) / 20 | CUDA : ARCHS = 860,1200 | FORCE_CUBLAS = 1 | USE_GRAPHS = 1 | FA_QUANTS = all | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+1.52.923.469 I perplexity: saving all logits to /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0c/.local/stage0c/T1A.kld
+1.52.923.472 I perplexity: tokenizing the input ..
+1.53.297.439 I perplexity: tokenization took 373.961 ms
+1.53.297.720 I perplexity: calculating perplexity over 1 chunks, n_ctx=16384, batch_size=2048, n_seq=1
+3.51.638.148 I perplexity: 116.14 seconds per pass - ETA 1.93 minutes
+[1]2.1750,
+3.53.177.591 I Final estimate: PPL = 2.1750 +/- 0.04276
+
+--- rc=0 wall_s=237.2 (2026-10-04T09:49:09+07:00) ---
+gpu_state_after:
+0, 1 MiB, 0 %
+1, 1 MiB, 3 %
+h2d_post: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
