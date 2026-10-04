@@ -297,6 +297,36 @@ per-layer `ids` sync amortises over fewer tokens.
    (the same compute is what hides copies) but it was not re-measured on a build where staging
    engages, because none exists yet.
 
+## Leader review note (2026-10-04) — the 1.18–1.38x ceiling is overstated; corrected to ~1.08–1.16x
+
+**What stands:** `f` is measured (DEQUANT 2.860 s lower bound; with all GEMM 5.100 s upper bound), the #830
+inference of `f ≈ 0.2` was circular and is withdrawn, the 72% GPU idle / 63% link duty / 25% host-sync
+figures are real, and the `bank=0 staged=0 declined=141` root cause (Stage 1a plan hook never runs) is
+good evidence.
+
+**What does not stand: the §3 ceiling arithmetic.** The saving and the wall use different bases. The
+`2·min(g,c)` saving per layer is built from `g` = session DEQUANT ÷ (47×3) (session total, all 3 ubatches),
+so "saving/ubatch = 1.91–3.40 s" is in fact the **session-total** saving, but it is divided by a
+**single-ubatch** wall (12.3 s). §6 repeats the mix: kernels divided by 3, wall divided by 2.
+On a consistent session basis, with hideable GEMM = 2/3 of the expert GEMM time (copy(up) behind GEMM(gate),
+copy(down) behind GEMM(up); copy(gate) cannot hide because ids(L+1) depend on layer L's output):
+
+```
+saving = 2/3 x (2.860 .. 5.100) = 1.91 .. 3.40 s   of the 24.873 s session wall
+ceiling = 24.873 / (24.873 - saving) = 1.083x .. 1.158x
+```
+
+So G-P 1.15x is reachable **only at the very top of the upper bound** (all GEMM counted as expert GEMM,
+which §3 says cannot be separated). The honest reading: ceiling 1.08–1.16x, G-P **marginal, not
+"arithmetically reachable"**, and #830's "never reachable" is **softened, not overturned**.
+The unconstrained bound (all compute hidden) is max(15.75, 9.12)/24.873 -> 1.58x, but dependencies forbid it.
+
+**§8 lever (c) is backwards.** H2D happens once per ubatch (about 31 GB each, nearly the whole expert
+set), so a **larger** ubatch amortises transfers and the ids syncs; a smaller one multiplies them. At
+`-ub 4096` p4k would restage once instead of twice, and `STAGE0C`/t0002 already saw ub 512->8192 give 6.93x
+prefill on the 35B. This is the cheapest lever by far (config only, no fork change) and is untested here.
+Follow-up t0026 sweeps `-ub`.
+
 ## 10. Rig state
 
 GPU1 only. Both GPUs returned to **1 MiB / 0%**; ports 8091/8086/8093 free; no `llama-server`, no
