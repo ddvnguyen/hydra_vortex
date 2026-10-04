@@ -1,0 +1,40 @@
+{
+  "label": "ub2048-r3",
+  "ub": 2048,
+  "round": 3,
+  "ok": true,
+  "vram_load_mib": 6271,
+  "compute_buffer": "",
+  "cuda_total_mib": null,
+  "h2d_pre": "dev 1 @\udcd4avg 6.12 GB/s best 6.12 GB/s",
+  "cells": {
+    "p4k": {
+      "ttft_s": 26.861,
+      "prompt_tokens": 4119,
+      "completion_tokens": 1,
+      "prefill_tps": 153.35,
+      "n_ubatches": 3,
+      "text_len": 2,
+      "sha12": "f3fe997b8d1c"
+    },
+    "p12k": {
+      "ttft_s": 75.452,
+      "prompt_tokens": 12334,
+      "completion_tokens": 1,
+      "prefill_tps": 163.47,
+      "n_ubatches": 7,
+      "text_len": 2,
+      "sha12": "f3fe997b8d1c"
+    }
+  },
+  "decode": {
+    "completion_tokens": 64,
+    "wall_s": 31.394,
+    "decode_tps": 2.01,
+    "text_len": 286,
+    "coarse_coherent": true,
+    "sha12": "98b4ef216abf"
+  },
+  "vram_after_prefill_mib": 6535,
+  "h2d_post": "dev 1 @\udcd4avg 6.12 GB/s best 6.12 GB/s"
+}
