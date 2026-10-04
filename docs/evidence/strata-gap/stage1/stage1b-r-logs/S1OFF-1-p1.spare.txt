@@ -1,0 +1,5 @@
+pre-arm GPU0=1MiB GPU1=1MiB
+nproc=20 threads=6 spare=14 (nproc-threads, leader-handoff:756)
+load1_pre=26.47 (host incl. other jobs; recorded, not part of the spare rule)
+h2d_pre: dev 1 @ÔQ H2D pinned: avg 6.10 GB/s best 6.10 GB/s
+load1_max=27.29 spare=14 (nproc-threads, constant for this arm)

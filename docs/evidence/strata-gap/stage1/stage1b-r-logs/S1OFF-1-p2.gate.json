@@ -1,0 +1,126 @@
+{
+  "label": "S1OFF-1-p2",
+  "port": 8093,
+  "max_tokens": 256,
+  "cells": {
+    "warmup": [
+      {
+        "start": "2026-10-04T20:00:00.950+07:00",
+        "end": "2026-10-04T20:00:28.386+07:00",
+        "ttft_s": 5.43,
+        "prefill_tps": 17.68,
+        "decode_tps": 11.59,
+        "wall_s": 27.435,
+        "prompt_tokens": 96,
+        "completion_tokens": 256,
+        "cached_tokens": 0,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 96,
+          "total_tokens": 352,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "snippet": "We need answer user: \"Write a detailed technical explanation of ",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b",
+        "full_file": "S1OFF-1-p2.warmup.rep0.full.txt",
+        "full_sha256": "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b",
+        "full_len": 1193
+      }
+    ],
+    "p4k": [
+      {
+        "start": "2026-10-04T20:00:28.394+07:00",
+        "end": "2026-10-04T20:01:15.925+07:00",
+        "ttft_s": 24.943,
+        "prefill_tps": 165.14,
+        "decode_tps": 11.29,
+        "wall_s": 47.531,
+        "prompt_tokens": 4119,
+        "completion_tokens": 256,
+        "cached_tokens": 42,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 4119,
+          "total_tokens": 4375,
+          "prompt_tokens_details": {
+            "cached_tokens": 42
+          }
+        },
+        "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "95a2557425a93dd25d72d610d6a84e8c4fa235b1bba78b8fc5aabac2d7f3c17d",
+        "full_file": "S1OFF-1-p2.p4k.rep0.full.txt",
+        "full_sha256": "95a2557425a93dd25d72d610d6a84e8c4fa235b1bba78b8fc5aabac2d7f3c17d",
+        "full_len": 1139
+      }
+    ],
+    "p12k": [
+      {
+        "start": "2026-10-04T20:01:15.929+07:00",
+        "end": "2026-10-04T20:02:53.066+07:00",
+        "ttft_s": 73.889,
+        "prefill_tps": 166.93,
+        "decode_tps": 10.97,
+        "wall_s": 97.137,
+        "prompt_tokens": 12334,
+        "completion_tokens": 256,
+        "cached_tokens": 42,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 12334,
+          "total_tokens": 12590,
+          "prompt_tokens_details": {
+            "cached_tokens": 42
+          }
+        },
+        "snippet": "We need answer to user. User provided a huge benchmark prompt ce",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "d914fe997b0696b9b6a5a0b1b911e5de27fa42be0fd13dc52b5a472f0f1d01ab",
+        "full_file": "S1OFF-1-p2.p12k.rep0.full.txt",
+        "full_sha256": "d914fe997b0696b9b6a5a0b1b911e5de27fa42be0fd13dc52b5a472f0f1d01ab",
+        "full_len": 1174
+      }
+    ]
+  },
+  "gk1_self_identical": true,
+  "gk1_detail": {
+    "warmup": {
+      "shas": [
+        "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b"
+      ],
+      "self_identical": true
+    },
+    "p4k": {
+      "shas": [
+        "95a2557425a93dd25d72d610d6a84e8c4fa235b1bba78b8fc5aabac2d7f3c17d"
+      ],
+      "self_identical": true
+    },
+    "p12k": {
+      "shas": [
+        "d914fe997b0696b9b6a5a0b1b911e5de27fa42be0fd13dc52b5a472f0f1d01ab"
+      ],
+      "self_identical": true
+    }
+  },
+  "cold_prefill_tps": {
+    "warmup": 17.68,
+    "p4k": 165.14,
+    "p12k": 166.93
+  }
+}

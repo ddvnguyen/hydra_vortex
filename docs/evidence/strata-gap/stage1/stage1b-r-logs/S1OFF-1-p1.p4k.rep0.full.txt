@@ -1,0 +1,5 @@
+We need answer to user? User pasted a long benchmark prompt cell p4k? It seems they want maybe something? The prompt is just content, no explicit question. Need infer task? It says "# t0006 benchmark prompt cell p4k" then long markdown. Maybe they expect us to do something? We need respond likely summarize? Need analyze.
+
+We have to produce final answer. Need understand context. User likely provided a benchmark prompt cell and wants maybe generate something? The title "t0006 benchmark prompt cell p4k" maybe from some dataset? Could be asking to answer? There is no explicit instruction. We need maybe complete the document? It ends with "## Why it is fast" incomplete. Maybe they want us to continue? The prompt cell p4k maybe benchmark for model to write? Need infer from pattern.
+
+The content: three sections: Layer split across GPUs (2026-09-29), Layer split: features off across GPUs, The GSQ-RCO Coder on Strata. Ends with "## Why it is fast" and no content. Maybe user wants us to fill in "Why it is fast"? The prompt cell p4k maybe expects answer to benchmark

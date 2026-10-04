@@ -1,0 +1,126 @@
+{
+  "label": "S1ON-1-p3",
+  "port": 8093,
+  "max_tokens": 256,
+  "cells": {
+    "warmup": [
+      {
+        "start": "2026-10-04T20:14:51.783+07:00",
+        "end": "2026-10-04T20:15:18.926+07:00",
+        "ttft_s": 5.177,
+        "prefill_tps": 18.54,
+        "decode_tps": 11.61,
+        "wall_s": 27.143,
+        "prompt_tokens": 96,
+        "completion_tokens": 256,
+        "cached_tokens": 0,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 96,
+          "total_tokens": 352,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "snippet": "We need answer user: \"Write a detailed technical explanation of ",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b",
+        "full_file": "S1ON-1-p3.warmup.rep0.full.txt",
+        "full_sha256": "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b",
+        "full_len": 1193
+      }
+    ],
+    "p4k": [
+      {
+        "start": "2026-10-04T20:15:18.941+07:00",
+        "end": "2026-10-04T20:16:03.655+07:00",
+        "ttft_s": 22.923,
+        "prefill_tps": 179.69,
+        "decode_tps": 11.7,
+        "wall_s": 44.715,
+        "prompt_tokens": 4119,
+        "completion_tokens": 256,
+        "cached_tokens": 42,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 4119,
+          "total_tokens": 4375,
+          "prompt_tokens_details": {
+            "cached_tokens": 42
+          }
+        },
+        "snippet": "We need answer to user? User pasted a long benchmark prompt cell",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "377407e072daf6f5129c06c648af65af3dfb9a885311e7f7ff4eabce1f5e9c42",
+        "full_file": "S1ON-1-p3.p4k.rep0.full.txt",
+        "full_sha256": "377407e072daf6f5129c06c648af65af3dfb9a885311e7f7ff4eabce1f5e9c42",
+        "full_len": 1018
+      }
+    ],
+    "p12k": [
+      {
+        "start": "2026-10-04T20:16:03.660+07:00",
+        "end": "2026-10-04T20:17:33.896+07:00",
+        "ttft_s": 68.755,
+        "prefill_tps": 179.39,
+        "decode_tps": 11.87,
+        "wall_s": 90.236,
+        "prompt_tokens": 12334,
+        "completion_tokens": 256,
+        "cached_tokens": 42,
+        "finish_reason": "length",
+        "usage": {
+          "completion_tokens": 256,
+          "prompt_tokens": 12334,
+          "total_tokens": 12590,
+          "prompt_tokens_details": {
+            "cached_tokens": 42
+          }
+        },
+        "snippet": "We need answer to user. User provided a huge benchmark prompt ce",
+        "error": null,
+        "rep": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "text_len": 0,
+        "reasoning_sha256": "44007b1962dfc7ff17bd8593bd9cf74d48cc72bbc4d0523771f96e927d5354f0",
+        "full_file": "S1ON-1-p3.p12k.rep0.full.txt",
+        "full_sha256": "44007b1962dfc7ff17bd8593bd9cf74d48cc72bbc4d0523771f96e927d5354f0",
+        "full_len": 1164
+      }
+    ]
+  },
+  "gk1_self_identical": true,
+  "gk1_detail": {
+    "warmup": {
+      "shas": [
+        "34f098e1f0f6be8ce1a2c67f3346d6450331a5942141c034a0a670e58c95ca9b"
+      ],
+      "self_identical": true
+    },
+    "p4k": {
+      "shas": [
+        "377407e072daf6f5129c06c648af65af3dfb9a885311e7f7ff4eabce1f5e9c42"
+      ],
+      "self_identical": true
+    },
+    "p12k": {
+      "shas": [
+        "44007b1962dfc7ff17bd8593bd9cf74d48cc72bbc4d0523771f96e927d5354f0"
+      ],
+      "self_identical": true
+    }
+  },
+  "cold_prefill_tps": {
+    "warmup": 18.54,
+    "p4k": 179.69,
+    "p12k": 179.39
+  }
+}

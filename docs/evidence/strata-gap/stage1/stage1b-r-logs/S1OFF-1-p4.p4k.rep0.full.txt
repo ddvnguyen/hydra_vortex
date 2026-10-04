@@ -1,0 +1,8 @@
+We need answer to user? User pasted a long benchmark prompt cell p4k, likely wants something? Need infer task. The user content is just benchmark text, no explicit question. Need respond appropriately. Maybe they expect summarization? The title "# t0006 benchmark prompt cell p4k" maybe from some dataset? Need produce final answer likely a summary or analysis? We need satisfy. Need analyze in English (same language as user? User mostly English). Need maybe produce concise summary of benchmark? Let's inspect.
+
+User pasted three sections:
+1. Layer split across GPUs (2026-09-29) with rig, model, tools, correctness, speed, auto placement, reproduce.
+2. Layer split: features off across GPUs (2026-09-29) with setup, correctness, speed, what changed.
+3. The GSQ-RCO Coder (256 of 512 experts) on Strata with RTX 5070 etc, table, "Why it is fast" incomplete.
+
+Maybe they want to generate a benchmark prompt cell p4k? Or maybe they want to continue? The prompt says "# t0006

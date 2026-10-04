@@ -1,0 +1,10 @@
+We need answer to user? User pasted a long benchmark prompt cell p4k, likely wants something? Need infer task. The prompt is just content, no explicit question. Need respond maybe summarize? Need analyze. We need produce final answer. Need understand context: "# t0006 benchmark prompt cell p4k" maybe they expect to generate a benchmark prompt cell? The content includes multiple benchmark reports. Maybe user wants us to process? Could be from some dataset where prompt cell p4k asks to write something? Need infer from title: "t0006 benchmark prompt cell p4k". They pasted a benchmark prompt cell. Maybe they want us to continue? The last line: "## Why it is fast" incomplete. Maybe they want us to complete the section? Need likely produce the missing "Why it is fast" explanation based on data. Need answer in same style? Let's inspect.
+
+The user message:
+# t0006 benchmark prompt cell p4k
+
+# Layer split across GPUs (2026-09-29)
+...
+# Layer split: the features that were off across GPUs (2026-09-29)
+...
+# The GS
