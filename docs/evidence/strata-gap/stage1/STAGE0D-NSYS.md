@@ -143,6 +143,19 @@ figure is quoted.** The mechanism gate stays **NOT MEASURED**, as in #830.
    not extended.
 6. **G-K2 not run**, per instruction.
 
+## Leader review note (2026-10-04)
+
+- The claim in §2 that "sign and `f ≈ 0.2` are unaffected" is **not established**. In #830 both arms
+  showed identical VRAM (7171 MiB), so VRAM never evidenced staging engagement on the ON arm, and
+  the `moe-stage:` line did not exist yet. The ON/OFF difference proves only that the arms
+  behaved differently. Treat #830's ratio and the implied `f` as **unverified**, not just
+  magnitude-suspect.
+- `f` can be measured **without** the flag: a clean legacy-path profile on `34068ff9` flag OFF
+  (6271 MiB, verified here) gives the kernel breakdown directly. The ON-arm engagement question
+  (§2) is a separate diagnostic.
+- Follow-up t0025 re-runs the capture with the §3 method and adds the plan-verbosity diagnostic.
+  No fork change and no CI cycle are needed for either.
+
 ## 7. Rig state
 
 GPU1 only. Both GPUs returned to **1 MiB / 0%**; ports 8091/8086/8093 free; no `llama-server`, no
