@@ -418,9 +418,86 @@ arithmetic runs. If G-K2 fails, that is a real bug (a bank-flip race), not a num
 
 ---
 
-## 10. Untested / open
+## 10. Implementation checkpoint (part 1 landed, part 2 specified)
 
-- **Nothing is runtime-verified.** Zero builds, zero rig minutes, zero GPU seconds so far. The
+**Landed** on fork `feat/moe-prefill-stream`, commit **`ffbbe31e`** (CI run
+`37185050092`): the backend half only — dedicated staging copy stream + 8-slot
+round-robin event pool in `ggml_backend_cuda_context`, and two **optional** slots appended at the
+**end** of `ggml_backend_i` (`set_tensor_async_staged`, `stage_stream_wait_event`), implemented
+for CUDA and registered. Nothing calls them yet, so flag-on and flag-off behaviour are both
+unchanged. Appended at the end on purpose: every backend in the tree initialises `ggml_backend_i`
+positionally, so inserting slots mid-struct would silently shift all of them.
+
+### 10.1 The bank, specified exactly enough to implement
+
+Expert weight geometry from `docs/evidence/model-layer-info/apex-i-mini.tsv`:
+
+| tensor | type | ne | bytes |
+|---|---|---|---|
+| `blk.N.ffn_down_exps.weight` | `iq4_nl` | **[640, 2560, 512]** | 471 859 200 (450 MiB) |
+| `blk.N.ffn_gate_exps.weight` | `iq3_xxs` / `iq3_s` | [2560, 640, 512] | 321 126 400 / 360 448 000 |
+| `blk.N.ffn_up_exps.weight` | `iq3_xxs` / `iq3_s` | [2560, 640, 512] | 321 126 400 / 360 448 000 |
+
+⇒ `bank_bytes` must be the **`get_alloc_size`** of the largest one, not `ggml_nbytes`:
+
+```
+// ggml-cuda.cu:971-983
+if (ggml_is_quantized(tensor->type)) {
+    if (ne0 % MATRIX_ROW_PADDING != 0) {                 // MATRIX_ROW_PADDING = 512
+        GGML_ASSERT(tensor->nb[0] == ggml_element_size(tensor));
+        size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0 % MATRIX_ROW_PADDING);
+    }
+}
+```
+
+`down_exps` has **ne0 = 640**, so `640 % 512 = 128 ≠ 0` and the padding branch **is** taken. That
+slack is what lets MMQ read the last quant block of the last expert without an OOB read — which is
+also exactly why `copy_experts` adds `min(expert_size, 512)` extra bytes per run
+(`ggml-backend.cpp:1859-1867`). **A bank sized at `ggml_nbytes` would drop it and read past the
+allocation.** Size the bank at `get_alloc_size(buft, dup)` and offset each bank by that padded
+value, not by the raw tensor size.
+
+**`view_src` is safe here — verified, not assumed.** The obvious worry is that a bank view sets
+`view_src` and trips `bad_padding_clear` (`ggml-cuda.cu:1862`, `:1897`), which would divert the
+GEMM to cuBLAS. It does not: `bad_padding_clear` is referenced **only** inside
+`ggml_cuda_should_fuse_mul_mat_vec_f` and `ggml_cuda_mul_mat` (the non-ID path), and
+`ggml_cuda_should_fuse_mul_mat_vec_f` already returns false for `MUL_MAT_ID` when
+`dst->ne[2] != 1` (`ggml-cuda.cu:1845`). The prefill ID path dispatches through
+`ggml_cuda_mul_mat_id_impl` (`:1987-2257`), which never consults it. *(Recorded because the
+opposite conclusion was the obvious first reading and would have been wrong.)*
+
+### 10.2 What part 2 still owes, and its traps
+
+1. Create the bank as one `GGML_TYPE_I8` node of `2 * bank_bytes` in `graph_copy`, marked
+   input+output so ggml-alloc never reclaims it (pattern at `ggml-backend.cpp:1389-1391`), and
+   only when the graph is prefill-shaped and the flag is on.
+2. In pass 5, for a staged MoE weight, replace `input_cpy` with a bank view at
+   `bank_index * padded_bank_bytes`, restoring `type`/`ne`/`nb` from the weight (the idiom
+   `ggml_dup_tensor_layout` itself uses at `:749-754`). **Trap:** the view must be added to
+   `graph_copy` (`:1517-1518`) or ggml-alloc will not reserve the bank.
+3. `bank_index = (++seq) & 1`, per MoE-weight split, in graph order.
+4. In `compute_splits`: replace the host block at `:1797-1802` with
+   `stage_stream_wait_event(bank_free[bank_index])`; after `dispatch_split`, record
+   `bank_free[bank_index]`. On **any** decline from either backend hook, fall back to the exact
+   legacy sequence (`ggml_backend_synchronize` + `ggml_backend_tensor_set_async`) — the fallback
+   must be per-split, not per-graph, or one refusal silently drops the ordering for the rest.
+5. Teardown the two events in `ggml_backend_sched_free`.
+
+**Why part 2 stopped here rather than being written blind.** It is ~150 lines of scheduler and
+tensor-layout surgery, there is **no local build** (host disk is full; every iteration is a ~1 h CI
+cycle), and the bank is precisely the part where an error is *silent* rather than loud. The two
+traps above — the dropped MMQ row padding and the `view_src` question — were both resolved by
+reading source and model metadata rather than by guessing, and both are recorded so the next
+attempt starts from facts. Writing the remaining 150 lines with no compiler and no ability to run
+them would risk spending 3-4 of the 6 budgeted CI cycles on a class of bug that a 5-minute local
+compile would have caught.
+
+---
+
+## 11. Untested / open
+
+- **Part 1 of the implementation is committed (`ffbbe31e`) and CI-validating (§10); nothing else
+  is written. Nothing is runtime-verified.** Zero builds, zero rig minutes, zero GPU seconds so far. The
   fork branch still carries only Stage 1a (whose flag-on path executes legacy, per
   `stage1/IMPL-CI.md`), so **G-P cannot be measured on the existing artifact**.
 - §2.1's staging-region reuse is proven by VRAM arithmetic, **not** by address logging. The
