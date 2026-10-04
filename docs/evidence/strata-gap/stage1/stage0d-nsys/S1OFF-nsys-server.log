@@ -1,0 +1,35 @@
+0.00.193.224 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.193.467 W srv  llama_server: -----------------
+0.00.193.469 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.193.469 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.193.469 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.193.469 W srv  llama_server: -----------------
+0.00.194.688 I srv    load_model: loading model '/mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+1.54.729.686 I cmn          init: llama threadpool init, n_threads = 6
+1.55.118.583 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+1.55.122.635 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.55.122.678 I srv  llama_server: model loaded
+1.55.122.682 I srv  llama_server: listening on http://127.0.0.1:8093
+2.01.166.045 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+2.01.166.093 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+2.04.387.883 I slot print_timing: id  0 | task 0 | prompt eval time =    3221.74 ms /    53 tokens (   60.79 ms per token,    16.45 tokens per second)
+2.04.387.893 I slot print_timing: id  0 | task 0 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+2.04.387.894 I slot print_timing: id  0 | task 0 |       total time =    3221.74 ms /    54 tokens
+2.04.387.901 I slot print_timing: id  0 | task 0 |    graphs reused =          1
+2.04.387.961 I slot      release: id  0 | task 0 | stop processing: n_tokens = 53, truncated = 0
+2.04.442.335 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 265801438971
+2.04.593.862 I slot launch_slot_: id  0 | task 4 | processing task, is_child = 0
+2.16.610.103 I slot print_timing: id  0 | task 4 | prompt processing, n_tokens =   2029, progress = 0.50, t =  12.02 s / 168.86 tokens per second
+2.28.789.085 I slot print_timing: id  0 | task 4 | prompt processing, n_tokens =   4073, progress = 1.00, t =  24.20 s / 168.34 tokens per second
+2.29.046.226 I slot print_timing: id  0 | task 4 | prompt eval time =   24452.34 ms /  4077 tokens (    6.00 ms per token,   166.73 tokens per second)
+2.29.046.229 I slot print_timing: id  0 | task 4 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+2.29.046.229 I slot print_timing: id  0 | task 4 |       total time =   24452.34 ms /  4078 tokens
+2.29.046.230 I slot print_timing: id  0 | task 4 |    graphs reused =          1
+2.29.046.330 I slot      release: id  0 | task 4 | stop processing: n_tokens = 4119, truncated = 0
+4.00.816.881 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/.local/tmp/nsys-report-4a12.qdstrm'
+Press Ctrl-C to stop symbol files downloading
+[1/1] [0%                          ] S1OFF-prefill.nsys-rep[1/1] [0%                          ] S1OFF-prefill.nsys-rep[1/1] [12%                         ] S1OFF-prefill.nsys-rep[1/1] [====25%                     ] S1OFF-prefill.nsys-rep[1/1] [====26%                     ] S1OFF-prefill.nsys-rep[1/1] [====27%                     ] S1OFF-prefill.nsys-rep[1/1] [====28%                     ] S1OFF-prefill.nsys-rep[1/1] [=====29%                    ] S1OFF-prefill.nsys-rep[1/1] [=====30%                    ] S1OFF-prefill.nsys-rep[1/1] [=====31%                    ] S1OFF-prefill.nsys-rep[1/1] [=====32%                    ] S1OFF-prefill.nsys-rep[1/1] [======33%                   ] S1OFF-prefill.nsys-rep[1/1] [======34%                   ] S1OFF-prefill.nsys-rep[1/1] [======35%                   ] S1OFF-prefill.nsys-rep[1/1] [=======36%                  ] S1OFF-prefill.nsys-rep[1/1] [=======37%                  ] S1OFF-prefill.nsys-rep[1/1] [=======38%                  ] S1OFF-prefill.nsys-rep[1/1] [=======39%                  ] S1OFF-prefill.nsys-rep[1/1] [========40%                 ] S1OFF-prefill.nsys-rep[1/1] [========41%                 ] S1OFF-prefill.nsys-rep[1/1] [========42%                 ] S1OFF-prefill.nsys-rep[1/1] [=========43%                ] S1OFF-prefill.nsys-rep[1/1] [=========44%                ] S1OFF-prefill.nsys-rep[1/1] [=========45%                ] S1OFF-prefill.nsys-rep[1/1] [=========46%                ] S1OFF-prefill.nsys-rep[1/1] [==========47%               ] S1OFF-prefill.nsys-rep[1/1] [==========48%               ] S1OFF-prefill.nsys-rep[1/1] [==========49%               ] S1OFF-prefill.nsys-rep[1/1] [===========50%              ] S1OFF-prefill.nsys-rep[1/1] [===========51%              ] S1OFF-prefill.nsys-rep[1/1] [===========52%              ] S1OFF-prefill.nsys-rep[1/1] [===========53%              ] S1OFF-prefill.nsys-rep[1/1] [============54%             ] S1OFF-prefill.nsys-rep[1/1] [==================77%       ] S1OFF-prefill.nsys-rep[1/1] [========================100%] S1OFF-prefill.nsys-rep[1/1] [========================100%] S1OFF-prefill.nsys-rep
+Generated:
+	/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/stage0d/S1OFF-prefill.nsys-rep
