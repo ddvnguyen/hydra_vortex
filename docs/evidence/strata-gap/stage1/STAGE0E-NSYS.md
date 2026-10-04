@@ -323,7 +323,7 @@ The unconstrained bound (all compute hidden) is max(15.75, 9.12)/24.873 -> 1.58x
 
 **§8 lever (c) is backwards.** H2D happens once per ubatch (about 31 GB each, nearly the whole expert
 set), so a **larger** ubatch amortises transfers and the ids syncs; a smaller one multiplies them. At
-`-ub 4096` p4k would restage once instead of twice, and `STAGE0C`/t0002 already saw ub 512->8192 give 6.93x
+`-ub 4096` p4k would restage once instead of twice, and t0002 (35B model, a different model) already saw ub 512->8192 give 6.93x
 prefill on the 35B. This is the cheapest lever by far (config only, no fork change) and is untested here.
 Follow-up t0026 sweeps `-ub`.
 
