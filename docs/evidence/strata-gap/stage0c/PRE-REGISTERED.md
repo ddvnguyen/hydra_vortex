@@ -181,3 +181,32 @@ crash / non-zero exit · invalid h2d link (outside 6.00–6.30 GB/s after one
 rerun) · `gen1 ∧ util≥20` sample · any pre-arm guard failure · free disk
 < 30 GB · `MemAvailable < 67 GiB` at pre-arm · any sign of touching GPU0,
 port 8091/8086, or the owner's cachyos-dev VM · exact-pid kills only.
+
+---
+
+## 8. EXTENT DECISION — filled from T1, committed **before any measured run** (2026-10-04)
+
+T1 executed per §4/§5 (`T1A` = run A `--chunks 1`, `T1B` = run B against it); both `rc=0`,
+h2d 6.11–6.12 GB/s (band 6.00–6.30), `gen1 ∧ util≥20` = 0 samples, no crash. Raw:
+`T1A.log`, `T1B.log`, `T1A.h2d.txt`, `T1B.h2d.txt`, `T1*.link.tsv`. T1 is **not** one of the
+n pairs (extent differs) and is reported separately.
+
+Measured inputs:
+
+| quantity | value | source |
+|---|---|---|
+| `wall(T1A)` / `wall(T1B)` | 237.2 s / 236.9 s | `T1A.log` / `T1B.log` `rc= wall_s=` |
+| `c_A` | 116.14 s internal pass + 1.54 s `process_logits`+write = **117.7 s/chunk** | `T1A.log` |
+| `c_B` | 115.89 s internal pass + ≈5 s KLD reduction/stats = **120.9 s/chunk** | `T1B.log` |
+| `L_A` / `L_B` | `wall − c` = **119.5 s / 116.0 s** | §5 rule |
+| `s` (base file per chunk) | **4 068 109 324 B (4.07 GB)** | `ls -l .local/stage0c/T1A.kld` |
+| KLD positions per chunk | 8191 (`n_ctx − 1 − n_ctx/2`) | `perplexity.cpp` |
+
+Rule evaluation: time bound `3·pair(K) + control(K) ≤ 240 min` ⇒ **K ≤ 16**;
+disk bound `K·s ≤ 60 GB` ⇒ **K ≤ 14**.
+
+### ⇒ `K_max = 14`, extent `K = min(N_full, 14)` chunks = 229 376 corpus tokens head,
+### 114 674 KLD positions per pair. Estimated total measured wall = **3.48 h** (budget 4 h),
+### base-file peak 57.0 GB (95 GB free → ≥ 38 GB remains, ≥ 30 GB rule holds).
+
+No other pre-registered item changes. P1/P2/P3 and C1 run at this extent.
