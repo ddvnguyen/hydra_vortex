@@ -109,4 +109,243 @@ multi-token path skipped at decode (`OPTION-C-DESIGN.md:144` row 16). Stage 0 at
 pays the same kernel once per routed expert per layer per ubatch with far taller
 per-expert row counts than decode.
 
-(PART 1/4 committed — §0 background + §1 current path. Next: §2 target design + §3 patch sketch.)
+---
+
+## 2. Target design: per-layer union streaming, double-buffered device pool, dedicated copy stream
+
+### 2.1 Shape (adapted from Strata's prefill regime)
+
+Strata's prefill streams experts **routing-independently**: the copy engine moves a layer's
+experts through a staging ring while earlier layers compute, with **one**
+`cudaStreamSynchronize` per MoE layer per chunk for host grouping + ordering
+(`src/prefill/prefill.cpp:1503-1512` [verified in source]) and per-entry
+`cudaStreamWaitEvent` for streamed experts (`OPTION-C-DESIGN.md:110` cites
+`prefill.cpp:1690-1694` [verified in that doc, not re-read here]).
+Ring sizing: `ring_slots()` = **384** slots when pinned share >= 0.9, else **96**
+(`prefill.cpp:77-88` [verified in source]); `STRATA_PREFILL_RING` overrides.
+Experts **stay quantized**; compute is MMQ int8 tensor-core GEMM
+(`OPTION-C-DESIGN.md:112` cites `src/prefill/moe_mmq.cu:125-151`).
+Cold cache still streams every blob each chunk — yet 3x the fork.
+
+The fork port keeps that shape but replaces Strata's pack/arena inputs with the fork's own
+tensors:
+
+1. **Per-layer union pass per ubatch.** After routing ids are known for the ubatch, compute
+   the distinct-expert set per layer (host pass over the ids tensor — the same ids the
+   sched already pulls to host at `ggml-backend.cpp:1836-1853`, so no new readback).
+   Stream **those experts only (not all 512)** from host-resident weights to the device pool.
+2. **Double-buffered device pool, layer-ahead.** Two pool slots alternate: while layer L
+   computes its grouped GEMM from slot A, layer L+1's union streams into slot B on a
+   **dedicated copy stream**. Flip on event landing (Strata's
+   `pending`-applied-when-event-lands shape, `generate.cpp:4797-4824` per `OPTION-C-DESIGN.md:84`).
+3. **GPU grouped GEMM on the pool.** The prefill `mul_mat_id` nodes execute against the
+   resident pool (grouped path) instead of falling to `PREFILL_LEGACY` CPU compute.
+4. **Must NOT require `--moe-expert-cache-size > 0`.** That flag costs **40% decode**
+   (F1 9.28 vs F0 15.30 [measured]) and is a load-time buft override (`src/llama.cpp:329`
+   [verified in source]) that cannot be enabled for prefill only. The pool is **phase-scoped**:
+   allocated for prefill, sized as a double buffer only (~1.0-1.8 GiB, §3.3), freed or
+   parked after prefill. Fallback if a new pool proves too large: reuse `moe-cache` staging
+   with the pool sized for the double buffer only (2 x 292 x 1.7838 MiB ≈ 1.02 GiB
+   [derived], `design-prefill-fastpath-DRAFT.md:4`).
+5. **Decode untouched with the new flag off (default off).** Outcome gating keeps
+   `DECODE_GROUPED`/`DECODE_LEGACY` selection byte-identical when the flag is unset;
+   G-K1 requires 100% identical decode tokens flag on vs off (§4).
+
+### 2.2 Why the union (not the bank, not per-miss)
+
+- The draft's offline union table (64 route traces / 428 non-overlapping 512-token prefill
+  windows): **k=10 union = 292.5/512 (sd 38.1)** = 57.1% of the bank
+  (`design-prefill-fastpath-DRAFT.md:42-49`). Per-expert 1.7838 MiB -> **521.8 MiB/layer/ubatch**.
+- CPU-only union analysis done for this spec (§7.5): decode-probe mean 307.6/512 (60.1%),
+  Stage 0 measured 68-79% of declared per 2048-chunk. Three independent sources band
+  **57-79%** — the union is a bit over half the bank at 512 tokens and well under it at 2048.
+- Per-miss fetching is explicitly out: it reintroduces the in-step readback + decision cost
+  that killed the decode-lookahead design (36.3 us/invocation break-even,
+  `design-prefill-fastpath-DRAFT.md:152`). The unit here is a **whole-layer batch transfer
+  amortised over the ubatch** — no predictor, no per-token decision, no readback beyond the
+  ids the base path already pulls.
+
+### 2.3 Flag name candidates (fork's own flag family)
+
+Owner rule: upstream params untouched; new behaviour behind fork-owned flags
+(`OPTION-C-DESIGN.md:52` §0.2; §21a pending surface `--moe-expert-home`,
+`--moe-expert-pins`, `--moe-expert-pin-count`). Candidates, in preference order:
+
+1. `--moe-prefill-stream` (OPTION-C placeholder, `OPTION-C-DESIGN.md:250`) — matches the
+   `--moe-expert-cache-*` family (`arg.cpp:2875-2895` [verified in source]), reads as the
+   prefill counterpart of the decode cache. **Recommended.**
+2. `--moe-prefill-gpu-stream` — more explicit about where compute runs; longer.
+3. `--prefill-moe-stream` — breaks the `--moe-*` prefix convention; not recommended.
+
+Env form follows the family pattern (`LLAMA_ARG_MOE_EXPERT_CACHE_SIZE` precedent,
+`arg.cpp:2886`): `LLAMA_ARG_MOE_PREFILL_STREAM`. Type: boolean (default off). No `N`
+size knob in v1 — the pool sizes itself from the measured union (§3.3); a size knob is a
+v2 tuning escape hatch, not a v1 requirement.
+
+---
+
+## 3. Diff-style patch sketch per file (NOT applied — design only)
+
+### 3.1 `common/arg.cpp` — new flag (~15 lines)
+
+```diff
++    add_opt(common_arg(
++        {"--moe-prefill-stream"},
++        "Stream prefill MoE expert unions to GPU on a dedicated copy stream with a\n"
++        "phase-scoped double buffer; decode untouched. 0 disables (default). "
++        "Does not require --moe-expert-cache-size.",
++        [](common_params & params) {
++            params.moe_prefill_stream = true;
++        }
++    ).set_env("LLAMA_ARG_MOE_PREFILL_STREAM"));
+```
+
+plus the `bool moe_prefill_stream = false;` field on `common_params` (beside
+`n_moe_expert_cache_slots`, `arg.cpp:2875-2886` region) and pass-through into
+`llama_cparams`/`llama_model_params` as the codebase's existing MoE knobs do.
+[hypothesis on the exact params struct plumbing: mirror `n_moe_expert_cache_slots`;
+re-verify at patch time.]
+
+### 3.2 `ggml/src/ggml-cuda/moe-cache.cuh` — new outcome + pool descriptor (~30 lines)
+
+```diff
+ enum ggml_cuda_moe_graph_outcome : uint32_t {
+     GGML_CUDA_MOE_GRAPH_OUTCOME_PREFILL_LEGACY = 0,
+     GGML_CUDA_MOE_GRAPH_OUTCOME_DECODE_GROUPED,
+     GGML_CUDA_MOE_GRAPH_OUTCOME_DECODE_LEGACY,
+     GGML_CUDA_MOE_GRAPH_OUTCOME_ERROR,
++    GGML_CUDA_MOE_GRAPH_OUTCOME_PREFILL_STREAMED,  // Stage 1: union in device pool, grouped GPU GEMM
+ };
+```
+
+plus a phase-scoped pool descriptor (device pointer x2, per-slot layer tag + ready event,
+union list per layer, pool byte size; see §3.4). The outcome keeps `PREFILL_LEGACY = 0`
+so every existing comparison keeps its meaning when the flag is off.
+
+### 3.3 `ggml/src/ggml-cuda/moe-cache.cu` — plan, copy engine, union pass (~250-400 lines, the bulk)
+
+```diff
+-    const bool pure_prefill = cached_prefill && !cached_decode;
+-    if (pure_prefill) {
+-        plan->outcome_ = GGML_CUDA_MOE_GRAPH_OUTCOME_PREFILL_LEGACY;
++    const bool pure_prefill = cached_prefill && !cached_decode;
++    if (pure_prefill && !prefill_stream_enabled) {          // flag off: byte-identical legacy path
++        plan->outcome_ = GGML_CUDA_MOE_GRAPH_OUTCOME_PREFILL_LEGACY;
+```
+
+at `:9768-9770` (and mirror at `:9883`, `:10360-10362` — all three decision points must
+agree or the plan/execution/certified-inventory checks at `ggml-cuda.cu:6905-6911` will
+refuse the capture [verified in source]).
+
+```diff
+ // resolve_streams / has_*_grouped_* predicates, e.g. :4589, :4618, :4626, :4638
+-        if (plan_->outcome_ != GGML_CUDA_MOE_GRAPH_OUTCOME_DECODE_GROUPED) {
++        if (plan_->outcome_ != GGML_CUDA_MOE_GRAPH_OUTCOME_DECODE_GROUPED &&
++            plan_->outcome_ != GGML_CUDA_MOE_GRAPH_OUTCOME_PREFILL_STREAMED) {
+```
+
+un-gating the copy engine for the new outcome only. New code (one function each):
+
+- `prefill_union_pass(ids_host, T, K, n_expert) -> bitset + count + ordered list` — host pass
+  shaped exactly like the sched's existing `used_ids` bitset loop
+  (`ggml-backend.cpp:1841-1853` [verified in source]); runs once per MoE layer per chunk
+  during the single per-layer host sync (Strata's `kPfHostGroup` shape,
+  `prefill.cpp:1503-1512`).
+- `prefill_stream_issue(layer, union, pool_slot, copy_stream)` — `cudaMemcpyAsync` runs of
+  consecutive experts (same consecutive-run grouping as `copy_experts`,
+  `ggml-backend.cpp:1855-1892`) onto the dedicated copy stream, `cudaEventRecord` per slot.
+- `prefill_stream_wait(pool_slot, compute_stream)` — `cudaStreamWaitEvent` before the
+  layer's grouped GEMM (Strata's per-entry wait shape, `prefill.cpp:1690-1694` per
+  `OPTION-C-DESIGN.md:110`).
+
+Authority/certification hazard (must-satisfy, not optional): the `GROUP_REASON_PREFILL`
+records (`:9791-9799`) + `certified_inventory` + `has_certified_complete_mmid_inventory`
+checks (`ggml-cuda.cu:6905-6917`) must accept the new outcome, or graph capture refuses.
+The sketch keeps prefill group records as-is and adds the streamed outcome as a
+certification-accepting variant; the decode-era *authority invariant refusing pools*
+(`design-prefill-fastpath-DRAFT.md:154`) is the known hazard — §4's numerics test, not an
+assumption, decides whether the prefill group path inherits it.
+
+### 3.4 Data structures
+
+```cpp
+// Phase-scoped (prefill only). Freed/parked when prefill ends; never touched by decode.
+struct moe_prefill_stream_pool {
+    void*      slot[2];          // device buffers, pool_bytes each
+    size_t     pool_bytes;       // sized at first prefill chunk (§3.5)
+    int        resident_layer[2];// which layer's union is in each slot, -1 = empty
+    cudaEvent_t ready[2];        // recorded on copy_stream when the slot's union lands
+    uint32_t   front;            // slot the current layer computes from
+};
+struct moe_prefill_union {
+    uint32_t ids[512];           // ordered distinct experts, count <= 512
+    uint32_t count;
+};
+```
+
+No LRU, no frequency, no eviction: the pool is a **two-slot flip-flop**, not a cache.
+Admission policy = the union; replacement policy = alternation. This is why Stage 1 needs
+no residency machinery (§1.1/§1.2 of `OPTION-C-DESIGN.md` stay Stage 3 scope).
+
+### 3.5 Buffer sizing for 12 GB (RTX 3060: F0 uses 6271 MiB; gate G-V <= 11000 MiB)
+
+Inputs: F0 VRAM after load **6271 MiB** [measured, `STAGE0-RESULTS.md:134`];
+per-expert **1.7838 MiB** (`design-prefill-fastpath-DRAFT.md:34`, GGUF table);
+union@512tok **292.5** (sd 38.1) (same); measured per-2048-chunk stream **31-36 GiB**
+(`STAGE0-RESULTS.md:256-262`).
+
+| Pool variant | Arithmetic | Bytes |
+|---|---|---:|
+| Union-sized (512-tok union) | 2 x 292.5 x 1.7838 MiB | **1043.5 MiB (~1.02 GiB)** |
+| Union-sized +3sd margin | 2 x (292.5+3x38.1=406.8) x 1.7838 | **1451 MiB (~1.42 GiB)** |
+| Whole-bank (saturation-proof) | 2 x 512 x 1.7838 MiB | **1826.6 MiB (~1.78 GiB)** |
+| 2048-chunk union [hypothesis §7.5] | 2 x ~400 x 1.7838 MiB | **~1427 MiB (~1.39 GiB)** |
+
+Totals vs gate: 6271 + 1451 = **7722 MiB** (recommended sizing); worst case
+6271 + 1827 = **8098 MiB**. Headroom to G-V (11000 MiB): **~2900-3300 MiB**;
+to the 12288 MiB ceiling: ~4.2-4.6 GiB. **G-V passes with margin in every variant,
+including whole-bank saturation.** Size the pool at first prefill chunk as
+`2 x max(union_measured, 292.5+3sd) x 1.7838 MiB`, capped at whole-bank; the cap is the
+saturation-proof fallback, not a second knob.
+
+### 3.6 Event/sync plan
+
+| Point | Primitive | Source shape |
+|---|---|---|
+| One host sync per MoE layer per chunk (host grouping + ordering) | `cudaStreamSynchronize(compute_stream)` after ids D2H, before union pass | Strata `prefill.cpp:1512` [verified in source] |
+| Union H2D on dedicated stream | `cudaMemcpyAsync` consecutive-expert runs + `cudaEventRecord(slot.ready)` on `copy_stream` | fork `copy_stream` infra, un-gated for the new outcome (§3.3) |
+| Compute waits for stream, host does not | `cudaStreamWaitEvent(compute_stream, slot.ready)` before the layer's grouped GEMM; slot flip after | Strata per-entry wait `prefill.cpp:1690-1694` (via `OPTION-C-DESIGN.md:110`) |
+| No decode-path sync change | decode keeps `DECODE_GROUPED`/`DECODE_LEGACY` outcomes; `ggml-cuda.cu:6927` overlap untouched | flag-off byte-identical (§2.1.5) |
+
+Expected overlap: link duty 51% -> ~85-95% [hypothesis]; transfer 5.0-5.9 s/chunk hidden
+behind GPU GEMM. Ceiling if fully overlapped: ~10.2 s/chunk -> ~4.3-5.2 s/chunk ≈
+**1.9-2.4x** [hypothesis, ceiling — the gate is only 1.15x].
+
+### 3.7 Pinned memory vs `--load-mode none` / mmap'd shards
+
+Loader downgrade: `src/llama-model-loader.cpp:1324-1332` [verified in source] rewrites any
+host buffer type to the plain CPU buffer when `use_mmap` is set. Pinned expert source
+needs `--load-mode none` (restores pinning); measured decode cost **-4.9% = nil**
+(`OPTION-C-DESIGN.md:227` [measured, cited]). Stage 0 ran `--load-mode none` on **every**
+arm (`STAGE0-RESULTS.md:60-63`), so the G-P control already pays that cost — no new
+confound. Strata's own source shape is a mapped-pinned arena + device alias
+(`expert_source.cpp:505-537` [verified in source]: `cudaHostAllocMapped|Portable` +
+`cudaHostGetDevicePointer`). The fork does **not** need to replicate the alias trick in
+v1: pageable source halves prefill H2D (draft's 4.6x vs 2.4x split on CUDA0), but on the
+3060 the link floor is 6.1 GB/s pinned-measured and the gate (1.15x) survives pageable;
+record the source kind in the measurement report and revisit only if G-P fails.
+
+### 3.8 Hybrid DeltaNet / PLE state unaffected (Stage 0 R2)
+
+Stage 0 answered R2: recurrent/PLE state does **not** ride boundary copies —
+`state_cache_entries = 0` in all 24 split blocks, zero `cache_*` names in the 1.8 MB
+SPLIT-1 log; RS buffer pinned to CUDA0, 112.57 MiB (`STAGE0-RESULTS.md:390-406`).
+Stage 1 moves only `ffn_*_exps` weights and grouped GEMM compute; it does not re-partition
+any layer's execution across backends and introduces no new copy source for
+`cache_r/s_l*` / `cache_ple_r_l*`. The one hard rule for review: any later change that
+moves a layer's MoE compute to CPU while its `cache_*` tensors stay on CUDA0 would
+introduce a new 112.57 MiB-per-state-set copy source (`:404-406`) — Stage 1 does not do
+this by construction (compute moves CPU->GPU, state stays GPU).
+
+(PART 2/4 committed — §2 target design + §3 patch sketch. Next: §4 correctness + §5 measurement.)
+
