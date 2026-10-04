@@ -1,0 +1,206 @@
+[T6] pre-arm gates (threads=6 prof=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 86.4 GiB (>= 67, pre-arm)
+nproc=20 threads=6 spare=14 (nproc-threads, leader-handoff:756)
+load1_pre=2.38 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 14 >= 2
+h2d_pre_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.12 GB/s
+h2d_pre=6.11 GB/s ok (band 6.00-6.30)
+[T6] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 6 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none
+[T6] llama-server pid 1756530, waiting for /health (max 900s)
+[T6] ready
+[T6] VALIDITY WARN: no util>=20 sample during load (expected-by-design, C8)
+[T6] vram_after_load_mib=6271
+  p4k rep0 ttft=20.348 prefill=202.43 decode=12.89 err=None
+  p4k rep1 ttft=0.251 prefill=16410.36 decode=13.77 err=None
+  p4k rep2 ttft=0.265 prefill=15543.4 decode=13.67 err=None
+  p12k rep0 ttft=61.386 prefill=200.93 decode=13.3 err=None
+  p12k rep1 ttft=0.258 prefill=47806.2 decode=13.46 err=None
+  p12k rep2 ttft=0.303 prefill=40706.27 decode=12.98 err=None
+[T6] bench rc=0
+load1_max=5.89 spare=14 (nproc-threads, constant for this arm)
+h2d_post_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.10 GB/s best 6.11 GB/s
+h2d_post=6.10 GB/s ok (band 6.00-6.30)
+T6-1 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/arms/T6-1.logparse.json (align match=True)
+T6-1 done status=ok threads=6 prof=0 reps=3 bench_rc=0 parse_rc=0 mem_avail_after=87.5GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.10 GB/s best 6.11 GB/s;] link_bad_samples=0 load1_max=5.89 spare=14 gpu0_after=1MiB gpu1_after=1MiB summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/logs/T6-1.summary.txt
+[T12] pre-arm gates (threads=12 prof=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 87.5 GiB (>= 67, pre-arm)
+nproc=20 threads=12 spare=8 (nproc-threads, leader-handoff:756)
+load1_pre=4.76 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 8 >= 2
+h2d_pre_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+h2d_pre=6.11 GB/s ok (band 6.00-6.30)
+[T12] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 12 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none
+[T12] llama-server pid 1777337, waiting for /health (max 900s)
+[T12] ready
+[T12] vram_after_load_mib=6271
+  p4k rep0 ttft=20.323 prefill=202.68 decode=14.4 err=None
+  p4k rep1 ttft=0.245 prefill=16812.24 decode=14.67 err=None
+  p4k rep2 ttft=0.245 prefill=16812.24 decode=14.25 err=None
+  p12k rep0 ttft=61.297 prefill=201.22 decode=14.48 err=None
+  p12k rep1 ttft=0.251 prefill=49139.44 decode=14.49 err=None
+  p12k rep2 ttft=0.25 prefill=49336.0 decode=14.87 err=None
+[T12] bench rc=0
+load1_max=5.72 spare=8 (nproc-threads, constant for this arm)
+h2d_post_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+h2d_post=6.12 GB/s ok (band 6.00-6.30)
+T12-1 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/arms/T12-1.logparse.json (align match=True)
+T12-1 done status=ok threads=12 prof=0 reps=3 bench_rc=0 parse_rc=0 mem_avail_after=87.4GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;] link_bad_samples=0 load1_max=5.72 spare=8 gpu0_after=1MiB gpu1_after=1MiB summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/logs/T12-1.summary.txt
+[T6] pre-arm gates (threads=6 prof=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 87.4 GiB (>= 67, pre-arm)
+nproc=20 threads=6 spare=14 (nproc-threads, leader-handoff:756)
+load1_pre=4.68 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 14 >= 2
+h2d_pre_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+h2d_pre=6.12 GB/s ok (band 6.00-6.30)
+[T6] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 6 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none
+[T6] llama-server pid 1798175, waiting for /health (max 900s)
+[T6] ready
+[T6] VALIDITY WARN: no util>=20 sample during load (expected-by-design, C8)
+[T6] vram_after_load_mib=6271
+  p4k rep0 ttft=20.395 prefill=201.96 decode=14.64 err=None
+  p4k rep1 ttft=0.246 prefill=16743.9 decode=14.45 err=None
+  p4k rep2 ttft=0.255 prefill=16152.94 decode=13.95 err=None
+  p12k rep0 ttft=61.45 prefill=200.72 decode=13.69 err=None
+  p12k rep1 ttft=0.267 prefill=46194.76 decode=13.65 err=None
+  p12k rep2 ttft=0.261 prefill=47256.7 decode=14.05 err=None
+[T6] bench rc=0
+load1_max=5.52 spare=14 (nproc-threads, constant for this arm)
+h2d_post_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+h2d_post=6.11 GB/s ok (band 6.00-6.30)
+T6-2 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/arms/T6-2.logparse.json (align match=True)
+T6-2 done status=ok threads=6 prof=0 reps=3 bench_rc=0 parse_rc=0 mem_avail_after=87.4GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s;] link_bad_samples=0 load1_max=5.52 spare=14 gpu0_after=1MiB gpu1_after=1MiB summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/logs/T6-2.summary.txt
+[T12] pre-arm gates (threads=12 prof=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 87.4 GiB (>= 67, pre-arm)
+nproc=20 threads=12 spare=8 (nproc-threads, leader-handoff:756)
+load1_pre=4.49 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 8 >= 2
+h2d_pre_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+h2d_pre=6.11 GB/s ok (band 6.00-6.30)
+[T12] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 12 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none
+[T12] llama-server pid 1817983, waiting for /health (max 900s)
+[T12] ready
+[T12] VALIDITY WARN: no util>=20 sample during load (expected-by-design, C8)
+[T12] vram_after_load_mib=6271
+  p4k rep0 ttft=20.302 prefill=202.89 decode=14.67 err=None
+  p4k rep1 ttft=0.24 prefill=17162.5 decode=14.77 err=None
+  p4k rep2 ttft=0.242 prefill=17020.66 decode=14.74 err=None
+  p12k rep0 ttft=61.397 prefill=200.89 decode=14.75 err=None
+  p12k rep1 ttft=0.251 prefill=49139.44 decode=14.83 err=None
+  p12k rep2 ttft=0.247 prefill=49935.22 decode=14.72 err=None
+[T12] bench rc=0
+load1_max=8.14 spare=8 (nproc-threads, constant for this arm)
+h2d_post_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+h2d_post=6.12 GB/s ok (band 6.00-6.30)
+T12-2 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/arms/T12-2.logparse.json (align match=True)
+T12-2 done status=ok threads=12 prof=0 reps=3 bench_rc=0 parse_rc=0 mem_avail_after=87.8GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;] link_bad_samples=0 load1_max=8.14 spare=8 gpu0_after=1MiB gpu1_after=1MiB summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/logs/T12-2.summary.txt
+[T6] pre-arm gates (threads=6 prof=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 87.8 GiB (>= 67, pre-arm)
+nproc=20 threads=6 spare=14 (nproc-threads, leader-handoff:756)
+load1_pre=6.78 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 14 >= 2
+h2d_pre_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.13 GB/s
+h2d_pre=6.12 GB/s ok (band 6.00-6.30)
+[T6] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 6 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none
+[T6] llama-server pid 1838198, waiting for /health (max 900s)
+[T6] ready
+[T6] VALIDITY WARN: no util>=20 sample during load (expected-by-design, C8)
+[T6] vram_after_load_mib=6271
+  p4k rep0 ttft=20.282 prefill=203.09 decode=14.41 err=None
+  p4k rep1 ttft=0.249 prefill=16542.17 decode=13.79 err=None
+  p4k rep2 ttft=0.268 prefill=15369.4 decode=13.55 err=None
+  p12k rep0 ttft=61.299 prefill=201.21 decode=13.55 err=None
+  p12k rep1 ttft=0.262 prefill=47076.34 decode=14.14 err=None
+  p12k rep2 ttft=0.253 prefill=48750.99 decode=14.0 err=None
+[T6] bench rc=0
+load1_max=6.78 spare=14 (nproc-threads, constant for this arm)
+h2d_post_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.12 GB/s
+h2d_post=6.11 GB/s ok (band 6.00-6.30)
+T6-3 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/arms/T6-3.logparse.json (align match=True)
+T6-3 done status=ok threads=6 prof=0 reps=3 bench_rc=0 parse_rc=0 mem_avail_after=87.9GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.12 GB/s;] link_bad_samples=0 load1_max=6.78 spare=14 gpu0_after=1MiB gpu1_after=1MiB summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/logs/T6-3.summary.txt
+[T12] pre-arm gates (threads=12 prof=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 87.8 GiB (>= 67, pre-arm)
+nproc=20 threads=12 spare=8 (nproc-threads, leader-handoff:756)
+load1_pre=5.29 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 8 >= 2
+h2d_pre_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+h2d_pre=6.12 GB/s ok (band 6.00-6.30)
+[T12] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 12 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none
+[T12] llama-server pid 1857925, waiting for /health (max 900s)
+[T12] ready
+[T12] VALIDITY WARN: no util>=20 sample during load (expected-by-design, C8)
+[T12] vram_after_load_mib=6271
+  p4k rep0 ttft=20.299 prefill=202.92 decode=13.7 err=None
+  p4k rep1 ttft=0.253 prefill=16280.63 decode=14.09 err=None
+  p4k rep2 ttft=0.256 prefill=16089.84 decode=14.4 err=None
+  p12k rep0 ttft=61.341 prefill=201.07 decode=14.56 err=None
+  p12k rep1 ttft=0.257 prefill=47992.22 decode=14.29 err=None
+  p12k rep2 ttft=0.305 prefill=40439.34 decode=14.77 err=None
+[T12] bench rc=0
+load1_max=7.02 spare=8 (nproc-threads, constant for this arm)
+h2d_post_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.10 GB/s best 6.11 GB/s
+h2d_post=6.10 GB/s ok (band 6.00-6.30)
+T12-3 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/arms/T12-3.logparse.json (align match=True)
+T12-3 done status=ok threads=12 prof=0 reps=3 bench_rc=0 parse_rc=0 mem_avail_after=87.8GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.10 GB/s best 6.11 GB/s;] link_bad_samples=0 load1_max=7.02 spare=8 gpu0_after=1MiB gpu1_after=1MiB summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/logs/T12-3.summary.txt
+[T6] pre-arm gates (threads=6 prof=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 87.8 GiB (>= 67, pre-arm)
+nproc=20 threads=6 spare=14 (nproc-threads, leader-handoff:756)
+load1_pre=6.55 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 14 >= 2
+h2d_pre_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.11 GB/s best 6.11 GB/s
+h2d_pre=6.11 GB/s ok (band 6.00-6.30)
+[T6] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 6 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none
+[T6] llama-server pid 1878042, waiting for /health (max 900s)
+[T6] ready
+[T6] vram_after_load_mib=6271
+  p4k rep0 ttft=20.247 prefill=203.44 decode=14.09 err=None
+  p4k rep1 ttft=0.256 prefill=16089.84 decode=14.21 err=None
+  p4k rep2 ttft=0.25 prefill=16476.0 decode=14.5 err=None
+  p12k rep0 ttft=61.25 prefill=201.37 decode=13.98 err=None
+  p12k rep1 ttft=0.266 prefill=46368.42 decode=14.36 err=None
+  p12k rep2 ttft=0.258 prefill=47806.2 decode=14.48 err=None
+[T6] bench rc=0
+load1_max=6.18 spare=14 (nproc-threads, constant for this arm)
+h2d_post_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.13 GB/s
+h2d_post=6.12 GB/s ok (band 6.00-6.30)
+T6-4 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/arms/T6-4.logparse.json (align match=True)
+T6-4 done status=ok threads=6 prof=0 reps=3 bench_rc=0 parse_rc=0 mem_avail_after=87.8GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.13 GB/s;] link_bad_samples=0 load1_max=6.18 spare=14 gpu0_after=1MiB gpu1_after=1MiB summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/logs/T6-4.summary.txt
+[T12] pre-arm gates (threads=12 prof=0 reps=3 maxtok=256):
+pre-arm GPU0=1MiB GPU1=1MiB
+GATE ok: both GPUs idle (<=5 MiB)
+GATE ok: MemAvailable 87.9 GiB (>= 67, pre-arm)
+nproc=20 threads=12 spare=8 (nproc-threads, leader-handoff:756)
+load1_pre=4.63 (host incl. other jobs; recorded, not part of the spare rule)
+GATE ok: spare 8 >= 2
+h2d_pre_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+h2d_pre=6.12 GB/s ok (band 6.00-6.30)
+[T12] flags: -m /mnt/SSD/strata-models/GSQ-RCO/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --split-mode layer -fit off -ngl 99 --n-cpu-moe 99 --override-tensor per_layer_token_embd=CPU --moe-expert-cache-size 0 -c 16384 --parallel 1 --flash-attn on --jinja -t 12 --experimental-logs --load-mode none --ple-prefetch -b 2048 -ub 2048 --host 127.0.0.1 --port 8093 --alias gsq-rco-iq3_s --spec-type none
+[T12] llama-server pid 1897381, waiting for /health (max 900s)
+[T12] ready
+[T12] VALIDITY WARN: no util>=20 sample during load (expected-by-design, C8)
+[T12] vram_after_load_mib=6271
+  p4k rep0 ttft=20.289 prefill=203.02 decode=14.63 err=None
+  p4k rep1 ttft=0.247 prefill=16676.11 decode=14.76 err=None
+  p4k rep2 ttft=0.253 prefill=16280.63 decode=14.77 err=None
+  p12k rep0 ttft=61.315 prefill=201.16 decode=14.75 err=None
+  p12k rep1 ttft=0.256 prefill=48179.69 decode=14.86 err=None
+  p12k rep2 ttft=0.251 prefill=49139.44 decode=14.46 err=None
+[T12] bench rc=0
+load1_max=6.74 spare=8 (nproc-threads, constant for this arm)
+h2d_post_attempt1: dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s
+h2d_post=6.12 GB/s ok (band 6.00-6.30)
+T12-4 logparse written: /mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/arms/T12-4.logparse.json (align match=True)
+T12-4 done status=ok threads=12 prof=0 reps=3 bench_rc=0 parse_rc=0 mem_avail_after=87.9GiB h2d=[dev 1 NVIDIA GeForce RTX 3060 H2D pinned: avg 6.12 GB/s best 6.12 GB/s;] link_bad_samples=0 load1_max=6.74 spare=8 gpu0_after=1MiB gpu1_after=1MiB summary=/mnt/WorkDisk/workspace/worktree/1q3ry0vb/baseline-flash-next/.local/wt-stage0b/docs/evidence/strata-gap/stage0b/logs/T12-4.summary.txt

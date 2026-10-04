@@ -1,0 +1,8 @@
+pre-arm GPU0=1MiB GPU1=1MiB
+nproc=20 threads=12 spare=8 (nproc-threads, leader-handoff:756)
+load1_pre=5.29 (host incl. other jobs; recorded, not part of the spare rule)
+h2d_pre=6.12 GB/s ok (band 6.00-6.30)
+h2d_pre: 6.12 GB/s attempt=1
+load1_max=7.02 spare=8 (nproc-threads, constant for this arm)
+h2d_post=6.10 GB/s ok (band 6.00-6.30)
+h2d_post: 6.10 GB/s attempt=1
